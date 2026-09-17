@@ -88,7 +88,7 @@ def test_v7_fields_round_trip_through_serialisation() -> None:
                 "window_start_at": "2026-05-28T22:00:00+00:00",
                 "attempt_count": 1,
                 "last_at": "2026-05-28T22:56:47+00:00",
-            }
+            },
         },
         pr_artefacts_recorded_at=datetime(2026, 5, 28, 22, 5, 50, tzinfo=UTC),
         multi_pr_divergence={

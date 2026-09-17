@@ -50,7 +50,7 @@ def build_report(
 ) -> dict[str, Any]:
     if not check.get("passed"):
         raise ArchitectWroteToTree(
-            "the architect left the working tree dirty: " + ", ".join(check.get("dirty_paths") or ["(unknown)"])
+            "the architect left the working tree dirty: " + ", ".join(check.get("dirty_paths") or ["(unknown)"]),
         )
     return {
         "blueprint": {

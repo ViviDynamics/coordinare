@@ -53,7 +53,7 @@ def test_legacy_feedback_cycle_count_migrates_to_content_counter() -> None:
     """FR-009: a persisted session carrying only the legacy feedback_cycle_count
     seeds content_feedback_cycles on load."""
     sess = PersistedSession.model_validate(
-        {"card_id": "PVTI_X", "feedback_cycle_count": 4}
+        {"card_id": "PVTI_X", "feedback_cycle_count": 4},
     )
     assert sess.content_feedback_cycles == 4
     assert sess.transient_error_cycles == 0
@@ -70,5 +70,5 @@ def test_split_budget_and_qa_round_trip() -> None:
     assert re_loaded.content_feedback_cycles == 3
     assert re_loaded.transient_error_cycles == 2
     assert re_loaded.assessor_open_questions == [
-        {"question": "Use OAuth?", "answer": "Yes"}
+        {"question": "Use OAuth?", "answer": "Yes"},
     ]

@@ -27,7 +27,7 @@ def test_explicit_responses_wire_api_is_written() -> None:
             "CODEX_PROVIDER_BASE_URL": "https://litellm.example/v1",
             "CODEX_PROVIDER_NAME": "vivi",
             "CODEX_PROVIDER_WIRE_API": "responses",
-        }
+        },
     )
     assert toml is not None
     assert 'model_provider = "vivi"' in toml
@@ -42,7 +42,7 @@ def test_unset_wire_api_omits_the_line() -> None:
         {
             "CODEX_PROVIDER_BASE_URL": "https://litellm.example/v1",
             "CODEX_PROVIDER_NAME": "vivi",
-        }
+        },
     )
     assert toml is not None
     assert "wire_api" not in toml
@@ -54,7 +54,7 @@ def test_unset_wire_api_omits_the_line() -> None:
 def test_never_emits_invalid_chat_literal() -> None:
     """Regression guard: the builder must never write wire_api = "chat" again."""
     toml = _build_provider_config_toml(
-        {"CODEX_PROVIDER_BASE_URL": "https://litellm.example/v1"}
+        {"CODEX_PROVIDER_BASE_URL": "https://litellm.example/v1"},
     )
     assert toml is not None
     assert 'wire_api = "chat"' not in toml

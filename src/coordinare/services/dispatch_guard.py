@@ -81,7 +81,7 @@ async def check_inflight(
         # so do not refuse.  This preserves the existing behaviour when a
         # snapshot is restored before performer_services is repopulated.
         return InFlightGuardResult(
-            is_in_flight=False, session_id=session_id, advice="proceed"
+            is_in_flight=False, session_id=session_id, advice="proceed",
         )
 
     try:
@@ -97,7 +97,7 @@ async def check_inflight(
             error=str(exc),
         )
         return InFlightGuardResult(
-            is_in_flight=False, session_id=session_id, advice="proceed"
+            is_in_flight=False, session_id=session_id, advice="proceed",
         )
 
     if is_alive:
@@ -109,10 +109,10 @@ async def check_inflight(
             service_has_live_session=True,
         )
         return InFlightGuardResult(
-            is_in_flight=True, session_id=session_id, advice="refuse"
+            is_in_flight=True, session_id=session_id, advice="refuse",
         )
     return InFlightGuardResult(
-        is_in_flight=False, session_id=session_id, advice="proceed"
+        is_in_flight=False, session_id=session_id, advice="proceed",
     )
 
 
@@ -180,7 +180,7 @@ def compute_title_slug(title: str) -> str:
     if len(s) <= 60:
         return s
     cut = s[:60].rsplit("-", 1)
-    return cut[0] if cut[0] else s[:60]
+    return cut[0] or s[:60]
 
 
 def canonical_branch_name(card: dict) -> CanonicalBranchName:

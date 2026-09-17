@@ -55,7 +55,7 @@ def score_run(
             break
         if not log_msgs[i].startswith(prefix):
             notes.append(
-                f"commit {i}: expected prefix {prefix}, got {log_msgs[i]}"
+                f"commit {i}: expected prefix {prefix}, got {log_msgs[i]}",
             )
 
     personas = [b["persona_kind"] for b in harness.briefs]
@@ -63,13 +63,13 @@ def score_run(
         expected_personas = fixture.expect.persona_sequence
         if personas != expected_personas:
             notes.append(
-                f"persona sequence: expected {expected_personas}, got {personas}"
+                f"persona sequence: expected {expected_personas}, got {personas}",
             )
 
     turn_count = len(harness.briefs)
     if not (fixture.expect.min_turns <= turn_count <= fixture.expect.max_turns):
         notes.append(
-            f"turn count: expected {fixture.expect.min_turns}-{fixture.expect.max_turns}, got {turn_count}"
+            f"turn count: expected {fixture.expect.min_turns}-{fixture.expect.max_turns}, got {turn_count}",
         )
 
     if fixture.expect.pushed:

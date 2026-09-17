@@ -142,13 +142,13 @@ async def test_stage_change_recorded_within_one_watcher_tick() -> None:
             "current_card": {"id": "CARD_A", "title": "First card", "issue_number": 7},
             "phase": "monitoring_performer",
             "performer_stage": "implementing",
-        }
+        },
     }
     store = DashboardStore()
     daemon = _watcher_daemon(sessions)
     store._watcher_fingerprint = store._active_sessions_fingerprint(daemon)
     task = asyncio.create_task(
-        store._watch_active_sessions(daemon, _mock_metrics(), _mock_health())
+        store._watch_active_sessions(daemon, _mock_metrics(), _mock_health()),
     )
     try:
         sessions["CARD_A"]["performer_stage"] = "reviewing"
@@ -172,7 +172,7 @@ async def test_departed_card_releases_dedup_bookkeeping_but_keeps_entries() -> N
             "current_card": {"id": "CARD_A", "title": "First", "issue_number": 7},
             "phase": "monitoring_performer",
             "performer_stage": "implementing",
-        }
+        },
     }
     store = DashboardStore()
     daemon = _watcher_daemon(sessions)

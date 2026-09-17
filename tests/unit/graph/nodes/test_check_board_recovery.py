@@ -13,7 +13,7 @@ _UNSET = object()
 
 class _FakeGitHub:
     def __init__(
-        self, ctx: dict[str, Any], *, move_raises: bool = False, pr: Any = _UNSET
+        self, ctx: dict[str, Any], *, move_raises: bool = False, pr: Any = _UNSET,
     ) -> None:
         self._ctx = ctx
         self.moved: list[tuple[str, str]] = []
@@ -158,7 +158,7 @@ def _env_state(notify, *, env_blocked=None, prev="IN_PROGRESS", cache=None, symp
             "env_blocked": env_blocked,
             "current_card": {"id": "CARD_1", "previous_status": prev},
             "performer_stage": "implementing",
-        }
+        },
     }
     return st
 

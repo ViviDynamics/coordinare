@@ -122,7 +122,7 @@ async def test_poll_one_success_updates_capabilities(pool: PerformerPool) -> Non
         return_value={
             "availability": "idle",
             "capabilities": {"backends": ["claude_code"], "tool_flags": ["git"]},
-        }
+        },
     )
     pool.register(_persistent("p1"), svc)
 

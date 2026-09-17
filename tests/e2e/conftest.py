@@ -41,7 +41,7 @@ def _mock_metrics() -> Any:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-03-02T09:30:00+00:00"
+        "started_at": "2026-03-02T09:30:00+00:00",
     }
     return metrics
 

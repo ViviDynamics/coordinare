@@ -73,7 +73,7 @@ def _postgres_manifest(data_dir: Path, *, test_env_source: str | None = None) ->
                     databases=["app_test"],
                     password_env_var=PW_VAR,
                 ),
-            )
+            ),
         ],
         cache_inputs=[],
         agent_version="test-092",
@@ -83,7 +83,7 @@ def _postgres_manifest(data_dir: Path, *, test_env_source: str | None = None) ->
 
 def _validate(scripts, env, *, timeout_seconds=15.0):
     return validate(
-        scripts, env=env, timeout_seconds=timeout_seconds, health_delay_seconds=0.0
+        scripts, env=env, timeout_seconds=timeout_seconds, health_delay_seconds=0.0,
     )
 
 
@@ -100,7 +100,7 @@ def _assert_gate_cleared(scripts, env) -> None:
 class TestDiscoveredTestEnvFallback:
     def test_manifest_test_env_source_is_path_only(self, tmp_path: Path) -> None:
         manifest = _postgres_manifest(
-            tmp_path / "pgdata", test_env_source=DISCOVERED_PATH
+            tmp_path / "pgdata", test_env_source=DISCOVERED_PATH,
         )
 
         assert manifest.test_env_source == DISCOVERED_PATH
@@ -110,7 +110,7 @@ class TestDiscoveredTestEnvFallback:
         assert "test-pw" not in dumped  # no literal secret value leaked anywhere.
 
     async def test_discovered_path_reloads_and_clears_gate(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.delenv(PW_VAR, raising=False)
         github = _FakeGitHub({DISCOVERED_PATH: f"{PW_VAR}=disc-pw-789\n"})
@@ -133,7 +133,7 @@ class TestDiscoveredTestEnvFallback:
         _assert_gate_cleared(scripts, loaded)
 
     async def test_config_block_wins_over_discovered_path(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.delenv(PW_VAR, raising=False)
         host_file = tmp_path / "host-secrets.env"
@@ -155,7 +155,7 @@ class TestDiscoveredTestEnvFallback:
         assert github.calls == []
 
     async def test_no_source_still_trips_exit_75(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.delenv(PW_VAR, raising=False)
         github = _FakeGitHub({})  # discovered file vanished / never existed.

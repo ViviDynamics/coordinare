@@ -87,7 +87,7 @@ class TestClassifyIssueCommentAI:
     @pytest.mark.asyncio
     async def test_valid_label_in_data_field(self) -> None:
         backend = _StubBackend({
-            "data": {"label": "scope_change", "rationale": "user requested new feature"}
+            "data": {"label": "scope_change", "rationale": "user requested new feature"},
         })
         assert await classify_issue_comment_ai("body", "alice", backend) == "scope_change"
 
@@ -200,7 +200,7 @@ class TestFetchNewIssueComments:
                     {
                         "id": "99999",
                         # author, body, created_at are missing
-                    }
+                    },
                 ]
 
         result = await fetch_new_issue_comments("card-x", None, FakeBoard(), 99)
@@ -233,7 +233,7 @@ class TestFetchNewIssueComments:
                         "author": "charlie",
                         "body": "New comment",
                         "created_at": "2025-05-05T11:00:00Z",
-                    }
+                    },
                 ]
 
         board = FakeBoard()

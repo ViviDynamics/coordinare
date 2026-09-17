@@ -109,7 +109,7 @@ class _FakeConfig:
 
 def test_resolve_stage_attribution_from_config():
     config = _FakeConfig(
-        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")})
+        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")}),
     )
     display, harness, model = resolve_stage_attribution(config, "implementing")
     assert (display, harness, model) == ("Implementer", "codex", "local/qwen3.6:35b")
@@ -123,7 +123,7 @@ def test_resolve_stage_falls_back_to_unknown():
 
 def test_coordinare_attribution_end_to_end():
     config = _FakeConfig(
-        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")})
+        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")}),
     )
     out = coordinare_attribution(config, "implementing")
     assert out == (
@@ -146,7 +146,7 @@ def test_coordinare_attribution_bare_when_unresolvable():
 
 
 @pytest.mark.skipif(
-    performer_attribution_header is None, reason="performer source not importable"
+    performer_attribution_header is None, reason="performer source not importable",
 )
 @pytest.mark.parametrize(
     ("role", "display", "harness", "model"),
@@ -158,9 +158,9 @@ def test_coordinare_attribution_bare_when_unresolvable():
 )
 def test_performer_and_coordinare_headers_match(role, display, harness, model):
     coordinare_out = attribution_header(
-        origin="performer", role=role, display=display, harness=harness, model=model
+        origin="performer", role=role, display=display, harness=harness, model=model,
     )
     performer_out = performer_attribution_header(
-        origin="performer", role=role, display=display, harness=harness, model=model
+        origin="performer", role=role, display=display, harness=harness, model=model,
     )
     assert coordinare_out == performer_out

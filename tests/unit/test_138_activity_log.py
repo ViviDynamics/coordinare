@@ -290,8 +290,8 @@ def test_serialised_entry_shape_matches_the_wire_contract() -> None:
 
 def test_stream_identity_and_raw_redaction():
     log = ActivityLog()
-    args = dict(activity_type="progress", card_id="C1", stage="implementing",
-                performer_id="codex", text="正在处理 https://hooks.slack.com/services/T/B/SECRET")
+    args = {"activity_type": "progress", "card_id": "C1", "stage": "implementing",
+                "performer_id": "codex", "text": "正在处理 https://hooks.slack.com/services/T/B/SECRET"}
     first = log.record(**args, session_id="one")
     assert first is not None
     assert "SECRET" not in first.text

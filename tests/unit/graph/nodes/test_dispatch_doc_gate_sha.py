@@ -22,7 +22,7 @@ class _Service:
         return {"status": "accepted"}
 
     async def dispatch_card(
-        self, card_context: dict[str, Any], workspace_info: Any = None
+        self, card_context: dict[str, Any], workspace_info: Any = None,
     ) -> dict[str, Any]:
         self.dispatched.append(card_context)
         return {"status": "accepted", "session_id": "sess-1"}
@@ -52,7 +52,7 @@ class _GitHub:
         return {"head_ref_oid": self._head_ref_oid, "mergeable": True}
 
     async def compare_changed_files(
-        self, pr_url: str, base_sha: str, head_sha: str
+        self, pr_url: str, base_sha: str, head_sha: str,
     ) -> list[str]:
         self.compare_calls.append((base_sha, head_sha))
         if self._compare_exc is not None:

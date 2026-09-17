@@ -97,7 +97,7 @@ class TestBuildInventory:
         (wiki_dir / "README.md").write_text("# Home\n\nWelcome")
         (wiki_dir / "setup.md").write_text("---\nkind: how-to\n---\n# Setup\n\nSteps here")
         (wiki_dir / "api.md").write_text(
-            "---\nkind: reference\n---\n# API\n\nSee `src/api.py`\n\n[setup](setup.md)"
+            "---\nkind: reference\n---\n# API\n\nSee `src/api.py`\n\n[setup](setup.md)",
         )
 
         tree = {"src/api.py", "docs/wiki/README.md", "docs/wiki/setup.md", "docs/wiki/api.md"}

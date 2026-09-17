@@ -47,7 +47,7 @@ class TestAHalfConfiguredChannelDoesNotStopTheDaemon:
 
     def test_a_slack_channel_without_its_webhook_is_dropped_not_fatal(self) -> None:
         raw, skipped = sanitize_notifications(
-            _raw(channels=[{"name": "team-slack", "type": "slack"}])
+            _raw(channels=[{"name": "team-slack", "type": "slack"}]),
         )
         assert raw["notifications"]["channels"] == []
         assert [s.name for s in skipped] == ["team-slack"]
@@ -59,7 +59,7 @@ class TestAHalfConfiguredChannelDoesNotStopTheDaemon:
         discoverable without reading the config file.
         """
         _, skipped = sanitize_notifications(
-            _raw(channels=[{"name": "team-slack", "type": "slack"}])
+            _raw(channels=[{"name": "team-slack", "type": "slack"}]),
         )
         reason = skipped[0].reason
         assert "webhook_url" in reason, f"the reason must name the missing field: {reason}"
@@ -83,7 +83,7 @@ class TestAHalfConfiguredChannelDoesNotStopTheDaemon:
     def test_an_email_channel_missing_its_recipient_is_treated_the_same(self) -> None:
         """Not a Slack-specific patch: any unusable channel degrades."""
         _, skipped = sanitize_notifications(
-            _raw(channels=[{"name": "ops-mail", "type": "email", "smtp_host": "mail.example"}])
+            _raw(channels=[{"name": "ops-mail", "type": "email", "smtp_host": "mail.example"}]),
         )
         assert [s.name for s in skipped] == ["ops-mail"]
 
@@ -99,7 +99,7 @@ class TestAHalfConfiguredChannelDoesNotStopTheDaemon:
             channels=[
                 {"name": "good", "type": "slack", "webhook_url": SLACK_SECRET},
                 {"name": "bad", "type": "slack"},
-            ]
+            ],
         )
         sanitized, skipped = sanitize_notifications(raw)
         assert [c["name"] for c in sanitized["notifications"]["channels"]] == ["good"]
@@ -111,7 +111,7 @@ class TestADanglingRoutingEntry:
 
     def test_an_entry_naming_a_channel_that_never_existed_is_ignored(self) -> None:
         raw, _ = sanitize_notifications(
-            _raw(channels=[], routing=[{"event_type": "card_stuck", "channels": ["ghost"]}])
+            _raw(channels=[], routing=[{"event_type": "card_stuck", "channels": ["ghost"]}]),
         )
         assert raw["notifications"]["routing"] == []
 
@@ -125,7 +125,7 @@ class TestADanglingRoutingEntry:
             _raw(
                 channels=[{"name": "team-slack", "type": "slack"}],
                 routing=[{"event_type": "card_stuck", "channels": ["team-slack"]}],
-            )
+            ),
         )
         assert raw["notifications"]["routing"] == []
         assert any("team-slack" in s.reason or s.name == "team-slack" for s in skipped)
@@ -135,7 +135,7 @@ class TestADanglingRoutingEntry:
             _raw(
                 channels=[{"name": "good", "type": "slack", "webhook_url": SLACK_SECRET}],
                 routing=[{"event_type": "card_stuck", "channels": ["good", "ghost"]}],
-            )
+            ),
         )
         entry = raw["notifications"]["routing"][0]
         assert entry["channels"] == ["good"], "a usable channel must survive a bad sibling"
@@ -221,7 +221,7 @@ class TestTheStartupPostureLine:
 
     def test_it_names_skipped_channels_and_why(self) -> None:
         posture = describe_notification_posture(
-            active=[], skipped=[SkippedChannel(name="team-slack", reason="missing webhook_url")]
+            active=[], skipped=[SkippedChannel(name="team-slack", reason="missing webhook_url")],
         )
         assert "team-slack" in str(posture["skipped_channels"])
         assert "webhook_url" in str(posture["skipped_channels"])
@@ -261,7 +261,7 @@ class TestTheStartupPostureLine:
         assert reason, "this channel should have been rejected"
 
         posture = describe_notification_posture(
-            active=[], skipped=[SkippedChannel(name=str(channel["name"]), reason=reason)]
+            active=[], skipped=[SkippedChannel(name=str(channel["name"]), reason=reason)],
         )
         rendered = str(posture)
         assert "SUPER-SECRET-PATH" not in rendered, (
@@ -284,7 +284,7 @@ class TestTheStartupPostureLine:
                 "type": "slack",
                 "webhook_url": SLACK_SECRET,
                 "rate_limit": "not-a-number",
-            }
+            },
         )
         assert reason, "this channel should have been rejected"
         assert SLACK_SECRET not in reason, f"the skip reason leaks the webhook URL: {reason}"
@@ -544,7 +544,7 @@ class TestSymphonyOverridesAreSanitizedToo:
                     "name": "web",
                     "github_project_number": 2,
                     "overrides": {"notifications": {"channels": [channel]}},
-                }
+                },
             ],
         }
 

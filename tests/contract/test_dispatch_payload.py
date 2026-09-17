@@ -179,11 +179,11 @@ class TestDispatchPayloadContract:
                 "criterion": "Users can sign in",
                 "expected": "password field present",
                 "observed": "password field absent",
-            }
+            },
         ]
 
         await service.dispatch_card(
-            {"qa_findings": findings, "title": "test", "id": "X"}
+            {"qa_findings": findings, "title": "test", "id": "X"},
         )
 
         assert transport.captured_payload["qa_findings"] == findings
@@ -260,7 +260,7 @@ class TestDispatchPayloadContract:
         disputes = [{"id": "fb-1", "body": "wrong finding", "reason": "already correct"}]
 
         await service.dispatch_card(
-            {"disputed_feedback": disputes, "title": "test", "id": "X"}
+            {"disputed_feedback": disputes, "title": "test", "id": "X"},
         )
 
         assert transport.captured_payload["disputed_feedback"] == disputes
@@ -381,7 +381,7 @@ class TestScoreModelContract:
         assert score.assessment["ready"] is True
         assert score.assessment["goal"] == "Add time entry categories"
         assert score.prior_clarifications == [
-            {"question": "Which ORM?", "answer": "ActiveRecord"}
+            {"question": "Which ORM?", "answer": "ActiveRecord"},
         ]
 
     def test_score_defaults_for_minimal_payload(self) -> None:
@@ -494,7 +494,7 @@ class TestPriorClarificationsContract:
         prior = [{"question": "What framework?", "answer": "Rails 7"}]
 
         await service.dispatch_card(
-            {"prior_clarifications": prior, "title": "test", "id": "X"}
+            {"prior_clarifications": prior, "title": "test", "id": "X"},
         )
 
         assert transport.captured_payload["prior_clarifications"] == prior
@@ -534,7 +534,7 @@ class TestPriorClarificationsContract:
             branch="b",
             role="assessing",
             prior_clarifications=[
-                {"question": "What framework?", "answer": "Rails 7"}
+                {"question": "What framework?", "answer": "Rails 7"},
             ],
         )
 

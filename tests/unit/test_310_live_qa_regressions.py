@@ -15,7 +15,7 @@ from coordinare.lib.redaction import RedactingFormatter, redact_mapping
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_optional_assistant_does_not_abort_quiet_timer(enabled):
-    match = re.search(r"document.addEventListener\('DOMContentLoaded', function\(\) \{(.*?)\n\}\);", _DASHBOARD_HTML, re.S)
+    match = re.search(r"document.addEventListener\('DOMContentLoaded', function\(\) \{(.*?)\n\}\);", _DASHBOARD_HTML, re.DOTALL)
     assert match
     script = '''const assert = require('node:assert/strict');
 let routed = false, timer = false, assistant = false;

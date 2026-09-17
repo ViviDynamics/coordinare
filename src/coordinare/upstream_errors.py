@@ -45,7 +45,7 @@ def strip_base_url_credentials(base_url: str) -> str:
             (k, v)
             for k, v in parse_qsl(parts.query, keep_blank_values=True)
             if k.lower() != "api_key"
-        ]
+        ],
     )
     return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 

@@ -30,7 +30,7 @@ from performer.workflows.implementer.observe import RedJudgement, TestObservatio
 def _toolkit(observation: TestObservation | None, *, exit_code: int = 1, output: str = "boom") -> MagicMock:
     toolkit = MagicMock()
     toolkit.run_command = AsyncMock(
-        return_value=MagicMock(output_excerpt=output, exit_code=exit_code)
+        return_value=MagicMock(output_excerpt=output, exit_code=exit_code),
     )
     toolkit.call_model = AsyncMock(return_value=observation)
     return toolkit

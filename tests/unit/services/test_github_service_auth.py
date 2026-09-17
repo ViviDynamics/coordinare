@@ -476,7 +476,7 @@ async def test_d1_auth_failure_ignored_by_circuit_breaker() -> None:
         observation_window=60.0,
     )
     svc = GitHubService(
-        org="acme", project_number=1, auth=auth, circuit_breaker=breaker
+        org="acme", project_number=1, auth=auth, circuit_breaker=breaker,
     )
 
     calls = {"n": 0}

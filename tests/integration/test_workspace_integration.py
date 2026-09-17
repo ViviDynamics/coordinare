@@ -93,7 +93,7 @@ def _redirect_clone_to_local(bare_repo: Path):
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.asyncio
 async def test_prepare_creates_workspace_on_correct_branch(
-    bare_repo: Path, tmp_path: Path
+    bare_repo: Path, tmp_path: Path,
 ) -> None:
     """Scenario 1: prepare() clones, checks out the correct branch; teardown removes dir."""
     import subprocess
@@ -159,7 +159,7 @@ async def test_prepare_raises_on_clone_failure_cleans_up(tmp_path: Path) -> None
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.asyncio
 async def test_concurrent_workspaces_are_isolated(
-    bare_repo: Path, tmp_path: Path
+    bare_repo: Path, tmp_path: Path,
 ) -> None:
     """Scenario 3: two concurrent prepare() calls produce distinct isolated dirs."""
     ws_root = tmp_path / "workspaces"
@@ -231,7 +231,7 @@ async def test_teardown_full_lifecycle(tmp_path: Path) -> None:
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.asyncio
 async def test_workspace_root_pvc_simulation(
-    bare_repo: Path, tmp_path: Path
+    bare_repo: Path, tmp_path: Path,
 ) -> None:
     """Scenario 6: workspace_root directs workspace creation to a specified parent."""
     pvc_mount = tmp_path / "pvc"

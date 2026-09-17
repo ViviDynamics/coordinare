@@ -76,7 +76,7 @@ async def test_lock_does_not_block_selection(
     state = pool._registrations["perf-1"]
     state.availability = "idle"
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     lock = pool._locks["perf-1"]
@@ -90,7 +90,7 @@ async def test_lock_does_not_block_selection(
         nonlocal selection_succeeded
         # Selection should NOT block waiting for the lock
         result = pool.select_for(
-            role="implementing", backend="claude_code", required_flags=set()
+            role="implementing", backend="claude_code", required_flags=set(),
         )
         selection_succeeded = result is not None
 

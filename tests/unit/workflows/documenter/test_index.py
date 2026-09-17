@@ -104,7 +104,7 @@ class TestGenerateReadme:
                 citations=[],
                 links=[],
                 size=500,
-            )
+            ),
         ]
 
         readme = generate_readme("Project", "Summary", pages)
@@ -144,7 +144,7 @@ class TestGenerateReadme:
                 citations=[],
                 links=[],
                 size=500,
-            )
+            ),
         ]
 
         readme = generate_readme("Project", "Summary", pages)
@@ -222,7 +222,7 @@ class TestReadmeShapeOk:
                 citations=[],
                 links=[],
                 size=100,
-            )
+            ),
         ]
 
         failures = readme_shape_ok(content, pages)

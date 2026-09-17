@@ -80,7 +80,7 @@ class TestTheAllowlistIsPlatformAware:
         passed the very variables that reopen it.
         """
         offenders = sorted(
-            CREDENTIAL_BEARING_NAMES.intersection(BASE_ENV_ALLOWLIST + WINDOWS_ENV_ALLOWLIST)
+            CREDENTIAL_BEARING_NAMES.intersection(BASE_ENV_ALLOWLIST + WINDOWS_ENV_ALLOWLIST),
         )
 
         assert not offenders, (
@@ -158,7 +158,7 @@ class TestBothEnvBuildersUseTheOneList:
             )
 
     def test_the_performer_env_carries_systemroot_on_windows(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The half the PR missed, asserted through the transport itself."""
         from coordinare.transport.subprocess_transport import SubprocessTransport

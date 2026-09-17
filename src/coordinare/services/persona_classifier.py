@@ -267,7 +267,7 @@ def _build_files_summary(
                 "removed": int(f.get("removed") or 0),
                 "status": str(f.get("status") or "modified"),
                 "classes": _match_path_classes(path, path_classes),
-            }
+            },
         )
     return out
 
@@ -495,7 +495,7 @@ async def classify(
 
     cycle_index = int(session.get("feedback_cycle_count") or 0)
     warn_cooldown = float(
-        getattr(persona_scope_cfg, "classifier_failure_warning_cooldown_seconds", 600.0)
+        getattr(persona_scope_cfg, "classifier_failure_warning_cooldown_seconds", 600.0),
     )
 
     if pr_fetch_error:
@@ -596,7 +596,7 @@ async def classify(
     cleaned = _drop_unknown_personas(coerced, expected_personas, card_id)
     filled = _fill_missing_personas(cleaned, expected_personas)
     forced_full_cfg: dict[str, list[str]] = dict(
-        getattr(persona_scope_cfg, "forced_full_on_path_classes", {}) or {}
+        getattr(persona_scope_cfg, "forced_full_on_path_classes", {}) or {},
     )
     _apply_forced_full(filled, files_summary, forced_full_cfg, card_id)
     if pr_truncated:

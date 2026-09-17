@@ -36,7 +36,7 @@ def _cluster_available() -> bool:
         return False
     return (
         subprocess.run(
-            ["kubectl", "get", "nodes"], capture_output=True, text=True, timeout=15
+            ["kubectl", "get", "nodes"], capture_output=True, text=True, timeout=15,
         ).returncode
         == 0
     )
@@ -66,7 +66,7 @@ def _probe(clients):
             networking_v1=networking_v1,
             namespace=NAMESPACE,
             image=IMAGE,
-        )
+        ),
     )
 
 

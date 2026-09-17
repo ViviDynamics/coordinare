@@ -127,7 +127,7 @@ def check_endpoints(config: ProjectConfiguration) -> list[CheckResult]:
                         f"kind '{endpoint.kind}' is a native provider with no base_url; "
                         "reachability is checked when a request is made"
                     ),
-                )
+                ),
             )
             continue
 
@@ -146,7 +146,7 @@ def check_endpoints(config: ProjectConfiguration) -> list[CheckResult]:
                         "the host, use host.docker.internal rather than localhost."
                     )
                 ),
-            )
+            ),
         )
     return results
 
@@ -172,7 +172,7 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
                         f"'{model_endpoint.model}' cannot be enumerated for endpoint kind "
                         f"'{getattr(endpoint, 'kind', 'unknown')}'; it is checked on first use"
                     ),
-                )
+                ),
             )
             continue
 
@@ -183,7 +183,7 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
                     name=f"model '{model_endpoint.name}'",
                     status=Status.WARN,
                     detail=f"could not list models at {base_url}; skipping the name check",
-                )
+                ),
             )
             continue
 
@@ -193,7 +193,7 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
                     name=f"model '{model_endpoint.name}'",
                     status=Status.OK,
                     detail=f"'{model_endpoint.model}' is served by '{endpoint.name}'",
-                )
+                ),
             )
         else:
             shown = ", ".join(sorted(available)[:8]) or "(none)"
@@ -207,7 +207,7 @@ def check_models(config: ProjectConfiguration) -> list[CheckResult]:
                         f"pull it with `ollama pull {model_endpoint.model}`, or set the model to "
                         f"one this endpoint already serves: {shown}{more}"
                     ),
-                )
+                ),
             )
     return results
 
@@ -223,7 +223,7 @@ def check_dashboard_binding(config: ProjectConfiguration) -> list[CheckResult]:
                 name="dashboard binding",
                 status=Status.OK,
                 detail=f"loopback ({host}); not reachable from the network",
-            )
+            ),
         ]
     return [
         CheckResult(
@@ -240,7 +240,7 @@ def check_dashboard_binding(config: ProjectConfiguration) -> list[CheckResult]:
                 "the localhost guard will refuse every request with 403. "
                 "See docs/security/threat-model.md."
             ),
-        )
+        ),
     ]
 
 
@@ -277,7 +277,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                     "Docker path is enforced in-container with iptables, not by a "
                     "NetworkPolicy"
                 ),
-            )
+            ),
         ]
 
     try:
@@ -292,11 +292,11 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                 status=Status.FAIL,
                 detail=f"the Kubernetes client is unavailable: {exc}",
                 fix="install coordinare with its Kubernetes extra",
-            )
+            ),
         ]
 
     image = next(
-        (ep.image for ep in config.performer_endpoints if getattr(ep, "image", None)), None
+        (ep.image for ep in config.performer_endpoints if getattr(ep, "image", None)), None,
     )
     if not image:
         return [
@@ -304,7 +304,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                 name="egress enforcement",
                 status=Status.SKIP,
                 detail="no performer endpoint declares an image, so there is nothing to probe with",
-            )
+            ),
         ]
 
     try:
@@ -319,7 +319,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                     status=Status.FAIL,
                     detail=f"no usable Kubernetes credentials: {exc}",
                     fix="set KUBECONFIG, or run this inside the cluster",
-                )
+                ),
             ]
 
     verdict = asyncio.run(
@@ -328,7 +328,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
             networking_v1=client.NetworkingV1Api(),
             namespace=config.kubernetes_namespace,
             image=image,
-        )
+        ),
     )
 
     if not verdict.conclusive:
@@ -342,7 +342,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                     f"'{config.kubernetes_namespace}'. Until this answers, do not assume "
                     "performers are contained."
                 ),
-            )
+            ),
         ]
 
     if verdict.enforced:
@@ -351,7 +351,7 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                 name="egress enforcement",
                 status=Status.OK,
                 detail=verdict.detail,
-            )
+            ),
         ]
 
     return [
@@ -365,5 +365,5 @@ def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[Ch
                 "enforces egress policy (Calico, Cilium) or place an egress proxy in "
                 "front of them."
             ),
-        )
+        ),
     ]

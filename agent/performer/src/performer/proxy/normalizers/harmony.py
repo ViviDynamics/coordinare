@@ -52,7 +52,7 @@ def _extract_calls(content: str) -> tuple[list[dict[str, Any]], str]:
                     "name": m.group("name"),
                     "arguments": m.group("args").strip(),
                 },
-            }
+            },
         )
     if not calls:
         return [], content
@@ -100,8 +100,7 @@ class _HarmonySSEFilter(StatefulSSEFilter):
         self._in_harmony = True
         self._content_buf += content
 
-        emitted = self._drain_complete_calls(payload)
-        return emitted  # None drops the frame until a call completes
+        return self._drain_complete_calls(payload)  # None drops the frame until a call completes
 
     def _drain_complete_calls(self, template: dict[str, Any]) -> bytes | None:
         """Emit a tool_calls frame for each complete call now in the buffer."""
@@ -132,7 +131,7 @@ class _HarmonySSEFilter(StatefulSSEFilter):
                     "index": src_choice.get("index", 0),
                     "delta": {"tool_calls": [tool_call]},
                     "finish_reason": None,
-                }
+                },
             ]
             out.extend(self.encode_frame(None, frame_payload))
             out.extend(b"\n\n")

@@ -81,7 +81,7 @@ async def test_assess_runs_when_no_pr_url_and_no_open_pr() -> None:
     # Backend marked insufficient → blocked + questions surface as before.
     assert result["phase"] == "blocked"
     assert result["open_questions"] == [
-        "Stale clarification question from before PR opened"
+        "Stale clarification question from before PR opened",
     ]
 
 
@@ -116,5 +116,5 @@ async def test_assess_runs_when_pr_url_points_at_closed_pr() -> None:
 
     assert result["phase"] == "blocked"
     assert result["open_questions"] == [
-        "Stale clarification question from before PR opened"
+        "Stale clarification question from before PR opened",
     ]

@@ -163,7 +163,7 @@ def test_excluded_performer_skipped_in_selection(
     state.availability = "idle"
     state.excluded_until_recovery = False
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     # Select should return the performer

@@ -182,7 +182,7 @@ def build_context(config: Any, *, focus: set[str] | None = None, budget: int = 6
     if omitted:
         parts.append(
             "NOTE: these sections were omitted for length and you have NOT been shown "
-            f"their fields: {', '.join(omitted)}. If you need one, say so."
+            f"their fields: {', '.join(omitted)}. If you need one, say so.",
         )
     return "\n\n".join(parts)
 
@@ -229,7 +229,7 @@ def _secret_fields(config: Any, section_id: str) -> set[str]:
             if not setting.secret:
                 continue
             key = setting.key
-            secrets.add(key[len(prefix) :] if key.startswith(prefix) else key)
+            secrets.add(key.removeprefix(prefix))
     return secrets
 
 

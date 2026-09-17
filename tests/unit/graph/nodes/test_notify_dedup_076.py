@@ -47,7 +47,7 @@ def _state_with_dispatched_card():
             "performer_stage": "implementing",
             "phase": "monitoring_performer",
             "dispatched_notified_stages": [],
-        }
+        },
     }
     state["active_card_id"] = "PVTI_X"
     state["notification_service"] = _FakeNotificationService()

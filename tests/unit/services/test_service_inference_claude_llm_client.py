@@ -157,7 +157,7 @@ async def test_step_parses_tool_use_blocks_into_tool_calls(fake_client):
             ],
             input_tokens=100,
             output_tokens=50,
-        )
+        ),
     )
     adapter = _make_adapter(fake_client)
 
@@ -182,7 +182,7 @@ async def test_step_routes_submit_manifest_to_manifest_field(fake_client):
                 "port": 6379,
                 "why_needed": "test",
                 "sources": [],
-            }
+            },
         ],
         "cache_inputs": [],
         "agent_version": "v1",
@@ -192,7 +192,7 @@ async def test_step_routes_submit_manifest_to_manifest_field(fake_client):
             [_block("tool_use", id="m1", name=SUBMIT_MANIFEST_TOOL, input=manifest_input)],
             input_tokens=200,
             output_tokens=300,
-        )
+        ),
     )
     adapter = _make_adapter(fake_client)
 
@@ -220,8 +220,8 @@ async def test_submit_manifest_wins_over_concurrent_tool_calls(fake_client):
             [
                 _block("tool_use", id="t1", name="read_file", input={"path": "a"}),
                 _block("tool_use", id="m1", name=SUBMIT_MANIFEST_TOOL, input=manifest_input),
-            ]
-        )
+            ],
+        ),
     )
     adapter = _make_adapter(fake_client)
 
@@ -289,7 +289,7 @@ async def test_step_does_not_retry_auth_error(fake_client):
             message="bad key",
             response=SimpleNamespace(status_code=401, headers={}, request=None),  # type: ignore[arg-type]
             body=None,
-        )
+        ),
     )
     adapter = _make_adapter(fake_client)
 

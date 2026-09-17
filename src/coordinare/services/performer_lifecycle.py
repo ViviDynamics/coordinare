@@ -80,7 +80,7 @@ async def _run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]
         proc.kill()
         await proc.wait()
         raise ContainerStartError(
-            f"docker {_redact_docker_args(args)} timed out after {timeout}s"
+            f"docker {_redact_docker_args(args)} timed out after {timeout}s",
         ) from None
     return proc.returncode or 0, stdout_b.decode().strip(), stderr_b.decode().strip()
 
@@ -205,7 +205,7 @@ async def start_ephemeral(
     rc, stdout, stderr = await _run_docker(*args)
     if rc != 0 or not stdout:
         raise ContainerStartError(
-            f"docker run failed for {config.id} (rc={rc}): {stderr or stdout}"
+            f"docker run failed for {config.id} (rc={rc}): {stderr or stdout}",
         )
     container_id = stdout.splitlines()[0].strip()
 
@@ -213,7 +213,7 @@ async def start_ephemeral(
     if rc != 0 or not port_out:
         await _safe_stop(container_id)
         raise ContainerStartError(
-            f"docker port lookup failed for {container_id} (rc={rc}): {port_err or port_out}"
+            f"docker port lookup failed for {container_id} (rc={rc}): {port_err or port_out}",
         )
     # `docker port` may emit one line per family (0.0.0.0 + ::), e.g.
     #   0.0.0.0:49160
@@ -222,7 +222,7 @@ async def start_ephemeral(
     host_port: str | None = None
     for line in port_out.splitlines():
         line = line.strip()
-        if line.startswith("0.0.0.0:") or line.startswith("127.0.0.1:"):
+        if line.startswith(("0.0.0.0:", "127.0.0.1:")):
             host_port = line.rsplit(":", 1)[1]
             break
     if host_port is None and port_out:
@@ -416,7 +416,7 @@ async def wait_ready(
             if time.monotonic() >= deadline:
                 raise ReadinessTimeoutError(
                     f"performer at {endpoint} not ready within {timeout}s"
-                    + (f": {last_error}" if last_error else "")
+                    + (f": {last_error}" if last_error else ""),
                 )
             await asyncio.sleep(poll_interval)
     finally:

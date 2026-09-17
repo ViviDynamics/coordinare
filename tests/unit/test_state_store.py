@@ -1015,7 +1015,7 @@ def test_persisted_session_migrates_legacy_feedback_cycle_count() -> None:
             "card_id": "PVTI_123",
             "feedback_cycle_count": 3,
             # content_feedback_cycles absent
-        }
+        },
     )
     assert sess.content_feedback_cycles == 3  # migrated from legacy field
     assert sess.transient_error_cycles == 0  # default
@@ -1029,7 +1029,7 @@ def test_persisted_session_legacy_migration_does_not_override_explicit_value() -
             "card_id": "PVTI_123",
             "feedback_cycle_count": 3,
             "content_feedback_cycles": 5,
-        }
+        },
     )
     assert sess.content_feedback_cycles == 5
 
@@ -1037,10 +1037,10 @@ def test_persisted_session_legacy_migration_does_not_override_explicit_value() -
 def test_persisted_session_legacy_migration_ignores_zero_and_bool() -> None:
     """123: a zero / bool legacy value is not treated as a positive migration source."""
     zero = PersistedSession.model_validate(
-        {"card_id": "PVTI_123", "feedback_cycle_count": 0}
+        {"card_id": "PVTI_123", "feedback_cycle_count": 0},
     )
     assert zero.content_feedback_cycles == 0
     truthy = PersistedSession.model_validate(
-        {"card_id": "PVTI_123", "feedback_cycle_count": True}
+        {"card_id": "PVTI_123", "feedback_cycle_count": True},
     )
     assert truthy.content_feedback_cycles == 0

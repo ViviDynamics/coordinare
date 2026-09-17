@@ -9,7 +9,7 @@ from coordinare.services.agent_service import AgentService
 from coordinare.transport.subprocess_transport import SubprocessTransport
 
 MOCK_AGENT = str(
-    __import__("pathlib").Path(__file__).resolve().parent.parent / "fixtures" / "mock_agent.py"
+    __import__("pathlib").Path(__file__).resolve().parent.parent / "fixtures" / "mock_agent.py",
 )
 
 
@@ -17,7 +17,7 @@ def _make_transport(tmp_path, scenario: str = "happy_path") -> SubprocessTranspo
     """Create a SubprocessTransport targeting the mock agent."""
     wrapper = tmp_path / "agent_wrapper.sh"
     wrapper.write_text(
-        f"#!/bin/sh\nexec {sys.executable} {MOCK_AGENT}\n"
+        f"#!/bin/sh\nexec {sys.executable} {MOCK_AGENT}\n",
     )
     wrapper.chmod(0o755)
     return SubprocessTransport(str(wrapper), timeout=30)

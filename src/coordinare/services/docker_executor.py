@@ -76,7 +76,7 @@ async def _run_docker(*args: str, timeout: float = 5.0) -> tuple[int, str, str]:
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(proc.wait(), timeout=2.0)
         raise DockerUnreachableError(
-            f"docker {args[0] if args else ''} timed out after {timeout}s"
+            f"docker {args[0] if args else ''} timed out after {timeout}s",
         ) from None
 
     stdout = stdout_b.decode(errors="replace").strip()
@@ -121,7 +121,7 @@ class DockerExecutor:
         rc, stdout, stderr = await _run_docker(*args, timeout=timeout)
         if rc != 0:
             raise DockerUnreachableError(
-                f"docker ps failed (rc={rc}): {stderr or stdout}"
+                f"docker ps failed (rc={rc}): {stderr or stdout}",
             )
 
         results: list[ContainerInfo] = []
@@ -153,7 +153,7 @@ class DockerExecutor:
                     image=image,
                     started_at=started_at,
                     labels=labels,
-                )
+                ),
             )
         return results
 
@@ -234,7 +234,7 @@ class DockerExecutor:
         is not reachable" and route to reap-and-replace.
         """
         rc, stdout, stderr = await _run_docker(
-            "port", container_id, f"{internal_port}/tcp", timeout=3.0
+            "port", container_id, f"{internal_port}/tcp", timeout=3.0,
         )
         if rc != 0 or not stdout:
             logger.debug(

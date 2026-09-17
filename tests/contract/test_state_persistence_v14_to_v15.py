@@ -79,7 +79,7 @@ def test_malformed_ledger_entries_drop_not_fatal() -> None:
                 {**_ITEM, "id": "fb-2", "disposition": "nonsense"},
                 "not-a-dict",
             ],
-        }
+        },
     )
     assert [r.id for r in sess.feedback_ledger] == ["fb-1"]
 
@@ -98,7 +98,7 @@ def test_feedback_ledger_round_trips() -> None:
                     "dispute_reason": "check is flaky",
                     "re_raised": True,
                     "round_status": "previous",
-                }
+                },
             ),
         ],
         feedback_origin_sha="abc123",

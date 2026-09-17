@@ -7,13 +7,13 @@ from performer.workflows.architect.intake import build_intake
 
 
 def _score(**over):
-    base = dict(
-        title="Add categories",
-        description="Time entries need a category.",
-        acceptance_criteria=["A select appears", "It is required"],
-        clarifications=[{"question": "Which page?", "answer": "The entry form"}, {"question": "x", "answer": ""}],
-        issue_number=162,
-    )
+    base = {
+        "title": "Add categories",
+        "description": "Time entries need a category.",
+        "acceptance_criteria": ["A select appears", "It is required"],
+        "clarifications": [{"question": "Which page?", "answer": "The entry form"}, {"question": "x", "answer": ""}],
+        "issue_number": 162,
+    }
     base.update(over)
     return SimpleNamespace(**base)
 

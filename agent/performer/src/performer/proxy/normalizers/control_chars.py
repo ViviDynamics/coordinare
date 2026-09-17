@@ -31,7 +31,7 @@ from .base import StatefulSSEFilter
 _ALLOWED_LOW = frozenset({0x09, 0x0A, 0x0D})
 _STRIP_CODEPOINTS = frozenset(c for c in range(0x20) if c not in _ALLOWED_LOW)
 # Translation table for str.translate (drop each stripped codepoint).
-_STR_DELETE = {c: None for c in _STRIP_CODEPOINTS}
+_STR_DELETE = dict.fromkeys(_STRIP_CODEPOINTS)
 # Byte set for the raw-bytes path.
 _STRIP_BYTES = bytes(_STRIP_CODEPOINTS)
 
@@ -70,8 +70,7 @@ class _ControlCharSSEFilter(StatefulSSEFilter):
             # Could not parse (possibly *because* of control bytes) — strip
             # illegal control bytes from the raw frame, preserving the structural
             # newlines/tabs that delimit SSE lines, and pass it through.
-            stripped = frame.translate(None, _STRIP_BYTES)
-            return stripped
+            return frame.translate(None, _STRIP_BYTES)
         if not _has_control(payload):
             return frame  # fail-open: untouched
         return self.encode_frame(event, _clean_obj(payload))

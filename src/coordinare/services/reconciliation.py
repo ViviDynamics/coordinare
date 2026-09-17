@@ -106,7 +106,7 @@ async def run_startup_reconciliation(
     containers: list[ContainerInfo] = []
     try:
         containers = await docker_executor.list_containers_by_label(
-            _COORDINARE_LABEL_FILTER, timeout=min(budget_seconds, 10.0)
+            _COORDINARE_LABEL_FILTER, timeout=min(budget_seconds, 10.0),
         )
     except DockerUnreachableError as exc:
         logger.error(
@@ -160,7 +160,7 @@ async def run_startup_reconciliation(
             )
             break
         decision = await _classify_and_act(
-            state, card_id, sess, by_session, docker_executor
+            state, card_id, sess, by_session, docker_executor,
         )
         decisions[card_id] = decision
 
@@ -264,12 +264,12 @@ async def handle_potentially_stale_session(
     session_id = agent_dispatch.get("session_id") if isinstance(agent_dispatch, dict) else None
     if not isinstance(session_id, str) or not session_id:
         return _clear_agent_dispatch_and_return(
-            target, ReconciliationDecision.FRESH_DISPATCHED, card_id
+            target, ReconciliationDecision.FRESH_DISPATCHED, card_id,
         )
 
     try:
         containers = await docker_executor.list_containers_by_label(
-            {"coordinare.session_id": session_id}, timeout=5.0
+            {"coordinare.session_id": session_id}, timeout=5.0,
         )
     except DockerUnreachableError as exc:
         # 401: a timeout is an unknown, not "the container is gone". Leave the
@@ -303,13 +303,13 @@ async def handle_potentially_stale_session(
             error=str(exc),
         )
         return _clear_agent_dispatch_and_return(
-            target, ReconciliationDecision.FRESH_DISPATCHED, card_id
+            target, ReconciliationDecision.FRESH_DISPATCHED, card_id,
         )
     _streaks = target.get(_STREAKS_KEY)
     if isinstance(_streaks, dict):
         _streaks.pop(session_id, None)  # 401: Docker answered; this session's streak is over
     decision = await _classify_and_act(
-        state, card_id, target, {session_id: containers[0]} if containers else {}, docker_executor
+        state, card_id, target, {session_id: containers[0]} if containers else {}, docker_executor,
     )
     logger.info(
         "check_board.stale_session_reconciled",
@@ -537,7 +537,7 @@ async def _classify_and_act(
         # agent_dispatch.  Don't emit reap_failed — there's nothing to
         # reap.
         return _clear_agent_dispatch_and_return(
-            sess, ReconciliationDecision.FRESH_DISPATCHED, card_id
+            sess, ReconciliationDecision.FRESH_DISPATCHED, card_id,
         )
 
     # We have a match.  Probe the container's job-runner for health
@@ -660,7 +660,7 @@ async def _reap_and_replace(
     proceed (the daemon must not wedge on a sticky orphan).
     """
     stopped = await docker_executor.stop_container(
-        container.container_id, timeout=5.0
+        container.container_id, timeout=5.0,
     )
     if not stopped:
         logger.warning(

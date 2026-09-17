@@ -21,11 +21,11 @@ from coordinare.state_store import EnvCacheStateSnapshot, WorkflowSnapshot
 
 
 def _live_state(cache_dir: Path, **overrides) -> EnvCacheState:
-    fields = dict(
-        symphony_name="website",
-        sanitised_name="website-a1b2c3",
-        cache_dir=cache_dir,
-    )
+    fields = {
+        "symphony_name": "website",
+        "sanitised_name": "website-a1b2c3",
+        "cache_dir": cache_dir,
+    }
     fields.update(overrides)
     return EnvCacheState(**fields)
 
@@ -57,7 +57,7 @@ def test_test_env_source_round_trips_through_workflow_snapshot(tmp_path: Path) -
                 sanitised_name="website-a1b2c3",
                 cache_dir=str(tmp_path / "website"),
                 test_env_source=".coordinare/test.env",
-            )
+            ),
         },
     )
     restored = WorkflowSnapshot.model_validate_json(snap.model_dump_json())

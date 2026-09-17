@@ -47,7 +47,7 @@ def test_success_markers_are_credited(marker: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "marker", ["changes_requested", "qa_failed", "security_failed", "blocked"]
+    "marker", ["changes_requested", "qa_failed", "security_failed", "blocked"],
 )
 def test_negative_verdicts_are_credited_not_defects(marker: str) -> None:
     """FR-002: a role rendering a legitimate negative verdict did its job.

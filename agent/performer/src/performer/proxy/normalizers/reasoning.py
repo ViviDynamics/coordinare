@@ -58,7 +58,7 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
     # -- Anthropic content_block_* events --------------------------------- #
 
     def _anthropic_frame(
-        self, event: str | None, payload: dict[str, Any], ptype: str
+        self, event: str | None, payload: dict[str, Any], ptype: str,
     ) -> bytes | None:
         index = payload.get("index")
         if ptype == "content_block_start":
@@ -78,7 +78,7 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
         return self._reindex(event, payload, index)
 
     def _reindex(
-        self, event: str | None, payload: dict[str, Any], index: Any
+        self, event: str | None, payload: dict[str, Any], index: Any,
     ) -> bytes:
         """Rewrite a surviving block's index to its contiguous new value."""
         if isinstance(index, int) and index in self._index_map:

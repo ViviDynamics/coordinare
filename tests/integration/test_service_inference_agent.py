@@ -68,8 +68,8 @@ def _write_fake_service(bin_dir: Path) -> Path:
             while True:
                 time.sleep(60)
             "
-            """
-        )
+            """,
+        ),
     )
     fake.chmod(0o755)
     return fake
@@ -90,21 +90,21 @@ class _StubClient:
 def _rails_fixture(project: Path) -> None:
     project.mkdir(parents=True, exist_ok=True)
     (project / "Gemfile").write_text(
-        "source 'https://rubygems.org'\ngem 'rails'\ngem 'pg'\ngem 'redis'\n"
+        "source 'https://rubygems.org'\ngem 'rails'\ngem 'pg'\ngem 'redis'\n",
     )
     (project / "config").mkdir()
     (project / "config" / "database.yml").write_text(
-        "default: &default\n  adapter: postgresql\n  encoding: unicode\n"
+        "default: &default\n  adapter: postgresql\n  encoding: unicode\n",
     )
 
 
 def _go_fixture(project: Path) -> None:
     project.mkdir(parents=True, exist_ok=True)
     (project / "go.mod").write_text(
-        "module example.com/app\n\ngo 1.22\n\nrequire github.com/lib/pq v1.10.9\n"
+        "module example.com/app\n\ngo 1.22\n\nrequire github.com/lib/pq v1.10.9\n",
     )
     (project / "main.go").write_text(
-        'package main\n\nimport _ "github.com/lib/pq"\n\nfunc main() {}\n'
+        'package main\n\nimport _ "github.com/lib/pq"\n\nfunc main() {}\n',
     )
 
 
@@ -112,7 +112,7 @@ def _snowflake_fixture(project: Path) -> None:
     project.mkdir(parents=True, exist_ok=True)
     (project / "requirements.txt").write_text("snowflake-connector-python==3.5.0\n")
     (project / ".env.example").write_text(
-        "SNOWFLAKE_ACCOUNT=\nSNOWFLAKE_USER=\nSNOWFLAKE_PASSWORD=\n"
+        "SNOWFLAKE_ACCOUNT=\nSNOWFLAKE_USER=\nSNOWFLAKE_PASSWORD=\n",
     )
 
 
@@ -247,7 +247,7 @@ async def test_go_postgres_cache_inputs_reflect_go_shape(tmp_path: Path) -> None
 
 @pytest.mark.asyncio
 async def test_snowflake_external_required_build_fails_with_env_var_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = tmp_path / "snowflake-app"
     _snowflake_fixture(project)

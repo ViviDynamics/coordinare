@@ -48,14 +48,14 @@ _SIG_B = "fedcba9876543210"
 
 def test_with_signature_is_a_failed_check_subclass() -> None:
     fc = FailedCheckWithSignature(
-        name="ci/test", conclusion="failure", head_signature=_SIG_A
+        name="ci/test", conclusion="failure", head_signature=_SIG_A,
     )
     assert isinstance(fc, FailedCheck)
 
 
 def test_with_signature_baseline_defaults_none() -> None:
     fc = FailedCheckWithSignature(
-        name="ci/test", conclusion="failure", head_signature=_SIG_A
+        name="ci/test", conclusion="failure", head_signature=_SIG_A,
     )
     assert fc.head_signature == _SIG_A
     assert fc.baseline_signature is None
@@ -114,10 +114,10 @@ def test_with_signature_truncates_last_log_line() -> None:
 
 def test_with_signature_serializes_as_failed_check_plus_two_fields() -> None:
     base_keys = set(
-        FailedCheck(name="ci/test", conclusion="failure").model_dump().keys()
+        FailedCheck(name="ci/test", conclusion="failure").model_dump().keys(),
     )
     sig_dump = FailedCheckWithSignature(
-        name="ci/test", conclusion="failure", head_signature=_SIG_A
+        name="ci/test", conclusion="failure", head_signature=_SIG_A,
     ).model_dump()
     assert set(sig_dump.keys()) == base_keys | {
         "head_signature",
@@ -227,10 +227,10 @@ def test_compare_real_signatures_same_root_cause_with_drift_match() -> None:
 
 def test_compare_real_signatures_different_root_cause_distinct() -> None:
     head_sig, head_reason = make_failure_signature(
-        "ci/test", "failure", "ConnectionError: refused", None
+        "ci/test", "failure", "ConnectionError: refused", None,
     )
     base_sig, base_reason = make_failure_signature(
-        "ci/test", "failure", "TimeoutError: deadline", None
+        "ci/test", "failure", "TimeoutError: deadline", None,
     )
     assert head_sig != base_sig
     assert (
@@ -257,18 +257,18 @@ _SHA40 = "a" * 40
 
 
 def _bounce(**overrides: object) -> CIGateDecision:
-    base: dict[str, object] = dict(
-        verdict="bounce",
-        head_sha=_SHA40,
-        required_checks=["integration", "lint", "unit-tests"],
-        failed_checks=[
+    base: dict[str, object] = {
+        "verdict": "bounce",
+        "head_sha": _SHA40,
+        "required_checks": ["integration", "lint", "unit-tests"],
+        "failed_checks": [
             FailedCheck(name="unit-tests", conclusion="failure"),
         ],
-        pending_checks=[],
-        resolver_source="persona_check_map",
-        bounce_count_after=1,
-        decided_at="2026-06-14T00:00:00.000Z",
-    )
+        "pending_checks": [],
+        "resolver_source": "persona_check_map",
+        "bounce_count_after": 1,
+        "decided_at": "2026-06-14T00:00:00.000Z",
+    }
     base.update(overrides)
     return CIGateDecision(**base)  # type: ignore[arg-type]
 
@@ -295,8 +295,8 @@ def test_classification_lists_do_not_change_verdict_or_signature() -> None:
     classified = _bounce(
         introduced_checks=[
             FailedCheckWithSignature(
-                name="unit-tests", conclusion="failure", head_signature=_SIG_A
-            )
+                name="unit-tests", conclusion="failure", head_signature=_SIG_A,
+            ),
         ],
     )
     assert classified.verdict == plain.verdict == "bounce"
@@ -311,8 +311,8 @@ def test_every_failed_check_classified_exactly_once_is_valid() -> None:
         ],
         inherited_checks=[
             FailedCheckWithSignature(
-                name="unit-tests", conclusion="failure", head_signature=_SIG_A
-            )
+                name="unit-tests", conclusion="failure", head_signature=_SIG_A,
+            ),
         ],
         flake_checks=[FailedCheck(name="lint", conclusion="timed_out")],
     )
@@ -330,8 +330,8 @@ def test_unclassified_failed_check_when_lists_populated_is_error() -> None:
             ],
             inherited_checks=[
                 FailedCheckWithSignature(
-                    name="unit-tests", conclusion="failure", head_signature=_SIG_A
-                )
+                    name="unit-tests", conclusion="failure", head_signature=_SIG_A,
+                ),
             ],
         )
 
@@ -350,8 +350,8 @@ def test_check_classified_more_than_once_is_error() -> None:
         _bounce(
             inherited_checks=[
                 FailedCheckWithSignature(
-                    name="unit-tests", conclusion="failure", head_signature=_SIG_A
-                )
+                    name="unit-tests", conclusion="failure", head_signature=_SIG_A,
+                ),
             ],
             unknown_checks=[FailedCheck(name="unit-tests", conclusion="failure")],
         )

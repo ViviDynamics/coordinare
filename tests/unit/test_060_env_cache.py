@@ -205,7 +205,7 @@ class TestGetEnvVolumeForSymphony:
         assert vol.mode == "rw"
 
     def test_returns_rw_volume_for_bootstrap_when_cache_not_ready(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Regression: bootstrap dispatch must mount the host cache rw even
         when cache_dir_ready=False — that's the run that populates it.
@@ -227,7 +227,7 @@ class TestGetEnvVolumeForSymphony:
         assert vol.host_path == cache_dir
 
     def test_returns_none_for_consumer_when_activate_missing(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Consumer dispatch is held when activate.sh hasn't been written yet —
         the on-disk presence of activate.sh is the authoritative readiness gate,
@@ -245,7 +245,7 @@ class TestGetEnvVolumeForSymphony:
         assert result is None
 
     def test_returns_ro_volume_when_activate_present_but_flag_false(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Post-restart cache survival: activate.sh on disk from a prior boot
         is enough to dispatch consumers, even though cache_dir_ready resets to
@@ -276,7 +276,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir_ready=True,
         )
         result = get_env_volume_for_symphony(
-            "s", {"s": state}, is_bootstrap=False, container_devenv_root="/custom"
+            "s", {"s": state}, is_bootstrap=False, container_devenv_root="/custom",
         )
         assert result is not None
         vol, container_path = result
@@ -371,7 +371,7 @@ class TestEnvCacheServiceCheckAndTrigger:
 
     @pytest.mark.asyncio
     async def test_retries_when_prior_bootstrap_failed_and_cooldown_elapsed(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """077: a FAILED bootstrap (readme_sha == current_sha, succeeded=False)
         must auto-retry once the cooldown has elapsed — otherwise the
@@ -402,7 +402,7 @@ class TestEnvCacheServiceCheckAndTrigger:
 
     @pytest.mark.asyncio
     async def test_retriggers_when_success_persisted_but_activate_missing(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """087: a persisted snapshot can claim last_bootstrap_succeeded=True with
         readme_sha == current_sha, yet the cache dir on disk has lost activate.sh
@@ -438,7 +438,7 @@ class TestEnvCacheServiceCheckAndTrigger:
 
     @pytest.mark.asyncio
     async def test_no_retry_when_prior_failure_within_cooldown(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """077: a recently-failed bootstrap must NOT relaunch a container on the
         very next poll cycle — the cooldown throttles retries."""
@@ -466,7 +466,7 @@ class TestEnvCacheServiceCheckAndTrigger:
 
     @pytest.mark.asyncio
     async def test_synchronous_dispatch_failure_does_not_wedge_in_flight(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """077: when dispatch fails SYNCHRONOUSLY (e.g. readiness timeout) the
         daemon calls on_bootstrap_complete(False) inside dispatch_fn, clearing
@@ -515,7 +515,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         cache_state = EnvCacheState(
-            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir
+            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=None)
@@ -530,7 +530,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         cache_state = EnvCacheState(
-            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir
+            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
@@ -547,7 +547,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         cache_state = EnvCacheState(
-            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir
+            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir,
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
@@ -564,7 +564,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         cache_state = EnvCacheState(
-            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old"
+            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old",
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
@@ -583,7 +583,7 @@ class TestEnvCacheServiceCheckAndTrigger:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         cache_state = EnvCacheState(
-            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old"
+            symphony_name="sym", sanitised_name="sym-abc", cache_dir=cache_dir, readme_sha="old",
         )
         sym_cfg = self._make_symphony_config()
         sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
@@ -644,8 +644,7 @@ class TestEnvCacheServiceInitialise:
         cfg = MagicMock()
         cfg.symphonies = symphonies
         cfg.global_config.env_cache_root = str(tmp_path)
-        svc = EnvCacheService(cfg)
-        return svc
+        return EnvCacheService(cfg)
 
     @pytest.mark.asyncio
     async def test_skips_symphony_without_bootstrap_performer(self, tmp_path: Path) -> None:
@@ -671,7 +670,7 @@ class TestEnvCacheServiceInitialise:
 
     @pytest.mark.asyncio
     async def test_does_not_seed_sha_or_mark_ready_when_github_available(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """061: initialise must leave readme_sha=None even when github is available.
 
@@ -980,7 +979,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
             cache_dir_ready=True,
         )
         result = _collect_env_volumes_for_persistent_performer(
-            {"s": state}, container_devenv_root="/custom"
+            {"s": state}, container_devenv_root="/custom",
         )
         assert len(result) == 1
         assert str(result[0].container_path) == "/custom/s-abc"
@@ -1126,7 +1125,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
         performer_svc = MagicMock()
         performer_svc.dispatch_card = AsyncMock(
-            return_value={"status": "accepted", "session_id": None}
+            return_value={"status": "accepted", "session_id": None},
         )
         performer_svc._config = MagicMock()
         performer_svc._config.container_devenv_root = "/devenv"
@@ -1168,7 +1167,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
     @pytest.mark.asyncio
     async def test_bootstrap_dispatch_fn_no_job_id_calls_on_bootstrap_complete(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """When dispatch_card returns no job_id, on_bootstrap_complete(False) is called."""
         daemon = _make_daemon_for_env_cache()
@@ -1189,7 +1188,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
         performer_svc = MagicMock()
         performer_svc.dispatch_card = AsyncMock(
-            return_value={"status": "accepted"}  # no session_id / job_id
+            return_value={"status": "accepted"},  # no session_id / job_id
         )
         performer_svc._config = MagicMock()
         performer_svc._config.container_devenv_root = "/devenv"
@@ -1224,7 +1223,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
     @pytest.mark.asyncio
     async def test_bootstrap_dispatch_resolves_model_from_role_mode(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """The bootstrap dispatch must carry the role's mode-resolved model.
 
@@ -1285,7 +1284,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
         performer_svc = MagicMock()
         performer_svc.dispatch_card = AsyncMock(
-            return_value={"status": "accepted", "session_id": None}
+            return_value={"status": "accepted", "session_id": None},
         )
         performer_svc._config = MagicMock()
         performer_svc._config.container_devenv_root = "/devenv"
@@ -1327,7 +1326,7 @@ class TestDaemonEnvCacheBootstrapLoop:
 
     @pytest.mark.asyncio
     async def test_bootstrap_dispatch_fn_missing_performer_logs_warning(
-        self, tmp_path: Path, caplog
+        self, tmp_path: Path, caplog,
     ) -> None:
         """When performer_id not in performer_services, dispatch_fn returns without dispatch."""
         daemon = _make_daemon_for_env_cache()
@@ -1424,7 +1423,7 @@ class TestPollBootstrapCompletion:
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
         svc.check_status = AsyncMock(
-            return_value={"status": "error", "error": "boom", "availability": "stopped"}
+            return_value={"status": "error", "error": "boom", "availability": "stopped"},
         )
         # No container_id — falls through to get_agent_logs branch
         svc.get_agent_logs = MagicMock(return_value=["line-a", "line-b"])
@@ -1504,7 +1503,7 @@ class TestPollBootstrapCompletion:
         monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
 
         await daemon._poll_bootstrap_completion(
-            svc, "job-1", "alpha", ec_svc, container_id="ctr-hung-deadbeef"
+            svc, "job-1", "alpha", ec_svc, container_id="ctr-hung-deadbeef",
         )
 
         # check_status polled exactly the budgeted number of times, never more.
@@ -1743,7 +1742,7 @@ class TestPollBootstrapCompletion:
                 RuntimeError("timeout"),
                 RuntimeError("timeout"),
                 {"status": "env_bootstrap_complete"},
-            ]
+            ],
         )
         ec_svc = MagicMock()
 
@@ -1774,7 +1773,7 @@ class TestPollBootstrapCompletion:
                 RuntimeError("timeout"),
                 RuntimeError("timeout"),
                 {"status": "env_bootstrap_complete"},
-            ]
+            ],
         )
         ec_svc = MagicMock()
 
@@ -1834,7 +1833,7 @@ class TestPollBootstrapCompletion:
 
         ec_svc = MagicMock()
         await daemon._poll_bootstrap_completion(
-            svc, "job-1", "alpha", ec_svc, container_id="cid-xyz"
+            svc, "job-1", "alpha", ec_svc, container_id="cid-xyz",
         )
 
         ec_svc.on_bootstrap_complete.assert_called_once()
@@ -1857,7 +1856,7 @@ def _multi_symphony_raw(performer_id: str, endpoint_id: str) -> dict:
                 "name": "my-symphony",
                 "github_project_number": 1,
                 "env_bootstrap_performer_id": performer_id,
-            }
+            },
         ],
         "performer_endpoints": [
             {
@@ -1866,7 +1865,7 @@ def _multi_symphony_raw(performer_id: str, endpoint_id: str) -> dict:
                 "roles": ["implementer"],
                 "image": "coordinare-performer:full",
                 "endpoint": "http://localhost:8080",
-            }
+            },
         ],
         "orchestra": {"mode": "shared_pool"},
     }
@@ -1919,7 +1918,7 @@ def test_env_bootstrap_persona_mandates_idempotent_reinstall() -> None:
         "cache_mount_path": "/devenv/website",
         "env_spec_files": ["README.md"],
         "env_spec_contents": {
-            "README.md": "Install Google Chrome / Chromium for the system tests."
+            "README.md": "Install Google Chrome / Chromium for the system tests.",
         },
         "backend": "opencode",
     }
@@ -2170,11 +2169,11 @@ class TestBootstrapCircuitBreaker:
         return EnvCacheService(coordinare_config)
 
     def _make_cache_state(self, tmp_path: Path, **overrides) -> EnvCacheState:
-        defaults = dict(
-            symphony_name="sym",
-            sanitised_name="sym-abc",
-            cache_dir=tmp_path,
-        )
+        defaults = {
+            "symphony_name": "sym",
+            "sanitised_name": "sym-abc",
+            "cache_dir": tmp_path,
+        }
         defaults.update(overrides)
         return EnvCacheState(**defaults)
 
@@ -2228,7 +2227,7 @@ class TestBootstrapCircuitBreaker:
 
     @pytest.mark.asyncio
     async def test_exhaustion_at_max_attempts_notifies_exactly_once(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """attempts >= env_bootstrap_max_attempts flips bootstrap_exhausted and
         fires exactly ONE circuit_breaker_trip notification — further failures
@@ -2281,7 +2280,7 @@ class TestBootstrapCircuitBreaker:
         dispatch_fn.assert_not_called()  # 1 attempt → cooldown doubled to 2x base
 
         cache_state.last_bootstrap_at = datetime.now(UTC) - timedelta(
-            seconds=BOOTSTRAP_RETRY_COOLDOWN_S * 2 + 5
+            seconds=BOOTSTRAP_RETRY_COOLDOWN_S * 2 + 5,
         )
         await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
         dispatch_fn.assert_awaited_once()
@@ -2385,21 +2384,21 @@ class TestRestartHonorPath:
         return cfg
 
     def _make_cache_state(
-        self, tmp_path: Path, *, with_activate: bool = True, **overrides
+        self, tmp_path: Path, *, with_activate: bool = True, **overrides,
     ) -> EnvCacheState:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir(exist_ok=True)
         if with_activate:
             (cache_dir / "activate.sh").write_text("#!/bin/sh\n")
-        defaults = dict(
-            symphony_name="sym",
-            sanitised_name="sym-abc",
-            cache_dir=cache_dir,
-            readme_sha=_combined_sha({"README.md": "same_sha"}),
-            last_bootstrap_succeeded=True,
-            last_bootstrap_at=datetime.now(UTC),
-            cache_dir_ready=True,
-        )
+        defaults = {
+            "symphony_name": "sym",
+            "sanitised_name": "sym-abc",
+            "cache_dir": cache_dir,
+            "readme_sha": _combined_sha({"README.md": "same_sha"}),
+            "last_bootstrap_succeeded": True,
+            "last_bootstrap_at": datetime.now(UTC),
+            "cache_dir_ready": True,
+        }
         defaults.update(overrides)
         return EnvCacheState(**defaults)
 
@@ -2431,14 +2430,14 @@ class TestRestartHonorPath:
 
     @pytest.mark.asyncio
     async def test_verify_failure_triggers_full_bootstrap_immediately(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Verify fail ⇒ the persisted success was phantom — downgrade it and
         dispatch a full bootstrap NOW (no retry-cooldown wait: last_bootstrap_at
         is recent here, and the dispatch must still fire)."""
         svc = self._make_service()
         cache_state = self._make_cache_state(
-            tmp_path, last_bootstrap_at=datetime.now(UTC)
+            tmp_path, last_bootstrap_at=datetime.now(UTC),
         )
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         dispatch_fn = AsyncMock()
@@ -2459,7 +2458,7 @@ class TestRestartHonorPath:
         health — go straight to a full bootstrap, don't waste a verify run."""
         svc = self._make_service()
         cache_state = self._make_cache_state(
-            tmp_path, readme_sha=_combined_sha({"README.md": "old_sha"})
+            tmp_path, readme_sha=_combined_sha({"README.md": "old_sha"}),
         )
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         dispatch_fn = AsyncMock()
@@ -2506,10 +2505,10 @@ class TestRestartHonorPath:
         github = self._make_github()
 
         await svc.check_and_trigger(
-            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn
+            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn,
         )
         await svc.check_and_trigger(
-            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn
+            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn,
         )
 
         verify_fn.assert_awaited_once()
@@ -2517,7 +2516,7 @@ class TestRestartHonorPath:
 
     @pytest.mark.asyncio
     async def test_in_process_success_suppresses_restart_verify(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """A bootstrap that succeeded IN THIS PROCESS was already clean-verified
         by the daemon's completion path — the honor verify must not re-fire."""
@@ -2543,7 +2542,7 @@ class TestRestartHonorPath:
         the cache demonstrably lost its toolchain)."""
         svc = self._make_service()
         cache_state = self._make_cache_state(
-            tmp_path, with_activate=False, last_bootstrap_at=None
+            tmp_path, with_activate=False, last_bootstrap_at=None,
         )
         state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
         dispatch_fn = AsyncMock()

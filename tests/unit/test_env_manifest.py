@@ -186,17 +186,17 @@ class TestServiceReadinessChecklist:
     def _service(**overrides):
         from coordinare_service_inference.schema import ServiceEntry, ServiceInit
 
-        fields = dict(
-            name="postgres",
-            binary="postgres",
-            version="16",
-            data_dir="/tmp/pg-data",
-            port=5432,
-            why_needed="Primary application database",
-            sources=["config/database.yml"],
-            kind="postgres",
-            init=ServiceInit(superuser="root", databases=["app_dev"]),
-        )
+        fields = {
+            "name": "postgres",
+            "binary": "postgres",
+            "version": "16",
+            "data_dir": "/tmp/pg-data",
+            "port": 5432,
+            "why_needed": "Primary application database",
+            "sources": ["config/database.yml"],
+            "kind": "postgres",
+            "init": ServiceInit(superuser="root", databases=["app_dev"]),
+        }
         fields.update(overrides)
         return ServiceEntry(**fields)
 
@@ -204,7 +204,7 @@ class TestServiceReadinessChecklist:
         # 112: even with a postgres service declared, verify.sh must NOT pg_isready —
         # the clean consumer-context has no running postgres.
         sh = render_verify_sh(
-            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()],
         )
         assert "pg_isready" not in sh
         assert not any("FAIL:" in ln and "service postgres" in ln for ln in sh.splitlines())
@@ -222,13 +222,13 @@ class TestServiceReadinessChecklist:
         verify.sh — the toolchain checklist is identical with or without it."""
         base = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
         with_svcs = render_verify_sh(
-            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()],
         )
         assert base == with_svcs
 
     def test_toolchain_checks_and_aggregate_exit_intact(self) -> None:
         sh = render_verify_sh(
-            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()],
         )
         assert "RUBY_VERSION" in sh  # toolchain check still present
         assert 'if [ "$FAILED" -ne 0 ]; then' in sh
@@ -240,8 +240,8 @@ class TestServiceReadinessChecklist:
 
         svc = self._service(
             init=ServiceInit(
-                superuser="root", databases=["app_dev"], password_env_var="PGPASSWORD"
-            )
+                superuser="root", databases=["app_dev"], password_env_var="PGPASSWORD",
+            ),
         )
         sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym", services=[svc])
         assert "--pwfile" not in sh
@@ -382,7 +382,7 @@ class TestActivateRenderer:
     def test_service_host_alias_single_label_to_loopback(self, tmp_path) -> None:
         """105/US1 (SC-001): single-label *_HOST values are aliased to 127.0.0.1."""
         content = self._run_activation(
-            tmp_path, {"POSTGRESQL_HOST": "db", "REDIS_HOST": "redis"}
+            tmp_path, {"POSTGRESQL_HOST": "db", "REDIS_HOST": "redis"},
         )
         assert "127.0.0.1 db" in content
         assert "127.0.0.1 redis" in content
@@ -454,7 +454,7 @@ class TestActivateRenderer:
             "DB_HOST": "db",
         }
         subprocess.run(
-            ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30
+            ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30,
         )
         assert "127.0.0.1 db\n" in hosts.read_text()  # db added despite postgres-db present
 
@@ -473,7 +473,7 @@ class TestActivateRenderer:
         }
         for _ in range(2):
             subprocess.run(
-                ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30
+                ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30,
             )
         assert hosts.read_text().count("127.0.0.1 db") == 1
 
@@ -485,17 +485,17 @@ class TestServiceInstallDerivation:
     def _entry(**overrides):
         from coordinare_service_inference.schema import ServiceEntry, ServiceInit
 
-        fields = dict(
-            name="postgres",
-            binary="postgres",
-            version="16",
-            data_dir="/tmp/pg-data",
-            port=5432,
-            why_needed="Primary application database",
-            sources=["config/database.yml"],
-            kind="postgres",
-            init=ServiceInit(superuser="root", databases=["app_dev"]),
-        )
+        fields = {
+            "name": "postgres",
+            "binary": "postgres",
+            "version": "16",
+            "data_dir": "/tmp/pg-data",
+            "port": 5432,
+            "why_needed": "Primary application database",
+            "sources": ["config/database.yml"],
+            "kind": "postgres",
+            "init": ServiceInit(superuser="root", databases=["app_dev"]),
+        }
         fields.update(overrides)
         return ServiceEntry(**fields)
 

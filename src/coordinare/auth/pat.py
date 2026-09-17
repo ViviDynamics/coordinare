@@ -24,4 +24,4 @@ class PatAuth:
         yields the same token — which is how the service detects a
         credential that cannot be refreshed and fails fast.
         """
-        return None
+        return

@@ -36,7 +36,7 @@ async def _run(repo: Path, score, harness: Harness, edges: Edges, **overrides):
     )
     stand = Stand(path=repo, branch="feat/x")
     result = await ImplementerWorkflow().run(
-        stand, score, toolkit, ctx_overrides=edges.overrides(**overrides)
+        stand, score, toolkit, ctx_overrides=edges.overrides(**overrides),
     )
     return result.report, toolkit
 

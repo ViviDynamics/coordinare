@@ -32,7 +32,7 @@ def _space_file(tmp_path, dimensions: list[dict]) -> str:
             "name": "harness-sweep-test",
             "baseline_config": "baseline.yaml",
             "dimensions": dimensions,
-        })
+        }),
     )
     return str(path)
 
@@ -44,7 +44,7 @@ def test_harness_points_are_attributable_to_their_harness(tmp_path) -> None:
         _space_file(tmp_path, [
             {"name": "reviewer-harness", "role": "reviewer",
              "choices": ["openclaw", "claude_code", "junie"]},
-        ])
+        ]),
     )
     specs = enumerate_ablation(loaded)
 
@@ -63,7 +63,7 @@ def test_one_point_per_declared_harness(tmp_path) -> None:
              "choices": ["openclaw", "claude_code"]},
             {"name": "security-harness", "role": "security",
              "choices": ["openclaw", "codex"]},
-        ])
+        ]),
     )
     specs = [s for s in enumerate_ablation(loaded) if s.dimension]
 
@@ -235,7 +235,7 @@ async def test_real_root_config_retains_session_between_cycles(tmp_path):
     from coordinare.bench.fixtures import tiny_fixture
     await run_board([tiny_fixture()], tmp_path / "run", stub=False, max_cycles=4,
                     config=cfg, real_config=cfg.global_config, server=_StubServer(),
-                    performer_services={s: recorder for s in _STAGES}, sleep_func=_no_sleep)
+                    performer_services=dict.fromkeys(_STAGES, recorder), sleep_func=_no_sleep)
     assert service.dispatches == 1, "root configuration must not reset the live session each cycle"
     assert service.polls >= 2
 

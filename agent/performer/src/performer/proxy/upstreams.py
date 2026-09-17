@@ -112,7 +112,7 @@ def render_anthropic(request: LLMRequest, model: str, *, tools_enabled: bool) ->
             msgs.append({
                 "role": "user",
                 "content": [
-                    {"type": "tool_result", "tool_use_id": m.tool_call_id or "", "content": m.content}
+                    {"type": "tool_result", "tool_use_id": m.tool_call_id or "", "content": m.content},
                 ],
             })
             continue
@@ -186,7 +186,7 @@ def to_llm_request_openai(body: dict[str, Any]) -> LLMRequest:
                 content=_openai_content_text(m.get("content")),
                 tool_calls=tcs,
                 tool_call_id=m.get("tool_call_id"),
-            )
+            ),
         )
     tools = tuple(
         ToolSchema(
@@ -220,7 +220,7 @@ def to_llm_request_anthropic(body: dict[str, Any]) -> LLMRequest:
                 text_parts.append(blk.get("text", ""))
             elif bt == "tool_use":
                 tool_calls.append(
-                    ToolCall(id=blk.get("id", ""), name=blk.get("name", ""), arguments=blk.get("input") or {})
+                    ToolCall(id=blk.get("id", ""), name=blk.get("name", ""), arguments=blk.get("input") or {}),
                 )
             elif bt == "tool_result":
                 messages.append(
@@ -229,7 +229,7 @@ def to_llm_request_anthropic(body: dict[str, Any]) -> LLMRequest:
                         content=_block_text(blk.get("content")),
                         tool_call_id=blk.get("tool_use_id"),
                         _is_error=bool(blk.get("is_error")),
-                    )
+                    ),
                 )
         if text_parts or tool_calls:
             messages.append(Message(role=role, content="".join(text_parts), tool_calls=tuple(tool_calls)))
@@ -268,7 +268,7 @@ def _responses_input_item_to_messages(item: dict[str, Any]) -> list[Message]:
                         arguments=_loads(item.get("arguments")),
                     ),
                 ),
-            )
+            ),
         ]
     if itype == "function_call_output":
         return [
@@ -276,7 +276,7 @@ def _responses_input_item_to_messages(item: dict[str, Any]) -> list[Message]:
                 role="tool",
                 content=_block_text(item.get("output")),
                 tool_call_id=item.get("call_id"),
-            )
+            ),
         ]
     return []
 
@@ -358,7 +358,7 @@ def parse_anthropic(body: dict[str, Any]) -> LLMResponse:
             reasoning_parts.append(b.get("thinking", ""))
         elif btype == "tool_use":
             tool_calls.append(
-                ToolCall(id=b.get("id", ""), name=b.get("name", ""), arguments=b.get("input") or {})
+                ToolCall(id=b.get("id", ""), name=b.get("name", ""), arguments=b.get("input") or {}),
             )
     return LLMResponse(
         content="".join(text_parts),

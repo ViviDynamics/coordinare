@@ -39,7 +39,7 @@ class _Service:
         return {"status": "accepted"}
 
     async def dispatch_card(
-        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None
+        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
         self.dispatched.append(card_context)
         return {"status": "accepted", "session_id": "sess-1"}
@@ -81,7 +81,7 @@ def _state(
     state["current_symphony"] = "default"
     if local_test_gate is not None:
         sym_cfg = SimpleNamespace(
-            persona_scope=PersonaScopeConfig(local_test_gate=local_test_gate)
+            persona_scope=PersonaScopeConfig(local_test_gate=local_test_gate),
         )
         state["symphony_configs"] = {"default": sym_cfg}
     return state

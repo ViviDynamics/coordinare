@@ -65,10 +65,9 @@ def build_reverse_lookup(
     snapshot: dict[str, list[str]] = board.get("snapshot", {})
 
     # item_id → issue_number (forward) → invert
-    issue_to_item: dict[int, str] = {}
-    for item_id, num in issue_numbers.items():
-        if num > 0:
-            issue_to_item[num] = item_id
+    issue_to_item: dict[int, str] = {
+        num: item_id for item_id, num in issue_numbers.items() if num > 0
+    }
 
     # item_id → column (scan all columns)
     item_to_column: dict[str, str] = {}

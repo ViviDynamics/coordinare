@@ -450,7 +450,7 @@ def _build_global_section(
         else:
             value = getattr(pc, fname, None)
         settings.append(
-            setting_from_field("global", fname, finfo, value, invalid=is_invalid)
+            setting_from_field("global", fname, finfo, value, invalid=is_invalid),
         )
     return ConfigSection(
         id="global",
@@ -481,7 +481,7 @@ def _build_personas_section(config: CoordinareConfiguration) -> ConfigSection:
                 settings=_catalog_settings("personas", persona),
                 referenced_by=[],
                 deletable=True,
-            )
+            ),
         )
     return ConfigSection(
         id="personas",
@@ -593,7 +593,7 @@ def _build_catalog_sections(config: CoordinareConfiguration) -> list[ConfigSecti
 
 
 def _build_routing_section(
-    *, routing_available: bool, routing_mounted: bool = False
+    *, routing_available: bool, routing_mounted: bool = False,
 ) -> ConfigSection:
     """Routing-table section (spec-078). Empty read-only state when unavailable.
 
@@ -657,7 +657,7 @@ def build_snapshot(
         _build_symphonies_section(config),
         *_build_catalog_sections(config),
         _build_routing_section(
-            routing_available=routing_available, routing_mounted=routing_mounted
+            routing_available=routing_available, routing_mounted=routing_mounted,
         ),
     ]
     return ConfigSnapshot(

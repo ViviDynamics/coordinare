@@ -29,11 +29,11 @@ class TestReviewFindingsSchemaV19:
                             "start_line": 1,
                             "end_line": 7,
                             "lines": ["def foo():", "    pass"],
-                        }
+                        },
                     ],
                     "fully_in_diff": True,
                     "opened_by_survey": False,
-                }
+                },
             ],
             "diff_truncated": False,
             "verdict": "changes_requested",
@@ -47,11 +47,11 @@ class TestReviewFindingsSchemaV19:
                     "why_blocking": "Documentation required",
                     "evidence": "def foo():",
                     "origin": "model",
-                }
+                },
             ],
         }
         session = PersistedSession(
-            card_id="test-card", review_findings=review_record
+            card_id="test-card", review_findings=review_record,
         )
         assert session.review_findings == review_record
 
@@ -91,7 +91,7 @@ class TestReviewFindingsSchemaV19:
                     "path": "test.py",
                     "hunks": [],
                     "fully_in_diff": True,
-                }
+                },
             ],
             "diff_truncated": False,
             "verdict": "approved",
@@ -133,7 +133,7 @@ class TestReviewFindingsSchemaV19:
                     "performer_stage": "implementing",
                     "assessment": None,
                     # No review_findings key
-                }
+                },
             },
         }
 
@@ -167,10 +167,10 @@ class TestReviewFindingsSchemaV19:
                             "header": "@@ -1,1 +1,1 @@",
                             "start_line": 1,
                             "end_line": 1,
-                        }
+                        },
                     ],
                     "fully_in_diff": True,
-                }
+                },
             ],
             "diff_truncated": False,
             "verdict": "changes_requested",
@@ -197,7 +197,7 @@ class TestReviewFindingsSchemaV19:
             ],
         }
         session = PersistedSession(
-            card_id="test-card", review_findings=review_record
+            card_id="test-card", review_findings=review_record,
         )
         assert session.review_findings == review_record
         assert len(session.review_findings["findings_before_gate"]) == 2

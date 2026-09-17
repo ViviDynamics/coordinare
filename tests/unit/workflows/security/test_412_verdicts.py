@@ -513,9 +513,9 @@ def _fake_scanner_runner():
 
 
 def _score(**over):
-    base = dict(pr_diff="", implementation_brief={"work_kind": "feature"}, title="t", description="d",
-                pr_url="https://github.com/o/r/pull/7", owner_repo=("o", "r"), effective_github_token="tok",
-                backend="codex", model="m", workflow_env={})
+    base = {"pr_diff": "", "implementation_brief": {"work_kind": "feature"}, "title": "t", "description": "d",
+                "pr_url": "https://github.com/o/r/pull/7", "owner_repo": ("o", "r"), "effective_github_token": "tok",
+                "backend": "codex", "model": "m", "workflow_env": {}}
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -614,7 +614,7 @@ async def test_no_scan_verdicts_never_post_a_review() -> None:
         "diff --git a/yarn.lock b/yarn.lock\n--- a/yarn.lock\n+++ b/yarn.lock\n@@ -1,2 +1,3 @@\n old\n+new\n",
     ):
         await SecurityWorkflow(poster=gh.post, scan_runner=_fake_scanner_runner()).run(
-            SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), _toolkit()
+            SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), _toolkit(),
         )
     assert gh.reviews == [], "nothing posts for nothing_to_scan / not_applicable"
 
@@ -650,7 +650,7 @@ async def test_named_phantom_blocks_not_applicable() -> None:
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] != "not_applicable"
@@ -689,7 +689,7 @@ async def test_cut_through_file_with_hunks_still_blocks_not_applicable() -> None
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -773,7 +773,7 @@ async def test_scan_argv_is_filtered_to_scannable_sources() -> None:
     )
     gh = FakeGitHub()
     await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     assert seen, "the scan ran"
     assert all("package-lock.json" not in argv for argv in seen), seen
@@ -794,7 +794,7 @@ async def test_truncated_before_first_header_holds_instead_of_nothing_to_scan() 
     """412 round 5: a truncated diff with no machine names hides an unknown
     unread set -- hold, never a vacuous empty-diff advance."""
     result = await security_run(
-        pr_diff="[coordinare: diff truncated to 10 chars — run `gh pr diff <pr_url>` for the full changes]"
+        pr_diff="[coordinare: diff truncated to 10 chars — run `gh pr diff <pr_url>` for the full changes]",
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -809,7 +809,7 @@ async def test_unread_overflow_holds_instead_of_scanning_a_partial_set() -> None
         pr_diff=(
             "[coordinare: diff truncated to 10 chars — run `gh pr diff <pr_url>` for the full changes; "
             "unread beyond this point: 5 file(s)]\ncoordinare-unread-overflow: 5\n"
-        )
+        ),
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -886,7 +886,7 @@ async def test_source_diff_still_runs_the_scan() -> None:
     diff = "diff --git a/src/db.py b/src/db.py\n--- a/src/db.py\n+++ b/src/db.py\n@@ -1,1 +1,2 @@\n old\n+new\n"
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -919,7 +919,7 @@ async def test_truncated_diff_scan_never_sees_the_phantom_path() -> None:
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked", "the unnamed tail holds the round"
@@ -962,7 +962,7 @@ async def test_scan_argv_never_sees_a_cut_through_deletion() -> None:
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=scan_runner).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert seen, "the scan ran on the real changed file"
@@ -989,7 +989,7 @@ async def test_named_phantom_only_diff_holds_without_scanning() -> None:
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=_fake_scanner_runner()).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -1014,7 +1014,7 @@ async def test_truncated_hold_reports_per_file_coverage() -> None:
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=_fake_scanner_runner()).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -1039,7 +1039,7 @@ async def test_truncated_named_source_holds_even_when_others_are_scannable() -> 
     )
     gh = FakeGitHub()
     result = await SecurityWorkflow(poster=gh.post, scan_runner=_fake_scanner_runner()).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk
+        SimpleNamespace(path=Path("/tmp/x")), _score(pr_diff=diff), tk,
     )
     record = result.report["security"]
     assert record["verdict"] == "env_blocked"
@@ -1163,5 +1163,5 @@ async def security_run(*, pr_diff: str, pr_diff_status: str = "", pr_changed_pat
     if pr_changed_paths is not None:
         score_over["pr_changed_paths"] = pr_changed_paths
     return await SecurityWorkflow(poster=gh.post, scan_runner=_fake_scanner_runner()).run(
-        SimpleNamespace(path=Path("/tmp/x")), _score(**score_over), _toolkit()
+        SimpleNamespace(path=Path("/tmp/x")), _score(**score_over), _toolkit(),
     )

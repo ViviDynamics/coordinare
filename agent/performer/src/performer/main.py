@@ -325,7 +325,7 @@ async def _run_test_check(
 
     log.info("test_check.running", label=label, command=command, stack=stack)
     run_result = await run_command(
-        command, stand_path, timeout=timeout_seconds, truncate="tail"
+        command, stand_path, timeout=timeout_seconds, truncate="tail",
     )
     if run_result.success:
         log.info(
@@ -529,7 +529,7 @@ async def _run_test_check(
         first_output_preview=error_output[:200],
     )
     retry_result = await run_command(
-        command, stand_path, timeout=timeout_seconds, truncate="tail"
+        command, stand_path, timeout=timeout_seconds, truncate="tail",
     )
     if retry_result.success:
         log.info(
@@ -914,7 +914,7 @@ def _extract_json(text: str) -> dict | list | None:
 # across processes because there is no shared library between coordinare
 # and the performer container; add roles to both sides together.
 SENTINEL_ROLES: frozenset[str] = frozenset(
-    {"implementing", "reviewing", "security", "qa", "documenting"}
+    {"implementing", "reviewing", "security", "qa", "documenting"},
 )
 
 
@@ -1022,7 +1022,7 @@ def _extract_pr_number(pr_url: str) -> int:
 
 def _looks_like_url(value: str) -> bool:
     """Return True for HTTP(S) URLs."""
-    return value.startswith("http://") or value.startswith("https://")
+    return value.startswith(("http://", "https://"))
 
 
 
@@ -1089,7 +1089,7 @@ def _persona_tag(score: Score, role: str | None = None) -> str:
     harness = score.backend or "?"
     model = score.model or "?"
     return _attribution_header(
-        origin="performer", role=r, display=display, harness=harness, model=model
+        origin="performer", role=r, display=display, harness=harness, model=model,
     )
 
 
@@ -1172,7 +1172,7 @@ async def _handle_backend_parse_failure(
                         stage_label=stage_label,
                         failure_reason=failure_reason,
                         output_preview=redacted_short or "<empty>",
-                    )
+                    ),
                 )
                 recovery_attempted = True
             except Exception as exc:
@@ -1512,7 +1512,7 @@ async def _format_check_failures_with_logs(
         slice_size = max(800, remaining // slots_left)
         try:
             tail = await get_check_run_logs(
-                owner, repo, int(job_id), token, max_chars=slice_size
+                owner, repo, int(job_id), token, max_chars=slice_size,
             )
         except Exception as exc:
             log.warning("ci_log_inline.fetch_failed", job_id=job_id, error=str(exc))
@@ -1558,7 +1558,7 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
     owner, repo = perf.score.owner_repo
     try:
         check_runs = await get_check_runs(
-            owner, repo, perf.pr_head_sha, perf.score.effective_github_token
+            owner, repo, perf.pr_head_sha, perf.score.effective_github_token,
         )
     except GitHubAPIError as exc:
         if 400 <= exc.status_code < 500 and exc.status_code != 429:
@@ -1642,7 +1642,7 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
 
     if perf.check_no_progress_streak >= no_progress_limit:
         questions = [
-            f"CI checks failed with no progress across {perf.check_no_progress_streak + 1} attempts: {names}"
+            f"CI checks failed with no progress across {perf.check_no_progress_streak + 1} attempts: {names}",
         ]
         perf.state = "blocked"
         perf.open_questions = questions
@@ -1687,7 +1687,7 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
         + "\nUse `performer-fetch-ci-log --list` to see all failing checks."
     )
     await perf.backend.relay_feedback(
-        f"CI checks failed. Fix the following:\n\n{failure_msg}{tool_hint}"
+        f"CI checks failed. Fix the following:\n\n{failure_msg}{tool_hint}",
     )
     perf.state = "working"
     return PerformerResponse(
@@ -2972,7 +2972,7 @@ async def handle_status(
             try:
                 perf.inference_state = await asyncio.wait_for(
                     _run_service_inference(
-                        perf.stand.path, perf.score.env_cache_path
+                        perf.stand.path, perf.score.env_cache_path,
                     ),
                     timeout=inference_timeout,
                 )
@@ -3305,7 +3305,7 @@ async def handle_status(
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
         pr_url, pr_node_id = await create_pull_request(
-            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token
+            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token,
         )
         perf.pr_url = pr_url
         perf.pr_node_id = pr_node_id
@@ -3545,7 +3545,7 @@ async def run_loop() -> None:
                     # Report field names only — never echo payload values which
                     # may contain secrets such as github_token.
                     fields = ", ".join(
-                        sorted({str(e["loc"][0]) for e in exc.errors() if e["loc"]})
+                        sorted({str(e["loc"][0]) for e in exc.errors() if e["loc"]}),
                     )
                     resp = PerformerResponse(
                         status="error",
@@ -3686,7 +3686,7 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
             return JobResult(
                 success=False,
                 summary=_redact_secrets(
-                    f"dispatch failed: {type(exc).__name__}: {exc}"
+                    f"dispatch failed: {type(exc).__name__}: {exc}",
                 ),
                 error_code="dispatch_error",
             )

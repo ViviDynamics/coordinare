@@ -77,8 +77,8 @@ def _parse_tool_versions(content: str) -> list[ManifestItem]:
         if canonical and version:
             items.append(
                 ManifestItem(
-                    name=canonical, kind="runtime", version=version, source=".tool-versions"
-                )
+                    name=canonical, kind="runtime", version=version, source=".tool-versions",
+                ),
             )
     return items
 
@@ -102,7 +102,7 @@ def _parse_package_json(content: str) -> list[ManifestItem]:
                         # engines specs are ranges (^20, >=18); keep raw, don't over-pin.
                         version=spec.strip(),
                         source="package.json",
-                    )
+                    ),
                 )
     return items
 
@@ -133,8 +133,8 @@ def _parse_gemfile_lock(content: str) -> list[ManifestItem]:
         return []
     return [
         ManifestItem(
-            name="bundler", kind="gem", version=m.group(1).strip(), source="Gemfile.lock"
-        )
+            name="bundler", kind="gem", version=m.group(1).strip(), source="Gemfile.lock",
+        ),
     ]
 
 
@@ -203,7 +203,7 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
                         f"service '{svc_name}' (kind={kind}); fetch as .deb into "
                         "<cache>/debs/ via the system-package path"
                     ),
-                )
+                ),
             )
     return items
 
@@ -310,7 +310,7 @@ def render_checklist(manifest: EnvManifest) -> str:
         lines.append(f"  - [{item.kind}] {item.name}{ver}  ({label}; from {item.source})")
     lines.append(
         "Install pinned language runtimes FIRST (gems/modules build against them). "
-        "A coordinare-provided verify.sh checks every item above; make it pass."
+        "A coordinare-provided verify.sh checks every item above; make it pass.",
     )
     return "\n".join(lines)
 

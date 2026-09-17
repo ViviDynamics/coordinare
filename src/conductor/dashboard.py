@@ -82,7 +82,7 @@ def is_session_stale(agent_dispatch_at_iso: str | None, threshold_minutes: int =
     if not agent_dispatch_at_iso:
         return False
     try:
-        dispatched = datetime.fromisoformat(agent_dispatch_at_iso.replace("Z", "+00:00"))
+        dispatched = datetime.fromisoformat(agent_dispatch_at_iso)
         elapsed = datetime.now(UTC) - dispatched
         return elapsed.total_seconds() > threshold_minutes * 60
     except (ValueError, TypeError):
@@ -335,7 +335,7 @@ class DashboardStore:
                 "phase": phase,
                 "duration_seconds": round(duration_seconds, 3),
                 "outcome": outcome,
-            }
+            },
         )
 
     def shutdown(self) -> None:
@@ -406,7 +406,7 @@ class DashboardStore:
                 self._watcher_fingerprint = fp
                 with contextlib.suppress(Exception):
                     self.broadcaster.broadcast(
-                        self.build_snapshot(daemon, metrics, health)
+                        self.build_snapshot(daemon, metrics, health),
                     )
                 # After the snapshot broadcast, so the state_update a client
                 # expects from a tick still arrives first (065's 1 s contract).
@@ -479,7 +479,7 @@ class DashboardStore:
             # Capture baseline synchronously — see _watch_active_sessions docstring.
             self._watcher_fingerprint = self._active_sessions_fingerprint(daemon)
             self._watcher_task = asyncio.create_task(
-                self._watch_active_sessions(daemon, metrics, health)
+                self._watch_active_sessions(daemon, metrics, health),
             )
         try:
             # Send current state immediately on connect (FR-011)
@@ -568,7 +568,7 @@ class DashboardStore:
         performer_events = list(daemon.state.get("performer_events") or [])
         performer_metrics = daemon.state.get("performer_metrics")
         performer_backend = str(
-            (daemon.state.get("agent_dispatch") or {}).get("backend") or ""
+            (daemon.state.get("agent_dispatch") or {}).get("backend") or "",
         ) or None
 
         # Stderr logs from the active performer process (drained continuously
@@ -689,7 +689,7 @@ class DashboardStore:
                 "performer_events": performer_events[-SESSION_EVENT_LIMIT:],
                 "performer_metrics": performer_metrics,
                 "session_stats": self._serialise_session_stats(
-                    daemon.state.get("session_stats")
+                    daemon.state.get("session_stats"),
                 ),
                 "backend_ui_url": daemon.state.get("backend_ui_url"),
                 "performer_backend": performer_backend,
@@ -808,7 +808,7 @@ class DashboardStore:
             # picking up everything nobody claimed -- true as far as it goes and
             # wrong about what coordinare will do next.
             "include_unassigned": bool(
-                getattr(daemon.state.get("config"), "include_unassigned", False)
+                getattr(daemon.state.get("config"), "include_unassigned", False),
             ),
             # 160: the policy named as one string, computed from the same
             # ownership_policy() the gate consults. The two raw fields above are
@@ -4594,7 +4594,7 @@ def _entity_tags(supplied: Any) -> list[str]:
 
 
 def _version_refusal(
-    config_path: Any, supplied: str | None, *, field: str = "If-Match"
+    config_path: Any, supplied: str | None, *, field: str = "If-Match",
 ) -> JSONResponse | None:
     """Refuse a write that carries no usable version, or ``None`` to proceed.
 
@@ -5003,12 +5003,12 @@ def create_dashboard_app(
 
         original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
         tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp"
+            dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp",
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 yaml.safe_dump(
-                    loaded, f, default_flow_style=False, allow_unicode=True, sort_keys=False
+                    loaded, f, default_flow_style=False, allow_unicode=True, sort_keys=False,
                 )
                 f.flush()
                 os.fsync(f.fileno())
@@ -5267,7 +5267,7 @@ def create_dashboard_app(
                 return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
             if not isinstance(body, dict):
                 return JSONResponse(
-                    {"error": "Request body must be a JSON object"}, status_code=400
+                    {"error": "Request body must be a JSON object"}, status_code=400,
                 )
             proposed_overrides = body.get("overrides", proposed_overrides)
             proposed_personas = body.get("personas", proposed_personas)
@@ -5495,7 +5495,7 @@ def create_dashboard_app(
         symphony_configs = daemon.state.get("symphony_configs") or {}
         if name not in symphony_configs:
             return JSONResponse(
-                {"error": f"Symphony {name!r} not found"}, status_code=404
+                {"error": f"Symphony {name!r} not found"}, status_code=404,
             )
 
         sym_cfg = symphony_configs[name]
@@ -5505,7 +5505,7 @@ def create_dashboard_app(
                     "error": (
                         f"Symphony {name!r} has no env_bootstrap_performer_id "
                         "configured"
-                    )
+                    ),
                 },
                 status_code=400,
             )
@@ -5513,7 +5513,7 @@ def create_dashboard_app(
         env_cache_svc = daemon.state.get("env_cache_service")
         if env_cache_svc is None:
             return JSONResponse(
-                {"error": "Env cache service not available"}, status_code=503
+                {"error": "Env cache service not available"}, status_code=503,
             )
 
         performer_id = sym_cfg.env_bootstrap_performer_id
@@ -5540,7 +5540,7 @@ def create_dashboard_app(
                     "error": (
                         f"Symphony {name!r} env cache state has not been "
                         "initialised yet — wait one cycle and retry"
-                    )
+                    ),
                 },
                 status_code=503,
             )
@@ -5710,7 +5710,7 @@ def create_dashboard_app(
             )
         except KeyError as err:
             raise HTTPException(
-                status_code=404, detail=f"Unknown section: {section_id}"
+                status_code=404, detail=f"Unknown section: {section_id}",
             ) from err
         return JSONResponse(section.model_dump(mode="json"))
 
@@ -5881,7 +5881,7 @@ def create_dashboard_app(
 
             if not isinstance(expected_hash, str):
                 return JSONResponse(
-                    {"error": "expected_hash must be a string"}, status_code=400
+                    {"error": "expected_hash must be a string"}, status_code=400,
                 )
             # A client that read the hash from the ETag sends it back with its
             # quotes, and a client holding it from `new_hash` sends it bare. Both
@@ -5901,7 +5901,7 @@ def create_dashboard_app(
                 return JSONResponse(
                     {
                         "error": "Could not read the configuration file: "
-                        f"{safe_failure_reason(exc)}"
+                        f"{safe_failure_reason(exc)}",
                     },
                     status_code=403,
                 )
@@ -6139,7 +6139,7 @@ def create_dashboard_app(
                 status_code=422)
 
         result = create_catalog_item(
-            catalog, body.get("item", {}), body.get("base_hash", ""), config_path
+            catalog, body.get("item", {}), body.get("base_hash", ""), config_path,
         )
         _apply_reload_or_stage(result, f"catalog POST {catalog}")
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
@@ -6171,7 +6171,7 @@ def create_dashboard_app(
                 status_code=422)
 
         result = update_catalog_item(
-            catalog, item_id, body.get("changes", {}), body.get("base_hash", ""), config_path
+            catalog, item_id, body.get("changes", {}), body.get("base_hash", ""), config_path,
         )
         _apply_reload_or_stage(result, f"catalog PUT {catalog}/{item_id}")
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
@@ -6200,7 +6200,7 @@ def create_dashboard_app(
             body = {}
 
         result = delete_catalog_item(
-            catalog, item_id, body.get("base_hash", ""), config_path
+            catalog, item_id, body.get("base_hash", ""), config_path,
         )
         _apply_reload_or_stage(result, f"catalog DELETE {catalog}/{item_id}")
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
@@ -6259,7 +6259,7 @@ def create_dashboard_app(
                 status_code=422)
 
         result = routing_config_service.create_routing_entry(
-            location, body.get("entry", {}), body.get("base_hash", "")
+            location, body.get("entry", {}), body.get("base_hash", ""),
         )
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
 
@@ -6284,7 +6284,7 @@ def create_dashboard_app(
                 status_code=422)
 
         result = routing_config_service.update_routing_entry(
-            location, index, body.get("changes", {}), body.get("base_hash", "")
+            location, index, body.get("changes", {}), body.get("base_hash", ""),
         )
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
 
@@ -6306,7 +6306,7 @@ def create_dashboard_app(
             body = {}
 
         result = routing_config_service.delete_routing_entry(
-            location, index, body.get("base_hash", "")
+            location, index, body.get("base_hash", ""),
         )
         return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
 
@@ -6521,7 +6521,7 @@ def create_dashboard_app(
                     # 155: the panel opens on whatever is actually missing rather than
                     # on a blank prompt, which is the same problem as the YAML.
                     "opening": opening_guidance(cfg) if cfg is not None else "",
-                }
+                },
             )
 
         @app.post("/api/assistant/message")
@@ -6569,7 +6569,7 @@ def create_dashboard_app(
                 }
 
             return JSONResponse(
-                {"reply": turn.reply, "proposal": proposal, "error": turn.error}
+                {"reply": turn.reply, "proposal": proposal, "error": turn.error},
             )
 
     return app
@@ -6599,7 +6599,7 @@ def verify_github_signature(body: bytes, secret: str, header: str | None) -> boo
     if not header.startswith("sha256="):
         return False
     expected_sig = "sha256=" + hmac.new(
-        secret.encode(), body, hashlib.sha256
+        secret.encode(), body, hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(expected_sig, header)
 

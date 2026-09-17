@@ -281,7 +281,7 @@ class OpenAiApiBackend:
             try:
                 async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
                     resp = await client.post(
-                        f"{self._base_url}/chat/completions", json=payload, headers=headers
+                        f"{self._base_url}/chat/completions", json=payload, headers=headers,
                     )
                 # Retry only transient server-side conditions; 4xx auth/bad-
                 # request errors won't recover and burning the budget on them
@@ -376,7 +376,7 @@ class ClaudeCliBackend:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
             )
         except TimeoutError:
             if proc is not None:
@@ -410,7 +410,7 @@ class ClaudeCliBackend:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=text.encode()), timeout=self._TIMEOUT
+                proc.communicate(input=text.encode()), timeout=self._TIMEOUT,
             )
         except TimeoutError:
             if proc is not None:
@@ -462,7 +462,7 @@ class OpenCodeBackend:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
             )
         except TimeoutError:
             if proc is not None:
@@ -497,7 +497,7 @@ class OpenCodeBackend:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=text.encode()), timeout=self._TIMEOUT
+                proc.communicate(input=text.encode()), timeout=self._TIMEOUT,
             )
         except TimeoutError:
             if proc is not None:
@@ -562,7 +562,7 @@ class CodexCliBackend:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
             )
         except TimeoutError:
             if proc is not None:

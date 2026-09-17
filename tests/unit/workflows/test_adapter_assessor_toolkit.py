@@ -19,13 +19,13 @@ def test_assessor_toolkit_write_free():
         description="Test card",
         repo_url="https://github.com/test/test",
         branch="main",
-        model="example/model"
+        model="example/model",
     )
     toolkit = build_production_toolkit(
         score,
         metrics=WorkflowMetrics(),
         event_sink=lambda _: None,
-        workflow_name="assessor"
+        workflow_name="assessor",
     )
     assert toolkit._command_runner is None
     assert toolkit._screenshot_capture is None
@@ -39,13 +39,13 @@ def test_qa_toolkit_has_all_capabilities():
         description="Test card",
         repo_url="https://github.com/test/test",
         branch="main",
-        model="example/model"
+        model="example/model",
     )
     toolkit = build_production_toolkit(
         score,
         metrics=WorkflowMetrics(),
         event_sink=lambda _: None,
-        workflow_name="qa"
+        workflow_name="qa",
     )
     assert toolkit._command_runner is not None
     assert toolkit._screenshot_capture is not None
@@ -59,13 +59,13 @@ def test_architect_toolkit_has_all_capabilities():
         description="Test card",
         repo_url="https://github.com/test/test",
         branch="main",
-        model="example/model"
+        model="example/model",
     )
     toolkit = build_production_toolkit(
         score,
         metrics=WorkflowMetrics(),
         event_sink=lambda _: None,
-        workflow_name="architect"
+        workflow_name="architect",
     )
     assert toolkit._command_runner is not None
     assert toolkit._screenshot_capture is not None

@@ -68,7 +68,7 @@ def get_workflow(name: str) -> "RoleWorkflow":
     supported = ", ".join(sorted(SUPPORTED_WORKFLOWS))
     if target is None:
         raise UnsupportedWorkflowError(
-            f"unsupported workflow {name!r}; supported: {supported}"
+            f"unsupported workflow {name!r}; supported: {supported}",
         )
 
     module_name, class_name = target
@@ -77,22 +77,22 @@ def get_workflow(name: str) -> "RoleWorkflow":
     except ImportError as exc:  # pragma: no cover - registration error
         raise UnsupportedWorkflowError(
             f"workflow {name!r} could not be imported from {module_name!r}; "
-            f"supported: {supported}"
+            f"supported: {supported}",
         ) from exc
 
     module_file = getattr(module, "__file__", None)
     if not module_file or not Path(module_file).resolve().is_relative_to(
-        TRUSTED_WORKFLOW_ROOT
+        TRUSTED_WORKFLOW_ROOT,
     ):
         raise UntrustedWorkflowPath(
             f"workflow {name!r} resolves to {module_file!r}, outside the trusted "
-            f"workflow root {TRUSTED_WORKFLOW_ROOT}"
+            f"workflow root {TRUSTED_WORKFLOW_ROOT}",
         )
 
     cls = getattr(module, class_name, None)
     if cls is None:  # pragma: no cover - registration error
         raise UnsupportedWorkflowError(
             f"workflow {name!r} names missing class {class_name!r}; "
-            f"supported: {supported}"
+            f"supported: {supported}",
         )
     return cls()

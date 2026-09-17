@@ -457,7 +457,7 @@ class FakeGitHubService(CardIdentityMap):
         return {"closed": False, "id": issue_id}
 
     async def post_comment(
-        self, issue_number: int, body: str, *, author: str = "coordinare-bot"
+        self, issue_number: int, body: str, *, author: str = "coordinare-bot",
     ) -> dict[str, Any]:
         # Latent, swallowed call in monitor_performer (does NOT exist on the real
         # service). We record it so the branch is observable rather than lost.
@@ -611,7 +611,7 @@ class FakeGitHubService(CardIdentityMap):
         return oid or None
 
     async def list_prs_by_branch_prefix(
-        self, owner: str, repo: str, prefix: str, state: str = "OPEN", limit: int = 20
+        self, owner: str, repo: str, prefix: str, state: str = "OPEN", limit: int = 20,
     ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         want_open = state.upper() == "OPEN"
@@ -629,7 +629,7 @@ class FakeGitHubService(CardIdentityMap):
         return {}
 
     async def ensure_labels_exist(
-        self, owner: str, repo: str, handled_label: str, escalation_label: str
+        self, owner: str, repo: str, handled_label: str, escalation_label: str,
     ) -> dict[str, str]:
         return {handled_label: f"LA_{handled_label}", escalation_label: f"LA_{escalation_label}"}
 

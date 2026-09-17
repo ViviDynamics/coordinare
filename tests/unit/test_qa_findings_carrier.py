@@ -62,7 +62,7 @@ def test_no_findings_means_the_key_is_absent_not_empty():
 def test_malformed_entries_are_filtered_rather_than_crashing_the_dispatch():
     card_context: dict = {}
     inject_qa_findings(
-        card_context, {"qa_findings": [FINDING, "not a finding", None, 42]}, role="implementing"
+        card_context, {"qa_findings": [FINDING, "not a finding", None, 42]}, role="implementing",
     )
     assert card_context["qa_findings"] == [FINDING]
 
@@ -71,7 +71,7 @@ def test_findings_survive_the_payload_boundary_onto_score():
     """The end of the road: dispatch payload -> JobInitPayload -> Score.
     Score uses extra="ignore", so an undeclared field is dropped in silence."""
     svc = HTTPPerformerService(
-        PerformerEndpointConfig(id="e", mode="ephemeral", roles=["implementer"], image="img")
+        PerformerEndpointConfig(id="e", mode="ephemeral", roles=["implementer"], image="img"),
     )
     card_context = {"id": "PVTI_1", "role": "implementing", "qa_findings": [FINDING]}
     ws = WorkspaceInfo(path=None, branch="b", repo_url="https://github.com/o/r.git")
@@ -92,6 +92,6 @@ def test_the_dedup_key_matches_the_scanner_findings_key():
     from performer.workflows.qa.models import Finding
 
     payload = Finding(
-        category="unexpected_regression", criterion="c", expected="e", observed="o"
+        category="unexpected_regression", criterion="c", expected="e", observed="o",
     ).model_dump()
     assert all(k in payload for k in ("file", "line", "category", "severity"))

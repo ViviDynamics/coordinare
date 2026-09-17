@@ -67,7 +67,7 @@ async def test_dispatch_loop_integration() -> None:
             "notification_service": FakeNotificationService(),
             "human_reviewers": ["alice"],
             "blocked_reminder_hours": 24,
-        }
+        },
     )
 
     graph = CoordinareGraphBuilder().build()

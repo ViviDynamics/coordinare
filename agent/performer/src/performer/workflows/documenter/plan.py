@@ -124,7 +124,7 @@ def select_pages(
                 exists=any(page.path == location for page in inventory),
                 say=data["say"],
                 modules=data["modules"],
-            )
+            ),
         )
 
     # Step 2: Add inventory pages whose citations match changed files
@@ -165,7 +165,7 @@ def select_pages(
                     exists=True,
                     say=[],
                     modules=[],
-                )
+                ),
             )
 
     # Step 3: Always append README when any page selected
@@ -224,7 +224,7 @@ def init_skeleton(
             source="index",
             justification="Project index",
             exists=existing is not None,
-        )
+        ),
     )
     seen_paths.add(readme_path)
 
@@ -238,7 +238,7 @@ def init_skeleton(
             source="init",
             justification="Architecture and design",
             exists=existing is not None,
-        )
+        ),
     )
     seen_paths.add(arch_path)
 
@@ -252,7 +252,7 @@ def init_skeleton(
             source="init",
             justification="Developer setup",
             exists=existing is not None,
-        )
+        ),
     )
     seen_paths.add(setup_path)
 
@@ -266,7 +266,7 @@ def init_skeleton(
             source="init",
             justification="How to test",
             exists=existing is not None,
-        )
+        ),
     )
     seen_paths.add(test_path)
 
@@ -286,7 +286,7 @@ def init_skeleton(
                 source="init",
                 justification=f"Package: {pkg['path']}",
                 exists=existing is not None,
-            )
+            ),
         )
         seen_paths.add(pkg_page)
 
@@ -321,8 +321,7 @@ def build_plan(
     """
     if mode == "update":
         return select_pages(brief_docs, changed_files, inventory, cap)
-    elif mode == "init":
+    if mode == "init":
         plans, deferred = init_skeleton(layout or RepositoryLayout(project_name="", packages=[], has_ci=False), inventory, cap)
         return plans, deferred, []
-    else:
-        return [], [], []
+    return [], [], []

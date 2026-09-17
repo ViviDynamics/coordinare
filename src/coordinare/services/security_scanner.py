@@ -48,7 +48,7 @@ _DANGEROUS_CWES = frozenset(
         "611",  # XXE
         "798",  # Hardcoded Credentials
         "918",  # SSRF
-    }
+    },
 )
 
 _DEFAULT_ROUTING = "implementer"

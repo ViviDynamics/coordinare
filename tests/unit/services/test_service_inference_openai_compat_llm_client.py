@@ -29,7 +29,7 @@ def test_anthropic_tools_to_openai_round_trips_schema():
             "name": "read_file",
             "description": "Read a file",
             "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
-        }
+        },
     ]
     out = _anthropic_tools_to_openai(tools)
     assert out == [
@@ -40,7 +40,7 @@ def test_anthropic_tools_to_openai_round_trips_schema():
                 "description": "Read a file",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
             },
-        }
+        },
     ]
 
 
@@ -139,7 +139,7 @@ def test_parse_submit_manifest_wins_over_concurrent_calls():
         [
             _fn_call("c1", "read_file", {"path": "a"}),
             _fn_call("m1", SUBMIT_MANIFEST_TOOL, manifest),
-        ]
+        ],
     )
     step = _parse_openai_response(payload)
     assert step.manifest == manifest
@@ -157,10 +157,10 @@ def test_parse_handles_malformed_arguments_as_empty():
                             "id": "c1",
                             "type": "function",
                             "function": {"name": "read_file", "arguments": "not-json"},
-                        }
+                        },
                     ],
-                }
-            }
+                },
+            },
         ],
         "usage": {},
     }
@@ -186,7 +186,7 @@ def test_parse_unwraps_parameter_envelope_on_submit_manifest():
 
 def test_parse_unwraps_parameters_envelope_on_tool_call():
     payload = _openai_response(
-        [_fn_call("c1", "read_file", {"parameters": {"path": "Gemfile"}})]
+        [_fn_call("c1", "read_file", {"parameters": {"path": "Gemfile"}})],
     )
     step = _parse_openai_response(payload)
     assert step.tool_calls[0].arguments == {"path": "Gemfile"}

@@ -167,7 +167,7 @@ async def test_cancel_performer_stop_timeout_is_swallowed() -> None:
     state["current_card"] = {"id": "ITEM_1", "title": "Card"}
     state["agent_dispatch"] = {"session_id": "s1"}
     state["agent_service"] = MagicMock(
-        relay_feedback=AsyncMock(side_effect=TimeoutError("performer stop timed out"))
+        relay_feedback=AsyncMock(side_effect=TimeoutError("performer stop timed out")),
     )
     state["notification_service"] = MagicMock(dispatch=AsyncMock())
 
@@ -239,7 +239,7 @@ async def test_cancel_performer_stop_exception_is_swallowed() -> None:
     state["current_card"] = {"id": "ITEM_1", "title": "Card"}
     state["agent_dispatch"] = {"session_id": "s1"}
     state["agent_service"] = MagicMock(
-        relay_feedback=AsyncMock(side_effect=RuntimeError("performer API error"))
+        relay_feedback=AsyncMock(side_effect=RuntimeError("performer API error")),
     )
     state["notification_service"] = MagicMock(dispatch=AsyncMock())
 
@@ -346,7 +346,7 @@ async def test_cancel_retires_active_session() -> None:
             "agent_dispatch": {"session_id": "s1"},
             "performer_stage": "implementing",
             "phase": "monitoring_performer",
-        }
+        },
     }
     state["current_card"] = card
     state["agent_dispatch"] = {"session_id": "s1"}
@@ -381,7 +381,7 @@ def _restored_multi_session_state() -> dict:
     state["active_card_id"] = "ITEM_1"
     state["active_card_title"] = "Weekly timesheet"
     state["active_sessions"] = {
-        "ITEM_1": {"card_id": "ITEM_1", "performer_stage": "implementing", "phase": "monitoring_performer"}
+        "ITEM_1": {"card_id": "ITEM_1", "performer_stage": "implementing", "phase": "monitoring_performer"},
     }
     state["current_card"] = None  # the mirror, not yet re-derived
     state["agent_dispatch"] = {"session_id": "s1"}

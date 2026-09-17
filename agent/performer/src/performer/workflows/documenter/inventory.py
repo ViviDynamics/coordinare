@@ -93,8 +93,7 @@ def extract_citations(text: str, tree: set[str]) -> list[str]:
     for link in link_list:
         target = link.target
         # Normalize the path
-        if target.startswith("./"):
-            target = target[2:]
+        target = target.removeprefix("./")
         if target.startswith("../"):
             # Resolve relative paths (basic implementation)
             pass
@@ -123,7 +122,7 @@ def wiki_links(text: str, page_path: str) -> list[str]:
     for link in link_list:
         target = link.target
         # Skip external links and anchors
-        if target.startswith("http") or target.startswith("#"):
+        if target.startswith(("http", "#")):
             continue
         if not target.endswith(".md"):
             continue
@@ -224,7 +223,7 @@ def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
                 links=page_links,
                 size=size,
                 summary=first_paragraph(content),
-            )
+            ),
         )
 
     return pages

@@ -82,7 +82,7 @@ def _make_mock_metrics(cycles: int = 0, started_at: str | None = None) -> MagicM
     metrics.cycles_completed_total._value.get.return_value = cycles
     # Simulate build_info labels()._value.get()
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": started_at or "2026-03-02T09:30:00+00:00"
+        "started_at": started_at or "2026-03-02T09:30:00+00:00",
     }
     return metrics
 
@@ -97,7 +97,7 @@ def _make_mock_health(probes: list[dict] | None = None) -> MagicMock:
                 "required": True,
                 "checked_at": "2026-03-02T10:00:00+00:00",
                 "details": None,
-            }
+            },
         ]
 
     mock_probe_objects = []
@@ -1845,7 +1845,7 @@ def _attach_env_cache(daemon, symphony: str, *, in_flight: bool = False) -> None
             cache_dir=Path(f"/tmp/env-caches/{symphony}-abc123"),
             readme_sha="cafef00d",
             bootstrap_in_flight=in_flight,
-        )
+        ),
     }
     daemon._webhook_trigger = MagicMock()
 
@@ -2043,7 +2043,7 @@ def test_put_global_config_persists_valid_field(tmp_path) -> None:
     config_file.write_text(
         "github_org: testorg\ngithub_project_number: 1\n"
         "poll_interval_seconds: 30\nhuman_reviewers:\n  - reviewer1\n"
-        "github_token: dummy_token\n"
+        "github_token: dummy_token\n",
     )
     store = DashboardStore()
     daemon = _make_mock_daemon()
@@ -2170,7 +2170,7 @@ def test_build_snapshot_preserves_fields_under_session_mirror() -> None:
             "card_tokens_total": 1234,
             "card_cost_estimate": 0.42,
             "agent_dispatch": {"container_id": "abc123"},
-        }
+        },
     }
     # FR-010 mirror: top-level current_card matches the session.
     daemon.state["current_card"] = card

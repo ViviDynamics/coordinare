@@ -7,13 +7,13 @@ from performer.workflows.base import WorkflowMetrics
 
 
 def _score(**kwargs) -> Score:
-    defaults = dict(
-        title="Test PR",
-        description="Test description",
-        repo_url="https://github.com/org/repo",
-        branch="test-branch",
-        github_token="ghp_test",
-    )
+    defaults = {
+        "title": "Test PR",
+        "description": "Test description",
+        "repo_url": "https://github.com/org/repo",
+        "branch": "test-branch",
+        "github_token": "ghp_test",
+    }
     defaults.update(kwargs)
     return Score(**defaults)
 

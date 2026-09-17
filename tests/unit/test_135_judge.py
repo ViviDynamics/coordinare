@@ -11,7 +11,7 @@ from coordinare.bench.judge import parse_verdict
 class TestParseVerdict:
     def test_well_formed_verdict(self) -> None:
         correct, quality, reason = parse_verdict(
-            'Sure! {"correct": true, "quality": 4, "reason": "meets rubric"} done'
+            'Sure! {"correct": true, "quality": 4, "reason": "meets rubric"} done',
         )
         assert correct is True and quality == 4 and reason == "meets rubric"
 
@@ -31,7 +31,7 @@ class TestParseVerdict:
     @pytest.mark.parametrize("bad_quality", ["10", "-1", '"high"', "3.5", "true"])
     def test_out_of_range_or_non_int_quality_dropped_to_none(self, bad_quality: str) -> None:
         correct, quality, _ = parse_verdict(
-            f'{{"correct": true, "quality": {bad_quality}, "reason": "r"}}'
+            f'{{"correct": true, "quality": {bad_quality}, "reason": "r"}}',
         )
         assert correct is True and quality is None
 

@@ -194,7 +194,7 @@ github_project_number: 42
 github_token: "token"
 human_reviewers:
   - alice
-"""
+""",
         )
 
         with patch(
@@ -207,7 +207,7 @@ human_reviewers:
         assert len(result.errors) == 0
 
     def test_validate_legacy_config_with_env_overrides(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Legacy config with env var overrides validates."""
         config_file = tmp_path / "config.yaml"
@@ -219,7 +219,7 @@ github_project_number: 42
 github_token: "token-from-file"
 human_reviewers:
   - alice
-"""
+""",
         )
         monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "token-from-env")
 

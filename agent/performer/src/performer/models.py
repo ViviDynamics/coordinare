@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 # 036: Accept any HTTPS host with exactly owner/repo path (supports GitHub Enterprise Server)
 _GITHUB_REPO_RE = re.compile(
-    r"^https://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$"
+    r"^https://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$",
 )
 
 # 151 (bench-only): a harness-local `git daemon` remote over git://. Accepted by
@@ -81,7 +81,7 @@ _GITHUB_REPO_RE = re.compile(
 # of its base path, so the bench remote is git://host:9418/bench-repo — there is
 # no owner segment to require.
 _GIT_REPO_RE = re.compile(
-    r"^git://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)?(\.git)?$"
+    r"^git://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)?(\.git)?$",
 )
 
 # 077: free-form viability/benchmark probe role. A diagnostic job runs the
@@ -269,7 +269,7 @@ class Score(BaseModel):
         for k, v in value.items():
             if isinstance(v, (dict, list, tuple, set)):
                 raise ValueError(
-                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}"
+                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}",
                 )
             if isinstance(v, bool):
                 v = "1" if v else "0"

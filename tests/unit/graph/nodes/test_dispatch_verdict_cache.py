@@ -25,7 +25,7 @@ class _Service:
         return {"status": "accepted"}
 
     async def dispatch_card(
-        self, card_context: dict[str, Any], workspace_info: Any = None
+        self, card_context: dict[str, Any], workspace_info: Any = None,
     ) -> dict[str, Any]:
         self.dispatched.append(card_context)
         return {"status": "accepted", "session_id": "sess-1"}

@@ -94,7 +94,7 @@ _BUILTIN_COMPILED: tuple[tuple[str, re.Pattern[str], str, str], ...] = tuple(
 
 
 def match_env_signature(
-    reason: str, patterns: list[EnvSignaturePattern]
+    reason: str, patterns: list[EnvSignaturePattern],
 ) -> EnvCause | None:
     """Return the :class:`EnvCause` for the first matching infra pattern, else None.
 

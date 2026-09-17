@@ -159,7 +159,7 @@ class CIGateDecision(BaseModel):
             raise ValueError(f"failed_checks must be non-empty when verdict={self.verdict!r}")
         if self.verdict in ("bounce", "escalate") and not self.required_checks:
             raise ValueError(
-                f"required_checks must be non-empty when verdict={self.verdict!r}"
+                f"required_checks must be non-empty when verdict={self.verdict!r}",
             )
         if self.verdict != "hold" and self.pending_checks:
             raise ValueError(f"pending_checks must be empty when verdict={self.verdict!r}")
@@ -197,20 +197,20 @@ class CIGateDecision(BaseModel):
         for name in classified_names:
             if name not in failed_names:
                 raise ValueError(
-                    f"classification names check {name!r} not present in failed_checks"
+                    f"classification names check {name!r} not present in failed_checks",
                 )
 
         if len(classified_names) != len(set(classified_names)):
             seen: set[str] = set()
             dupes = sorted({n for n in classified_names if n in seen or seen.add(n)})
             raise ValueError(
-                f"checks classified in more than one list: {dupes}"
+                f"checks classified in more than one list: {dupes}",
             )
 
         unclassified = sorted(failed_names - set(classified_names))
         if unclassified:
             raise ValueError(
-                f"failed_checks not classified into exactly one list: {unclassified}"
+                f"failed_checks not classified into exactly one list: {unclassified}",
             )
         return self
 

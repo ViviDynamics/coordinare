@@ -50,7 +50,7 @@ class _StuckGraph:
 
 
 async def _run_stuck_daemon(
-    *, cycles: int, cooldown: int, notifications: Any = None
+    *, cycles: int, cooldown: int, notifications: Any = None,
 ) -> ActivityLog:
     log = ActivityLog()
     daemon = CoordinareDaemon(
@@ -138,7 +138,7 @@ async def test_stall_watchdog_trip_reaches_the_feed() -> None:
     # 329: derive the prior fingerprint from the same helper the node uses,
     # so this test cannot drift from the implementation's format.
     state["last_progress_fingerprint"] = progress_fingerprint(
-        [{"type": "progress", "text": "still working"}]
+        [{"type": "progress", "text": "still working"}],
     )
 
     await monitor_performer(state)
@@ -174,7 +174,7 @@ class _FakeGitHub:
 
 _RECOVERY_CTX = {
     "reviews": [
-        {"id": "RVW_1", "author_login": "jason", "state": "CHANGES_REQUESTED", "commit_oid": "oldsha"}
+        {"id": "RVW_1", "author_login": "jason", "state": "CHANGES_REQUESTED", "commit_oid": "oldsha"},
     ],
     "review_threads": [{"id": "T1", "is_resolved": True, "review_id": "RVW_1"}],
     "head_oid": "newsha",
@@ -192,7 +192,7 @@ async def test_auto_recovery_reaches_the_feed_with_zero_channels(
     gh = _FakeGitHub(_RECOVERY_CTX)
     state: dict = {"human_reviewers": ["jason"], "activity_log": log}  # no notification_service
     await _attempt_blocked_card_recovery(
-        state, gh, ["CARD_1"], {"content_node_ids": {"CARD_1": "ISSUE_1"}}
+        state, gh, ["CARD_1"], {"content_node_ids": {"CARD_1": "ISSUE_1"}},
     )
 
     assert ("CARD_1", "IN_REVIEW") in gh.moved
@@ -217,7 +217,7 @@ async def test_recording_never_alters_phase_retries_or_outcome() -> None:
         state["performer_stage"] = "implementing"
         state["lifecycle_sequence"] = ["implementing", "reviewing"]
         state["current_card"] = {
-            "id": "CARD_C", "status": "IN_PROGRESS", "title": "Card", "issue_number": 3
+            "id": "CARD_C", "status": "IN_PROGRESS", "title": "Card", "issue_number": 3,
         }
         state["agent_dispatch"] = {"session_id": "sess-1"}
         return state

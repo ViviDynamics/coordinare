@@ -63,7 +63,7 @@ def test_the_section_never_prescribes_a_fix():
 
 
 @pytest.mark.parametrize(
-    "backend", ["claude_code", "junie", "hermes", "pi", "opencode_compat", "codex", "opencode"]
+    "backend", ["claude_code", "junie", "hermes", "pi", "opencode_compat", "codex", "opencode"],
 )
 def test_every_prompt_builder_renders_the_section(backend):
     """Each backend builds its own prompt (no shared builder), so each must call

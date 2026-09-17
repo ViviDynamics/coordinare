@@ -97,7 +97,7 @@ def test_build_notification_service_with_slack_channel() -> None:
                 name="slack-alerts",
                 type=ChannelType.slack,
                 webhook_url=SecretStr("https://hooks.slack.com/T999"),
-            )
+            ),
         ],
         routing=[],
     )
@@ -116,7 +116,7 @@ def test_build_notification_service_with_email_channel() -> None:
                 type=ChannelType.email,
                 smtp_host="smtp.example.com",
                 smtp_recipient="ops@example.com",
-            )
+            ),
         ],
         routing=[],
     )

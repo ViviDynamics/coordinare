@@ -92,10 +92,10 @@ def test_runbooks_have_minimum_content_depth() -> None:
         # Extract section content between headings
         sections = re.split(r"\n## ", content)
         diag_section = next(
-            (s for s in sections if s.startswith("Diagnostic Steps")), None
+            (s for s in sections if s.startswith("Diagnostic Steps")), None,
         )
         resolution_section = next(
-            (s for s in sections if s.startswith("Resolution Actions")), None
+            (s for s in sections if s.startswith("Resolution Actions")), None,
         )
 
         assert diag_section is not None, f"{runbook_url}: Missing Diagnostic Steps section"

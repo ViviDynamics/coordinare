@@ -195,7 +195,7 @@ async def test_dispatch_enriches_payload_with_workspace_fields() -> None:
     state["github_service"] = _GitHub()
     state["agent_service"] = agent
     state["workspace_manager"] = _WorkspaceManager(
-        workspace_path=Path("/tmp/fake-ws/repo")
+        workspace_path=Path("/tmp/fake-ws/repo"),
     )
 
     result = await dispatch_card(state)
@@ -220,7 +220,7 @@ async def test_dispatch_blocks_card_on_workspace_setup_error() -> None:
     state["github_service"] = gh
     state["agent_service"] = _Agent()
     state["workspace_manager"] = _WorkspaceManager(
-        raise_on_prepare=WorkspaceSetupError("git clone failed: connection refused")
+        raise_on_prepare=WorkspaceSetupError("git clone failed: connection refused"),
     )
 
     result = await dispatch_card(state)
@@ -243,7 +243,7 @@ async def test_dispatch_workspace_setup_error_move_card_fails_gracefully() -> No
     state["github_service"] = _GitHubRaises()
     state["agent_service"] = _Agent()
     state["workspace_manager"] = _WorkspaceManager(
-        raise_on_prepare=WorkspaceSetupError("disk full")
+        raise_on_prepare=WorkspaceSetupError("disk full"),
     )
 
     result = await dispatch_card(state)

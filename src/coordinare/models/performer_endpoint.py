@@ -163,7 +163,7 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("container_devenv_root")
             if set_fields:
                 raise ValueError(
-                    f"subprocess performers must not set: {', '.join(set_fields)}"
+                    f"subprocess performers must not set: {', '.join(set_fields)}",
                 )
         elif self.mode == "persistent":
             if self.endpoint is None:
@@ -194,11 +194,11 @@ def apply_endpoint_reload(
     if current.current_job_id is not None:
         raise HotReloadRejectedError(
             f"performer {current.id} has in-flight job {current.current_job_id}; "
-            "deferred reload required"
+            "deferred reload required",
         )
     if current.id != new_config.id:
         raise HotReloadRejectedError(
-            f"id mismatch: state={current.id} vs config={new_config.id}"
+            f"id mismatch: state={current.id} vs config={new_config.id}",
         )
 
 

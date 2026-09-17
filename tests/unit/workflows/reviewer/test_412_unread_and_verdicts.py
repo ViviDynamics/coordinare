@@ -89,7 +89,7 @@ def test_unread_names_from_note_are_verbatim():
     names = unread_names_from_note(
         "[coordinare: diff truncated to 10 chars]\n"
         "coordinare-unread:  leading space.py\n"
-        "coordinare-cut: trailing.py \n"
+        "coordinare-cut: trailing.py \n",
     )
     assert names == [" leading space.py", "trailing.py "]
 
@@ -502,7 +502,7 @@ def test_context_line_looking_like_a_note_is_not_metadata():
     files = parse_unified_diff(text)
     assert [f.path for f in files] == ["real.py"]
     assert unread_names_from_note(
-        "diff --git a/real.py b/real.py\n@@ -1,1 +1,2 @@\n coordinare-unread: src/other.py\n"
+        "diff --git a/real.py b/real.py\n@@ -1,1 +1,2 @@\n coordinare-unread: src/other.py\n",
     ) == []
 
 

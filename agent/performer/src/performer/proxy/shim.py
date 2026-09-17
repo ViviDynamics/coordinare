@@ -80,7 +80,7 @@ _HOP_BY_HOP = frozenset(
         "transfer-encoding",
         "upgrade",
         "accept-encoding",
-    }
+    },
 )
 
 
@@ -288,7 +288,7 @@ class SelfHostedShim:
             import httpx
 
             self.client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.forward_timeout, connect=_CONNECT_TIMEOUT)
+                timeout=httpx.Timeout(self.forward_timeout, connect=_CONNECT_TIMEOUT),
             )
             self._owns_client = True
 
@@ -320,7 +320,7 @@ class SelfHostedShim:
 
                 if want_stream:
                     status, resp = await self._proxy_sse(
-                        request, upstream_url, fwd_headers, raw
+                        request, upstream_url, fwd_headers, raw,
                     )
                     return resp
                 status, resp = await self._proxy_json(upstream_url, fwd_headers, raw)
@@ -328,7 +328,7 @@ class SelfHostedShim:
             except Exception:  # noqa: BLE001 — never leak bodies; surface a clean 502
                 status = 502
                 return web.json_response(
-                    {"error": {"message": "self-hosted shim proxy failed"}}, status=502
+                    {"error": {"message": "self-hosted shim proxy failed"}}, status=502,
                 )
             finally:
                 # method/path/status/latency + which translator + which
@@ -356,7 +356,7 @@ class SelfHostedShim:
         return f"http://{host}:{port}"
 
     async def _proxy_json(
-        self, upstream_url: str, headers: dict[str, str], raw: bytes
+        self, upstream_url: str, headers: dict[str, str], raw: bytes,
     ) -> tuple[int, Any]:
         import json as _json
 
@@ -403,7 +403,7 @@ class SelfHostedShim:
 
         chain = self.sse_chain()
         async with self.client.stream(
-            "POST", upstream_url, content=raw, headers=headers
+            "POST", upstream_url, content=raw, headers=headers,
         ) as upstream:
             out_status = upstream.status_code
             if out_status != 200:
@@ -419,7 +419,7 @@ class SelfHostedShim:
                     body=body,
                     status=out_status,
                     content_type=upstream.headers.get(
-                        "content-type", "application/json"
+                        "content-type", "application/json",
                     ),
                 )
 

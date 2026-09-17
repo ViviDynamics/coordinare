@@ -229,7 +229,7 @@ class TestBuildAssessPrompt:
             "comments": {
                 "nodes": [
                     {"body": "Can we scope this to v2 only?", "author": {"login": "alice"}},
-                ]
+                ],
             },
         }
         prompt = _build_assess_prompt(card)
@@ -242,7 +242,7 @@ class TestBuildAssessPrompt:
             "comments": {
                 "nodes": [
                     {"body": "Needs input:\n- What routes?", "author": {"login": "coordinare-bot"}},
-                ]
+                ],
             },
         }
         prompt = _build_assess_prompt(card)
@@ -369,7 +369,7 @@ class TestBuildConductingBackend:
         from coordinare.config import ConductingConfig
         cfg = MagicMock()
         cfg.conducting = ConductingConfig(
-            backend="anthropic_api", model="claude-test", max_tokens=2048, temperature=0.3
+            backend="anthropic_api", model="claude-test", max_tokens=2048, temperature=0.3,
         )
         backend = build_conducting_backend(cfg)
         assert isinstance(backend, AnthropicApiBackend)
@@ -441,9 +441,9 @@ class TestOpenAiApiBackend:
         client = _fake_httpx_client(
             response_json={
                 "choices": [
-                    {"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}}
-                ]
-            }
+                    {"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}},
+                ],
+            },
         )
         with patch("httpx.AsyncClient", return_value=client):
             result = await backend.assess({"title": "X", "body": "Y"})
@@ -508,7 +508,7 @@ class TestOpenAiApiBackend:
         ok_resp.status_code = 200
         ok_resp.raise_for_status = MagicMock()
         ok_resp.json = MagicMock(return_value={
-            "choices": [{"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}}]
+            "choices": [{"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}}],
         })
 
         fake_client = MagicMock()
@@ -537,7 +537,7 @@ class TestOpenAiApiBackend:
         ok_resp.status_code = 200
         ok_resp.raise_for_status = MagicMock()
         ok_resp.json = MagicMock(return_value={
-            "choices": [{"message": {"content": '{"sufficient": false}'}}]
+            "choices": [{"message": {"content": '{"sufficient": false}'}}],
         })
 
         fake_client = MagicMock()
@@ -594,10 +594,10 @@ class TestOpenAiApiBackend:
     async def test_payload_shape_chat_model(self) -> None:
         """Non-reasoning model: max_tokens + temperature, no reasoning_effort."""
         backend = OpenAiApiBackend(
-            api_key="k", model="gpt-4o-mini", max_tokens=1234, temperature=0.7
+            api_key="k", model="gpt-4o-mini", max_tokens=1234, temperature=0.7,
         )
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             await backend.assess({"title": "X"})
@@ -614,10 +614,10 @@ class TestOpenAiApiBackend:
         """Reasoning model (effort set): max_completion_tokens + reasoning_effort,
         and temperature/max_tokens are omitted because the API rejects them."""
         backend = OpenAiApiBackend(
-            api_key="k", model="o3-mini", max_tokens=2048, temperature=0.5, effort="high"
+            api_key="k", model="o3-mini", max_tokens=2048, temperature=0.5, effort="high",
         )
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             await backend.assess({"title": "X"})
@@ -630,10 +630,10 @@ class TestOpenAiApiBackend:
     @pytest.mark.asyncio
     async def test_base_url_override_strips_trailing_slash(self) -> None:
         backend = OpenAiApiBackend(
-            api_key="k", model="gpt-test", base_url="https://proxy.example.com/v1/"
+            api_key="k", model="gpt-test", base_url="https://proxy.example.com/v1/",
         )
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             await backend.assess({"title": "X"})
@@ -644,7 +644,7 @@ class TestOpenAiApiBackend:
     async def test_auth_header_present(self) -> None:
         backend = OpenAiApiBackend(api_key="sk-abc", model="gpt-test")
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             await backend.assess({"title": "X"})
@@ -656,7 +656,7 @@ class TestOpenAiApiBackend:
     async def test_prompt_method_success(self) -> None:
         backend = OpenAiApiBackend(api_key="k", model="gpt-test")
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": "hello there"}}]}
+            response_json={"choices": [{"message": {"content": "hello there"}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             result = await backend.prompt("say hi")
@@ -666,7 +666,7 @@ class TestOpenAiApiBackend:
     async def test_prompt_method_json_response_format(self) -> None:
         backend = OpenAiApiBackend(api_key="k", model="gpt-test")
         client = _fake_httpx_client(
-            response_json={"choices": [{"message": {"content": '{"answer": 42}'}}]}
+            response_json={"choices": [{"message": {"content": '{"answer": 42}'}}]},
         )
         with patch("httpx.AsyncClient", return_value=client):
             result = await backend.prompt("Q?", response_format="json")
@@ -763,7 +763,7 @@ class TestCodexCliBackend:
         """codex exec may exit non-zero (e.g. warning) but still produce a
         usable response on stdout; we should parse what we have and log."""
         proc = _make_proc(
-            b'{"sufficient": true, "questions": [], "rationale": "ok"}', returncode=1
+            b'{"sufficient": true, "questions": [], "rationale": "ok"}', returncode=1,
         )
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             result = await CodexCliBackend().assess({"title": "X"})
@@ -843,7 +843,7 @@ class TestOpenCodeBackendStdinAssess:
         proc.returncode = 0
         with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
             await OpenCodeBackend(executable="opencode", effort="medium").assess(
-                {"title": "Secret-Card"}
+                {"title": "Secret-Card"},
             )
         args = mock_exec.call_args.args
         assert not any("Secret-Card" in (a if isinstance(a, str) else "") for a in args)

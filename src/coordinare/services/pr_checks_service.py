@@ -266,7 +266,7 @@ def _branch_matches(pattern: str, branch: str) -> bool:
 
 
 def _resolve_required_names(
-    repo: dict[str, Any], branch_ref: str
+    repo: dict[str, Any], branch_ref: str,
 ) -> tuple[bool, set[str]]:
     """Resolve the set of required check names for a branch from branchProtectionRules.
 
@@ -459,7 +459,7 @@ class _BaselineFetchFailureTracker:
     _THRESHOLD: int = 5
 
     def __init__(
-        self, owner: str, repo: str, *, clock: Callable[[], float] | None = None
+        self, owner: str, repo: str, *, clock: Callable[[], float] | None = None,
     ) -> None:
         self._owner = owner
         self._repo = repo
@@ -696,7 +696,7 @@ class PrChecksService:
             raise
 
     async def get_base_branch_check_rollup(
-        self, base_ref: str
+        self, base_ref: str,
     ) -> CheckRollup | None:
         """Fetch the base branch's check rollup; fail-safe to None (FR-005).
 

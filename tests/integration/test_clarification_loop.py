@@ -67,7 +67,7 @@ class _GitHubRecorder:
     async def move_card(self, item_id: str, status: str) -> None:
         self.moves.append((item_id, status))
         # Update the board to reflect the move
-        for _col, items in self._board.items():
+        for items in self._board.values():
             if item_id in items:
                 items.remove(item_id)
         target = status.upper().replace(" ", "_")
@@ -231,8 +231,8 @@ async def test_user_answer_triggers_dispatch() -> None:
                     "body": "It should affect all authenticated routes.",
                     "createdAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     "author": {"login": "user"},
-                }
-            ]
+                },
+            ],
         },
     }
 

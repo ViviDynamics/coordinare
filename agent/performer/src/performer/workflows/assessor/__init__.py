@@ -48,7 +48,7 @@ class AssessorWorkflow:
                     type=BackendEventType.progress,
                     text=f"assessor.{name}",
                     detail=detail,
-                )
+                ),
             )
 
     async def run(self, stand: "Stand", score: "Score", toolkit: Any) -> WorkflowResult:

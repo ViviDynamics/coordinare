@@ -24,7 +24,7 @@ PROFILE = REPO_ROOT / "agent" / "performer" / "devenv-profile.sh"
 
 
 pytestmark = pytest.mark.skipif(
-    not shutil.which("bash"), reason="bash required for these shell tests"
+    not shutil.which("bash"), reason="bash required for these shell tests",
 )
 
 # Native-lib extraction tests need a tool to *build* a synthetic .deb (ar) and
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 # falls back to ar+tar, which is what the macOS dev host uses.
 _DEB_TOOLS = bool(shutil.which("ar") and shutil.which("tar"))
 requires_deb_tools = pytest.mark.skipif(
-    not _DEB_TOOLS, reason="ar + tar required to build/extract synthetic .deb"
+    not _DEB_TOOLS, reason="ar + tar required to build/extract synthetic .deb",
 )
 
 # US3: the profile must source cleanly under dash (the `sh` agent CLIs spawn).
@@ -40,13 +40,13 @@ _DASH = shutil.which("dash") or (
     "/bin/sh" if not (os.path.realpath("/bin/sh").endswith("bash")) else None
 )
 requires_dash = pytest.mark.skipif(
-    not _DASH, reason="dash (or a non-bash /bin/sh) required for POSIX-sh tests"
+    not _DASH, reason="dash (or a non-bash /bin/sh) required for POSIX-sh tests",
 )
 
 
 def _run(cmd: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        cmd, capture_output=True, text=True, env=env, timeout=10, check=False
+        cmd, capture_output=True, text=True, env=env, timeout=10, check=False,
     )
 
 
@@ -129,7 +129,7 @@ def _build_synthetic_deb(
         # we don't depend on the host `ar` (BSD `ar` on macOS injects a
         # __.SYMDEF symbol table that breaks `ar t` listing of real members).
         header = "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n".format(
-            name, 0, 0, 0, "100644", len(data)
+            name, 0, 0, 0, "100644", len(data),
         ).encode()
         out = header + data
         if len(data) % 2:  # members are padded to an even byte boundary
@@ -138,7 +138,7 @@ def _build_synthetic_deb(
 
     data_tar = _data_targz()
     control_tar = _targz(
-        "./control", b"Package: libfake\nVersion: 1.0\nArchitecture: arm64\n"
+        "./control", b"Package: libfake\nVersion: 1.0\nArchitecture: arm64\n",
     )
 
     with open(deb_path, "wb") as fh:
@@ -166,7 +166,7 @@ def fake_cache(tmp_path: Path) -> SimpleNamespace:
     debs = cache / "debs"
     debs.mkdir(parents=True)
     _build_synthetic_deb(
-        debs / "libfake_1.0_arm64.deb", soname=soname, triplet=triplet
+        debs / "libfake_1.0_arm64.deb", soname=soname, triplet=triplet,
     )
     activate = cache / "activate.sh"
     activate.write_text("export DEVENV_ACTIVATED=1\n")
@@ -203,7 +203,7 @@ def fake_devenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     activate = devenv / "sym" / "activate.sh"
     activate.write_text(
         "export DEVENV_ACTIVATED=1\n"
-        'export PATH="/fake/devenv/bin:$PATH"\n'
+        'export PATH="/fake/devenv/bin:$PATH"\n',
     )
     return devenv
 
@@ -225,7 +225,7 @@ def _patched_profile(tmp_path: Path, devenv_root: Path) -> Path:
 
 
 def test_profile_sources_under_bash_login(
-    tmp_path: Path, fake_devenv: Path
+    tmp_path: Path, fake_devenv: Path,
 ) -> None:
     """bash -lc reads /etc/profile.d/*; the profile must activate env."""
     profile = _patched_profile(tmp_path, fake_devenv)
@@ -243,7 +243,7 @@ def test_profile_sources_under_bash_login(
 
 
 def test_profile_sources_under_bash_env(
-    tmp_path: Path, fake_devenv: Path
+    tmp_path: Path, fake_devenv: Path,
 ) -> None:
     """Non-login bash honors $BASH_ENV; verify activation via that path."""
     profile = _patched_profile(tmp_path, fake_devenv)
@@ -260,7 +260,7 @@ def test_profile_sources_under_bash_env(
 
 
 def test_profile_skips_services_start_when_flag_set(
-    tmp_path: Path, fake_devenv: Path
+    tmp_path: Path, fake_devenv: Path,
 ) -> None:
     """spec 120: `_DEVENV_SKIP_SERVICES=1` skips the spec-117 services-start block
     while STILL activating the env. `_activate_env_cache` sets this so it captures
@@ -271,7 +271,7 @@ def test_profile_skips_services_start_when_flag_set(
     svc_dir.mkdir(parents=True)
     marker = tmp_path / "services-ran.marker"
     (svc_dir / "services-start.sh").write_text(
-        f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n"
+        f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n",
     )
     profile = _patched_profile(tmp_path, fake_devenv)
     base_env = {
@@ -298,7 +298,7 @@ def test_profile_skips_services_start_when_flag_set(
 
 
 def test_profile_reentry_guard_prevents_recursion(
-    tmp_path: Path, fake_devenv: Path
+    tmp_path: Path, fake_devenv: Path,
 ) -> None:
     """When activate.sh itself runs a subshell (e.g. rbenv init), bash will
     re-source BASH_ENV.  The exported _DEVENV_SOURCED sentinel must short
@@ -310,7 +310,7 @@ def test_profile_reentry_guard_prevents_recursion(
     activate.write_text(
         "export DEVENV_ACTIVATED=1\n"
         # Command substitution: bash spawns a subshell which re-reads BASH_ENV
-        'export REENTRY_CHECK="$(echo inner)"\n'
+        'export REENTRY_CHECK="$(echo inner)"\n',
     )
     profile = _patched_profile(tmp_path, devenv)
     env = {**os.environ, "BASH_ENV": str(profile)}
@@ -345,7 +345,7 @@ def test_profile_no_op_when_no_activate_files(tmp_path: Path) -> None:
 
 
 def test_profile_sentinel_skips_subsequent_sources(
-    tmp_path: Path, fake_devenv: Path
+    tmp_path: Path, fake_devenv: Path,
 ) -> None:
     """If _DEVENV_SOURCED is already set when the profile runs, it must
     return without touching the environment a second time."""
@@ -369,7 +369,7 @@ def test_profile_sentinel_skips_subsequent_sources(
 
 @requires_deb_tools
 def test_profile_extracts_debs_and_sets_ld_library_path(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C1: a cache with a .so-bearing .deb gets its shared object
     extracted to <lib_base>/<slug>/lib and that dir prepended to
@@ -395,7 +395,7 @@ def test_profile_extracts_debs_and_sets_ld_library_path(
 
 @requires_deb_tools
 def test_profile_skips_extraction_when_sentinel_present(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C3: with the sentinel already present, extraction does NOT
     re-run (a shimmed dpkg-deb/ar would leave a marker) yet the lib dir is
@@ -430,7 +430,7 @@ def test_profile_skips_extraction_when_sentinel_present(
 
 @requires_deb_tools
 def test_profile_no_debs_dir_leaves_ld_library_path_unchanged(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C4: a cache with no debs/ dir adds no lib entry and starts
     cleanly."""
@@ -450,7 +450,7 @@ def test_profile_no_debs_dir_leaves_ld_library_path_unchanged(
 
 @requires_deb_tools
 def test_profile_preserves_existing_ld_library_path(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """The new lib dir is prepended; a pre-existing LD_LIBRARY_PATH is kept."""
     profile = _patched_profile(tmp_path, fake_cache.devenv)
@@ -473,7 +473,7 @@ def test_profile_preserves_existing_ld_library_path(
 
 @requires_deb_tools
 def test_ld_library_path_set_before_activate_sh_sourced(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C2: the lib dir is already on LD_LIBRARY_PATH at the moment a
     no-deb-handling activate.sh is sourced (deterministic step runs first)."""
@@ -481,7 +481,7 @@ def test_ld_library_path_set_before_activate_sh_sourced(
     # Today's verbatim shape: activate.sh does NO deb/LD_LIBRARY_PATH handling.
     (fake_cache.cache / "activate.sh").write_text(
         f'printf "%s" "$LD_LIBRARY_PATH" > "{capture}"\n'
-        "export DEVENV_ACTIVATED=1\n"
+        "export DEVENV_ACTIVATED=1\n",
     )
     profile = _patched_profile(tmp_path, fake_cache.devenv)
 
@@ -494,12 +494,12 @@ def test_ld_library_path_set_before_activate_sh_sourced(
 
 @requires_deb_tools
 def test_activate_sh_appending_ld_library_path_is_well_formed(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C7: when activate.sh ALSO appends to LD_LIBRARY_PATH, the final
     value contains both our lib dir and theirs and is not malformed."""
     (fake_cache.cache / "activate.sh").write_text(
-        'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/their/lib"\n'
+        'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/their/lib"\n',
     )
     profile = _patched_profile(tmp_path, fake_cache.devenv)
 
@@ -525,7 +525,7 @@ def test_activate_sh_appending_ld_library_path_is_well_formed(
 @requires_deb_tools
 @requires_dash
 def test_dash_sh_c_sees_activated_environment(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C8: sourcing the profile under dash runs the deterministic
     extraction with no bashism syntax errors and the lib dir lands on
@@ -549,7 +549,7 @@ def test_dash_sh_c_sees_activated_environment(
 @requires_deb_tools
 @requires_dash
 def test_sh_c_inherits_activated_env_from_parent(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C8 (practical guarantee): a parent that sourced the profile
     exports LD_LIBRARY_PATH; a child `sh -c` inherits it unchanged, so the
@@ -578,7 +578,7 @@ def test_sh_c_inherits_activated_env_from_parent(
 
 @requires_deb_tools
 def test_profile_never_aborts_on_corrupt_deb(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """Contract C5: a corrupt/unreadable .deb must not abort the shell — the
     profile sources cleanly and the cache's activate.sh still runs, so the
@@ -612,7 +612,7 @@ def test_profile_does_not_enable_set_e_or_exit() -> None:
 
 @requires_deb_tools
 def test_profile_partial_lib_dir_without_sentinel_reextracts(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """FR-009: a lib dir left from an interrupted publish (NO `.extracted`
     sentinel) is never treated as complete — sourcing re-runs extraction and
@@ -638,7 +638,7 @@ def test_profile_partial_lib_dir_without_sentinel_reextracts(
 
 @requires_deb_tools
 def test_profile_no_sentinel_or_libdir_when_no_so_extracted(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """MEDIUM (adversarial review): a deb carrying NO shared object must not
     be cached as 'complete' — no `.extracted` sentinel is written and no empty
@@ -671,7 +671,7 @@ def test_profile_no_sentinel_or_libdir_when_no_so_extracted(
 
 @requires_deb_tools
 def test_profile_reextracts_when_sentinel_present_but_libdir_missing(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """CRITICAL (adversarial review): if a prior publish lost the lib dir (e.g.
     `rm -rf libdir` succeeded but the subsequent `mv` failed) the sentinel may
@@ -700,7 +700,7 @@ def test_profile_reextracts_when_sentinel_present_but_libdir_missing(
 
 @requires_deb_tools
 def test_profile_extracts_symlinked_shared_object(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """MEDIUM (adversarial review): Debian ships dev/runtime sonames as symlinks
     (``libssl.so -> libssl.so.3``). The extractor must follow symlinked shared
@@ -733,7 +733,7 @@ def test_profile_extracts_symlinked_shared_object(
 
 @requires_deb_tools
 def test_profile_reclaims_stale_lock_and_extracts(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """CRITICAL (adversarial review, round 2): the per-slug `mkdir` lock has no
     staleness recovery. A shell crashing (OOM/SIGKILL) between acquiring the
@@ -766,7 +766,7 @@ def test_profile_reclaims_stale_lock_and_extracts(
 
 @requires_deb_tools
 def test_profile_warns_when_lock_held_and_no_libdir(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """MEDIUM (adversarial review, round 2): when another shell currently holds
     the (fresh) extraction lock and no lib dir is published yet, the profile
@@ -811,7 +811,7 @@ def test_profile_warns_when_lock_held_and_no_libdir(
 
 @requires_deb_tools
 def test_profile_symlinks_captured_executable_into_sysroot(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """A deb that ships an executable (``usr/bin/foo``) must have that binary
     exposed under the sysroot at ``<sysroot>/usr/bin/foo`` as a symlink into the
@@ -852,7 +852,7 @@ def test_profile_symlinks_captured_executable_into_sysroot(
 
 @requires_deb_tools
 def test_profile_does_not_clobber_existing_sysroot_entry(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """The shallow-symlink step must NEVER overwrite a path that already exists
     in the sysroot (image-provided files win). A pre-existing
@@ -887,7 +887,7 @@ def test_profile_does_not_clobber_existing_sysroot_entry(
 
 @requires_deb_tools
 def test_profile_waits_for_a_held_lock_then_uses_the_published_libs(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """397: a shell that loses the extraction lock must WAIT for the holder to
     publish, not proceed without libraries.
@@ -931,7 +931,7 @@ def test_profile_waits_for_a_held_lock_then_uses_the_published_libs(
 
 @requires_deb_tools
 def test_profile_gives_up_waiting_at_the_ceiling_and_warns(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """397: the wait is bounded. A holder that never publishes must not hang
     every shell in the container; after the ceiling the existing warning fires
@@ -992,7 +992,7 @@ def test_lock_wait_ceiling_keeps_a_lock_loss_inside_the_services_outer_cap() -> 
 
 @requires_deb_tools
 def test_lock_wait_ends_when_the_sentinel_appears_even_if_the_lock_is_still_held(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """397 (review): the wait loop has three exit conditions and the first
     waiting test satisfied two of them at once, so removing either check still
@@ -1033,7 +1033,7 @@ def test_lock_wait_ends_when_the_sentinel_appears_even_if_the_lock_is_still_held
 
 @requires_deb_tools
 def test_lock_wait_ends_when_the_lock_is_released_without_a_sentinel(
-    tmp_path: Path, fake_cache: SimpleNamespace
+    tmp_path: Path, fake_cache: SimpleNamespace,
 ) -> None:
     """397 (review): the LOCK condition alone. A holder that releases the lock
     without publishing (extraction produced nothing, or it was killed and the

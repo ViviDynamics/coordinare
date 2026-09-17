@@ -85,12 +85,12 @@ def build_performer_network_policy(
             "to": [
                 {
                     "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": dns_namespace}
-                    }
-                }
+                        "matchLabels": {"kubernetes.io/metadata.name": dns_namespace},
+                    },
+                },
             ],
             "ports": [{"protocol": protocol, "port": port} for protocol, port in DNS_PORTS],
-        }
+        },
     ]
 
     for cidr in allowed_cidrs or []:
@@ -137,7 +137,7 @@ def _probe_pod(name: str, image: str, command: list[str], labels: dict[str, str]
                     "image": image,
                     "imagePullPolicy": "IfNotPresent",
                     "command": command,
-                }
+                },
             ],
         },
     }
@@ -208,7 +208,7 @@ async def probe_network_policy_enforcement(
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             pod = await asyncio.to_thread(
-                core_v1.read_namespaced_pod, name=name, namespace=namespace
+                core_v1.read_namespaced_pod, name=name, namespace=namespace,
             )
             if pod.status.phase == "Running" and pod.status.pod_ip:
                 return pod.status.pod_ip
@@ -230,12 +230,12 @@ async def probe_network_policy_enforcement(
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() < deadline:
             pod = await asyncio.to_thread(
-                core_v1.read_namespaced_pod, name=name, namespace=namespace
+                core_v1.read_namespaced_pod, name=name, namespace=namespace,
             )
             if pod.status.phase in {"Succeeded", "Failed"}:
                 try:
                     logs = await asyncio.to_thread(
-                        core_v1.read_namespaced_pod_log, name=name, namespace=namespace
+                        core_v1.read_namespaced_pod_log, name=name, namespace=namespace,
                     )
                 except ApiException:
                     # The Pod ran but its output is gone. Not evidence either way.
@@ -264,7 +264,7 @@ async def probe_network_policy_enforcement(
         for pod in created.pods:
             try:
                 await asyncio.to_thread(
-                    core_v1.delete_namespaced_pod, name=pod, namespace=namespace
+                    core_v1.delete_namespaced_pod, name=pod, namespace=namespace,
                 )
             except Exception as exc:
                 _log.warning(

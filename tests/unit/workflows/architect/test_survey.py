@@ -16,7 +16,7 @@ from performer.workflows.architect.survey import (
 class _TK:
     def __init__(self, commands: list[str], output: str = "out"):
         self.proposal = SurveyProposal.model_validate(
-            {"commands": [{"command": c, "reason": "r"} for c in commands]}
+            {"commands": [{"command": c, "reason": "r"} for c in commands]},
         )
         self.ran: list[str] = []
         self.output = output

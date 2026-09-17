@@ -84,7 +84,7 @@ def test_2xx_response_does_not_set_envelope():
 
     async def _run() -> httpx.Response:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handler), base_url=adapter.base_url
+            transport=httpx.MockTransport(handler), base_url=adapter.base_url,
         ) as client:
             return await adapter._post_chat_completions(
                 {"model": "x", "messages": [{"role": "user", "content": "hi"}]},
@@ -116,7 +116,7 @@ def test_2xx_after_prior_failure_clears_stale_envelope():
 
     async def _run() -> tuple[httpx.Response, httpx.Response, dict | None]:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(handler), base_url=adapter.base_url
+            transport=httpx.MockTransport(handler), base_url=adapter.base_url,
         ) as client:
             body = {"model": "x", "messages": [{"role": "user", "content": "hi"}]}
             first = await adapter._post_chat_completions(body, client=client)
@@ -175,7 +175,7 @@ def test_base_url_path_preserved_on_wire():
         captured["path"] = request.url.path
         captured["full"] = str(request.url)
         return httpx.Response(
-            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
         )
 
     adapter = OpenCodeCompatAdapter(base_url="http://stub.local/v1", api_key="k")
@@ -199,7 +199,7 @@ def test_base_url_with_trailing_slash_normalised():
     def handler(request: httpx.Request) -> httpx.Response:
         captured["path"] = request.url.path
         return httpx.Response(
-            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
         )
 
     adapter = OpenCodeCompatAdapter(base_url="http://stub.local/v1/", api_key="k")

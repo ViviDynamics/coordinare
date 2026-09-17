@@ -149,7 +149,7 @@ async def test_resume_and_completion_follow_canonical_replaced_session():
     def spawn(coro):
         tasks.append(asyncio.create_task(coro))
 
-    kwargs = dict(svc=Service(), resolve=resolve, spawn=spawn, polling=polling, get_session=sessions.get)
+    kwargs = {"svc": Service(), "resolve": resolve, "spawn": spawn, "polling": polling, "get_session": sessions.get}
     await side.run_cycle(sessions, **kwargs)
     await entered.wait()
     sessions["c1"] = copy.deepcopy(state)

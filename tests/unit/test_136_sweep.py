@@ -128,7 +128,7 @@ class TestRanking:
 class TestDeriveRepeats:
     def _report(self, stdev: float | None, n: int = 5) -> NoiseReport:
         stats = None if stdev is None else ComponentStats(
-            mean=1.0, variance=stdev**2, stdev=stdev, min=0.9, max=1.1, n=n
+            mean=1.0, variance=stdev**2, stdev=stdev, min=0.9, max=1.1, n=n,
         )
         return NoiseReport(requested_repeats=n, effective_repeats=n, scalar_stats=stats)
 

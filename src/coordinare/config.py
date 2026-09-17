@@ -240,7 +240,7 @@ class CostTrackingConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 ConductingBackendName = Literal[
-    "anthropic_api", "openai_api", "claude_cli", "codex_cli", "opencode", "none"
+    "anthropic_api", "openai_api", "claude_cli", "codex_cli", "opencode", "none",
 ]
 
 
@@ -374,11 +374,11 @@ class Endpoint(BaseModel):
     def _validate_kind_rules(self) -> Endpoint:
         if self.kind in _SELF_HOSTED_ENDPOINT_KINDS and not self.base_url:
             raise ValueError(
-                f"endpoint '{self.name}': kind '{self.kind}' is self-hosted and requires base_url"
+                f"endpoint '{self.name}': kind '{self.kind}' is self-hosted and requires base_url",
             )
         if self.kind in _NATIVE_ENDPOINT_KINDS and self.base_url:
             raise ValueError(
-                f"endpoint '{self.name}': kind '{self.kind}' is native and must not set base_url"
+                f"endpoint '{self.name}': kind '{self.kind}' is native and must not set base_url",
             )
         return self
 
@@ -444,32 +444,32 @@ class Mode(BaseModel):
             if forbidden:
                 raise ValueError(
                     f"mode '{self.name}': strategy 'single' must not set {', '.join(sorted(forbidden))} "
-                    f"(single is one model via 'tool')"
+                    f"(single is one model via 'tool')",
                 )
         else:
             if self.thinking is None:
                 raise ValueError(
-                    f"mode '{self.name}': strategy '{self.strategy}' requires 'thinking'"
+                    f"mode '{self.name}': strategy '{self.strategy}' requires 'thinking'",
                 )
             if self.strategy == "conditional":
                 missing = [k for k, v in conditional_params.items() if v is None]
                 if missing:
                     raise ValueError(
-                        f"mode '{self.name}': strategy 'conditional' requires {', '.join(sorted(missing))}"
+                        f"mode '{self.name}': strategy 'conditional' requires {', '.join(sorted(missing))}",
                     )
             else:
                 set_conditional = [k for k, v in conditional_params.items() if v is not None]
                 if set_conditional:
                     raise ValueError(
                         f"mode '{self.name}': strategy '{self.strategy}' must not set "
-                        f"{', '.join(sorted(set_conditional))} (conditional-only)"
+                        f"{', '.join(sorted(set_conditional))} (conditional-only)",
                     )
             if self.strategy != "think_once":
                 set_think_once = [k for k, v in think_once_params.items() if v is not None]
                 if set_think_once:
                     raise ValueError(
                         f"mode '{self.name}': strategy '{self.strategy}' must not set "
-                        f"{', '.join(sorted(set_think_once))} (think_once-only)"
+                        f"{', '.join(sorted(set_think_once))} (think_once-only)",
                     )
 
         if self.threshold is not None and not (0.0 <= self.threshold <= 1.0):
@@ -554,7 +554,7 @@ class PerformerRoleConfig(BaseModel):
         for k, v in value.items():
             if isinstance(v, (dict, list, tuple, set)):
                 raise ValueError(
-                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}"
+                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}",
                 )
             if isinstance(v, bool):
                 v = "1" if v else "0"
@@ -577,7 +577,7 @@ class PerformerRoleConfig(BaseModel):
         if value not in KNOWN_WORKFLOWS:
             supported = ", ".join(sorted(KNOWN_WORKFLOWS))
             raise ValueError(
-                f"unknown workflow {value!r}; supported: {supported}"
+                f"unknown workflow {value!r}; supported: {supported}",
             )
         return value
 
@@ -598,7 +598,7 @@ class PerformerRoleConfig(BaseModel):
                     f"performer role sets removed inline field(s) {', '.join(present)} — "
                     "080 moved all model selection to the root-level "
                     "endpoints/model_endpoints/modes catalogs; reference a mode with "
-                    "`mode: <mode-name>` instead (see specs/080-dual-model-orchestration)."
+                    "`mode: <mode-name>` instead (see specs/080-dual-model-orchestration).",
                 )
         return data
 
@@ -747,7 +747,7 @@ class CuratorConfig(BaseModel):
     label: str = "curator-proposed"
     backlog_column: str = "Backlog"
     criteria: list[str] = Field(
-        default_factory=lambda: list(_DEFAULT_SELECTION_CRITERIA)
+        default_factory=lambda: list(_DEFAULT_SELECTION_CRITERIA),
     )
     scan_interval_seconds: int = Field(default=3600, ge=60, le=86400)
     max_per_run: int = Field(default=5, ge=1, le=50)
@@ -789,53 +789,53 @@ class ServiceCircuitConfig(BaseModel):
 class ResilienceConfig(BaseModel):
     github_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=5, wait_initial_seconds=3.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0
-        )
+            attempts=5, wait_initial_seconds=3.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0,
+        ),
     )
     slack_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=3, wait_initial_seconds=1.0, wait_max_seconds=15.0, wait_jitter_seconds=1.0
-        )
+            attempts=3, wait_initial_seconds=1.0, wait_max_seconds=15.0, wait_jitter_seconds=1.0,
+        ),
     )
     smtp_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=3, wait_initial_seconds=2.0, wait_max_seconds=20.0, wait_jitter_seconds=1.5
-        )
+            attempts=3, wait_initial_seconds=2.0, wait_max_seconds=20.0, wait_jitter_seconds=1.5,
+        ),
     )
     anthropic_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=4, wait_initial_seconds=5.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0
-        )
+            attempts=4, wait_initial_seconds=5.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0,
+        ),
     )
     agent_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=3, wait_initial_seconds=2.0, wait_max_seconds=20.0, wait_jitter_seconds=1.0
-        )
+            attempts=3, wait_initial_seconds=2.0, wait_max_seconds=20.0, wait_jitter_seconds=1.0,
+        ),
     )
     github_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=5, recovery_window_seconds=180.0, observation_window_seconds=300.0
-        )
+            failure_threshold=5, recovery_window_seconds=180.0, observation_window_seconds=300.0,
+        ),
     )
     slack_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=5, recovery_window_seconds=120.0, observation_window_seconds=300.0
-        )
+            failure_threshold=5, recovery_window_seconds=120.0, observation_window_seconds=300.0,
+        ),
     )
     smtp_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=5, recovery_window_seconds=300.0, observation_window_seconds=600.0
-        )
+            failure_threshold=5, recovery_window_seconds=300.0, observation_window_seconds=600.0,
+        ),
     )
     anthropic_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=3, recovery_window_seconds=120.0, observation_window_seconds=300.0
-        )
+            failure_threshold=3, recovery_window_seconds=120.0, observation_window_seconds=300.0,
+        ),
     )
     agent_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=3, recovery_window_seconds=60.0, observation_window_seconds=180.0
-        )
+            failure_threshold=3, recovery_window_seconds=60.0, observation_window_seconds=180.0,
+        ),
     )
 
 
@@ -1134,12 +1134,12 @@ class ProjectConfiguration(BaseSettings):
         dup_ids = {i for i, n in Counter(ids).items() if n > 1}
         if dup_ids:
             raise ValueError(
-                f"performer_endpoints contains duplicate id(s): {sorted(dup_ids)}"
+                f"performer_endpoints contains duplicate id(s): {sorted(dup_ids)}",
             )
         dup_endpoints = detect_duplicate_endpoints(self.performer_endpoints)
         if dup_endpoints:
             raise ValueError(
-                f"performer_endpoints contains duplicate endpoint URL(s): {dup_endpoints}"
+                f"performer_endpoints contains duplicate endpoint URL(s): {dup_endpoints}",
             )
         return self
 
@@ -1171,7 +1171,7 @@ class ProjectConfiguration(BaseSettings):
         for me in self.model_endpoints:
             if me.endpoint not in endpoint_names:
                 raise ValueError(
-                    f"model_endpoint '{me.name}' references unknown endpoint '{me.endpoint}'"
+                    f"model_endpoint '{me.name}' references unknown endpoint '{me.endpoint}'",
                 )
 
         for me in self.model_endpoints:
@@ -1184,7 +1184,7 @@ class ProjectConfiguration(BaseSettings):
                 ref = getattr(mode, field)
                 if ref is not None and ref not in model_endpoint_names:
                     raise ValueError(
-                        f"mode '{mode.name}' {field} references unknown model_endpoint '{ref}'"
+                        f"mode '{mode.name}' {field} references unknown model_endpoint '{ref}'",
                     )
 
         # performer.mode -> modes[] (FR-004/FR-005). Runs regardless of catalog
@@ -1197,7 +1197,7 @@ class ProjectConfiguration(BaseSettings):
             role = getattr(self.performers, role_name, None)
             if role is not None and role.mode is not None and role.mode not in mode_names:
                 raise ValueError(
-                    f"performers.{role_name} references unknown mode '{role.mode}'"
+                    f"performers.{role_name} references unknown mode '{role.mode}'",
                 )
         return self
 
@@ -1218,7 +1218,7 @@ class ProjectConfiguration(BaseSettings):
         if bare in _SECURITY_MODEL_DENYLIST:
             raise ValueError(
                 f"performers.security model '{model}' is on the weak-judge denylist "
-                f"and may not gate security review (spec 083); choose a capable model"
+                f"and may not gate security review (spec 083); choose a capable model",
             )
         return self
 
@@ -1368,7 +1368,7 @@ class ProjectConfiguration(BaseSettings):
                 "    model: <model-id>\n"
                 "    max_tokens: 4096\n"
                 "    temperature: 0.0\n"
-                "See config.example.yaml for the full schema."
+                "See config.example.yaml for the full schema.",
             )
         return cls(**raw)
 
@@ -1589,7 +1589,7 @@ class LocalTestGateConfig(BaseModel):
                 re.compile(pattern)
             except re.error as exc:
                 raise ValueError(
-                    f"test_path_patterns entry {pattern!r} is not a valid regex: {exc}"
+                    f"test_path_patterns entry {pattern!r} is not a valid regex: {exc}",
                 ) from exc
         return patterns
     max_fix_attempts: int = Field(default=2, ge=0, le=20)
@@ -1706,18 +1706,18 @@ class PersonaScopeConfig(BaseModel):
     # 090 — Baseline repair autonomy (three layers, all opt-in / default-off; see
     # specs/090-baseline-repair-autonomy/data-model.md §10, SC-006).
     baseline_prevention_gate: BaselinePreventionGateConfig = Field(
-        default_factory=BaselinePreventionGateConfig
+        default_factory=BaselinePreventionGateConfig,
     )
     baseline_classification_gate: BaselineClassificationGateConfig = Field(
-        default_factory=BaselineClassificationGateConfig
+        default_factory=BaselineClassificationGateConfig,
     )
     inherited_repair_gate: InheritedRepairGateConfig = Field(
-        default_factory=InheritedRepairGateConfig
+        default_factory=InheritedRepairGateConfig,
     )
     # 095 — Infrastructure/environment CI-failure classification (ENV_BLOCKED;
     # opt-in / default-off). See specs/095-env-blocked-ci/.
     env_blocked_gate: EnvBlockedGateConfig = Field(
-        default_factory=EnvBlockedGateConfig
+        default_factory=EnvBlockedGateConfig,
     )
 
     @field_validator("path_classes")
@@ -1933,13 +1933,13 @@ class DispatcherDedupConfig(BaseModel):
     wedge_block_threshold: int = Field(default=3, ge=1, le=100)
     wedge_block_window_hours: int = Field(default=24, ge=1, le=168)
     multi_pr_check_triggers: list[Literal["dispatch", "restart", "webhook"]] = Field(
-        default_factory=lambda: ["dispatch", "restart", "webhook"]
+        default_factory=lambda: ["dispatch", "restart", "webhook"],
     )
 
     @field_validator("multi_pr_check_triggers")
     @classmethod
     def _validate_triggers_non_empty(
-        cls, v: list[str]
+        cls, v: list[str],
     ) -> list[str]:
         if not v:
             msg = "multi_pr_check_triggers must contain at least one of: dispatch, restart, webhook"

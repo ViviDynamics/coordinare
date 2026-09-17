@@ -42,7 +42,7 @@ async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
 
     toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=None, call_limit=8)
     result = await CloserWorkflow(fetcher=gh.fetcher, resolver=gh.resolver, poster=gh.poster).run(
-        SimpleNamespace(path="."), fixture_score(), toolkit
+        SimpleNamespace(path="."), fixture_score(), toolkit,
     )
     return score_run(fixture, result.report, gh, calls["n"], live=live), result.report
 

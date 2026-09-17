@@ -198,7 +198,7 @@ def _collect_env_volumes_for_persistent_performer(
                 host_path=state.cache_dir,
                 container_path=container_path,
                 mode="ro",
-            )
+            ),
         )
     return mounts
 
@@ -264,7 +264,7 @@ async def resolve_test_env_vars(
         source = f"host_path:{test_env.host_path}"
     else:
         content = await github_service.get_file_content(
-            github_org, repo, test_env.repo_path
+            github_org, repo, test_env.repo_path,
         )
         if content is None:
             msg = (
@@ -285,7 +285,7 @@ async def resolve_test_env_vars(
 
 
 async def verify_env_cache_clean(
-    state: dict[str, Any], symphony_name: str, svc: Any
+    state: dict[str, Any], symphony_name: str, svc: Any,
 ) -> tuple[bool | None, str]:
     """077/093: run the cache's ``verify.sh`` in a CLEAN consumer-context
     container — the performer image with ONLY the cache mounted read-only at
@@ -362,7 +362,7 @@ async def verify_env_cache_clean(
 
 
 def write_service_scripts(
-    cache_dir: Path, service_models: list[Any], *, symphony: str = ""
+    cache_dir: Path, service_models: list[Any], *, symphony: str = "",
 ) -> bool:
     """108 (P1): coordinare renders + writes the service start/stop/health scripts
     into ``<cache_dir>/services/`` DETERMINISTICALLY.
@@ -515,7 +515,7 @@ class EnvCacheService:
                 return None
             if sha is None:
                 logger.warning(
-                    "env_cache.sha_fetch_none", symphony=symphony_name, file=spec_file
+                    "env_cache.sha_fetch_none", symphony=symphony_name, file=spec_file,
                 )
                 return None
             per_file[spec_file] = sha
@@ -546,7 +546,7 @@ class EnvCacheService:
         async def _fetch(path: str) -> str | None:
             try:
                 return await github_service.get_file_content(
-                    github_org, github_repo, path
+                    github_org, github_repo, path,
                 )
             except Exception as exc:
                 logger.warning(
@@ -630,7 +630,7 @@ class EnvCacheService:
             # completion re-bootstraps for nothing: every forced regen cost two
             # bootstraps. Record it now; completion adopts it as readme_sha.
             cache_state.forced_manifest_sha = await self._current_manifest_sha(
-                symphony_name, symphony_config, github_service, eff_config, cache_state
+                symphony_name, symphony_config, github_service, eff_config, cache_state,
             )
             cache_state.bootstrap_forced = True
             try:
@@ -659,7 +659,7 @@ class EnvCacheService:
 
         # Fetch combined blob SHA for all watched files (metadata-only, cheap).
         current_sha = await self._current_manifest_sha(
-            symphony_name, symphony_config, github_service, eff_config, cache_state
+            symphony_name, symphony_config, github_service, eff_config, cache_state,
         )
         if current_sha is None:
             logger.warning(
@@ -782,7 +782,7 @@ class EnvCacheService:
             if passed is True:
                 cache_state.cache_dir_ready = True
                 logger.info(
-                    "env_cache.restart_verify_passed", symphony=symphony_name
+                    "env_cache.restart_verify_passed", symphony=symphony_name,
                 )
             elif passed is False:
                 logger.warning(
@@ -878,7 +878,7 @@ class EnvCacheService:
         _global_config = self._coordinare_config.global_config
         manages_services = bool(
             getattr(_global_config, "env_cache", None)
-            and _global_config.env_cache.coordinare_manages_services
+            and _global_config.env_cache.coordinare_manages_services,
         )
         if manages_services:
             declared_services = await self._fetch_declared_services(
@@ -1047,7 +1047,7 @@ class EnvCacheService:
         """
         try:
             content = await github_service.get_file_content(
-                github_org, repo, ".coordinare/score.json"
+                github_org, repo, ".coordinare/score.json",
             )
         except Exception:
             return []
@@ -1110,7 +1110,7 @@ class EnvCacheService:
 
         # Best-effort README pass for system packages described only in prose.
         readme_text = readme_contents.get("README.md") or next(
-            (c for c in readme_contents.values() if c), ""
+            (c for c in readme_contents.values() if c), "",
         )
         manifest = await enrich_from_readme(manifest, readme_text, llm_chat)
 
@@ -1148,12 +1148,12 @@ class EnvCacheService:
                     manifest,
                     cache_mount_path=cache_mount_path,
                     services=service_models,
-                )
+                ),
             )
             verify_path.chmod(0o755)
             activate_path = cache_dir / "activate.sh"
             activate_path.write_text(
-                render_activate_sh(manifest, cache_mount_path=cache_mount_path)
+                render_activate_sh(manifest, cache_mount_path=cache_mount_path),
             )
             activate_path.chmod(0o755)
             (cache_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
@@ -1169,7 +1169,7 @@ class EnvCacheService:
                 write_service_scripts(cache_dir, service_models, symphony=symphony_name)
         except OSError as exc:
             logger.warning(
-                "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc)
+                "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc),
             )
             return render_checklist(manifest), False, False
 
@@ -1382,7 +1382,7 @@ class EnvCacheService:
                     "env_bootstrap_max_attempts",
                     3,
                 )
-                or 3
+                or 3,
             )
             if (
                 cache_state.bootstrap_attempts >= max_attempts
@@ -1439,7 +1439,7 @@ class EnvCacheService:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 logger.warning(
-                    "env_cache.snapshot_flush_skipped", symphony=symphony_name
+                    "env_cache.snapshot_flush_skipped", symphony=symphony_name,
                 )
             else:
                 task = loop.create_task(save_fn())

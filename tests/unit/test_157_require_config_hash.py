@@ -35,7 +35,7 @@ def _client(config_path: Path) -> TestClient:
     daemon.state = {"coordinare_config": cfg, "config_version": 7}
     daemon.running = True
     app = create_dashboard_app(
-        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
     )
     return TestClient(app, base_url="http://127.0.0.1:8090")
 
@@ -59,7 +59,7 @@ class TestNoShapeOfMissingVersionGetsThrough:
 
     @pytest.mark.parametrize(("label", "value", "expected"), CASES)
     def test_it_is_refused_and_the_file_is_untouched(
-        self, temp_config_path, label, value, expected
+        self, temp_config_path, label, value, expected,
     ) -> None:
         client = _client(temp_config_path)
         body: dict = {"max_concurrent_cards": 4}
@@ -105,7 +105,7 @@ class TestTheOtherOutcomesAreUnchanged:
         assert "# meanwhile" in temp_config_path.read_text()
 
     def test_a_current_version_still_writes_and_returns_the_next_one(
-        self, temp_config_path
+        self, temp_config_path,
     ) -> None:
         from coordinare.services.config_write_service import compute_content_hash
 

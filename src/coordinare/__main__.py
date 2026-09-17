@@ -232,14 +232,14 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
             print(f"✓ Config valid — loaded from {result.config_file_path}")
         else:
             print(
-                "✓ Config valid — no config file (all required fields supplied via environment variables)"
+                "✓ Config valid — no config file (all required fields supplied via environment variables)",
             )
 
         env_count = result.env_var_fields_count
         if result.config_file_path is not None:
             print(
                 f"  Fields resolved: {env_count} from environment variables, "
-                "remaining from file or default values"
+                "remaining from file or default values",
             )
         else:
             print(f"  Fields resolved: {env_count} from environment variables")
@@ -274,7 +274,7 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
                 print(line)
             print(
                 "\nFix: Create a config file at one of the above paths, or supply "
-                "all required fields via COORDINARE_* environment variables."
+                "all required fields via COORDINARE_* environment variables.",
             )
 
     # Print non-config-file errors
@@ -436,10 +436,10 @@ def _build_transport_for_role(
             if not executable:
                 raise ValueError(
                     "subprocess transport requires an executable — set agent_executable "
-                    "in config.yaml or role_config.executable"
+                    "in config.yaml or role_config.executable",
                 )
             return SubprocessTransport(
-                executable, timeout, config=config, github_token=github_token
+                executable, timeout, config=config, github_token=github_token,
             )
         case "ssh":
             return SshTransport()
@@ -541,7 +541,7 @@ def _build_performer_services(
                 role_config.transport
                 or role_config.executable
                 or config.agent_executable
-                or config.agent_transport != "subprocess"
+                or config.agent_transport != "subprocess",
             )
             if not has_explicit_transport:
                 logger.debug(
@@ -858,7 +858,7 @@ async def _bootstrap_services(
         transport = _UnavailableTransport(
             "agent_transport: kubernetes runs performers as Pods over HTTP and has "
             "no subprocess transport. This role is configured for a wire-protocol "
-            "transport, which the Kubernetes path does not provide."
+            "transport, which the Kubernetes path does not provide.",
         )
     else:
         try:
@@ -1113,7 +1113,7 @@ async def _run(
             circuit_breakers,
             config_path=config_path,
             activity_log=dashboard_store.activity_log,
-        )
+        ),
     )
 
     # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
@@ -1144,7 +1144,7 @@ async def _run(
                     endpoint=_eff.github_graphql_url,
                     circuit_breaker=circuit_breakers["github"],
                     retry_kwargs=_retry_config_from(
-                        _eff.resilience.github_retry
+                        _eff.resilience.github_retry,
                     ).to_stamina_kwargs(),
                 )
                 _sym_svc._project_name = _eff.project_name
@@ -1189,7 +1189,7 @@ async def _run(
             log_level="warning",
             # Disable uvicorn's own signal handlers — we install a unified
             # handler below so Ctrl+C cancels the daemon task immediately.
-        )
+        ),
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
@@ -1242,7 +1242,7 @@ async def _run(
             port=config.dashboard_port,
             log_level="warning",
             timeout_graceful_shutdown=3,  # max wait after SSE streams are signalled
-        )
+        ),
     )
     dashboard_server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
@@ -1278,7 +1278,7 @@ async def _run(
         out.write(f"task_count={len(tasks)}\n\n")
         for t in tasks:
             out.write(
-                f"--- Task name={t.get_name()!r} done={t.done()} cancelled={t.cancelled()} ---\n"
+                f"--- Task name={t.get_name()!r} done={t.done()} cancelled={t.cancelled()} ---\n",
             )
             out.write(f"  coro={t.get_coro()!r}\n")
             stack = t.get_stack()
@@ -1287,7 +1287,7 @@ async def _run(
             else:
                 for f in stack:
                     out.write(
-                        f'  File "{f.f_code.co_filename}", line {f.f_lineno}, in {f.f_code.co_name}\n'
+                        f'  File "{f.f_code.co_filename}", line {f.f_lineno}, in {f.f_code.co_name}\n',
                     )
             out.write("\n")
         # Truncate per dump so a long-lived daemon receiving repeated SIGUSR1
@@ -1510,7 +1510,7 @@ def main() -> None:
             "version": _coordinare_version(),
             "python_version": platform.python_version(),
             "started_at": _started_at,
-        }
+        },
     )
 
     # Step 6: Initialize HEALTH registry with configured subsystems
@@ -1557,7 +1557,7 @@ def main() -> None:
                 config_path=result.config_file_path,
                 coordinare_config=_coordinare_cfg,
                 config_mode=_config_mode,
-            )
+            ),
         )
     except RuntimeExecutionError as exc:
         logger.error(

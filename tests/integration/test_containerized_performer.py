@@ -99,7 +99,7 @@ def _container_endpoint(container_id: str, port: int = 8080) -> str:
     pytest.skip(
         f"Docker container networking not reachable from test process "
         f"(container {container_id[:12]}): tried {candidates or ['no candidates']}. "
-        f"The daemon is probably not in this process's network namespace."
+        f"The daemon is probably not in this process's network namespace.",
     )
 STUB_SCRIPT = textwrap.dedent(
     """
@@ -121,7 +121,7 @@ STUB_SCRIPT = textwrap.dedent(
         executor=stub_executor,
     )
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
-    """
+    """,
 ).strip()
 
 
@@ -214,7 +214,7 @@ async def test_persistent_container_dispatch_lifecycle(running_container: str) -
             "roles": ["implementing"],
             "image": IMAGE_TAG,
             "endpoint": endpoint,
-        }
+        },
     )
     svc = HTTPPerformerService(config)
     try:
@@ -262,7 +262,7 @@ async def test_persistent_container_dispatch_lifecycle(running_container: str) -
 @pytest.mark.timeout(600)
 @pytest.mark.asyncio
 async def test_two_persistent_containers_run_in_parallel(
-    performer_base_image: str, tmp_path: Path
+    performer_base_image: str, tmp_path: Path,
 ) -> None:
     """Two persistent performers dispatch and run jobs in parallel (SC-002)."""
     import httpx
@@ -324,7 +324,7 @@ async def test_two_persistent_containers_run_in_parallel(
                 "roles": ["implementing"],
                 "image": IMAGE_TAG,
                 "endpoint": endpoints[0],
-            }
+            },
         )
         config2 = PerformerEndpointConfig.model_validate(
             {
@@ -333,7 +333,7 @@ async def test_two_persistent_containers_run_in_parallel(
                 "roles": ["implementing"],
                 "image": IMAGE_TAG,
                 "endpoint": endpoints[1],
-            }
+            },
         )
 
         svc1 = HTTPPerformerService(config1)
@@ -423,7 +423,7 @@ async def test_two_persistent_containers_run_in_parallel(
 @pytest.mark.timeout(600)
 @pytest.mark.asyncio
 async def test_subprocess_and_container_coexist(
-    performer_base_image: str, tmp_path: Path
+    performer_base_image: str, tmp_path: Path,
 ) -> None:
     """Subprocess and containerized performers coexist with no throughput regression (SC-008, FR-024).
 
@@ -490,7 +490,7 @@ async def test_subprocess_and_container_coexist(
                 "roles": ["implementing"],
                 "image": IMAGE_TAG,
                 "endpoint": container_endpoint,
-            }
+            },
         )
         container_svc = HTTPPerformerService(container_config)
 

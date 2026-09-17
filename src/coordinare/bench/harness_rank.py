@@ -289,16 +289,16 @@ def format_report(report: HarnessRankingReport) -> str:
             lines.append(
                 f"  {i}. {s.backend:<14} scalar={s.scalar:.4f}  "
                 f"credit={ev.credit}/{ev.conclusive} conclusive  "
-                f"defects={ev.harness_defect}  runs={ev.runs_contributing}"
+                f"defects={ev.harness_defect}  runs={ev.runs_contributing}",
             )
         for pair in r.ties:
             lines.append(
-                f"  indistinguishable (within noise band): {pair[0]} vs {pair[1]}"
+                f"  indistinguishable (within noise band): {pair[0]} vs {pair[1]}",
             )
         if r.insufficient_evidence:
             lines.append(
                 f"  insufficient evidence (<{r.min_conclusive} conclusive): "
-                f"{', '.join(sorted(r.insufficient_evidence))}"
+                f"{', '.join(sorted(r.insufficient_evidence))}",
             )
         lines.append("")
     if not report.rankings:

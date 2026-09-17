@@ -84,7 +84,7 @@ async def test_baseline_is_skipped_when_nothing_visual_is_planned():
     tk = _Toolkit()
 
     result = await run_baseline_step(
-        tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base")
+        tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base"),
     )
 
     assert result == {}
@@ -101,7 +101,7 @@ async def test_baseline_runs_for_a_flow_plan_and_uses_a_worktree():
     tk = _Toolkit(dom={"http://localhost:3000/": [{"kind": "button", "label": "Continue"}]})
 
     result = await run_baseline_step(
-        tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base")
+        tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base"),
     )
 
     assert any("git worktree add" in c for c in tk.ran)
@@ -120,7 +120,7 @@ async def test_a_failed_worktree_raises_rather_than_reporting_no_regressions():
 
     with pytest.raises(RuntimeError):
         await run_baseline_step(
-            tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base")
+            tk, plan, workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/w/.base"),
         )
 
 
@@ -142,7 +142,7 @@ async def test_every_planned_check_yields_a_real_result():
 async def test_a_failing_command_is_recorded_as_failing():
     plan = TestPlan(checks=[PlanCheck(id="c1", criterion=CRIT, kind="command", command="pytest -q")])
     results = await run_execute_step(
-        _Toolkit(commands={"pytest -q": 1}), plan, cwd=Path("/w"), driver_path="/d.py"
+        _Toolkit(commands={"pytest -q": 1}), plan, cwd=Path("/w"), driver_path="/d.py",
     )
     assert results[0].passed is False
 
@@ -169,11 +169,11 @@ async def test_flow_steps_are_passed_as_json_not_interpolated_into_code(tmp_path
     """Nothing the model wrote is ever interpolated into executable source."""
     plan = TestPlan(checks=[
         PlanCheck(id="c1", criterion=CRIT, kind="flow",
-                  steps=[FlowStep(action="fill", target="#email", value="'; rm -rf /")])
+                  steps=[FlowStep(action="fill", target="#email", value="'; rm -rf /")]),
     ])
     tk = _Toolkit()
     await run_execute_step(
-        tk, plan, cwd=tmp_path, driver_path=str(tmp_path / ".qa_flow_driver.py")
+        tk, plan, cwd=tmp_path, driver_path=str(tmp_path / ".qa_flow_driver.py"),
     )
 
     import json
@@ -225,7 +225,7 @@ async def test_the_flow_driver_is_written_before_it_is_invoked():
 async def test_running_a_flow_installs_the_driver():
     plan = TestPlan(checks=[
         PlanCheck(id="c1", criterion=CRIT, kind="flow",
-                  steps=[FlowStep(action="goto", target="/")])
+                  steps=[FlowStep(action="goto", target="/")]),
     ])
     import tempfile
 
@@ -426,7 +426,7 @@ async def test_an_unobservable_visual_check_fails_closed():
     plan = TestPlan(checks=[PlanCheck(id="c1", criterion=CRIT, kind="visual")])
     tk = _Toolkit()
     results = await run_execute_step(
-        tk, plan, cwd=Path("/w"), driver_path="/tmp/qa_flow_driver.py"
+        tk, plan, cwd=Path("/w"), driver_path="/tmp/qa_flow_driver.py",
     )
 
     assert len(results) == 1

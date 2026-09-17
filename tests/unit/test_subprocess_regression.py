@@ -27,7 +27,7 @@ def test_subprocess_performer_not_tracked_in_pool() -> None:
             "id": "subprocess-perf",
             "mode": "subprocess",
             "roles": ["writer"],
-        }
+        },
     )
 
     # The pool should reject subprocess performers (FR-024).
@@ -50,7 +50,7 @@ def test_subprocess_performer_no_transition_events() -> None:
             "id": "subprocess-perf",
             "mode": "subprocess",
             "roles": ["writer"],
-        }
+        },
     )
 
     # Pool rejects subprocess; therefore no performer_endpoint.transition
@@ -96,14 +96,14 @@ def test_coordinare_state_performer_endpoints_excludes_subprocess() -> None:
             "image": "performer:slim",
             "endpoint": "http://localhost:8088",
             "roles": ["implementer"],
-        }
+        },
     )
     subprocess_config = PerformerEndpointConfig.model_validate(
         {
             "id": "subprocess-1",
             "mode": "subprocess",
             "roles": ["implementer"],
-        }
+        },
     )
 
     service = HTTPPerformerService(container_config)
@@ -136,7 +136,7 @@ def test_subprocess_mixed_with_containerized_no_cross_talk() -> None:
             "image": "performer:slim",
             "endpoint": "http://localhost:8088",
             "roles": ["writer"],
-        }
+        },
     )
     service = HTTPPerformerService(container_config)
     pool.register(container_config, service=service)
@@ -152,7 +152,7 @@ def test_subprocess_mixed_with_containerized_no_cross_talk() -> None:
             "id": "subprocess-perf",
             "mode": "subprocess",
             "roles": ["writer"],
-        }
+        },
     )
     with pytest.raises(ValueError, match="subprocess"):
         pool.register(subprocess_config, service=None)

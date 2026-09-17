@@ -45,7 +45,7 @@ def test_neutral_and_skipped_count_as_pass(conclusion: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "conclusion", ["failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"]
+    "conclusion", ["failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"],
 )
 def test_terminal_failure_conclusions_bounce(conclusion: str) -> None:
     rollup = _rollup([_req("ci/test", "completed", conclusion)])
@@ -170,7 +170,7 @@ def test_required_names_filters_to_named_checks_only() -> None:
             _check("lint", "completed", "success"),
             _check("unit-tests", "completed", "success"),
             _check("e2e", "completed", "failure"),  # not in required set → ignored
-        ]
+        ],
     )
     d = decide(rollup, required_check_names={"lint", "unit-tests"}, now=NOW)
     assert d.action == "FORWARD"
@@ -182,7 +182,7 @@ def test_required_names_named_check_failing_bounces() -> None:
         [
             _check("lint", "completed", "failure"),
             _check("unit-tests", "completed", "success"),
-        ]
+        ],
     )
     d = decide(rollup, required_check_names={"lint", "unit-tests"}, now=NOW)
     assert d.action == "BOUNCE"
@@ -235,7 +235,7 @@ def test_required_names_empty_set_forwards() -> None:
         [
             _check("lint", "completed", "failure"),
             _check("e2e", "in_progress"),
-        ]
+        ],
     )
     d = decide(rollup, required_check_names=set(), now=NOW)
     assert d.action == "FORWARD"

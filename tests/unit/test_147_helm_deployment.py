@@ -759,7 +759,7 @@ class TestTheInstallGateCannotPassOnABrokenRelease:
         import time
 
         spec = importlib.util.spec_from_file_location(
-            "t147_integration", "tests/integration/test_147_helm_install.py"
+            "t147_integration", "tests/integration/test_147_helm_install.py",
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -770,7 +770,7 @@ class TestTheInstallGateCannotPassOnABrokenRelease:
 
         def fake_run(*args, **kwargs):
             return subprocess.CompletedProcess(
-                args, returncode, json.dumps(body) if returncode == 0 else "", "not found"
+                args, returncode, json.dumps(body) if returncode == 0 else "", "not found",
             )
 
         module._run = fake_run

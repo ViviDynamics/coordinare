@@ -41,7 +41,7 @@ def _observation_for(exit_code: int, output: str):
 def _toolkit(*, exit_code: int, output: str) -> MagicMock:
     toolkit = MagicMock()
     toolkit.run_command = AsyncMock(
-        return_value=MagicMock(output_excerpt=output, exit_code=exit_code)
+        return_value=MagicMock(output_excerpt=output, exit_code=exit_code),
     )
     toolkit.call_model = AsyncMock(return_value=_observation_for(exit_code, output))
     return toolkit
@@ -70,7 +70,7 @@ class TestUnrunnableRunnerIsEnvBlocked:
 
     @pytest.mark.asyncio
     async def test_the_check_runs_before_any_baseline_is_built(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Failing closed is the point: no empty Baseline may escape."""
         toolkit = _toolkit(exit_code=127, output="sh: rspec: not found")
@@ -110,7 +110,7 @@ class TestRealTestOutcomesAreUntouched:
 
     @pytest.mark.asyncio
     async def test_exit_1_with_not_found_in_output_is_not_env_blocked(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """The guard must key on the exit code, not on the words.
 

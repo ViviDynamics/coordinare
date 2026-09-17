@@ -666,7 +666,7 @@ class GitHubService(CardIdentityMap):
                     # cannot help, so don't retry. Surface as permanent.
                     logger.info("github.auth.refresh_retry", outcome="failed")
                     raise PermanentGitHubError(
-                        "GitHub auth failed and the credential could not be refreshed"
+                        "GitHub auth failed and the credential could not be refreshed",
                     ) from None
                 self._client = self._build_client(fresh_token)
                 self._last_token = fresh_token
@@ -675,7 +675,7 @@ class GitHubService(CardIdentityMap):
                 except AuthGitHubError as exc:
                     logger.info("github.auth.refresh_retry", outcome="failed")
                     raise PermanentGitHubError(
-                        "GitHub auth failed again after credential refresh"
+                        "GitHub auth failed again after credential refresh",
                     ) from exc
                 logger.info("github.auth.refresh_retry", outcome="recovered")
                 return result
@@ -1319,7 +1319,7 @@ class GitHubService(CardIdentityMap):
                                 "added": int(entry.get("additions") or 0),
                                 "removed": int(entry.get("deletions") or 0),
                                 "status": str(entry.get("status") or "modified"),
-                            }
+                            },
                         )
                     if len(batch) < 100:
                         break
@@ -1382,7 +1382,7 @@ class GitHubService(CardIdentityMap):
         return raw, changed_files
 
     async def compare_changed_files(
-        self, pr_url: str, base_sha: str, head_sha: str
+        self, pr_url: str, base_sha: str, head_sha: str,
     ) -> list[str]:
         """125 — file paths touched between two commits (REST compare API).
 
@@ -1428,7 +1428,7 @@ class GitHubService(CardIdentityMap):
                         page=page,
                     )
                     raise RuntimeError(
-                        f"compare_changed_files: fetch failed (status {resp.status_code})"
+                        f"compare_changed_files: fetch failed (status {resp.status_code})",
                     )
                 payload = resp.json() or {}
                 # The compare API returns a ``files`` list for an enumerable
@@ -1441,7 +1441,7 @@ class GitHubService(CardIdentityMap):
                 page_files = payload.get("files")
                 if not isinstance(page_files, list):
                     raise RuntimeError(
-                        "compare_changed_files: response has no enumerable 'files' list"
+                        "compare_changed_files: response has no enumerable 'files' list",
                     )
                 files.extend(
                     str(f["filename"])
@@ -1474,7 +1474,7 @@ class GitHubService(CardIdentityMap):
                 # header alone ("a/old b/name.py b/new b/name.py"). The
                 # section's rename-to metadata is the authoritative post-image.
                 # 412 round 14: copy-only sections carry "copy to" instead.
-                if pending_index is not None and (line.startswith("rename to ") or line.startswith("copy to ")):
+                if pending_index is not None and line.startswith(("rename to ", "copy to ")):
                     target = line.split(" ", 2)[2].strip()
                     if target.startswith('"') and target.endswith('"'):
                         # 412 round 17: a quoted metadata target is
@@ -1839,7 +1839,7 @@ class GitHubService(CardIdentityMap):
                         "id": str(t.get("id", "")),
                         "is_resolved": bool(t.get("isResolved", False)),
                         "review_id": review_id,
-                    }
+                    },
                 )
         return {
             "reviews": reviews,
@@ -1849,7 +1849,7 @@ class GitHubService(CardIdentityMap):
         }
 
     async def request_reviews(
-        self, pr_id: str, reviewer_logins: list[str]
+        self, pr_id: str, reviewer_logins: list[str],
     ) -> dict[str, Any]:
         """128: re-request review from the given human reviewer(s) for a
         stale-addressed change-request. Fail-safe — returns
@@ -1867,12 +1867,12 @@ class GitHubService(CardIdentityMap):
                         user_ids.append(str(uid))
                 except Exception as exc:  # per-login failure is non-fatal
                     logger.warning(
-                        "request_reviews.user_lookup_failed", login=login, error=str(exc)
+                        "request_reviews.user_lookup_failed", login=login, error=str(exc),
                     )
             if not user_ids:
                 return {"requested": False, "reason": "no resolvable reviewers"}
             await self._guarded_execute(
-                REQUEST_REVIEWS_MUTATION, {"prId": pr_id, "userIds": user_ids}
+                REQUEST_REVIEWS_MUTATION, {"prId": pr_id, "userIds": user_ids},
             )
             return {"requested": True, "reason": "re-requested", "count": len(user_ids)}
         except Exception as exc:
@@ -1983,7 +1983,7 @@ class GitHubService(CardIdentityMap):
 
     async def get_repository_id(self, owner: str, repo: str) -> str:
         result = await self._guarded_execute(
-            GET_REPOSITORY_ID_QUERY, {"owner": owner, "repo": repo}
+            GET_REPOSITORY_ID_QUERY, {"owner": owner, "repo": repo},
         )
         repo_id = result.get("repository", {}).get("id")
         if not repo_id:
@@ -1992,7 +1992,7 @@ class GitHubService(CardIdentityMap):
         return str(repo_id)
 
     async def get_required_status_checks(
-        self, owner: str, repo: str, default_branch: str
+        self, owner: str, repo: str, default_branch: str,
     ) -> set[str] | None:
         """075: Return the set of required-status-check contexts for ``default_branch``.
 
@@ -2011,7 +2011,7 @@ class GitHubService(CardIdentityMap):
         """
         try:
             result = await self._guarded_execute(
-                GET_BRANCH_PROTECTION_QUERY, {"owner": owner, "repo": repo}
+                GET_BRANCH_PROTECTION_QUERY, {"owner": owner, "repo": repo},
             )
         except Exception:
             return None
@@ -2041,7 +2041,7 @@ class GitHubService(CardIdentityMap):
 
     async def get_label_ids(self, owner: str, repo: str) -> dict[str, str]:
         result = await self._guarded_execute(
-            GET_LABEL_IDS_QUERY, {"owner": owner, "repo": repo}
+            GET_LABEL_IDS_QUERY, {"owner": owner, "repo": repo},
         )
         nodes = result.get("repository", {}).get("labels", {}).get("nodes", [])
         if not isinstance(nodes, list):
@@ -2093,7 +2093,7 @@ class GitHubService(CardIdentityMap):
         )
 
     async def list_open_issues(
-        self, owner: str, repo: str, first: int = 20
+        self, owner: str, repo: str, first: int = 20,
     ) -> list[dict[str, Any]]:
         result = await self._guarded_execute(
             LIST_OPEN_ISSUES_QUERY,
@@ -2105,7 +2105,7 @@ class GitHubService(CardIdentityMap):
         return [n for n in nodes if isinstance(n, dict)]
 
     async def get_file_content(
-        self, owner: str, repo: str, path: str, ref: str = "HEAD"
+        self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
         expression = f"{ref}:{path}"
         result = await self._guarded_execute(
@@ -2118,7 +2118,7 @@ class GitHubService(CardIdentityMap):
         return None
 
     async def get_file_blob_sha(
-        self, owner: str, repo: str, path: str, ref: str = "HEAD"
+        self, owner: str, repo: str, path: str, ref: str = "HEAD",
     ) -> str | None:
         expression = f"{ref}:{path}"
         result = await self._guarded_execute(

@@ -239,7 +239,7 @@ async def test_guard_raises_circuit_open_error_when_open():
     assert cb.state == CircuitState.OPEN
 
     with patch.object(time, "monotonic", return_value=base + 1.0), pytest.raises(
-        CircuitOpenError, match="test-service"
+        CircuitOpenError, match="test-service",
     ):
         async with cb.guard():
             pass  # pragma: no cover — should not reach here
@@ -252,7 +252,7 @@ async def test_guard_records_failure_on_exception():
 
     base = 1000.0
     with patch.object(time, "monotonic", return_value=base), pytest.raises(
-        ValueError, match="boom"
+        ValueError, match="boom",
     ):
         async with cb.guard():
             raise ValueError("boom")
@@ -261,7 +261,7 @@ async def test_guard_records_failure_on_exception():
     assert cb.state == CircuitState.CLOSED
 
     with patch.object(time, "monotonic", return_value=base + 1.0), pytest.raises(
-        ValueError, match="boom"
+        ValueError, match="boom",
     ):
         async with cb.guard():
             raise ValueError("boom")

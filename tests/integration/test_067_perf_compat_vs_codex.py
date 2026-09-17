@@ -26,5 +26,5 @@ def test_first_token_latency_compat_within_10pct_of_codex():
     pytest.skip(
         "Perf benchmark is operator-gated to avoid unsolicited API spend; "
         "run manually with OPENAI_API_KEY=... pytest -s once the cost is "
-        "approved. NFR-001 target: compat first-token within 10% of codex."
+        "approved. NFR-001 target: compat first-token within 10% of codex.",
     )

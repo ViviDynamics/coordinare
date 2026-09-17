@@ -240,13 +240,10 @@ def _parse_diff(diff: str) -> list[_FileDiff]:
                     current.path = path
             continue
 
-        if raw.startswith("@@") or raw.startswith("\\"):
+        if raw.startswith(("@@", "\\")):
             continue
-        if raw.startswith("index ") or raw.startswith("new file") or raw.startswith(
-            "deleted file"
-        ) or raw.startswith("old mode") or raw.startswith("new mode") or raw.startswith(
-            "rename "
-        ) or raw.startswith("similarity ") or raw.startswith("copy "):
+        if raw.startswith(("index ", "new file", "deleted file", "old mode", "new mode",
+                           "rename ", "similarity ", "copy ")):
             continue
 
         if current is None:
@@ -291,7 +288,7 @@ def _analyze_test_file(fd: _FileDiff) -> list[str]:
     if removed_asserts > added_asserts:
         reasons.append(
             f"{fd.path}: removed assertion(s) "
-            f"({removed_asserts} removed vs {added_asserts} added)"
+            f"({removed_asserts} removed vs {added_asserts} added)",
         )
 
     # (c) loosened comparison / widened tolerance: a strict assertion replaced
@@ -307,7 +304,7 @@ def _analyze_test_file(fd: _FileDiff) -> list[str]:
         if removed_strict and added_loose:
             reasons.append(
                 f"{fd.path}: loosened an assertion comparison/tolerance "
-                "(strict check replaced by a looser one)"
+                "(strict check replaced by a looser one)",
             )
 
     # (d) assertion swallowed by a try/except or made conditional.
@@ -317,13 +314,13 @@ def _analyze_test_file(fd: _FileDiff) -> list[str]:
     if added_try and added_except and (added_swallow or added_asserts):
         reasons.append(
             f"{fd.path}: wrapped assertion in a try/except that swallows the "
-            "AssertionError exception (failure no longer propagates)"
+            "AssertionError exception (failure no longer propagates)",
         )
     added_conditional = any(_CONDITIONAL_RE.match(ln) for ln in added)
     if added_conditional and added_asserts and removed_asserts:
         reasons.append(
             f"{fd.path}: made an assertion conditional "
-            "(it may now be skipped at runtime)"
+            "(it may now be skipped at runtime)",
         )
 
     # (e) a real requirement mocked away: a mock introduced while a substantive
@@ -335,14 +332,14 @@ def _analyze_test_file(fd: _FileDiff) -> list[str]:
     if added_mock and removed_non_mock and not any("mock" in r.lower() for r in reasons):
         reasons.append(
             f"{fd.path}: replaced a real requirement with a mock "
-            "(the behaviour is no longer exercised)"
+            "(the behaviour is no longer exercised)",
         )
 
     # (f) removed setUp / tearDown / fixture.
     if any(_FIXTURE_RE.search(ln) for ln in removed):
         reasons.append(
             f"{fd.path}: removed a setUp/tearDown/fixture "
-            "(test preconditions no longer established)"
+            "(test preconditions no longer established)",
         )
 
     # Conservative catch-all: a test file with substantive removed lines that no
@@ -351,7 +348,7 @@ def _analyze_test_file(fd: _FileDiff) -> list[str]:
     if removed_sub and not reasons:
         reasons.append(
             f"{fd.path}: existing test code was modified in a way the guard "
-            "cannot confidently clear (conservative reject)"
+            "cannot confidently clear (conservative reject)",
         )
 
     return reasons

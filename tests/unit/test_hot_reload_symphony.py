@@ -95,7 +95,7 @@ symphonies:
     github_project_number: 2
   - name: "mobile"
     github_project_number: 3
-"""
+""",
         )
 
         with patch(
@@ -129,7 +129,7 @@ symphonies:
     github_project_number: 1
   - name: "web"
     github_project_number: 2
-"""
+""",
         )
 
         with patch(
@@ -165,7 +165,7 @@ symphonies:
     github_project_number: 1
     overrides:
       poll_interval_seconds: 60
-"""
+""",
         )
 
         with patch(
@@ -213,7 +213,7 @@ class TestHotReloadStateManagement:
             "api": SymphonyRuntimeState(name="api", cycle_count=5, last_poll_at=None),
             "web": SymphonyRuntimeState(name="web", cycle_count=3, last_poll_at=None),
             "mobile": SymphonyRuntimeState(
-                name="mobile", cycle_count=1, last_poll_at=None
+                name="mobile", cycle_count=1, last_poll_at=None,
             ),
         }
 
@@ -257,7 +257,7 @@ human_reviewers:
 symphonies:
   - name: "api"
     github_project_number: 1
-"""
+""",
         )
 
         with patch(
@@ -279,7 +279,7 @@ github_org: "acme"
 symphonies:
   - name: "api"
     github_project_number: 1
-"""
+""",
         )
 
         with patch(
@@ -306,7 +306,7 @@ symphonies:
     github_project_number: 1
   - name: "api"
     github_project_number: 2
-"""
+""",
         )
 
         with patch(
@@ -357,7 +357,7 @@ class TestHotReloadLegacyToMultiSymphony:
         assert len(new_config.symphonies) == 2
 
     def test_reload_multi_symphony_to_legacy_via_wrapping(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         """Hot-reload from multi-symphony back to legacy (via wrapping)."""
         # Start with multi-symphony

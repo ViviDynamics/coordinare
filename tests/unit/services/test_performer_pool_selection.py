@@ -72,19 +72,19 @@ def test_selection_deterministic_by_registration_order(
     state1 = pool._registrations["perf-1"]
     state1.availability = "idle"
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git", "node"]
+        backends=["claude_code"], tool_flags=["git", "node"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.capabilities = PerformerCapabilities(
-        backends=["codex"], tool_flags=["git"]
+        backends=["codex"], tool_flags=["git"],
     )
 
     state3 = pool._registrations["perf-3"]
     state3.availability = "idle"
     state3.capabilities = PerformerCapabilities(
-        backends=["claude_code", "codex"], tool_flags=["git"]
+        backends=["claude_code", "codex"], tool_flags=["git"],
     )
 
     # Select for role needing claude_code + [git] (no tool restrictions in this test)
@@ -107,13 +107,13 @@ def test_selection_skips_ineligible_candidates(
     state1 = pool._registrations["perf-1"]
     state1.availability = "idle"
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git", "node"]
+        backends=["claude_code"], tool_flags=["git", "node"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.capabilities = PerformerCapabilities(
-        backends=["codex"], tool_flags=["git"]
+        backends=["codex"], tool_flags=["git"],
     )
 
     # Select for codex + [git, node]
@@ -137,13 +137,13 @@ def test_selection_returns_first_idle_candidate(
     state1 = pool._registrations["perf-1"]
     state1.availability = "busy"  # Not available
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     candidates = pool.select_for(role="implementing", backend="claude_code", required_flags=set())
@@ -166,14 +166,14 @@ def test_selection_skips_excluded_candidates(
     state1.availability = "idle"
     state1.excluded_until_recovery = True
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.excluded_until_recovery = False
     state2.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     candidates = pool.select_for(role="implementing", backend="claude_code", required_flags=set())
@@ -195,13 +195,13 @@ def test_selection_ignores_unreachable_candidates(
     state1 = pool._registrations["perf-1"]
     state1.availability = "unreachable"
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     candidates = pool.select_for(role="implementing", backend="claude_code", required_flags=set())
@@ -229,7 +229,7 @@ def test_selection_requires_all_flags(
     state = pool._registrations["perf-1"]
     state.availability = "idle"
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git", "node"]
+        backends=["claude_code"], tool_flags=["git", "node"],
     )
 
     # Require git + node + python
@@ -264,7 +264,7 @@ def test_selection_empty_required_flags(
     state = pool._registrations["perf-1"]
     state.availability = "idle"
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git", "node"]
+        backends=["claude_code"], tool_flags=["git", "node"],
     )
 
     candidates = pool.select_for(

@@ -39,13 +39,13 @@ class TestPersistentMode:
     def test_persistent_requires_endpoint(self) -> None:
         with pytest.raises(ValidationError, match="persistent performers require endpoint"):
             PerformerEndpointConfig(
-                **_base(mode="persistent", image="performer:full")
+                **_base(mode="persistent", image="performer:full"),
             )
 
     def test_persistent_requires_image(self) -> None:
         with pytest.raises(ValidationError, match="persistent performers require image"):
             PerformerEndpointConfig(
-                **_base(mode="persistent", endpoint="http://localhost:8080")
+                **_base(mode="persistent", endpoint="http://localhost:8080"),
             )
 
     def test_persistent_valid(self) -> None:
@@ -54,7 +54,7 @@ class TestPersistentMode:
                 mode="persistent",
                 image="performer:full",
                 endpoint="http://localhost:8080",
-            )
+            ),
         )
         assert cfg.mode == "persistent"
         assert str(cfg.endpoint).startswith("http://localhost:8080")
@@ -67,7 +67,7 @@ class TestEphemeralMode:
 
     def test_ephemeral_valid_without_endpoint(self) -> None:
         cfg = PerformerEndpointConfig(
-            **_base(mode="ephemeral", image="performer:slim-claude")
+            **_base(mode="ephemeral", image="performer:slim-claude"),
         )
         assert cfg.mode == "ephemeral"
         assert cfg.endpoint is None
@@ -101,10 +101,10 @@ class TestDetectDuplicateEndpoints:
     def test_no_duplicates_returns_empty(self) -> None:
         configs = [
             PerformerEndpointConfig(
-                **_base(id="p1", mode="persistent", image="i", endpoint="http://a:8080")
+                **_base(id="p1", mode="persistent", image="i", endpoint="http://a:8080"),
             ),
             PerformerEndpointConfig(
-                **_base(id="p2", mode="persistent", image="i", endpoint="http://b:8080")
+                **_base(id="p2", mode="persistent", image="i", endpoint="http://b:8080"),
             ),
         ]
         assert detect_duplicate_endpoints(configs) == []
@@ -112,10 +112,10 @@ class TestDetectDuplicateEndpoints:
     def test_duplicate_endpoints_detected(self) -> None:
         configs = [
             PerformerEndpointConfig(
-                **_base(id="p1", mode="persistent", image="i", endpoint="http://a:8080")
+                **_base(id="p1", mode="persistent", image="i", endpoint="http://a:8080"),
             ),
             PerformerEndpointConfig(
-                **_base(id="p2", mode="persistent", image="i", endpoint="http://a:8080")
+                **_base(id="p2", mode="persistent", image="i", endpoint="http://a:8080"),
             ),
         ]
         dups = detect_duplicate_endpoints(configs)

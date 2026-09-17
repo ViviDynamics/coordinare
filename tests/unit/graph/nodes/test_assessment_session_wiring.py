@@ -74,7 +74,7 @@ def test_daemon_save_and_restore_preserves_assessment() -> None:
             "card_id": "c1",
             "performer_stage": "architecting",
             "assessment": _ASSESSMENT,
-        }
+        },
     }
     out = _persist_active_sessions(live)
     persisted_sess = out["c1"]
@@ -86,7 +86,7 @@ def test_daemon_save_and_restore_preserves_assessment() -> None:
             snapshot_at="2026-09-06T12:00:00+00:00",
             phase="idle",
             active_sessions=out,
-        ).model_dump_json()
+        ).model_dump_json(),
     )
     restored_sess = snap.active_sessions["c1"]
     assert restored_sess.assessment == _ASSESSMENT

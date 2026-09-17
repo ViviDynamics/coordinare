@@ -17,7 +17,7 @@ def test_schema_version_bumped_to_13() -> None:
 def test_old_snapshot_loads_wiki_fields_with_safe_defaults() -> None:
     # A v12-shaped snapshot (no wiki fields) must load with defaults — no migration.
     snap = EnvCacheStateSnapshot.model_validate(
-        {"symphony_name": "s", "sanitised_name": "s", "cache_dir": "/tmp/c"}
+        {"symphony_name": "s", "sanitised_name": "s", "cache_dir": "/tmp/c"},
     )
     assert snap.wiki_initialized is False
     assert snap.wiki_attempts == 0

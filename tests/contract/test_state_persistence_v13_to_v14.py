@@ -56,7 +56,7 @@ def test_v13_snapshot_loads_into_v14_with_defaults() -> None:
                 "sanitised_name": "sym",
                 "cache_dir": "/tmp/c",
                 "wiki_initialized": True,
-            }
+            },
         },
     }
     snap = WorkflowSnapshot.model_validate(v13_shape)
@@ -91,7 +91,7 @@ def test_corrupt_stage_verdict_entry_dropped_not_fatal() -> None:
                 "qa": {"head_sha": "", "verdict": "qa_passed", "recorded_at": "t"},
                 "security": "not-a-dict",
             },
-        }
+        },
     )
     assert set(sess.stage_verdicts.keys()) == {"reviewing"}
     assert sess.stage_verdicts["reviewing"].head_sha == "abc123"

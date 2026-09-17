@@ -71,7 +71,10 @@ PYTEST=(env -u COORDINARE_INFERENCE_MAX_TOKENS -u HERMES_CONTEXT_WINDOW
         uv run --no-sync pytest)
 
 run "Lint (ruff)" \
-  uv run --no-sync ruff check src tests
+  uv run --no-sync ruff check src tests agent/performer/src
+
+run "Ruff baseline (432 ratchet)" \
+  uv run --no-sync python scripts/ruff_baseline.py
 
 run "Coordinare tests" \
   "${PYTEST[@]}" tests/ -q

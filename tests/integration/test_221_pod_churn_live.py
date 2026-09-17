@@ -36,7 +36,7 @@ def _cluster_available() -> bool:
         return False
     return (
         subprocess.run(
-            ["kubectl", "get", "nodes"], capture_output=True, text=True, timeout=15
+            ["kubectl", "get", "nodes"], capture_output=True, text=True, timeout=15,
         ).returncode
         == 0
     )
@@ -108,7 +108,7 @@ def test_many_distinct_performers_run_and_stop_concurrently(runtime) -> None:
         assert len({s.handle for s in started}) == len(ids)
         assert all(s.endpoint.startswith("http://") for s in started)
         await asyncio.gather(
-            *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True))
+            *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True)),
         )
 
     try:
@@ -165,7 +165,7 @@ def test_a_performer_recovers_from_a_failed_start(runtime) -> None:
     async def scenario():
         with pytest.raises(performer_lifecycle.LifecycleError):
             await runtime.start_ephemeral(
-                _config(performer_id, image="example.invalid/nope:0", readiness_timeout_s=25)
+                _config(performer_id, image="example.invalid/nope:0", readiness_timeout_s=25),
             )
         # The image problem is resolved; the same performer must start.
         started = await runtime.start_ephemeral(_config(performer_id))

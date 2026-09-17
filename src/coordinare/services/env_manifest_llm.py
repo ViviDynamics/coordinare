@@ -113,5 +113,5 @@ async def enrich_from_readme(
         added=[i.name for i in new_items],
     )
     return manifest.model_copy(
-        update={"items": [*manifest.items, *new_items], "llm_derived": True}
+        update={"items": [*manifest.items, *new_items], "llm_derived": True},
     )

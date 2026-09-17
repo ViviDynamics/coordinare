@@ -59,7 +59,7 @@ def test_a_workflow_file_dropped_into_a_clone_is_not_loadable(tmp_path, monkeypa
         "class EvilWorkflow:\n"
         "    name = 'evil'\n"
         "    async def run(self, stand, score, toolkit):\n"
-        "        raise AssertionError('untrusted workflow executed')\n"
+        "        raise AssertionError('untrusted workflow executed')\n",
     )
     # Even with the clone on sys.path, the name must not resolve.
     monkeypatch.syspath_prepend(str(clone))

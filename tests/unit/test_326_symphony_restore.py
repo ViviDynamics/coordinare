@@ -97,8 +97,8 @@ async def test_daemon_start_runs_real_board_graph_with_unfocused_history(monkeyp
                              sleep_func=AsyncMock())
     runtime = SymphonyRuntimeState(name='website')
     board = {'snapshot': {'TODO': list(saved_sessions())},
-             'titles': {cid: 'Implement feature' for cid in saved_sessions()},
-             'descriptions': {cid: 'Deliver feature' for cid in saved_sessions()}}
+             'titles': dict.fromkeys(saved_sessions(), 'Implement feature'),
+             'descriptions': dict.fromkeys(saved_sessions(), 'Deliver feature')}
     github = SimpleNamespace(project_id='project', poll_board=AsyncMock(return_value=board))
     daemon._state.update(symphony_states={'website': runtime},
                          symphony_configs={'website': SimpleNamespace(enabled=True)},

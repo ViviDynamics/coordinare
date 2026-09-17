@@ -67,7 +67,7 @@ def _make_mock_metrics() -> MagicMock:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-08-27T00:00:00+00:00"
+        "started_at": "2026-08-27T00:00:00+00:00",
     }
     return metrics
 
@@ -289,7 +289,7 @@ def test_row5_foreign_origin_is_rejected_on_mutating_requests(method: str) -> No
 def test_row6_local_origin_and_host_is_allowed(method: str) -> None:
     """Row 6 — the dashboard's own requests must keep working."""
     verdict = _permitted().check(
-        method, host="127.0.0.1:8090", origin=f"http://127.0.0.1:{DASHBOARD_PORT}"
+        method, host="127.0.0.1:8090", origin=f"http://127.0.0.1:{DASHBOARD_PORT}",
     )
     assert verdict.allowed
     assert verdict.rejected_header is None
@@ -362,7 +362,7 @@ def test_read_route_rejects_a_foreign_host_through_the_app(client: TestClient) -
 def test_rejection_does_not_echo_the_offending_value_unescaped(client: TestClient) -> None:
     """FR-016 — explain the failure without reflecting attacker content."""
     response = client.post(
-        "/api/force-poll", headers={"Origin": "https://evil.example/<script>alert(1)</script>"}
+        "/api/force-poll", headers={"Origin": "https://evil.example/<script>alert(1)</script>"},
     )
     assert response.status_code == 403
     assert "<script>" not in response.text
@@ -450,7 +450,7 @@ def test_webhook_path_is_exempt_because_it_authenticates_itself() -> None:
     # And the exemption does not widen to neighbouring paths.
     assert (
         exempt_client.post(
-            "/api/force-poll", headers={"Origin": "https://evil.example"}
+            "/api/force-poll", headers={"Origin": "https://evil.example"},
         ).status_code
         == 403
     )
@@ -572,7 +572,7 @@ def test_threat_model_has_an_honest_prompt_injection_section() -> None:
     """FR-003 — mitigations AND residual risk, not a list of defences."""
     text = _read(THREAT_MODEL)
     match = re.search(
-        r"^#+\s*Prompt injection.*?(?=^#+\s|\Z)", text, re.MULTILINE | re.DOTALL | re.I
+        r"^#+\s*Prompt injection.*?(?=^#+\s|\Z)", text, re.MULTILINE | re.DOTALL | re.IGNORECASE,
     )
     assert match, "threat model has no prompt-injection section"
     body = match.group(0).lower()
@@ -875,7 +875,7 @@ def test_exposed_bind_warning_explains_the_guard_consequence() -> None:
     assert not permitted.is_host_allowed("192.168.1.50:8090")
     # ...and the escape hatch does work, once they know it exists.
     assert build_permitted("0.0.0.0", 8090, trusted_hosts=["192.168.1.50"]).is_host_allowed(
-        "192.168.1.50:8090"
+        "192.168.1.50:8090",
     )
 
     captured: list[dict] = []
@@ -989,6 +989,6 @@ class TestBindAllIsNeverAPermittedHost:
         from coordinare.localhost_guard import build_permitted
 
         permitted = build_permitted(
-            dashboard_host="0.0.0.0", dashboard_port=8090, trusted_hosts=["coordinare.ns.svc"]
+            dashboard_host="0.0.0.0", dashboard_port=8090, trusted_hosts=["coordinare.ns.svc"],
         )
         assert permitted.is_host_allowed("coordinare.ns.svc:8090")

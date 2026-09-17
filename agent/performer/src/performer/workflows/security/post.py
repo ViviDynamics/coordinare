@@ -68,7 +68,7 @@ def _baseline_section(baseline: list[SecurityFinding]) -> str:
         if used + len(line) > MAX_BASELINE_RENDER_CHARS and lines:
             lines.append(
                 f"- (+{len(baseline) - len(lines)} more pre-existing findings omitted from this report;"
-                " the full list is in the persisted record)"
+                " the full list is in the persisted record)",
             )
             break
         lines.append(line)

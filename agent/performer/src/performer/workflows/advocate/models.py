@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 IssueKind = Literal[
-    "question", "confusion", "complaint", "feature_request", "bug_report", "off_topic"
+    "question", "confusion", "complaint", "feature_request", "bug_report", "off_topic",
 ]
 
 #: The kinds an answer may be drafted for. Everything else is acknowledged,

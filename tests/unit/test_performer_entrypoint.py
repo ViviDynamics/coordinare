@@ -26,7 +26,7 @@ def _make_stubs(tmp_path: Path) -> tuple[Path, Path]:
     for name in ("rtk", "npm", "curl", "python"):
         stub = bindir / name
         stub.write_text(
-            f'#!/bin/sh\necho "{name} $*" >> "{logfile}"\nexit 0\n'
+            f'#!/bin/sh\necho "{name} $*" >> "{logfile}"\nexit 0\n',
         )
         stub.chmod(0o755)
     return bindir, logfile
@@ -52,7 +52,7 @@ def _read_log(logfile: Path) -> str:
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_skips_rtk_when_disabled(tmp_path):
     """Default (RTK_ENABLED unset) MUST NOT call rtk."""
@@ -65,7 +65,7 @@ def test_entrypoint_skips_rtk_when_disabled(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_skips_rtk_init_for_codex_with_info_log(tmp_path):
     """Codex has no rtk auto-hook upstream; we log INFO and skip init."""
@@ -78,7 +78,7 @@ def test_entrypoint_skips_rtk_init_for_codex_with_info_log(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_runs_rtk_init_for_claude(tmp_path):
     bindir, logfile = _make_stubs(tmp_path)
@@ -89,7 +89,7 @@ def test_entrypoint_runs_rtk_init_for_claude(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_creates_claude_dir_before_rtk_init(tmp_path):
     """rtk init -g requires $HOME/.claude to pre-exist; entrypoint must mkdir."""
@@ -103,7 +103,7 @@ def test_entrypoint_creates_claude_dir_before_rtk_init(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_warns_and_skips_rtk_for_unsupported_backend(tmp_path):
     """Unsupported backends with RTK_ENABLED=1 warn but don't call rtk."""
@@ -116,7 +116,7 @@ def test_entrypoint_warns_and_skips_rtk_for_unsupported_backend(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_warns_when_rtk_enabled_without_backend(tmp_path):
     bindir, logfile = _make_stubs(tmp_path)
@@ -128,7 +128,7 @@ def test_entrypoint_warns_when_rtk_enabled_without_backend(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_rtk_failure_is_fatal_when_enabled(tmp_path):
     """If rtk init exits non-zero with RTK_ENABLED=1, entrypoint MUST fail.
@@ -139,7 +139,7 @@ def test_entrypoint_rtk_failure_is_fatal_when_enabled(tmp_path):
     bindir, logfile = _make_stubs(tmp_path)
     # Replace rtk stub with one that fails.
     (bindir / "rtk").write_text(
-        f'#!/bin/sh\necho "rtk $*" >> "{logfile}"\nexit 1\n'
+        f'#!/bin/sh\necho "rtk $*" >> "{logfile}"\nexit 1\n',
     )
     (bindir / "rtk").chmod(0o755)
 
@@ -163,7 +163,7 @@ def _make_egress_stubs(tmp_path: Path) -> tuple[Path, Path]:
     for tool in ("iptables", "ip6tables"):
         stub = bindir / tool
         stub.write_text(
-            f'#!/bin/sh\necho "{tool} $*" >> "{logfile}"\nexit 0\n'
+            f'#!/bin/sh\necho "{tool} $*" >> "{logfile}"\nexit 0\n',
         )
         stub.chmod(0o755)
     getent = bindir / "getent"
@@ -180,14 +180,14 @@ case "$db" in
   ahostsv6) echo "2606:50c0:8000::153    STREAM $host" ;;
 esac
 exit 0
-"""
+""",
     )
     getent.chmod(0o755)
     return bindir, logfile
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_skipped_when_unset(tmp_path):
     """Default (PERFORMER_EGRESS_ALLOWLIST unset) MUST NOT call iptables."""
@@ -202,7 +202,7 @@ def test_entrypoint_egress_skipped_when_unset(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_applies_rules_for_each_host(tmp_path):
     """Allowlist resolves each host and adds v4+v6 ACCEPT rules, then sets DROP."""
@@ -232,7 +232,7 @@ def test_entrypoint_egress_applies_rules_for_each_host(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_warns_on_unresolvable_host_and_continues(tmp_path):
     """Unresolvable hosts log WARNING but do not abort the container."""
@@ -253,7 +253,7 @@ def test_entrypoint_egress_warns_on_unresolvable_host_and_continues(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_fails_without_iptables(tmp_path):
     """PERFORMER_EGRESS_ALLOWLIST without iptables on PATH MUST refuse to start."""
@@ -268,7 +268,7 @@ def test_entrypoint_egress_fails_without_iptables(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_warns_when_ip6tables_absent_but_continues(tmp_path):
     """Missing ip6tables warns and proceeds with v4-only enforcement."""
@@ -287,7 +287,7 @@ def test_entrypoint_egress_warns_when_ip6tables_absent_but_continues(tmp_path):
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_fails_when_iptables_unusable(tmp_path):
     """iptables present but `-L OUTPUT -n` fails (e.g. no NET_ADMIN) → refuse."""
@@ -301,7 +301,7 @@ case "$1" in
   -L) exit 3 ;;
 esac
 exit 0
-"""
+""",
     )
     (bindir / "iptables").chmod(0o755)
     rc, _out, err = _run(
@@ -318,7 +318,7 @@ exit 0
 
 
 @pytest.mark.skipif(
-    not ENTRYPOINT.exists(), reason="entrypoint.sh not present"
+    not ENTRYPOINT.exists(), reason="entrypoint.sh not present",
 )
 def test_entrypoint_egress_sets_drop_policy_after_accept_rules(tmp_path):
     """DROP policy MUST be the last rule operation — otherwise we'd lock out

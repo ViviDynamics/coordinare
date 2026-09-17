@@ -12,7 +12,6 @@ from performer.workflows.assessor.models import Assessment, GateRecord
 
 class AssessorHadCommandRunner(Exception):
     """The assessor workflow is write-free; toolkit must not have write capabilities."""
-    pass
 
 
 def build_report(assessment: Assessment, record: GateRecord, toolkit) -> dict:
@@ -43,7 +42,7 @@ def build_report(assessment: Assessment, record: GateRecord, toolkit) -> dict:
         raise AssessorHadCommandRunner(
             f"Assessor workflow must be write-free. Command runner present: "
             f"{has_command_runner}, screenshot_capture present: {has_screenshot_capture}, "
-            f"dom_reader present: {has_dom_reader}, commands run: {commands_run}"
+            f"dom_reader present: {has_dom_reader}, commands run: {commands_run}",
         )
 
     return {

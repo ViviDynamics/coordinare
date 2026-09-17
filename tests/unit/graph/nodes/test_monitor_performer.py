@@ -1667,7 +1667,7 @@ def _seed_active_session(state: dict, card_id: str) -> None:
             "agent_dispatch": {"session_id": "s1"},
             "performer_stage": "implementing",
             "phase": "monitoring_performer",
-        }
+        },
     }
     state["current_card"] = card
 
@@ -2363,10 +2363,10 @@ async def test_monitor_performer_uses_slot_manager_service() -> None:
     specific_service = MagicMock()
     primary_service = MagicMock()
     specific_service.check_status = AsyncMock(
-        return_value={"status": "working", "session_id": "sess_A"}
+        return_value={"status": "working", "session_id": "sess_A"},
     )
     primary_service.check_status = AsyncMock(
-        return_value={"status": "working", "session_id": "sess_A"}
+        return_value={"status": "working", "session_id": "sess_A"},
     )
 
     sm = SlotManager()
@@ -2466,7 +2466,7 @@ async def test_qa_freshness_failure_routes_to_implementer() -> None:
             "file": None, "line": None,
             "message": "Branch is behind latest main — rebase required before QA can pass",
             "type": "freshness",
-        }
+        },
     ]
     report = {
         "criteria_checked": 3,
@@ -2502,7 +2502,7 @@ async def test_qa_freshness_indeterminate_routes_to_implementer() -> None:
             "file": None, "line": None,
             "message": "Branch freshness could not be verified — environment/git failure",
             "type": "freshness_indeterminate",
-        }
+        },
     ]
     svc = _Performer(response={"status": "qa_failed", "failures": failures})
     state["performer_services"] = {"qa": svc}
@@ -2574,13 +2574,13 @@ def _rollup_payload(
                                     "state": "PENDING",
                                     "contexts": {"nodes": contexts or []},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": bpr_nodes or []},
-        }
+        },
     }
 
 
@@ -2940,7 +2940,7 @@ class _GitHubWithRollupAndLogs(_GitHubWithRollup):
         self.log_calls: list[tuple[str, str, int, int]] = []
 
     async def fetch_failed_job_log(
-        self, owner: str, repo: str, job_id: int, max_chars: int = 6000
+        self, owner: str, repo: str, job_id: int, max_chars: int = 6000,
     ) -> str:
         self.log_calls.append((owner, repo, job_id, max_chars))
         if self._raise_on_log:
@@ -2966,7 +2966,7 @@ async def test_071_bounce_inlines_log_tail_when_fetch_returns_content() -> None:
         bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
     )
     gh = _GitHubWithRollupAndLogs(
-        payload, log_text="FAIL: assert x == y\nE   AssertionError"
+        payload, log_text="FAIL: assert x == y\nE   AssertionError",
     )
     state = _gate_state(gh)
     state["notification_service"] = FakeNotificationService()
@@ -3080,7 +3080,7 @@ async def test_stall_watchdog_resets_on_progress() -> None:
     """A working turn that produced new event TEXT this poll is NOT tripped; the
     progress timestamp is refreshed."""
     service = _Performer(
-        {"status": "working", "events": [{"type": "tool_call", "text": "ran pytest"}]}
+        {"status": "working", "events": [{"type": "tool_call", "text": "ran pytest"}]},
     )
     state = _stalled_state(service, stall=600, retries=2)  # last_progress far in past
     with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
@@ -3129,7 +3129,7 @@ async def test_stall_watchdog_trips_on_repeated_identical_output() -> None:
     done = {"type": "progress", "text": "## Task Complete: implemented the thing"}
     events = [done] * 89  # the same message, re-emitted (list keeps growing)
     service = _Performer(
-        {"status": "working", "events": events, "metrics": {"tokens_total": 250_000}}
+        {"status": "working", "events": events, "metrics": {"tokens_total": 250_000}},
     )
     state = _stalled_state(service, stall=600, retries=2)
     # Prior poll saw a SHORTER list and FEWER tokens, but the same trailing text.

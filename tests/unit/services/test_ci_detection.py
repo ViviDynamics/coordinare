@@ -62,7 +62,7 @@ class TestPythonDetection:
     def test_pyproject_with_ruff(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "foo"\n[tool.ruff]\nline-length = 88\n'
-            '[project.optional-dependencies]\ndev = ["pytest", "ruff"]\n'
+            '[project.optional-dependencies]\ndev = ["pytest", "ruff"]\n',
         )
         result = detect(tmp_path)
         assert result.stack == "python"
@@ -72,7 +72,7 @@ class TestPythonDetection:
     def test_pyproject_with_flake8(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text(
             '[project]\nname = "foo"\n'
-            '[project.optional-dependencies]\ndev = ["pytest", "flake8"]\n'
+            '[project.optional-dependencies]\ndev = ["pytest", "flake8"]\n',
         )
         result = detect(tmp_path)
         assert result.stack == "python"

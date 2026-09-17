@@ -49,7 +49,7 @@ def _extract_feed_js() -> str:
     end = _DASHBOARD_HTML.index(_FEED_END)
     feed_js = _DASHBOARD_HTML[start:end]
 
-    esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.S)
+    esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
     if esc is None:
         raise AssertionError("the shared esc() helper is no longer in _DASHBOARD_HTML")
     return esc.group(0) + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
@@ -58,7 +58,7 @@ def _extract_feed_js() -> str:
 def test_feed_js_slice_is_complete() -> None:
     """A drifted marker must fail loudly, not quietly shrink the slice."""
     feed_js = _extract_feed_js()
-    found = set(re.findall(r"^function (\w+)", feed_js, re.M))
+    found = set(re.findall(r"^function (\w+)", feed_js, re.MULTILINE))
     assert found >= _EXPECTED_FUNCTIONS, f"missing from the slice: {sorted(_EXPECTED_FUNCTIONS - found)}"
     assert "var banner" not in feed_js, "slice overran into the EventSource block"
 
@@ -85,7 +85,7 @@ def test_activity_feed_client_js(tmp_path: Path) -> None:
     report = result.stdout + result.stderr
     assert result.returncode == 0, f"client-side JS checks failed:\n{report}"
 
-    summary = re.search(r"^SUMMARY (\d+) (\d+)$", result.stdout, re.M)
+    summary = re.search(r"^SUMMARY (\d+) (\d+)$", result.stdout, re.MULTILINE)
     assert summary is not None, f"no summary line — the harness did not finish:\n{report}"
     passed, failed = int(summary.group(1)), int(summary.group(2))
     assert failed == 0, report

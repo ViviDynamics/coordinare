@@ -301,7 +301,7 @@ def _make_assignee_board(assignees_by_item: dict) -> object:
             return {
                 "snapshot": {"TODO": list(assignees_by_item.keys()), "IN_PROGRESS": [], "IN_REVIEW": []},
                 "titles": {k: f"Card {k}" for k in assignees_by_item},
-                "descriptions": {k: "" for k in assignees_by_item},
+                "descriptions": dict.fromkeys(assignees_by_item, ""),
                 "issue_numbers": {k: i + 1 for i, k in enumerate(assignees_by_item)},
                 "item_assignees": assignees_by_item,
             }
@@ -385,8 +385,8 @@ class _GitHubBlockedWithNewComment:
             "comments": {
                 "nodes": [
                     {"body": "Here is the answer", "createdAt": "2026-02-25T12:00:00Z"},
-                ]
-            }
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -450,7 +450,7 @@ async def test_check_board_blocked_card_uses_session_watermark_when_top_level_is
             "phase": "blocked",
             "performer_stage": "implementing",
             "last_blocked_notified_at": datetime(2026, 2, 25, 10, 0, tzinfo=UTC),
-        }
+        },
     }
     state["open_questions"] = ["What routes need breadcrumbs?"]
 
@@ -537,8 +537,8 @@ class _GitHubBlockedOnlyBotComments:
                         "createdAt": "2026-04-13T20:01:36Z",
                         "author": {"login": "vivi-coordinare[bot]"},
                     },
-                ]
-            }
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -603,8 +603,8 @@ class _GitHubBlockedMixedAuthors:
                         "createdAt": "2026-04-13T20:05:00Z",
                         "author": {"login": "alice"},
                     },
-                ]
-            }
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -658,9 +658,9 @@ class _GitHubBlockedOnlyOldHumanComment:
                         "body": "Old answer",
                         "createdAt": "2026-03-01T12:00:00Z",
                         "author": {"login": "alice"},
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -829,7 +829,7 @@ async def test_check_board_multicard_per_session_in_review_preserves_monitoring_
                 "status": "IN_REVIEW",
             },
             "phase": "monitoring_pr",
-        }
+        },
     }
     state["current_card"] = {
         "id": "ITEM_R",
@@ -1031,7 +1031,7 @@ async def test_check_board_multicard_per_session_in_progress_preserves_monitorin
                 "status": "IN_PROGRESS",
             },
             "phase": "monitoring_agent",
-        }
+        },
     }
     state["current_card"] = {
         "id": "ITEM_P1",
@@ -1157,7 +1157,7 @@ async def test_check_board_multicard_per_session_monitoring_performer_falls_thro
         "ITEM_P1": {
             "current_card": dict(state["current_card"]),
             "phase": "monitoring_performer",
-        }
+        },
     }
 
     result = await check_board(state)
@@ -1225,8 +1225,8 @@ class _GitHubBlockedBadComments:
                     "not a dict",
                     {"createdAt": ""},
                     {"createdAt": "invalid-date"},
-                ]
-            }
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -1515,7 +1515,7 @@ async def test_check_board_preserves_parked_system_error_session() -> None:
             "phase": "system_error",
             "system_error_count": 1,
             "agent_dispatch": {"session_id": "sess-parked"},
-        }
+        },
     }
     state["active_card_id"] = "ITEM_P"
 
@@ -1557,8 +1557,8 @@ class _GitHubBlockedOldComment:
                 "nodes": [
                     # Comment is OLDER than last_blocked_notified_at — should not trigger requeue
                     {"body": "old comment", "createdAt": "2026-02-20T08:00:00Z"},
-                ]
-            }
+                ],
+            },
         }
 
     async def move_card(self, item_id: str, status: str) -> None:
@@ -1713,7 +1713,7 @@ class _GitHubActiveCardWithMetadata:
             "snapshot": {"TODO": [], "IN_PROGRESS": ["PVT_ACTIVE"], "IN_REVIEW": []},
             "titles": {"PVT_ACTIVE": "Refreshed Title"},
             "descriptions": {
-                "PVT_ACTIVE": "Refreshed description\n- [ ] criterion one\n- [ ] criterion two"
+                "PVT_ACTIVE": "Refreshed description\n- [ ] criterion one\n- [ ] criterion two",
             },
             "issue_numbers": {"PVT_ACTIVE": 89},
             "issue_urls": {"PVT_ACTIVE": "https://github.com/o/r/issues/89"},
@@ -2256,7 +2256,7 @@ async def test_check_board_multicard_unblock_resets_feedback_cycle_count() -> No
             "feedback_cycle_count": 4,
             "total_feedback_cycles": 7,
             "triage_blocks": 2,
-        }
+        },
     }
 
     with structlog.testing.capture_logs() as cap_logs:
@@ -2543,7 +2543,7 @@ class _GitHubEmpty:
     [_GitHubEmpty, _GitHub, _GitHubInProgressWithTodos],
 )
 async def test_check_board_preserves_i3_invariant(
-    github_factory, assert_current_card_invariant
+    github_factory, assert_current_card_invariant,
 ) -> None:
     """066 FR-010: after any check_board invocation, current_card MUST be
     the derived mirror of active_sessions[active_card_id]['current_card'],
@@ -2736,7 +2736,7 @@ async def test_unblock_reset_parity_across_n(max_n: int) -> None:
             "feedback_cycle_count": 4,
             "total_feedback_cycles": 7,
             "triage_blocks": 2,
-        }
+        },
     }
 
     with structlog.testing.capture_logs() as cap_logs:
@@ -2830,7 +2830,7 @@ async def test_check_board_per_session_in_progress_preserves_monitoring_pr() -> 
             },
             "phase": "monitoring_pr",
             "pr_url": "https://github.com/acme/repo/pull/139",
-        }
+        },
     }
     state["current_card"] = {
         "id": "ITEM_P1",

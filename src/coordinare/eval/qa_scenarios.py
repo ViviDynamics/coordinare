@@ -110,7 +110,7 @@ async def run_scenario(fixture, workdir: Path, repeats: int) -> ScenarioScore:
             score.runs.append(classify(report))
         except Exception as exc:
             score.runs.append(
-                ScenarioOutcome(verdict="error", error=f"{type(exc).__name__}: {exc}")
+                ScenarioOutcome(verdict="error", error=f"{type(exc).__name__}: {exc}"),
             )
     return score
 
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  " + score.line(fixture.must_name))
     print(
         "\nThis is a measurement, not a gate. A scenario dropping below its "
-        "recorded rate is the signal to investigate.\n"
+        "recorded rate is the signal to investigate.\n",
     )
     return 0
 

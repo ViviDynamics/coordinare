@@ -134,7 +134,7 @@ async def test_a_low_confidence_answer_escalates(tmp_path: Path) -> None:
     ],
 )
 async def test_every_preserved_branch_still_behaves_as_before(
-    tmp_path: Path, kind: str, action: str, label: str, commented: bool
+    tmp_path: Path, kind: str, action: str, label: str, commented: bool,
 ) -> None:
     gh = FakeGitHub([issue(1)])
     tk = FakeToolkit([batch(classification(classification=kind, answer=None, cited_documents=[]))])

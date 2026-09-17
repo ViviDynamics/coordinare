@@ -26,11 +26,11 @@ async def _boundary(tmp_path: Path):
     branch = fx.branch()
     apply_solution_branch(bare, branch, fx.solution_files, tmp_path / "sol")
     fake = FakeGitHubService(
-        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci"
+        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci",
     )
     seed_board(fake, [fx])
     server = FakeGitHubServer(
-        fake, bare_repo=bare, head_ref_index={branch: "PVTI_1"}, scratch=tmp_path
+        fake, bare_repo=bare, head_ref_index={branch: "PVTI_1"}, scratch=tmp_path,
     )
     return fake, server, branch
 
@@ -57,7 +57,7 @@ async def test_pulls_head_is_coordinare_branch_not_fixture_branch(tmp_path: Path
     fx = tiny_fixture()
     bare = materialize_repo([fx], tmp_path / "repos")
     fake = FakeGitHubService(
-        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci"
+        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci",
     )
     seed_board(fake, [fx])  # card PVTI_1 with title=fx.title
     # Exactly the runner's seeding expression.
@@ -136,7 +136,7 @@ async def test_review_and_issue_comments_endpoints(tmp_path: Path) -> None:
 
         # Security stage posts an advisory finding to the same endpoint (POST).
         posted = await client.post(
-            "/repos/bench-org/bench-repo/issues/1/comments", json={"body": "finding"}
+            "/repos/bench-org/bench-repo/issues/1/comments", json={"body": "finding"},
         )
         assert posted.status == 201
         assert "id" in await posted.json()
@@ -152,7 +152,7 @@ async def test_review_and_issue_comments_endpoints(tmp_path: Path) -> None:
 
         # Unknown PR number → 404, not a crash.
         missing = await client.post(
-            "/repos/bench-org/bench-repo/pulls/999/reviews", json={"event": "COMMENT"}
+            "/repos/bench-org/bench-repo/pulls/999/reviews", json={"event": "COMMENT"},
         )
         assert missing.status == 404
 

@@ -73,7 +73,7 @@ def _name_from_root_files(text: str) -> str:
     quietly swapping it for the directory name.
     """
     import re
-    m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
     if m:
         return m.group(1)
     m = re.search(r'"name"\s*:\s*"([^"]+)"', text)
@@ -310,7 +310,7 @@ def test_the_persona_offers_retire_only_for_an_existing_inventory_page():
     """Live init round: the model answered retire for pages that did not exist yet."""
     from performer.workflows.documenter.personas import render_write_persona
 
-    common = dict(path="docs/wiki/x.md", kind="reference", current_content="", say=[], evidence="", changed_hunks="", max_chars=12000)
+    common = {"path": "docs/wiki/x.md", "kind": "reference", "current_content": "", "say": [], "evidence": "", "changed_hunks": "", "max_chars": 12000}
     assert '"retire"' not in render_write_persona(**common) and "do not answer retire" in render_write_persona(**common)
     assert "does not exist yet" in render_write_persona(**common)
     existing = render_write_persona(**{**common, "current_content": "# X\n"}, allow_retire=True)
@@ -353,7 +353,7 @@ async def test_175_side_integrates_structured_findings_without_root_pointer_writ
     score = _score("", {**BRIEF, "modules": [{"path": "src/payments/ledger.py", "note": "Payment ledger"}]})
     score.documenting_side_run = True
     score.documentation_findings = {
-        "reviewing": {"role": "reviewing", "source_head": "priorhead", "content_hash": "hash", "findings": {"verdict": "approved", "findings": [{"body": "Currency amounts are integer cents"}]}}
+        "reviewing": {"role": "reviewing", "source_head": "priorhead", "content_hash": "hash", "findings": {"verdict": "approved", "findings": [{"body": "Currency amounts are integer cents"}]}},
     }
     seen = []
 
@@ -411,7 +411,7 @@ async def test_a_repository_nobody_can_characterise_holds_in_the_write_phase(tmp
     toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call,
                       command_runner=_run_command, call_limit=20)
     result = await DocumenterWorkflow(committer=local_committer).run(
-        Stand(path=repo, branch="feat/payments"), _score(diff, BRIEF), toolkit
+        Stand(path=repo, branch="feat/payments"), _score(diff, BRIEF), toolkit,
     )
     docs = result.report["docs"]
     assert docs["verdict"] == "env_blocked", "a crash where the design promises a hold"

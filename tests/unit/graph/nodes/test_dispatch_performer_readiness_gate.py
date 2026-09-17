@@ -59,7 +59,7 @@ def _readiness_state(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", CODE_RUNNING_STAGES)
 async def test_readiness_fail_withholds_dispatch(
-    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T005: readiness ``False`` ⇒ dispatch withheld + slot released, for every
     code-running stage."""
@@ -85,7 +85,7 @@ async def test_readiness_fail_withholds_dispatch(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", CODE_RUNNING_STAGES)
 async def test_readiness_pass_proceeds_with_dispatch(
-    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T006: readiness ``True`` ⇒ dispatch proceeds, for every code-running stage."""
     svc = _make_http_service(mode="ephemeral")
@@ -105,7 +105,7 @@ async def test_readiness_pass_proceeds_with_dispatch(
 
 @pytest.mark.asyncio
 async def test_readiness_none_is_degraded_passthrough(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T007: readiness ``None`` (verify.sh absent / docker error) MUST NOT block —
     proceed on the legacy last_bootstrap_succeeded path."""
@@ -127,7 +127,7 @@ async def test_readiness_none_is_degraded_passthrough(
 
 @pytest.mark.asyncio
 async def test_readiness_gate_exempts_env_bootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """env_bootstrap is the run that BUILDS the cache — it must never be gated on
     readiness (the check would always fail before the cache exists)."""
@@ -158,7 +158,7 @@ async def test_readiness_gate_exempts_env_bootstrap(
 
 @pytest.mark.asyncio
 async def test_readiness_recomputed_each_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FR-006: no readiness verdict is cached across dispatches — two dispatches
     against the same cache run the check twice."""
@@ -208,7 +208,7 @@ def _readiness_state_with_ec_service(
     if svc is None:
         svc = _make_http_service(mode="ephemeral")
     state = _readiness_state(
-        tmp_path, stage=stage, svc=svc, symphony_name=symphony_name
+        tmp_path, stage=stage, svc=svc, symphony_name=symphony_name,
     )
     env_cache_service = MagicMock()
     env_cache_service.mark_runtime_health_failed = MagicMock(return_value=None)
@@ -218,14 +218,14 @@ def _readiness_state_with_ec_service(
 
 @pytest.mark.asyncio
 async def test_readiness_fail_triggers_rebootstrap_and_holds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T017: a False readiness flags the cache for re-bootstrap (the existing
     forced-regen seam) for the current symphony AND holds the dispatch under the
     existing env_cache_not_current path (slot released, performer not invoked)."""
     svc = _make_http_service(mode="ephemeral")
     state, env_cache_service = _readiness_state_with_ec_service(
-        tmp_path, stage="qa", svc=svc
+        tmp_path, stage="qa", svc=svc,
     )
 
     fake_verify = AsyncMock(return_value=(False, "FAIL: ruby 3.3.0 not resolvable"))
@@ -240,7 +240,7 @@ async def test_readiness_fail_triggers_rebootstrap_and_holds(
     assert env_cache_service.mark_runtime_health_failed.call_count == 1
     called_args = env_cache_service.mark_runtime_health_failed.call_args
     assert called_args.args[0] == "my-project" or called_args.kwargs.get(
-        "symphony_name"
+        "symphony_name",
     ) == "my-project"
     # ...and the dispatch was held (performer never invoked).
     assert not svc.dispatch_card.called
@@ -248,7 +248,7 @@ async def test_readiness_fail_triggers_rebootstrap_and_holds(
 
 @pytest.mark.asyncio
 async def test_readiness_fail_loop_is_bounded_by_existing_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T018: the dispatch→bootstrap→dispatch loop is bounded by the EXISTING
     budget — the node introduces NO readiness-specific counter. It only routes
@@ -260,7 +260,7 @@ async def test_readiness_fail_loop_is_bounded_by_existing_budget(
     svc = _make_http_service(mode="ephemeral")
     svc.has_live_session = MagicMock(return_value=False)
     state, env_cache_service = _readiness_state_with_ec_service(
-        tmp_path, stage="qa", svc=svc
+        tmp_path, stage="qa", svc=svc,
     )
 
     fake_verify = AsyncMock(return_value=(False, "FAIL: ruby not resolvable"))
@@ -289,14 +289,14 @@ async def test_readiness_fail_loop_is_bounded_by_existing_budget(
 
 @pytest.mark.asyncio
 async def test_readiness_converges_after_rebootstrap(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T019: once a re-bootstrap makes readiness pass, the next dispatch
     proceeds normally (the gate self-heals)."""
     svc = _make_http_service(mode="ephemeral")
     svc.has_live_session = MagicMock(return_value=False)
     state, env_cache_service = _readiness_state_with_ec_service(
-        tmp_path, stage="qa", svc=svc
+        tmp_path, stage="qa", svc=svc,
     )
 
     # First dispatch fails readiness (triggers re-bootstrap + hold); the second,

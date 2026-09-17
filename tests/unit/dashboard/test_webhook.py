@@ -112,7 +112,7 @@ class TestWebhookRoute:
         body = b'{"action": "opened"}'
         resp = client.post(
             "/webhook/github", content=body,
-            headers={"X-Hub-Signature-256": "sha256=badhex"}
+            headers={"X-Hub-Signature-256": "sha256=badhex"},
         )
         assert resp.status_code == 401
 
@@ -122,7 +122,7 @@ class TestWebhookRoute:
         body = b'{"action": "opened"}'
         client.post(
             "/webhook/github", content=body,
-            headers={"X-Hub-Signature-256": "sha256=badhex"}
+            headers={"X-Hub-Signature-256": "sha256=badhex"},
         )
         assert not webhook_trigger.is_set()
 

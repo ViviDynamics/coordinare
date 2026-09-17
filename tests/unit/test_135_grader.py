@@ -117,7 +117,7 @@ class TestDeterministicTruthTable:
     def test_harness_failures_excluded_from_correctness_denominator(self) -> None:
         ok = _card()
         broken = CardOutcome(
-            card_id="PVTI_2", fixture_id="fx2", final_state="error", merge=Merge(merged=False)
+            card_id="PVTI_2", fixture_id="fx2", final_state="error", merge=Merge(merged=False),
         )
         score = score_run(_artifact(ok, broken), [_fixture(), _fixture("fx2")])
         assert score.components.correctness_rate == 1.0

@@ -34,7 +34,7 @@ def _baseline(reason: str = _QUOTA, sig: str = _SIG) -> dict[str, BaselineFailur
             conclusion="failure",
             signature=sig,
             normalized_reason=reason,
-        )
+        ),
     }
 
 
@@ -43,7 +43,7 @@ def test_env_blocked_takes_priority_over_inherited() -> None:
     baseline (would be INHERITED) but whose reason is an infra signature is
     classified env_blocked, not inherited."""
     result = classify_failure_origin(
-        _head(), _QUOTA, _baseline(), env_patterns=[]
+        _head(), _QUOTA, _baseline(), env_patterns=[],
     )
     assert result == "env_blocked"
 

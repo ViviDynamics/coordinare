@@ -59,7 +59,7 @@ def _assert_logs_redacted(cap_logs: list[dict], *, expected_source: str) -> None
 
 class TestTestEnvRedaction:
     async def test_host_path_source_logs_keys_and_source_only(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         host_file = tmp_path / "host-secrets.env"
         host_file.write_text(f"{PW_VAR}={SECRET_VALUE}\n", encoding="utf-8")
@@ -106,7 +106,7 @@ class TestTestEnvRedaction:
 
         assert loaded == {PW_VAR: SECRET_VALUE}
         _assert_logs_redacted(
-            cap_logs, expected_source=f"test_env_source:{DISCOVERED_PATH}"
+            cap_logs, expected_source=f"test_env_source:{DISCOVERED_PATH}",
         )
 
     def test_manifest_carries_path_only_never_value(self, tmp_path: Path) -> None:
@@ -126,7 +126,7 @@ class TestTestEnvRedaction:
                         databases=["app_test"],
                         password_env_var=PW_VAR,  # a NAME reference, never a value.
                     ),
-                )
+                ),
             ],
             cache_inputs=[],
             agent_version="test-092",

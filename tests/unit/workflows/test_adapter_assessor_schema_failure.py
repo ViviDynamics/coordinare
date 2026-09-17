@@ -26,9 +26,8 @@ def _stubbed_toolkit_factory(metrics, event_sink):
             # Return non-JSON on both attempts to trigger SchemaViolation
             if self.call_count == 1:
                 return ModelReply(content="This is not JSON, just prose", finish_reason="stop")
-            else:
-                # Second attempt also fails
-                return ModelReply(content="Still not JSON", finish_reason="stop")
+            # Second attempt also fails
+            return ModelReply(content="Still not JSON", finish_reason="stop")
 
     stub_model = StubModel()
 

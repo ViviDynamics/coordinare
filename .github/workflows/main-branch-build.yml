@@ -103,7 +103,10 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Run Ruff
-        run: uv run --extra dev ruff check src tests
+        run: uv run --extra dev ruff check src tests agent/performer/src
+
+      - name: Ruff baseline (432 ratchet)
+        run: uv run --extra dev python scripts/ruff_baseline.py
 
   test:
     name: Test

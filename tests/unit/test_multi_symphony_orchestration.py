@@ -49,7 +49,7 @@ class TestMultiSymphonyStateTracking:
                     name="api",
                     cycle_count=0,
                     last_poll_at=None,
-                )
+                ),
             },
             "current_symphony": "api",
             "config": _base_project_config(),

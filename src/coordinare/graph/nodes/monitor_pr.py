@@ -45,7 +45,7 @@ def _parse_submitted_at(review: dict[str, object]) -> datetime | None:
     raw = review.get("submitted_at")
     if isinstance(raw, str) and raw:
         with contextlib.suppress(ValueError, TypeError):
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw)
             # Normalise to UTC-aware: a timezone-less ISO-8601 string (some
             # non-GitHub sources) parses naive, and comparing naive vs aware
             # (``new_t > cur_t``, or ``max()`` over mixed reviews) raises
@@ -103,7 +103,7 @@ def _latest_reviews_per_author(
 
 
 def _latest_human_change_request(
-    reviews: list[dict[str, object]], human_reviewers: list[str]
+    reviews: list[dict[str, object]], human_reviewers: list[str],
 ) -> dict[str, object] | None:
     """The most recent human CHANGES_REQUESTED review across the FULL list
     (not the processed-filtered subset) — GitHub gates on it regardless of what
@@ -186,7 +186,7 @@ async def _surface_stale_change_request(
     # for the safe default threshold (>=1 later commit) "commit != head" ⇒ >=1.
     commits_behind = 1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
     result = classify_review_staleness(
-        review, head_oid, commits_behind, threads, config=StalenessConfig()
+        review, head_oid, commits_behind, threads, config=StalenessConfig(),
     )
 
     if result.classification is StalenessClass.FRESH:
@@ -266,7 +266,7 @@ async def _notify_stale_review(
                     "next_action": action,
                 },
                 dedup_key=f"stale_review:{card.get('pr_node_id')}:{review_id}:{head_oid}",
-            )
+            ),
         )
     except Exception as exc:  # notification must never crash the gate
         logger.warning("stale_review.notify_failed", card_id=card_id, error=str(exc))
@@ -364,7 +364,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         from coordinare.graph.nodes.monitor_performer import _evaluate_pr_checks_gate
 
         gate_updates, gate_stop = await _evaluate_pr_checks_gate(
-            state, card_id, pr_url
+            state, card_id, pr_url,
         )
         if gate_stop:
             is_bounce = gate_updates.get("phase") == "dispatching"
@@ -445,7 +445,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         cutoff = lifecycle_completed_at
     elif isinstance(lifecycle_completed_at, str) and lifecycle_completed_at:
         with contextlib.suppress(ValueError, TypeError):
-            cutoff = datetime.fromisoformat(lifecycle_completed_at.replace("Z", "+00:00"))
+            cutoff = datetime.fromisoformat(lifecycle_completed_at)
 
     processed_ids: set[str] = state.get("processed_review_ids") or set()
 
@@ -473,7 +473,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             submitted_raw = review.get("submitted_at", "")
             if isinstance(submitted_raw, str) and submitted_raw:
                 try:
-                    submitted_at = datetime.fromisoformat(submitted_raw.replace("Z", "+00:00"))
+                    submitted_at = datetime.fromisoformat(submitted_raw)
                     if submitted_at <= cutoff:
                         continue
                 except (ValueError, TypeError):
@@ -542,7 +542,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         )
 
         base_updates, base_stop = await _evaluate_baseline_prevention_gate(
-            state, card_id, pr_url
+            state, card_id, pr_url,
         )
         if base_stop:
             for key, value in base_updates.items():

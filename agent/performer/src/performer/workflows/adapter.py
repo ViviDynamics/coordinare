@@ -62,7 +62,7 @@ def _command_runner(workspace: "Path"):
     from performer.workspace import run_command
 
     async def _run(
-        cmd: str, cwd, timeout_s: int, *, output_budget: int = 4000, capture: str = "tail"
+        cmd: str, cwd, timeout_s: int, *, output_budget: int = 4000, capture: str = "tail",
     ) -> tuple[int, str]:
         # Split the caller's budget across the two streams so the combined
         # output never exceeds it. Concatenate-then-head-slice could otherwise
@@ -98,7 +98,7 @@ def _model_caller(score: "Score", gateway: tuple[str, str] | None = None):
         if not base:
             raise RuntimeError(
                 "LITELLM_PROXY_BASE_URL is unset; a role workflow cannot reach "
-                "the model gateway"
+                "the model gateway",
             )
         token = gateway_token.strip()
         headers = {"Content-Type": "application/json"}
@@ -125,10 +125,10 @@ def _model_caller(score: "Score", gateway: tuple[str, str] | None = None):
             body["chat_template_kwargs"] = {"enable_thinking": False}
         started = time.monotonic()
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(_MODEL_READ_TIMEOUT_S, connect=_MODEL_CONNECT_TIMEOUT_S)
+            timeout=httpx.Timeout(_MODEL_READ_TIMEOUT_S, connect=_MODEL_CONNECT_TIMEOUT_S),
         ) as client:
             resp = await client.post(
-                f"{base}/chat/completions", headers=headers, content=_json.dumps(body)
+                f"{base}/chat/completions", headers=headers, content=_json.dumps(body),
             )
             resp.raise_for_status()
             payload = resp.json()
@@ -231,7 +231,7 @@ def build_agent_turn_runner(
         turn_score = score.model_copy(
             update={
                 "persona_instructions": brief.get("persona", ""),
-            }
+            },
         )
 
         # Start the backend
@@ -576,7 +576,7 @@ class WorkflowAdapter:
             )
         )
         log.info(
-            "workflow.start", workflow=self.workflow_name, role=getattr(score, "role", None)
+            "workflow.start", workflow=self.workflow_name, role=getattr(score, "role", None),
         )
         self._task = asyncio.create_task(self._run(stand, score, toolkit))
 
@@ -735,7 +735,7 @@ class WorkflowAdapter:
                 pass
             except Exception as exc:  # noqa: BLE001
                 log.warning(
-                    "workflow.stop_failed", workflow=self.workflow_name, error=str(exc)
+                    "workflow.stop_failed", workflow=self.workflow_name, error=str(exc),
                 )
 
     # -- extras -----------------------------------------------------------

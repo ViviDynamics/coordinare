@@ -25,7 +25,7 @@ async def test_notification_pipeline_dispatches_event() -> None:
             # card_dispatched; phase "dispatching" at notify time now means the
             # dispatch was HELD and is intentionally suppressed (076 QA #150).
             "phase": "monitoring_performer",
-        }
+        },
     )
 
     await notify(state)
@@ -48,7 +48,7 @@ async def test_notification_latency_target_smoke() -> None:
             },
             "notification_service": fake,
             "phase": "monitoring_agent",
-        }
+        },
     )
 
     await notify(state)

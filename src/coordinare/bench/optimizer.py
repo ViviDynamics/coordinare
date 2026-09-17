@@ -74,7 +74,7 @@ class EvalOutcome(BaseModel):
 
 class Evaluator(Protocol):
     async def __call__(
-        self, eval_id: int, overrides: dict[str, Any], config: CoordinareConfiguration
+        self, eval_id: int, overrides: dict[str, Any], config: CoordinareConfiguration,
     ) -> EvalOutcome: ...
 
 
@@ -207,7 +207,7 @@ class OptimizerArtifact(BaseModel):
             scalar = "FAILED" if t.failed else str(t.mean_scalar)
             lines.append(
                 f"| {t.eval_id} | {t.provenance} | {scalar} | {t.best_so_far} | "
-                f"{'yes' if t.cache_hit else ''} | `{t.fingerprint}` |"
+                f"{'yes' if t.cache_hit else ''} | `{t.fingerprint}` |",
             )
         if self.notes:
             lines += ["", "## Notes", ""]
@@ -239,7 +239,7 @@ def real_evaluator(
     weights = weights or Weights()
 
     async def evaluate(
-        eval_id: int, overrides: dict[str, Any], config: CoordinareConfiguration
+        eval_id: int, overrides: dict[str, Any], config: CoordinareConfiguration,
     ) -> EvalOutcome:
         try:
             scores: list[ScoreObject] = []
@@ -253,7 +253,7 @@ def real_evaluator(
                     stub=stub, config=config,
                 )
                 score = score_run(
-                    artifact, fixtures, weights=weights, judge=judge, judge_model=judge_model
+                    artifact, fixtures, weights=weights, judge=judge, judge_model=judge_model,
                 )
                 score.write(repeat_dir)
                 scores.append(score)
@@ -326,7 +326,7 @@ async def run_optimizer(
         notes.append(
             "substrate=stub: gate/model dimensions carry no signal (136 ablation finding) — "
             "this search validates the machinery; real recommendations require a --real "
-            "search gated on a real-substrate noise report (135)"
+            "search gated on a real-substrate noise report (135)",
         )
 
     def _overrides_for(coords: dict[str, Any]) -> dict[str, Any]:
@@ -381,7 +381,7 @@ async def run_optimizer(
 
     # --- 1) baseline + candidates (the FR-009 comparison set; charged) ---
     seed_queue: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = [
-        ("baseline", {}, baseline_coords)
+        ("baseline", {}, baseline_coords),
     ]
     seed_queue.extend(
         (f"candidate:{c.name}", dict(c.overrides), None) for c in loaded.definition.candidates
@@ -394,7 +394,7 @@ async def run_optimizer(
             skipped = [p for p, _, _ in seed_queue[i:]]
             notes.append(
                 "budget exhausted before evaluating the comparison set: "
-                f"{', '.join(skipped)} — absent from the head-to-head (shortfall)"
+                f"{', '.join(skipped)} — absent from the head-to-head (shortfall)",
             )
             break
         record = await _evaluate(provenance, overrides)
@@ -443,7 +443,7 @@ async def run_optimizer(
         if overshoot > 0:
             notes.append(
                 f"wall-clock cap exceeded by {overshoot:.1f}s — the in-flight evaluation "
-                "was completed before stopping"
+                "was completed before stopping",
             )
         else:
             notes.append("wall-clock cap reached; no new evaluation started past the cap")

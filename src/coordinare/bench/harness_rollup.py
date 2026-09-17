@@ -248,7 +248,7 @@ def format_table(rollup: HarnessRollup) -> str:
         rate = "" if r.defect_rate is None else f"{r.defect_rate:.3f}"
         lines.append(
             f"{r.role:<16}{r.backend:<14}{r.dispatches:>5}{r.credit:>8}"
-            f"{r.harness_defect:>8}{r.environment:>5}{r.inconclusive:>7}{rate:>13}"
+            f"{r.harness_defect:>8}{r.environment:>5}{r.inconclusive:>7}{rate:>13}",
         )
     return "\n".join(lines)
 

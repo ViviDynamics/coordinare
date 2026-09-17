@@ -18,7 +18,7 @@ def _seal_manifest(cache_dir: Path, *, cache_inputs: list[str], agent_version: s
             "services": [],
             "cache_inputs": cache_inputs,
             "agent_version": agent_version,
-        })
+        }),
     )
 
 

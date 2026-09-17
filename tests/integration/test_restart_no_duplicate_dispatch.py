@@ -182,7 +182,7 @@ async def test_fr014_one_container_after_restart_when_prior_container_healthy() 
     assert len(svc._active_jobs) == 1
     # agent_dispatch preserved — no re-dispatch will happen
     assert state["active_sessions"]["PVTI_TODAY"]["agent_dispatch"] == {
-        "session_id": "uuid-from-prior-daemon"
+        "session_id": "uuid-from-prior-daemon",
     }
 
 
@@ -231,6 +231,6 @@ async def test_fr014_docker_unreachable_does_not_corrupt_state() -> None:
     assert report.docker_unreachable is True
     # State MUST be untouched — agent_dispatch still references the prior session
     assert state["active_sessions"]["PVTI_TODAY"]["agent_dispatch"] == {
-        "session_id": "uuid-from-prior-daemon"
+        "session_id": "uuid-from-prior-daemon",
     }
     assert state["active_sessions"]["PVTI_TODAY"]["phase"] == "monitoring_performer"

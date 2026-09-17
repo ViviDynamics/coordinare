@@ -107,7 +107,7 @@ def declared_source_paths(scope: str | None, extra_test_patterns: tuple[str, ...
 
 def _anchored(name: str, path: str) -> bool:
     """Whether a reported test name belongs to *path*, as ``red_check`` reads names."""
-    return name == path or name.startswith(path + "::") or name.startswith(path + " ")
+    return name == path or name.startswith((path + "::", path + " "))
 
 
 def tests_cover(

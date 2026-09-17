@@ -18,11 +18,11 @@ from pydantic import ValidationError
 
 
 def _brief(**over):
-    base = dict(
-        kind="tests", persona_kind="TESTS", persona="Write only test files.", milestone_index=0,
-        milestone_goal="Add login endpoint", scope_paths=["app/auth/", "spec/requests/"],
-        done_when="request specs pass", forbidden_paths=["docs/"],
-    )
+    base = {
+        "kind": "tests", "persona_kind": "TESTS", "persona": "Write only test files.", "milestone_index": 0,
+        "milestone_goal": "Add login endpoint", "scope_paths": ["app/auth/", "spec/requests/"],
+        "done_when": "request specs pass", "forbidden_paths": ["docs/"],
+    }
     base.update(over)
     return TurnBrief(**base)
 
@@ -135,7 +135,7 @@ class TestSatisfiedBy:
     """171: how a milestone came to be complete."""
 
     def _record(self, **over):
-        base = dict(index=0, goal="g", done_when="d", implementation_successful=True)
+        base = {"index": 0, "goal": "g", "done_when": "d", "implementation_successful": True}
         base.update(over)
         return PerMilestoneRecord(**base)
 

@@ -142,7 +142,7 @@ def _port_forward(pod_name: str, remote_port: int):
         if proc is not None:
             proc.kill()
         raise RuntimeError(
-            f"port-forward to {pod_name} never served /status. kubectl stderr: {last_stderr!r}"
+            f"port-forward to {pod_name} never served /status. kubectl stderr: {last_stderr!r}",
         )
 
     try:
@@ -195,7 +195,7 @@ def test_performer_pod_starts_serves_and_stops(runtime, config, tmp_path) -> Non
             # routable; in-cluster, started.endpoint is used directly.
             with _port_forward(started.handle, 8088) as local_endpoint:
                 status = await performer_lifecycle.wait_ready(
-                    local_endpoint, auth_token=None, timeout=120.0, performer_id=config.id
+                    local_endpoint, auth_token=None, timeout=120.0, performer_id=config.id,
                 )
             assert status.availability != "starting"
             return started
@@ -216,7 +216,7 @@ def test_performer_pod_starts_serves_and_stops(runtime, config, tmp_path) -> Non
 
     core = client.CoreV1Api()
     remaining = core.list_namespaced_pod(
-        namespace=NAMESPACE, field_selector=f"metadata.name={started.handle}"
+        namespace=NAMESPACE, field_selector=f"metadata.name={started.handle}",
     )
     assert not remaining.items, "the Pod must not outlive the performer (FR-008)"
 
@@ -241,7 +241,7 @@ def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config) -> None
                         "image": TEST_IMAGE,
                         "imagePullPolicy": "Never",
                         "command": ["sleep", "300"],
-                    }
+                    },
                 ],
             },
         },
@@ -252,7 +252,7 @@ def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config) -> None
         assert swept >= 1
 
         survivors = core.list_namespaced_pod(
-            namespace=NAMESPACE, field_selector=f"metadata.name={bystander}"
+            namespace=NAMESPACE, field_selector=f"metadata.name={bystander}",
         )
         assert survivors.items, (
             "the sweep deleted a Pod coordinare does not own; it must select on its "
@@ -290,9 +290,9 @@ def test_a_pod_that_cannot_pull_fails_fast_with_a_useful_reason(runtime) -> None
     asyncio.run(
         runtime.stop(
             __import__(
-                "coordinare.services.kubernetes_runtime", fromlist=["pod_name_for"]
-            ).pod_name_for(bad.id)
-        )
+                "coordinare.services.kubernetes_runtime", fromlist=["pod_name_for"],
+            ).pod_name_for(bad.id),
+        ),
     )
 
 
@@ -317,8 +317,8 @@ def _can_i(*, verb: str, resource: str, namespace: str | None, subresource: str 
                     resource=resource,
                     subresource=subresource,
                 ),
-            )
-        )
+            ),
+        ),
     )
     return bool(review.status.allowed)
 
@@ -349,7 +349,7 @@ def _rbac_applied() -> None:
     ],
 )
 def test_shipped_rbac_grants_everything_the_runtime_actually_does(
-    _rbac_applied, verb: str, resource: str, subresource: str
+    _rbac_applied, verb: str, resource: str, subresource: str,
 ) -> None:
     """SC-002, sufficiency half — the daemon can do its job under this Role.
 
@@ -383,7 +383,7 @@ def test_shipped_rbac_grants_everything_the_runtime_actually_does(
     ],
 )
 def test_shipped_rbac_grants_nothing_beyond_that(
-    _rbac_applied, verb: str, resource: str, namespace: str | None
+    _rbac_applied, verb: str, resource: str, namespace: str | None,
 ) -> None:
     """SC-002, the "and nothing more" half — the half a manifest cannot prove.
 

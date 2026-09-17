@@ -30,7 +30,7 @@ def test_load_manifest(tmp_path: Path) -> None:
         "    title: Task one\n"
         "    body: do one\n"
         "    base_files:\n"
-        "      a.py: \"x = 1\\n\"\n"
+        "      a.py: \"x = 1\\n\"\n",
     )
     fixtures = load_manifest(manifest)
     assert len(fixtures) == 1

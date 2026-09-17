@@ -88,10 +88,10 @@ async def test_initialize_populates_project_and_field_cache() -> None:
                                     {"id": "OPT_1", "name": "Todo"},
                                     {"id": "OPT_2", "name": "In Progress"},
                                 ],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
         ],
         async_mode=True,
@@ -597,7 +597,7 @@ class TestCompareChangedFiles:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.get = AsyncMock(
-            return_value=_compare_resp(200, ["src/app.py", "docs/readme.md"])
+            return_value=_compare_resp(200, ["src/app.py", "docs/readme.md"]),
         )
         with patch("httpx.AsyncClient", return_value=mock_client):
             files = await svc.compare_changed_files(_PR_URL, "abc123", "def456")

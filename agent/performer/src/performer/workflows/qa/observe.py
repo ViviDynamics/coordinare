@@ -56,7 +56,7 @@ def _diff_key(observation: Observation) -> tuple[str, int, str]:
 
 
 def diff_observations(
-    before: list[Observation], after: list[Observation]
+    before: list[Observation], after: list[Observation],
 ) -> tuple[list[Observation], list[Observation]]:
     """Return (added, removed) by element identity.
 

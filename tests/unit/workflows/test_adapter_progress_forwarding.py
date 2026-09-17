@@ -28,7 +28,7 @@ def fake_backend_with_progress():
                 return BackendStatus(
                     state="working",
                     progress=f"Processing step {self._status_counter}...",
-                    questions=[]
+                    questions=[],
                 )
             return BackendStatus(state="done", output='{"result": "ok"}')
 

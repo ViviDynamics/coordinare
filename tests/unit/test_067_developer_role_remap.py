@@ -35,7 +35,7 @@ def test_warn_emitted_exactly_once_per_session():
     logger = MagicMock()
     flag = {"warned": False}
     _remap_developer_role(
-        [{"role": "developer", "content": "a"}], warned_flag=flag, logger=logger
+        [{"role": "developer", "content": "a"}], warned_flag=flag, logger=logger,
     )
     _remap_developer_role(
         [{"role": "developer", "content": "b"}, {"role": "developer", "content": "c"}],
@@ -43,7 +43,7 @@ def test_warn_emitted_exactly_once_per_session():
         logger=logger,
     )
     _remap_developer_role(
-        [{"role": "developer", "content": "d"}], warned_flag=flag, logger=logger
+        [{"role": "developer", "content": "d"}], warned_flag=flag, logger=logger,
     )
     assert logger.warning.call_count == 1, (
         f"expected exactly one WARN per adapter instance, got {logger.warning.call_count}"
@@ -54,7 +54,7 @@ def test_no_warn_when_no_developer_messages():
     logger = MagicMock()
     flag = {"warned": False}
     _remap_developer_role(
-        [{"role": "user", "content": "Hi"}], warned_flag=flag, logger=logger
+        [{"role": "user", "content": "Hi"}], warned_flag=flag, logger=logger,
     )
     assert logger.warning.call_count == 0
     assert flag["warned"] is False

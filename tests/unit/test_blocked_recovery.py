@@ -32,7 +32,7 @@ def test_genuine_changes_requested_never_recovers() -> None:
 
 def test_verdict_cleared_recovers() -> None:
     d = evaluate_recovery(
-        [BlockReason.STALE_REVIEW], RecoverySignals(review_decision="APPROVED")
+        [BlockReason.STALE_REVIEW], RecoverySignals(review_decision="APPROVED"),
     )
     assert d.recover is True and d.target_stage == "IN_REVIEW"
 
@@ -57,7 +57,7 @@ def test_ci_green_recovers() -> None:
 
 def test_open_clarification_only_clears_when_answered() -> None:
     assert evaluate_recovery(
-        [BlockReason.OPEN_CLARIFICATION], RecoverySignals(clarification_answered=False)
+        [BlockReason.OPEN_CLARIFICATION], RecoverySignals(clarification_answered=False),
     ).recover is False
     d = evaluate_recovery(
         [BlockReason.OPEN_CLARIFICATION],

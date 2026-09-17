@@ -98,7 +98,7 @@ class AdvocateWorkflow:
                 calls=record.model_calls,
             )
             return WorkflowResult(
-                report=build_report(record, metrics), findings=[], events=events, metrics=metrics
+                report=build_report(record, metrics), findings=[], events=events, metrics=metrics,
             )
 
         def blocked(reason: str) -> WorkflowResult:
@@ -194,7 +194,7 @@ class AdvocateWorkflow:
                 outcomes.append(await self._escalate(poster, issue, REASON_UNCLASSIFIED, settings))
                 continue
             outcomes.append(
-                await self._decide(poster, issue, classification, settings, record, documents)
+                await self._decide(poster, issue, classification, settings, record, documents),
             )
         record.outcomes = outcomes
         timed("gate", started)

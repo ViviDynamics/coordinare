@@ -855,7 +855,7 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
     original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
 
     tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp"
+        dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp",
     )
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:

@@ -113,7 +113,7 @@ def _with_verbatim_wire_path(backend: str, base: str) -> str:
 
 
 def _emit_health_decision(
-    capture_dir: str | Path | None, backend: str, model: str | None, result
+    capture_dir: str | Path | None, backend: str, model: str | None, result,
 ) -> None:
     """Append the gating decision to ``capture_dir/health.jsonl`` (FR-078-10).
 
@@ -146,14 +146,14 @@ def _emit_health_decision(
 
 
 def _suppress_double_proxy(
-    backend: str, mapping: dict[str, str], env_restores: list
+    backend: str, mapping: dict[str, str], env_restores: list,
 ) -> None:
     """claude_code would relaunch its own LiteLLM shim from ``LITELLM_PROXY_BASE_URL``
     and double-proxy; suppress it (restorably) so it talks to our seam directly.
     """
     if backend == "claude_code":
         env_restores.append(
-            (mapping, "LITELLM_PROXY_BASE_URL", mapping.get("LITELLM_PROXY_BASE_URL"))
+            (mapping, "LITELLM_PROXY_BASE_URL", mapping.get("LITELLM_PROXY_BASE_URL")),
         )
         mapping.pop("LITELLM_PROXY_BASE_URL", None)
 
@@ -177,7 +177,7 @@ async def _launch_for_target(
         raise ProxyLaunchError(
             f"backend '{backend}' has no provider-base-URL override; it cannot be "
             f"routed at self-hosted target {target.base_url!r} (FR-078-4) — "
-            "no silent no-op into a broken path"
+            "no silent no-op into a broken path",
         )
     mapping = os.environ if env is None else env
 
@@ -272,7 +272,7 @@ async def _gate_target(
         ).strip()
     _probe_headers = {"Authorization": f"Bearer {_probe_tok}"} if _probe_tok else None
     result = await check_health(
-        target, model=model, client=client, timeout=timeout, headers=_probe_headers
+        target, model=model, client=client, timeout=timeout, headers=_probe_headers,
     )
     _emit_health_decision(capture_dir, backend_name, model, result)
 
@@ -293,7 +293,7 @@ async def _gate_target(
     raise ProxyLaunchError(
         f"self-hosted path for backend '{backend_name}' model '{model}' failed its "
         f"startup health probe and has no reroute_upstream: {result.reason} "
-        "(FR-078-5) — card not accepted rather than black-holed"
+        "(FR-078-5) — card not accepted rather than black-holed",
     )
 
 
@@ -349,7 +349,7 @@ async def maybe_launch_proxy(
             if target.upstream_session_header is not None:
                 raise ProxyLaunchError(
                     "upstream_session_header requires the self-hosted shim; "
-                    "reasoning policies use the canonical proxy and are not supported"
+                    "reasoning policies use the canonical proxy and are not supported",
                 )
             if health_check:
                 target = await _gate_target(target, backend_name, ref["model"], client=health_client,
@@ -387,7 +387,7 @@ async def maybe_launch_proxy(
     if backend in UNSUPPORTED_BACKENDS:
         raise ProxyLaunchError(
             f"backend '{backend}' has no provider-base-URL override; it cannot run a "
-            "multi-model mode (080) — use strategy: single for it"
+            "multi-model mode (080) — use strategy: single for it",
         )
     env_var = PROVIDER_BASE_URL_ENV.get(backend)
     if env_var is None:

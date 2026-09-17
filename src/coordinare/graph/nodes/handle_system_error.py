@@ -84,7 +84,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         state["phase"] = "blocked"
         state["open_questions"] = [
             "The model exhausted its output budget. Raise the performer output token cap "
-            "or shorten the prompt before retrying."
+            "or shorten the prompt before retrying.",
         ]
         return state
 

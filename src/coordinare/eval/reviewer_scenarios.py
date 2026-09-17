@@ -82,7 +82,7 @@ async def run_all(*, live: bool, only: str | None) -> list[Score]:
         print(
             f"{fixture.name:20s} {'PASS' if score.passed else 'FAIL'}  verdict={review.get('verdict')}  "
             f"findings={len(review.get('findings') or [])}  dropped={len(review.get('findings_dropped') or [])}  "
-            f"coverage_pass={review.get('coverage_pass_ran')}  steps_ms={json.dumps(durations)}"
+            f"coverage_pass={review.get('coverage_pass_ran')}  steps_ms={json.dumps(durations)}",
         )
         for note in score.notes:
             print(f"         - {note}")

@@ -4,7 +4,7 @@ import re
 
 _CHECKLIST_RE = re.compile(r"^\s*-\s*\[[ xX]\]\s*(.+)$", re.MULTILINE)
 _HEADING_RE = re.compile(
-    r"^##\s*Acceptance\s+Criteria\s*$", re.MULTILINE | re.IGNORECASE
+    r"^##\s*Acceptance\s+Criteria\s*$", re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -42,7 +42,7 @@ def parse_acceptance_criteria(body: str) -> list[str]:
         for line in section.split("\n"):
             stripped = line.strip()
             if stripped.startswith(("- ", "* ")) and not re.match(
-                r"^\s*-\s*\[[ xX]\]", line
+                r"^\s*-\s*\[[ xX]\]", line,
             ):
                 text = stripped[2:].strip()
                 if text and text not in seen:

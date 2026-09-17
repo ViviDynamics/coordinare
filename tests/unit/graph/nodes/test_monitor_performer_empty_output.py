@@ -35,7 +35,7 @@ def _state(card_id: str = "PVTI_149", stage: str = "architecting") -> dict:
             "performer_stage": stage,
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-x"},
-        }
+        },
     }
     return state
 

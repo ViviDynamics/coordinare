@@ -38,10 +38,10 @@ def _score(
                 fixture_id="fx",
                 category=category,  # type: ignore[arg-type]
                 correct=category == "PASS",
-            )
+            ),
         ],
         components=ComponentVector(
-            correctness_rate=correctness, cost_usd=cost, wall_clock_seconds=60.0
+            correctness_rate=correctness, cost_usd=cost, wall_clock_seconds=60.0,
         ),
         scalar=scalar,
     )

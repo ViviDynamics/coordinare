@@ -116,7 +116,7 @@ def test_setting_from_field_infers_enum_from_strenum():
 
     fi = ProjectConfiguration.model_fields["branch_collision_strategy"]
     setting = cd.setting_from_field(
-        "global", "branch_collision_strategy", fi, BranchCollisionStrategy.delete
+        "global", "branch_collision_strategy", fi, BranchCollisionStrategy.delete,
     )
     assert setting.type == "enum"
     assert set(setting.enum) == {s.value for s in BranchCollisionStrategy}
@@ -132,7 +132,7 @@ def test_setting_from_field_masks_secret_current_value():
 def test_setting_from_field_env_placeholder_not_masked():
     fi = ProjectConfiguration.model_fields["github_token"]
     setting = cd.setting_from_field(
-        "global", "github_token", fi, "${COORDINARE_GITHUB_TOKEN}"
+        "global", "github_token", fi, "${COORDINARE_GITHUB_TOKEN}",
     )
     assert setting.is_env_placeholder is True
     assert setting.current_value == "${COORDINARE_GITHUB_TOKEN}"
@@ -374,7 +374,7 @@ def test_build_snapshot_routing_unavailable_empty_state(coordinare_config):
 def test_routing_banner_unmounted_says_not_mounted(coordinare_config):
     """No endpoint mounts a routing path → banner advises mounting one."""
     snapshot = cd.build_snapshot(
-        coordinare_config, routing_available=False, routing_mounted=False
+        coordinare_config, routing_available=False, routing_mounted=False,
     )
     routing = _sections_by_id(snapshot)["routing"]
     assert "is mounted" in routing.invalid_banner
@@ -385,7 +385,7 @@ def test_routing_banner_mounted_but_missing_says_check_mount(coordinare_config):
     """An endpoint mounts a routing path but the host file is missing/not a file
     → banner must NOT claim 'no routing table is mounted' (FR misdiagnosis)."""
     snapshot = cd.build_snapshot(
-        coordinare_config, routing_available=False, routing_mounted=True
+        coordinare_config, routing_available=False, routing_mounted=True,
     )
     routing = _sections_by_id(snapshot)["routing"]
     assert routing.invalid_banner is not None

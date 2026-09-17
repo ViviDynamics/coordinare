@@ -118,7 +118,7 @@ def test_strips_long_hex_and_sha() -> None:
 def test_strips_uuid() -> None:
     assert (
         normalize_reason(
-            "trace 123e4567-e89b-12d3-a456-426614174000 aborted", None
+            "trace 123e4567-e89b-12d3-a456-426614174000 aborted", None,
         )
         == "trace <uuid> aborted"
     )
@@ -129,7 +129,7 @@ def test_strips_path_with_embedded_hash() -> None:
     # partial <hex> substitution leaving slashes behind.
     assert (
         normalize_reason(
-            "artifact /tmp/cache/9f8e7d6c5b4a3210ff/out.log missing", None
+            "artifact /tmp/cache/9f8e7d6c5b4a3210ff/out.log missing", None,
         )
         == "artifact <path> missing"
     )

@@ -135,20 +135,20 @@ async def run_all(*, live: bool, only: str | None) -> list[dict]:
         if live:
             print(
                 f"{fixture.name:12s} {status:15s} turns={turns:2d} "
-                f"phases={json.dumps({k: f'{v}ms' for k, v in phases[:3]})}"
+                f"phases={json.dumps({k: f'{v}ms' for k, v in phases[:3]})}",
             )
         else:
             passed = score_result.passed if score_result else False
             print(
                 f"{fixture.name:12s} {'PASS' if passed else 'FAIL':4s} "
                 f"status={status:15s} turns={turns:2d} "
-                f"phases={json.dumps({k: v for k, v in phases[:3]})}"
+                f"phases={json.dumps(dict(phases[:3]))}",
             )
             if score_result and score_result.notes:
                 for note in score_result.notes:
                     print(f"             - {note}")
 
-        results.append(score_result if score_result else {"passed": False, "notes": ["live mode"]})
+        results.append(score_result or {"passed": False, "notes": ["live mode"]})
 
     return results
 

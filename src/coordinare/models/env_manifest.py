@@ -33,7 +33,7 @@ class ManifestItem(BaseModel):
         description="Exact pinned version when known (e.g. '3.4.2'); None if unpinned.",
     )
     source: str = Field(
-        description="Where this item was derived from, e.g. '.ruby-version', 'Gemfile', 'README.md'."
+        description="Where this item was derived from, e.g. '.ruby-version', 'Gemfile', 'README.md'.",
     )
     check: str | None = Field(
         default=None,

@@ -58,7 +58,7 @@ def test_persona_check_map_parses_valid_structure() -> None:
                 "full": ["lint*", "unit-tests*", "integration*", "e2e*"],
             },
             "reviewer": {"normal": ["lint*", "unit-tests*"]},
-        }
+        },
     )
     assert "implementer" in cfg.root
     assert cfg.root["implementer"].any == ["lint*", "unit-tests*"]
@@ -73,7 +73,7 @@ def test_persona_check_map_any_only_parses() -> None:
     """077 FR-013: an `any`-only map (no depth keys) is valid — the standalone
     gate-scoping shape used without 074 tiering."""
     cfg = PersonaCheckMapConfig.model_validate(
-        {"implementer": {"any": ["Validate version", "Unit tests*"]}}
+        {"implementer": {"any": ["Validate version", "Unit tests*"]}},
     )
     assert cfg.root["implementer"].any == ["Validate version", "Unit tests*"]
 
@@ -86,14 +86,14 @@ def test_persona_check_map_rejects_non_dict_root() -> None:
 def test_persona_check_map_rejects_non_list_globs() -> None:
     with pytest.raises(ValidationError):
         PersonaCheckMapConfig.model_validate(
-            {"implementer": {"skim": "lint"}}
+            {"implementer": {"skim": "lint"}},
         )
 
 
 def test_persona_check_map_rejects_unknown_depth() -> None:
     with pytest.raises(ValidationError):
         PersonaCheckMapConfig.model_validate(
-            {"implementer": {"fast": ["lint*"]}}
+            {"implementer": {"fast": ["lint*"]}},
         )
 
 
@@ -120,7 +120,7 @@ def test_persona_scope_with_full_75_config() -> None:
                 "max_bounces_per_head": 5,
                 "pending_timeout_seconds": 600,
             },
-        }
+        },
     )
     assert cfg.ci_gate.enabled is True
     assert cfg.ci_gate.max_bounces_per_head == 5

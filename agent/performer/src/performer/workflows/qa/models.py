@@ -52,7 +52,7 @@ class FlowStep(BaseModel):
     """
 
     action: FlowAction = Field(
-        ..., description="What to do. One of the listed actions only."
+        ..., description="What to do. One of the listed actions only.",
     )
     target: str | None = Field(
         default=None,
@@ -95,7 +95,7 @@ class PlanCheck(BaseModel):
         ),
     )
     command: str | None = Field(
-        default=None, description="Required when kind is 'command'. A shell command."
+        default=None, description="Required when kind is 'command'. A shell command.",
     )
     steps: list[FlowStep] = Field(
         default_factory=list,
@@ -114,11 +114,11 @@ class PlanCheck(BaseModel):
         """
         if self.kind == "command" and not (self.command or "").strip():
             raise ValueError(
-                "a 'command' check requires a non-empty shell command"
+                "a 'command' check requires a non-empty shell command",
             )
         if self.kind == "flow" and not self.steps:
             raise ValueError(
-                "a 'flow' check requires at least one step"
+                "a 'flow' check requires at least one step",
             )
         return self
 

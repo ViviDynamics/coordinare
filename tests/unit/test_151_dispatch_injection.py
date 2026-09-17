@@ -40,7 +40,7 @@ def test_both_urls_survive_into_metadata_and_score() -> None:
         "github_graphql_url": "http://127.0.0.1:5555/graphql",
     }
     svc = HTTPPerformerService(
-        PerformerEndpointConfig(id="e", mode="ephemeral", roles=["implementer"], image="img")
+        PerformerEndpointConfig(id="e", mode="ephemeral", roles=["implementer"], image="img"),
     )
     ws = WorkspaceInfo(path=None, branch="bench/x", repo_url="git://127.0.0.1:9418/bench-org/bench-repo.git")
     payload = svc._build_job_payload(card_context, ws)

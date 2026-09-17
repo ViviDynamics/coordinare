@@ -90,7 +90,7 @@ async def _poll_until_settled(ctx: RunContext, head_sha: str, attempts: list[CIA
             failing_checks=[str(r.get("name") or "check") for r in failed],
             repair_needed=verdict == "fail",
             wall_time_ms=int((time.monotonic() - started) * 1000),
-        )
+        ),
     )
     return verdict, failed, pending
 

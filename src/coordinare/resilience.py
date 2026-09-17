@@ -101,7 +101,7 @@ class CircuitBreaker:
             CircuitState.OPEN: 2.0,
         }
         METRICS.circuit_breaker_state.labels(service_name=self.service_name).set(
-            _state_numeric.get(new_state, 0.0)
+            _state_numeric.get(new_state, 0.0),
         )
         if new_state == CircuitState.OPEN:
             METRICS.circuit_breaker_trips_total.labels(service_name=self.service_name).inc()

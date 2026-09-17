@@ -21,7 +21,7 @@ _BRIEF = {
 
 
 def _score(**over):
-    base = dict(acceptance_criteria=["Card says something else"], pr_diff="", description="d", verification_brief={})
+    base = {"acceptance_criteria": ["Card says something else"], "pr_diff": "", "description": "d", "verification_brief": {}}
     base.update(over)
     return SimpleNamespace(**base)
 

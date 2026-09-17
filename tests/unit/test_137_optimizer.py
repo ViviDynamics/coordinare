@@ -121,7 +121,7 @@ class TestConvergence:
         ticks = iter(range(0, 10_000, 100))  # each clock() call advances 100s
 
         artifact = await _run(
-            tmp_path, max_evaluations=100, max_seconds=150.0, clock=lambda: float(next(ticks))
+            tmp_path, max_evaluations=100, max_seconds=150.0, clock=lambda: float(next(ticks)),
         )
         assert artifact.budget.stop_reason == "budget_wall_clock"
         assert artifact.budget.charged_evaluations < 100
@@ -170,13 +170,13 @@ class TestConvergence:
 class TestFailureAndTies:
     async def test_failed_evaluations_recorded_search_continues(self, tmp_path: Path) -> None:
         artifact = await _run(
-            tmp_path, max_evaluations=1000, evaluate=_synthetic(fail_on={"single-premium"})
+            tmp_path, max_evaluations=1000, evaluate=_synthetic(fail_on={"single-premium"}),
         )
         failed = [r for r in artifact.trace if r.failed]
         assert failed and all("synthetic failure" in r.error for r in failed)
         assert artifact.recommendation is not None
         assert artifact.recommendation.overrides.get(
-            "global_config.performers.implementer.mode"
+            "global_config.performers.implementer.mode",
         ) != "single-premium"
 
     async def test_all_failed_yields_no_recommendation(self, tmp_path: Path) -> None:
@@ -231,10 +231,10 @@ class TestComparisonAndArtifact:
                 EvaluationRecord(
                     eval_id=1, provenance="baseline", overrides={}, fingerprint="f" * 16,
                     mean_scalar=0.5, best_so_far=0.5,
-                )
+                ),
             ],
             recommendation=Recommendation(
-                eval_id=1, overrides={}, fingerprint="f" * 16, mean_scalar=0.5
+                eval_id=1, overrides={}, fingerprint="f" * 16, mean_scalar=0.5,
             ),
             budget=BudgetSpent(
                 max_evaluations=10, charged_evaluations=5, cache_hits=0,  # lies: trace has 1

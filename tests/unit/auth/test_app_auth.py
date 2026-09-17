@@ -277,7 +277,7 @@ class TestFetchInstallationTokenErrors:
     async def test_invalid_expires_at_format_raises_transient(self, auth: AppAuth) -> None:
         """Response with unparseable 'expires_at' raises TransientGitHubError."""
         mock_response = _make_http_response(
-            201, json_body={"token": "tok", "expires_at": "not-a-date"}
+            201, json_body={"token": "tok", "expires_at": "not-a-date"},
         )
         with patch("httpx.AsyncClient.post", return_value=mock_response), pytest.raises(TransientGitHubError, match="malformed"):
             await auth._fetch_installation_token()

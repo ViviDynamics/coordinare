@@ -43,7 +43,7 @@ def build(fixture: ScenarioFixture, dest: Path) -> tuple[Path, str, str]:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
     base_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
     ).stdout.strip()
 
     # head_files replaces the tree: a key absent from head_files but present in
@@ -61,7 +61,7 @@ def build(fixture: ScenarioFixture, dest: Path) -> tuple[Path, str, str]:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", fixture.claimed_change or "head")
     head_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
     ).stdout.strip()
 
     return repo, base_sha, head_sha

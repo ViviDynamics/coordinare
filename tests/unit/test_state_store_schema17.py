@@ -33,7 +33,7 @@ def test_a_v16_snapshot_loads_with_both_fields_none() -> None:
             "snapshot_at": "2026-09-06T12:00:00+00:00",
             "phase": "idle",
             "active_sessions": {"c1": {"card_id": "c1", "performer_stage": "implementing"}},
-        }
+        },
     )
     sess = snap.active_sessions["c1"]
     assert sess.blueprint is None and sess.documenting_side is None
@@ -49,7 +49,7 @@ def test_blueprint_and_side_run_persist_from_the_live_session() -> None:
                 "dispatched_at": "2026-09-06T12:05:00+00:00",
                 "session_id": "s-9",
             },
-        }
+        },
     }
     out = _persist_active_sessions(live)
     assert out["c1"].blueprint == _BLUEPRINT

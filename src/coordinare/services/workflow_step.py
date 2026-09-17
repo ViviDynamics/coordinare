@@ -92,7 +92,7 @@ def _event_time(event: Mapping, *, observed_at: datetime) -> datetime:
         return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
     if isinstance(raw, str) and raw:
         try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw)
         except ValueError:
             return observed_at
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

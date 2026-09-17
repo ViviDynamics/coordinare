@@ -165,9 +165,9 @@ class ReviewerWorkflow:
         t = time.monotonic()
         diff_lines = intake.diff_line_list()
         survey_lines = survey_output_lines(outcome.records())
-        gate_kwargs = dict(changed_files=files, prior_comments=intake.prior_comments, diff_lines=diff_lines, survey_lines=survey_lines,
-                           brief=intake.brief, truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran,
-                           surveyed_files=opened_paths(outcome.records(), [f.path for f in before]))
+        gate_kwargs = {"changed_files": files, "prior_comments": intake.prior_comments, "diff_lines": diff_lines, "survey_lines": survey_lines,
+                           "brief": intake.brief, "truncated": intake.diff_truncated, "coverage_pass_ran": outcome.coverage_pass_ran,
+                           "surveyed_files": opened_paths(outcome.records(), [f.path for f in before])}
         result = run_gate(before, model_out.dispositions, **gate_kwargs)
         reanchored = []
         if result.dropped:

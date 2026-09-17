@@ -264,9 +264,9 @@ async def test_initialize_handles_options_not_a_list() -> None:
                             "name": "Status",
                             "options": [{"id": "OPT_1", "name": "Todo"}],
                         },
-                    ]
-                }
-            }
+                    ],
+                },
+            },
         },
     )
     await svc.initialize()
@@ -303,9 +303,9 @@ async def test_initialize_skips_non_dict_nodes_and_options() -> None:
                                 {"id": "OPT_1", "name": "Todo"},
                             ],
                         },
-                    ]
-                }
-            }
+                    ],
+                },
+            },
         },
     )
     await svc.initialize()
@@ -327,7 +327,7 @@ async def test_poll_board_malformed_items_returns_empty_snapshot() -> None:
     svc = _initialized_svc({"node": {"items": {"nodes": "bad"}}})
     result = await svc.poll_board()
     assert result["snapshot"] == {
-        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []
+        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": [],
     }
     assert result["titles"] == {}
     assert result["issue_numbers"] == {}
@@ -339,7 +339,7 @@ async def test_poll_board_item_without_id_is_skipped() -> None:
     svc = _initialized_svc(_poll_response([{"id": "", "fieldValues": {"nodes": []}}]))
     result = await svc.poll_board()
     assert result["snapshot"] == {
-        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []
+        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": [],
     }
 
 
@@ -355,7 +355,7 @@ async def test_poll_board_non_dict_item_is_skipped() -> None:
 async def test_poll_board_field_values_not_a_list() -> None:
     """When fieldValues.nodes is not a list, item has unknown status and is skipped."""
     svc = _initialized_svc(
-        _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": "bad"}, "content": {}}])
+        _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": "bad"}, "content": {}}]),
     )
     result = await svc.poll_board()
     # Unknown status — not in any column
@@ -371,8 +371,8 @@ async def test_poll_board_non_dict_field_value_is_skipped() -> None:
                 "id": "ITEM_1",
                 "fieldValues": {"nodes": ["not-a-dict", {"name": "Done"}]},
                 "content": {},
-            }
-        ])
+            },
+        ]),
     )
     result = await svc.poll_board()
     assert "ITEM_1" in result["snapshot"]["DONE"]
@@ -404,8 +404,8 @@ async def test_poll_board_unknown_status_name_is_skipped() -> None:
                 "id": "ITEM_1",
                 "fieldValues": {"nodes": [{"name": "Custom Column"}]},
                 "content": {},
-            }
-        ])
+            },
+        ]),
     )
     result = await svc.poll_board()
     assert "ITEM_1" not in result["snapshot"]["TODO"]
@@ -426,7 +426,7 @@ async def test_poll_board_backlog_is_separate_from_todo() -> None:
                 "fieldValues": {"nodes": [{"name": "Todo"}]},
                 "content": {"title": "Todo item"},
             },
-        ])
+        ]),
     )
     result = await svc.poll_board()
     assert "ITEM_1" in result["snapshot"]["BACKLOG"]
@@ -438,7 +438,7 @@ async def test_poll_board_backlog_is_separate_from_todo() -> None:
 async def test_poll_board_content_not_dict() -> None:
     """Non-dict content is gracefully ignored; item has unknown status and is skipped."""
     svc = _initialized_svc(
-        _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": []}, "content": "bad"}])
+        _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": []}, "content": "bad"}]),
     )
     result = await svc.poll_board()
     assert "ITEM_1" not in result["snapshot"]["TODO"]
@@ -454,8 +454,8 @@ async def test_poll_board_labels_not_dict() -> None:
                 "id": "ITEM_1",
                 "fieldValues": {"nodes": []},
                 "content": {"title": "T", "body": "", "number": 1, "labels": "bad"},
-            }
-        ])
+            },
+        ]),
     )
     result = await svc.poll_board()
     assert result["item_labels"].get("ITEM_1") is None
@@ -566,7 +566,7 @@ async def test_get_label_ids_malformed_nodes_returns_empty() -> None:
 @pytest.mark.asyncio
 async def test_get_label_ids_success() -> None:
     svc = _initialized_svc(
-        {"repository": {"labels": {"nodes": [{"name": "bug", "id": "LBL_1"}]}}}
+        {"repository": {"labels": {"nodes": [{"name": "bug", "id": "LBL_1"}]}}},
     )
     result = await svc.get_label_ids("acme", "repo")
     assert result == {"bug": "LBL_1"}
@@ -626,7 +626,7 @@ async def test_add_labels() -> None:
 @pytest.mark.asyncio
 async def test_list_open_issues_returns_list() -> None:
     svc = _initialized_svc(
-        {"repository": {"issues": {"nodes": [{"id": "ISS_1", "title": "Bug"}]}}}
+        {"repository": {"issues": {"nodes": [{"id": "ISS_1", "title": "Bug"}]}}},
     )
     result = await svc.list_open_issues("acme", "repo")
     assert len(result) == 1
@@ -643,7 +643,7 @@ async def test_list_open_issues_malformed_returns_empty() -> None:
 @pytest.mark.asyncio
 async def test_get_file_content_returns_text() -> None:
     svc = _initialized_svc(
-        {"repository": {"object": {"text": "file contents here"}}}
+        {"repository": {"object": {"text": "file contents here"}}},
     )
     result = await svc.get_file_content("acme", "repo", "README.md")
     assert result == "file contents here"
@@ -689,9 +689,9 @@ async def test_find_pr_for_issue_returns_open_pr() -> None:
             "closedByPullRequestsReferences": {
                 "nodes": [
                     {"id": "PR_kwDO_1", "url": "https://github.com/acme/repo/pull/42", "state": "OPEN"},
-                ]
-            }
-        }
+                ],
+            },
+        },
     })
     result = await svc.find_pr_for_issue("I_kwDO_issue")
     assert result == {
@@ -709,9 +709,9 @@ async def test_find_pr_for_issue_skips_closed_prs() -> None:
                 "nodes": [
                     {"id": "PR_old", "url": "https://github.com/acme/repo/pull/1", "state": "MERGED"},
                     {"id": "PR_new", "url": "https://github.com/acme/repo/pull/2", "state": "OPEN"},
-                ]
-            }
-        }
+                ],
+            },
+        },
     })
     result = await svc.find_pr_for_issue("I_kwDO_issue")
     assert result == {"pr_node_id": "PR_new", "pr_url": "https://github.com/acme/repo/pull/2"}
@@ -724,9 +724,9 @@ async def test_find_pr_for_issue_returns_none_when_no_open_pr() -> None:
             "closedByPullRequestsReferences": {
                 "nodes": [
                     {"id": "PR_old", "url": "https://github.com/acme/repo/pull/1", "state": "MERGED"},
-                ]
-            }
-        }
+                ],
+            },
+        },
     })
     assert await svc.find_pr_for_issue("I_kwDO_issue") is None
 
@@ -781,9 +781,9 @@ async def test_count_closed_prs_for_issue_counts_closed_only() -> None:
                     {"state": "CLOSED"},
                     {"state": "MERGED"},
                     {"state": "CLOSED"},
-                ]
-            }
-        }
+                ],
+            },
+        },
     })
     assert await svc.count_closed_prs_for_issue("I_kwDO_issue") == 2
 
@@ -987,11 +987,11 @@ async def test_get_required_status_checks_exact_pattern_match() -> None:
                                 {"context": "lint"},
                                 {"context": "unit-tests"},
                             ],
-                        }
-                    ]
-                }
-            }
-        }
+                        },
+                    ],
+                },
+            },
+        },
     )
     result = await svc.get_required_status_checks("acme", "repo", "main")
     assert result == {"lint", "unit-tests"}
@@ -1008,11 +1008,11 @@ async def test_get_required_status_checks_glob_pattern_match() -> None:
                         {
                             "pattern": "release/*",
                             "requiredStatusChecks": [{"context": "e2e"}],
-                        }
-                    ]
-                }
-            }
-        }
+                        },
+                    ],
+                },
+            },
+        },
     )
     result = await svc.get_required_status_checks("acme", "repo", "release/1.0")
     assert result == {"e2e"}
@@ -1029,11 +1029,11 @@ async def test_get_required_status_checks_non_matching_pattern_skipped() -> None
                         {
                             "pattern": "develop",
                             "requiredStatusChecks": [{"context": "lint"}],
-                        }
-                    ]
-                }
-            }
-        }
+                        },
+                    ],
+                },
+            },
+        },
     )
     result = await svc.get_required_status_checks("acme", "repo", "main")
     assert result == set()
@@ -1052,7 +1052,7 @@ async def test_get_required_status_checks_null_rules_returns_none() -> None:
 async def test_get_required_status_checks_empty_rules_returns_empty_set() -> None:
     """Readable but empty rules list returns an empty set (distinct from None)."""
     svc = _initialized_svc(
-        {"repository": {"branchProtectionRules": {"nodes": []}}}
+        {"repository": {"branchProtectionRules": {"nodes": []}}},
     )
     result = await svc.get_required_status_checks("acme", "repo", "main")
     assert result == set()

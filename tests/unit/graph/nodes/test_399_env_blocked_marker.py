@@ -75,7 +75,7 @@ def _blocked_session_state(marker, *, cache, notify=None, stage="implementing", 
             "current_card": {"id": "CARD_1", "previous_status": "IN_PROGRESS"},
             "performer_stage": stage,
             "lifecycle_sequence": sequence or ["implementing", "qa"],
-        }
+        },
     }
     return st
 
@@ -157,8 +157,7 @@ def _rollup(*conclusions: str, pending: bool = False):
 
 
 def _pr_state(marker, *, notify=None):
-    st = _blocked_session_state(marker, cache=_env_cache(), notify=notify)
-    return st
+    return _blocked_session_state(marker, cache=_env_cache(), notify=notify)
 
 
 _PR = {"pr_node_id": "PR1", "pr_url": "https://github.com/ViviDynamics/website/pull/193"}
@@ -201,7 +200,7 @@ async def test_recovery_with_a_green_pr_advances_past_implementing(monkeypatch) 
     from coordinare.graph.nodes.monitor_performer import _advance_stage
 
     expected = _advance_stage(
-        {"lifecycle_sequence": ["implementing", "qa"], "performer_stage": "implementing"}, None
+        {"lifecycle_sequence": ["implementing", "qa"], "performer_stage": "implementing"}, None,
     )
     expected.pop("current_card", None)
     assert set(expected) >= {"performer_stage", "phase", "agent_dispatch", "agent_dispatch_at",

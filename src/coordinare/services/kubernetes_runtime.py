@@ -205,7 +205,7 @@ def build_pod_manifest(
                 f"cache volume {container_path} has no single-segment subpath under "
                 f"{devenv_root}: the claim holds one directory per symphony, and a "
                 f"path {'at the root' if not parts else 'nested deeper'} names no "
-                f"symphony to mount"
+                f"symphony to mount",
             )
         devenv_mounts.append(
             {
@@ -213,13 +213,13 @@ def build_pod_manifest(
                 "mountPath": str(container_path),
                 "subPath": parts[0],
                 "readOnly": volume.mode == "ro",
-            }
+            },
         )
 
     if cache_claim and devenv_mounts:
         container["volumeMounts"] = devenv_mounts
         spec["volumes"] = [
-            {"name": "devenv-cache", "persistentVolumeClaim": {"claimName": cache_claim}}
+            {"name": "devenv-cache", "persistentVolumeClaim": {"claimName": cache_claim}},
         ]
 
     if image_pull_secrets:
@@ -301,13 +301,13 @@ class KubernetesRuntime:
 
         try:
             await asyncio.to_thread(
-                self._api.create_namespaced_pod, namespace=self._namespace, body=manifest
+                self._api.create_namespaced_pod, namespace=self._namespace, body=manifest,
             )
         except ApiException as exc:
             if exc.status != 409:
                 raise performer_lifecycle.ContainerStartError(
                     f"could not create performer Pod {pod_name!r} in namespace "
-                    f"{self._namespace!r}: {exc.status} {exc.reason}"
+                    f"{self._namespace!r}: {exc.status} {exc.reason}",
                 ) from exc
 
             # The name is taken. Because ``pod_name_for`` is deterministic, that
@@ -323,7 +323,7 @@ class KubernetesRuntime:
             await self._await_pod_gone(pod_name, timeout_s=config.readiness_timeout_s)
             try:
                 await asyncio.to_thread(
-                    self._api.create_namespaced_pod, namespace=self._namespace, body=manifest
+                    self._api.create_namespaced_pod, namespace=self._namespace, body=manifest,
                 )
             except ApiException as retry_exc:
                 # Still there. Either it is not terminating at all — a live
@@ -334,7 +334,7 @@ class KubernetesRuntime:
                     f"performer Pod {pod_name!r} already exists in namespace "
                     f"{self._namespace!r} and did not go away: "
                     f"{retry_exc.status} {retry_exc.reason}. Another coordinare may be "
-                    "running against this namespace, or the Pod is stuck terminating."
+                    "running against this namespace, or the Pod is stuck terminating.",
                 ) from retry_exc
             _log.info(
                 "kubernetes_runtime.pod_recreated_after_predecessor",
@@ -381,7 +381,7 @@ class KubernetesRuntime:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             pod = await asyncio.to_thread(
-                self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace
+                self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace,
             )
             phase = pod.status.phase
             pod_ip = pod.status.pod_ip
@@ -404,7 +404,7 @@ class KubernetesRuntime:
             await asyncio.sleep(1.0)
 
         raise performer_lifecycle.ReadinessTimeoutError(
-            f"performer Pod {pod_name!r} did not reach Running with an IP within {timeout_s}s"
+            f"performer Pod {pod_name!r} did not reach Running with an IP within {timeout_s}s",
         )
 
     async def stop(
@@ -468,7 +468,7 @@ class KubernetesRuntime:
         while time.monotonic() < deadline:
             try:
                 await asyncio.to_thread(
-                    self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace
+                    self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace,
                 )
             except ApiException as exc:
                 if exc.status == 404:
@@ -491,7 +491,7 @@ class KubernetesRuntime:
         )
 
     async def _dump_pod_logs(
-        self, pod_name: str, host_log_dir: Path, *, performer_id: str | None
+        self, pod_name: str, host_log_dir: Path, *, performer_id: str | None,
     ) -> None:
         import asyncio
 
@@ -499,7 +499,7 @@ class KubernetesRuntime:
 
         try:
             logs = await asyncio.to_thread(
-                self._api.read_namespaced_pod_log, name=pod_name, namespace=self._namespace
+                self._api.read_namespaced_pod_log, name=pod_name, namespace=self._namespace,
             )
         except ApiException as exc:
             _log.warning("kubernetes_runtime.logs_unavailable", pod=pod_name, status=exc.status)

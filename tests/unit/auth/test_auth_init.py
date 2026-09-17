@@ -138,7 +138,7 @@ def test_validate_auth_config_missing_key_file_exits(tmp_path: Path) -> None:
 
 
 def test_validate_auth_config_missing_key_file_prints_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     cfg = MagicMock()
     cfg.github_auth = "app"
@@ -159,7 +159,7 @@ def test_validate_auth_config_path_is_directory_exits(tmp_path: Path) -> None:
 
 
 def test_validate_auth_config_path_is_directory_prints_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     cfg = MagicMock()
     cfg.github_auth = "app"

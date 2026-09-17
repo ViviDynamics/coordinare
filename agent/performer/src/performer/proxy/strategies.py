@@ -64,7 +64,7 @@ async def act(tool: Upstream, request: LLMRequest, plan: str | None, rec: Orches
     return LLMResponse(
         content=resp.content,
         tool_calls=resp.tool_calls,
-        reasoning=plan if plan else resp.reasoning,
+        reasoning=plan or resp.reasoning,
         raw=resp.raw,
     )
 
@@ -189,7 +189,7 @@ class ThinkOnceActMany:
 
 
 async def _safe_think(
-    thinking: Upstream, request: LLMRequest, rec: OrchestrationRecord, on_think_error: str
+    thinking: Upstream, request: LLMRequest, rec: OrchestrationRecord, on_think_error: str,
 ) -> str | None:
     try:
         return await think(thinking, request, rec)

@@ -28,7 +28,7 @@ def _ephemeral_config() -> PerformerEndpointConfig:
             "mode": "ephemeral",
             "roles": ["implementing"],
             "image": "performer:base",
-        }
+        },
     )
 
 
@@ -68,7 +68,7 @@ async def test_check_status_forwards_refreshed_github_token() -> None:
     svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
 
     await svc.check_status(
-        "job-T", payload={"github_token": "ghs_refreshed_xyz"}
+        "job-T", payload={"github_token": "ghs_refreshed_xyz"},
     )
 
     patches = [r for r in recorded if r[0] == "PATCH"]
@@ -125,7 +125,7 @@ async def test_check_status_patch_failure_does_not_block_status_poll() -> None:
 
     # Should not raise — refresh is best-effort.
     result = await svc.check_status(
-        "job-T", payload={"github_token": "ghs_new"}
+        "job-T", payload={"github_token": "ghs_new"},
     )
     assert result["status"] in {"ok", "in_progress", "running", "working"}
 
@@ -167,7 +167,7 @@ async def test_check_status_patch_failure_retries_once_then_degrades() -> None:
 
     with structlog.testing.capture_logs() as cap_logs:
         result = await svc.check_status(
-            "job-T", payload={"github_token": "ghs_new"}
+            "job-T", payload={"github_token": "ghs_new"},
         )
 
     assert patch_count == 2, "refresh failure must be retried exactly once"
@@ -208,7 +208,7 @@ async def test_check_status_patch_transient_failure_retry_success_is_clean() -> 
 
     with structlog.testing.capture_logs() as cap_logs:
         result = await svc.check_status(
-            "job-T", payload={"github_token": "ghs_new"}
+            "job-T", payload={"github_token": "ghs_new"},
         )
 
     assert patch_count == 2, "first failure must trigger exactly one retry"

@@ -147,7 +147,7 @@ def _is_wildcard_bind(host: str) -> bool:
     # left to the trusted-host list where it belongs.
     try:
         resolved = socket.getaddrinfo(
-            candidate, None, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST
+            candidate, None, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST,
         )
     except (socket.gaierror, UnicodeError, ValueError):
         return False
@@ -390,7 +390,7 @@ def install_localhost_guard(
 
     @app.middleware("http")
     async def _localhost_guard(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        request: Request, call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         if request.url.path in exempt:
             return await call_next(request)

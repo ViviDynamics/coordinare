@@ -199,7 +199,7 @@ async def test_fake_never_raises_on_unknown_or_degraded_input(bench_repo: Path, 
     fake = _fake(bench_repo, tmp_path)
     assert await fake.check_mergeability("nope") == {"mergeable": False, "reason": "missing_pr"}
     assert await fake.get_pr_review_context("nope") == {
-        "reviews": [], "review_threads": [], "head_oid": "", "review_decision": ""
+        "reviews": [], "review_threads": [], "head_oid": "", "review_decision": "",
     }
     assert await fake.get_pr_reviews("nope") == []
     assert await fake.get_pr_diff("https://fake/o/r/pull/999") == ("", [])

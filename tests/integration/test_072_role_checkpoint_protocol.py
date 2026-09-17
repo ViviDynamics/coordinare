@@ -28,7 +28,7 @@ def _state_for(stage: str, response: dict) -> dict:
     state["performer_services"] = {stage: _Performer(response)}
     state["performer_stage"] = stage
     state["lifecycle_sequence"] = [
-        "implementing", "reviewing", "security", "qa", "documenting"
+        "implementing", "reviewing", "security", "qa", "documenting",
     ]
     state["current_card"] = {"id": "CARD_X", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "sess-1"}

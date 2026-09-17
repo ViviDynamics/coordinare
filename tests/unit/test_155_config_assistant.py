@@ -59,7 +59,7 @@ class ScriptedBackend:
             raise AssertionError(
                 f"the assistant called the model {len(self.prompts)} times; the test "
                 "scripted fewer. One structured response per turn — a tool-calling "
-                "loop is what spec 124 found unreliable on self-hosted models."
+                "loop is what spec 124 found unreliable on self-hosted models.",
             )
         result = self.responses.pop(0)
         if isinstance(result, Exception):
@@ -204,7 +204,7 @@ class TestAProposalMustNameSomethingReal:
             history=[],
             config=coordinare_config,
             backend=ScriptedBackend(
-                [{"reply": "sure", "proposal": {"section": "flux", "values": {"jigawatts": 1.21}}}]
+                [{"reply": "sure", "proposal": {"section": "flux", "values": {"jigawatts": 1.21}}}],
             ),
         )
         assert turn.proposal is None
@@ -223,8 +223,8 @@ class TestAProposalMustNameSomethingReal:
                     {
                         "reply": "sure",
                         "proposal": {"section": "global", "values": {"no_such_field": 1}},
-                    }
-                ]
+                    },
+                ],
             ),
         )
         assert turn.proposal is None
@@ -273,7 +273,7 @@ class TestSecretsCannotBeSetByProposal:
         )
 
     def test_a_literal_value_for_a_secret_field_is_rejected(
-        self, coordinare_config, monkeypatch
+        self, coordinare_config, monkeypatch,
     ) -> None:
         """The rule itself, on a field made secret for the duration."""
         from coordinare.services import config_assistant as mod
@@ -290,7 +290,7 @@ class TestSecretsCannotBeSetByProposal:
         assert rejection is not None and "environment variable" in rejection
 
     def test_an_env_reference_for_a_secret_field_is_accepted(
-        self, coordinare_config, monkeypatch
+        self, coordinare_config, monkeypatch,
     ) -> None:
         from coordinare.services import config_assistant as mod
 
@@ -303,7 +303,7 @@ class TestSecretsCannotBeSetByProposal:
         assert rejection is None, rejection
 
     def test_a_literal_cannot_ride_alongside_a_placeholder(
-        self, coordinare_config, monkeypatch
+        self, coordinare_config, monkeypatch,
     ) -> None:
         """Review finding: `is_env_placeholder` asks whether a value *contains* one.
 
@@ -318,7 +318,7 @@ class TestSecretsCannotBeSetByProposal:
         rejection = mod.validate_proposal(
             coordinare_config,
             mod.Proposal(
-                section="global", values={"assignee_filter": "${WHO} ghp_realsecret"}
+                section="global", values={"assignee_filter": "${WHO} ghp_realsecret"},
             ),
         )
         assert rejection is not None, "a literal secret rode in beside a placeholder"
@@ -333,7 +333,7 @@ class TestOneCallPerTurn:
 
         backend = ScriptedBackend([{"reply": "hello", "proposal": None}])
         await run_turn(
-            message="hi", history=[], config=coordinare_config, backend=backend
+            message="hi", history=[], config=coordinare_config, backend=backend,
         )
 
         assert len(backend.prompts) == 1, (
@@ -394,13 +394,13 @@ class TestApplyingGoesThroughTheGuardedWritePath:
         raw["github_token"] = "ghp_fixturetoken"
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
         cfg = CoordinareConfiguration(
-            **coerce_multi_symphony_raw({**raw, "github_token": "ghp_fixturetoken"})
+            **coerce_multi_symphony_raw({**raw, "github_token": "ghp_fixturetoken"}),
         )
         daemon = MagicMock()
         daemon.state = {"coordinare_config": cfg, "config_version": 7}
         daemon.running = True
         app = create_dashboard_app(
-            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
         )
         return TestClient(app, base_url="http://127.0.0.1:8090")
 
@@ -412,7 +412,7 @@ class TestApplyingGoesThroughTheGuardedWritePath:
         temp_config_path.write_text(temp_config_path.read_text() + "\n# a concurrent edit\n")
 
         resp = client.put(
-            "/api/config/global", json={"max_concurrent_cards": 5, "expected_hash": stale}
+            "/api/config/global", json={"max_concurrent_cards": 5, "expected_hash": stale},
         )
 
         assert resp.status_code == 409, (
@@ -426,7 +426,7 @@ class TestApplyingGoesThroughTheGuardedWritePath:
         current = client.get("/api/config/all").json()["content_hashes"]["config_yaml"]
 
         resp = client.put(
-            "/api/config/global", json={"max_concurrent_cards": 5, "expected_hash": current}
+            "/api/config/global", json={"max_concurrent_cards": 5, "expected_hash": current},
         )
 
         assert resp.status_code == 200, resp.text
@@ -457,7 +457,7 @@ class TestApplyingGoesThroughTheGuardedWritePath:
         current = client.get("/api/config/all").json()["content_hashes"]["config_yaml"]
 
         client.put(
-            "/api/config/global", json={"max_concurrent_cards": 7, "expected_hash": current}
+            "/api/config/global", json={"max_concurrent_cards": 7, "expected_hash": current},
         )
 
         import yaml
@@ -498,7 +498,7 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
         }
         daemon.running = True
         app = create_dashboard_app(
-            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
         )
         return TestClient(app, base_url="http://127.0.0.1:8090")
 
@@ -514,7 +514,7 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
         assert client.get("/api/config/all").status_code == 200
 
     def test_enabled_without_a_backend_says_so_rather_than_failing(
-        self, temp_config_path
+        self, temp_config_path,
     ) -> None:
         """An operator who turned it on but configured no model gets an explanation."""
         client = self._client(temp_config_path, enabled=True, backend=None)
@@ -538,13 +538,13 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
                         "values": {"max_concurrent_cards": 2},
                         "reason": "so one stuck card does not idle the daemon",
                     },
-                }
-            ]
+                },
+            ],
         )
         client = self._client(temp_config_path, enabled=True, backend=backend)
 
         body = client.post(
-            "/api/assistant/message", json={"message": "how many cards at once?"}
+            "/api/assistant/message", json={"message": "how many cards at once?"},
         ).json()
 
         assert body["error"] is None, body["error"]
@@ -558,7 +558,7 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
         what the client sent, not anything the server remembered on its own.
         """
         backend = ScriptedBackend(
-            [{"reply": "one", "proposal": None}, {"reply": "two", "proposal": None}]
+            [{"reply": "one", "proposal": None}, {"reply": "two", "proposal": None}],
         )
         client = self._client(temp_config_path, enabled=True, backend=backend)
 
@@ -659,7 +659,7 @@ class TestAFreshInstallIsToldWhatToDoFirst:
         from coordinare.services.config_assistant import opening_guidance
 
         opening = opening_guidance(
-            self._config(endpoints=[], model_endpoints=[], modes=[], github_org="")
+            self._config(endpoints=[], model_endpoints=[], modes=[], github_org=""),
         )
 
         assert "model" in opening.lower(), (
@@ -669,7 +669,7 @@ class TestAFreshInstallIsToldWhatToDoFirst:
 
     def test_the_opening_reaches_the_panel(self, temp_config_path) -> None:
         client = TestTheFeatureIsOffUntilItIsTurnedOn._client(
-            temp_config_path, enabled=True, backend=ScriptedBackend()
+            temp_config_path, enabled=True, backend=ScriptedBackend(),
         )
 
         assert client.get("/api/assistant/status").json()["opening"]
@@ -747,7 +747,7 @@ class TestAProposalIsCheckedBeforeTheOperatorSeesIt:
         ],
     )
     def test_a_value_the_schema_rejects_never_reaches_apply(
-        self, coordinare_config, values
+        self, coordinare_config, values,
     ) -> None:
         from coordinare.services.config_assistant import validate_proposal
 
@@ -778,7 +778,7 @@ class TestAProposalIsCheckedBeforeTheOperatorSeesIt:
 
     @pytest.mark.asyncio
     async def test_an_invalid_proposal_surfaces_as_an_error_not_a_proposal(
-        self, coordinare_config
+        self, coordinare_config,
     ) -> None:
         from coordinare.services.config_assistant import run_turn
 
@@ -791,8 +791,8 @@ class TestAProposalIsCheckedBeforeTheOperatorSeesIt:
                     {
                         "reply": "sure",
                         "proposal": {"section": "global", "values": {"log_level": "verbose"}},
-                    }
-                ]
+                    },
+                ],
             ),
         )
 

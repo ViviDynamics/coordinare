@@ -91,7 +91,7 @@ def render_scan_findings(findings: list[dict]) -> str:
         tool = f.get("description", "").split(":")[0] if f.get("description") else "scanner"
         lines.append(
             f"- {tool} on {f.get('file', '?')}:{f.get('line', '?')}: {f.get('category', '?')} "
-            f"({f.get('severity', '?')}) - {f.get('description', '')}"
+            f"({f.get('severity', '?')}) - {f.get('description', '')}",
         )
     return "\n".join(lines)
 

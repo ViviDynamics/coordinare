@@ -74,7 +74,7 @@ async def test_scenario_normal_operation(tmp_path: Path) -> None:
     store = StateStore(path=path, metrics=metrics)
 
     daemon = CoordinareDaemon(
-        _TransitionGraph(), max_cycles=2, sleep_func=_no_sleep, state_store=store
+        _TransitionGraph(), max_cycles=2, sleep_func=_no_sleep, state_store=store,
     )
     await daemon.start()
 
@@ -115,7 +115,7 @@ async def test_scenario_crash_recovery(tmp_path: Path) -> None:
             return state
 
     daemon = CoordinareDaemon(
-        _KeepPhaseGraph(), max_cycles=1, sleep_func=_no_sleep, state_store=store2
+        _KeepPhaseGraph(), max_cycles=1, sleep_func=_no_sleep, state_store=store2,
     )
     daemon.state["github_service"] = github
     await daemon.start()
@@ -138,7 +138,7 @@ async def test_scenario_corrupted_file(tmp_path: Path) -> None:
     metrics = CoordinareMetrics()
     store = StateStore(path=path, metrics=metrics)
     daemon = CoordinareDaemon(
-        _IdleGraph(), max_cycles=1, sleep_func=_no_sleep, state_store=store
+        _IdleGraph(), max_cycles=1, sleep_func=_no_sleep, state_store=store,
     )
 
     await daemon.start()  # must not raise

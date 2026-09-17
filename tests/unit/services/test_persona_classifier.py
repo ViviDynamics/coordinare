@@ -115,8 +115,8 @@ def _baseline_response() -> dict[str, Any]:
                 "qa": {"depth": "normal", "focus": "ok"},
                 "tech_writer": {"depth": "skip", "focus": "no docs"},
                 "closer": {"depth": "skim", "focus": "ok"},
-            }
-        }
+            },
+        },
     }
 
 
@@ -274,8 +274,8 @@ async def test_unknown_depth_value_falls_back_to_full() -> None:
                 "qa": {"depth": "deep", "focus": "x"},
                 "tech_writer": {"depth": "deep", "focus": "x"},
                 "closer": {"depth": "deep", "focus": "x"},
-            }
-        }
+            },
+        },
     })
 
     scope = await persona_classifier.classify(

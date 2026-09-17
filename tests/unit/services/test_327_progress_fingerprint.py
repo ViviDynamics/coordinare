@@ -70,7 +70,7 @@ def test_short_almost_periodic_text_is_not_treated_as_a_cycle() -> None:
     """`abcabd` shares a prefix with a cycle but is not one -- it must stay
     distinguishable from the true cycle `abcabc`, or real output collapses."""
     assert progress_fingerprint([{"text": "abcabd"}]) != progress_fingerprint(
-        [{"text": "abcabc"}]
+        [{"text": "abcabc"}],
     )
 
 
@@ -116,7 +116,7 @@ def test_exact_rotations_of_a_non_looping_message_stay_distinct() -> None:
     assert second != first
     assert second in {first[i:] + first[:i] for i in range(len(first))}  # a rotation
     assert progress_fingerprint([{"text": first}]) != progress_fingerprint(
-        [{"text": second}]
+        [{"text": second}],
     )
 
 

@@ -105,13 +105,13 @@ def _green_approved_head() -> tuple[dict, list[dict]]:
                                                 "name": "ci/test",
                                                 "status": "COMPLETED",
                                                 "conclusion": "SUCCESS",
-                                            }
-                                        ]
+                                            },
+                                        ],
                                     },
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {
@@ -119,10 +119,10 @@ def _green_approved_head() -> tuple[dict, list[dict]]:
                     {
                         "pattern": "main",
                         "requiredStatusChecks": [{"context": "ci/test"}],
-                    }
-                ]
+                    },
+                ],
             },
-        }
+        },
     }
     reviews = [{"id": "R1", "author_login": "alice", "state": "APPROVED"}]
     return head_payload, reviews
@@ -137,10 +137,10 @@ def _base_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict:
                 "target": {
                     "oid": "base0000",
                     "statusCheckRollup": {"contexts": {"nodes": contexts}},
-                }
+                },
             },
             "branchProtectionRules": {"nodes": bpr_nodes},
-        }
+        },
     }
 
 
@@ -175,7 +175,7 @@ def _gate_state(github: object, *, enabled: bool = True) -> dict:
     class _Sym:
         closer_pr_checks = CloserPrChecksConfig()
         persona_scope = PersonaScopeConfig(
-            baseline_prevention_gate=BaselinePreventionGateConfig(enabled=enabled)
+            baseline_prevention_gate=BaselinePreventionGateConfig(enabled=enabled),
         )
 
     state["current_symphony"] = "default"
@@ -196,7 +196,7 @@ async def test_l1_e2e_holds_while_base_red_then_merges_once_base_green() -> None
         head_payload,
         reviews,
         base_payload=_base_payload(
-            contexts=[_ctx("ci/test", "FAILURE")], bpr_nodes=bpr
+            contexts=[_ctx("ci/test", "FAILURE")], bpr_nodes=bpr,
         ),
     )
 
@@ -216,7 +216,7 @@ async def test_l1_e2e_holds_while_base_red_then_merges_once_base_green() -> None
 
     # Base turns green; the SAME github (its cached PrChecksService) is re-read.
     gh._base_payload = _base_payload(
-        contexts=[_ctx("ci/test", "SUCCESS")], bpr_nodes=bpr
+        contexts=[_ctx("ci/test", "SUCCESS")], bpr_nodes=bpr,
     )
     with capture_logs() as logs2:
         result2 = await monitor_pr(_gate_state(gh, enabled=True))

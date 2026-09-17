@@ -18,7 +18,7 @@ def select_pipelines(
     for cid, session in sessions.items():
         card = session.get('current_card') or {}
         live = session.get('phase') == 'monitoring_performer' and bool(
-            (session.get('agent_dispatch') or {}).get('session_id')
+            (session.get('agent_dispatch') or {}).get('session_id'),
         )
         if live:
             running.append(cid)

@@ -86,8 +86,8 @@ def _full_response() -> dict[str, Any]:
                 "qa": {"depth": "normal", "focus": "retry behavior tests"},
                 "tech_writer": {"depth": "skim", "focus": "minor README"},
                 "closer": {"depth": "skim", "focus": "tag scope-invariant"},
-            }
-        }
+            },
+        },
     }
 
 
@@ -178,9 +178,9 @@ async def test_output_schema_validates() -> None:
                     "qa": {"depth": "skip", "focus": "no runtime code"},
                     "tech_writer": {"depth": "full", "focus": "doc changes"},
                     "closer": {"depth": "normal", "focus": "tag invariant"},
-                }
-            }
-        }
+                },
+            },
+        },
     )
     gh = _FakeGitHub([{"path": "README.md", "added": 3, "removed": 0, "status": "modified"}])
 

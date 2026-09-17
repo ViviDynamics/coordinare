@@ -63,7 +63,7 @@ def test_render_single_idle_performer(
     state = pool._registrations["perf-1"]
     state.availability = "idle"
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git", "node"]
+        backends=["claude_code"], tool_flags=["git", "node"],
     )
     state.last_status_at = datetime.now(UTC)
 
@@ -98,7 +98,7 @@ def test_render_busy_performer(
     state.availability = "busy"
     state.current_job_id = "job-123"
     state.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     result = render_performer_pool_widget(pool)

@@ -146,7 +146,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
         dep_questions = [
             f"This card appears to depend on {dep_labels}. "
             "Those cards should complete first to avoid merge conflicts "
-            "and wasted implementation effort."
+            "and wasted implementation effort.",
         ]
         # Merge with any sufficiency questions the assessor also raised.
         all_questions = dep_questions + [str(q) for q in questions if str(q).strip()]
@@ -173,7 +173,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
                 "issue_number": n,
                 "title": raw_titles.get(blocker_item, "") if blocker_item else None,
                 "column": col,
-                "issue_url": raw_url if raw_url else None,
+                "issue_url": raw_url or None,
                 "source": "assessor",
             })
         state["blocked_by_dependencies"] = dep_info  # type: ignore[typeddict-unknown-key]

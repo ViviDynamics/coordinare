@@ -17,7 +17,7 @@ class TestResetReviewFindingsForReviewer:
                 "changed_files": [],
                 "diff_truncated": False,
                 "covered_files": [],
-            }
+            },
         }
 
         result = reset_review_findings_for_reviewer(state, "reviewing")
@@ -33,7 +33,7 @@ class TestResetReviewFindingsForReviewer:
                 "changed_files": [],
                 "diff_truncated": False,
                 "covered_files": [],
-            }
+            },
         }
 
         result = reset_review_findings_for_reviewer(state, "implementing")
@@ -88,9 +88,9 @@ class TestInjectReviewFindings:
                         "why_blocking": "Documentation required",
                         "evidence": "def foo():",
                         "origin": "model",
-                    }
+                    },
                 ],
-            }
+            },
         }
         card_context = {}
 
@@ -108,7 +108,7 @@ class TestInjectReviewFindings:
                 "changed_files": [],
                 "diff_truncated": False,
                 "covered_files": [],
-            }
+            },
         }
         card_context = {}
 
@@ -152,7 +152,7 @@ class TestInjectReviewFindings:
                 "changed_files": [],
                 "diff_truncated": False,
                 "covered_files": [],
-            }
+            },
         }
 
         for stage in ["reviewing", "architecting", "assessing", "qa", "closing_review", "documenting", "security"]:
@@ -172,7 +172,7 @@ class TestInjectReviewFindings:
                 "diff_truncated": False,
                 "covered_files": [],
                 "findings_before_gate": [],
-            }
+            },
         }
         card_context = {}
 

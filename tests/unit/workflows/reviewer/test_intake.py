@@ -10,7 +10,7 @@ from tests.unit.workflows.reviewer._fixtures import DIFF, TRUNCATED_DIFF
 
 
 def _score(**over):
-    base = dict(pr_diff=DIFF, relay_feedback=[], implementation_brief={}, title="Add div", description="Divide numbers", pr_url="https://github.com/o/r/pull/12")
+    base = {"pr_diff": DIFF, "relay_feedback": [], "implementation_brief": {}, "title": "Add div", "description": "Divide numbers", "pr_url": "https://github.com/o/r/pull/12"}
     base.update(over)
     return SimpleNamespace(**base)
 

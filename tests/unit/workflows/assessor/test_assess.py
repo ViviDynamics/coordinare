@@ -27,7 +27,7 @@ async def test_assess_step_one_call():
             "questions": [],
             "assumptions": [],
             "criteria": [],
-        })
+        }),
     )
 
     result = await run_assess_step(toolkit, "Card text")
@@ -51,7 +51,7 @@ async def test_assess_step_respects_budget():
             "questions": [],
             "assumptions": [],
             "criteria": [],
-        })
+        }),
     )
 
     await run_assess_step(toolkit, "Card text")
@@ -74,7 +74,7 @@ async def test_assess_step_passes_persona_and_schema():
             "questions": [],
             "assumptions": [],
             "criteria": [],
-        })
+        }),
     )
 
     await run_assess_step(toolkit, "Card text")
@@ -97,7 +97,7 @@ async def test_assess_step_budget_matches_registry():
             "questions": [],
             "assumptions": [],
             "criteria": [],
-        })
+        }),
     )
 
     await run_assess_step(toolkit, "Card text")

@@ -81,7 +81,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
         try:
             async with asyncio.timeout(min(_CLASSIFIER_TIMEOUT_SECONDS, remaining)):
                 label = await classify_issue_comment_ai(
-                    event.body, event.author, conducting_backend
+                    event.body, event.author, conducting_backend,
                 )
         except TimeoutError:
             # The existing keyword fallback preserves the original comment body
@@ -136,7 +136,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
 
     state["card_clarifications"] = clarifications
     state["requirements_changed"] = requirements_changed
-    state["last_issue_comment_id"] = new_max_id if new_max_id else since_id
+    state["last_issue_comment_id"] = new_max_id or since_id
     state["processed_issue_comment_ids"] = processed
 
     return state

@@ -202,7 +202,7 @@ def fetch_ci_log_cli(argv: list[str] | None = None) -> int:
     if isinstance(job_id, int):
         try:
             tail = asyncio.run(
-                get_check_run_logs(owner, repo, job_id, token, max_chars=max_chars)
+                get_check_run_logs(owner, repo, job_id, token, max_chars=max_chars),
             )
         except Exception as exc:
             print(f"performer-fetch-ci-log: log fetch error: {exc}", file=sys.stderr)

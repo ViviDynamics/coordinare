@@ -384,7 +384,7 @@ def test_collect_in_flight_sessions_skips_non_dict_entries() -> None:
                 "phase": "idle",
                 "agent_dispatch": {"session_id": "x"},
             },
-        }
+        },
     }
     result = _collect_in_flight_sessions(state)
     assert list(result.keys()) == ["PVTI_OK"]
@@ -417,7 +417,7 @@ def test_wedge_window_parses_iso_strings_from_snapshot() -> None:
                 now.replace(tzinfo=None).isoformat(),  # naive ISO string (line 348 path)
                 "garbage-not-a-date",  # malformed entry — should be skipped
                 12345,  # non-string non-datetime — should be skipped
-            ]
+            ],
         },
     }
     detect_wedged_state(state)

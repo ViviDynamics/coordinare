@@ -42,7 +42,7 @@ def card_doc_folder(score: Score) -> str | None:
 
 
 def card_docs_prompt_section(
-    score: Score, stand_path: Path | None
+    score: Score, stand_path: Path | None,
 ) -> list[str]:
     """Build the ``## Card Documentation`` prompt block.
 
@@ -125,7 +125,7 @@ def qa_findings_prompt_section(score: Score) -> list[str]:
         ev = f.get("evidence")
         if isinstance(ev, dict) and ev.get("command"):
             lines.append(
-                f"  - evidence: `{ev['command']}` exited {ev.get('exit_code')}"
+                f"  - evidence: `{ev['command']}` exited {ev.get('exit_code')}",
             )
         if f.get("repro_command"):
             lines.append(f"  - reproduce: `{f['repro_command']}`")

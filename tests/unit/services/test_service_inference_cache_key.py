@@ -26,11 +26,11 @@ def _manifest(cache_inputs: list[str], agent_version: str = "v1") -> ServicesMan
                     "port": 6379,
                     "why_needed": "test",
                     "sources": cache_inputs[:1] or ["Gemfile"],
-                }
+                },
             ],
             "cache_inputs": cache_inputs,
             "agent_version": agent_version,
-        }
+        },
     )
 
 
@@ -84,12 +84,12 @@ async def test_cache_key_changes_when_listed_path_content_changes(
     manifest = _manifest(["Gemfile"])
 
     before = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
 
     (tmp_path / "Gemfile").write_text("gem 'rails'\ngem 'pg'\n")
     after = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
     assert before != after
 
@@ -103,12 +103,12 @@ async def test_cache_key_stable_when_unlisted_path_changes(tmp_path: Path) -> No
     manifest = _manifest(["Gemfile"])
 
     before = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
 
     (tmp_path / "README.md").write_text("hello, world\n")
     after = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
     assert before == after
 
@@ -120,10 +120,10 @@ async def test_cache_key_changes_with_agent_version(tmp_path: Path) -> None:
     manifest = _manifest(["Gemfile"])
 
     v1 = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
     v2 = await compute_inference_cache_key(
-        agent_version="v2", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v2", prior_manifest=manifest, content_fetcher=fetcher,
     )
     assert v1 != v2
 
@@ -175,12 +175,12 @@ async def test_missing_listed_file_changes_key(tmp_path: Path) -> None:
     manifest = _manifest(["Gemfile"])
 
     before = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
 
     (tmp_path / "Gemfile").unlink()
     after = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=manifest, content_fetcher=fetcher,
     )
     assert before != after
 
@@ -194,10 +194,10 @@ async def test_cache_input_order_does_not_matter(tmp_path: Path) -> None:
     m2 = _manifest(["b", "a"])
 
     k1 = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=m1, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=m1, content_fetcher=fetcher,
     )
     k2 = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=m2, content_fetcher=fetcher
+        agent_version="v1", prior_manifest=m2, content_fetcher=fetcher,
     )
     assert k1 == k2
 
@@ -211,11 +211,11 @@ async def test_empty_cache_inputs_marker_does_not_collapse(tmp_path: Path) -> No
 
     manifest = _manifest([])
     key = await compute_inference_cache_key(
-        agent_version="v1", prior_manifest=manifest, content_fetcher=never_called
+        agent_version="v1", prior_manifest=manifest, content_fetcher=never_called,
     )
     # Compare to a different agent_version + same empty inputs — should differ.
     key2 = await compute_inference_cache_key(
-        agent_version="v2", prior_manifest=manifest, content_fetcher=never_called
+        agent_version="v2", prior_manifest=manifest, content_fetcher=never_called,
     )
     assert key != key2
 

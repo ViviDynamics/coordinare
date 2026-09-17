@@ -106,7 +106,7 @@ def test_no_collected_test_reaches_the_live_gateway():
             # Real imports only. Matching on raw text would flag this test's
             # own error message, which is how the first version of this failed.
             if (isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                "coordinare.eval.gateway"
+                "coordinare.eval.gateway",
             )) or (isinstance(node, ast.Import) and any(
                 a.name.startswith("coordinare.eval.gateway") for a in node.names
             )):

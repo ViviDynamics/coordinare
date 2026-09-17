@@ -66,8 +66,7 @@ def _repair_truncated_json(text: str) -> str | None:
     if in_string:
         # If the truncation landed right after a backslash, drop it so the
         # closing quote is not interpreted as an escape sequence.
-        if repair.endswith("\\"):
-            repair = repair[:-1]
+        repair = repair.removesuffix("\\")
         repair += '"'
     # Trim a dangling comma or colon that would otherwise leave the object
     # expecting another value (e.g. `{"a": 1,` or `{"a":`).

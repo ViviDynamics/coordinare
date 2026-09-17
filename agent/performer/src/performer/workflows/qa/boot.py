@@ -122,7 +122,7 @@ def plan_needs_server(plan: TestPlan, base_url: str | None) -> bool:
 
     placeholders = re.compile(r"\$\{?BASE_URL\}?|\$\{?PORT\}?")
     url_token = re.compile(
-        r"(?:localhost|127\.0\.0\.1)(?::\d|:\$)|https?://(?:localhost|127\.0\.0\.1)"
+        r"(?:localhost|127\.0\.0\.1)(?::\d|:\$)|https?://(?:localhost|127\.0\.0\.1)",
     )
     if base_url:
         origin = base_url.rstrip("/")
@@ -361,7 +361,7 @@ class AppBoot:
                     f"port {port} (command: {cmd}). This is a crash, not a slow boot."
                 )
                 log.warning(
-                    "qa.boot.process_exited", command=cmd, port=port, exit_code=exit_code
+                    "qa.boot.process_exited", command=cmd, port=port, exit_code=exit_code,
                 )
                 self._proc = None  # nothing left to terminate
                 return None

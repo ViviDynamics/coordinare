@@ -607,7 +607,7 @@ def test_legacy_put_config_global_persists_and_reports_saved(temp_config_path, m
     client = _make_client(temp_config_path, raw)
     etag = client.get("/api/config/global").headers["etag"]  # 157: version required
     resp = client.put(
-        "/api/config/global", json={"poll_interval_seconds": 33, "expected_hash": etag}
+        "/api/config/global", json={"poll_interval_seconds": 33, "expected_hash": etag},
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "saved"
@@ -673,7 +673,7 @@ def test_legacy_persona_put_then_delete_round_trip(temp_config_path, monkeypatch
     assert "Be thorough." in body["instructions"]
 
     delete = client.delete(
-        "/api/personas/reviewer", headers=_version_header(temp_config_path)
+        "/api/personas/reviewer", headers=_version_header(temp_config_path),
     )
     assert delete.status_code == 204
 

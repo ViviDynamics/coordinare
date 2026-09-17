@@ -57,7 +57,7 @@ def redirect_body(settings: AdvocateSettings) -> str:
     """
     try:
         return settings.redirect_template.format(
-            support_channel_url=settings.support_channel_url
+            support_channel_url=settings.support_channel_url,
         )
     except (KeyError, IndexError, ValueError):
         return settings.redirect_template

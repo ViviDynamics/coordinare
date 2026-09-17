@@ -109,7 +109,7 @@ class NoiseReport(BaseModel):
             flag = " (single sample)" if s.single_sample else ""
             lines.append(
                 f"| {name} | {s.mean:.6g} | {s.variance:.6g} | {s.stdev:.6g} "
-                f"| {s.min:.6g} | {s.max:.6g} | {s.n}{flag} |"
+                f"| {s.min:.6g} | {s.max:.6g} | {s.n}{flag} |",
             )
         if self.card_agreement:
             lines += ["", "## Per-card verdict agreement (fraction agreeing with modal verdict)", ""]
@@ -209,7 +209,7 @@ async def run_repeats(
                 stub=stub,
             )
             score = score_run(
-                artifact, fixtures, weights=weights, judge=judge, judge_model=judge_model
+                artifact, fixtures, weights=weights, judge=judge, judge_model=judge_model,
             )
             score.write(repeat_dir)
             runs.append((artifact.config_fingerprint.hash, score, f"{i}/score.json"))

@@ -50,7 +50,7 @@ def render_issues(issues: list[IssueCandidate]) -> str:
         blocks.append(
             f"### issue_id: {issue.issue_id}\n"
             f"Title: {issue.title}\n\n"
-            f"Body:\n{issue.body}"
+            f"Body:\n{issue.body}",
         )
     return "\n\n".join(blocks)
 

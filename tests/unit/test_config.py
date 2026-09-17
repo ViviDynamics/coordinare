@@ -26,8 +26,8 @@ def _write_config(tmp_path, github_token: str = "token-from-file"):
                 f'github_token: "{github_token}"',
                 'agent_executable: "/usr/local/bin/agent"',
                 'human_reviewers: ["alice"]',
-            ]
-        )
+            ],
+        ),
     )
     return path
 
@@ -52,8 +52,8 @@ def test_legacy_assessment_backend_key_raises(tmp_path) -> None:
                 'agent_executable: "/usr/local/bin/agent"',
                 'human_reviewers: ["alice"]',
                 'assessment_backend: "claude_cli"',
-            ]
-        )
+            ],
+        ),
     )
     with pytest.raises(ValueError, match="legacy 'assessment_backend'"):
         ProjectConfiguration.from_yaml(path)
@@ -313,7 +313,7 @@ def test_performer_image_yaml_override(tmp_path) -> None:
             'github_token: "tok"',
             'human_reviewers: ["alice"]',
             'performer_image: "coordinare-performer:custom"',
-        ])
+        ]),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.performer_image == "coordinare-performer:custom"
@@ -488,7 +488,7 @@ def test_personas_config_parses_all_eight_roles_from_yaml(tmp_path) -> None:
                 "qa": {"instructions": "validate tests"},
                 "tech_writer": {"instructions": "write docs"},
             },
-        })
+        }),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.personas.advocate.instructions == "scan issues"
@@ -510,7 +510,7 @@ def test_missing_personas_key_produces_all_default_personas_config(tmp_path) -> 
             "github_project_number": 1,
             "github_token": "tok",
             "human_reviewers": ["alice"],
-        })
+        }),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert isinstance(config.personas, PersonasConfig)
@@ -550,7 +550,7 @@ def test_project_configuration_raises_validation_error_for_oversized_persona(tmp
             "personas": {
                 "implementer": {"instructions": "x" * (PERSONA_MAX_LENGTH + 1)},
             },
-        })
+        }),
     )
     with pytest.raises(ValidationError):
         ProjectConfiguration.from_yaml(path)
@@ -855,7 +855,7 @@ def test_assignee_filter_parsed_from_yaml(tmp_path) -> None:
             'agent_executable: "/usr/bin/agent"',
             'human_reviewers: ["alice"]',
             'assignee_filter: "coordinare-bot"',
-        ])
+        ]),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.assignee_filter == "coordinare-bot"
@@ -892,7 +892,7 @@ def test_bot_identity_parsed_from_yaml(tmp_path) -> None:
             "bot_identity:",
             '  name: "my-bot"',
             '  email: "my-bot@company.com"',
-        ])
+        ]),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.bot_identity.name == "my-bot"
@@ -912,7 +912,7 @@ def test_env_passthrough_parsed_from_yaml(tmp_path) -> None:
             "env_passthrough:",
             "  - ANTHROPIC_API_KEY",
             "  - OPENCODE_MODEL",
-        ])
+        ]),
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.env_passthrough == ["ANTHROPIC_API_KEY", "OPENCODE_MODEL"]

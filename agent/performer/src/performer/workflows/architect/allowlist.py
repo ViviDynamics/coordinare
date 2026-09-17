@@ -14,13 +14,13 @@ import re
 import shlex
 
 _READ_ONLY_PROGRAMS: frozenset[str] = frozenset(
-    {"ls", "cat", "head", "tail", "sed", "rg", "grep", "find", "wc", "sort", "uniq", "git", "tr", "cut"}
+    {"ls", "cat", "head", "tail", "sed", "rg", "grep", "find", "wc", "sort", "uniq", "git", "tr", "cut"},
 )
 _GIT_READ_ONLY: frozenset[str] = frozenset(
-    {"log", "show", "diff", "ls-files", "status", "blame", "rev-parse", "ls-tree", "branch"}
+    {"log", "show", "diff", "ls-files", "status", "blame", "rev-parse", "ls-tree", "branch"},
 )
 _FIND_FORBIDDEN: frozenset[str] = frozenset(
-    {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+    {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"},
 )
 _SHELL_META = re.compile(r"[><`$]")  # redirections and substitutions
 # The two stderr redirects a survey legitimately uses; live models attach them
@@ -35,7 +35,7 @@ _SED_OPTIONS: frozenset[str] = frozenset({"-n", "-E", "-r", "--sandbox"})
 _GIT_FORBIDDEN_PREFIXES: tuple[str, ...] = ("--output", "--external-diff", "--ext-diff", "--textconv")
 _GIT_BRANCH_WRITES: frozenset[str] = frozenset(
     {"-d", "-D", "-m", "-M", "-c", "-C", "-f", "-u", "--delete", "--move", "--copy", "--force",
-     "--set-upstream-to", "--unset-upstream", "--edit-description", "--track", "--no-track"}
+     "--set-upstream-to", "--unset-upstream", "--edit-description", "--track", "--no-track"},
 )
 # rg/grep: --pre runs a preprocessor per file, --hostname-bin runs a binary.
 _GREP_FORBIDDEN_PREFIXES: tuple[str, ...] = ("--pre", "--hostname-bin")

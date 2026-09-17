@@ -52,7 +52,7 @@ class _Service:
         return {"status": "accepted"}
 
     async def dispatch_card(
-        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None
+        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
         self.dispatched.append(card_context)
         return {"status": "accepted", "session_id": f"sess-{self.name}"}
@@ -346,7 +346,7 @@ class _FailingBackend:
 
 class _GitHubWithPRFiles(_GitHub):
     async def get_pr_files(
-        self, owner: str, repo: str, pr_number: int
+        self, owner: str, repo: str, pr_number: int,
     ) -> dict[str, Any]:
         return {
             "files": [
@@ -355,7 +355,7 @@ class _GitHubWithPRFiles(_GitHub):
                     "added": 10,
                     "removed": 2,
                     "status": "modified",
-                }
+                },
             ],
             "head_sha": "abc123",
         }

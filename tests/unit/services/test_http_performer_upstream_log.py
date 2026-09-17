@@ -17,7 +17,7 @@ def _cfg() -> PerformerEndpointConfig:
             "roles": ["implementing"],
             "image": "performer:base",
             "endpoint": "http://127.0.0.1:8080",
-        }
+        },
     )
 
 

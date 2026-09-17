@@ -261,7 +261,7 @@ class SubprocessTransport:
             if self._stderr_task and not self._stderr_task.done():
                 self._stderr_task.cancel()
             self._stderr_task = asyncio.create_task(
-                self._drain_stderr(proc), name="performer-stderr-drain"
+                self._drain_stderr(proc), name="performer-stderr-drain",
             )
         return proc
 
@@ -284,7 +284,7 @@ class SubprocessTransport:
             logger.debug("stderr_drain_error", error=str(exc))
 
     async def _one_shot(
-        self, message: ProtocolMessage, timeout: int
+        self, message: ProtocolMessage, timeout: int,
     ) -> ProtocolResponse:
         """Start a fresh process, send one message, wait for it to exit."""
         start = time.monotonic()
@@ -350,7 +350,7 @@ class SubprocessTransport:
 
     @staticmethod
     def _parse_response(
-        data: bytes, *, one_shot: bool, returncode: int | None
+        data: bytes, *, one_shot: bool, returncode: int | None,
     ) -> ProtocolResponse:
         if one_shot and returncode is not None and returncode != 0:
             raise TransportError(f"Agent process exited with code {returncode}")

@@ -74,7 +74,7 @@ def _make_metrics() -> MagicMock:
     m = MagicMock()
     m.cycles_completed_total._value.get.return_value = 0
     m.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-05-17T09:00:00+00:00"
+        "started_at": "2026-05-17T09:00:00+00:00",
     }
     return m
 
@@ -174,7 +174,7 @@ def test_cycle_end_broadcast_still_reflects_active_sessions() -> None:
     async def _run() -> dict:
         store = DashboardStore()
         daemon = _make_daemon(
-            {"PVTI_B": _session("PVTI_B", "Add keyboard nav", "reviewing")}
+            {"PVTI_B": _session("PVTI_B", "Add keyboard nav", "reviewing")},
         )
         gen = store.sse_stream(daemon, _make_metrics(), _make_health())
         try:

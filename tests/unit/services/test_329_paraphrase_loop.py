@@ -78,7 +78,7 @@ def test_genuine_work_is_never_flattened() -> None:
         assert not fp.endswith(LOOP_MARKER), f"genuine work flattened into a stall: {fp[:80]}"
         # and it must still move when new work arrives
         assert progress_fingerprint(stream) != progress_fingerprint(
-            [*stream, {"type": "progress", "is_delta": True, "text": "all green, 214 examples, 0 failures\n"}]
+            [*stream, {"type": "progress", "is_delta": True, "text": "all green, 214 examples, 0 failures\n"}],
         )
 
 

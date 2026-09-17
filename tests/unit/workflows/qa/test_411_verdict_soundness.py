@@ -114,7 +114,7 @@ async def test_a_card_with_no_criteria_refuses_before_the_model_answers():
     class _TK:
         async def call_model(self, **_kw):
             raise AssertionError(
-                "the zero-criteria refusal must fire before any model call"
+                "the zero-criteria refusal must fire before any model call",
             )
 
     with pytest.raises(EmptyPlan) as exc_info:
@@ -163,7 +163,7 @@ def test_a_pure_command_check_does_not_need_the_server():
     from performer.workflows.qa.boot import plan_needs_server
 
     assert not plan_needs_server(
-        _plan_with_command("pytest -q"), "http://127.0.0.1:8000/"
+        _plan_with_command("pytest -q"), "http://127.0.0.1:8000/",
     )
 
 
@@ -796,7 +796,7 @@ async def test_an_aborted_visual_run_cleans_its_evidence_tree():
             if schema is JudgeOutput:
                 raise RuntimeError("judge exploded mid-run")
             return await super().call_model(
-                persona=persona, schema=schema, content=content, budget=budget
+                persona=persona, schema=schema, content=content, budget=budget,
             )
 
     tk = _ExplodingJudgeToolkit(
@@ -973,7 +973,7 @@ def test_the_booted_origin_is_shell_quoted_in_rewritten_commands():
     textually. The substituted values must be quoted."""
     plan = _plan_with_command("curl -sS $BASE_URL/api/status")
     rewritten = rewrite_command_placeholders(
-        plan, "http://127.0.0.1:8000/; touch /tmp/pwned"
+        plan, "http://127.0.0.1:8000/; touch /tmp/pwned",
     )
 
     assert rewritten == 1

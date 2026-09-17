@@ -41,7 +41,7 @@ async def test_an_advocate_run_handles_20_issues_within_10_seconds(tmp_path: Pat
 
     started = time.monotonic()
     result = await AdvocateWorkflow(lister=gh.lister, poster=gh).run(
-        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "20"}), tk
+        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "20"}), tk,
     )
     elapsed = time.monotonic() - started
 
@@ -63,6 +63,6 @@ async def test_issues_are_batched_rather_than_one_call_each(tmp_path: Path) -> N
     from tests.unit.workflows.advocate._fakes import score
 
     await AdvocateWorkflow(lister=gh.lister, poster=gh).run(
-        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "10"}), tk
+        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "10"}), tk,
     )
     assert tk.metrics.model_calls == 2, "20 issues at 10 per call is 2 calls, not 20"

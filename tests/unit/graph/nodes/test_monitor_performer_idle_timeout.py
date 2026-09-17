@@ -109,7 +109,7 @@ async def test_monitor_performer_idle_timeout_first_retry() -> None:
             "performer_stage": "implementing",
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-x"},
-        }
+        },
     }
 
     result = await monitor_performer(state)
@@ -142,7 +142,7 @@ async def test_monitor_performer_idle_timeout_via_error_marker() -> None:
             "performer_stage": "implementing",
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-x"},
-        }
+        },
     }
 
     result = await monitor_performer(state)
@@ -175,7 +175,7 @@ async def test_monitor_performer_real_claude_idle_error_string_routes_to_retry()
             "performer_stage": "implementing",
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-x"},
-        }
+        },
     }
 
     result = await monitor_performer(state)
@@ -207,7 +207,7 @@ async def test_monitor_performer_stop_reason_idle_timeout_routes_to_retry() -> N
             "performer_stage": "implementing",
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-sr"},
-        }
+        },
     }
 
     result = await monitor_performer(state)
@@ -235,7 +235,7 @@ async def test_monitor_performer_idle_timeout_exhausted_blocks() -> None:
             "performer_stage": "implementing",
             "idle_timeout_retries": {},
             "agent_dispatch": {"session_id": "uuid-x"},
-        }
+        },
     }
 
     # Pre-exhaust the counter
@@ -287,7 +287,7 @@ async def test_monitor_performer_partial_progress_invokes_drain(monkeypatch) -> 
             "phase": "monitoring_performer",
             "performer_stage": "implementing",
             "agent_dispatch": {"session_id": "uuid-pp"},
-        }
+        },
     }
 
     result = await monitor_performer(state)

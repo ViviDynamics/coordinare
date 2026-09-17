@@ -60,9 +60,9 @@ def changed_files():
 
 
 def finding(**over) -> SecurityFinding:
-    base = dict(path="src/db.py", line=7, category="injection", problem="request parameter concatenated into SQL", why_blocking="attacker controls the query",
-                evidence='query = "SELECT * FROM users WHERE id = " + user_id', origin="model", severity="high", routing="implementer",
-                introduced_by="src/db.py", tool="model")
+    base = {"path": "src/db.py", "line": 7, "category": "injection", "problem": "request parameter concatenated into SQL", "why_blocking": "attacker controls the query",
+                "evidence": 'query = "SELECT * FROM users WHERE id = " + user_id', "origin": "model", "severity": "high", "routing": "implementer",
+                "introduced_by": "src/db.py", "tool": "model"}
     base.update(over)
     return SecurityFinding(**base)
 

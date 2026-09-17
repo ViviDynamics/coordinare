@@ -42,7 +42,7 @@ def _good_manifest() -> dict[str, Any]:
                 "port": 6379,
                 "why_needed": "session store",
                 "sources": ["Gemfile"],
-            }
+            },
         ],
         "cache_inputs": ["Gemfile"],
         "agent_version": "test-1",
@@ -70,12 +70,12 @@ class _StubClient:
 
 @pytest.mark.asyncio
 async def test_success_on_first_attempt_writes_artifacts(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
-            phase=None, stdout="ok", stderr="", ok=True, returncode=0
+            phase=None, stdout="ok", stderr="", ok=True, returncode=0,
         ),
     )
     client = _StubClient([LLMStep(manifest=_good_manifest())])
@@ -104,7 +104,7 @@ async def test_success_on_first_attempt_writes_artifacts(
 
 @pytest.mark.asyncio
 async def test_validation_failure_then_success_uses_hint(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """First validate() fails, second succeeds. Hint must reach second attempt."""
     results = iter(
@@ -117,14 +117,14 @@ async def test_validation_failure_then_success_uses_hint(
                 returncode=1,
             ),
             ValidationResult(phase=None, stdout="ok", stderr="", ok=True, returncode=0),
-        ]
+        ],
     )
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: next(results),
     )
     client = _StubClient(
-        [LLMStep(manifest=_good_manifest()), LLMStep(manifest=_good_manifest())]
+        [LLMStep(manifest=_good_manifest()), LLMStep(manifest=_good_manifest())],
     )
 
     result = await infer_services(
@@ -144,12 +144,12 @@ async def test_validation_failure_then_success_uses_hint(
 
 @pytest.mark.asyncio
 async def test_budget_exhaustion_writes_rejected_and_raises(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
-            phase="start", stdout="", stderr="boom", ok=False, returncode=42
+            phase="start", stdout="", stderr="boom", ok=False, returncode=42,
         ),
     )
     client = _StubClient([LLMStep(manifest=_good_manifest()) for _ in range(2)])
@@ -177,20 +177,20 @@ async def test_budget_exhaustion_writes_rejected_and_raises(
 
 @pytest.mark.asyncio
 async def test_agent_error_counted_as_attempt(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A schema-invalid manifest from the LLM consumes one retry."""
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
-            phase=None, stdout="ok", stderr="", ok=True, returncode=0
+            phase=None, stdout="ok", stderr="", ok=True, returncode=0,
         ),
     )
     client = _StubClient(
         [
             LLMStep(manifest=_bad_manifest_missing_required()),
             LLMStep(manifest=_good_manifest()),
-        ]
+        ],
     )
 
     result = await infer_services(
@@ -205,7 +205,7 @@ async def test_agent_error_counted_as_attempt(
 
 @pytest.mark.asyncio
 async def test_retry_budget_must_be_positive(
-    project: Path, output_root: Path
+    project: Path, output_root: Path,
 ) -> None:
     client = _StubClient([])
     with pytest.raises(ValueError):
@@ -220,7 +220,7 @@ async def test_retry_budget_must_be_positive(
 
 @pytest.mark.asyncio
 async def test_skip_validation_writes_artifacts_immediately(
-    project: Path, output_root: Path
+    project: Path, output_root: Path,
 ) -> None:
     """run_validation=False bypasses the validator (used by callers that dry-run elsewhere)."""
     client = _StubClient([LLMStep(manifest=_good_manifest())])
@@ -238,7 +238,7 @@ async def test_skip_validation_writes_artifacts_immediately(
 
 @pytest.mark.asyncio
 async def test_stale_rejected_file_removed_on_success(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     services_dir = output_root / "services"
     services_dir.mkdir(parents=True)
@@ -248,7 +248,7 @@ async def test_stale_rejected_file_removed_on_success(
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
-            phase=None, stdout="ok", stderr="", ok=True, returncode=0
+            phase=None, stdout="ok", stderr="", ok=True, returncode=0,
         ),
     )
     client = _StubClient([LLMStep(manifest=_good_manifest())])
@@ -340,7 +340,7 @@ def _mixed_manifest() -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_managed_only_manifest_skips_validation_and_records(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """104/US1: a manifest whose only services are coordinare-managed
     (postgres/redis) must NOT be validated-by-starting — validate() is never
@@ -372,7 +372,7 @@ async def test_managed_only_manifest_skips_validation_and_records(
 
 @pytest.mark.asyncio
 async def test_mixed_manifest_validates_only_generic(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """104/US3: a mixed manifest validates ONLY the generic service; postgres is
     never started during inference; the persisted manifest records BOTH."""
@@ -405,14 +405,14 @@ async def test_mixed_manifest_validates_only_generic(
 
 @pytest.mark.asyncio
 async def test_generic_failure_still_rejects(
-    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """104/US2: a generic service whose start/health fails still rejects the
     manifest (the run-validation regression guard is intact)."""
     monkeypatch.setattr(
         "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
-            phase="health", stdout="", stderr="not listening", ok=False, returncode=1
+            phase="health", stdout="", stderr="not listening", ok=False, returncode=1,
         ),
     )
     generic_only = {
@@ -426,7 +426,7 @@ async def test_generic_failure_still_rejects(
                 "why_needed": "jobs",
                 "sources": ["Procfile"],
                 "kind": "generic",
-            }
+            },
         ],
         "cache_inputs": ["Procfile"],
         "agent_version": "test-1",

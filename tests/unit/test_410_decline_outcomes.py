@@ -42,8 +42,8 @@ def _status() -> dict:
             "assessment": {
                 "expected_behavior": "the premise is wrong",
                 "goal": "g",
-            }
-        }
+            },
+        },
     }
 
 
@@ -77,7 +77,7 @@ async def test_not_work_comments_and_closes():
     gh = _FakeGitHub()
     board = _FakeBoard()
     out = await _apply_assessor_decline(
-        state, _card(), "CARD-1", "assessment_not_work", _status(), board, gh
+        state, _card(), "CARD-1", "assessment_not_work", _status(), board, gh,
     )
     assert len(gh.comments) == 1
     assert "not work" in gh.comments[0]
@@ -95,7 +95,7 @@ async def test_needs_split_moves_backlog_and_does_not_close():
     gh = _FakeGitHub()
     board = _FakeBoard()
     out = await _apply_assessor_decline(
-        state, _card(), "CARD-1", "assessment_needs_split", _status(), board, gh
+        state, _card(), "CARD-1", "assessment_needs_split", _status(), board, gh,
     )
     assert len(gh.comments) == 1
     assert "split" in gh.comments[0].lower()
@@ -108,7 +108,7 @@ async def test_needs_split_moves_backlog_and_does_not_close():
 async def test_missing_github_still_retires():
     state = _state()
     out = await _apply_assessor_decline(
-        state, _card(), "CARD-1", "assessment_not_work", _status(), None, None
+        state, _card(), "CARD-1", "assessment_not_work", _status(), None, None,
     )
     assert out["phase"] == "idle"
     assert out["agent_dispatch"] == {}
@@ -119,7 +119,7 @@ async def test_board_failure_still_retires():
     state = _state()
     gh = _FakeGitHub(fail_close=True)
     out = await _apply_assessor_decline(
-        state, _card(), "CARD-1", "assessment_not_work", _status(), None, gh
+        state, _card(), "CARD-1", "assessment_not_work", _status(), None, gh,
     )
     assert gh.comments, "the comment may still have landed"
     assert out["phase"] == "idle", "the run's retirement must not depend on a mutation"

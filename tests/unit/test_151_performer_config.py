@@ -35,7 +35,7 @@ def test_http_non_loopback_rejected_falls_back(field: str) -> None:
 
 @pytest.mark.parametrize("field", ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"])
 def test_http_host_gateway_rejected_without_optin(
-    field: str, monkeypatch: pytest.MonkeyPatch
+    field: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ALLOW_HOST_GATEWAY_GITHUB", raising=False)
     s = Settings()
@@ -47,7 +47,7 @@ def test_http_host_gateway_rejected_without_optin(
 
 @pytest.mark.parametrize("field", ["GITHUB_API_URL", "GITHUB_GRAPHQL_URL"])
 def test_http_host_gateway_accepted_with_optin(
-    field: str, monkeypatch: pytest.MonkeyPatch
+    field: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ALLOW_HOST_GATEWAY_GITHUB", "1")
     s = Settings()

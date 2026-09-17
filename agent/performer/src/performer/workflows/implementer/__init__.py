@@ -187,7 +187,7 @@ class ImplementerWorkflow:
 
     @staticmethod
     async def _resume(
-        ctx: RunContext, plans: list[MilestonePlan], workspace: Path
+        ctx: RunContext, plans: list[MilestonePlan], workspace: Path,
     ) -> tuple[list[MilestonePlan], int | None]:
         """Drop the milestones a previous run of this card already did (171 FR-007).
 
@@ -240,7 +240,7 @@ class ImplementerWorkflow:
                     done_when=plan.done_when,
                     implementation_successful=True,
                     satisfied_by="prior_run",
-                )
+                ),
             )
         resumed_from = remaining[0].index if (skipped and remaining) else None
         log.info(
