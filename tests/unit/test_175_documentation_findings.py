@@ -30,6 +30,37 @@ def session():
                           "docs": [{"topic": "behavior", "location": "docs/wiki/behavior.md", "say": "Explain the API"}]}}
 
 
+def test_412_empty_diff_verdicts_collect_their_reports():
+    """412 round 4: nothing_to_review/nothing_to_scan/not_applicable advance
+    through the terminal-success path, so their structured reports must
+    collect like any other terminal instead of being silently discarded."""
+    state = session()
+    collect(state, "reviewing", "nothing_to_review",
+            {"report": {"review": {"verdict": "nothing_to_review", "covered_files": ["a.py"],
+                                   "advisory_findings": [{"category": "style", "body": "naming"}]}}, "head_sha": "abc"})
+    collect(state, "security", "not_applicable",
+            {"report": {"security": {"verdict": "not_applicable", "blocking": [], "advisory": []}}, "head_sha": "abc"})
+    records = state["documentation_findings"]
+    assert records["reviewing"]["findings"]["covered_files"] == ["a.py"]
+    # 412 round 30: the advisory notes survive the projection (and ride the
+    # findings hash) -- the documenter sees them as structured analysis.
+    assert records["reviewing"]["findings"]["advisory_findings"] == [{"category": "style", "body": "naming"}]
+    assert records["security"]["findings"]["verdict"] == "not_applicable"
+
+
+def test_412_baseline_scanner_findings_survive_the_projection():
+    """412 round 25: baseline findings are documented as reported and never
+    dropped -- the coordinare's security projection persists them, not just
+    the performer-side record."""
+    state = session()
+    collect(state, "security", "security_passed",
+            {"report": {"security": {"verdict": "security_passed", "blocking": [], "advisory": [],
+                                     "baseline_scanner_findings": [{"category": "secret", "problem": "hardcoded key"}]}},
+             "head_sha": "abc"})
+    findings = state["documentation_findings"]["security"]["findings"]
+    assert findings["baseline_scanner_findings"] == [{"category": "secret", "problem": "hardcoded key"}]
+
+
 def test_all_analysts_have_independent_bounded_persisted_inputs():
     state = session()
     samples = [("assessing", "assessment_complete", {"assessment": {"goal": "Goal", "ready": True}}),

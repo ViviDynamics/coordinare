@@ -16,11 +16,12 @@
     "findings_dropped": {"type": "array", "maxItems": 30, "items": {"$ref": "#/definitions/finding"}, "default": []},
     "findings_after_anchor_recheck": {"type": "array", "maxItems": 30, "items": {"$ref": "#/definitions/finding"}, "default": []},
     "scanner_findings": {"type": "array", "maxItems": 200, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "baseline_scanner_findings": {"type": "array", "maxItems": 200, "items": {"$ref": "#/definitions/finding"}, "default": []},
     "blocking": {"type": "array", "maxItems": 230, "items": {"$ref": "#/definitions/finding"}, "default": []},
     "advisory": {"type": "array", "maxItems": 230, "items": {"$ref": "#/definitions/finding"}, "default": []},
     "coverage_pass_ran": {"type": "boolean", "default": false},
     "coverage_pass_output": {"type": "string", "default": ""},
-    "verdict": {"type": "string", "enum": ["security_passed", "security_failed", "env_blocked"]},
+    "verdict": {"type": "string", "enum": ["security_passed", "security_failed", "env_blocked", "nothing_to_scan", "not_applicable"]},
     "hold_reason": {"type": ["string", "null"], "default": null},
     "covered_files": {"type": "array", "items": {"type": "string"}},
     "post_error": {"type": ["string", "null"], "default": null},
@@ -36,6 +37,8 @@
         "hunks": {"type": "array", "items": {"type": "object", "required": ["header", "start_line", "end_line"],
           "properties": {"header": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "lines": {"type": "array", "items": {"type": "string"}}}}},
         "fully_in_diff": {"type": "boolean"},
+        "deleted": {"type": "boolean", "description": "True if the diff removes the file; deletions are covered by their own removals", "default": false},
+        "deleted_before_cut": {"type": "boolean", "description": "412 round 24: true when the truncation cut through a removal section -- the cut clears `deleted` so the coverage gates hold the file unread, and this records the hunk-header truth so the scan argv still excludes the missing file", "default": false},
         "opened_by_survey": {"type": "boolean", "default": false}
       }
     },
@@ -43,7 +46,7 @@
       "type": "object",
       "required": ["tool", "command", "finding_count", "duration_ms"],
       "properties": {
-        "tool": {"type": "string", "enum": ["semgrep", "bandit"]},
+        "tool": {"type": "string", "description": "412 round 15: model-driven scanners are arbitrary installed tools (gosec, trivy, pylint, ...), so the tool name is not an enum."},
         "command": {"type": "string"},
         "exit_code": {"type": ["integer", "null"]},
         "finding_count": {"type": "integer", "minimum": 0},
@@ -57,7 +60,7 @@
       "properties": {
         "path": {"type": "string"},
         "line": {"type": "integer", "minimum": 0},
-        "category": {"type": "string", "enum": ["injection", "broken_authorization", "hardcoded_secret", "insecure_deserialization", "path_traversal", "ssrf", "weak_crypto", "missing_hardening", "information_leak", "other_insecure_pattern"]},
+        "category": {"type": "string", "enum": ["injection", "broken_authorization", "hardcoded_secret", "insecure_deserialization", "path_traversal", "ssrf", "weak_crypto", "missing_hardening", "information_leak", "vulnerable_dependency", "supply_chain", "insecure_configuration", "other_insecure_pattern"]},
         "problem": {"type": "string", "minLength": 1, "maxLength": 500},
         "why_blocking": {"type": "string", "minLength": 1, "maxLength": 500},
         "evidence": {"type": "string", "maxLength": 200},
@@ -65,7 +68,7 @@
         "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
         "routing": {"type": "string", "enum": ["implementer", "architect"]},
         "introduced_by": {"type": "string"},
-        "tool": {"type": "string", "enum": ["model", "semgrep", "bandit"]},
+        "tool": {"type": "string", "description": "model for a model-reported finding, or any installed scanner tool name."},
         "downgraded": {"type": "boolean", "default": false},
         "downgrade_reason": {"type": "string", "maxLength": 300, "default": ""}
       }

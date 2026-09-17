@@ -33,6 +33,11 @@ _VERDICT_MAP: dict[str, Verdict] = {
     "qa_passed": "pass",
     "security_passed": "pass",
     "docs_committed": "pass",
+    # 412: advance-with-note verdicts -- the stage completed, so the attempt
+    # closes as a pass even though nothing was reviewed/scanned.
+    "nothing_to_review": "pass",
+    "nothing_to_scan": "pass",
+    "not_applicable": "pass",
     # Failure markers — QA/review rejected the work
     "changes_requested": "fail",
     "qa_failed": "fail",

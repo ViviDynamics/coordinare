@@ -6,10 +6,10 @@ dispositions: every security round scans and analyses fresh. Pure.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from performer.workflows.reviewer.diffparse import detect_truncation, diff_lines, parse_unified_diff
+from performer.workflows.reviewer.diffparse import detect_truncation, diff_lines, parse_unified_diff, unread_beyond_truncation, unread_overflow_from_note
 from performer.workflows.reviewer.models import ChangedFile
 
 __all__ = ["SecurityIntake", "build_intake"]
@@ -23,9 +23,13 @@ class SecurityIntake:
     diff_text: str
     diff_truncated: bool
     brief: dict[str, Any]
+    pr_diff_status: str = ""
+    pr_changed_paths: list[str] = field(default_factory=list)
+    pr_changed_paths_overflow: bool = False
     title: str = ""
     description: str = ""
     pr_url: str = ""
+    unread_overflow: int = 0
 
     @property
     def changed_paths(self) -> list[str]:
@@ -49,12 +53,16 @@ def build_intake(score: Any) -> SecurityIntake:
     diff_text = str(getattr(score, "pr_diff", "") or "")
     truncated = detect_truncation(diff_text)
     files = parse_unified_diff(diff_text)
-    if truncated and files:
-        files[-1] = files[-1].model_copy(update={"fully_in_diff": False})
+    if truncated:
+        files = unread_beyond_truncation(files, diff_text)
+    overflow = unread_overflow_from_note(diff_text)
     brief = getattr(score, "implementation_brief", None)
     return SecurityIntake(
-        changed_files=files, diff_text=diff_text, diff_truncated=truncated,
+        changed_files=files, diff_text=diff_text, diff_truncated=truncated, unread_overflow=overflow,
         brief=dict(brief) if isinstance(brief, dict) and brief else {},
+        pr_diff_status=str(getattr(score, "pr_diff_status", "") or ""),
+        pr_changed_paths=[str(p) for p in (getattr(score, "pr_changed_paths", None) or [])],
+        pr_changed_paths_overflow=bool(getattr(score, "pr_changed_paths_overflow", False)),
         title=str(getattr(score, "title", "") or ""), description=str(getattr(score, "description", "") or ""),
         pr_url=str(getattr(score, "pr_url", "") or ""),
     )

@@ -76,8 +76,10 @@ async def test_a_truncated_diff_runs_exactly_one_coverage_pass_naming_the_unread
     assert calls["model"] == 2, "the survey call and the single coverage call"
     assert outcome.coverage_pass_ran is True
     assert "src/extra.py" in outcome.coverage_pass_output
-    assert unread_files(files) == []
-    assert files[-1].opened_by_survey is True
+    # 412 round 12: the bare note names nothing, so the unaccounted tail stays
+    # unread behind the phantom even after every visible file is opened.
+    assert unread_files(files) == ["<unnamed files beyond the truncated diff>"]
+    assert files[-2].opened_by_survey is True
 
 
 @pytest.mark.asyncio

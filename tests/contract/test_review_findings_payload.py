@@ -126,6 +126,8 @@ class TestReviewFindingsRecordSchema:
                         }
                     ],
                     "fully_in_diff": True,
+                    "deleted": False,
+                    "deleted_before_cut": False,
                     "opened_by_survey": False,
                 }
             ],

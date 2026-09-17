@@ -145,6 +145,18 @@ class Score(BaseModel):
     pr_url: str = ""  # existing PR URL (for reviewer/security/QA roles)
     pr_node_id: str = ""  # existing PR node ID (for terminal status)
     pr_diff: str = ""  # raw unified PR diff injected for review roles (reviewer/closer/qa/tech_writer)
+    # 412: why pr_diff is absent — "injected" (present), "empty" (fetched, no
+    # reviewable diff), "failed"/"unavailable" (fetch outage). The workflow
+    # short-circuits only on a real empty; an outage holds instead.
+    pr_diff_status: str = ""
+    # 412 round 25: the GitHub-side changed-path list, which survives diff
+    # sanitization — the security workflow reads it to distinguish a
+    # non-scannable change set (not_applicable) from content it never saw.
+    pr_changed_paths: list[str] = Field(default_factory=list)
+    # 412 round 39: the dispatch caps the list; overflow means paths were cut,
+    # so the security empty-diff classification must hold instead of trusting
+    # a partial list.
+    pr_changed_paths_overflow: bool = False
     # 164: optional role workflow name. Score uses extra="ignore", so this MUST
     # be declared or the field is silently dropped and the role runs the pre-164
     # single-backend path while looking correctly configured.
@@ -357,7 +369,9 @@ PerformanceState = Literal[
     "accepted", "working", "blocked", "pr_opened", "plan_committed",
     "approved", "changes_requested",
     "security_passed", "security_failed",
-    "qa_passed", "qa_failed",
+    "nothing_to_review", "nothing_to_scan", "not_applicable",
+    "qa_passed", "qa_failed", "qa_env_blocked",
+    "diagnostic_complete",
     "docs_committed",
     "assessment_complete",
     "error", "session_expired", "waiting_for_checks",

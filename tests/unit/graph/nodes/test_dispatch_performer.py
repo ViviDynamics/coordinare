@@ -1842,21 +1842,40 @@ _SEC_CARD = {
     "pr_node_id": "PR_node_1",
 }
 
-_SAMPLE_FINDINGS = [
-    {
-        "severity": "high",
-        "category": "78",
-        "description": "semgrep:dangerous-system-call",
-        "file": "src/app/vuln.py",
-        "line": 3,
-        "routing": "implementer",
-    }
-]
+
+@pytest.mark.asyncio
+async def test_security_role_without_workflow_runs_the_floor(monkeypatch) -> None:
+    """412 round 10: a security role NOT configured with the workflow keeps
+    the 083 dispatch-time scan — the example config promises that removing
+    the workflow line restores the prose path exactly, so the floor is back."""
+    security_svc = _Service()
+    github = _GitHubWithDiff()
+    state = _base_state(
+        github_service=github,
+        performer_services={"security": security_svc},
+        performer_stage="security",
+        lifecycle_sequence=["security"],
+        current_card=dict(_SEC_CARD),
+    )
+    scanned: list[list[str]] = []
+
+    def _scan(files, root):
+        scanned.append(list(files))
+        return [{"severity": "low", "file": "x", "category": "style"}]
+
+    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _scan)
+
+    result = await dispatch_performer(state)
+
+    assert scanned == [["src/app/vuln.py"]], "the floor fetched the diff and scanned it once"
+    assert result["scanner_findings"] == [{"severity": "low", "file": "x", "category": "style"}]
+    assert security_svc.dispatched[0]["scanner_findings"] == result["scanner_findings"]
 
 
 @pytest.mark.asyncio
-async def test_security_role_scans_once_and_stashes_findings(monkeypatch) -> None:
-    """security role → get_pr_diff once + scan_diff once + findings stashed/injected."""
+async def test_security_role_with_workflow_skips_the_floor(monkeypatch) -> None:
+    """412: when the security role runs the workflow, the workflow record is
+    the single source — the floor is skipped and scanner_findings stays empty."""
     security_svc = _Service()
     github = _GitHubWithDiff()
     state = _base_state(
@@ -1867,28 +1886,34 @@ async def test_security_role_scans_once_and_stashes_findings(monkeypatch) -> Non
         current_card=dict(_SEC_CARD),
     )
 
-    calls: list[tuple[list[str], str]] = []
+    def _fail_scan(files, root):
+        raise AssertionError("the floor must not run for a workflow-configured security role")
 
-    def fake_scan(changed_files, repo_root):
-        calls.append((list(changed_files), str(repo_root)))
-        return list(_SAMPLE_FINDINGS)
+    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _fail_scan)
+    from coordinare.config import PerformerRoleConfig
 
-    monkeypatch.setattr(
-        "coordinare.graph.nodes.dispatch_performer.scan_diff", fake_scan
-    )
+    role_cfg = PerformerRoleConfig(workflow="security")
+    performers = type("PerformersCfg", (), {"resolved_role": lambda self, role: role_cfg})()
+    config = type(
+        "Cfg",
+        (),
+        {
+            "performers": performers,
+            "resolve_performer_dispatch_model": lambda self, role: {},
+            "resolve_performer_orchestration": lambda self, role: None,
+        },
+    )()
+    state["config"] = config
 
     result = await dispatch_performer(state)
 
-    assert github.get_pr_diff_calls == ["https://github.com/acme/repo/pull/42"]
-    assert len(calls) == 1
-    assert calls[0][0] == ["src/app/vuln.py"]
-    assert result["scanner_findings"] == _SAMPLE_FINDINGS
-    assert security_svc.dispatched[0]["scanner_findings"] == _SAMPLE_FINDINGS
+    assert result["scanner_findings"] == []
+    assert security_svc.dispatched[0]["scanner_findings"] == []
 
 
 @pytest.mark.asyncio
-async def test_non_security_role_does_not_scan(monkeypatch) -> None:
-    """Non-security role → scan_diff NOT called, no scanner_findings state key."""
+async def test_non_security_role_does_not_set_scanner_findings() -> None:
+    """Non-security role → no scanner_findings state key."""
     impl_svc = _Service()
     github = _GitHubWithDiff()
     state = _base_state(
@@ -1899,83 +1924,10 @@ async def test_non_security_role_does_not_scan(monkeypatch) -> None:
         current_card=dict(_SEC_CARD),
     )
 
-    called: list[int] = []
-
-    def fake_scan(*a, **k):
-        called.append(1)
-        return []
-
-    monkeypatch.setattr(
-        "coordinare.graph.nodes.dispatch_performer.scan_diff", fake_scan
-    )
-
     result = await dispatch_performer(state)
 
-    assert called == []
     assert "scanner_findings" not in result
     assert "scanner_findings" not in impl_svc.dispatched[0]
-
-
-@pytest.mark.asyncio
-async def test_scan_error_fails_closed_with_synthetic_finding(monkeypatch) -> None:
-    """scan_diff raises ScannerError → fail-closed synthetic critical finding."""
-    from coordinare.services.security_scanner import ScannerError
-
-    security_svc = _Service()
-    github = _GitHubWithDiff()
-    state = _base_state(
-        github_service=github,
-        performer_services={"security": security_svc},
-        performer_stage="security",
-        lifecycle_sequence=["security"],
-        current_card=dict(_SEC_CARD),
-    )
-
-    def boom(*a, **k):
-        raise ScannerError("semgrep binary not found")
-
-    monkeypatch.setattr(
-        "coordinare.graph.nodes.dispatch_performer.scan_diff", boom
-    )
-
-    result = await dispatch_performer(state)
-
-    findings = result["scanner_findings"]
-    assert len(findings) == 1
-    f = findings[0]
-    assert f["severity"] == "critical"
-    assert f["category"] == "scanner_unavailable"
-    assert f["routing"] == "halt"
-    assert security_svc.dispatched[0]["scanner_findings"] == findings
-
-
-@pytest.mark.asyncio
-async def test_diff_fetch_error_fails_closed(monkeypatch) -> None:
-    """get_pr_diff raises → fail-closed synthetic finding; scan_diff never reached."""
-    security_svc = _Service()
-    github = _GitHubWithDiff(raise_exc=RuntimeError("fetch failed (status 503)"))
-    state = _base_state(
-        github_service=github,
-        performer_services={"security": security_svc},
-        performer_stage="security",
-        lifecycle_sequence=["security"],
-        current_card=dict(_SEC_CARD),
-    )
-
-    def must_not_scan(*a, **k):
-        raise AssertionError("scan_diff must not run when diff fetch fails")
-
-    monkeypatch.setattr(
-        "coordinare.graph.nodes.dispatch_performer.scan_diff", must_not_scan
-    )
-
-    result = await dispatch_performer(state)
-
-    findings = result["scanner_findings"]
-    assert len(findings) == 1
-    assert findings[0]["severity"] == "critical"
-    assert findings[0]["category"] == "scanner_unavailable"
-    assert findings[0]["routing"] == "halt"
 
 
 # ---------------------------------------------------------------------------
@@ -2022,6 +1974,7 @@ async def test_review_roles_receive_pr_diff(stage, role_key) -> None:
 
     assert github.get_pr_diff_calls == ["https://github.com/acme/repo/pull/42"]
     assert svc.dispatched[0].get("pr_diff") == _REVIEW_DIFF
+    assert svc.dispatched[0].get("pr_diff_status") == "injected"
 
 
 @pytest.mark.asyncio
@@ -2062,9 +2015,71 @@ async def test_review_role_diff_fetch_failure_is_graceful() -> None:
 
     await dispatch_performer(state)
 
-    # dispatch still happened, just without an injected diff
+    # dispatch still happened, just without an injected diff -- and the status
+    # tells the workflow to hold instead of reading the outage as an empty diff
     assert len(svc.dispatched) == 1
     assert "pr_diff" not in svc.dispatched[0]
+    assert svc.dispatched[0].get("pr_diff_status") == "failed"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_carries_github_changed_paths() -> None:
+    """412 round 25: the changed-path list survives diff sanitization, so the
+    security workflow can tell a binary-only change set (not_applicable)
+    from content it never saw (hold). It rides card_context next to
+    pr_diff_status."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])
+    state = _base_state(
+        github_service=github,
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatched[0].get("pr_changed_paths") == ["src/app.py"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_caps_the_changed_path_list() -> None:
+    """412 round 39: the changed-path list rides the dispatch payload uncapped
+    from the raw GitHub diff, so it is sliced to the budget and the overflow
+    is declared on a flag the security workflow holds on. A list within the
+    budget carries no overflow flag."""
+    paths = [f"src/f{i}.py" for i in range(600)]
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=paths)
+    state = _base_state(
+        github_service=github,
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    payload = svc.dispatched[0]
+    assert len(payload.get("pr_changed_paths")) == 512
+    assert payload.get("pr_changed_paths") == paths[:512]
+    assert payload.get("pr_changed_paths_overflow") is True
+
+    within = _Service()
+    state = _base_state(
+        github_service=_GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=paths[:512]),
+        performer_services={"reviewing": within},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert len(within.dispatched[0].get("pr_changed_paths")) == 512
+    assert "pr_changed_paths_overflow" not in within.dispatched[0]
 
 
 @pytest.mark.asyncio
@@ -2083,6 +2098,7 @@ async def test_review_role_empty_diff_not_injected() -> None:
     await dispatch_performer(state)
 
     assert "pr_diff" not in svc.dispatched[0]
+    assert svc.dispatched[0].get("pr_diff_status") == "empty"
 
 
 # ---------------------------------------------------------------------------
@@ -2283,7 +2299,10 @@ async def test_prior_clarifications_absent_on_first_dispatch() -> None:
 # (prevents committed .codex/ junk from overflowing the model context → 400)
 # ---------------------------------------------------------------------------
 
-from coordinare.graph.nodes.dispatch_performer import _sanitize_pr_diff  # noqa: E402
+from coordinare.graph.nodes.dispatch_performer import (  # noqa: E402
+    _diff_section_path,
+    _sanitize_pr_diff,
+)
 
 
 def _diff(path: str, body: str = "+x\n") -> str:
@@ -2322,3 +2341,233 @@ def test_sanitize_keeps_clean_diff_unchanged_no_note():
     out = _sanitize_pr_diff(raw)
     assert "about.html.erb" in out
     assert "[coordinare:" not in out  # nothing omitted/truncated → no note
+
+
+def test_sanitize_truncation_note_names_the_rename_target():
+    """412 round 2: the parser's ChangedFile carries the b/ side, so the note
+    must name the b/ target too -- or the cut-through file never turns unread."""
+    raw = (
+        "diff --git a/docs/old.md b/docs/new.md\n--- a/docs/old.md\n+++ b/docs/new.md\n@@ -1,1 +1,2 @@\n old\n"
+        + "+" + ("x" * 40_000) + "\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=500)
+    assert "coordinare-cut: docs/new.md" in out
+    assert "coordinare-cut: docs/old.md" not in out
+
+
+def test_sanitize_truncation_note_paths_keep_spaces():
+    """412 round 2: paths with spaces stay whole in the header and the note."""
+    raw = (
+        "diff --git a/docs/my guide.md b/docs/my guide.md\n"
+        "--- a/docs/my guide.md\n+++ b/docs/my guide.md\n@@ -1,1 +1,2 @@\n old\n"
+        + "+" + ("x" * 40_000) + "\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=500)
+    assert "coordinare-cut: docs/my guide.md" in out
+
+
+def test_diff_section_path_reads_quoted_delete_header():
+    """412 round 8: a delete-only section carries no "+++" line, so the
+    quoted header is the only name source -- and the quoted form is exact,
+    with no greedy " b/" split."""
+    section = (
+        'diff --git "a/foo b/bar.md" "b/foo b/bar.md"\n'
+        "deleted file mode 100644\n"
+        "--- a/foo b/bar.md\n+++ /dev/null\n"
+    )
+    assert _diff_section_path(section) == "foo b/bar.md"
+
+
+def test_diff_section_path_delete_only_keeps_quoted_edge_spaces():
+    """412 round 45: the quoted payload is byte-exact -- the post-decode
+    trim the delete-only branch applied changed a filename git deliberately
+    quoted, and the coordinare-cut metadata then named a different file."""
+    section = (
+        'diff --git "a/foo.py " "b/foo.py "\n'
+        "deleted file mode 100644\n"
+        '--- "a/foo.py "\n'
+        "+++ /dev/null\n"
+    )
+    assert _diff_section_path(section) == "foo.py "
+
+
+def test_diff_section_path_decodes_quoted_header_escapes():
+    """412 round 17: a quoted header payload is git-escaped (real output
+    for a file named "café menu.py") -- the fallback decodes it."""
+    section = (
+        'diff --git "a/caf\\303\\251 menu.py" "b/caf\\303\\251 menu.py"\n'
+        "deleted file mode 100644\n"
+        '--- "a/caf\\303\\251 menu.py"\n'
+        "+++ /dev/null\n"
+    )
+    assert _diff_section_path(section) == "café menu.py"
+
+
+def test_diff_section_path_decodes_quoted_plus_plus():
+    """412 round 17: a quoted +++ payload is git-escaped -- decode it, not
+    just strip the quotes around the raw escapes."""
+    section = (
+        'diff --git "a/caf\\303\\251 menu.py" "b/caf\\303\\251 menu.py"\n'
+        '--- "a/caf\\303\\251 menu.py"\n'
+        '+++ "b/caf\\303\\251 menu.py"\n'
+        "@@ -1,1 +1,2 @@\n+new\n"
+    )
+    assert _diff_section_path(section) == "café menu.py"
+
+
+def test_diff_section_path_decodes_quoted_rename_to():
+    """412 round 17: a quoted rename-to target is git-escaped; the decoded
+    metadata is the authoritative post-image."""
+    section = (
+        'diff --git "a/old dir/old.py" "b/old dir/old.py"\n'
+        "similarity index 100%\n"
+        "rename from old dir/old.py\n"
+        'rename to "new dir/caf\\303\\251.py"\n'
+    )
+    assert _diff_section_path(section) == "new dir/café.py"
+
+
+def test_diff_section_path_reads_the_minus_header_for_unquoted_deletes():
+    """412 round 9: an unquoted delete-only path containing " b/" would be
+    reduced to "bar.md" by the header's greedy split; the "--- a/<path>"
+    metadata line is exact."""
+    section = (
+        "diff --git a/foo b/bar.md b/foo b/bar.md\n"
+        "deleted file mode 100644\n"
+        "--- a/foo b/bar.md\n+++ /dev/null\n"
+    )
+    assert _diff_section_path(section) == "foo b/bar.md"
+
+
+def test_diff_section_path_parses_a_mode_only_header_exactly():
+    """412 round 10: a mode-only section has only the header, and its sides
+    are the same path -- "a/<X> b/<X>" parses exactly even when X contains
+    " b/" (the greedy split alone would return "bar.md")."""
+    section = (
+        "diff --git a/docs/foo b/bar.md b/docs/foo b/bar.md\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert _diff_section_path(section) == "docs/foo b/bar.md"
+
+
+@pytest.mark.asyncio
+async def test_security_floor_runs_for_non_workflow_roles(monkeypatch):
+    """412 round 10: the 083 floor is restored for a security role NOT
+    configured with the workflow -- the example config promises that removing
+    the workflow line restores the prose path exactly, and the prose path's
+    static scan is the floor. A scanner failure is fail-closed."""
+    from coordinare.graph.nodes.dispatch_performer import _run_security_floor
+    from coordinare.services.security_scanner import ScannerError
+
+    class FakeGitHub:
+        async def get_pr_diff(self, url):
+            return "diff --git a/v.py b/v.py\n+++ b/v.py\n@@ -1,1 +1,2 @@\n", ["v.py"]
+
+    state = {"github_service": FakeGitHub(), "workspace_path": None}
+    card = {"id": "c1", "pr_url": "https://github.com/o/r/pull/1"}
+
+    findings = [{"severity": "high", "file": "v.py", "category": "injection"}]
+    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", lambda files, root: findings)
+    assert await _run_security_floor(state, card) == findings
+
+    def _boom(files, root):
+        raise ScannerError("semgrep missing")
+
+    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _boom)
+    held = await _run_security_floor(state, card)
+    assert held == [{
+        "severity": "critical",
+        "category": "scanner_unavailable",
+        "description": "security scanner unavailable: scanner failed",
+        "file": "",
+        "line": 0,
+        "routing": "halt",
+    }]
+
+
+def test_sanitize_truncation_note_path_with_b_slash_stays_whole():
+    """412 round 4: the note names the +++ b/ target, so a path CONTAINING
+    " b/" is not split by the header's greedy a/b layout."""
+    raw = (
+        "diff --git a/docs/foo b/bar.md b/docs/foo b/bar.md\n"
+        "--- a/docs/foo b/bar.md\n+++ b/docs/foo b/bar.md\n@@ -1,1 +1,2 @@\n old\n"
+        + "+" + ("x" * 40_000) + "\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=500)
+    assert "coordinare-cut: docs/foo b/bar.md" in out
+    assert "coordinare-cut: bar.md" not in out
+
+
+def test_sanitize_rename_only_section_with_b_slash_names_the_target():
+    """412 round 5: a rename-only section has no +++ line; the "rename to"
+    path names the target when the header greedy split cannot."""
+    raw = (
+        "diff --git a/docs/foo b/bar.md b/docs/foo b/bar.md\n"
+        "similarity index 100%\n"
+        "rename from docs/foo b/bar.md\n"
+        "rename to docs/foo b/bar.md\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=10)
+    assert "coordinare-cut: docs/foo b/bar.md" in out
+    assert "coordinare-cut: bar.md" not in out
+
+
+def test_sanitize_copy_only_section_with_b_slash_names_the_target():
+    """412 round 14: copy-only sections carry "copy to" instead of a "+++"
+    line -- real git output for copying src-file.py to "copy b/dest.py"."""
+    raw = (
+        "diff --git a/src-file.py b/copy b/dest.py\n"
+        "similarity index 100%\n"
+        "copy from src-file.py\n"
+        "copy to copy b/dest.py\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=10)
+    assert "coordinare-cut: copy b/dest.py" in out
+    assert "coordinare-cut: dest.py" not in out
+
+
+def test_sanitize_truncation_note_bounds_the_metadata_block():
+    """412 round 6: per-path machine lines are bounded; the overflow is
+    declared by count so the workflows can hold instead of guessing."""
+    section = "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,2 @@\n old\n"
+    raw = section + "+" + ("x" * 40_000) + "\n"
+    raw += "".join(
+        f"diff --git a/src/dir{i:03d}/file_with_a_reasonably_long_name_{i}.py b/src/dir{i:03d}/file_with_a_reasonably_long_name_{i}.py\n"
+        f"--- a/src/dir{i:03d}/f.py\n+++ b/src/dir{i:03d}/f.py\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+        for i in range(200)
+    )
+    out = _sanitize_pr_diff(raw, max_chars=500)
+    assert "coordinare-unread-overflow: " in out
+    assert out.count("coordinare-unread: ") < 200
+    assert len(out) <= 500 + 4096 + 300  # cap + bounded metadata + prose note
+
+
+def test_sanitize_quoted_payload_with_escaped_tab_keeps_the_filename():
+    """412 round 18: the timestamp split happens before the decode -- a
+    quoted payload's escaped tab is filename content, not a separator
+    (decoding first turned ta\\tb.py into the truncated path ta)."""
+    raw = (
+        'diff --git "a/ta\\tb.py" "b/ta\\tb.py"\n'
+        '--- "a/ta\\tb.py"\n'
+        '+++ "b/ta\\tb.py"\n'
+        "@@ -1,1 +1,2 @@\n"
+        "+new\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=10)
+    assert "coordinare-cut: ta\tb.py" in out.splitlines()
+    assert "coordinare-cut: ta" not in out.splitlines()
+
+
+def test_sanitize_plus_plus_with_timestamp_suffix_splits_before_decode():
+    """412 round 18: a real tab separates an optional timestamp suffix; it
+    is split off before any quoted payload is decoded."""
+    raw = (
+        'diff --git a/name.py b/name.py\n'
+        "--- a/name.py\n"
+        '+++ "b/name.py"\t2026-09-16 08:00:00.000000000 +0000\n'
+        "@@ -1,1 +1,2 @@\n"
+        "+new\n"
+    )
+    out = _sanitize_pr_diff(raw, max_chars=10)
+    assert "coordinare-cut: name.py" in out.splitlines()

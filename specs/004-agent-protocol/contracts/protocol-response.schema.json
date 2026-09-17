@@ -1,69 +1,341 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "coordinare/protocol-response/v1",
-  "title": "ProtocolResponse",
-  "description": "A structured reply from an agent to the coordinare. Serialised as JSON to the agent process stdout (SubprocessTransport) or equivalent. This schema is the single source of truth for both the coordinare's response validator and external agent implementors.",
-  "type": "object",
-  "required": ["status"],
-  "additionalProperties": false,
   "properties": {
     "status": {
-      "type": "string",
       "enum": [
         "accepted",
         "working",
         "pr_opened",
+        "plan_committed",
+        "approved",
+        "nothing_to_review",
+        "changes_requested",
+        "security_passed",
+        "nothing_to_scan",
+        "not_applicable",
+        "security_failed",
+        "qa_passed",
+        "qa_failed",
+        "qa_env_blocked",
+        "env_blocked",
+        "docs_committed",
+        "env_bootstrap_complete",
+        "assessment_complete",
+        "assessment_not_work",
+        "assessment_needs_split",
+        "partial_progress",
         "blocked",
         "error",
         "unknown",
         "busy",
         "acknowledged",
-        "session_expired"
+        "session_expired",
+        "token_limit",
+        "healthy",
+        "unhealthy"
       ],
-      "description": "Current agent state. See status semantics below."
+      "title": "Status",
+      "type": "string"
     },
     "session_id": {
-      "type": "string",
-      "description": "Agent-assigned session identifier. Populated on accepted; echoed on subsequent responses. Empty string if not applicable.",
-      "default": ""
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "active_session": {
+      "default": false,
+      "title": "Active Session",
+      "type": "boolean"
     },
     "reason": {
-      "type": ["string", "null"],
-      "description": "Human-readable explanation. Required when status is error, blocked, or session_expired.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
     },
     "questions": {
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "title": "Questions",
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
       "description": "Questions requiring human input. Must be non-empty when status is blocked.",
       "default": []
     },
     "pr_url": {
-      "type": ["string", "null"],
-      "format": "uri",
-      "description": "URL of the pull request opened by the agent. Required when status is pr_opened.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uri"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pr Url"
     },
     "pr_node_id": {
-      "type": ["string", "null"],
-      "description": "GitHub node ID of the pull request. Required when status is pr_opened.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pr Node Id"
     },
     "progress": {
-      "type": ["string", "null"],
-      "description": "Optional human-readable description of current activity. May be present when status is working.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Progress"
     },
     "backend": {
-      "type": ["string", "null"],
-      "description": "Performer backend name (e.g. opencode, junie, claude_code, codex). Typically set on dispatch acceptance responses.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Backend"
     },
     "model": {
-      "type": ["string", "null"],
-      "description": "Performer model override selected for the session. Typically set on dispatch acceptance responses.",
-      "default": null
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "plan_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Path"
+    },
+    "comments": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Comments",
+      "type": "array"
+    },
+    "suggestions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Suggestions",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "failures": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Failures",
+      "type": "array"
+    },
+    "report": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Report"
+    },
+    "files_modified": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Files Modified",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "metrics": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Metrics"
+    },
+    "env_cache_health_failed": {
+      "default": false,
+      "title": "Env Cache Health Failed",
+      "type": "boolean"
+    },
+    "local_test_failed": {
+      "default": false,
+      "title": "Local Test Failed",
+      "type": "boolean"
+    },
+    "inference_skipped_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inference Skipped Reason"
+    },
+    "inference_agent_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inference Agent Version"
+    },
+    "inference_attempts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inference Attempts"
+    },
+    "inference_succeeded": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inference Succeeded"
+    },
+    "inference_services": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Inference Services",
+      "type": "array"
+    },
+    "head_before": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Head Before"
+    },
+    "head_after": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Head After"
+    },
+    "next_focus": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Focus"
+    },
+    "bot_pr_comment_delta": {
+      "default": 0,
+      "title": "Bot Pr Comment Delta",
+      "type": "integer"
+    },
+    "feedback_dispositions": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Feedback Dispositions",
+      "type": "array"
     }
   },
-  "$comment": "Status semantics: accepted=dispatch accepted; working=actively processing; pr_opened=PR created (pr_url+pr_node_id required); blocked=needs human input (questions required); error=unrecoverable failure (reason required); unknown=session not recognised; busy=cannot accept new work; acknowledged=relay_feedback received; session_expired=session context lost (reason required)."
+  "required": [
+    "status"
+  ],
+  "title": "ProtocolResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/protocol-response/v1",
+  "description": "A structured reply from an agent to the coordinare. Serialised as JSON to the agent process stdout (SubprocessTransport) or equivalent. This schema is the single source of truth for both the coordinare's response validator and external agent implementors.",
+  "$comment": "Status semantics: accepted=dispatch accepted; working=actively processing; pr_opened=PR created (pr_url+pr_node_id required); blocked=needs human input (questions required); error=unrecoverable failure (reason required); unknown=session not recognised; busy=cannot accept new work; acknowledged=relay_feedback received; session_expired=session context lost (reason required); active_session=true on session_expired means another session is still being served (transport keeps the live process). The 412 reviewer-security work extends the enum with stage-advance and terminal statuses (see the enum for the full list)."
 }

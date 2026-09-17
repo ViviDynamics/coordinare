@@ -1,10 +1,11 @@
 """Reviewer post step (spec 169 FR-010, FR-011): exactly one GitHub review.
 
-REQUEST_CHANGES with one inline comment per finding that sits in a diff hunk
-(GitHub rejects inline comments outside the diff), the rest in the body, when
-findings survive; COMMENT with a short body when none do. Fixed dispositions
-are named in the body. No thread is resolved. A failed post is reported back
-as an error for the caller to turn into an environment hold.
+REQUEST_CHANGES with one inline comment per blocking finding that sits in a
+diff hunk (GitHub rejects inline comments outside the diff), the rest and the
+advisory notes in the body, when blocking findings survive; COMMENT with the
+advisory notes when none do. Fixed dispositions are named in the body. No
+thread is resolved. A failed post is reported back as an error for the caller
+to turn into an environment hold.
 """
 from __future__ import annotations
 
@@ -45,23 +46,36 @@ def _finding_line(f: Finding) -> str:
     return f"- **{f.category}** at {where}: {f.problem}\n  Why blocking: {f.why_blocking}{ev}"
 
 
-def build_review(findings: list[Finding], changed_files: list[ChangedFile], fixed_ids: list[str], covered: int, header: str) -> tuple[str, str, list[dict]]:
-    """Return (event, body, inline_comments)."""
+def _advisory_line(f: Finding) -> str:
+    """412: advisory notes have no blocking reason to give -- presenting them
+    under a ``Why blocking:`` label would mislead the human reviewer."""
+    where = f"`{f.path}:{f.line}`" if f.path else "(pull request)"
+    ev = f"\n  Evidence: `{f.evidence[:200]}`" if f.evidence else ""
+    return f"- **{f.category}** at {where}: {f.problem}{ev}"
+
+
+def build_review(blocking: list[Finding], advisory: list[Finding], changed_files: list[ChangedFile], fixed_ids: list[str], covered: int, header: str) -> tuple[str, str, list[dict]]:
+    """Return (event, body, inline_comments).
+
+    412: blocking findings drive REQUEST_CHANGES; advisory findings (style,
+    test_missing) ride the body as notes and never change the event.
+    """
     inline: list[dict] = []
     in_body: list[Finding] = []
-    for f in findings:
+    for f in blocking:
         if f.path and f.line > 0 and anchor_in_hunks(f, changed_files):
             inline.append({"path": f.path, "line": f.line, "body": f"**{f.category}**: {f.problem}\n\nWhy blocking: {f.why_blocking}" + (f"\n\nEvidence: `{f.evidence[:200]}`" if f.evidence else "")})
         else:
             in_body.append(f)
     fixed = ("\n\nPrior comments addressed: " + ", ".join(fixed_ids)) if fixed_ids else ""
-    if findings:
-        body = f"{header}\n\n**Bot Review: CHANGES REQUESTED**\n\n{len(findings)} blocking finding(s); {len(inline)} inline."
+    advisories = ("\n\nAdvisory notes (not blocking):\n" + "\n".join(_advisory_line(f) for f in advisory)) if advisory else ""
+    if blocking:
+        body = f"{header}\n\n**Bot Review: CHANGES REQUESTED**\n\n{len(blocking)} blocking finding(s); {len(inline)} inline."
         if in_body:
             body += "\n\n" + "\n".join(_finding_line(f) for f in in_body)
-        return "REQUEST_CHANGES", body + fixed, inline
-    body = f"{header}\n\n**Bot Review: APPROVED**\n\nNo blocking findings; {covered} changed file(s) covered. A human reviewer gives the formal approval."
-    return "COMMENT", body + fixed, []
+        return "REQUEST_CHANGES", body + advisories + fixed, inline
+    body = f"{header}\n\n**Bot Review: APPROVED**\n\nNo blocking findings; {len(advisory)} advisory note(s); {covered} changed file(s) covered. A human reviewer gives the formal approval."
+    return "COMMENT", body + advisories + fixed, []
 
 
 class PostOutcome:
@@ -73,13 +87,13 @@ class PostOutcome:
         return self.error is None
 
 
-async def post_review(score: Any, findings: list[Finding], changed_files: list[ChangedFile], fixed_ids: list[str], covered: int, poster: Poster | None = None) -> PostOutcome:
+async def post_review(score: Any, blocking: list[Finding], advisory: list[Finding], changed_files: list[ChangedFile], fixed_ids: list[str], covered: int, poster: Poster | None = None) -> PostOutcome:
     if poster is None:
         from performer.github import post_pull_request_review as poster  # noqa: PLC0415 - late import keeps the workflow importable without network deps
     number = pr_number_from_url(getattr(score, "pr_url", "") or "")
     if number <= 0:
         return PostOutcome(error=f"pr_url is missing or invalid ({getattr(score, 'pr_url', None)!r})")
-    event, body, inline = build_review(findings, changed_files, fixed_ids, covered, attribution_header(score))
+    event, body, inline = build_review(blocking, advisory, changed_files, fixed_ids, covered, attribution_header(score))
     try:
         owner, repo = score.owner_repo
         token = score.effective_github_token

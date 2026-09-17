@@ -24,10 +24,12 @@ reading are one change rather than two.
 """
 from __future__ import annotations
 
+import os
+
 from pydantic import BaseModel, Field, StringConstraints
 from typing_extensions import Annotated
 
-__all__ = ["ScanTool", "ScanPlan", "ExaminedFile", "ScanReading", "plan_persona", "read_persona"]
+__all__ = ["ScanTool", "ScanPlan", "ExaminedFile", "ScanReading", "plan_persona", "read_persona", "tool_inventory"]
 
 
 class ScanTool(BaseModel):
@@ -52,6 +54,14 @@ class ScanTool(BaseModel):
       sandbox already exists to contain.
 
     The containment is the container, not a list of approved binaries.
+
+    412: ``argv`` may carry the literal ``{{files}}`` token, which the runner
+    replaces with the changed files (one argv element each); when the token is
+    absent the changed files are appended, so the tool is always scoped to the
+    changed set and never points at the whole repository. ``ok_exit_codes``
+    declares EXTRA exit codes that mean "the tool ran", on top of the default
+    0 (clean) and 1 (findings) -- per-tool conventions (pylint's bitmask,
+    trivy's 2) are exactly the knowledge the model has and coordinare cannot.
     """
 
     model_config = {"extra": "forbid"}
@@ -59,6 +69,7 @@ class ScanTool(BaseModel):
     name: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     argv: list[str] = Field(min_length=1)
     why: Annotated[str, StringConstraints(min_length=1, max_length=300)]
+    ok_exit_codes: list[int] = Field(default_factory=lambda: [0, 1])
 
 
 class ScanPlan(BaseModel):
@@ -104,14 +115,33 @@ class ScanReading(BaseModel):
         return [c for c in self.coverage if not c.examined]
 
 
-def plan_persona() -> str:
+def plan_persona(tool_inventory: str = "") -> str:
     """Ask what scanning applies here. Names no tool and no language."""
+    inventory = (
+        "\n\nExecutables available on PATH in this container:\n" + tool_inventory
+        if tool_inventory
+        else ""
+    )
     return (
         "You are a security engineer opening an unfamiliar repository.\n\n"
         "Decide what static security scanning is appropriate for THIS codebase, "
         "given its languages, frameworks and layout. Name each tool and the exact "
         "argv to run it with, preferring machine-readable output (JSON) so the "
-        "results can be read back.\n\n"
+        "results can be read back."
+        f"{inventory}\n\n"
+        "Where the changed-file list belongs in argv, write the literal token "
+        "{{files}} -- it is replaced with the changed files, one element each. "
+        "If you omit the token the files are appended after your arguments, so "
+        "either way the tool scans exactly the changed set. Never write argv "
+        "that scans the whole repository or a source directory: pre-existing "
+        "findings would fail this pull request for problems it did not "
+        "introduce, and a repository-wide run cannot finish inside the scan "
+        "timeout.\n\n"
+        "Exit codes: 0 (clean) and 1 (findings) are always treated as 'the "
+        "tool ran'. If a tool's convention differs -- pylint returns a 0..32 "
+        "bitmask, trivy returns 2 when it finds problems -- list the extra "
+        "exit codes that mean 'the tool ran' in ok_exit_codes (they are added "
+        "to 0 and 1, never replacing them).\n\n"
         "Only name tools you have reason to believe are installed in a general "
         "purpose CI image. Do not name a tool that cannot read this codebase's "
         "languages -- a scanner that examines nothing is worse than no scanner, "
@@ -141,3 +171,31 @@ def read_persona() -> str:
         "similar-looking output, and treating them the same way is how an "
         "unscanned repository gets a passing security verdict."
     )
+
+
+def tool_inventory(path_env: str | None = None) -> str:
+    """Executable names visible on PATH, so the model plans with what exists.
+
+    412: the planning persona asked the model to "only name tools installed in
+    a general purpose CI image" while telling it nothing about the image, so
+    every plan was a guess about the sandbox. This lists the executables
+    actually visible on PATH (names only, no paths). The list is capped so a
+    pathological image cannot bloat the prompt.
+    """
+    dirs = (path_env if path_env is not None else os.environ.get("PATH", "")).split(os.pathsep)
+    names: set[str] = set()
+    for d in dirs:
+        if not d:
+            continue
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            continue
+        for entry in entries:
+            full = os.path.join(d, entry)
+            try:
+                if os.path.isfile(full) and os.access(full, os.X_OK):
+                    names.add(entry)
+            except OSError:
+                continue
+    return ", ".join(sorted(names))[:2000]

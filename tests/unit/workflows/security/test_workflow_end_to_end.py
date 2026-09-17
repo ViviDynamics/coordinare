@@ -279,12 +279,48 @@ async def test_advisories_pass_with_one_comment_listing_them():
     assert gh.reviews[0]["event"] == "COMMENT" and "bandit" in gh.reviews[0]["body"] and "`src/db.py:8`" in gh.reviews[0]["body"]
 
 
-# "garbage" is deliberately absent: under 366 a scanner printing something
-# coordinare cannot parse is not a broken scanner, it is a scanner whose output
-# the model reads. That case is asserted directly below, and the abstention it
-# can still produce -- a reader that cannot tell whether any file was examined
-# -- holds through the coverage floor in test_scanner.py.
-@pytest.mark.parametrize("kind,tool,needle", [("missing", "semgrep", "binary not found"), ("timeout", "bandit", "timed out"), ("empty", "bandit", "no output")])
+# "garbage" and "empty" are deliberately absent: under 366 a scanner printing
+# something coordinare cannot parse is not a broken scanner, it is a scanner
+# whose output the model reads -- and under 412 empty output after a declared-ok
+# exit is a clean quiet run, not a crash. That empty case is asserted directly
+# below, and so is the nothing-to-scan abstention for a plan with no tools.
+# A deleted file is absent from the worktree: a tool aimed at it fails or
+# examines nothing, which would read as an environment failure. Deleted paths
+# stay in the changed set for coverage, but only existing files are scanned.
+DELETED_SECTION = (
+    "diff --git a/gone.py b/gone.py\n"
+    "deleted file mode 100644\n"
+    "--- a/gone.py\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-def run():\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_file_is_excluded_from_the_scan_argv():
+    seen: list[str] = []
+
+    async def scanner(argv, cwd, timeout_s):
+        seen.append(" ".join(argv))
+        return 0, "{}", ""
+
+    _result, record, _gh, _events, _state = await _run([SURVEY, NO_FINDINGS], _score(pr_diff=DIFF + DELETED_SECTION), scanner=scanner)
+    assert record.verdict == "security_passed"
+    assert any("src/db.py" in a for a in seen), "the existing file is scanned"
+    assert all("gone.py" not in a for a in seen), "the deleted file is not a scan target"
+
+
+@pytest.mark.asyncio
+async def test_a_delete_only_diff_is_not_applicable():
+    _result, record, _gh, _events, _state = await _run([], _score(pr_diff=DELETED_SECTION))
+    assert record.verdict == "not_applicable"
+    # 412 round 20: the code-decided no-scan verdicts short-circuit before the
+    # posting branch -- no public "Bot Security Review: PASSED" may appear for
+    # a diff that was never scanned.
+    assert _gh.reviews == []
+
+
+# tell whether any file was examined -- holds through the coverage floor in
+# test_scanner.py.
+@pytest.mark.parametrize("kind,tool,needle", [("missing", "semgrep", "binary not found"), ("timeout", "bandit", "timed out")])
 @pytest.mark.asyncio
 async def test_a_broken_scanner_holds_after_planning_and_before_reading(kind, tool, needle):
     """Spec 366 reverses spec 170: the model now plans the tools before scanners run.
@@ -304,11 +340,27 @@ async def test_a_broken_scanner_holds_after_planning_and_before_reading(kind, to
 
 
 @pytest.mark.asyncio
+async def test_an_empty_stdout_scanner_run_proceeds_to_the_reading():
+    """412: empty output with a declared-ok exit code is quiet, not broken. The
+    run reaches the reading step, whose per-file coverage is what separates
+    read-nothing from read-everything."""
+    scanner = fake_scanner(empty="bandit")
+    _result, record, _gh, _, _ = await _run([SURVEY, NO_FINDINGS], _score(), scanner=scanner)
+    assert record.verdict == "security_passed" and [r.exit_code for r in record.scan if r.tool == "bandit"] == [1]
+
+
+@pytest.mark.asyncio
 async def test_a_truncated_diff_runs_the_coverage_pass_and_unread_files_hold():
+    # 412 round 12: the bare truncation note accounts for nothing, so an
+    # unopenable phantom keeps the unnamed tail in the unread set even after
+    # the coverage pass opens every visible file -- the scan holds instead of
+    # certifying the visible subset.
     _, record, _gh, _, _ = await _run([SURVEY, OPEN_EXTRA, NO_FINDINGS], _score(pr_diff=TRUNCATED_DIFF))
-    assert record.diff_truncated and record.coverage_pass_ran and record.verdict == "security_passed" and "src/extra.py" in record.covered_files
+    assert record.diff_truncated and record.coverage_pass_ran and "src/extra.py" in record.covered_files
+    assert record.verdict == "env_blocked"
+    assert record.unread_files == ["<unnamed files beyond the truncated diff>"]
     _, hold, gh2, _, _ = await _run([SURVEY, SURVEY, NO_FINDINGS], _score(pr_diff=TRUNCATED_DIFF))
-    assert hold.verdict == "env_blocked" and hold.unread_files == ["src/extra.py"] and gh2.reviews == []
+    assert hold.verdict == "env_blocked" and hold.unread_files == ["src/extra.py", "<unnamed files beyond the truncated diff>"] and gh2.reviews == []
     _, still_fails, _, _, _ = await _run([SURVEY, SURVEY, {"findings": [INJECTION]}], _score(pr_diff=TRUNCATED_DIFF))
     assert still_fails.verdict == "security_failed", "a blocking finding outranks the coverage hold"
 

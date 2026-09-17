@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 from performer.workflows.security.budgets import SecurityBudgets
-from performer.workflows.security.scanner import ScannerUnavailable, run_scan
+from performer.workflows.security.scanner import (
+    FILES_TOKEN,
+    NothingToScan,
+    ScannerUnavailable,
+    run_scan,
+)
 from performer.workflows.security.tooling import ExaminedFile, ScanReading, ScanTool
 
 BUDGETS = SecurityBudgets()
@@ -80,6 +85,201 @@ class TestAbstentionIsNotAPass:
         assert len(results) == 1
 
     @pytest.mark.asyncio
+    async def test_a_coverage_row_for_an_unrelated_path_is_not_coverage(self):
+        """412 round 24: examined paths are trusted only for the files the
+        run actually scoped -- a malformed or hallucinated coverage row for
+        an unrelated path must not turn a zero-coverage run into a clean
+        one."""
+        async def read(tool, argv, stdout, files):
+            return ScanReading(
+                findings=[],
+                coverage=[ExaminedFile(path="vendor/unrelated.py", examined=True)],
+            )
+
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(
+                FILES, Path("/repo"), tools=[_tool()],
+                read=read, runner=_runner(0, "{}"),
+                budgets=BUDGETS,
+            )
+        assert "examined none" in exc.value.reason
+
+    @pytest.mark.asyncio
+    async def test_a_changed_path_that_starts_with_dash_is_a_target(self):
+        """412 round 24: a changed path like ``-flag.py`` would parse as an
+        option -- spelled ``./-flag.py`` so the tool reads it as a target
+        and the command stays intact."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        files = ["-flag.py"]
+        await run_scan(
+            files, Path("/repo"),
+            tools=[_tool(argv=["semgrep", "--json", FILES_TOKEN])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["semgrep", "--json", "./-flag.py"]]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_subcommand_token_is_not_repointed_at_the_changed_set(self, tmp_path):
+        """412 round 25: a known subcommand of the tool is CLI plumbing, not
+        an operand -- ``trivy fs`` with a repo-local ``fs`` directory keeps
+        its subcommand and the changed set rides where ``.`` used to sit."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        repo = tmp_path
+        (repo / "fs").mkdir()
+        files = ["app.py"]
+        await run_scan(
+            files, repo,
+            tools=[_tool(argv=["trivy", "fs", "."])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["trivy", "fs", "app.py"]]
+
+    @pytest.mark.asyncio
+    async def test_a_subcommand_after_global_options_is_not_repointed(self, tmp_path):
+        """412 round 40: the subcommand slot is any bare token before the
+        first operand -- ``trivy --quiet fs .`` with a repo-local ``fs``
+        directory keeps its subcommand instead of repointing ``fs`` at the
+        changed set (which corrupts the CLI shape into a hold)."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        repo = tmp_path
+        (repo / "fs").mkdir()
+        files = ["app.py"]
+        await run_scan(
+            files, repo,
+            tools=[_tool(argv=["trivy", "--quiet", "fs", "."])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["trivy", "--quiet", "fs", "app.py"]]
+
+    @pytest.mark.asyncio
+    async def test_a_subcommand_after_an_option_value_is_not_repointed(self, tmp_path):
+        """412 round 40: a whitelisted option VALUE is plumbing and does not
+        end the option prefix, so ``--format json fs`` still recognizes the
+        subcommand that follows it."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        repo = tmp_path
+        (repo / "fs").mkdir()
+        files = ["app.py"]
+        await run_scan(
+            files, repo,
+            tools=[_tool(argv=["trivy", "--format", "json", "fs", "."])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["trivy", "--format", "json", "fs", "app.py"]]
+
+    @pytest.mark.asyncio
+    async def test_an_operand_outside_the_workspace_is_refused(self):
+        """412 round 41: a bare absolute operand outside the workspace is a
+        scan target the scoping cannot bound -- the tool reads it beside the
+        changed set and its findings can carry the file's contents into the
+        report -- so the plan is refused and the card holds."""
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(
+                FILES, Path("/repo"),
+                tools=[_tool(argv=["semgrep", "/etc/passwd"])],
+                read=_reader(examined=FILES), runner=_runner(0, "{}"), budgets=BUDGETS,
+            )
+        assert "outside the workspace" in exc.value.reason
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_operand_inside_the_workspace_is_a_target(self, tmp_path):
+        """412 round 15: an absolute operand under the workspace root is as
+        much a scan target as its relative spelling -- replaced by the
+        changed set, not refused by the round-41 outside-workspace guard."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        repo = tmp_path
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        files = ["app.py"]
+        await run_scan(
+            files, repo,
+            tools=[_tool(argv=["semgrep", str(repo / "app.py"), "."])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["semgrep", "app.py"]]
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_option_value_outside_the_workspace_stays_a_report_path(self):
+        """412 round 41: config and report paths ride option values -- the
+        refusal reaches bare operands only, and whitelisted value-takers are
+        preserved plumbing."""
+        seen: list = []
+
+        async def run(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        files = ["app.py"]
+        await run_scan(
+            files, Path("/repo"),
+            tools=[_tool(argv=["semgrep", "--output", "/tmp/report.json", "."])],
+            read=_reader(examined=files), runner=run, budgets=BUDGETS,
+        )
+        assert seen == [["semgrep", "--output", "/tmp/report.json", "app.py"]]
+
+    @pytest.mark.asyncio
+    async def test_a_dot_slash_prefixed_coverage_path_is_normalized(self):
+        """412 round 26: tool output names paths the way the tool printed
+        them (``./src/app.py`` for ``src/app.py``) -- coverage is normalized
+        exactly as findings are, or a valid run reads as zero coverage."""
+        async def read(tool, argv, stdout, files):
+            return ScanReading(
+                findings=[],
+                coverage=[ExaminedFile(path="./" + FILES[0], examined=True)],
+            )
+
+        _findings, results = await run_scan(
+            FILES, Path("/repo"), tools=[_tool()],
+            read=read, runner=_runner(0, "{}"), budgets=BUDGETS,
+        )
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_dash_prefixed_changed_file_named_in_the_plan_is_a_target(self):
+        """412 round 27: ``-flag.py`` is a real filename -- a plan that names
+        it literally (without ``{{files}}``) must not leave the option-token
+        in argv; the token is replaced by the ``./``-spelled change set."""
+        seen_argv: list[list[str]] = []
+
+        async def run(argv, cwd, timeout_s):
+            seen_argv.append(list(argv))
+            return (0, "{}", "")
+
+        async def read(tool, argv, stdout, files):
+            return ScanReading(findings=[], coverage=[ExaminedFile(path="-flag.py", examined=True)])
+
+        _findings, results = await run_scan(
+            ["-flag.py"], Path("/repo"), tools=[_tool(argv=["semgrep", "-flag.py"])],
+            read=read, runner=run, budgets=BUDGETS,
+        )
+        assert seen_argv == [["semgrep", "./-flag.py"]]
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
     async def test_coverage_from_any_tool_is_enough(self):
         """A Python-only tool abstaining is fine if another tool read the code."""
         _findings, results = await run_scan(
@@ -114,9 +314,11 @@ class TestNoApplicableTooling:
 
     @pytest.mark.asyncio
     async def test_no_changed_files_is_not_a_hold(self):
-        """Nothing to scan is a different condition from scanning nothing."""
-        findings, results = await run_scan([], Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(), budgets=BUDGETS)
-        assert findings == [] and results == []
+        """Nothing to scan is a different condition from scanning nothing: the
+        scanner raises NothingToScan, which the workflow reports as the
+        explicit nothing_to_scan verdict rather than a hold or a pass."""
+        with pytest.raises(NothingToScan):
+            await run_scan([], Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(), budgets=BUDGETS)
 
 
 class TestTheModelSuppliesTheCommand:
@@ -134,7 +336,9 @@ class TestTheModelSuppliesTheCommand:
             tools=[ScanTool(name="brakeman", argv=["brakeman", "-f", "json"], why="rails app")],
             read=_reader(), runner=capture, budgets=BUDGETS,
         )
-        assert seen == [["brakeman", "-f", "json"]]
+        # 412: no {{files}} token in the plan means coordinare appends the
+        # changed files; the plan itself is never trusted to name them.
+        assert seen == [["brakeman", "-f", "json", *FILES]]
 
     @pytest.mark.asyncio
     async def test_an_arbitrary_tool_name_is_accepted(self):
@@ -189,9 +393,13 @@ class TestToolExecutionProblemsStillFailClosed:
 
     @pytest.mark.asyncio
     async def test_empty_output(self):
-        with pytest.raises(ScannerUnavailable) as exc:
-            await run_scan(FILES, Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(0, "   "), budgets=BUDGETS)
-        assert "produced no output" in exc.value.reason
+        """412: empty stdout after a declared-ok exit is a clean quiet run, not
+        a crash. The reading's per-file coverage is what separates read-nothing
+        from read-everything; an abstention still holds the card there."""
+        _findings, results = await run_scan(
+            FILES, Path("/repo"), tools=[_tool()], read=_reader(examined=FILES), runner=_runner(0, "   "), budgets=BUDGETS,
+        )
+        assert results[0].exit_code == 0
 
     @pytest.mark.parametrize("code", [2, 3, 127, 137])
     @pytest.mark.asyncio

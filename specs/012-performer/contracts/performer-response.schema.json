@@ -29,6 +29,11 @@
       "default": "",
       "description": "Echoed back from the request. Set to the generated UUID on 'accepted'."
     },
+    "active_session": {
+      "type": "boolean",
+      "default": false,
+      "description": "412 round 46: true on a session_expired response when a different session is still being served -- the stale request is an error for that request only and the transport must not clear or reap the live process. False (or absent) on the no-session exit, which is process-exiting."
+    },
     "reason": {
       "type": ["string", "null"],
       "default": null,
@@ -128,6 +133,12 @@
       "status": "session_expired",
       "session_id": "nonexistent-id",
       "reason": "No active performance with that session ID"
+    },
+    {
+      "status": "session_expired",
+      "session_id": "stale-id",
+      "reason": "No active performance with that session ID",
+      "active_session": true
     },
     {
       "status": "healthy"

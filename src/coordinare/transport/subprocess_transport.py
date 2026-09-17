@@ -12,14 +12,11 @@ import structlog
 
 from coordinare.lib.redaction import redact_secrets
 from coordinare.lib.subprocess_env import inherited_host_env
-from coordinare.protocol import ProtocolMessage, ProtocolResponse
+from coordinare.protocol import PROCESS_EXITING_STATUSES, ProtocolMessage, ProtocolResponse
 from coordinare.session import SessionStats
 from coordinare.transport.base import TransportError, TransportTimeoutError
 
 logger = structlog.get_logger(__name__)
-
-# Statuses after which the performer process has exited and must not be reused.
-_TERMINAL_STATUSES = frozenset({"pr_opened", "error", "blocked"})
 
 # Pattern opencode emits to stderr when its HTTP server starts:
 # e.g. {"server":"http://127.0.0.1:34567"}
@@ -81,6 +78,9 @@ async def _fetch_session_stats(ui_url: str) -> SessionStats | None:
 
 # Max stderr lines buffered per session — older lines are dropped automatically.
 _STDERR_MAXLEN = 200
+#: 412 round 12: how long a discarded performer process may keep running its
+#: cleanup path before the transport terminates it.
+_REAP_GRACE_SECONDS = 10.0
 
 
 class SubprocessTransport:
@@ -113,6 +113,7 @@ class SubprocessTransport:
         self._proc: asyncio.subprocess.Process | None = None
         self._agent_logs: deque[str] = deque(maxlen=_STDERR_MAXLEN)
         self._stderr_task: asyncio.Task[None] | None = None
+        self._reap_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,16 +137,58 @@ class SubprocessTransport:
             self._proc = None
 
         if self._proc is None:
+            # 412 round 13: a discarded predecessor may still be inside its
+            # grace-window cleanup (backend stop / proxy shutdown / workspace
+            # teardown) in the same workspace -- the next performer must not
+            # start beside it. Serializing the start behind the reap bounds
+            # the wait to the grace window.
+            pending_reaps = [t for t in self._reap_tasks if not t.done()]
+            if pending_reaps:
+                await asyncio.gather(*pending_reaps, return_exceptions=True)
             self._proc = await self._start(drain_stderr=True)
 
         response = await self._exchange(self._proc, message, effective_timeout)
 
-        if response.status in _TERMINAL_STATUSES:
-            # Process will exit on its own after emitting a terminal status;
-            # clear our reference so the next dispatch gets a fresh one.
-            self._proc = None
+        # 412 round 46: session_expired answers both a no-session exit (the
+        # run loop breaks; the process is on its way out) and a stale or
+        # mismatched session id while another session is still being served
+        # (the loop keeps running). Only the former may clear the process --
+        # reaping a live backend loses the active session. Every other
+        # process-exiting status genuinely exits the loop.
+        exiting = response.status in PROCESS_EXITING_STATUSES and (
+            response.status != "session_expired" or not response.active_session
+        )
+        if exiting:
+            # 412: the run loop exits for every terminal status, not just the
+            # failures -- clear our reference so the next dispatch gets a
+            # fresh process instead of reusing one that is on its way out.
+            # 412 round 12: stop what we discard, but let the performer's
+            # cleanup path run first: the run loop writes the response before
+            # it breaks into backend stop / proxy shutdown / workspace
+            # cleanup, and an immediate SIGTERM would leave that behind.
+            proc, self._proc = self._proc, None
+            if proc is not None and proc.returncode is None:
+                self._schedule_reap(proc)
 
         return response
+
+    def _schedule_reap(self, proc: asyncio.subprocess.Process) -> None:
+        """Exit the discarded process gracefully, then terminate (412 round 12)."""
+
+        async def _reap() -> None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_SECONDS)
+            except TimeoutError:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_SECONDS)
+                except TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+        task = asyncio.create_task(_reap())
+        self._reap_tasks.add(task)
+        task.add_done_callback(self._reap_tasks.discard)
 
     @property
     def agent_logs(self) -> list[str]:

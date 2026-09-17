@@ -69,3 +69,24 @@ def path_has_agent_config(path: str) -> bool:
         return False
     segments = path.replace("\\", "/").split("/")
     return any(seg in AGENT_CONFIG_DIRS for seg in segments)
+
+
+#: 412 round 31: mirrors the coordinare diff sanitizer's drop markers
+#: (``_DIFF_NOISE_PATH_MARKERS`` in ``src/coordinare/graph/nodes/dispatch_performer.py``);
+#: ``tests/unit/test_diff_noise_drift.py`` fails CI if the two ever diverge.
+DIFF_NOISE_PATH_MARKERS: tuple[str, ...] = (
+    *(f"{d}/" for d in AGENT_CONFIG_DIRS),
+    *(f"{d}/" for d in BUILD_VCS_NOISE),
+)
+
+
+def is_sanitizer_omitted_path(path: str) -> bool:
+    """True iff the coordinare diff sanitizer would have dropped this section.
+
+    412 round 31: the empty-diff verdict needs to know which changed paths
+    the sanitizer deliberately omitted, so a PR whose every section was
+    dropped advances with a note instead of holding as if content were cut.
+    Substring match on the ``<dir>/`` marker, exactly like the sanitizer's
+    own per-path filter.
+    """
+    return any(mk in path for mk in DIFF_NOISE_PATH_MARKERS)

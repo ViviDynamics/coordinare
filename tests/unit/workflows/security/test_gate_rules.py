@@ -147,6 +147,51 @@ def test_run_gate_end_to_end_orders_the_rules():
     assert hold.verdict == "env_blocked" and hold.unread_files == ["src/extra.py"]
 
 
+# 412 round 18: a scanner finding is introduced-evidence only when its line
+# anchors to the diff -- argv scoping to changed files alone still lets a
+# pre-existing finding at an unchanged line inside a changed file block the merge.
+def test_a_scanner_finding_outside_the_hunks_does_not_block():
+    files = changed_files()
+    result = run_gate([], [{**SEMGREP_SECRET, "line": 40}], changed_files=files, diff_lines=LINES, survey_lines=[], surveyed_files=[], truncated=False, coverage_pass_ran=False)
+    assert result.blocking == []
+    assert [f.line for f in result.baseline_findings] == [40], "reported, never dropped"
+    assert result.scanner_findings == []
+
+
+def test_a_scanner_finding_in_the_hunks_still_blocks():
+    files = changed_files()
+    result = run_gate([], [SEMGREP_SECRET], changed_files=files, diff_lines=LINES, survey_lines=[], surveyed_files=[], truncated=False, coverage_pass_ran=False)
+    assert [f.line for f in result.blocking] == [SEMGREP_SECRET["line"]]
+    assert result.baseline_findings == []
+
+
+# 412 round 27: the survey opening a file is model-finding evidence only --
+# a scanner finding at an unchanged line was not introduced by the diff no
+# matter what the survey read, so it reports in the baseline bucket.
+def test_a_scanner_finding_at_an_unchanged_line_of_a_surveyed_file_is_baseline():
+    files = changed_files()
+    result = run_gate([], [{**SEMGREP_SECRET, "line": 40}], changed_files=files, diff_lines=LINES, survey_lines=[], surveyed_files=["src/db.py"], truncated=False, coverage_pass_ran=False)
+    assert result.blocking == [], "survey reads cannot establish introduction"
+    assert [f.line for f in result.baseline_findings] == [40], "reported, never dropped"
+    assert result.scanner_findings == []
+
+
+def test_a_scanner_finding_on_an_unchanged_surveyed_file_is_baseline_only():
+    """412 round 23: ``introduced_by`` is stamped from the scanner's own
+    report -- a finding on an unchanged file the survey opened is not
+    introduced by this PR, so it reports in the baseline bucket instead of
+    blocking the merge."""
+    files = changed_files()
+    result = run_gate(
+        [], [{**SEMGREP_SECRET, "file": "src/sink.py", "line": 2}], changed_files=files, diff_lines=LINES,
+        survey_lines=["return db.execute(sql)"], surveyed_files=["src/sink.py"], truncated=False, coverage_pass_ran=True,
+    )
+    assert result.blocking == []
+    assert [(f.path, f.line) for f in result.baseline_findings] == [("src/sink.py", 2)]
+    assert result.scanner_findings == []
+    assert result.verdict == "security_passed"
+
+
 # normalise_tool_path: mutation = return the path unchanged
 def test_tool_paths_match_the_diff_paths():
     """Live round: bandit reports ./app/web.py; the diff, the dedup key and the inline comment need app/web.py."""
@@ -165,7 +210,7 @@ def test_tool_findings_are_never_sliced_out_by_the_survivor_cap():
     from tests.unit.workflows.security._fixtures import SEMGREP_SECRET
 
     model = [finding(line=7, category="weak_crypto", severity="medium", evidence='query = "SELECT * FROM users WHERE id = " + user_id') for _ in range(50)]
-    tools = [{**SEMGREP_SECRET, "line": 100 + i} for i in range(15)]
+    tools = [{**SEMGREP_SECRET, "line": (i % 9) + 1} for i in range(15)]  # round 18: anchored to the hunks
     result = run_gate(model, tools, changed_files=changed_files(), diff_lines=LINES, survey_lines=[], surveyed_files=[], truncated=False, coverage_pass_ran=False)
     assert len(result.blocking) == 15 and all(f.tool == "semgrep" for f in result.blocking)
     assert len(result.advisory) == 30, "the model's survivors are capped at the findings cap"
@@ -189,9 +234,9 @@ def test_the_scanner_bound_can_only_drop_findings_that_were_not_going_to_fail():
     were not going to fail the round. This is not the anchor rule of FR-011 --
     that one is about dropping, and is tested above -- it is the bound.
     """
-    advisory = [{"tool": "semgrep", "category": "weak_crypto", "description": f"w{i}", "file": "src/db.py", "line": i}
-                for i in range(240)]
-    blocking_raw = [{"tool": "semgrep", "category": "injection", "description": f"sqli{i}", "file": "src/db.py", "line": 1000 + i}
+    advisory = [{"tool": "semgrep", "category": "weak_crypto", "description": f"w{i}", "file": "src/db.py", "line": (i % 9) + 1}
+                for i in range(240)]  # round 18: lines anchor to the hunks so only the bound can drop these
+    blocking_raw = [{"tool": "semgrep", "category": "injection", "description": f"sqli{i}", "file": "src/db.py", "line": (i % 9) + 1}
                     for i in range(10)]
 
     result = run_gate(

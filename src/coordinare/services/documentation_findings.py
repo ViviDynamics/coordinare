@@ -10,11 +10,15 @@ from typing import Any
 _FIELDS = {
     "assessing": ("assessment", ("goal", "expected_behavior", "out_of_scope", "assumptions", "criteria")),
     "architecting": ("blueprint", ("summary", "docs", "modules", "interfaces", "risks")),
-    "reviewing": ("review", ("verdict", "findings", "covered_files")),
-    "security": ("security", ("verdict", "blocking", "advisory", "covered_files")),
+    "reviewing": ("review", ("verdict", "findings", "advisory_findings", "covered_files")),
+    "security": ("security", ("verdict", "blocking", "advisory", "covered_files", "baseline_scanner_findings")),
     "qa": (None, ("passed", "criteria_checked", "criteria_passed", "failures", "qa_findings")),
 }
-_TERMINALS = {"assessment_complete", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed"}
+# 412: the explicit empty-diff verdicts advance through the terminal-success
+# path and must collect their structured reports like any other terminal --
+# otherwise a reviewing/security stage that ends with nothing_to_review,
+# nothing_to_scan or not_applicable silently contributes nothing.
+_TERMINALS = {"assessment_complete", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "nothing_to_review", "nothing_to_scan", "not_applicable"}
 MAX_RECORD_CHARS = 12000
 
 

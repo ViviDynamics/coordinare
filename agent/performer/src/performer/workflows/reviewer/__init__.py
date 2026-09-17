@@ -26,7 +26,7 @@ from performer.workflows.reviewer.budgets import ReviewerBudgets
 from performer.workflows.reviewer.findings import run_findings_step, run_reanchor_step
 from performer.workflows.reviewer.gate import run_gate, to_findings
 from performer.workflows.reviewer.intake import build_intake
-from performer.workflows.reviewer.models import DEFAULT_CATEGORIES, ReviewRecord
+from performer.workflows.reviewer.models import ADVISORY_CATEGORIES, DEFAULT_CATEGORIES, ReviewRecord
 from performer.workflows.reviewer.post import post_review
 from performer.workflows.reviewer.report import build_report, write_free_check
 from performer.workflows.reviewer.survey import opened_paths, run_reviewer_survey, survey_output_lines
@@ -75,6 +75,77 @@ class ReviewerWorkflow:
         timed("intake", t)
         log.info("reviewer.intake", files=len(intake.changed_files), truncated=intake.diff_truncated, prior_comments=len(intake.prior_comments), brief=intake.brief_present)
 
+        # 412: a fetch outage ("failed"/"unavailable") is NOT an empty diff --
+        # hold with a reason instead of advancing on a diff that was never seen.
+        if not intake.changed_files and intake.pr_diff_status in ("failed", "unavailable"):
+            record = ReviewRecord(
+                changed_files=[], diff_truncated=intake.diff_truncated, unread_files=[],
+                verdict="env_blocked", covered_files=[],
+                post_error="the pull-request diff could not be fetched (" + intake.pr_diff_status + "), so the review held instead of advancing on nothing",
+            )
+            log.info("reviewer.diff_fetch_held", status=intake.pr_diff_status)
+            self._step(toolkit, "report")
+            check = await write_free_check(toolkit, workspace)
+            record.workflow_metrics = {"model_calls": metrics.model_calls, "commands_run": metrics.commands_run}
+            report = build_report(record, check, metrics)
+            raw_events = getattr(toolkit, "events", [])
+            events = list(raw_events() if callable(raw_events) else raw_events)
+            return WorkflowResult(report=report, findings=[], events=events, metrics=metrics)
+
+        # 412 round 6: the sanitizer bounds the per-path metadata; an overflow
+        # means unnamed unread files exist, so coverage cannot be verified.
+        if intake.unread_overflow:
+            record = ReviewRecord(
+                changed_files=intake.changed_files, diff_truncated=intake.diff_truncated, unread_files=[],
+                verdict="env_blocked", covered_files=[],
+                post_error=f"the truncated diff could not name {intake.unread_overflow} more unread file(s), so coverage cannot be verified and the review held",
+            )
+            log.info("reviewer.unread_overflow_held", overflow=intake.unread_overflow)
+            self._step(toolkit, "report")
+            check = await write_free_check(toolkit, workspace)
+            record.workflow_metrics = {"model_calls": metrics.model_calls, "commands_run": metrics.commands_run}
+            report = build_report(record, check, metrics)
+            raw_events = getattr(toolkit, "events", [])
+            events = list(raw_events() if callable(raw_events) else raw_events)
+            return WorkflowResult(report=report, findings=[], events=events, metrics=metrics)
+
+        # 412: an empty parsed diff is nothing_to_review, decided in code and
+        # before any model call. The old path ran the whole sequence and
+        # returned "approved" -- coverage over zero files is trivially
+        # complete -- a vacuous pass on a diff that was never seen.
+        if not intake.changed_files:
+            if intake.diff_truncated:
+                # 412 round 5: a truncated diff whose cut hides an unknown
+                # set of files (no machine names were emitted) is not a
+                # genuine empty diff -- hold instead of a vacuous advance.
+                record = ReviewRecord(
+                    changed_files=[], diff_truncated=True, unread_files=[],
+                    verdict="env_blocked", covered_files=[],
+                    post_error="the pull-request diff was truncated before any file header, so the unread set is unknown and the review held instead of advancing on nothing",
+                )
+                log.info("reviewer.truncated_no_files_held")
+                self._step(toolkit, "report")
+                check = await write_free_check(toolkit, workspace)
+                record.workflow_metrics = {"model_calls": metrics.model_calls, "commands_run": metrics.commands_run}
+                report = build_report(record, check, metrics)
+                raw_events = getattr(toolkit, "events", [])
+                events = list(raw_events() if callable(raw_events) else raw_events)
+                return WorkflowResult(report=report, findings=[], events=events, metrics=metrics)
+            record = ReviewRecord(
+                changed_files=[], diff_truncated=intake.diff_truncated, unread_files=[],
+                verdict="nothing_to_review", covered_files=[],
+            )
+            log.info("reviewer.nothing_to_review")
+            self._step(toolkit, "report")
+            t = time.monotonic()
+            check = await write_free_check(toolkit, workspace)
+            durations["report"] = int((time.monotonic() - t) * 1000)
+            record.workflow_metrics = {"model_calls": metrics.model_calls, "commands_run": metrics.commands_run}
+            report = build_report(record, check, metrics)
+            raw_events = getattr(toolkit, "events", [])
+            events = list(raw_events() if callable(raw_events) else raw_events)
+            return WorkflowResult(report=report, findings=[], events=events, metrics=metrics)
+
         self._step(toolkit, "survey", f"{len(intake.changed_files)} changed file(s)")
         t = time.monotonic()
         outcome, files = await run_reviewer_survey(toolkit, intake, workspace, budgets.survey_budget())
@@ -95,7 +166,7 @@ class ReviewerWorkflow:
         diff_lines = intake.diff_line_list()
         survey_lines = survey_output_lines(outcome.records())
         gate_kwargs = dict(changed_files=files, prior_comments=intake.prior_comments, diff_lines=diff_lines, survey_lines=survey_lines,
-                           brief_present=intake.brief_present, truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran,
+                           brief=intake.brief, truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran,
                            surveyed_files=opened_paths(outcome.records(), [f.path for f in before]))
         result = run_gate(before, model_out.dispositions, **gate_kwargs)
         reanchored = []
@@ -109,19 +180,21 @@ class ReviewerWorkflow:
         timed("gate", t)
         log.info("reviewer.gate", kept=len(result.findings), dropped=len(result.dropped), reanchored=len(reanchored), verdict=result.verdict, unread=result.unread_files)
 
+        advisory = [f for f in result.findings if f.category in ADVISORY_CATEGORIES]
         record = ReviewRecord(
             changed_files=files, diff_truncated=intake.diff_truncated, unread_files=result.unread_files,
             survey_commands=[_record_dict(r) for r in outcome.records() if r.allowed],
             survey_refusals=[{"command": r.command, "reason": r.refusal_reason} for r in outcome.records() if not r.allowed],
             findings_before_gate=before[:30], findings_dropped=result.dropped[:30], findings_after_anchor_recheck=reanchored[:30],
             dispositions=result.dispositions, coverage_pass_ran=outcome.coverage_pass_ran, coverage_pass_output=outcome.coverage_pass_output,
-            verdict=result.verdict, covered_files=result.covered_files, findings=result.findings,
+            verdict=result.verdict, covered_files=result.covered_files, findings=result.blocking,
+            advisory_findings=advisory,
         )
 
         if record.verdict != "env_blocked":
             self._step(toolkit, "post", record.verdict)
             t = time.monotonic()
-            posted = await post_review(score, result.findings, files, result.fixed_ids, len(result.covered_files), poster=self._poster)
+            posted = await post_review(score, result.blocking, advisory, files, result.fixed_ids, len(result.covered_files), poster=self._poster)
             timed("post", t)
             if posted.ok:
                 record.posted_review_url = posted.url
@@ -139,7 +212,7 @@ class ReviewerWorkflow:
         report = build_report(record, check, metrics)
         raw_events = getattr(toolkit, "events", [])
         events = list(raw_events() if callable(raw_events) else raw_events)
-        return WorkflowResult(report=report, findings=[f.model_dump() for f in result.findings], events=events, metrics=metrics)
+        return WorkflowResult(report=report, findings=[f.model_dump() for f in result.blocking], events=events, metrics=metrics)
 
 
 _REANCHOR_DIFF_CHARS = 30000

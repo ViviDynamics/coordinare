@@ -28,8 +28,14 @@ PerformerStatusType = Literal[
     "token_limit",
     "plan_committed",
     "approved",
+    # 412: advance-with-note verdicts for an empty parsed diff (reviewer) and
+    # for a diff with no scannable source (security). Recorded as verdict slots
+    # on the coordinare side, never read as "approved".
+    "nothing_to_review",
     "changes_requested",
     "security_passed",
+    "nothing_to_scan",
+    "not_applicable",
     "security_failed",
     "qa_passed",
     "qa_failed",
@@ -113,6 +119,10 @@ class PerformerResponse(BaseModel):
 
     status: PerformerStatusType
     session_id: str = ""
+    # 412 round 46: session_expired carries this so the transport can tell
+    # the no-session exit (process-exiting) from a stale request answered
+    # while another session is still being served (not process-exiting).
+    active_session: bool = False
     reason: str | None = None
     questions: list[str] = Field(default_factory=list)
     pr_url: str | None = None

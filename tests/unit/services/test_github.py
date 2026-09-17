@@ -678,3 +678,148 @@ async def test_move_card_refuses_to_dump_into_backlog() -> None:
 
     with pytest.raises(ValueError, match="Unknown status option"):
         await service.move_card("ITEM_1", "TODO")
+
+
+def test_parse_diff_paths_exact_split_for_paths_with_b_slash() -> None:
+    """412 round 12: a path containing " b/" defeats the greedy header split
+    ("a/docs/foo b/bar.md b/docs/foo b/bar.md" -> "bar.md"). Header sides are
+    the same path outside renames, so the exact "a/<X> b/<X>" form wins; the
+    greedy match stays the fallback for renames."""
+    diff = (
+        "diff --git a/docs/foo b/bar.md b/docs/foo b/bar.md\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+        "diff --git a/normal.py b/normal.py\n"
+        "--- a/normal.py\n"
+        "+++ b/normal.py\n"
+        "diff --git a/old.md b/new docs/x b/bar.md\n"
+        "similarity index 100%\n"
+        "rename from old.md\n"
+        "rename to new docs/x b/bar.md\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == [
+        "docs/foo b/bar.md",
+        "normal.py",
+        "new docs/x b/bar.md",
+    ]
+
+
+def test_parse_diff_paths_rename_to_metadata_is_authoritative() -> None:
+    """412 round 13: git does not quote spaces in the diff header, so a
+    rename whose a-side contains " b/" is ambiguous in the header alone --
+    the section's rename-to metadata is the authoritative post-image. This
+    is real git output for a rename of "old b/name.py" -> "new b/name.py"."""
+    diff = (
+        "diff --git a/old b/name.py b/new b/name.py\n"
+        "similarity index 100%\n"
+        "rename from old b/name.py\n"
+        "rename to new b/name.py\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["new b/name.py"]
+
+
+def test_parse_diff_paths_copy_to_metadata_is_authoritative() -> None:
+    """412 round 14: copy-only sections carry "copy to" instead of a "+++"
+    line -- real git output for copying src-file.py to "copy b/dest.py"."""
+    diff = (
+        "diff --git a/src-file.py b/copy b/dest.py\n"
+        "similarity index 100%\n"
+        "copy from src-file.py\n"
+        "copy to copy b/dest.py\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["copy b/dest.py"]
+
+
+def test_parse_diff_paths_decodes_quoted_rename_to_metadata() -> None:
+    """412 round 17: git quotes and escapes the rename-to target when the
+    post-image path needs it -- the quotes must not just be stripped off the
+    raw escape spelling."""
+    diff = (
+        "diff --git a/old.py b/old.py\n"
+        "similarity index 100%\n"
+        "rename from old.py\n"
+        'rename to "caf\\303\\251 2.py"\n'
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["café 2.py"]
+
+
+def test_parse_diff_paths_keeps_line_escapes_canonical_with_the_diff_parser() -> None:
+    """412 round 42: the changed-file list carries the same escaped spelling
+    as the performer diff parser and the sanitizer's one-line metadata --
+    one representation for every consumer of a changed-path spelling.
+    (Round 34 decoded this list to the real control character on the belief
+    the scanner argv or reviewer matching consumed it; rounds 35-41
+    established the list is classification-only, so the split representation
+    served nothing and the consumers now agree.)"""
+    diff = (
+        'diff --git "a/we\\nird.py" "b/we\\nird.py"\n'
+        "--- a/we\\nird.py\n"
+        "+++ b/we\\nird.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["we\\nird.py"]
+
+
+def test_changed_path_spelling_agrees_with_the_performer_diff_parser() -> None:
+    """412 round 42 drift guard: the GitHub changed-path list and the
+    performer's parsed diff must spell a newline filename identically --
+    rounds 35-42 churned on this split. Both spell it escaped; a future
+    change to either side alone fails here."""
+    from performer.workflows.reviewer.diffparse import parse_unified_diff
+
+    diff = (
+        'diff --git "a/we\\nird.py" "b/we\\nird.py"\n'
+        "--- a/we\\nird.py\n"
+        "+++ b/we\\nird.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert [changed.path for changed in parse_unified_diff(diff)] == GitHubService._parse_diff_paths(diff)
+
+
+def test_parse_diff_paths_decodes_tab_escapes_in_quoted_headers() -> None:
+    """412 round 16: git escapes a real tab as \\\\t inside the quoted
+    payload -- the decode must yield the tab, not drop the backslash."""
+    diff = (
+        'diff --git "a/ta\\tb.py" "b/ta\\tb.py"\n'
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["ta\tb.py"]
+
+
+def test_parse_diff_paths_handles_git_quoted_headers() -> None:
+    """412 round 14: git quotes header paths it cannot emit raw (non-ASCII,
+    embedded quotes); each side is a quoted string and the b-side is the
+    post-image."""
+    diff = (
+        'diff --git "a/путь/файл.py" "b/путь/файл.py"\n'
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["путь/файл.py"]
+
+
+def test_parse_diff_paths_decodes_escaped_quote_in_quoted_headers() -> None:
+    """412 round 15: git escapes an embedded quote as \\" inside the quoted
+    payload -- real output for a file literally named quo"te.py."""
+    diff = (
+        'diff --git "a/quo\\"te.py" "b/quo\\"te.py"\n'
+        "new file mode 100644\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ['quo"te.py']
+
+
+def test_parse_diff_paths_decodes_octal_escapes_in_quoted_headers() -> None:
+    """412 round 15: non-ASCII names are octal-escaped UTF-8 bytes under
+    core.quotePath -- real output for путь/файл.py."""
+    diff = (
+        'diff --git "a/\\320\\277\\321\\203\\321\\202\\321\\214/\\321\\204\\320\\260\\320\\271\\320\\273.py" '
+        '"b/\\320\\277\\321\\203\\321\\202\\321\\214/\\321\\204\\320\\260\\320\\271\\320\\273.py"\n'
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert GitHubService._parse_diff_paths(diff) == ["путь/файл.py"]
