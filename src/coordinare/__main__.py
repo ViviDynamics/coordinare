@@ -35,6 +35,7 @@ from coordinare.config import (
     validate_persona_scope_config,
 )
 from coordinare.config_validation import (
+    ConfigValidationResult,
     _load_raw_yaml,
     coerce_multi_symphony_raw,
     is_multi_symphony_config,
@@ -56,11 +57,11 @@ from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.github import GitHubService
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
+    SkippedChannel,
     describe_notification_posture,
     sanitize_notifications,
 )
 from coordinare.state_store import StateStore
-from coordinare.transport.ssh_transport import SshTransport
 from coordinare.transport.subprocess_transport import SubprocessTransport
 from coordinare.workspace import WorkspaceManager
 
@@ -178,7 +179,9 @@ def _cmd_dry_run(args: argparse.Namespace) -> None:
             else:
                 config = ProjectConfiguration(**raw)
         else:
-            config = ProjectConfiguration()
+            # github_org/human_reviewers have no defaults; pydantic raises
+            # ValidationError at runtime and the except below handles it.
+            config = ProjectConfiguration()  # type: ignore[call-arg]
     except Exception as exc:
         print(f"Failed to load config: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -442,7 +445,14 @@ def _build_transport_for_role(
                 executable, timeout, config=config, github_token=github_token,
             )
         case "ssh":
-            return SshTransport()
+            # The stub class was deleted: its __init__ did nothing but raise
+            # this, so returning it was unreachable dead code. Raise here with
+            # the same operator-facing message.
+            msg = (
+                "SSH transport is defined but not yet implemented. "
+                "Set agent_transport: subprocess in your configuration."
+            )
+            raise NotImplementedError(msg)
         case "kubernetes":
             # Kubernetes performers speak HTTP, not the subprocess wire protocol,
             # so there is no AgentTransport for them; _build_performer_runtime
@@ -722,11 +732,11 @@ def _resolve_stage_max_concurrency(
 def _compose_performer_pools(
     *,
     config: ProjectConfiguration,
-    service_lists: dict[str, list],
-    http_services_by_stage: dict[str, list],
+    service_lists: dict[str, list[Any]],
+    http_services_by_stage: dict[str, list[Any]],
     performer_services: dict[str, Any],
     bootstrap_services_by_id: dict[str, Any] | None = None,
-) -> tuple[dict[str, list], dict[str, int], dict[str, Any]]:
+) -> tuple[dict[str, list[Any]], dict[str, int], dict[str, Any]]:
     """Merge subprocess + HTTP performer services and resolve per-stage caps.
 
     Returns ``(merged_service_lists, stage_max_c, performer_services_by_id)``.
@@ -799,7 +809,14 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
                 github_token=github_token,
             )
         case "ssh":
-            return SshTransport()
+            # The stub class was deleted: its __init__ did nothing but raise
+            # this, so returning it was unreachable dead code. Raise here with
+            # the same operator-facing message.
+            msg = (
+                "SSH transport is defined but not yet implemented. "
+                "Set agent_transport: subprocess in your configuration."
+            )
+            raise NotImplementedError(msg)
         case "kubernetes":
             # Kubernetes performers speak HTTP, not the subprocess wire protocol,
             # so there is no AgentTransport for them; _build_performer_runtime
@@ -843,6 +860,7 @@ async def _bootstrap_services(
     # the subprocess path, and "Unknown transport" for a typo. Both must still stop
     # the daemon — an operator who misspells agent_transport should be told, not
     # left with a process that starts and quietly does nothing.
+    transport: AgentTransport
     if config.agent_transport == "kubernetes":
         # No subprocess wire protocol exists here and none is needed: performers
         # are Pods reached over HTTP. This call is unconditional, so demanding one
@@ -898,7 +916,7 @@ async def _bootstrap_services(
     performer_services = _build_performer_services(config, circuit_breakers)
 
     # 048 — Collect per-role service lists and max_concurrency before slot registration.
-    service_lists: dict[str, list] = getattr(
+    service_lists: dict[str, list[Any]] = getattr(
         _build_performer_services,
         "_service_lists",
         {},
@@ -1191,7 +1209,9 @@ async def _run(
             # handler below so Ctrl+C cancels the daemon task immediately.
         ),
     )
-    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+    # uvicorn's Server class has install_signal_handlers at runtime, but its
+    # published stubs omit it — the attribute-assignment ignore is deliberate.
+    server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
     # Spec 144 (#198): the localhost guard, configured from the live config so the
     # operator's bind address, port, and any trusted proxy hostname are honoured.
@@ -1244,7 +1264,7 @@ async def _run(
             timeout_graceful_shutdown=3,  # max wait after SSE streams are signalled
         ),
     )
-    dashboard_server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+    dashboard_server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
     daemon_task = asyncio.create_task(daemon.start())
     server_task = asyncio.create_task(server.serve())
@@ -1313,14 +1333,13 @@ async def _run(
         await dashboard_task
 
 
-def _load_project_config_for_doctor(result):  # type: ignore[no-untyped-def]
+def _load_project_config_for_doctor(result: ConfigValidationResult) -> ProjectConfiguration:
     """Parse the validated config file into a ProjectConfiguration.
 
     Mirrors the daemon startup path, including the multi-symphony wrapping, so
     preflight inspects the same object the daemon would run with rather than a
     separately-parsed approximation that could diverge.
     """
-    from coordinare.config import ProjectConfiguration
     from coordinare.config_validation import (
         _load_raw_yaml,
         coerce_multi_symphony_raw,
@@ -1328,7 +1347,9 @@ def _load_project_config_for_doctor(result):  # type: ignore[no-untyped-def]
     )
 
     if result.config_file_path is None:
-        return ProjectConfiguration()
+        # github_org/human_reviewers have no defaults; pydantic raises
+        # ValidationError at runtime (same pattern as the daemon startup path).
+        return ProjectConfiguration()  # type: ignore[call-arg]
     raw = _load_raw_yaml(result.config_file_path)
     if is_multi_symphony_config(raw):
         from coordinare.config import CoordinareConfiguration
@@ -1337,7 +1358,7 @@ def _load_project_config_for_doctor(result):  # type: ignore[no-untyped-def]
     return ProjectConfiguration(**raw)
 
 
-def _cmd_doctor(args) -> None:  # type: ignore[no-untyped-def]
+def _cmd_doctor(args: argparse.Namespace) -> None:
     """Run preflight checks and exit non-zero if any failed (spec 145, FR-012)."""
     import sys
 
@@ -1427,8 +1448,8 @@ def main() -> None:
     # Step 2: Re-instantiate ProjectConfiguration from resolved path
     # (validate_config already verified this succeeds; re-instantiate to get the typed object)
     _coordinare_cfg = None
-    _config_mode = "legacy"
-    _skipped_channels: list = []
+    _config_mode: Literal["legacy", "multi_symphony"] = "legacy"
+    _skipped_channels: list[SkippedChannel] = []
     try:
         if result.config_file_path is not None:
             raw = _load_raw_yaml(result.config_file_path)
@@ -1452,7 +1473,9 @@ def main() -> None:
                 config = ProjectConfiguration(**raw)
                 _coordinare_cfg = CoordinareConfiguration(**wrap_legacy_config(raw))
         else:
-            config = ProjectConfiguration()
+            # github_org/human_reviewers have no defaults; pydantic raises
+            # ValidationError at runtime and the except below handles it.
+            config = ProjectConfiguration()  # type: ignore[call-arg]
     except Exception as exc:
         configure_logging(log_level=args.log_level or "error", structured=False)
         logger.error(

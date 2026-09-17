@@ -13,11 +13,16 @@ import asyncio
 import shutil
 import tempfile
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
 
@@ -210,7 +215,7 @@ def detect_stale_branches(
 
 
 def should_attempt_rebase(
-    session: dict[str, Any], current_main_sha: str, head_sha: str,
+    session: Mapping[str, Any], current_main_sha: str, head_sha: str,
 ) -> bool:
     """096 (FR-007): anti-thrash guard for the proactive conflicting-branch rebase.
 
@@ -235,7 +240,7 @@ def classify_pre_dispatch(
     mergeable_raw: str,
     merge_state_status: str,
     head_sha: str,
-    session: dict[str, Any],
+    session: Mapping[str, Any],
     current_main_sha: str,
 ) -> str:
     """097: decide what to do with an in-flight branch at the dispatch point.
@@ -472,7 +477,7 @@ def build_conflict_feedback(job: RebaseJob) -> list[dict[str, str]]:
 
 def prepare_conflict_resolution(
     job: RebaseJob,
-    state: dict[str, Any],
+    state: CoordinareState | dict[str, Any],
     human_reviewers: list[str] | None = None,
 ) -> None:
     """Set up a session's state for performer-driven conflict resolution.
@@ -489,7 +494,7 @@ def prepare_conflict_resolution(
     if not feedback:
         return
 
-    state["relay_feedback"] = feedback  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = feedback
     state["performer_stage"] = "implementing"
     state["phase"] = "dispatching"
     state["agent_dispatch"] = {}

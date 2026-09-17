@@ -2397,7 +2397,7 @@ def test_diff_section_path_parses_a_mode_only_header_exactly():
 
 
 @pytest.mark.asyncio
-async def test_security_floor_runs_for_non_workflow_roles(monkeypatch):
+async def test_security_floor_runs_for_non_workflow_roles(monkeypatch, tmp_path):
     """412 round 10: the 083 floor is restored for a security role NOT
     configured with the workflow -- the example config promises that removing
     the workflow line restores the prose path exactly, and the prose path's
@@ -2409,7 +2409,7 @@ async def test_security_floor_runs_for_non_workflow_roles(monkeypatch):
         async def get_pr_diff(self, url):
             return "diff --git a/v.py b/v.py\n+++ b/v.py\n@@ -1,1 +1,2 @@\n", ["v.py"]
 
-    state = {"github_service": FakeGitHub(), "workspace_path": None}
+    state = {"github_service": FakeGitHub(), "workspace_path": tmp_path}
     card = {"id": "c1", "pr_url": "https://github.com/o/r/pull/1"}
 
     findings = [{"severity": "high", "file": "v.py", "category": "injection"}]
@@ -2425,6 +2425,31 @@ async def test_security_floor_runs_for_non_workflow_roles(monkeypatch):
         "severity": "critical",
         "category": "scanner_unavailable",
         "description": "security scanner unavailable: scanner failed",
+        "file": "",
+        "line": 0,
+        "routing": "halt",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_security_floor_missing_workspace_fails_closed():
+    """A None workspace_path is a scanner-unavailable condition, not a crash:
+    the gate returns the synthetic finding (fail closed) instead of letting
+    Path(None) raise a TypeError past the ScannerError handler."""
+    from coordinare.graph.nodes.dispatch_performer import _run_security_floor
+
+    class FakeGitHub:
+        async def get_pr_diff(self, url):
+            return "diff --git a/v.py b/v.py\n+++ b/v.py\n@@ -1,1 +1,2 @@\n", ["v.py"]
+
+    state = {"github_service": FakeGitHub(), "workspace_path": None}
+    card = {"id": "c1", "pr_url": "https://github.com/o/r/pull/1"}
+
+    held = await _run_security_floor(state, card)
+    assert held == [{
+        "severity": "critical",
+        "category": "scanner_unavailable",
+        "description": "security scanner unavailable: no workspace to scan",
         "file": "",
         "line": 0,
         "routing": "halt",

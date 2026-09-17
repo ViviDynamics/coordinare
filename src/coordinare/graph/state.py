@@ -79,7 +79,7 @@ class GitHubServiceProtocol(Protocol):
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str = "HEAD") -> str | None: ...
     async def get_file_blob_sha(self, owner: str, repo: str, path: str, ref: str = "HEAD") -> str | None: ...
     async def list_prs_by_branch_prefix(
-        self, owner: str, repo: str, prefix: str, state: str = "OPEN", limit: int = 20,
+        self, owner: str, repo: str, prefix: str, *, state: str = "OPEN", limit: int = 20,
     ) -> list[dict[str, Any]]: ...
 
     # Labels
@@ -248,6 +248,19 @@ class CoordinareState(TypedDict, total=False):
     workflow_step_trail: list[dict[str, Any]]
     workflow_steps: list[str]
     last_progress_fingerprint: str | None
+    # 083: security-floor findings from the dispatch-time scan (prose path only;
+    # workflow roles scan inside the performer). Written by dispatch_performer.
+    scanner_findings: list[dict[str, Any]]
+    # Convergence tracking for stalled production monitoring — written by
+    # dispatch_performer's reset and monitor_performer's production-progress
+    # check; consumed by monitor_performer's 3536 convergence reprieve logic.
+    last_production_at: datetime | None
+    last_production_fingerprint: tuple[int, int] | None
+    convergence_reprieves: int
+    # 048: per-cycle pipeline admission set, computed in daemon and consulted by
+    # dispatch_has_pipeline_slot. Underscore keys are written via state[...], so
+    # the TypedDict must carry it for strict typing.
+    _pipeline_selected: set[str] | None
     idle_timeout_retries: dict[str, dict[str, Any]]
     # 045: Number of times reviewer/security/qa has returned a non-terminal
     # "changes_requested" / "_failed" marker for this card, routing back to

@@ -137,9 +137,7 @@ ignore_errors = true
 # 433 ratchet: per-module strict-mypy allowlist. Covers exactly the files that
 # failed when the typecheck job was introduced. Entries may be removed as files
 # are fixed; the allowlist can only shrink.
-module = [
-    "coordinare.__main__",
-    "coordinare.auth",
+module = [    "coordinare.auth",
     "coordinare.bench.space",
     "coordinare.bench.sweep",
     "coordinare.config",
@@ -161,9 +159,7 @@ module = [
     "coordinare.eval.security_scenarios",
     "coordinare.graph.nodes.assess_card",
     "coordinare.graph.nodes.check_board",
-    "coordinare.graph.nodes.classify_human_feedback",
-    "coordinare.graph.nodes.dispatch_performer",
-    "coordinare.graph.nodes.github_retry",
+    "coordinare.graph.nodes.classify_human_feedback",    "coordinare.graph.nodes.github_retry",
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.graph.nodes.handle_system_error",
     "coordinare.graph.nodes.monitor_performer",

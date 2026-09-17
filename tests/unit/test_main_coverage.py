@@ -197,7 +197,7 @@ def test_build_circuit_breakers_returns_all_five_keys() -> None:
 
 
 def test_build_transport_ssh_raises_not_implemented() -> None:
-    """Line 265: 'ssh' transport → SshTransport() raises NotImplementedError (stub transport)."""
+    """Line 265: 'ssh' transport raises NotImplementedError (stub class removed, message preserved)."""
     cfg = SimpleNamespace(agent_transport="ssh", agent_executable="", transport_timeout_seconds=30, github_token=None)
     with pytest.raises(NotImplementedError, match="SSH transport"):
         _build_transport(cfg)

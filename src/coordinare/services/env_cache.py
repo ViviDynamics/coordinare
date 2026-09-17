@@ -33,7 +33,7 @@ from coordinare.services.test_env_loader import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping
     from typing import Protocol
 
     from coordinare.models.performer_endpoint import VolumeMount
@@ -285,7 +285,7 @@ async def resolve_test_env_vars(
 
 
 async def verify_env_cache_clean(
-    state: dict[str, Any], symphony_name: str, svc: Any,
+    state: Mapping[str, Any], symphony_name: str, svc: Any,
 ) -> tuple[bool | None, str]:
     """077/093: run the cache's ``verify.sh`` in a CLEAN consumer-context
     container — the performer image with ONLY the cache mounted read-only at

@@ -10,7 +10,6 @@ SRC = PYPROJECT.parent / "src"
 
 
 _SNAPSHOT: tuple[str, ...] = (
-    "coordinare.__main__",
     "coordinare.auth",
     "coordinare.bench.space",
     "coordinare.bench.sweep",
@@ -34,7 +33,6 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.graph.nodes.assess_card",
     "coordinare.graph.nodes.check_board",
     "coordinare.graph.nodes.classify_human_feedback",
-    "coordinare.graph.nodes.dispatch_performer",
     "coordinare.graph.nodes.github_retry",
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.graph.nodes.handle_system_error",

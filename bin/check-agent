@@ -76,10 +76,14 @@ async def _run(config_path: str) -> int:
         transport = SubprocessTransport(executable, timeout)
 
     elif transport_type == "ssh":
-        from coordinare.transport.ssh_transport import SshTransport
         print(f"host:       {cfg.agent_host}:{cfg.agent_port}")
         print(f"user:       {cfg.agent_user}")
-        transport = SshTransport()
+        # The stub class only raised in __init__; raise here with the same
+        # message the daemon-side ssh case does.
+        raise NotImplementedError(
+            "SSH transport is defined but not yet implemented. "
+            "Set agent_transport: subprocess in your configuration."
+        )
 
     elif transport_type == "kubernetes":
         from coordinare.transport.kubernetes_transport import KubernetesTransport

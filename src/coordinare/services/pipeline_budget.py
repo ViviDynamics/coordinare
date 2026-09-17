@@ -1,7 +1,10 @@
 """Reserve issue slots across performer stages, independently of role capacity."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from coordinare.graph.state import CoordinareState
 
 
 def select_pipelines(
@@ -37,7 +40,7 @@ def select_pipelines(
     return selected
 
 
-def dispatch_has_pipeline_slot(state: dict[str, Any], card_id: str) -> bool:
+def dispatch_has_pipeline_slot(state: CoordinareState, card_id: str) -> bool:
     """Cover bootstrap/readoption and dispatch reached by blocked recovery too."""
     sessions = state.get('active_sessions') or {}
     if not sessions:
