@@ -4,7 +4,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from coordinare.graph.state import CoordinareState
 
 # Deliberately omit raw diffs, command output, logs, prompts and posting metadata.
 _FIELDS = {
@@ -92,14 +95,14 @@ def collect(state: dict[str, Any], stage: str, marker: str, status: dict[str, An
     state["documentation_findings"] = current
 
 
-def reset(state: dict[str, Any], stage: str) -> None:
+def reset(state: CoordinareState, stage: str) -> None:
     if stage in _FIELDS and state.get("documentation_findings"):
         records = clean_findings(state["documentation_findings"])
         records.pop(stage, None)
         state["documentation_findings"] = records
 
 
-def inject(context: dict[str, Any], state: dict[str, Any], stage: str) -> None:
+def inject(context: dict[str, Any], state: CoordinareState, stage: str) -> None:
     if stage == "documenting":
         records = clean_findings(state.get("documentation_findings"))
         if records:

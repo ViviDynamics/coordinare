@@ -215,6 +215,11 @@ async def _run_security_floor(
         return [_scanner_unavailable_finding("diff fetch failed")]
 
     repo_root = state.get("workspace_path")
+    if repo_root is None:
+        # Fail closed: a missing workspace is a scanner-unavailable condition,
+        # not something to pass into Path() as a TypeError.
+        logger.error("security_floor.scan_failed_no_workspace", card_id=str(card.get("id", "")))
+        return [_scanner_unavailable_finding("no workspace to scan")]
     try:
         findings = scan_diff(changed_files, repo_root)
     except ScannerError as exc:
@@ -1066,7 +1071,7 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
                 proceed = False  # do not dispatch onto a failed rebase; retry next cycle
         # Record the main we reconciled against (mirror check_board), so the
         # marker comparison stays consistent across cycles.
-        state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
+        state["last_known_main_sha"] = current_main
         return proceed
     except Exception as exc:  # FR-009: a guard bug must never block dispatch
         logger.warning(
@@ -1285,8 +1290,8 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # been hoisted into the public ``dispatch_performer`` wrapper so the
     # override path runs OUTSIDE the per-card mutex.  By the time this
     # body runs, the override (if any) has already been applied to state.
-    performer_stage: str = state.get("performer_stage", "")  # type: ignore[assignment]
-    performer_services: dict[str, Any] = state.get("performer_services", {})  # type: ignore[assignment]
+    performer_stage: str = state.get("performer_stage", "")
+    performer_services: dict[str, Any] = state.get("performer_services", {})
 
     if not isinstance(card, dict) or github is None or not performer_stage:
         logger.warning(
@@ -1488,10 +1493,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         pr_url = str(card.get("pr_url") or "").strip()
         pr_node_id = str(card.get("pr_node_id") or "").strip()
         if not (pr_url and pr_node_id):
-            recovered: dict[str, str] | None = None
+            recovered_pr: dict[str, str] | None = None
             if hasattr(github, "find_pr_for_issue"):
                 try:
-                    recovered = await github.find_pr_for_issue(issue_id)
+                    recovered_pr = await github.find_pr_for_issue(issue_id)
                 except Exception as exc:
                     logger.warning(
                         "dispatch_performer.pr_recovery_failed",
@@ -1500,9 +1505,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                         issue_id=issue_id,
                         error=str(exc),
                     )
-            if recovered and recovered.get("pr_url") and recovered.get("pr_node_id"):
-                card["pr_url"] = recovered["pr_url"]
-                card["pr_node_id"] = recovered["pr_node_id"]
+            if recovered_pr and recovered_pr.get("pr_url") and recovered_pr.get("pr_node_id"):
+                card["pr_url"] = recovered_pr["pr_url"]
+                card["pr_node_id"] = recovered_pr["pr_node_id"]
                 _set_current_card(state, card)
             else:
                 lifecycle: list[str] = list(state.get("lifecycle_sequence") or [])
@@ -1592,7 +1597,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     )
 
     def _release_slot_on_error() -> None:
-        if _acquired_via_slot_mgr:
+        if _acquired_via_slot_mgr and slot_manager is not None:
             slot_manager.release(performer_stage, card_id)
 
     # --- Health check with retry (033) ---
@@ -1774,7 +1779,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         )
 
     # Include relay feedback when present (reviewer / QA feedback loops).
-    relay_feedback: list[dict[str, Any]] | None = state.get("relay_feedback")  # type: ignore[assignment]
+    relay_feedback: list[dict[str, Any]] | None = state.get("relay_feedback")
     if relay_feedback:
         card_context["relay_feedback"] = relay_feedback
 
@@ -2202,7 +2207,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     try:
         await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
-        _dispatch_kwargs: dict = {"workspace_info": workspace_info}
+        _dispatch_kwargs: dict[str, Any] = {"workspace_info": workspace_info}
         if _extra_volumes is not None:
             from coordinare.services.http_performer_service import HTTPPerformerService
             if isinstance(service, HTTPPerformerService):
@@ -2339,7 +2344,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         start_attempt(state, card, card_context.get("model"))
 
     # Clear relay_feedback so it isn't re-sent to subsequent roles.
-    state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = []
     state["agent_dispatch"] = result
     state["agent_dispatch_at"] = datetime.now(UTC)
     state["performer_events"] = []
