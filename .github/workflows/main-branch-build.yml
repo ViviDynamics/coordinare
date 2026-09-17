@@ -108,6 +108,9 @@ jobs:
       - name: Ruff baseline (432 ratchet)
         run: uv run --extra dev python scripts/ruff_baseline.py
 
+      - name: Typecheck (433 ratchet)
+        run: uv run --extra dev mypy -p coordinare
+
   test:
     name: Test
     runs-on:
