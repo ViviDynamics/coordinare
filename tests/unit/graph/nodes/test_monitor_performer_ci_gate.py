@@ -1671,7 +1671,7 @@ async def test_repair_guard_clean_diff_lands_as_candidate_not_merged(monkeypatch
         return True, ""
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_clears,
     )
 
@@ -1710,7 +1710,7 @@ async def test_repair_guard_static_veto_rejects_and_escalates(monkeypatch) -> No
         raise AssertionError("reviewer must not run after a static veto")
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_must_not_run,
     )
 
@@ -1744,7 +1744,7 @@ async def test_repair_guard_reviewer_veto_rejects_and_escalates(monkeypatch) -> 
         return False, "the fix masks the failure instead of addressing it"
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_vetoes,
     )
 
@@ -1775,7 +1775,7 @@ async def test_repair_guard_reviewer_uncertainty_rejects(monkeypatch) -> None:
         raise RuntimeError("diagnostic performer unreachable")
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_crashes,
     )
 
@@ -1801,7 +1801,7 @@ async def test_repair_guard_diff_fetch_failure_rejects(monkeypatch) -> None:
         raise AssertionError("reviewer must not run when the diff is unavailable")
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_must_not_run,
     )
 

@@ -36,7 +36,7 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.graph.nodes.github_retry",
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.graph.nodes.handle_system_error",
-    "coordinare.graph.nodes.monitor_performer",
+    "coordinare.graph.nodes.monitor.body",
     "coordinare.graph.nodes.monitor_pr",
     "coordinare.graph.nodes.notify",
     "coordinare.graph.nodes.route_issue_comments",

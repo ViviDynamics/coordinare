@@ -298,7 +298,7 @@ async def test_sc008_inherited_failure_autonomously_repaired_up_to_review(monkey
         return True, ""
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_clears,
     )
     gh.head_payload = _head_rollup(
@@ -341,7 +341,7 @@ async def test_sc008_contrast_disabled_repair_only_bounces(monkeypatch) -> None:
         raise AssertionError("the adversarial reviewer must not run with L3 disabled")
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_must_not_run,
     )
 
@@ -385,7 +385,7 @@ async def test_sc005_accepted_repair_lands_as_candidate_never_auto_merged(monkey
         return True, ""
 
     monkeypatch.setattr(
-        "coordinare.graph.nodes.monitor_performer._dispatch_repair_reviewer",
+        "coordinare.graph.nodes.monitor.repair._dispatch_repair_reviewer",
         _reviewer_clears,
     )
 

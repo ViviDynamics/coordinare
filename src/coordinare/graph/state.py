@@ -327,6 +327,13 @@ class CoordinareState(TypedDict, total=False):
     feedback_ledger: list[dict[str, Any]]
     feedback_origin_sha: str | None
     noop_success_retries: int
+    # 090 gate bookkeeping written by monitor_performer's CI-gate evaluation
+    # and the L3 repair guard (per-head bounce/repair budgets, the current
+    # env-block HOLD record, and the append-only repair audit trail).
+    env_blocked: dict[str, Any] | None
+    bounce_counter: dict[str, Any]
+    inheritance_repair_counter: dict[str, Any]
+    repair_audit: list[dict[str, Any]]
     last_attempt_id: str | None
     last_attempt_log_path: str | None
     last_attempt_failure_source: str | None
