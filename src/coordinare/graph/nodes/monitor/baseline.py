@@ -12,6 +12,7 @@ from coordinare.services.failure_signature import make_failure_signature
 from coordinare.services.pr_checks_policy import _is_failure
 
 if TYPE_CHECKING:
+    from coordinare.config import EnvSignaturePattern
     from coordinare.graph.state import CoordinareState
     from coordinare.services.pr_checks_service import CheckRollup, PrChecksService
 
@@ -64,6 +65,98 @@ def _plain(fc: FailedCheckWithSignature) -> FailedCheck:
     )
 
 
+def _classify_each_failure(
+    *,
+    svc: PrChecksService,
+    rollup: CheckRollup,
+    failed_names: list[str],
+    failed_conclusion: str,
+    url_by_name: dict[str, str],
+    baseline_index: dict[str, BaselineFailure] | None,
+    env_on: bool,
+    env_patterns: list[EnvSignaturePattern] | None,
+    l2_on: bool,
+) -> tuple[
+    list[FailedCheckWithSignature],
+    list[FailedCheckWithSignature],
+    list[FailedCheck],
+    list[FailedCheck],
+    list[FailedCheckWithSignature],
+    dict[str, Any],
+]:
+    """Classify each failing HEAD check; returns the six classification bins.
+
+    Returns ``(inherited, introduced, flake, unknown, env_blocked,
+    structural_causes)``.
+    """
+    structural_causes: dict[str, Any] = {}
+    head_by_name = {c.name: c for c in rollup.checks}
+
+    inherited: list[FailedCheckWithSignature] = []
+    introduced: list[FailedCheckWithSignature] = []
+    flake: list[FailedCheck] = []
+    unknown: list[FailedCheck] = []
+    env_blocked: list[FailedCheckWithSignature] = []
+    conclusion: str
+
+    for name in failed_names:
+        entry = head_by_name.get(name)
+        if entry is not None and entry.conclusion is not None:
+            # Real conclusion/output: a transient conclusion classifies
+            # FLAKE (FR-010), so we must NOT substitute the gate's
+            # overridden failed_conclusion here.
+            conclusion = entry.conclusion
+            title = entry.title
+            summary = entry.summary
+        else:
+            # pending_timeout / missing entry: no real output to read, so
+            # synthesize the gate's failed_conclusion ("timed_out" for a
+            # pending timeout → FLAKE; "failure" otherwise).
+            conclusion = failed_conclusion
+            title = None
+            summary = None
+        head_sig, head_reason = make_failure_signature(
+            name, conclusion, title, summary,
+        )
+        base_failure = baseline_index.get(name) if baseline_index else None
+        fc = FailedCheckWithSignature(
+            name=name,
+            conclusion=conclusion,
+            html_url=url_by_name.get(name) or None,
+            head_signature=head_sig,
+            baseline_signature=base_failure.signature if base_failure else None,
+        )
+        origin = classify_failure_origin(
+            fc, head_reason, baseline_index, env_patterns=env_patterns,
+        )
+        if env_on:
+            from coordinare.services.env_signature import EnvCause
+
+            if entry is not None and getattr(entry, "setup_failure", False):
+                structural_causes[name] = EnvCause("ci_setup_failure", "CI failed during runner/platform setup",
+                                                   "Repair runner setup or platform credentials, then rerun the failed job")
+            elif head_reason and hasattr(svc, "unrelated_failure_seen") and svc.unrelated_failure_seen(rollup, name, head_sig) is True:
+                structural_causes[name] = EnvCause("ci_shared_failure", "The same CI failure occurs on an unrelated head",
+                                                   "Inspect the shared runner/service or base-branch failure, then rerun CI")
+            if name in structural_causes:
+                origin = "env_blocked"
+        if origin == "env_blocked":
+            env_blocked.append(fc)
+        elif l2_on:
+            # Only collect the L2 lists when the L2 gate is on. With env-only
+            # (l2_on=False), a non-env failure stays unclassified so the
+            # decision is byte-identical to the pre-L2 baseline (SC-006).
+            if origin == "inherited":
+                inherited.append(fc)
+            elif origin == "introduced":
+                introduced.append(fc)
+            elif origin == "flake":
+                flake.append(_plain(fc))
+            else:
+                unknown.append(_plain(fc))
+    return inherited, introduced, flake, unknown, env_blocked, structural_causes
+
+
 async def _classify_head_failures(
     *,
     state: CoordinareState,
@@ -101,71 +194,24 @@ async def _classify_head_failures(
         baseline_index = _build_baseline_index(base_rollup)
         if env_on and hasattr(svc, "refresh_peer_rollups"):
             await svc.refresh_peer_rollups(rollup.pr_number)
-        structural_causes: dict[str, Any] = {}
-        head_by_name = {c.name: c for c in rollup.checks}
-
-        inherited: list[FailedCheckWithSignature] = []
-        introduced: list[FailedCheckWithSignature] = []
-        flake: list[FailedCheck] = []
-        unknown: list[FailedCheck] = []
-        env_blocked: list[FailedCheckWithSignature] = []
-        conclusion: str
-
-        for name in failed_names:
-            entry = head_by_name.get(name)
-            if entry is not None and entry.conclusion is not None:
-                # Real conclusion/output: a transient conclusion classifies
-                # FLAKE (FR-010), so we must NOT substitute the gate's
-                # overridden failed_conclusion here.
-                conclusion = entry.conclusion
-                title = entry.title
-                summary = entry.summary
-            else:
-                # pending_timeout / missing entry: no real output to read, so
-                # synthesize the gate's failed_conclusion ("timed_out" for a
-                # pending timeout → FLAKE; "failure" otherwise).
-                conclusion = failed_conclusion
-                title = None
-                summary = None
-            head_sig, head_reason = make_failure_signature(
-                name, conclusion, title, summary,
-            )
-            base_failure = baseline_index.get(name) if baseline_index else None
-            fc = FailedCheckWithSignature(
-                name=name,
-                conclusion=conclusion,
-                html_url=url_by_name.get(name) or None,
-                head_signature=head_sig,
-                baseline_signature=base_failure.signature if base_failure else None,
-            )
-            origin = classify_failure_origin(
-                fc, head_reason, baseline_index, env_patterns=env_patterns,
-            )
-            if env_on:
-                from coordinare.services.env_signature import EnvCause
-
-                if entry is not None and getattr(entry, "setup_failure", False):
-                    structural_causes[name] = EnvCause("ci_setup_failure", "CI failed during runner/platform setup",
-                                                       "Repair runner setup or platform credentials, then rerun the failed job")
-                elif head_reason and hasattr(svc, "unrelated_failure_seen") and svc.unrelated_failure_seen(rollup, name, head_sig) is True:
-                    structural_causes[name] = EnvCause("ci_shared_failure", "The same CI failure occurs on an unrelated head",
-                                                       "Inspect the shared runner/service or base-branch failure, then rerun CI")
-                if name in structural_causes:
-                    origin = "env_blocked"
-            if origin == "env_blocked":
-                env_blocked.append(fc)
-            elif l2_on:
-                # Only collect the L2 lists when the L2 gate is on. With env-only
-                # (l2_on=False), a non-env failure stays unclassified so the
-                # decision is byte-identical to the pre-L2 baseline (SC-006).
-                if origin == "inherited":
-                    inherited.append(fc)
-                elif origin == "introduced":
-                    introduced.append(fc)
-                elif origin == "flake":
-                    flake.append(_plain(fc))
-                else:
-                    unknown.append(_plain(fc))
+        (
+            inherited,
+            introduced,
+            flake,
+            unknown,
+            env_blocked,
+            structural_causes,
+        ) = _classify_each_failure(
+            svc=svc,
+            rollup=rollup,
+            failed_names=failed_names,
+            failed_conclusion=failed_conclusion,
+            url_by_name=url_by_name,
+            baseline_index=baseline_index,
+            env_on=env_on,
+            env_patterns=env_patterns,
+            l2_on=l2_on,
+        )
 
         logger.info(
             "ci_gate.classified",
