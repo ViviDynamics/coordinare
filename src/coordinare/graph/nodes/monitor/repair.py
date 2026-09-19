@@ -255,6 +255,120 @@ async def _post_repair_comment(state: CoordinareState, body: str) -> None:
         )
 
 
+async def _reject_repair(
+    *,
+    state: CoordinareState,
+    head_sha: str,
+    attempt: int,
+    now_iso: str,
+    audit: list[dict[str, Any]],
+    detail: str,
+    kind_seq: list[dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    """Fail-safe rejection: audit the verdict, escalate, and block (no push)."""
+    records = list(kind_seq)
+    records.append(
+        _repair_record(
+            head_sha=head_sha,
+            attempt=attempt,
+            kind="rejection",
+            now_iso=now_iso,
+            detail=detail,
+        ),
+    )
+    open_qs = list(state.get("open_questions") or [])
+    open_qs.append(
+        f"Autonomous baseline repair (attempt {attempt}) on head {head_sha[:12]} "
+        f"was rejected by the test-integrity guard and NOT landed: {detail} "
+        "A human must review and resolve the inherited base-branch failure.",
+    )
+    await _post_repair_comment(
+        state,
+        "🚫 **Baseline repair rejected by the test-integrity guard — not "
+        f"landed.** {detail}\n\nThe coordinare never weakens tests and never "
+        "auto-merges; this requires human review.",
+    )
+    return (
+        {
+            "phase": "blocked",
+            "agent_dispatch": {},
+            "agent_dispatch_at": None,
+            "repair_audit": audit + records,
+            "open_questions": open_qs,
+        },
+        True,
+    )
+
+
+async def _adjudicate_reviewed_repair(
+    *,
+    state: CoordinareState,
+    card_id: str,
+    pending: dict[str, Any],
+    head_sha: str,
+    attempt: int,
+    now_iso: str,
+    audit: list[dict[str, Any]],
+    static_record: dict[str, Any],
+    diff: str,
+) -> tuple[dict[str, Any], bool]:
+    """(3) adversarial reviewer + acceptance — the static half already cleared."""
+    try:
+        reviewer_safe, reviewer_detail = await _dispatch_repair_reviewer(
+            state=state, card_id=card_id, diff=diff or "", pending=pending,
+        )
+    except Exception as exc:
+        logger.warning(
+            "repair_guard.reviewer_failed",
+            card_id=card_id,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        reviewer_safe, reviewer_detail = (
+            False,
+            "The adversarial reviewer could not reach a verdict "
+            f"({type(exc).__name__}).",
+        )
+    reviewer_record = _repair_record(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind="reviewer",
+        now_iso=now_iso,
+        is_safe=reviewer_safe,
+        detail=None if reviewer_safe else reviewer_detail,
+    )
+    if not reviewer_safe:
+        return await _reject_repair(
+            state=state,
+            head_sha=head_sha,
+            attempt=attempt,
+            now_iso=now_iso,
+            audit=audit,
+            detail=reviewer_detail,
+            kind_seq=[static_record, reviewer_record],
+        )
+
+    # Both halves cleared → land as a candidate (never auto-merged).
+    acceptance_record = _repair_record(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind="acceptance",
+        now_iso=now_iso,
+        is_safe=True,
+    )
+    await _post_repair_comment(state, _REPAIR_CANDIDATE_COMMENT)
+    logger.info(
+        "repair_guard.candidate_accepted",
+        card_id=card_id,
+        attempt=attempt,
+        head_sha=head_sha,
+    )
+
+    return {
+        "repair_audit": [*audit, static_record, reviewer_record, acceptance_record],
+    }, False
+
+
 async def _evaluate_repair_guard(
     state: CoordinareState,
     card_id: str,
@@ -282,47 +396,18 @@ async def _evaluate_repair_guard(
     now_iso = datetime.now(UTC).isoformat()
     audit: list[dict[str, Any]] = list(state.get("repair_audit") or [])
 
-    async def _reject(detail: str, *, kind_seq: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
-        records = list(kind_seq)
-        records.append(
-            _repair_record(
-                head_sha=head_sha,
-                attempt=attempt,
-                kind="rejection",
-                now_iso=now_iso,
-                detail=detail,
-            ),
-        )
-        open_qs = list(state.get("open_questions") or [])
-        open_qs.append(
-            f"Autonomous baseline repair (attempt {attempt}) on head {head_sha[:12]} "
-            f"was rejected by the test-integrity guard and NOT landed: {detail} "
-            "A human must review and resolve the inherited base-branch failure.",
-        )
-        await _post_repair_comment(
-            state,
-            "🚫 **Baseline repair rejected by the test-integrity guard — not "
-            f"landed.** {detail}\n\nThe coordinare never weakens tests and never "
-            "auto-merges; this requires human review.",
-        )
-        return (
-            {
-                "phase": "blocked",
-                "agent_dispatch": {},
-                "agent_dispatch_at": None,
-                "repair_audit": audit + records,
-                "open_questions": open_qs,
-            },
-            True,
-        )
-
     # (1) Fetch the candidate diff. A failure here is uncertainty → fail safe,
     # and we reject BEFORE recording a static_guard record (analyze_diff never
     # ran).
     github = state.get("github_service")
     if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        return await _reject(
-            "Could not fetch the candidate repair diff to adjudicate it.",
+        return await _reject_repair(
+            state=state,
+            head_sha=head_sha,
+            attempt=attempt,
+            now_iso=now_iso,
+            audit=audit,
+            detail="Could not fetch the candidate repair diff to adjudicate it.",
             kind_seq=[],
         )
     try:
@@ -334,8 +419,13 @@ async def _evaluate_repair_guard(
             error=str(exc),
             exc_type=type(exc).__name__,
         )
-        return await _reject(
-            "Could not fetch the candidate repair diff to adjudicate it.",
+        return await _reject_repair(
+            state=state,
+            head_sha=head_sha,
+            attempt=attempt,
+            now_iso=now_iso,
+            audit=audit,
+            detail="Could not fetch the candidate repair diff to adjudicate it.",
             kind_seq=[],
         )
 
@@ -350,60 +440,28 @@ async def _evaluate_repair_guard(
         flagged_patterns=flagged,
     )
     if not is_safe:
-        return await _reject(
-            "The static test-integrity check flagged the diff as weakening tests "
-            f"({', '.join(flagged)}).",
+        return await _reject_repair(
+            state=state,
+            head_sha=head_sha,
+            attempt=attempt,
+            now_iso=now_iso,
+            audit=audit,
+            detail=(
+                "The static test-integrity check flagged the diff as weakening tests "
+                f"({', '.join(flagged)})."
+            ),
             kind_seq=[static_record],
         )
 
-    # (3) Independent adversarial reviewer — only when the static half cleared.
-    try:
-        reviewer_safe, reviewer_detail = await _dispatch_repair_reviewer(
-            state=state, card_id=card_id, diff=diff or "", pending=pending,
-        )
-    except Exception as exc:
-        logger.warning(
-            "repair_guard.reviewer_failed",
-            card_id=card_id,
-            error=str(exc),
-            exc_type=type(exc).__name__,
-        )
-        reviewer_safe, reviewer_detail = (
-            False,
-            "The adversarial reviewer could not reach a verdict "
-            f"({type(exc).__name__}).",
-        )
-    reviewer_record = _repair_record(
-        head_sha=head_sha,
-        attempt=attempt,
-        kind="reviewer",
-        now_iso=now_iso,
-        is_safe=reviewer_safe,
-        detail=None if reviewer_safe else reviewer_detail,
-    )
-    if not reviewer_safe:
-        return await _reject(
-            reviewer_detail,
-            kind_seq=[static_record, reviewer_record],
-        )
-
-    # Both halves cleared → land as a candidate (never auto-merged).
-    acceptance_record = _repair_record(
-        head_sha=head_sha,
-        attempt=attempt,
-        kind="acceptance",
-        now_iso=now_iso,
-        is_safe=True,
-    )
-    await _post_repair_comment(state, _REPAIR_CANDIDATE_COMMENT)
-    logger.info(
-        "repair_guard.candidate_accepted",
+    return await _adjudicate_reviewed_repair(
+        state=state,
         card_id=card_id,
-        attempt=attempt,
+        pending=pending,
         head_sha=head_sha,
+        attempt=attempt,
+        now_iso=now_iso,
+        audit=audit,
+        static_record=static_record,
+        diff=diff or "",
     )
-
-    return {
-        "repair_audit": [*audit, static_record, reviewer_record, acceptance_record],
-    }, False
 
