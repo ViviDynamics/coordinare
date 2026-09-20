@@ -45,7 +45,7 @@ from performer.protocol import (
     PerformerMetrics,
     PerformerResponse,
 )
-from performer.workspace import commit_file
+from performer.workspace import commit_file  # noqa: F401  (late-bound by status_paths helpers)
 from performer.workspace import (
     BranchConflictError,
     WorkspaceSetupError,
@@ -58,6 +58,19 @@ from performer.workspace import (
     run_command,
 )
 
+from performer.status_paths import (
+    _terminal_status_response,
+    architect_path,
+    assessor_path,
+    bootstrap_path,
+    closing_record_path,
+    documenting_path,
+    implementing_path,
+    intake_path,
+    reviewer_path,
+    security_path,
+    sentinel_path,
+)
 log = structlog.get_logger(__name__)
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL | re.IGNORECASE)
@@ -347,6 +360,52 @@ async def _run_test_check(
     # the implementer -- sees the same plain text.
     error_output = _strip_ansi((run_result.stderr + "\n" + run_result.stdout).strip())
 
+    blocked = _test_check_command_not_found(command, error_output, run_result, label)
+    if blocked is not None:
+        return blocked
+    blocked = await _test_check_env_signal_block(command, error_output, run_result, label)
+    if blocked is not None:
+        return blocked
+    blocked = await _test_check_timeout_block(
+        command, error_output, run_result, timeout_seconds, label
+    )
+    if blocked is not None:
+        return blocked
+    blocked = _test_check_broad_failure(command, error_output, run_result, label)
+    if blocked is not None:
+        return blocked
+    return await _test_check_with_retry(
+        stand_path, timeout_seconds, label, command, run_result, error_output
+    )
+
+
+# ---------------------------------------------------------------------------
+# 063 Cross-cutting (T026c) — Service inference for env_bootstrap
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_INFERENCE_AGENT_VERSION = "claude-services-v1"
+DEFAULT_INFERENCE_MODEL = "claude-sonnet-4-5-20250929"
+# Sonnet 4.5 caps output at 64k. The Anthropic API rejects requests where
+# max_tokens exceeds the model cap, so the default has to fit the default
+# model. Operators can override via COORDINARE_INFERENCE_MAX_TOKENS when they
+# point COORDINARE_INFERENCE_MODEL at something with a different cap.
+DEFAULT_INFERENCE_MAX_TOKENS = 64_000
+# Tool-call ceiling per agent attempt. Wandering models (e.g. Qwen on a large
+# Rails repo) can burn the default of 50 without ever emitting submit_manifest.
+# Operators can raise this via COORDINARE_INFERENCE_MAX_TOOL_CALLS when the
+# repo + model combination needs more headroom.
+DEFAULT_INFERENCE_MAX_TOOL_CALLS = 50
+
+
+def _test_check_command_not_found(
+    command: str,
+    error_output: str,
+    run_result,
+    label: str,
+) -> LocalTestResult | None:
+    """409/352: exit 127 is an environment hold, not a code defect."""
+
     # 409: exit 127 is the shell saying the command name does not exist. In
     # the 167 lane that is the unambiguous "the runner is not installed"
     # environment hold (352), and this gate now agrees. The env-signature
@@ -377,6 +436,18 @@ async def _run_test_check(
             exit_code=run_result.exit_code,
         )
 
+
+    return None
+
+
+async def _test_check_env_signal_block(
+    command: str,
+    error_output: str,
+    run_result,
+    label: str,
+) -> LocalTestResult | None:
+    """089 US2: explicit env signals drain both consumers, then the output signature."""
+
     # 089 US2: a failure coinciding with a spec-088 env signal is an environment
     # block, not a code defect — consult both single-shot consumers (drain both,
     # don't short-circuit) only on the failure branch so a green run never
@@ -384,7 +455,6 @@ async def _run_test_check(
     from performer.workspace import (
         consume_env_cache_health_failure,
         consume_services_start_failure,
-        services_healthy_this_job,
     )
 
     services_failure = consume_services_start_failure()
@@ -419,6 +489,20 @@ async def _run_test_check(
             env_reason=env_reason,
             exit_code=run_result.exit_code,
         )
+
+
+    return None
+
+
+async def _test_check_timeout_block(
+    command: str,
+    error_output: str,
+    run_result,
+    timeout_seconds: int,
+    label: str,
+) -> LocalTestResult | None:
+    """A timed-out suite is held as an environment block, never retried."""
+    from performer.workspace import services_healthy_this_job
 
     # A timed-out run is not retried: it already consumed the full
     # timeout_seconds budget, so a second attempt would double the gate's
@@ -480,6 +564,17 @@ async def _run_test_check(
             budget_exceeded=healthy,
         )
 
+    return None
+
+
+def _test_check_broad_failure(
+    command: str,
+    error_output: str,
+    run_result,
+    label: str,
+) -> LocalTestResult | None:
+    """409: a broad failure is a broken diff; skip the flake retry."""
+
     # No env signal and no env signature: this looks like a real code failure.
     # Re-run once before bouncing the implementer — a single flaky failure
     # (timing-sensitive test, transient resource) should not cost a self-fix
@@ -520,6 +615,20 @@ async def _run_test_check(
             env_blocked=False,
             exit_code=run_result.exit_code,
         )
+
+
+    return None
+
+
+async def _test_check_with_retry(
+    stand_path: Path,
+    timeout_seconds: int,
+    label: str,
+    command: str,
+    run_result,
+    error_output: str,
+) -> LocalTestResult:
+    """Second attempt with env re-check and attempt-differs reporting."""
 
     log.info(
         "test_check.retrying",
@@ -603,25 +712,6 @@ async def _run_test_check(
     )
 
 
-# ---------------------------------------------------------------------------
-# 063 Cross-cutting (T026c) — Service inference for env_bootstrap
-# ---------------------------------------------------------------------------
-
-
-DEFAULT_INFERENCE_AGENT_VERSION = "claude-services-v1"
-DEFAULT_INFERENCE_MODEL = "claude-sonnet-4-5-20250929"
-# Sonnet 4.5 caps output at 64k. The Anthropic API rejects requests where
-# max_tokens exceeds the model cap, so the default has to fit the default
-# model. Operators can override via COORDINARE_INFERENCE_MAX_TOKENS when they
-# point COORDINARE_INFERENCE_MODEL at something with a different cap.
-DEFAULT_INFERENCE_MAX_TOKENS = 64_000
-# Tool-call ceiling per agent attempt. Wandering models (e.g. Qwen on a large
-# Rails repo) can burn the default of 50 without ever emitting submit_manifest.
-# Operators can raise this via COORDINARE_INFERENCE_MAX_TOOL_CALLS when the
-# repo + model combination needs more headroom.
-DEFAULT_INFERENCE_MAX_TOOL_CALLS = 50
-
-
 def _read_feedback_dispositions(stand_path: Path) -> list[dict]:
     """126: read the implementer's per-item feedback dispositions from the
     workspace's durable ``.coordinare/feedback_dispositions.json`` contract.
@@ -693,17 +783,9 @@ async def _run_service_inference(
     if not env_cache_path:
         return {"inference_skipped_reason": "no_env_cache_path"}
 
-    from coordinare_service_inference import (
-        InferenceFailed,
-        infer_services,
-    )
-    from coordinare_service_inference.claude_llm_client import (
-        ClaudeServiceLLMClient,
-    )
     from coordinare_service_inference.manual_override import (
         apply_manual_override,
     )
-    from coordinare_service_inference.prompt import render_system_prompt
 
     output_root = Path(env_cache_path)
 
@@ -731,25 +813,32 @@ async def _run_service_inference(
             "inference_succeeded": True,
             "inference_services": services,
         }
+    cfg = _service_inference_config()
 
-    # 2) LLM path: provider-selected via COORDINARE_INFERENCE_PROVIDER
-    #    (`anthropic` default, or `openai_compat` for LiteLLM/vLLM/Ollama/etc).
-    # Empty values are treated as unset. Coordinare forwards these vars via
-    # config.yaml ${VAR} placeholders; if a var is unset on the host,
-    # os.path.expandvars leaves the literal `${...}` string. The coordinare's
-    # performer_lifecycle drops those before docker -e, but treat them as unset
-    # here too in case an older coordinare or alternate launch path lets one through.
-    def _env(key: str) -> str:
-        val = os.environ.get(key, "")
-        if val.startswith("${") and val.endswith("}"):
-            return ""
-        return val
+    client, skip = _service_inference_client(cfg)
+    if skip is not None:
+        return skip
 
-    provider = (_env("COORDINARE_INFERENCE_PROVIDER") or "anthropic").strip().lower()
+    return await _service_inference_run(cfg, client, stand_path, output_root)
 
-    agent_version = _env("COORDINARE_INFERENCE_AGENT_VERSION") or DEFAULT_INFERENCE_AGENT_VERSION
-    model = _env("COORDINARE_INFERENCE_MODEL") or DEFAULT_INFERENCE_MODEL
-    max_tokens_raw = _env("COORDINARE_INFERENCE_MAX_TOKENS")
+
+def _service_inference_env(key: str) -> str:
+    """826: expandvars-leak guard — treat a literal ``${VAR}`` as unset."""
+    val = os.environ.get(key, "")
+    if val.startswith("${") and val.endswith("}"):
+        return ""
+    return val
+
+
+def _service_inference_config() -> dict[str, object]:
+    """Resolve inference env overrides into a provider/client config dict."""
+    from coordinare_service_inference.prompt import render_system_prompt
+
+    provider = (_service_inference_env("COORDINARE_INFERENCE_PROVIDER") or "anthropic").strip().lower()
+
+    agent_version = _service_inference_env("COORDINARE_INFERENCE_AGENT_VERSION") or DEFAULT_INFERENCE_AGENT_VERSION
+    model = _service_inference_env("COORDINARE_INFERENCE_MODEL") or DEFAULT_INFERENCE_MODEL
+    max_tokens_raw = _service_inference_env("COORDINARE_INFERENCE_MAX_TOKENS")
     try:
         max_tokens = int(max_tokens_raw) if max_tokens_raw else DEFAULT_INFERENCE_MAX_TOKENS
     except ValueError:
@@ -759,7 +848,7 @@ async def _run_service_inference(
             fallback=DEFAULT_INFERENCE_MAX_TOKENS,
         )
         max_tokens = DEFAULT_INFERENCE_MAX_TOKENS
-    max_tool_calls_raw = _env("COORDINARE_INFERENCE_MAX_TOOL_CALLS")
+    max_tool_calls_raw = _service_inference_env("COORDINARE_INFERENCE_MAX_TOOL_CALLS")
     try:
         max_tool_calls = (
             int(max_tool_calls_raw) if max_tool_calls_raw else DEFAULT_INFERENCE_MAX_TOOL_CALLS
@@ -772,18 +861,40 @@ async def _run_service_inference(
         )
         max_tool_calls = DEFAULT_INFERENCE_MAX_TOOL_CALLS
     system_prompt = render_system_prompt(agent_version)
+    return {
+        "provider": provider,
+        "agent_version": agent_version,
+        "model": model,
+        "max_tokens": max_tokens,
+        "max_tool_calls": max_tool_calls,
+        "system_prompt": system_prompt,
+    }
 
+
+def _service_inference_client(
+    cfg: dict[str, object],
+) -> tuple[object, dict[str, object] | None]:
+    """867: build the provider client. Returns (client, None) or (None, skip-dict)."""
+    from coordinare_service_inference.claude_llm_client import (
+        ClaudeServiceLLMClient,
+    )
+
+    provider = str(cfg["provider"])
+    agent_version = str(cfg["agent_version"])
+    model = str(cfg["model"])
+    max_tokens = int(cfg["max_tokens"])  # type: ignore[arg-type]
+    system_prompt = str(cfg["system_prompt"])
     if provider == "openai_compat":
-        base_url = _env("COORDINARE_INFERENCE_BASE_URL").strip()
+        base_url = _service_inference_env("COORDINARE_INFERENCE_BASE_URL").strip()
         if not base_url:
             # Fail fast — silently falling back to Anthropic would leak traffic
             # to a provider the operator explicitly opted out of.
             log.warning("service_inference.openai_compat_missing_base_url")
-            return {
+            return None, {
                 "inference_skipped_reason": "openai_compat_missing_base_url",
                 "inference_agent_version": agent_version,
             }
-        compat_api_key = _env("COORDINARE_INFERENCE_API_KEY") or None
+        compat_api_key = _service_inference_env("COORDINARE_INFERENCE_API_KEY") or None
         from coordinare_service_inference.openai_compat_llm_client import (
             OpenAICompatServiceLLMClient,
         )
@@ -798,7 +909,7 @@ async def _run_service_inference(
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             log.info("service_inference.no_api_key")
-            return {"inference_skipped_reason": "no_api_key"}
+            return None, {"inference_skipped_reason": "no_api_key"}
         client = ClaudeServiceLLMClient.from_api_key(
             api_key=api_key,
             model=model,
@@ -807,12 +918,28 @@ async def _run_service_inference(
         )
     else:
         log.warning("service_inference.unknown_provider", provider=provider)
-        return {
+        return None, {
             "inference_skipped_reason": f"unknown_provider:{provider}",
             "inference_agent_version": agent_version,
         }
+    return client, None
 
-    step_timeout_raw = _env("COORDINARE_INFERENCE_STEP_TIMEOUT")
+
+async def _service_inference_run(
+    cfg: dict[str, object],
+    client: object,
+    stand_path: Path,
+    output_root: Path,
+) -> dict[str, object]:
+    """906: run inference; map every outcome onto response keys."""
+    from coordinare_service_inference import (
+        InferenceFailed,
+        infer_services,
+    )
+
+    agent_version = str(cfg["agent_version"])
+    max_tool_calls = int(cfg["max_tool_calls"])  # type: ignore[arg-type]
+    step_timeout_raw = _service_inference_env("COORDINARE_INFERENCE_STEP_TIMEOUT")
     try:
         step_timeout = (
             float(step_timeout_raw)
@@ -1154,65 +1281,9 @@ async def _handle_backend_parse_failure(
     # would otherwise survive into operator-facing surfaces.
     redacted_short = _redact_secrets(raw[:200]) if raw else ""
     if perf.parse_retry_count < max_retries:
-        perf.parse_retry_count += 1
-        log.warning(
-            "backend.invalid_output.retrying",
-            stage=stage_label,
-            attempt=perf.parse_retry_count,
-            max_retries=max_retries,
-            failure_reason=failure_reason,
-            output_preview=redacted_short,
-        )
-        recovery_attempted = False
-        if is_json_contract_role:
-            try:
-                await perf.backend.relay_feedback(
-                    _json_recovery_prompt(
-                        role=perf.role,
-                        stage_label=stage_label,
-                        failure_reason=failure_reason,
-                        output_preview=redacted_short or "<empty>",
-                    ),
-                )
-                recovery_attempted = True
-            except Exception as exc:
-                log.warning(
-                    "backend.parse_retry_relay_failed",
-                    stage=stage_label,
-                    role=perf.role,
-                    error=str(exc),
-                )
-        if not recovery_attempted:
-            # Copilot round 5: backends like OpenCodeAdapter launch long-lived
-            # ``opencode serve`` processes and start() doesn't tear down previous
-            # instances.  Stop the current backend (best-effort) before launching
-            # a fresh run so repeated parse failures don't leak subprocesses or
-            # background tasks.  Swallow stop() failures — the backend may be
-            # already dead, and start() is what matters.
-            try:
-                await perf.backend.stop()
-            except Exception as exc:
-                log.warning(
-                    "backend.parse_retry_stop_failed",
-                    stage=stage_label,
-                    error=str(exc),
-                )
-            model_name = perf.score.model or None
-            await perf.backend.start(
-                perf.stand, perf.score,
-                model=model_name,
-                effort=perf.score.effort or None,
-                temperature=perf.score.temperature,
-                max_tokens=perf.score.max_tokens,
-            )
-        return PerformerResponse(
-            status="working",
-            session_id=perf.session_id,
-            progress=(
-                f"Backend {stage_label} output {failure_reason}; "
-                f"{'requested JSON repair' if recovery_attempted else 'restarting backend'} — "
-                f"retrying ({perf.parse_retry_count}/{max_retries})"
-            ),
+        return await _parse_failure_retry_response(
+            perf, stage_label, failure_reason, redacted_short,
+            max_retries, is_json_contract_role,
         )
     redacted_long = _redact_secrets((raw or "")[:300])
     # 077: retries exhausted. For roles that can SAFELY interpret prose (assessor
@@ -1239,6 +1310,77 @@ async def _handle_backend_parse_failure(
         status="error",
         session_id=perf.session_id,
         reason=perf.error_reason,
+    )
+
+
+async def _parse_failure_retry_response(
+    perf: Performance,
+    stage_label: str,
+    failure_reason: str,
+    redacted_short: str,
+    max_retries: int,
+    is_json_contract_role: bool,
+) -> PerformerResponse:
+    """(045) Schedule a parse-retry: repair prompt for JSON roles, else restart."""
+    perf.parse_retry_count += 1
+    log.warning(
+        "backend.invalid_output.retrying",
+        stage=stage_label,
+        attempt=perf.parse_retry_count,
+        max_retries=max_retries,
+        failure_reason=failure_reason,
+        output_preview=redacted_short,
+    )
+    recovery_attempted = False
+    if is_json_contract_role:
+        try:
+            await perf.backend.relay_feedback(
+                _json_recovery_prompt(
+                    role=perf.role,
+                    stage_label=stage_label,
+                    failure_reason=failure_reason,
+                    output_preview=redacted_short or "<empty>",
+                ),
+            )
+            recovery_attempted = True
+        except Exception as exc:
+            log.warning(
+                "backend.parse_retry_relay_failed",
+                stage=stage_label,
+                role=perf.role,
+                error=str(exc),
+            )
+    if not recovery_attempted:
+        # Copilot round 5: backends like OpenCodeAdapter launch long-lived
+        # ``opencode serve`` processes and start() doesn't tear down previous
+        # instances.  Stop the current backend (best-effort) before launching
+        # a fresh run so repeated parse failures don't leak subprocesses or
+        # background tasks.  Swallow stop() failures — the backend may be
+        # already dead, and start() is what matters.
+        try:
+            await perf.backend.stop()
+        except Exception as exc:
+            log.warning(
+                "backend.parse_retry_stop_failed",
+                stage=stage_label,
+                error=str(exc),
+            )
+        model_name = perf.score.model or None
+        await perf.backend.start(
+            perf.stand, perf.score,
+            model=model_name,
+            effort=perf.score.effort or None,
+            temperature=perf.score.temperature,
+            max_tokens=perf.score.max_tokens,
+        )
+    return PerformerResponse(
+        status="working",
+        session_id=perf.session_id,
+        progress=(
+            f"Backend {stage_label} output {failure_reason}; "
+            f"{'requested JSON repair' if recovery_attempted else 'restarting backend'} — "
+            f"retrying ({perf.parse_retry_count}/{max_retries})"
+        ),
     )
 
 
@@ -1350,36 +1492,9 @@ async def handle_dispatch(
     apply_github_url_override(score.github_graphql_url, "GITHUB_GRAPHQL_URL", settings)
 
     stand: Stand = await clone_repository(score)
-    # 080: for a non-single mode, launch the in-container dual-model proxy and
-    # point this backend's provider base URL at it BEFORE the CLI starts. No-op
-    # (returns None) when the dispatch carries no orchestration block.
-    orchestration_proxy = None
-    try:
-        from performer.proxy.launch import maybe_launch_proxy
-        from performer.proxy.routing import RoutingTable
-
-        # 078: load the self-hosted routing table from its mounted/baked YAML
-        # path (SELFHOSTED_ROUTING_CONFIG). When the path is empty (the default)
-        # no table is loaded, so the layer stays a byte-for-byte no-op for every
-        # backend. A non-empty-but-broken table fails fast here at job start.
-        routing_table = None
-        routing_config_path = (settings.SELFHOSTED_ROUTING_CONFIG or "").strip()
-        if routing_config_path:
-            routing_table = RoutingTable.from_yaml_file(routing_config_path)
-
-        orchestration_proxy = await maybe_launch_proxy(
-            score.orchestration,
-            backend_name,
-            routing_table=routing_table,
-            model=model_name,
-            health_check=routing_table is not None,
-            health_timeout=settings.SELFHOSTED_HEALTH_TIMEOUT,
-            capture_dir=(settings.LITELLM_PROXY_CAPTURE_DIR or "").strip() or None,
-        )
-    except Exception as exc:
-        log.warning("dual_model_proxy.launch_failed", error=str(exc))
-        cleanup_stand(stand)
-        raise
+    orchestration_proxy = await _launch_dispatch_proxy(
+        score, backend_name, model_name, stand, settings,
+    )
     try:
         # 164: a role with a configured workflow runs that workflow, presented
         # as a BackendAdapter so every downstream mechanism (Performance, the
@@ -1424,19 +1539,7 @@ async def handle_dispatch(
         perf.head_at_start = await get_head_sha(stand)
     except Exception as exc:
         log.warning("dispatch.head_at_start_capture_failed", error=str(exc))
-    # 072: snapshot pre-turn PR comment count for bot_pr_comment_delta.
-    if pr_url:
-        try:
-            owner_repo = score.owner_repo
-            pr_number = _extract_pr_number(pr_url)
-            if pr_number:
-                pre_comments = await list_pr_comments(
-                    owner_repo[0], owner_repo[1], pr_number,
-                    token=score.effective_github_token,
-                )
-                perf.pr_comments_at_start = _count_bot_comments(pre_comments)
-        except Exception as exc:
-            log.warning("dispatch.pr_comments_at_start_failed", error=str(exc))
+    await _snapshot_pr_comment_baseline(perf, pr_url, score)
     log.info("dispatch accepted", session_id=session_id)
     return PerformerResponse(
         status="accepted",
@@ -1444,6 +1547,69 @@ async def handle_dispatch(
         backend=backend_name,
         model=model_name,
     ), perf
+
+
+async def _launch_dispatch_proxy(
+    score: Score,
+    backend_name: str,
+    model_name: str | None,
+    stand: Stand,
+    settings: Settings,
+) -> object | None:
+    """080/078: launch the in-container dual-model proxy before the CLI starts.
+
+    No-op (returns None) when the dispatch carries no orchestration block.
+    On failure the stand is cleaned up and the error re-raised.
+    """
+    orchestration_proxy = None
+    try:
+        from performer.proxy.launch import maybe_launch_proxy
+        from performer.proxy.routing import RoutingTable
+
+        # 078: load the self-hosted routing table from its mounted/baked YAML
+        # path (SELFHOSTED_ROUTING_CONFIG). When the path is empty (the default)
+        # no table is loaded, so the layer stays a byte-for-byte no-op for every
+        # backend. A non-empty-but-broken table fails fast here at job start.
+        routing_table = None
+        routing_config_path = (settings.SELFHOSTED_ROUTING_CONFIG or "").strip()
+        if routing_config_path:
+            routing_table = RoutingTable.from_yaml_file(routing_config_path)
+
+        orchestration_proxy = await maybe_launch_proxy(
+            score.orchestration,
+            backend_name,
+            routing_table=routing_table,
+            model=model_name,
+            health_check=routing_table is not None,
+            health_timeout=settings.SELFHOSTED_HEALTH_TIMEOUT,
+            capture_dir=(settings.LITELLM_PROXY_CAPTURE_DIR or "").strip() or None,
+        )
+    except Exception as exc:
+        log.warning("dual_model_proxy.launch_failed", error=str(exc))
+        cleanup_stand(stand)
+        raise
+    return orchestration_proxy
+
+
+async def _snapshot_pr_comment_baseline(
+    perf: Performance,
+    pr_url: str | None,
+    score: Score,
+) -> None:
+    """072: snapshot pre-turn PR comment count for bot_pr_comment_delta."""
+    if not pr_url:
+        return
+    try:
+        owner_repo = score.owner_repo
+        pr_number = _extract_pr_number(pr_url)
+        if pr_number:
+            pre_comments = await list_pr_comments(
+                owner_repo[0], owner_repo[1], pr_number,
+                token=score.effective_github_token,
+            )
+            perf.pr_comments_at_start = _count_bot_comments(pre_comments)
+    except Exception as exc:
+        log.warning("dispatch.pr_comments_at_start_failed", error=str(exc))
 
 
 def _format_check_failures(failed_runs: list[dict[str, Any]]) -> str:
@@ -1625,6 +1791,17 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
                                          "check_names": [str(run.get("name") or "check") for run in failed], "cause": cause}})
 
     # verdict == "fail"
+    return await _dispatch_check_failure_repair(perf, settings, failed, owner, repo)
+
+
+async def _dispatch_check_failure_repair(
+    perf: Performance,
+    settings: Settings | None,
+    failed: list[dict[str, Any]],
+    owner: str,
+    repo: str,
+) -> PerformerResponse:
+    """Fail path: no-progress/budget gates, then relay the failure to the backend."""
     max_attempts = settings.CHECK_MAX_ATTEMPTS if settings is not None else 3
     no_progress_limit = settings.CHECK_NO_PROGRESS_LIMIT if settings is not None else 2
 
@@ -1865,6 +2042,54 @@ async def handle_status(
     settings: Settings | None = None,
 ) -> PerformerResponse:
     """Return the current session state."""
+    _guard = await _status_session_guard(msg, perf, settings)
+    if _guard is not None:
+        return _guard
+
+    # Return a stable response for terminal/parked states without re-running
+    # backend logic.  Without this guard, a coordinare poll arriving after
+    # _poll_check_runs sets perf.state = "blocked" would fall through to
+    # backend.get_status(), see "done", and re-execute the push/PR-open path.
+    _settled = await _terminal_status_response(perf, settings)
+    if _settled is not None:
+        return _settled
+
+    backend_status: BackendStatus = perf.backend.get_status()
+
+    if backend_status.state == "done":
+        # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
+        if perf.role == "qa":
+            # 164 T049: QA post-processing lives in performer.qa_postprocess.
+            # Late import: that module looks collaborators up on this one.
+            from performer.qa_postprocess import finalize_qa
+
+            return await finalize_qa(perf, backend_status, settings)
+
+        _dispatched = await _role_dispatch_response(perf, backend_status, settings)
+        if _dispatched is not None:
+            return _dispatched
+
+        _lint_response = await _pre_push_lint_response(perf)
+        if _lint_response is not None:
+            return _lint_response
+
+        gate_cfg = perf.score.local_test_gate
+        if gate_cfg and gate_cfg.get("enabled"):
+            _gate_response = await _local_test_gate_response(perf, gate_cfg)
+            if _gate_response is not None:
+                return _gate_response
+
+        return await _push_and_open_pr(perf)
+
+    return await _non_done_response(perf, backend_status)
+
+
+async def _status_session_guard(
+    msg: PerformerMessage,
+    perf: Performance | None,
+    settings: Settings | None,
+) -> PerformerResponse | None:
+    """Reject stale/foreign sessions and enforce the FR-015 wall-clock timeout."""
     if perf is None or msg.session_id != perf.session_id:
         # 412 round 46: a stale request while another session is still being
         # served is an error for that request only -- the run loop keeps
@@ -1893,1437 +2118,195 @@ async def handle_status(
                 session_id=perf.session_id,
                 reason=f"session timed out after {elapsed:.0f}s",
             )
+    return None
 
-    # Return a stable response for terminal/parked states without re-running
-    # backend logic.  Without this guard, a coordinare poll arriving after
-    # _poll_check_runs sets perf.state = "blocked" would fall through to
-    # backend.get_status(), see "done", and re-execute the push/PR-open path.
-    if perf.state == "plan_committed":
-        return PerformerResponse(
-            status="plan_committed",
-            session_id=perf.session_id,
-            plan_path=perf.plan_path,
-        )
-    if perf.state == "assessment_complete":
-        return PerformerResponse(
-            status="assessment_complete",
-            session_id=perf.session_id,
-        )
-    if perf.state == "approved":
-        return PerformerResponse(
-            status="approved",
-            session_id=perf.session_id,
-            suggestions=perf.review_suggestions,
-        )
-    if perf.state == "changes_requested":
-        return PerformerResponse(
-            status="changes_requested",
-            session_id=perf.session_id,
-            comments=perf.review_comments,
-        )
-    if perf.state == "security_passed":
-        return PerformerResponse(
-            status="security_passed",
-            session_id=perf.session_id,
-        )
-    if perf.state == "security_failed":
-        return PerformerResponse(
-            status="security_failed",
-            session_id=perf.session_id,
-            findings=perf.security_findings,
-        )
-    if perf.state == "qa_passed":
-        return PerformerResponse(
-            status="qa_passed",
-            session_id=perf.session_id,
-            report=perf.qa_report,
-        )
-    if perf.state == "qa_failed":
-        return PerformerResponse(
-            status="qa_failed",
-            session_id=perf.session_id,
-            failures=perf.qa_failures,
-        )
-    if perf.state == "qa_env_blocked":
-        return PerformerResponse(
-            status="qa_env_blocked",
-            session_id=perf.session_id,
-            reason=(perf.qa_report or {}).get("environment_error"),
-            report=perf.qa_report,
-        )
-    if perf.state == "docs_committed":
-        return PerformerResponse(
-            status="docs_committed",
-            session_id=perf.session_id,
-            files_modified=perf.docs_files_modified,
-        )
-    if perf.state == "env_bootstrap_complete":
-        return PerformerResponse(
-            status="env_bootstrap_complete",
-            session_id=perf.session_id,
-            **perf.inference_state,
-        )
-    if perf.state == "diagnostic_complete":
+
+async def _role_dispatch_response(
+    perf: Performance,
+    backend_status: BackendStatus,
+    settings: Settings | None,
+) -> PerformerResponse | None:
+    """Dispatch a done state to the role path; None falls through to the shared push tail."""
+    # 077: diagnostic/benchmark probe — return the agent's output verbatim
+    # with NO lifecycle scaffolding (no commit/push/PR, no verify, no
+    # service-inference). Short-circuits before every role branch so a
+    # viability probe ("can this backend drive a browser on this model?")
+    # isn't distorted by a role's commit/PR/JSON contract.
+    if perf.role == DIAGNOSTIC_ROLE:
+        perf.state = "diagnostic_complete"
         return PerformerResponse(
             status="diagnostic_complete",
             session_id=perf.session_id,
+            progress=(backend_status.output or "").strip()[:4000],
         )
-    if perf.state == "blocked":
+
+    if perf.role == "architecting":
+        return await architect_path(perf, backend_status, settings)
+
+    if perf.role == "assessing":
+        return await assessor_path(perf, backend_status, settings)
+
+    # 021/173: the intake/reviewer roles map a verdict and return terminal
+    # statuses. This branch MUST come before the shared tail below: that tail
+    # lints, pushes the branch and opens a pull request for any role that
+    # reaches it, and these roles clone a repository they never modify. A
+    # missing branch here does not fail loudly, it opens pull requests.
+    if perf.role in ("advocate", "curator"):
+        return await intake_path(perf, backend_status, settings)
+    if perf.role == "closing_review":
+        _closing_response = await closing_record_path(perf, backend_status, settings)
+        if _closing_response is not None:
+            return _closing_response
+    if perf.role in ("reviewing", "closing_review"):
+        return await reviewer_path(perf, backend_status, settings)
+
+    if perf.role == "security":
+        return await security_path(perf, backend_status, settings)
+
+    if perf.role == "documenting":
+        return await documenting_path(perf, backend_status, settings)
+
+    if perf.role == "env_bootstrap":
+        return await bootstrap_path(perf, backend_status, settings)
+
+    if perf.role == "implementing":
+        _impl_response = await implementing_path(perf, backend_status, settings)
+        if _impl_response is not None:
+            return _impl_response
+
+    if perf.role in SENTINEL_ROLES:
+        _sentinel_response = await sentinel_path(perf, backend_status, settings)
+        if _sentinel_response is not None:
+            return _sentinel_response
+
+    return None
+
+
+async def _pre_push_lint_response(perf: Performance) -> PerformerResponse | None:
+    """043/409: run the lint gate before pushing; None when the gate passes."""
+    lint_gate_cfg = perf.score.local_test_gate or {}
+    ci_ok, ci_error = await _run_ci_check(
+        perf.stand.path,
+        label=perf.role,
+        lint_override=str(lint_gate_cfg["lint_command"]) if lint_gate_cfg.get("lint_command") else None,
+        sub_roots=tuple(lint_gate_cfg.get("roots") or ()),
+    )
+    if not ci_ok:
+        log.warning("pre_push_ci_failed", role=perf.role, error_preview=ci_error[:200])
+        perf.state = "changes_requested"
+        perf.review_comments = [{"body": f"Lint failed before push:\n{ci_error[:500]}"}]
         return PerformerResponse(
-            status="blocked",
+            status="changes_requested",
             session_id=perf.session_id,
-            questions=perf.open_questions,
+            comments=[{"body": f"Lint failed before push:\n{ci_error[:500]}"}],
         )
-
-    # US5: if we've pushed and created the PR, poll check runs instead of the backend
-    if perf.state == "waiting_for_checks":
-        return await _poll_check_runs(perf, settings)
-
-    backend_status: BackendStatus = perf.backend.get_status()
-
-    if backend_status.state == "done":
-        # 077: diagnostic/benchmark probe — return the agent's output verbatim
-        # with NO lifecycle scaffolding (no commit/push/PR, no verify, no
-        # service-inference). Short-circuits before every role branch so a
-        # viability probe ("can this backend drive a browser on this model?")
-        # isn't distorted by a role's commit/PR/JSON contract.
-        if perf.role == DIAGNOSTIC_ROLE:
-            perf.state = "diagnostic_complete"
-            return PerformerResponse(
-                status="diagnostic_complete",
-                session_id=perf.session_id,
-                progress=(backend_status.output or "").strip()[:4000],
-            )
-
-        # 020: Architect path — commit plan file instead of opening a PR.
-        # Plan content can arrive two ways:
-        #   1. inline — backend sets BackendStatus.output to the plan text
-        #      (used when the model emits an assistant message containing it)
-        #   2. workspace — backend writes {folder}/plan.md (and optional
-        #      tasks.md) directly via tool calls (e.g. codex apply_patch).
-        #      Detected after the fact by reading the file back.
-        # Fix 13 (065): codex populates `output` only from assistant text; when
-        # the model writes the plan via apply_patch, output is empty. Probe
-        # the workspace before declaring the plan empty.
-        if perf.role == "architecting":
-            # 165: the architect WORKFLOW reports a blueprint and commits nothing.
-            # Its output is the JSON report (blueprint, size, write_free_check,
-            # workflow_metrics); coordinare lifts the blueprint and slices it into
-            # the readers' briefs. The prose path below is untouched (164 FR-005).
-            _bp_report = _extract_json(backend_status.output or "")
-            if isinstance(_bp_report, dict) and isinstance(_bp_report.get("blueprint"), dict):
-                perf.state = "plan_committed"
-                log.info(
-                    "architect.blueprint_reported",
-                    size=_bp_report.get("size"),
-                    milestones=len(_bp_report["blueprint"].get("milestones") or []),
-                    session_id=perf.session_id,
-                )
-                return PerformerResponse(
-                    status="plan_committed",
-                    session_id=perf.session_id,
-                    report=_bp_report,
-                    progress=f"blueprint ({_bp_report.get('size') or 'unsized'})",
-                )
-            folder = _doc_folder(perf.score)
-            issue_num = perf.score.issue_number
-            plan_content = (backend_status.output or "").strip()
-            tasks_content = ""
-            plan_source = "inline"
-
-            if plan_content:
-                if "---TASKS---" in plan_content:
-                    parts = plan_content.split("---TASKS---", 1)
-                    plan_content = parts[0].strip()
-                    tasks_content = parts[1].strip()
-            else:
-                ws_plan = perf.stand.path / folder / "plan.md"
-                ws_tasks = perf.stand.path / folder / "tasks.md"
-                if ws_plan.is_file():
-                    try:
-                        plan_content = ws_plan.read_text(encoding="utf-8").strip()
-                    except OSError as exc:
-                        log.warning("architect.read_workspace_plan_failed", path=str(ws_plan), error=str(exc))
-                        plan_content = ""
-                    if plan_content and ws_tasks.is_file():
-                        try:
-                            tasks_content = ws_tasks.read_text(encoding="utf-8").strip()
-                        except OSError as exc:
-                            log.warning("architect.read_workspace_tasks_failed", path=str(ws_tasks), error=str(exc))
-                    if plan_content:
-                        plan_source = "workspace"
-
-            if not plan_content:
-                perf.state = "error"
-                perf.error_reason = "Backend produced an empty architecture plan"
-                return PerformerResponse(
-                    status="error",
-                    session_id=perf.session_id,
-                    reason="Backend produced an empty architecture plan",
-                )
-
-            log.info("architect.plan_source", source=plan_source, session_id=perf.session_id)
-
-            plan_path = f"{folder}/plan.md"
-            commit_msg = f"chore: add architecture plan for #{issue_num}" if issue_num else "chore: add architecture plan"
-            await commit_file(perf.stand, plan_path, plan_content, commit_msg)
-
-            if tasks_content:
-                tasks_path = f"{folder}/tasks.md"
-                tasks_msg = f"chore: add implementation tasks for #{issue_num}" if issue_num else "chore: add implementation tasks"
-                try:
-                    await commit_file(perf.stand, tasks_path, tasks_content, tasks_msg)
-                except Exception as exc:
-                    log.warning("architect.commit_tasks_failed", error=str(exc))
-            perf.plan_path = plan_path
-            perf.state = "plan_committed"
-            return PerformerResponse(
-                status="plan_committed",
-                session_id=perf.session_id,
-                plan_path=plan_path,
-            )
-
-        # Assessor path — evaluate whether the card specification is sufficient.
-        # Backend output is expected to be JSON with: sufficient (bool),
-        # questions (list[str]).  When sufficient, reports assessment_complete
-        # (a terminal success status that advances the lifecycle).  When
-        # insufficient, reports blocked with the generated questions.
-        if perf.role == "assessing":
-            # 166: the assessor WORKFLOW reports an assessment and commits nothing.
-            # Its output is the JSON report (assessment, gate_record, write_free_check,
-            # workflow_metrics); coordinare lifts the assessment and records it on the
-            # card session. The prose path below is untouched (164 FR-005).
-            assess_raw = backend_status.output or ""
-            _ar = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-            if isinstance(_ar, dict) and isinstance(_ar.get("assessment"), dict):
-                _assessment = _ar["assessment"]
-                _ready = bool(_assessment.get("ready"))
-                _questions = [str(q) for q in (_assessment.get("questions") or [])]
-                _verdict = str(_assessment.get("verdict") or "work")
-                log.info(
-                    "assessor.assessment_reported",
-                    ready=_ready,
-                    questions=len(_questions),
-                    criteria_source=_assessment.get("criteria_source"),
-                    verdict=_verdict,
-                    session_id=perf.session_id,
-                )
-                # 410: a verdict that declines the card never advances the
-                # lifecycle — coordinare turns it into the defined board outcome
-                # (comment + close for not_work, comment + back to backlog for
-                # needs_split) instead of dispatching the architect.
-                if _verdict in ("not_work", "needs_split"):
-                    perf.state = "assessment_complete"
-                    return PerformerResponse(
-                        status="assessment_not_work" if _verdict == "not_work" else "assessment_needs_split",
-                        session_id=perf.session_id,
-                        report=_ar,
-                        progress=f"assessment ({_verdict})",
-                    )
-                if _ready:
-                    perf.state = "assessment_complete"
-                    return PerformerResponse(
-                        status="assessment_complete",
-                        session_id=perf.session_id,
-                        report=_ar,
-                        progress="assessment (ready)",
-                    )
-                # Not ready: the same blocked shape the prose assessor returns
-                # (FR-011, FR-015), so coordinare's open_questions path and the
-                # issue comment are untouched. The gate guarantees a question.
-                perf.assessment_questions = _questions
-                perf.state = "blocked"
-                perf.open_questions = perf.assessment_questions
-                return PerformerResponse(
-                    status="blocked",
-                    session_id=perf.session_id,
-                    questions=perf.assessment_questions,
-                    report=_ar,
-                )
-            if not assess_raw.strip():
-                return await _handle_backend_parse_failure(
-                    perf, assess_raw, "assessment", settings, "was empty",
-                )
-            assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-            if not isinstance(assess_output, dict):
-                async def _assessor_lenient_sufficient() -> PerformerResponse:
-                    # 077: prose assessment (no parseable JSON) → treat as sufficient.
-                    # We cannot extract blocking questions from prose, and the parser
-                    # already biases to sufficient when no questions are present
-                    # (see below), so prose-with-no-structured-questions is the same
-                    # case. The raw prose is committed as the assessment report (same
-                    # as the structured-sufficient path); no error_reason is produced,
-                    # so no unredacted text reaches operator surfaces.
-                    folder = _doc_folder(perf.score)
-                    assessment_path = f"{folder}/assessment.md"
-                    n = perf.score.issue_number
-                    # Redact before committing: unstructured backend output is
-                    # untrusted and may echo credentials; this path (unlike the
-                    # structured-sufficient one) handles arbitrary prose, so scrub it.
-                    content = (
-                        f"# Assessment: {perf.score.title}\n\n"
-                        f"_(Recorded from unstructured backend output.)_\n\n"
-                        f"{_redact_secrets(assess_raw)}"
-                    )
-                    try:
-                        await commit_file(
-                            perf.stand, assessment_path, content,
-                            f"chore: add assessment for #{n}" if n else "chore: add assessment",
-                        )
-                    except Exception as exc:
-                        log.warning("assessor.commit_assessment_failed", error=str(exc))
-                    perf.state = "assessment_complete"
-                    return PerformerResponse(
-                        status="assessment_complete", session_id=perf.session_id,
-                    )
-
-                return await _handle_backend_parse_failure(
-                    perf, assess_raw, "assessment", settings,
-                    "could not be parsed as a JSON object",
-                    lenient_fallback=_assessor_lenient_sufficient,
-                )
-
-            sufficient = assess_output.get("sufficient", True)
-            raw_questions = assess_output.get("questions", [])
-            questions = raw_questions if isinstance(raw_questions, list) else []
-
-            # If insufficient but no questions were generated, treat as sufficient
-            # (mirrors the legacy assess_card behaviour).
-            if not sufficient and not questions:
-                log.info(
-                    "assessor.no_questions_treating_as_sufficient",
-                    session_id=perf.session_id,
-                )
-                sufficient = True
-
-            if sufficient:
-                # Write assessment report for the architect and human readers
-                folder = _doc_folder(perf.score)
-                assessment_path = f"{folder}/assessment.md"
-                assess_issue_num = perf.score.issue_number
-                # Build structured assessment content from the raw output
-                assessment_content = f"# Assessment: {perf.score.title}\n\n"
-                assessment_content += assess_raw if isinstance(assess_raw, str) else str(assess_output)
-                try:
-                    await commit_file(
-                        perf.stand, assessment_path, assessment_content,
-                        f"chore: add assessment for #{assess_issue_num}" if assess_issue_num else "chore: add assessment",
-                    )
-                    log.info("assessor.assessment_committed", path=assessment_path)
-                except Exception as exc:
-                    log.warning("assessor.commit_assessment_failed", error=str(exc))
-
-                perf.state = "assessment_complete"
-                return PerformerResponse(
-                    status="assessment_complete",
-                    session_id=perf.session_id,
-                )
-
-            # Insufficient — block with questions
-            perf.assessment_questions = [str(q) for q in questions]
-            perf.state = "blocked"
-            perf.open_questions = perf.assessment_questions
-            return PerformerResponse(
-                status="blocked",
-                session_id=perf.session_id,
-                questions=perf.assessment_questions,
-            )
-
-        # 021: Reviewer path — post review to GitHub PR, return approved or changes_requested.
-        # Backend output is expected to be JSON with: approved (bool), comments (list),
-        # suggestions (list), body (str). Existing backends don't produce this yet —
-        # the reviewer backend adapter will be implemented separately.
-        #
-        # 173: the two card-less intake roles. Both run a workflow that has
-        # already done every GitHub write it intends to do, so the only work
-        # here is to map the verdict onto a terminal status.
-        #
-        # This branch MUST come before the shared tail below: that tail lints,
-        # pushes the branch and opens a pull request for any role that reaches
-        # it, and these roles clone a repository they never modify. A missing
-        # branch here does not fail loudly, it opens pull requests.
-        #
-        # The guard requires the shape, not just the key: a dict carrying only a
-        # verdict is not a workflow report (the same lesson spec 172 recorded).
-        if perf.role in ("advocate", "curator"):
-            _key = "advocate" if perf.role == "advocate" else "curation"
-            _ok = "advocate_complete" if perf.role == "advocate" else "curation_complete"
-            _raw = backend_status.output or ""
-            _ir = _extract_json(_raw) if isinstance(_raw, str) else _raw
-            _rec = _ir.get(_key) if isinstance(_ir, dict) else None
-            if (
-                isinstance(_rec, dict)
-                and _rec.get("verdict") in (_ok, "env_blocked")
-                and isinstance(_rec.get("outcomes"), list)
-                and isinstance(_rec.get("model_calls"), int)
-            ):
-                _verdict = str(_rec.get("verdict") or "")
-                log.info(
-                    "intake.run_reported",
-                    role=perf.role,
-                    verdict=_verdict,
-                    outcomes=len(_rec.get("outcomes") or []),
-                    model_calls=_rec.get("model_calls"),
-                    error=_rec.get("error"),
-                )
-                perf.state = _verdict
-                if _verdict == "env_blocked":
-                    _reason = str(_rec.get("error") or "the intake run could not complete")
-                    perf.open_questions = [_reason]
-                    return PerformerResponse(
-                        status="env_blocked", session_id=perf.session_id,
-                        questions=[_reason], report=_ir,
-                    )
-                return PerformerResponse(
-                    status=_ok, session_id=perf.session_id,
-                    body=f"{len(_rec.get('outcomes') or [])} issue(s) handled",
-                    report=_ir,
-                )
-            # An unusable report must NOT fall through. For every other role a
-            # fall-through lands on the prose path, which is a reasonable
-            # default; for these two it lands on the tail that pushes a branch
-            # and opens a pull request. There is no prose path to fall back to
-            # here, so a malformed report is an error, reported as one.
-            log.warning(
-                "intake.report_unusable",
-                role=perf.role,
-                has_key=isinstance(_ir, dict) and _key in _ir,
-            )
-            perf.state = "error"
-            perf.error_reason = f"{perf.role} run returned no usable report"
-            return PerformerResponse(
-                status="error", session_id=perf.session_id,
-                body=f"{perf.role} run returned no usable report",
-                report=_ir if isinstance(_ir, dict) else None,
-            )
-
-        # 042: The "closing_review" stage shares the same code path — its only
-        # difference is the persona instructions injected by the coordinare.
-        # The closer posts a verdict and, on approval, resolves every open
-        # thread so the PR can clear the "all comments resolved" merge gate.
-        # 172: the closer WORKFLOW reports a closing record: the review threads were
-        # classified by code, only ambiguous ones reached the model, every judgement
-        # was checked against the thread's own words, the one review is posted and
-        # the earned threads are already resolved. Map the verdict and skip the prose
-        # path (and its resolve-everything call). A dict without a known verdict is
-        # not a workflow report: the prose path below is untouched.
-        if perf.role == "closing_review":
-            _cr_raw = backend_status.output or ""
-            _cr = _extract_json(_cr_raw) if isinstance(_cr_raw, str) else _cr_raw
-            if (isinstance(_cr, dict) and isinstance(_cr.get("closing"), dict)
-                    and _cr["closing"].get("verdict") in ("approved", "changes_requested", "env_blocked")
-                    and isinstance(_cr["closing"].get("threads_read"), int)
-                    and isinstance(_cr["closing"].get("classifications"), list)):
-                _closing = _cr["closing"]
-                _verdict = str(_closing.get("verdict"))
-                _open = [t for t in (_closing.get("open_threads") or []) if isinstance(t, dict)]
-                log.info(
-                    "closer.record_reported",
-                    verdict=_verdict,
-                    threads=_closing.get("threads_read"),
-                    resolved=len(_closing.get("resolved") or []),
-                    open=len(_open),
-                    model_calls=(_closing.get("workflow_metrics") or {}).get("model_calls"),
-                    session_id=perf.session_id,
-                )
-                if _verdict == "env_blocked":
-                    perf.state = "env_blocked"
-                    return PerformerResponse(
-                        status="env_blocked", session_id=perf.session_id,
-                        reason=str(_closing.get("hold_reason") or "the closing review could not complete"), report=_cr,
-                    )
-                if _verdict == "approved":
-                    # The workflow resolved what it judged; never resolve again here.
-                    perf.state = "approved"
-                    perf.review_suggestions = []
-                    return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_cr)
-                _comments = [
-                    {"path": str(t.get("path") or ""), "line": int(t.get("line") or 0),
-                     "body": f"unresolved review thread: {t.get('excerpt') or t.get('thread_id')}"}
-                    for t in _open
-                ]
-                max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
-                perf.review_cycle += 1
-                if perf.review_cycle >= max_cycles:
-                    summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved threads remain."
-                    perf.state = "blocked"
-                    perf.open_questions = [summary]
-                    return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_cr)
-                perf.review_comments = _comments
-                perf.state = "changes_requested"
-                return PerformerResponse(
-                    status="changes_requested", session_id=perf.session_id, comments=_comments,
-                    body=f"{len(_open)} review thread(s) still open", report=_cr,
-                )
-
-        if perf.role in ("reviewing", "closing_review"):
-            review_raw = backend_status.output or ""
-            # 169: the reviewer WORKFLOW reports a review record and has already
-            # posted the one GitHub review itself (REQUEST_CHANGES with inline
-            # comments, or COMMENT). Map its verdict onto the response the prose
-            # path returns for that outcome and skip the prose post. Without the
-            # report key the prose path below is untouched (FR-015).
-            _rr = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
-            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict) and _rr["review"].get("verdict") in ("approved", "changes_requested", "env_blocked", "nothing_to_review"):
-                _review = _rr["review"]
-                _verdict = str(_review.get("verdict") or "")
-                _findings = [f for f in (_review.get("findings") or []) if isinstance(f, dict)]
-                log.info(
-                    "reviewer.review_reported",
-                    verdict=_verdict,
-                    findings=len(_findings),
-                    dropped=len(_review.get("findings_dropped") or []),
-                    coverage_pass=_review.get("coverage_pass_ran"),
-                    posted=_review.get("posted_review_url"),
-                    session_id=perf.session_id,
-                )
-                if _verdict == "approved":
-                    perf.state = "approved"
-                    perf.review_suggestions = []
-                    return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_rr)
-                if _verdict == "changes_requested":
-                    _comments = [
-                        {
-                            "path": str(f.get("path") or ""),
-                            "line": int(f.get("line") or 0),
-                            "body": f"{f.get('category')}: {f.get('problem')} Why blocking: {f.get('why_blocking')}",
-                        }
-                        for f in _findings
-                    ]
-                    max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
-                    perf.review_cycle += 1
-                    if perf.review_cycle >= max_cycles:
-                        summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved issues remain."
-                        perf.state = "blocked"
-                        perf.open_questions = [summary]
-                        return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_rr)
-                    perf.review_comments = _comments
-                    perf.state = "changes_requested"
-                    return PerformerResponse(
-                        status="changes_requested", session_id=perf.session_id, comments=_comments,
-                        body=f"{len(_findings)} blocking finding(s) from the reviewer workflow", report=_rr,
-                    )
-                if _verdict == "nothing_to_review":
-                    # 412: the parsed diff was empty. Advance with the note in
-                    # the report; never "approved", since there is no diff to
-                    # approve. The settled head rides along so the coordinare
-                    # can record the verdict slot and skip a re-dispatch.
-                    perf.state = "nothing_to_review"
-                    _head = None
-                    try:
-                        _head = await get_head_sha(perf.stand)
-                    except Exception as exc:
-                        log.warning("nothing_to_review.head_after_failed", error=str(exc))
-                    return PerformerResponse(status="nothing_to_review", session_id=perf.session_id, report=_rr, head_after=_head)
-                _reason = str(_review.get("post_error") or "")
-                if not _reason:
-                    _unread = _review.get("unread_files") or []
-                    _reason = "the review could not cover every changed file: " + ", ".join(str(u) for u in _unread[:10])
-                perf.state = "env_blocked"
-                return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_rr)
-            if not review_raw.strip():
-                return await _handle_backend_parse_failure(
-                    perf, review_raw, "review", settings, "was empty",
-                )
-            review_output = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
-            if not isinstance(review_output, dict):
-                async def _reviewer_lenient_changes() -> PerformerResponse:
-                    # 077: prose review (no parseable JSON) → request changes. NEVER
-                    # auto-approve on ambiguity (safety). Post the model's notes as
-                    # feedback so the implementer can act, REDACTED before posting to
-                    # the PR (a public surface), and keep the loop moving instead of
-                    # hard-erroring → Blocked column.
-                    pr_number = 0
-                    pr_url = (perf.pr_url or "").rstrip("/")
-                    if pr_url and "/" in pr_url:
-                        try:
-                            pr_number = int(pr_url.rsplit("/", 1)[-1])
-                        except (ValueError, IndexError):
-                            pass
-                    if pr_number <= 0:
-                        perf.state = "error"
-                        perf.error_reason = (
-                            f"Cannot post review: pr_url is missing or invalid ({perf.pr_url!r})"
-                        )
-                        return PerformerResponse(
-                            status="error", session_id=perf.session_id,
-                            reason=perf.error_reason,
-                        )
-                    owner, repo = perf.score.owner_repo
-                    token = perf.score.effective_github_token
-                    header_label = (
-                        "Bot Closer Review" if perf.role == "closing_review" else "Bot Review"
-                    )
-                    safe_body = _redact_secrets(review_raw[:1500])
-                    full_body = (
-                        f"{_persona_tag(perf.score, perf.role)}\n\n"
-                        f"**{header_label}: CHANGES REQUESTED**\n\n"
-                        "_(Backend did not return a structured verdict; recording its "
-                        "notes verbatim.)_\n\n"
-                        f"{safe_body}"
-                    )
-                    try:
-                        await post_pull_request_review(
-                            owner, repo, pr_number, event="COMMENT",
-                            body=full_body, comments=[], token=token,
-                        )
-                    except Exception as exc:
-                        log.warning("reviewer.lenient_post_failed", error=str(exc))
-                    max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
-                    perf.review_cycle += 1
-                    if perf.review_cycle >= max_cycles:
-                        summary = (
-                            f"Review cycle limit reached ({perf.review_cycle}). "
-                            "Unresolved issues remain."
-                        )
-                        perf.state = "blocked"
-                        perf.open_questions = [summary]
-                        return PerformerResponse(
-                            status="blocked", session_id=perf.session_id,
-                            questions=[summary],
-                        )
-                    perf.review_comments = []
-                    perf.state = "changes_requested"
-                    return PerformerResponse(
-                        status="changes_requested", session_id=perf.session_id,
-                        body=safe_body or None,
-                    )
-
-                return await _handle_backend_parse_failure(
-                    perf, review_raw, "review", settings,
-                    "could not be parsed as a JSON object",
-                    lenient_fallback=_reviewer_lenient_changes,
-                )
-
-            is_approved = review_output.get("approved") is True  # strict bool check
-            raw_comments = review_output.get("comments", [])
-            # Normalize comments: strings become {"body": str}, dicts pass through
-            comments = []
-            if isinstance(raw_comments, list):
-                for c in raw_comments:
-                    if isinstance(c, dict):
-                        comments.append(c)
-                    elif isinstance(c, str):
-                        comments.append({"body": c})
-            raw_suggestions = review_output.get("suggestions", [])
-            suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
-            review_body = str(review_output.get("body", ""))
-
-            # 153: a parsed verdict that REJECTS (approved is not True) but
-            # carries neither structured comments nor a prose body is not
-            # actionable — the implementer would have nothing to act on. Weak
-            # reviewer models (observed: gpt-oss:120b) emit a bare
-            # ``{"approved": false}`` with no rationale; the coordinare can only
-            # re-review-once-then-block on it (monitor_performer
-            # changes_requested_empty_re_review → no_actionable_feedback),
-            # parking the card in Blocked. Treat it exactly like an unparseable
-            # verdict: retry the SAME warm backend with a JSON-repair nudge
-            # (_handle_backend_parse_failure) to elicit a real rationale, and on
-            # exhaustion block with an explicit reason. NEVER auto-approve on
-            # ambiguity (safety) — a contentless rejection must not become an
-            # approval. Do this BEFORE posting to GitHub so an empty CHANGES
-            # REQUESTED review is never published mid-retry.
-            if not is_approved and not comments and not review_body.strip():
-                async def _reviewer_empty_rejection() -> PerformerResponse:
-                    summary = (
-                        f"The `{perf.role}` reviewer rejected this PR "
-                        f"(`approved=false`) but returned no structured comments "
-                        f"and no prose body across "
-                        f"{perf.parse_retry_count + 1} attempt(s) — there is no "
-                        f"actionable feedback to relay to the implementer. "
-                        f"Operator triage required."
-                    )
-                    perf.state = "blocked"
-                    perf.open_questions = [summary]
-                    return PerformerResponse(
-                        status="blocked",
-                        session_id=perf.session_id,
-                        questions=[summary],
-                    )
-
-                return await _handle_backend_parse_failure(
-                    perf, review_raw, "review", settings,
-                    "was a changes_requested verdict with no comments and no body",
-                    lenient_fallback=_reviewer_empty_rejection,
-                )
-
-            # Always post as COMMENT — the human reviewer handles formal
-            # approval.  Bot reviews provide feedback for the implementer.
-            verdict = "APPROVED" if is_approved else "CHANGES REQUESTED"
-            event = "COMMENT"
-
-            # Extract PR number from pr_url (set by implementer earlier in lifecycle)
-            pr_number = 0
-            pr_url = (perf.pr_url or "").rstrip("/")
-            if pr_url and "/" in pr_url:
-                try:
-                    pr_number = int(pr_url.rsplit("/", 1)[-1])
-                except (ValueError, IndexError):
-                    pass
-
-            if pr_number <= 0:
-                perf.state = "error"
-                perf.error_reason = f"Cannot post review: pr_url is missing or invalid ({perf.pr_url!r})"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason=perf.error_reason,
-                )
-
-            owner, repo = perf.score.owner_repo
-            token = perf.score.effective_github_token
-            header_label = "Bot Closer Review" if perf.role == "closing_review" else "Bot Review"
-            full_body = f"{_persona_tag(perf.score, perf.role)}\n\n**{header_label}: {verdict}**\n\n{review_body}"
-            await post_pull_request_review(
-                owner, repo, pr_number, event=event,
-                body=full_body, comments=comments, token=token,
-            )
-
-            if is_approved:
-                # Resolve all open review threads — the reviewer has verified
-                # that the implementer's fixes address the feedback.
-                try:
-                    resolved = await resolve_pr_review_threads(
-                        owner, repo, pr_number, token,
-                    )
-                    if resolved:
-                        log.info("reviewer.resolved_threads", pr_number=pr_number, count=resolved)
-                except Exception as exc:
-                    log.warning("reviewer.resolve_threads_failed", error=str(exc))
-
-                perf.state = "approved"
-                perf.review_suggestions = suggestions
-                return PerformerResponse(
-                    status="approved",
-                    session_id=perf.session_id,
-                    suggestions=suggestions,
-                )
-
-            # Changes requested
-            max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
-            perf.review_cycle += 1
-            if perf.review_cycle >= max_cycles:
-                summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved issues remain."
-                perf.state = "blocked"
-                perf.open_questions = [summary]
-                return PerformerResponse(
-                    status="blocked",
-                    session_id=perf.session_id,
-                    questions=[summary],
-                )
-            perf.review_comments = comments
-            perf.state = "changes_requested"
-            return PerformerResponse(
-                status="changes_requested",
-                session_id=perf.session_id,
-                comments=comments,
-                body=review_body or None,
-            )
-
-        # 022: Security performer path — analyse findings, post advisories, pass or fail.
-        if perf.role == "security":
-            sec_raw = backend_status.output or ""
-            # 170: the security WORKFLOW reports a security record: the scan ran
-            # inside the performer, the gate assigned severity and routing by code,
-            # and the one GitHub review is already posted. Map the record onto the
-            # statuses coordinare routes today (022 findings shape) and skip the
-            # prose post-processing (committed report, advisory comments). Without
-            # the report key the prose path below is untouched.
-            _sr = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
-            if isinstance(_sr, dict) and isinstance(_sr.get("security"), dict) and _sr["security"].get("verdict") in ("security_passed", "security_failed", "env_blocked", "nothing_to_scan", "not_applicable"):
-                _sec = _sr["security"]
-                _verdict = str(_sec.get("verdict") or "")
-                _blocking = [f for f in (_sec.get("blocking") or []) if isinstance(f, dict)]
-                _advisory = [f for f in (_sec.get("advisory") or []) if isinstance(f, dict)]
-                log.info(
-                    "security.record_reported",
-                    verdict=_verdict,
-                    blocking=len(_blocking),
-                    advisory=len(_advisory),
-                    dropped=len(_sec.get("findings_dropped") or []),
-                    scan=[(r.get("tool"), r.get("exit_code"), r.get("finding_count")) for r in (_sec.get("scan") or []) if isinstance(r, dict)],
-                    posted=_sec.get("posted_review_url"),
-                    session_id=perf.session_id,
-                )
-
-                def _as_022(f: dict) -> dict:
-                    desc = f"{f.get('category')}: {f.get('problem')} Why blocking: {f.get('why_blocking')}"
-                    if f.get("evidence"):
-                        desc += f" Evidence: {f.get('evidence')}"
-                    return {
-                        "severity": str(f.get("severity") or "high"),
-                        "category": str(f.get("category") or "other_insecure_pattern"),
-                        "description": desc,
-                        "file": str(f.get("path") or ""),
-                        "line": int(f.get("line") or 0),
-                        "routing": str(f.get("routing") or "implementer"),
-                    }
-
-                if _verdict == "security_passed":
-                    perf.state = "security_passed"
-                    return PerformerResponse(status="security_passed", session_id=perf.session_id, report=_sr)
-                if _verdict == "security_failed":
-                    max_cycles = settings.SECURITY_MAX_CYCLES if settings else 3
-                    perf.security_cycle += 1
-                    if perf.security_cycle >= max_cycles:
-                        summary = f"Security: {len(_blocking)} blocking finding(s) after {perf.security_cycle} fix attempt(s)"
-                        perf.state = "blocked"
-                        perf.open_questions = [summary]
-                        return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_sr)
-                    perf.security_findings = [_as_022(f) for f in _blocking]
-                    perf.state = "security_failed"
-                    return PerformerResponse(
-                        status="security_failed", session_id=perf.session_id, findings=perf.security_findings, report=_sr,
-                    )
-                if _verdict in ("nothing_to_scan", "not_applicable"):
-                    # 412: advance-with-note. Nothing statically scannable
-                    # changed, decided in code from the file list -- recorded
-                    # as its own verdict, not a pass, so the operator sees it.
-                    # The settled head rides along so the coordinare can record
-                    # the verdict slot and skip a re-dispatch.
-                    perf.state = _verdict
-                    _head = None
-                    try:
-                        _head = await get_head_sha(perf.stand)
-                    except Exception as exc:
-                        log.warning("security_advance.head_after_failed", error=str(exc))
-                    return PerformerResponse(status=_verdict, session_id=perf.session_id, report=_sr, head_after=_head)
-                _reason = str(_sec.get("hold_reason") or _sec.get("post_error") or "")
-                if not _reason:
-                    _reason = "the security review could not complete: " + ", ".join(str(u) for u in (_sec.get("unread_files") or [])[:10])
-                perf.state = "env_blocked"
-                return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_sr)
-            if not sec_raw.strip():
-                return await _handle_backend_parse_failure(
-                    perf, sec_raw, "security", settings, "was empty",
-                )
-            sec_output = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
-            if not isinstance(sec_output, dict):
-                return await _handle_backend_parse_failure(
-                    perf, sec_raw, "security", settings,
-                    "could not be parsed as a JSON object",
-                )
-
-            raw_findings = sec_output.get("findings", [])
-            findings = raw_findings if isinstance(raw_findings, list) else []
-
-            # Commit security report to the architecture folder
-            folder = _doc_folder(perf.score)
-            sec_report = f"# Security Report: {perf.score.title}\n\n"
-            passed = sec_output.get("passed", len(findings) == 0)
-            sec_report += f"**Result: {'PASSED' if passed else 'FAILED'}**\n\n"
-            if findings:
-                sec_report += "## Findings\n\n"
-                for f in findings:
-                    if isinstance(f, dict):
-                        sev = str(f.get("severity", "unknown"))
-                        cat = str(f.get("category", "unknown"))
-                        desc = str(f.get("description", ""))
-                        fpath = str(f.get("file", ""))
-                        sec_report += f"- **[{sev.upper()}]** {cat}"
-                        if fpath:
-                            sec_report += f" (`{fpath}`)"
-                        sec_report += f"\n  {desc}\n\n"
-            else:
-                sec_report += "No security findings.\n"
-            try:
-                issue_num = perf.score.issue_number
-                await commit_file(
-                    perf.stand, f"{folder}/security.md", sec_report,
-                    f"chore: add security report for #{issue_num}" if issue_num else "chore: add security report",
-                )
-            except Exception as exc:
-                log.warning("security.commit_report_failed", error=str(exc))
-
-            # Extract PR number for advisory comments
-            pr_number = 0
-            pr_url = (perf.pr_url or "").rstrip("/")
-            if pr_url and "/" in pr_url:
-                try:
-                    pr_number = int(pr_url.rsplit("/", 1)[-1])
-                except (ValueError, IndexError):
-                    pass
-
-            # Post advisory comments for medium/low findings (FR-007)
-            advisory = [f for f in findings if isinstance(f, dict) and f.get("severity") in ("medium", "low")]
-            if advisory and pr_number <= 0:
-                log.warning(
-                    "security.advisory_comments_skipped",
-                    count=len(advisory),
-                    reason="pr_url missing or invalid — cannot post advisory comments",
-                )
-            if advisory and pr_number > 0:
-                owner, repo = perf.score.owner_repo
-                token = perf.score.effective_github_token
-                seen_fingerprints: set[str] = set()
-                try:
-                    existing = await list_pr_comments(owner, repo, pr_number, token=token)
-                    for c in existing:
-                        parsed = _parse_advisory_header(c.get("body", "") if isinstance(c, dict) else "")
-                        if parsed:
-                            seen_fingerprints.add(_advisory_fingerprint(*parsed))
-                except Exception as exc:
-                    log.warning("advisory_list_failed", error=str(exc))
-                for finding in advisory:
-                    cat = finding.get("category", "unknown")
-                    sev = finding.get("severity", "")
-                    desc = finding.get("description", "")
-                    fp = _advisory_fingerprint(cat, sev)
-                    if fp in seen_fingerprints:
-                        log.info("advisory_comment_skipped_dedup", category=cat, severity=sev, fingerprint=fp)
-                        continue
-                    body = f"{_persona_tag(perf.score, perf.role)}\n\n[Advisory - Security] **{cat}** ({sev})\n\n{desc}"
-                    try:
-                        await post_pr_comment(owner, repo, pr_number, body=body, token=token)
-                        seen_fingerprints.add(fp)
-                    except Exception as exc:
-                        log.warning("advisory_comment_failed", category=cat, error=str(exc), exc_info=True)
-
-            # Check for blocking findings (critical/high)
-            blocking = [f for f in findings if isinstance(f, dict) and f.get("severity") in ("critical", "high")]
-            if not blocking:
-                perf.state = "security_passed"
-                return PerformerResponse(
-                    status="security_passed",
-                    session_id=perf.session_id,
-                )
-
-            # Blocking findings exist
-            max_cycles = settings.SECURITY_MAX_CYCLES if settings else 3
-            perf.security_cycle += 1
-            if perf.security_cycle >= max_cycles:
-                summary = f"Security: {len(blocking)} blocking finding(s) after {perf.security_cycle} fix attempt(s)"
-                perf.state = "blocked"
-                perf.open_questions = [summary]
-                return PerformerResponse(
-                    status="blocked",
-                    session_id=perf.session_id,
-                    questions=[summary],
-                )
-            perf.security_findings = [f for f in blocking if isinstance(f, dict)]
-            perf.state = "security_failed"
-            return PerformerResponse(
-                status="security_failed",
-                session_id=perf.session_id,
-                findings=perf.security_findings,
-            )
-
-        # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
-        if perf.role == "qa":
-            # 164 T049: QA post-processing lives in performer.qa_postprocess.
-            # Late import: that module looks collaborators up on this one.
-            from performer.qa_postprocess import finalize_qa
-
-            return await finalize_qa(perf, backend_status, settings)
+    return None
 
 
-        # 024/124(C): Tech-writer path — plan->write decomposition. The FIRST
-        # backend run produces a PLAN (which pages to write/retire — tiny output);
-        # each later run WRITES one page (small output); when the queue drains we
-        # batch-commit. Splitting the work keeps every model call small — the
-        # reliability fix for gpt-oss on multi-page wiki jobs.
-        if perf.role == "documenting":
-            docs_raw = backend_status.output or ""
-            # 171: the documenter WORKFLOW reports a docs record: the page set was
-            # chosen by code, every page passed the contract, and the one commit
-            # (with push) is already made through commit_files. Map the record
-            # onto docs_committed with the files it wrote, or env_blocked for a
-            # hold, and skip the prose plan-then-write path. A dict without a known
-            # verdict is not a workflow report (a prose model may emit a "docs"
-            # key): the prose path below is untouched.
-            _dr = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
-            if isinstance(_dr, dict) and isinstance(_dr.get("docs"), dict) and _dr["docs"].get("verdict") in ("docs_committed", "env_blocked"):
-                _docs = _dr["docs"]
-                _written = [str(p) for p in (_docs.get("files_written") or []) if isinstance(p, str)]
-                _retired = [str(p) for p in (_docs.get("files_retired") or []) if isinstance(p, str)]
-                _pointers = [str(p) for p in (_docs.get("pointers_refreshed") or []) if isinstance(p, str)]
-                log.info(
-                    "documenter.record_reported",
-                    verdict=_docs.get("verdict"),
-                    mode=_docs.get("mode"),
-                    planned=len(_docs.get("plan") or []),
-                    written=len(_written),
-                    retired=len(_retired),
-                    dropped=sum(1 for r in (_docs.get("results") or []) if isinstance(r, dict) and r.get("dropped")),
-                    commit=_docs.get("commit_sha"),
-                    session_id=perf.session_id,
-                )
-                if _docs.get("verdict") == "env_blocked":
-                    perf.state = "env_blocked"
-                    return PerformerResponse(
-                        status="env_blocked", session_id=perf.session_id,
-                        reason=str(_docs.get("hold_reason") or "the documenter could not complete"), report=_dr,
-                    )
-                perf.docs_files_modified = _written + _retired + _pointers
-                perf.state = "docs_committed"
-                # 124(US2): the symphony-init dispatch is cardless; open the seed PR as
-                # the prose path does so WikiInitService can auto-merge it.
-                pr_url = pr_node_id = None
-                _pr_error: str | None = None
-                if getattr(perf.score, "doc_mode", "update") == "init" and perf.docs_files_modified:
-                    try:
-                        owner, repo = perf.score.owner_repo
-                        pr_url, pr_node_id = await create_pull_request(
-                            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token,
-                        )
-                        perf.pr_url, perf.pr_node_id = pr_url, pr_node_id
-                    except Exception as exc:  # noqa: BLE001 - never fail the doc commit on PR open
-                        _pr_error = f"wiki init PR open failed (the branch carries the wiki): {exc}"
-                        log.error("wiki_init.pr_open_failed", error=str(exc))
-                return PerformerResponse(
-                    status="docs_committed", session_id=perf.session_id, files_modified=perf.docs_files_modified,
-                    pr_url=pr_url, pr_node_id=pr_node_id, report=_dr, reason=_pr_error,
-                )
-
-            # WRITE phase: a per-page write just completed → accumulate + advance.
-            if perf.doc_phase == "writing":
-                return await _advance_doc_writes(perf, docs_raw, settings)
-
-            # PLAN phase: this first completion is the page plan.
-            if not docs_raw.strip():
-                # Nothing emitted — treat as "no doc changes" (FR-010).
-                perf.state = "docs_committed"
-                perf.docs_files_modified = []
-                return PerformerResponse(
-                    status="docs_committed", session_id=perf.session_id, files_modified=[],
-                )
-            plan = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
-            if not isinstance(plan, dict):
-                return await _handle_backend_parse_failure(
-                    perf, docs_raw, "docs plan", settings,
-                    "could not be parsed as a JSON object",
-                )
-            raw_del = plan.get("deletions", [])
-            perf.doc_deletions = (
-                [d for d in raw_del if isinstance(d, str) and d]
-                if isinstance(raw_del, list) else []
-            )
-            # Backward-compat: only hermes is prompted to PLAN. A backend that
-            # emitted the legacy single-shot {files} manifest (e.g. a non-hermes
-            # documenter, or an old-image hermes) has no "pages" key — commit it
-            # directly instead of mis-reading it as an empty plan and silently
-            # writing nothing.
-            if "pages" not in plan and isinstance(plan.get("files"), list):
-                perf.doc_files_pending = [
-                    f for f in plan["files"]
-                    if isinstance(f, dict) and f.get("path") and isinstance(f.get("content"), str)
-                ]
-                return await _commit_doc_batch(perf)
-            raw_pages = plan.get("pages", [])
-            pages = [
-                {"path": p["path"], "intent": str(p.get("intent", "")).strip()}
-                for p in (raw_pages if isinstance(raw_pages, list) else [])
-                if isinstance(p, dict) and _safe_doc_page_path(p.get("path"))
-            ]
-            if not pages:
-                # Nothing to write — commit any planned deletions (or no-op).
-                return await _commit_doc_batch(perf)
-            perf.doc_phase = "writing"
-            perf.doc_write_queue = pages
-            perf.parse_retry_count = 0
-            try:
-                await _start_doc_write(perf, pages[0], settings)
-            except Exception as exc:
-                return _doc_write_dispatch_error(perf, pages[0], exc)
-            return PerformerResponse(
-                status="working", session_id=perf.session_id,
-                progress=f"Documenting: writing {pages[0]['path']} (1/{len(pages)})",
-            )
-
-        # 060/Option A: env_bootstrap path — backend ran install commands
-        # into the mounted cache_mount_path. There is no PR to open and no
-        # commit to push; just report a terminal success status. Failures
-        # surface as backend_status.state == "error" and route through the
-        # generic error path elsewhere in this function.
-        if perf.role == "env_bootstrap":
-            if perf.score.workflow == "env_bootstrap":
-                from pydantic import ValidationError
-
-                from performer.workflows.env_bootstrap import BootstrapRun
-
-                raw = _extract_json(backend_status.output or "")
-                try:
-                    run = BootstrapRun.model_validate(raw.get("env_bootstrap_run") if isinstance(raw, dict) else None)
-                    if any(not key.startswith("inference_") or key not in PerformerResponse.model_fields for key in run.inference):
-                        raise ValueError("invalid inference fields")
-                    response = PerformerResponse.model_validate({
-                        **run.inference,
-                        "status": "env_bootstrap_complete" if run.status == "complete" else "error",
-                        "session_id": perf.session_id,
-                        "reason": run.reason or None,
-                    }, strict=True)
-                except (ValidationError, ValueError):
-                    perf.state = "error"
-                    perf.error_reason = "invalid bootstrap workflow report"
-                    return PerformerResponse(status="error", session_id=perf.session_id, reason=perf.error_reason)
-                perf.inference_state = run.inference
-                perf.state = "env_bootstrap_complete" if run.status == "complete" else "error"
-                perf.error_reason = run.reason or None
-                return response
-            # 107: START declared services BEFORE running verify.sh. verify.sh
-            # embeds a LIVE service probe (spec-093 pg_isready/redis PING) that
-            # hard-fails when the service isn't running, so it MUST run after the
-            # spec-101 readiness gate has started the services. Order:
-            #   inference (writes services-start.sh) → readiness (starts + health-
-            #   checks) → verify (toolchain + live service probe, now satisfied).
-            # Running verify first made it fail on the service probe before anything
-            # started the service, returning early so the readiness gate that starts
-            # it was never reached (the website-postgres "never came up" bug).
-            inference_timeout = get_settings().SERVICE_INFERENCE_TIMEOUT
-            try:
-                perf.inference_state = await asyncio.wait_for(
-                    _run_service_inference(
-                        perf.stand.path, perf.score.env_cache_path,
-                    ),
-                    timeout=inference_timeout,
-                )
-            except asyncio.TimeoutError:
-                # 076 (live QA #150): service_inference is a best-effort,
-                # secondary probe; a timeout MUST NOT by itself fail the whole
-                # bootstrap (re-dispatch-forever). Record the skip and fall
-                # through to the 101 readiness gate, which only blocks when the
-                # symphony declares REQUIRED services that aren't connectable.
-                log.warning(
-                    "service_inference.timeout",
-                    job_id=perf.session_id,
-                    timeout_seconds=inference_timeout,
-                    detail=(
-                        "inference timed out (best-effort); deferring to the "
-                        "service-readiness gate for required-service handling"
-                    ),
-                )
-                perf.inference_state = {
-                    "inference_succeeded": False,
-                    "inference_skipped_reason": "timeout",
-                }
-
-            # 101: service-readiness completion gate — a cache is NOT complete
-            # unless every REQUIRED declared service is started + connectable. A
-            # rejected/empty manifest (or an unconnectable required service) →
-            # bootstrap error, routed through on_bootstrap_complete(success=False)
-            # so the cache is not marked ready and re-bootstraps (instead of
-            # dispatching cards into a structurally-broken env). No declared
-            # services → no-op (behavior unchanged). Started services stay running
-            # so the verify.sh live probe below observes them.
-            # 116: the 101 readiness gate is part of the coordinare-managed-services
-            # subsystem. When coordinare does NOT manage services (the default), the
-            # performer owns env setup end-to-end and bootstrap success is decided by
-            # the toolchain verify.sh below — skip the gate entirely (pre-101 behavior).
-            # The performer's own service inference (_run_service_inference →
-            # apply_manual_override) still wrote services.json + scripts above.
-            if getattr(perf.score, "coordinare_manages_services", True):
-                from performer.workspace import run_service_readiness
-
-                ready_ok, ready_failures = await run_service_readiness(
-                    perf.score.env_cache_path,
-                    getattr(perf.stand, "cache_env", None),
-                    _read_declared_services(perf.stand.path),
-                    perf.inference_state,
-                )
-            else:
-                ready_ok, ready_failures = True, []
-                log.info(
-                    "env_bootstrap.service_readiness_skipped",
-                    session_id=perf.session_id,
-                    reason="coordinare_manages_services=False (performer owns env setup)",
-                )
-            if not ready_ok:
-                perf.state = "error"
-                perf.error_reason = (
-                    "env-cache required service(s) not ready: "
-                    + "; ".join(f["reason"] for f in ready_failures)
-                )
-                log.warning(
-                    "env_bootstrap.service_readiness_failed",
-                    session_id=perf.session_id,
-                    failures=[f["service"] for f in ready_failures],
-                )
-                return PerformerResponse(
-                    status="error",
-                    session_id=perf.session_id,
-                    reason=perf.error_reason,
-                )
-
-            # 077 (Tier 2): confirm the install actually worked before reporting
-            # success. The agent wrote verify.sh asserting every documented
-            # dependency is present + runnable (and, for declared services, a live
-            # readiness probe — now satisfied because readiness started them above);
-            # a non-zero exit means a silent install failure (e.g. apt-get located
-            # no package), so we FAIL the bootstrap here. The coordinare's
-            # on_bootstrap_complete(success=False) path then clears readme_sha and
-            # retries — instead of marking a broken cache "ready". A missing
-            # verify.sh is treated as a degraded (legacy) bootstrap: logged, not
-            # failed.
-            from performer.workspace import run_env_cache_verify
-
-            verify_passed, verify_detail = await run_env_cache_verify(
-                perf.score.env_cache_path,
-                getattr(perf.stand, "cache_env", None),
-            )
-            if verify_passed is False:
-                perf.state = "error"
-                perf.error_reason = (
-                    "env-cache verification failed (verify.sh non-zero): "
-                    f"{verify_detail[-600:]}"
-                )
-                log.warning(
-                    "env_bootstrap.verify_failed",
-                    session_id=perf.session_id,
-                    detail=verify_detail[-300:],
-                )
-                return PerformerResponse(
-                    status="error",
-                    session_id=perf.session_id,
-                    reason=perf.error_reason,
-                )
-            if verify_passed is None:
-                log.warning(
-                    "env_bootstrap.verify_script_missing",
-                    session_id=perf.session_id,
-                    detail="verify.sh not written by bootstrap agent; "
-                    "cannot confirm install — proceeding as degraded",
-                )
-
-            perf.state = "env_bootstrap_complete"
-            return PerformerResponse(
-                status="env_bootstrap_complete",
-                session_id=perf.session_id,
-                **perf.inference_state,
-            )
-
-        # 167: the implementer WORKFLOW reports a run record and has already
-        # committed, pushed, opened the PR and waited for green CI itself (or
-        # stopped at a bounded failure). Map its status onto the response the
-        # prose path returns for that outcome and skip the prose
-        # post-processing (089 gate, push, PR, 075 loop). Prose path unchanged.
-        if perf.role == "implementing":
-            _ir_raw = backend_status.output or ""
-            _ir = _extract_json(_ir_raw) if isinstance(_ir_raw, str) else _ir_raw
-            if isinstance(_ir, dict) and isinstance(_ir.get("implementer_run"), dict):
-                _run = _ir["implementer_run"]
-                _status = str(_run.get("status") or "")
-                _reason = str(_run.get("reason") or "")
-                log.info(
-                    "implementer.run_reported",
-                    status=_status,
-                    milestones_completed=_run.get("milestones_completed"),
-                    milestones_planned=_run.get("milestones_planned"),
-                    turns=_run.get("turn_count"),
-                    session_id=perf.session_id,
-                )
-                _head: str | None = None
-                try:
-                    _head = await get_head_sha(perf.stand)
-                except Exception as exc:  # noqa: BLE001 - best effort
-                    log.warning("implementer.head_after_failed", error=str(exc))
-                if _status == "pr_opened":
-                    perf.pr_url = str(_ir.get("pr_url") or perf.pr_url or "") or None
-                    perf.pr_node_id = str(_ir.get("pr_node_id") or "") or perf.pr_node_id
-                    perf.pr_head_sha = _head
-                    perf.state = "pr_opened"
-                    return PerformerResponse(
-                        status="pr_opened", session_id=perf.session_id, pr_url=perf.pr_url,
-                        pr_node_id=perf.pr_node_id, report=_ir, head_before=perf.head_at_start, head_after=_head,
-                        progress="implementer workflow: CI green",
-                    )
-                if _status == "partial_progress":
-                    # #278: failed milestones reset to their start commit. Push
-                    # the surviving committed milestones before this clone dies,
-                    # without creating a PR for an incomplete task.
-                    try:
-                        await push_branch(perf.stand, perf.score)
-                    except Exception as exc:
-                        perf.state = "env_blocked"
-                        detail = " ".join(_format_failure_excerpt(str(exc), limit=400).split())[:400]
-                        reason = f"Partial progress checkpoint push failed: {detail}"
-                        log.warning("implementer.checkpoint_push_failed", error_type=type(exc).__name__,
-                                    session_id=perf.session_id)
-                        return PerformerResponse(
-                            status="env_blocked", session_id=perf.session_id,
-                            reason=reason, report=_ir,
-                        )
-                    # push_branch may rebase onto concurrent remote work.
-                    try:
-                        _head = await get_head_sha(perf.stand)
-                    except Exception as exc:
-                        log.warning("implementer.checkpoint_head_failed", error_type=type(exc).__name__,
-                                    session_id=perf.session_id)
-                        _head = None
-                    perf.state = "waiting_for_checks"
-                    return PerformerResponse(
-                        status="partial_progress", session_id=perf.session_id, report=_ir,
-                        next_focus=_run.get("next_focus_milestone"), reason=_reason,
-                        progress=_reason[:200] or "partial progress checkpoint",
-                        head_before=perf.head_at_start, head_after=_head,
-                    )
-                if _status == "env_blocked":
-                    perf.state = "env_blocked"
-                    return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_ir,
-                                             pr_url=_ir.get("pr_url"), pr_node_id=_ir.get("pr_node_id"))
-                perf.state = "changes_requested"
-                return PerformerResponse(
-                    status="changes_requested", session_id=perf.session_id, reason=_reason,
-                    body=_reason, report=_ir, local_test_failed=True,
-                )
-
-        # 070: implementer partial_progress escape hatch. If the backend
-        # emitted a trailing ``{"status": "partial_progress", ...}`` sentinel,
-        # push whatever was committed, post a status comment on the PR (when
-        # one exists), and hand control back to the coordinare with
-        # status="partial_progress" so the next turn resumes from next_focus.
-        if perf.role in SENTINEL_ROLES:
-            sentinel = _extract_trailing_partial_progress(backend_status.output or "")
-            if sentinel is not None:
-                comment_body = str(sentinel.get("comment") or "").strip()
-                next_focus = str(sentinel.get("next_focus") or "").strip() or None
-                head_after: str | None = None
-                try:
-                    await push_branch(perf.stand, perf.score)
-                except Exception as exc:
-                    log.warning("partial_progress.push_failed", error=str(exc))
-                try:
-                    head_after = await get_head_sha(perf.stand)
-                except Exception as exc:
-                    log.warning("partial_progress.head_after_failed", error=str(exc))
-                if comment_body and perf.score.pr_url:
-                    owner, repo = perf.score.owner_repo
-                    pr_number = _extract_pr_number(perf.score.pr_url)
-                    if pr_number:
-                        try:
-                            await post_pr_comment(
-                                owner, repo, pr_number,
-                                body=f"[partial_progress] {comment_body}",
-                                token=perf.score.effective_github_token,
-                            )
-                        except Exception as exc:
-                            log.warning("partial_progress.comment_failed", error=str(exc))
-                perf.state = "waiting_for_checks"
-                # 072 FR-072-6: emit bot_pr_comment_delta on all terminal
-                # ProtocolResponses so the coordinare's per-role guardrail sees
-                # signals from partial_progress turns too, not just blocked.
-                partial_bot_delta = await _compute_pr_comment_delta(perf)
-                return PerformerResponse(
-                    status="partial_progress",
-                    session_id=perf.session_id,
-                    progress=comment_body or "partial progress checkpoint",
-                    next_focus=next_focus,
-                    head_before=perf.head_at_start,
-                    head_after=head_after,
-                    bot_pr_comment_delta=partial_bot_delta,
-                )
-
-        # 043: Run lint before pushing — catch CI violations at the source
-        # rather than discovering them post-push when the PR is already in review.
-        # 409: the operator's lint override and monorepo roots ride the same
-        # gate config as the test command; detection-only when absent.
-        lint_gate_cfg = perf.score.local_test_gate or {}
-        ci_ok, ci_error = await _run_ci_check(
-            perf.stand.path,
-            label=perf.role,
-            lint_override=str(lint_gate_cfg["lint_command"]) if lint_gate_cfg.get("lint_command") else None,
-            sub_roots=tuple(lint_gate_cfg.get("roots") or ()),
+async def _local_test_gate_response(
+    perf: Performance,
+    gate_cfg: dict[str, Any],
+) -> PerformerResponse | None:
+    """089 US1/US2/US3: local test gate before push; None when the gate passes."""
+    # 089 US1: implementer local test gate — run the detected test command
+    # before pushing so code that fails its own tests never reaches the
+    # remote CI gate (a cheap pre-filter; local pass ≠ remote pass).  Opt-in
+    # and coordinare-delivered via score.local_test_gate; when absent or
+    # disabled the gate is dormant and this path is byte-identical (SC-005).
+    # The config is delivered only on implementer dispatches (the coordinare
+    # injects card_context["local_test_gate"] solely for role == implementer),
+    # and this default push path is reached only by the implementer/default
+    # flow — every other role returns earlier — so config presence alone is a
+    # sufficient and robust gate without a brittle role-string comparison.
+    # 409: the operator's pinned command and monorepo roots ride the
+    # same gate config; both default to detection-only behaviour.
+    test_result = await _run_test_check(
+        perf.stand.path,
+        timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
+        label=perf.role,
+        command_override=str(gate_cfg["command"]) if gate_cfg.get("command") else None,
+        sub_roots=tuple(gate_cfg.get("roots") or ()),
+    )
+    if test_result.env_blocked:
+        # 089 US2: an env-cache signal coincided with the failure — hold
+        # the card on the same stage (env-blocked, like qa_env_blocked),
+        # never re-dispatch the agent to fix fine code, never push.
+        log.warning(
+            "pre_push_local_tests_env_blocked",
+            role=perf.role,
+            command=test_result.command,
+            env_reason=test_result.env_reason,
+            budget_exceeded=test_result.budget_exceeded,
         )
-        if not ci_ok:
-            log.warning("pre_push_ci_failed", role=perf.role, error_preview=ci_error[:200])
-            perf.state = "changes_requested"
-            perf.review_comments = [{"body": f"Lint failed before push:\n{ci_error[:500]}"}]
-            return PerformerResponse(
-                status="changes_requested",
-                session_id=perf.session_id,
-                comments=[{"body": f"Lint failed before push:\n{ci_error[:500]}"}],
-            )
-
-        # 089 US1: implementer local test gate — run the detected test command
-        # before pushing so code that fails its own tests never reaches the
-        # remote CI gate (a cheap pre-filter; local pass ≠ remote pass).  Opt-in
-        # and coordinare-delivered via score.local_test_gate; when absent or
-        # disabled the gate is dormant and this path is byte-identical (SC-005).
-        # The config is delivered only on implementer dispatches (the coordinare
-        # injects card_context["local_test_gate"] solely for role == implementer),
-        # and this default push path is reached only by the implementer/default
-        # flow — every other role returns earlier — so config presence alone is a
-        # sufficient and robust gate without a brittle role-string comparison.
-        gate_cfg = perf.score.local_test_gate
-        if gate_cfg and gate_cfg.get("enabled"):
-            # 409: the operator's pinned command and monorepo roots ride the
-            # same gate config; both default to detection-only behaviour.
-            test_result = await _run_test_check(
-                perf.stand.path,
-                timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
-                label=perf.role,
-                command_override=str(gate_cfg["command"]) if gate_cfg.get("command") else None,
-                sub_roots=tuple(gate_cfg.get("roots") or ()),
-            )
-            if test_result.env_blocked:
-                # 089 US2: an env-cache signal coincided with the failure — hold
-                # the card on the same stage (env-blocked, like qa_env_blocked),
-                # never re-dispatch the agent to fix fine code, never push.
-                log.warning(
-                    "pre_push_local_tests_env_blocked",
-                    role=perf.role,
-                    command=test_result.command,
-                    env_reason=test_result.env_reason,
-                    budget_exceeded=test_result.budget_exceeded,
-                )
-                return _env_blocked_gate_response(
-                    perf, test_result,
-                    timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
-                )
-            if not test_result.passed:
-                log.warning(
-                    "pre_push_local_tests_failed",
-                    role=perf.role,
-                    command=test_result.command,
-                    output_preview=test_result.output[:200],
-                )
-                cmd_label = test_result.command or "(unknown command)"
-                code_label = (
-                    ""
-                    if test_result.exit_code is None
-                    else f" (exit code {test_result.exit_code})"
-                )
-                excerpt = _format_failure_excerpt(test_result.output)
-                body = (
-                    f"Local tests failed before push.\n"
-                    f"Command: `{cmd_label}`{code_label}\n\n"
-                    f"```\n{excerpt}\n```"
-                )
-                perf.state = "changes_requested"
-                perf.review_comments = [{"body": body}]
-                # 089 US3: carry the current HEAD so the coordinare can key the
-                # per-head local_fix_counter and reset the self-fix budget when
-                # the agent commits a fix (a new HEAD SHA).
-                _head_after = await get_head_sha(perf.stand)
-                return PerformerResponse(
-                    status="changes_requested",
-                    session_id=perf.session_id,
-                    comments=[{"body": body}],
-                    local_test_failed=True,
-                    head_after=_head_after,
-                )
-
-        # Default path: push branch and open PR
-        owner, repo = perf.score.owner_repo
-        await push_branch(perf.stand, perf.score)
-        pr_url, pr_node_id = await create_pull_request(
-            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token,
+        return _env_blocked_gate_response(
+            perf, test_result,
+            timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
         )
-        perf.pr_url = pr_url
-        perf.pr_node_id = pr_node_id
-        perf.pr_head_sha = await get_head_sha(perf.stand)
-
-        # Only resolve review threads if the implementer actually pushed new
-        # commits that address the feedback.  Never resolve threads without
-        # corresponding code changes — that hides unresolved issues.
-        # Note: thread resolution is intentionally removed.  Human reviewers
-        # should verify fixes and resolve their own threads.
-
-        perf.state = "waiting_for_checks"
+    if not test_result.passed:
+        log.warning(
+            "pre_push_local_tests_failed",
+            role=perf.role,
+            command=test_result.command,
+            output_preview=test_result.output[:200],
+        )
+        cmd_label = test_result.command or "(unknown command)"
+        code_label = (
+            ""
+            if test_result.exit_code is None
+            else f" (exit code {test_result.exit_code})"
+        )
+        excerpt = _format_failure_excerpt(test_result.output)
+        body = (
+            f"Local tests failed before push.\n"
+            f"Command: `{cmd_label}`{code_label}\n\n"
+            f"```\n{excerpt}\n```"
+        )
+        perf.state = "changes_requested"
+        perf.review_comments = [{"body": body}]
+        # 089 US3: carry the current HEAD so the coordinare can key the
+        # per-head local_fix_counter and reset the self-fix budget when
+        # the agent commits a fix (a new HEAD SHA).
+        _head_after = await get_head_sha(perf.stand)
         return PerformerResponse(
-            status="working",
+            status="changes_requested",
             session_id=perf.session_id,
-            progress="Waiting for CI checks...",
+            comments=[{"body": body}],
+            local_test_failed=True,
+            head_after=_head_after,
         )
+    return None
 
+
+async def _push_and_open_pr(perf: Performance) -> PerformerResponse:
+    """Default path: push the branch and open the pull request."""
+    owner, repo = perf.score.owner_repo
+    await push_branch(perf.stand, perf.score)
+    pr_url, pr_node_id = await create_pull_request(
+        owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token,
+    )
+    perf.pr_url = pr_url
+    perf.pr_node_id = pr_node_id
+    perf.pr_head_sha = await get_head_sha(perf.stand)
+
+    # Only resolve review threads if the implementer actually pushed new
+    # commits that address the feedback.  Never resolve threads without
+    # corresponding code changes — that hides unresolved issues.
+    # Note: thread resolution is intentionally removed.  Human reviewers
+    # should verify fixes and resolve their own threads.
+
+    perf.state = "waiting_for_checks"
+    return PerformerResponse(
+        status="working",
+        session_id=perf.session_id,
+        progress="Waiting for CI checks...",
+    )
+
+
+async def _non_done_response(
+    perf: Performance,
+    backend_status: BackendStatus,
+) -> PerformerResponse:
+    """Blocked / error / working tails for a backend that has not finished."""
     if backend_status.state == "blocked":
         perf.state = "blocked"
         perf.open_questions = backend_status.questions
@@ -3498,15 +2481,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error"):
-                perf.state = "error"
-                perf.error_reason = (
-                    f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
-                )
-                try:
-                    await perf.backend.stop()
-                except Exception:  # pragma: no cover
-                    pass
+            await _watchdog_fired(perf, settings)
             break
         except Exception:  # pragma: no cover
             break
@@ -3515,14 +2490,9 @@ async def run_loop() -> None:
         if not line:
             continue
 
-        try:
-            msg = PerformerMessage.model_validate_json(line)
-        except Exception as exc:
-            # Log exception type only — exc text may contain sensitive input values
-            # (e.g. github_token surfaced by pydantic ValidationError).
-            log.error("invalid message", exc_type=type(exc).__name__)
-            resp = PerformerResponse(status="error", reason=f"invalid message: {type(exc).__name__}")
-            _write_response(resp)
+        msg, invalid = _parse_message(line)
+        if invalid is not None:
+            _write_response(invalid)
             continue
 
         try:
@@ -3533,53 +2503,12 @@ async def run_loop() -> None:
                 # Note: no per-dispatch timeout here — AGENT_TIMEOUT is the
                 # end-to-end session budget enforced by the watchdog above.
                 # A separate clone/setup timeout lives inside _run_git().
-                try:
-                    resp, perf = await handle_dispatch(msg, settings)
-                except WorkspaceSetupError as exc:
-                    resp = PerformerResponse(
-                        status="error",
-                        session_id=msg.session_id,
-                        reason=str(exc),
-                    )
-                except ValidationError as exc:
-                    # Report field names only — never echo payload values which
-                    # may contain secrets such as github_token.
-                    fields = ", ".join(
-                        sorted({str(e["loc"][0]) for e in exc.errors() if e["loc"]}),
-                    )
-                    resp = PerformerResponse(
-                        status="error",
-                        session_id=msg.session_id,
-                        reason=f"invalid dispatch payload — bad fields: {fields}",
-                    )
-                except Exception as exc:
-                    # Log exception type only — raw exc string may contain tokens
-                    # or other sensitive context from git/http operations.
-                    log.error("dispatch error", exc_type=type(exc).__name__)
-                    resp = PerformerResponse(
-                        status="error",
-                        session_id=msg.session_id,
-                        reason=f"dispatch failed: {type(exc).__name__}",
-                    )
+                resp, new_perf = await _dispatch_action(msg, settings, perf)
+                if new_perf is not None:
+                    perf = new_perf
 
             elif msg.action == "status":
-                # Refresh GitHub token if the coordinare sent a fresh one
-                refreshed_token = msg.payload.get("github_token")
-                if refreshed_token and perf is not None and perf.score is not None:
-                    perf.score.github_token = refreshed_token
-                    perf.stand.git_env = _git_credential_vars(refreshed_token)
-                    log.debug("token_refreshed", session_id=perf.session_id)
-                try:
-                    resp = await handle_status(msg, perf, settings)
-                except (BranchConflictError, GitHubAPIError, WorkspaceSetupError) as exc:
-                    if perf:
-                        perf.state = "error"
-                        perf.error_reason = str(exc)
-                    resp = PerformerResponse(
-                        status="error",
-                        session_id=msg.session_id,
-                        reason=str(exc),
-                    )
+                resp = await _status_action(msg, settings, perf)
 
             elif msg.action == "relay_feedback":
                 resp = await handle_relay_feedback(msg, perf)
@@ -3601,15 +2530,7 @@ async def run_loop() -> None:
 
         _write_response(resp)
 
-        # Terminal states exit the loop. 412 round 34: "blocked" joins the
-        # break set -- the transport treats it as process-exiting (the
-        # session is capped and the next dispatch is fresh), so the loop
-        # must actually exit and run the graceful cleanup below instead of
-        # idling until the transport's SIGTERM reaps it uncleanly.
-        if resp.status in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error", "blocked") and msg.action != "health":
-            break
-        # session_expired with no active session means nothing will ever start
-        if resp.status == "session_expired" and perf is None:
+        if _loop_should_exit(resp, msg, perf):
             break
 
     # Cleanup regardless of outcome
@@ -3622,6 +2543,116 @@ async def run_loop() -> None:
         cleanup_stand(perf.stand)
 
 
+def _parse_message(
+    line: str,
+) -> tuple[PerformerMessage, None] | tuple[None, PerformerResponse]:
+    """Validate a wire line; (msg, None) on success, (None, error-response) on bad JSON."""
+    try:
+        return PerformerMessage.model_validate_json(line), None
+    except Exception as exc:
+        # Log exception type only — exc text may contain sensitive input values
+        # (e.g. github_token surfaced by pydantic ValidationError).
+        log.error("invalid message", exc_type=type(exc).__name__)
+        return None, PerformerResponse(
+            status="error", reason=f"invalid message: {type(exc).__name__}",
+        )
+
+
+def _loop_should_exit(
+    resp: PerformerResponse,
+    msg: PerformerMessage,
+    perf: Performance | None,
+) -> bool:
+    """Terminal states exit the loop. 412 round 34: "blocked" joins the break
+    set -- the transport treats it as process-exiting (the session is capped
+    and the next dispatch is fresh), so the loop must actually exit and run
+    the graceful cleanup below instead of idling until the transport's SIGTERM
+    reaps it uncleanly."""
+    if resp.status in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error", "blocked") and msg.action != "health":
+        return True
+    # session_expired with no active session means nothing will ever start
+    return resp.status == "session_expired" and perf is None
+
+
+async def _watchdog_fired(perf: Performance | None, settings: Settings) -> None:
+    """Watchdog trip: park a mid-flight session as error and stop its backend."""
+    if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error"):
+        perf.state = "error"
+        perf.error_reason = (
+            f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
+        )
+        try:
+            await perf.backend.stop()
+        except Exception:  # pragma: no cover
+            pass
+
+
+async def _dispatch_action(
+    msg: PerformerMessage,
+    settings: Settings,
+    perf: Performance | None,
+) -> tuple[PerformerResponse, Performance | None]:
+    """2518: dispatch — clone the repo, start the backend, map setup failures.
+
+    Returns the previous ``perf`` unchanged on error so run_loop keeps the
+    stale-session semantics of the original inline branch.
+    """
+    try:
+        return await handle_dispatch(msg, settings)
+    except WorkspaceSetupError as exc:
+        resp = PerformerResponse(
+            status="error",
+            session_id=msg.session_id,
+            reason=str(exc),
+        )
+    except ValidationError as exc:
+        # Report field names only — never echo payload values which
+        # may contain secrets such as github_token.
+        fields = ", ".join(
+            sorted({str(e["loc"][0]) for e in exc.errors() if e["loc"]}),
+        )
+        resp = PerformerResponse(
+            status="error",
+            session_id=msg.session_id,
+            reason=f"invalid dispatch payload — bad fields: {fields}",
+        )
+    except Exception as exc:
+        # Log exception type only — raw exc string may contain tokens
+        # or other sensitive context from git/http operations.
+        log.error("dispatch error", exc_type=type(exc).__name__)
+        resp = PerformerResponse(
+            status="error",
+            session_id=msg.session_id,
+            reason=f"dispatch failed: {type(exc).__name__}",
+        )
+    return resp, perf
+
+
+async def _status_action(
+    msg: PerformerMessage,
+    settings: Settings,
+    perf: Performance | None,
+) -> PerformerResponse:
+    """2551: status — refresh the GitHub token if fresh, then handle_status."""
+    # Refresh GitHub token if the coordinare sent a fresh one
+    refreshed_token = msg.payload.get("github_token")
+    if refreshed_token and perf is not None and perf.score is not None:
+        perf.score.github_token = refreshed_token
+        perf.stand.git_env = _git_credential_vars(refreshed_token)
+        log.debug("token_refreshed", session_id=perf.session_id)
+    try:
+        return await handle_status(msg, perf, settings)
+    except (BranchConflictError, GitHubAPIError, WorkspaceSetupError) as exc:
+        if perf:
+            perf.state = "error"
+            perf.error_reason = str(exc)
+        return PerformerResponse(
+            status="error",
+            session_id=msg.session_id,
+            reason=str(exc),
+        )
+
+
 def _write_response(resp: PerformerResponse) -> None:  # pragma: no cover
     # Spec 063 Phase 4 (T023): drain the env-cache health-failure flag set by
     # workspace._run_env_cache_health_check, so the very next outbound response
@@ -3631,6 +2662,70 @@ def _write_response(resp: PerformerResponse) -> None:  # pragma: no cover
         resp = resp.model_copy(update={"env_cache_health_failed": True})
     sys.stdout.write(resp.model_dump_json(exclude_none=True) + "\n")
     sys.stdout.flush()
+
+
+async def _poll_job_status(
+    perf: Performance,
+    settings: Settings | None,
+) -> PerformerResponse:
+    """2710: poll handle_status to a terminal response, then stop the backend.
+
+    US5 / Spec 073 Phase 9: pick up secrets PATCHed mid-job by the coordinare
+    (refreshed GitHub App token before the 1h expiry boundary), mirroring the
+    stdio `action == "status"` refresh.
+    """
+    from performer.server.job_runner import (  # local import — server subpackage
+        _progress_cb_var,
+        _refreshed_secrets_var,
+    )
+
+    status_msg = PerformerMessage(action="status", session_id=perf.session_id)
+    resp = None
+    # Track the last applied github_token so we only re-inject when it
+    # actually changed — avoids spamming git_env rebuilds every 2s tick.
+    _last_applied_token: str | None = None
+    try:
+        while True:
+            await asyncio.sleep(2.0)
+            _refreshed = _refreshed_secrets_var.get()
+            if _refreshed:
+                _new_token = _refreshed.get("github_token")
+                if (
+                    _new_token
+                    and _new_token != _last_applied_token
+                    and perf is not None
+                    and perf.score is not None
+                ):
+                    perf.score.github_token = _new_token
+                    perf.stand.git_env = _git_credential_vars(_new_token)
+                    _last_applied_token = _new_token
+                    log.debug(
+                        "token_refreshed_http",
+                        session_id=perf.session_id,
+                    )
+            resp = await handle_status(status_msg, perf, settings)
+            _progress_cb = _progress_cb_var.get()
+            if _progress_cb is not None and resp.events:
+                _progress_cb(
+                    [e if isinstance(e, dict) else e.model_dump(exclude_none=True) for e in resp.events],
+                    resp.metrics if isinstance(resp.metrics, dict) else (resp.metrics.model_dump() if resp.metrics is not None else None),
+                )
+            if resp.status in TERMINAL_STATUSES:
+                # A backend that only learns its token count at the terminal
+                # result event (claude_code) never reports it on a `working`
+                # response, so stamp metrics on the terminal response — this is
+                # what coordinare's check_status returns (JobResult.summary).
+                if resp.metrics is None:
+                    resp = resp.model_copy(update={"metrics": collect_metrics(perf.backend)})
+                break
+    finally:
+        try:
+            await perf.backend.stop()
+        except Exception:
+            pass
+        await _stop_orchestration_proxy(perf)
+        cleanup_stand(perf.stand)
+    return resp
 
 
 async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no cover
@@ -3691,61 +2786,7 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
                 error_code="dispatch_error",
             )
 
-        from performer.server.job_runner import (  # local import — server subpackage
-            _progress_cb_var,
-            _refreshed_secrets_var,
-        )
-
-        status_msg = PerformerMessage(action="status", session_id=perf.session_id)
-        resp = None
-        # Track the last applied github_token so we only re-inject when it
-        # actually changed — avoids spamming git_env rebuilds every 2s tick.
-        _last_applied_token: str | None = None
-        try:
-            while True:
-                await asyncio.sleep(2.0)
-                # US5 / Spec 073 Phase 9: pick up any secrets PATCHed mid-job
-                # by the coordinare (refreshed GitHub App token before the
-                # 1h expiry boundary). Mirror the stdio refresh at the
-                # `action == "status"` branch above.
-                _refreshed = _refreshed_secrets_var.get()
-                if _refreshed:
-                    _new_token = _refreshed.get("github_token")
-                    if (
-                        _new_token
-                        and _new_token != _last_applied_token
-                        and perf is not None
-                        and perf.score is not None
-                    ):
-                        perf.score.github_token = _new_token
-                        perf.stand.git_env = _git_credential_vars(_new_token)
-                        _last_applied_token = _new_token
-                        log.debug(
-                            "token_refreshed_http",
-                            session_id=perf.session_id,
-                        )
-                resp = await handle_status(status_msg, perf, settings)
-                _progress_cb = _progress_cb_var.get()
-                if _progress_cb is not None and resp.events:
-                    _progress_cb(
-                        [e if isinstance(e, dict) else e.model_dump(exclude_none=True) for e in resp.events],
-                        resp.metrics if isinstance(resp.metrics, dict) else (resp.metrics.model_dump() if resp.metrics is not None else None),
-                    )
-                if resp.status in TERMINAL_STATUSES:
-                    # A backend that only learns its token count at the terminal
-                    # result event (claude_code) never reports it on a `working`
-                    # response, so stamp metrics on the terminal response — this is
-                    # what coordinare's check_status returns (JobResult.summary).
-                    if resp.metrics is None:
-                        resp = resp.model_copy(update={"metrics": collect_metrics(perf.backend)})
-                    break
-        finally:
-            try:
-                await perf.backend.stop()
-            except Exception:
-                pass
-            await _stop_orchestration_proxy(perf)
-            cleanup_stand(perf.stand)
+        resp = await _poll_job_status(perf, settings)
 
         if resp is None:
             return JobResult(success=False, summary="no status response", error_code="internal_error")

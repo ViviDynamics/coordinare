@@ -19,14 +19,34 @@ from coordinare.protocol import PROCESS_EXITING_STATUSES
 
 
 def _run_loop_break_statuses() -> set[str]:
-    """Extract the status tuple of the run loop's only break-on-response."""
+    """Extract the status tuple behind the run loop's only break-on-response.
+
+    438: the loop exits via `if _loop_should_exit(resp, msg, perf): break`, and
+    the status tuple lives in that helper, so resolve break -> helper -> tuple.
+    """
     main_path = Path(__file__).parents[2] / "agent" / "performer" / "src" / "performer" / "main.py"
     tree = ast.parse(main_path.read_text(encoding="utf-8"))
     statuses: set[str] | None = None
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.If) and len(node.body) == 1 and isinstance(node.body[0], ast.Break)):
+        if not (
+            isinstance(node, ast.If)
+            and len(node.body) == 1
+            and isinstance(node.body[0], ast.Break)
+            and isinstance(node.test, ast.Call)
+            and isinstance(node.test.func, ast.Name)
+            and node.test.func.id == "_loop_should_exit"
+        ):
             continue
-        for sub in ast.walk(node.test):
+        helper = next(
+            (
+                fn
+                for fn in tree.body
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name == "_loop_should_exit"
+            ),
+            None,
+        )
+        assert helper is not None, "_loop_should_exit must stay a module-level function in main.py"
+        for sub in ast.walk(helper):
             if isinstance(sub, (ast.Tuple, ast.List)):
                 candidate = {element.value for element in sub.elts if isinstance(element, ast.Constant)}
                 if "pr_opened" in candidate and "blocked" in candidate and "nothing_to_review" in candidate:

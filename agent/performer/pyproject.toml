@@ -55,3 +55,13 @@ fail_under = 90
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# 438: the decomposition keeps the `patch("performer.main.<name>")` surface
+# intact, which forces three shapes ruff would otherwise flag. Collaborators
+# are imported at call time (a module-level from-import binds before the
+# test's monkeypatch); status-path builders late-bind via `from performer
+# import main as _m` preambles (a module-level import would be circular);
+# extracted phase helpers legitimately need 6 args and >6 return paths.
+"src/performer/main.py" = ["PLC0415", "PLR0911", "PLR0913"]
+"src/performer/status_paths.py" = ["PLC0415", "PLR0911", "PLR0913"]
