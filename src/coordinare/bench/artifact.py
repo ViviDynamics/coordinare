@@ -62,6 +62,10 @@ class PersonaDispatch(BaseModel):
     seconds: float | None = None
     tokens_processed: int | None = None
     raw_summary_ref: str | None = None
+    #: 306: set when the dispatch's terminal state was never observed because the
+    #: status poll itself failed. Distinguishes "we never saw the end" from a
+    #: clean budget cutoff, which both used to render as status=cancelled.
+    poll_error: str | None = None
 
 
 class GateDecision(BaseModel):

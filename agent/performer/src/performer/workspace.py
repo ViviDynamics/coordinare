@@ -1267,6 +1267,32 @@ async def push_branch(stand: Stand, score: Score) -> None:
     )
 
 
+async def _uncommitted_paths(git_out) -> list[str]:
+    """Paths git considers dirty, or ``[]`` when the tree is clean or unreadable.
+
+    306: git refuses to rebase while the working tree has unstaged changes
+    ("error: cannot rebase: You have unstaged changes"). That is the
+    performer's own uncommitted work, not a conflict with the remote's commits,
+    but the failure was reported as ``rebase_conflict`` either way and sent
+    operators looking for a merge problem that did not exist.
+
+    Read-only and best effort. If status cannot be read we return nothing and
+    the caller keeps the conflict message, because inventing a diagnosis is
+    worse than an imprecise one.
+    """
+    rc, out = None, None
+    try:
+        rc, out = await git_out(["status", "--porcelain"], "status")
+    except WorkspaceSetupError:
+        # The helper's own failure (OSError, the read timeout) must not replace
+        # the diagnosis the caller is building — that is the "best effort" half
+        # of the contract above.
+        return []
+    if rc != 0:
+        return []
+    return [line[3:].strip() for line in out.splitlines() if line.strip()]
+
+
 async def _push_head_without_clobbering(
     git_run, git_out, *, remote: str, branch: str, score: Score | None,
 ) -> None:
@@ -1295,6 +1321,18 @@ async def _push_head_without_clobbering(
         rebase_rc, rebase_err = await git_run(["rebase", "FETCH_HEAD"], "rebase")
         if rebase_rc != 0:
             await git_run(["rebase", "--abort"], "rebase --abort")
+            dirty = await _uncommitted_paths(git_out)
+            if dirty:
+                log.warning(
+                    "push_branch.uncommitted_changes", branch=branch, paths=dirty[:10]
+                )
+                msg = (
+                    "push_branch.uncommitted_changes: the workspace still has "
+                    f"{len(dirty)} uncommitted path(s), so git refused to rebase and "
+                    "nothing was pushed. This is the performer's own unfinished work, "
+                    f"not a conflict with the remote: {', '.join(dirty[:10])}"
+                )
+                raise WorkspaceSetupError(msg)
             log.warning("push_branch.rebase_conflict", branch=branch, error=rebase_err[:300])
             raise WorkspaceSetupError(
                 "push_branch.rebase_conflict: the remote branch has commits this "

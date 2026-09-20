@@ -22,6 +22,13 @@ class RecordingPerformer:
         # Raw per-call records the runner maps into artifact PersonaDispatch rows.
         self.dispatch_records: list[dict[str, Any]] = []
         self.status_records: list[dict[str, Any]] = []
+        # 306: polls that RAISED. A terminal state can only be observed through
+        # check_status, so a poll that never returns takes the observation with
+        # it: the dispatch then joined to nothing and was written out as a clean
+        # `cancelled` with terminal_marker null, which is what a dispatch the
+        # wall-clock budget cut off looks like. A real executor failure was
+        # therefore indistinguishable from "we ran out of time".
+        self.status_error_records: list[dict[str, Any]] = []
 
     async def dispatch_card(self, card_context: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         started = datetime.now(UTC)
@@ -68,7 +75,21 @@ class RecordingPerformer:
         })
 
     async def check_status(self, session_id: str, **kwargs: Any) -> dict[str, Any]:
-        result = await self._delegate.check_status(session_id, **kwargs)
+        try:
+            result = await self._delegate.check_status(session_id, **kwargs)
+        except Exception as exc:
+            # Record and re-raise: the caller's transport-retry path is
+            # unchanged, but the failure is no longer invisible to the artifact.
+            # This is NOT treated as terminal on its own — a bare poll timeout
+            # during a long build is retried while the job keeps running — so
+            # the join below only falls back to it when no terminal status was
+            # ever observed for the session.
+            self.status_error_records.append({
+                "session_id": session_id,
+                "error": f"{type(exc).__name__}: {exc}"[:300],
+                "at": datetime.now(UTC),
+            })
+            raise
         status = (result or {}).get("status")
         # Only the non-terminal branch reports "working" — every other return is the
         # parsed PerformerResponse, whose `status` IS the terminal marker

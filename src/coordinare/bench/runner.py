@@ -235,20 +235,45 @@ def _records_to_dispatch_log(services: dict[str, Any]) -> list[dict[str, Any]]:
     every dispatch to its terminal status by session — the real finish time (hence
     seconds), the true terminal marker and tokens, not a run-end stamp."""
     terminal_by_session: dict[str, dict[str, Any]] = {}
+    # 306: the LAST poll that raised, per session. Used only as a fallback when
+    # no terminal status was ever observed — a poll can raise transiently (a
+    # deadline exceeded during a long build) while the job runs on to a real
+    # verdict, and that verdict must win.
+    poll_error_by_session: dict[str, dict[str, Any]] = {}
     for svc in _unique_recorders(services):
         for sr in svc.status_records:
             sid = sr.get("session_id")
             if sid:
                 terminal_by_session.setdefault(sid, sr)  # first terminal wins
+        for er in getattr(svc, "status_error_records", []):
+            sid = er.get("session_id")
+            if sid:
+                poll_error_by_session[sid] = er  # last failure wins
     log: list[dict[str, Any]] = []
     for svc in _unique_recorders(services):
         for dr in svc.dispatch_records:
-            term = terminal_by_session.get(dr.get("session_id")) or {}
+            sid = dr.get("session_id")
+            term = terminal_by_session.get(sid) or {}
             marker = str(term.get("status") or "")
-            started, ended = dr.get("started_at"), term.get("at")
+            # Only surface a poll failure when nothing terminal was seen for the
+            # session: otherwise the dispatch DID reach a verdict and a healed
+            # transient poll is noise.
+            failed_poll = {} if term else (poll_error_by_session.get(sid) or {})
+            poll_error = failed_poll.get("error")
+            started = dr.get("started_at")
+            ended = term.get("at") or failed_poll.get("at")
             # A dispatch the performer never accepted has no session to join.
-            status = "error" if dr.get("status") == "error" else _dispatch_status(marker)
+            if dr.get("status") == "error":
+                status = "error"
+            elif poll_error:
+                # The terminal state was never observed because polling itself
+                # failed. That is not a budget cutoff, and reporting it as one
+                # made a real executor failure read as "nothing happened".
+                status = "error"
+            else:
+                status = _dispatch_status(marker)
             log.append({
+                "poll_error": poll_error,
                 "stage": dr.get("stage", ""),
                 "role": dr.get("role", ""),
                 "card_id": dr.get("card_id", ""),
@@ -618,7 +643,7 @@ def _build_artifact(
                 container_id=d.get("container_id"),
                 tokens_processed=d.get("tokens_processed"),
                 started_at=d["started_at"], finished_at=d["finished_at"],
-                seconds=d.get("seconds"),
+                seconds=d.get("seconds"), poll_error=d.get("poll_error"),
             )
             for d in dispatch_log if d["card_id"] == card_id
         ]
