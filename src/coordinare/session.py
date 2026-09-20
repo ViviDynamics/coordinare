@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
+    from coordinare.graph.state import CoordinareState
+
 
 # 074 — Persona scope tiering (per-card classifier output).
 Depth = Literal["skim", "normal", "full", "skip"]
@@ -465,7 +467,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
     )
 
 
-def session_to_state(session: CardSession, state: dict[str, Any]) -> None:
+def session_to_state(session: CardSession, state: CoordinareState) -> None:
     """Copy session fields into the flat CoordinareState dict.
 
     This is called *before* invoking graph nodes so that node code
@@ -476,7 +478,7 @@ def session_to_state(session: CardSession, state: dict[str, Any]) -> None:
             state[field] = session[field]
 
 
-def state_to_session(state: dict[str, Any]) -> CardSession:
+def state_to_session(state: CoordinareState) -> CardSession:
     """Copy card-scoped fields from flat CoordinareState into a CardSession.
 
     Called *after* graph node invocation to capture any mutations the

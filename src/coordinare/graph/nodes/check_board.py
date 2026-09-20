@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -12,27 +13,58 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
-from coordinare.graph.state import _rederive_current_card, _retire_active_session
+from coordinare.graph.state import (
+    GitHubServiceProtocol,
+    _rederive_current_card,
+    _retire_active_session,
+)
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
-from coordinare.models.dependency import DependencyStatus
+from coordinare.models.dependency import DependencyGraph, DependencyStatus
+from coordinare.models.notification import (
+    EventType,
+    NotificationEvent,
+    NotificationSeverity,
+)
+from coordinare.models.review import (
+    Review,
+    ReviewerType,
+    ReviewState,
+    ReviewThread,
+    StalenessClass,
+    classify_reviewer,
+)
+from coordinare.services.blocked_recovery import (
+    BlockReason,
+    RecoverySignals,
+    evaluate_recovery,
+)
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_ownership import (
+    OwnershipPolicy,
     filter_owned,
     ownership_policy,
     owns_card,
 )
-from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+from coordinare.services.dependency import (
+    build_graph,
+    resolve_off_board_dependencies,
+)
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.rebase import repo_url_from_config
+from coordinare.services.review_staleness import classify_review_staleness
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
 if TYPE_CHECKING:
+    from coordinare.config import ProjectConfiguration
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.blocked_recovery import RecoveryDecision
+    from coordinare.services.board_provider import BoardProvider
+    from coordinare.services.pr_checks_service import CheckRollup
 
 logger = structlog.get_logger(__name__)
 
 
-def _snapshot_stage_for_card(state: dict, card_id: str) -> str | None:
+def _snapshot_stage_for_card(state: CoordinareState, card_id: str) -> str | None:
     """Return the snapshot-restored performer_stage for ``card_id`` if any.
 
     065 Fix 7a/7b: a freshly-rehydrated active_sessions entry (v2 snapshot
@@ -67,7 +99,7 @@ _STAGE_OUTPUT_ARTIFACTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _card_docs_dir(card: dict) -> str | None:
+def _card_docs_dir(card: dict[str, Any]) -> str | None:
     """Return ``docs/cards/<issue>-<slug>`` for *card*, matching the performer's
     ``_doc_folder`` slug algorithm (lowercased, non-alnum→dash, truncated 20)."""
     import re
@@ -82,7 +114,7 @@ def _card_docs_dir(card: dict) -> str | None:
     return f"docs/cards/{slug}"
 
 
-async def _derive_resume_stage(github: object, card: dict, lifecycle_seq: list[str]) -> str | None:
+async def _derive_resume_stage(github: GitHubServiceProtocol, card: dict[str, Any], lifecycle_seq: list[str]) -> str | None:
     """076 (live QA #150): derive the stage to resume a re-adopted IN_PROGRESS
     card at, by probing its branch for completed-stage artifacts.
 
@@ -115,7 +147,7 @@ async def _derive_resume_stage(github: object, card: dict, lifecycle_seq: list[s
                 # earlier doc-producing stage is complete, so resume here.
                 return stage
             for fname in artifacts:
-                sha = await github.get_file_blob_sha(  # type: ignore[attr-defined]
+                sha = await github.get_file_blob_sha(
                     owner, repo, f"{docs_dir}/{fname}", ref=branch,
                 )
                 if not sha:
@@ -139,9 +171,9 @@ PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked"})
 
 
-def _count_slot_consuming_sessions(state: dict) -> int:
+def _count_slot_consuming_sessions(state: CoordinareState) -> int:
     """Count active sessions occupying a concurrency slot."""
-    sessions: dict = state.get("active_sessions") or {}
+    sessions: dict[str, Any] = state.get("active_sessions") or {}
     return sum(
         1 for sess in sessions.values()
         if sess.get("phase") not in NON_SLOT_PHASES
@@ -158,7 +190,7 @@ _IN_FLIGHT_WORKING_PHASES: frozenset[str] = frozenset(
 )
 
 
-def _has_in_flight_working_session(state: dict) -> bool:
+def _has_in_flight_working_session(state: CoordinareState) -> bool:
     """Whether ``active_card_id`` points at a session in an in-flight working phase.
 
     Used by ``check_board`` to skip the end-of-cycle retire-and-go-idle path
@@ -176,7 +208,7 @@ def _has_in_flight_working_session(state: dict) -> bool:
     return sess.get("phase") in _IN_FLIGHT_WORKING_PHASES
 
 
-def _allowed_github_host(config: object) -> str | None:
+def _allowed_github_host(config: ProjectConfiguration | None) -> str | None:
     """Return the configured GitHub hostname for issue_url allowlisting.
 
     Reads ``config.github_endpoint`` if present (e.g. GHE), otherwise falls
@@ -258,7 +290,7 @@ def _sort_by_priority(
     return sorted(item_ids, key=_sort_key)
 
 
-def _build_card_dict(item: str, board: dict, status: str) -> dict:
+def _build_card_dict(item: str, board: dict[str, Any], status: str) -> dict[str, Any]:
     """066 T013/FR-002: unified card_dict builder for the pickup paths.
 
     Returns a fresh card dict keyed off the per-cycle board snapshot.  Status
@@ -361,7 +393,7 @@ def _env_cache_recovered(state: CoordinareState, symphony: str) -> bool:
     )
 
 
-def _prior_stage_column(sess: dict) -> str:
+def _prior_stage_column(sess: dict[str, Any]) -> str:
     """129a: the board column an env-recovered card resumes to — the card's
     pre-BLOCKED column when it is a genuine working column, else IN_PROGRESS
     (re-enter the pipeline; the session's ``performer_stage`` drives what
@@ -371,15 +403,17 @@ def _prior_stage_column(sess: dict) -> str:
     return prev if prev in ("IN_PROGRESS", "IN_REVIEW", "TODO") else "IN_PROGRESS"
 
 
-async def _fetch_pr_rollup(github: object, owner: str, repo: str, number: int):
+async def _fetch_pr_rollup(
+    github: GitHubServiceProtocol, owner: str, repo: str, number: int,
+) -> CheckRollup:
     """399: the PR's check rollup, via the same service the CI gate uses.
     Module-level so tests can substitute a rollup without a GitHub."""
     from coordinare.services.pr_checks_service import PrChecksService
 
-    return await PrChecksService(github, owner, repo).get_pr_check_rollup(number)  # type: ignore[arg-type]
+    return await PrChecksService(github, owner, repo).get_pr_check_rollup(number)
 
 
-async def _reconcile_stage_with_pr(sess: dict, cid: str, github: object, pr: dict) -> None:
+async def _reconcile_stage_with_pr(sess: dict[str, Any], cid: str, github: GitHubServiceProtocol, pr: dict[str, Any]) -> None:
     """399: a recovered card resumes at the stage its session recorded. For
     website#160 that was ``implementing`` while its PR was already open and
     green, so recovery would have re-run the implementer on finished work.
@@ -427,8 +461,146 @@ async def _reconcile_stage_with_pr(sess: dict, cid: str, github: object, pr: dic
     )
 
 
+def _gather_env_blocked_reason(
+    state: CoordinareState, active_reasons: list[Any], sig: dict[str, Any], cid: str, sess: dict[str, Any],
+) -> None:
+    if sess.get("env_blocked"):
+        active_reasons.append(BlockReason.ENV_BLOCKED)
+        _symphony = str(state.get("current_symphony") or "")
+        # A healthy dependency cache says nothing about an Actions outage.
+        # CI holds re-evaluate their own checks in monitor_performer.
+        sig["env_recovered"] = not bool(sess["env_blocked"].get("check_names")) and _env_cache_recovered(state, _symphony)
+        sig["prior_stage"] = _prior_stage_column(sess)
+        if not sig["env_recovered"]:
+            logger.debug(
+                "blocked_recovery.env_not_recovered",
+                card_id=cid,
+                symphony=_symphony or None,
+                has_cache=bool((state.get("env_cache") or {}).get(_symphony)),
+            )
+
+
+async def _gather_stale_review_reason(
+    github: GitHubServiceProtocol, active_reasons: list[Any], sig: dict[str, Any], issue_node: str, human_reviewers: list[str],
+) -> tuple[dict[str, Any] | None, str, str, bool]:
+    pr: dict[str, Any] | None = None
+    pr_node_id = ""
+    head_oid = ""
+    review_gate_checked = True
+    if issue_node and hasattr(github, "find_pr_for_issue"):
+        pr = await github.find_pr_for_issue(issue_node)
+        pr_node_id = str((pr or {}).get("pr_node_id") or "")
+        if pr and not pr_node_id:
+            # A PR exists but we can't read its node id → review state unknown.
+            review_gate_checked = False
+        if pr_node_id and hasattr(github, "get_pr_review_context"):
+            ctx = await github.get_pr_review_context(pr_node_id)
+            ctx = ctx if isinstance(ctx, dict) else {}
+            review_decision = str(ctx.get("review_decision", "") or "")
+            if review_decision.upper() == "CHANGES_REQUESTED":
+                reviews = ctx.get("reviews", []) or []
+                threads_raw = ctx.get("review_threads", []) or []
+                head_oid = str(ctx.get("head_oid", "") or "")
+                gating = None
+                for r in reviews:
+                    if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
+                        str(r.get("author_login", "")), human_reviewers, [],
+                    ) == ReviewerType.HUMAN:
+                        gating = r  # last wins → latest human CR
+                if gating is not None:
+                    commit_oid = str(gating.get("commit_oid", "") or "")
+                    review = Review(
+                        id=str(gating.get("id", "")),
+                        author_login=str(gating.get("author_login", "")),
+                        author_type=ReviewerType.HUMAN,
+                        state=ReviewState.CHANGES_REQUESTED,
+                        commit_oid=commit_oid,
+                    )
+                    threads = [
+                        ReviewThread(
+                            id=str(t.get("id", "")),
+                            is_resolved=bool(t.get("is_resolved", False)),
+                            review_id=(str(t["review_id"]) if t.get("review_id") else None),
+                        )
+                        for t in threads_raw
+                    ]
+                    commits_behind = (
+                        1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
+                    )
+                    staleness = classify_review_staleness(
+                        review, head_oid, commits_behind, threads,
+                    )
+                    active_reasons.append(BlockReason.STALE_REVIEW)
+                    sig["review_decision"] = review_decision
+                    sig["review_stale_addressed"] = (
+                        staleness.classification is StalenessClass.STALE_ADDRESSED
+                    )
+    return pr, pr_node_id, head_oid, review_gate_checked
+
+
+async def _execute_blocked_recovery(
+    state: CoordinareState, board_provider: BoardProvider, github: GitHubServiceProtocol, sess: dict[str, Any], cid: str, item: str, blocked: list[str], decision: RecoveryDecision, dedup_suffix: str, pr: dict[str, Any] | None, pr_node_id: str, active_reasons: list[Any],
+) -> None:
+    if BlockReason.ENV_BLOCKED in active_reasons and pr_node_id and isinstance(pr, dict):
+        await _reconcile_stage_with_pr(sess, cid, github, pr)
+    await move_card_or_warn(board_provider, cid, decision.target_stage)
+    # 399: the marker was consumed. Left in place it would make the
+    # card's NEXT block, whatever its cause, also demand env_recovered.
+    # Review noted the marker also survives when recovery is gated out
+    # above (review_gate_checked False) and a human then moves the card.
+    # Accepted: the card is still genuinely env-blocked at that point,
+    # and a lingering marker only adds an env_recovered condition to a
+    # later block, which is true whenever the environment is healthy.
+    if BlockReason.ENV_BLOCKED in active_reasons and sess:
+        sess["env_blocked"] = None
+    # The card is no longer BLOCKED on GitHub — drop it from the in-memory
+    # board snapshot AND the live blocked list so the downstream blocked-
+    # handling branch (which re-reads state["board_snapshot"]["BLOCKED"])
+    # does not re-adopt it as BLOCKED in this same cycle (adversarial
+    # finding: stale-snapshot re-adoption → phase/GitHub divergence).
+    _snap = state.get("board_snapshot")
+    if isinstance(_snap, dict) and isinstance(_snap.get("BLOCKED"), list):
+        _snap["BLOCKED"][:] = [b for b in _snap["BLOCKED"] if str(b) != cid]
+    with contextlib.suppress(ValueError):
+        blocked.remove(item)
+    logger.info(
+        "blocked_recovery.recovered",
+        card_id=cid,
+        target=decision.target_stage,
+        reason=decision.reason,
+    )
+    # 138 T040: recorded *before* the notification branch, so recovery
+    # surfaces with zero channels configured (FR-012). No gate removed.
+    _alog = state.get("activity_log")
+    if _alog is not None:
+        with contextlib.suppress(Exception):
+            _alog.record(
+                activity_type="recovered",
+                card_id=cid,
+                stage=decision.target_stage,
+                text=f"auto-recovered to {decision.target_stage} ({decision.reason})",
+            )
+    notif = state.get("notification_service")
+    if notif is not None:
+        with contextlib.suppress(Exception):
+            await notif.dispatch(
+                NotificationEvent(
+                    event_type=EventType.card_auto_recovered,
+                    severity=NotificationSeverity.info,
+                    source="check_board",
+                    payload={
+                        "card_id": cid,
+                        "target": decision.target_stage,
+                        "reason": decision.reason,
+                    },
+                    dedup_key=f"auto_recovered:{cid}:{dedup_suffix}",
+                ),
+            )
+
+
+
 async def _attempt_blocked_card_recovery(
-    state: CoordinareState, github: object, blocked: list, board: dict,
+    state: CoordinareState, github: GitHubServiceProtocol, blocked: list[str], board: dict[str, Any],
 ) -> None:
     """129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
     block has cleared and auto-recover them. Handles the stale-review case
@@ -442,29 +614,8 @@ async def _attempt_blocked_card_recovery(
     board_provider = board_of(state, github)
     if not _blocked_recovery_enabled() or not blocked or github is None:
         return
-    import contextlib
 
-    from coordinare.models.notification import (
-        EventType,
-        NotificationEvent,
-        NotificationSeverity,
-    )
-    from coordinare.models.review import (
-        Review,
-        ReviewerType,
-        ReviewState,
-        ReviewThread,
-        StalenessClass,
-        classify_reviewer,
-    )
-    from coordinare.services.blocked_recovery import (
-        BlockReason,
-        RecoverySignals,
-        evaluate_recovery,
-    )
-    from coordinare.services.review_staleness import classify_review_staleness
-
-    markers: dict = state.setdefault("_recovery_attempts", {})  # type: ignore[assignment]
+    markers: dict[str, Any] = state.setdefault("_recovery_attempts", {})  # type: ignore[ typeddict-item]
     human_reviewers = state.get("human_reviewers") or []
     if not isinstance(human_reviewers, list):
         human_reviewers = []
@@ -476,8 +627,8 @@ async def _attempt_blocked_card_recovery(
             continue
         try:
             active_reasons: list[BlockReason] = []
-            sig: dict = {}
-            pr: dict | None = None
+            sig: dict[str, Any] = {}
+            pr: dict[str, Any] | None = None
             pr_node_id = ""
             head_oid = ""
             # Human-gate safety (FR-004): the env path may recover a card WITHOUT a
@@ -493,71 +644,15 @@ async def _attempt_blocked_card_recovery(
             # recovered when the symphony's env-cache is healthy again.
             sess = (state.get("active_sessions") or {}).get(cid)
             sess = sess if isinstance(sess, dict) else {}
-            if sess.get("env_blocked"):
-                active_reasons.append(BlockReason.ENV_BLOCKED)
-                _symphony = str(state.get("current_symphony") or "")
-                # A healthy dependency cache says nothing about an Actions outage.
-                # CI holds re-evaluate their own checks in monitor_performer.
-                sig["env_recovered"] = not bool(sess["env_blocked"].get("check_names")) and _env_cache_recovered(state, _symphony)
-                sig["prior_stage"] = _prior_stage_column(sess)
-                if not sig["env_recovered"]:
-                    logger.debug(
-                        "blocked_recovery.env_not_recovered",
-                        card_id=cid,
-                        symphony=_symphony or None,
-                        has_cache=bool((state.get("env_cache") or {}).get(_symphony)),
-                    )
+            _gather_env_blocked_reason(state, active_reasons, sig, cid, sess)
 
             # --- STALE_REVIEW gatherer (spec-128; PR-based) ---
             issue_node = str(content_node_ids.get(cid, "") or "")
-            if issue_node and hasattr(github, "find_pr_for_issue"):
-                pr = await github.find_pr_for_issue(issue_node)  # type: ignore[attr-defined]
-                pr_node_id = str((pr or {}).get("pr_node_id") or "")
-                if pr and not pr_node_id:
-                    # A PR exists but we can't read its node id → review state unknown.
-                    review_gate_checked = False
-                if pr_node_id and hasattr(github, "get_pr_review_context"):
-                    ctx = await github.get_pr_review_context(pr_node_id)  # type: ignore[attr-defined]
-                    ctx = ctx if isinstance(ctx, dict) else {}
-                    review_decision = str(ctx.get("review_decision", "") or "")
-                    if review_decision.upper() == "CHANGES_REQUESTED":
-                        reviews = ctx.get("reviews", []) or []
-                        threads_raw = ctx.get("review_threads", []) or []
-                        head_oid = str(ctx.get("head_oid", "") or "")
-                        gating = None
-                        for r in reviews:
-                            if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
-                                str(r.get("author_login", "")), human_reviewers, [],
-                            ) == ReviewerType.HUMAN:
-                                gating = r  # last wins → latest human CR
-                        if gating is not None:
-                            commit_oid = str(gating.get("commit_oid", "") or "")
-                            review = Review(
-                                id=str(gating.get("id", "")),
-                                author_login=str(gating.get("author_login", "")),
-                                author_type=ReviewerType.HUMAN,
-                                state=ReviewState.CHANGES_REQUESTED,
-                                commit_oid=commit_oid,
-                            )
-                            threads = [
-                                ReviewThread(
-                                    id=str(t.get("id", "")),
-                                    is_resolved=bool(t.get("is_resolved", False)),
-                                    review_id=(str(t["review_id"]) if t.get("review_id") else None),
-                                )
-                                for t in threads_raw
-                            ]
-                            commits_behind = (
-                                1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
-                            )
-                            staleness = classify_review_staleness(
-                                review, head_oid, commits_behind, threads,
-                            )
-                            active_reasons.append(BlockReason.STALE_REVIEW)
-                            sig["review_decision"] = review_decision
-                            sig["review_stale_addressed"] = (
-                                staleness.classification is StalenessClass.STALE_ADDRESSED
-                            )
+            (
+                pr, pr_node_id, head_oid, review_gate_checked,
+            ) = await _gather_stale_review_reason(
+                github, active_reasons, sig, issue_node, human_reviewers,
+            )
 
             if not active_reasons:
                 # No recoverable block reason detectable → leave the card blocked
@@ -580,61 +675,11 @@ async def _attempt_blocked_card_recovery(
             decision = evaluate_recovery(active_reasons, RecoverySignals(**sig))
             if not decision.recover:
                 continue
-            if BlockReason.ENV_BLOCKED in active_reasons and pr_node_id and isinstance(pr, dict):
-                await _reconcile_stage_with_pr(sess, cid, github, pr)
-            await move_card_or_warn(board_provider, cid, decision.target_stage)
-            # 399: the marker was consumed. Left in place it would make the
-            # card's NEXT block, whatever its cause, also demand env_recovered.
-            # Review noted the marker also survives when recovery is gated out
-            # above (review_gate_checked False) and a human then moves the card.
-            # Accepted: the card is still genuinely env-blocked at that point,
-            # and a lingering marker only adds an env_recovered condition to a
-            # later block, which is true whenever the environment is healthy.
-            if BlockReason.ENV_BLOCKED in active_reasons and sess:
-                sess["env_blocked"] = None
-            # The card is no longer BLOCKED on GitHub — drop it from the in-memory
-            # board snapshot AND the live blocked list so the downstream blocked-
-            # handling branch (which re-reads state["board_snapshot"]["BLOCKED"])
-            # does not re-adopt it as BLOCKED in this same cycle (adversarial
-            # finding: stale-snapshot re-adoption → phase/GitHub divergence).
-            _snap = state.get("board_snapshot")
-            if isinstance(_snap, dict) and isinstance(_snap.get("BLOCKED"), list):
-                _snap["BLOCKED"][:] = [b for b in _snap["BLOCKED"] if str(b) != cid]
-            with contextlib.suppress(ValueError):
-                blocked.remove(item)
-            logger.info(
-                "blocked_recovery.recovered",
-                card_id=cid,
-                target=decision.target_stage,
-                reason=decision.reason,
-            )
-            # 138 T040: recorded *before* the notification branch, so recovery
-            # surfaces with zero channels configured (FR-012). No gate removed.
-            _alog = state.get("activity_log")
-            if _alog is not None:
-                with contextlib.suppress(Exception):
-                    _alog.record(
-                        activity_type="recovered",
-                        card_id=cid,
-                        stage=decision.target_stage,
-                        text=f"auto-recovered to {decision.target_stage} ({decision.reason})",
-                    )
-            notif = state.get("notification_service")
-            if notif is not None:
-                with contextlib.suppress(Exception):
-                    await notif.dispatch(
-                        NotificationEvent(
-                            event_type=EventType.card_auto_recovered,
-                            severity=NotificationSeverity.info,
-                            source="check_board",
-                            payload={
-                                "card_id": cid,
-                                "target": decision.target_stage,
-                                "reason": decision.reason,
-                            },
-                            dedup_key=f"auto_recovered:{cid}:{dedup_suffix}",
-                        ),
-                    )
+            if board_provider is not None:
+                await _execute_blocked_recovery(
+                    state, board_provider, github, sess, cid, item, blocked,
+                    decision, dedup_suffix, pr, pr_node_id, active_reasons,
+                )
         except Exception as exc:  # fail-safe: a card's recovery never breaks the cycle
             logger.warning("blocked_recovery.failsafe_skip", card_id=cid, error=str(exc))
 
@@ -652,7 +697,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     _status_pre = str(_flat_cur_pre.get("status", "")) if isinstance(_flat_cur_pre, dict) else ""
     _sessions_pre = state.get("active_sessions") or {}
     if _flat_id_pre and _status_pre == "BLOCKED" and _flat_id_pre not in _sessions_pre:
-        _sess_pre = state_to_session(state)  # type: ignore[arg-type]
+        _sess_pre = state_to_session(state)
         _sess_pre.setdefault("current_card", _flat_cur_pre)
         _sess_pre["phase"] = "blocked"
         _sessions_pre = dict(_sessions_pre)
@@ -678,30 +723,14 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     return result
 
 
-async def _check_board_impl(state: CoordinareState) -> CoordinareState:
-    github = state.get("github_service")
-    board_provider = board_of(state)
-    logger.info(
-        "check_board.entered",
-        github_present=github is not None,
-        github_type=type(github).__name__ if github is not None else None,
-        project_id=getattr(github, "project_id", None) if github is not None else None,
-        active_sessions=len(state.get("active_sessions") or {}),
-        current_symphony=state.get("current_symphony"),
+async def _poll_board_once(
+    state: CoordinareState, github: GitHubServiceProtocol, board_provider: BoardProvider, config: ProjectConfiguration | None, max_cards: int,
+) -> dict[str, Any] | None:
+    cached_board: dict[str, Any] | None = (
+        cast("dict[str, Any] | None", state.get("_board_cache"))
+        if max_cards > 1
+        else None
     )
-    if github is None:
-        logger.warning("check_board.no_github_service")
-        state["phase"] = "idle"
-        return state
-
-    # In multi-session mode the daemon invokes the graph once per active
-    # session within a single cycle.  Cache the board result to avoid
-    # redundant GitHub polls.  Only used when max_concurrent_cards > 1;
-    # single-card mode always polls fresh to avoid stale cache issues.
-    config = state.get("config")
-    _raw_max = getattr(config, "max_concurrent_cards", 1) if config else 1
-    max_cards = _raw_max if isinstance(_raw_max, int) else 1
-    cached_board = state.get("_board_cache") if max_cards > 1 else None
     if cached_board:
         board = cached_board
     else:
@@ -712,7 +741,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 retry_in_seconds=round(retry_in, 1),
             )
             # Keep running without crashing; a later cycle will retry.
-            return state
+            return None
         try:
             board = await board_provider.poll_board()
             clear_deferred_github_operation(state, "poll_board")
@@ -732,29 +761,19 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     retry_at=deferred.get("retry_at"),
                 )
                 # Do not drop active in-flight state on transient GitHub outages.
-                return state
+                return None
             logger.error("check_board.poll_failed", error=str(exc))
             state["phase"] = "idle"
-            return state
+            return None
         if max_cards > 1:
-            state["_board_cache"] = board
+            state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
         state["last_poll_at"] = datetime.now(UTC)
+    return board
 
-    snapshot = board.get("snapshot")
-    state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
-    # 046: Stash titles and issue_numbers so assess_card can inject active-card
-    # context into the assessor's prompt for implicit dependency detection.
-    state["_board_titles"] = board.get("titles", {})
-    state["_board_issue_numbers"] = board.get("issue_numbers", {})
-    state["_board_issue_urls"] = board.get("issue_urls", {})
-    state["_board_pr_urls"] = board.get("pr_urls", {})
-    # 410: card labels ride the dispatch payload so a no-brief implementer run
-    # can infer its lane from them (docs, config, dependency, chore).
-    state["_board_item_labels"] = board.get("item_labels", {})
 
-    # 047: Detect external merges (non-coordinare PRs merged by humans) by
-    # comparing last_known_main_sha against the current main HEAD.  If
-    # changed, trigger a rebase round for all active sessions.
+async def _maybe_rebase_on_main_change(
+    state: CoordinareState, github: GitHubServiceProtocol, config: ProjectConfiguration | None, max_cards: int,
+) -> None:
     active_sessions = state.get("active_sessions") or {}
     if active_sessions and config is not None:
         # Derive repo URL from config (not WorkspaceManager internals)
@@ -766,11 +785,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             with contextlib.suppress(Exception):
                 token = await github._current_token()
         if repo_url and token:
-            from coordinare.services.rebase import fetch_main_sha, run_rebase_round
+            from coordinare.services.rebase import fetch_main_sha
             # Cache the fetched main SHA per cycle to avoid N ls-remote
             # calls in multi-session mode (check_board runs once per
             # active session within a single daemon cycle).
-            cached_main = state.get("_main_sha_cache")
+            cached_main = cast("str | None", state.get("_main_sha_cache"))
+            current_main: str | None
             if cached_main and max_cards > 1:
                 current_main = cached_main
             else:
@@ -787,136 +807,153 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     # First cycle / post-upgrade — initialize the baseline. NOT a
                     # no-op for stranded branches: the proactive sweep below still
                     # heals any branch already conflicting against this main.
-                    state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
+                    state["last_known_main_sha"] = current_main
                 elif edge_rebased:
                     logger.info(
                         "check_board.main_head_changed",
                         old_sha=prev_main[:8] if prev_main else "?",
                         new_sha=current_main[:8],
                     )
-                    state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
-                    try:
-                        notification_svc = state.get("notification_service")
-                        rr = await run_rebase_round(
-                            active_sessions, current_main, repo_url, token,
-                            notification_service=notification_svc,
-                            github=github,
-                            human_reviewers=state.get("human_reviewers"),
-                        )
-                        state["last_rebase_round"] = rr.to_dict()  # type: ignore[typeddict-unknown-key]
-                        # US2: attempt performer conflict resolution for
-                        # the first BLOCKED job (same as merge_pr path).
-                        from coordinare.models.rebase import RebaseOutcome
-                        from coordinare.services.rebase import prepare_conflict_resolution
-                        for _job in rr.jobs:
-                            # 096 US3: distinct, secret-free observability per card.
-                            logger.info(
-                                "rebase.triggered", reason="main_moved",
-                                card_id=_job.card_id, branch=_job.branch,
-                                prev_main_sha=prev_main, current_main_sha=current_main,
-                                outcome=_job.outcome.value,
-                            )
-                            _sess = active_sessions.get(_job.card_id)
-                            if not isinstance(_sess, dict):
-                                continue
-                            # 096 FR-007: record the anti-thrash marker for EVERY
-                            # edge-rebased card (not just BLOCKED) so the next
-                            # cycle's proactive sweep doesn't re-attempt a
-                            # just-BLOCKED branch. head_sha = the pre-rebase head
-                            # (a BLOCKED rebase doesn't push, so it stays current).
-                            # Per-job try/except keeps one card's failure from
-                            # skipping the others (FR-006).
-                            try:
-                                _sess["last_rebase_attempt"] = {
-                                    "main_sha": current_main,
-                                    "head_sha": _job.pre_rebase_sha or "",
-                                    "outcome": _job.outcome.value,
-                                }
-                                if _job.outcome == RebaseOutcome.BLOCKED:
-                                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
-                            except Exception as exc:  # per-card isolation (FR-006)
-                                logger.warning(
-                                    "check_board.edge_rebase_postprocess_failed",
-                                    card_id=_job.card_id, error=str(exc),
-                                )
-                    except Exception as exc:
-                        logger.warning("check_board.rebase_round_failed", error=str(exc))
-
+                    state["last_known_main_sha"] = current_main
+                    await _run_edge_rebase_round(state, github, active_sessions, current_main, prev_main, repo_url, token)
                 # 096 US2 (FR-003): proactively rebase any in-flight branch the
                 # platform reports CONFLICTING/BEHIND, independent of the edge —
                 # covers branches stranded from before the baseline (the live
                 # incident) or a missed edge. Skipped when the edge above already
                 # rebased every branch this cycle.
                 if not edge_rebased:
-                    from coordinare.models.rebase import RebaseOutcome
-                    from coordinare.services.rebase import (
-                        detect_stale_branches,
-                        prepare_conflict_resolution,
-                        should_attempt_rebase,
-                    )
-                    for _cand in detect_stale_branches(active_sessions, current_main):
-                        if _cand.get("skipped"):
-                            continue  # active performer (047 FR-006)
-                        _cid = _cand["card_id"]
-                        _sess = active_sessions.get(_cid)
-                        if not isinstance(_sess, dict):
-                            continue
-                        _pr_node = (_sess.get("current_card") or {}).get("pr_node_id")
-                        if not _pr_node:
-                            continue
-                        try:
-                            _mc = await github.check_mergeability(_pr_node)
-                        except Exception as exc:  # per-card isolation
-                            logger.warning(
-                                "check_board.proactive_mergeability_failed",
-                                card_id=_cid, error=str(exc),
-                            )
-                            continue
-                        _raw = (_mc.get("mergeable_raw") or "").upper()
-                        _mss = (_mc.get("merge_state_status") or "").upper()
-                        _head = _mc.get("head_ref_oid") or ""
-                        if _raw in ("", "UNKNOWN") or not _head:
-                            # Defer: mergeability not yet computed, or the head OID
-                            # is missing. Without a reliable head the anti-thrash
-                            # guard can't tell "performer pushed work" from "no
-                            # change", so we re-check next cycle rather than rebase.
-                            continue
-                        if not (_raw == "CONFLICTING" or _mss == "BEHIND"):
-                            continue  # current/clean → no rebase, no churn
-                        if not should_attempt_rebase(_sess, current_main, _head):
-                            continue  # anti-thrash (FR-007)
-                        try:
-                            _rr = await run_rebase_round(
-                                {_cid: _sess}, current_main, repo_url, token,
-                                notification_service=state.get("notification_service"),
-                                github=github,
-                                human_reviewers=state.get("human_reviewers"),
-                            )
-                            state["last_rebase_round"] = _rr.to_dict()  # type: ignore[typeddict-unknown-key]
-                            for _job in _rr.jobs:
-                                # _head is guaranteed non-empty here (deferred
-                                # above otherwise), so the marker head matches what
-                                # the guard reads next cycle — no asymmetry.
-                                _sess["last_rebase_attempt"] = {
-                                    "main_sha": current_main,
-                                    "head_sha": _head,
-                                    "outcome": _job.outcome.value,
-                                }
-                                logger.info(
-                                    "rebase.triggered", reason="proactive_conflict",
-                                    card_id=_cid, branch=_cand.get("branch", ""),
-                                    prev_main_sha=prev_main, current_main_sha=current_main,
-                                    outcome=_job.outcome.value,
-                                )
-                                if _job.outcome == RebaseOutcome.BLOCKED:
-                                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
-                        except Exception as exc:  # per-card isolation (FR-006)
-                            logger.warning(
-                                "check_board.proactive_rebase_failed",
-                                card_id=_cid, error=str(exc),
-                            )
-                            continue
+                    await _proactive_rebase_stale_branches(state, github, active_sessions, current_main, prev_main, repo_url, token)
 
+
+async def _run_edge_rebase_round(
+    state: CoordinareState, github: GitHubServiceProtocol, active_sessions: dict[str, Any], current_main: str, prev_main: str | None, repo_url: str, token: str,
+) -> None:
+    from coordinare.services.rebase import run_rebase_round
+    try:
+        notification_svc = state.get("notification_service")
+        rr = await run_rebase_round(
+            active_sessions, current_main, repo_url, token,
+            notification_service=notification_svc,
+            github=github,
+            human_reviewers=state.get("human_reviewers"),
+        )
+        state["last_rebase_round"] = rr.to_dict()
+        # US2: attempt performer conflict resolution for
+        # the first BLOCKED job (same as merge_pr path).
+        from coordinare.models.rebase import RebaseOutcome
+        from coordinare.services.rebase import prepare_conflict_resolution
+        for _job in rr.jobs:
+            # 096 US3: distinct, secret-free observability per card.
+            logger.info(
+                "rebase.triggered", reason="main_moved",
+                card_id=_job.card_id, branch=_job.branch,
+                prev_main_sha=prev_main, current_main_sha=current_main,
+                outcome=_job.outcome.value,
+            )
+            _sess = active_sessions.get(_job.card_id)
+            if not isinstance(_sess, dict):
+                continue
+            # 096 FR-007: record the anti-thrash marker for EVERY
+            # edge-rebased card (not just BLOCKED) so the next
+            # cycle's proactive sweep doesn't re-attempt a
+            # just-BLOCKED branch. head_sha = the pre-rebase head
+            # (a BLOCKED rebase doesn't push, so it stays current).
+            # Per-job try/except keeps one card's failure from
+            # skipping the others (FR-006).
+            try:
+                _sess["last_rebase_attempt"] = {
+                    "main_sha": current_main,
+                    "head_sha": _job.pre_rebase_sha or "",
+                    "outcome": _job.outcome.value,
+                }
+                if _job.outcome == RebaseOutcome.BLOCKED:
+                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
+            except Exception as exc:  # per-card isolation (FR-006)
+                logger.warning(
+                    "check_board.edge_rebase_postprocess_failed",
+                    card_id=_job.card_id, error=str(exc),
+                )
+    except Exception as exc:
+        logger.warning("check_board.rebase_round_failed", error=str(exc))
+
+
+async def _proactive_rebase_stale_branches(
+    state: CoordinareState, github: GitHubServiceProtocol, active_sessions: dict[str, Any], current_main: str, prev_main: str | None, repo_url: str, token: str,
+) -> None:
+    from coordinare.models.rebase import RebaseOutcome
+    from coordinare.services.rebase import (
+        detect_stale_branches,
+        prepare_conflict_resolution,
+        run_rebase_round,
+        should_attempt_rebase,
+    )
+    for _cand in detect_stale_branches(active_sessions, current_main):
+        if _cand.get("skipped"):
+            continue  # active performer (047 FR-006)
+        _cid = _cand["card_id"]
+        _sess = active_sessions.get(_cid)
+        if not isinstance(_sess, dict):
+            continue
+        _pr_node = (_sess.get("current_card") or {}).get("pr_node_id")
+        if not _pr_node:
+            continue
+        try:
+            _mc = await github.check_mergeability(_pr_node)
+        except Exception as exc:  # per-card isolation
+            logger.warning(
+                "check_board.proactive_mergeability_failed",
+                card_id=_cid, error=str(exc),
+            )
+            continue
+        _raw = (_mc.get("mergeable_raw") or "").upper()
+        _mss = (_mc.get("merge_state_status") or "").upper()
+        _head = _mc.get("head_ref_oid") or ""
+        if _raw in ("", "UNKNOWN") or not _head:
+            # Defer: mergeability not yet computed, or the head OID
+            # is missing. Without a reliable head the anti-thrash
+            # guard can't tell "performer pushed work" from "no
+            # change", so we re-check next cycle rather than rebase.
+            continue
+        if not (_raw == "CONFLICTING" or _mss == "BEHIND"):
+            continue  # current/clean → no rebase, no churn
+        if not should_attempt_rebase(_sess, current_main, _head):
+            continue  # anti-thrash (FR-007)
+        try:
+            _rr = await run_rebase_round(
+                {_cid: _sess}, current_main, repo_url, token,
+                notification_service=state.get("notification_service"),
+                github=github,
+                human_reviewers=state.get("human_reviewers"),
+            )
+            state["last_rebase_round"] = _rr.to_dict()
+            for _job in _rr.jobs:
+                # _head is guaranteed non-empty here (deferred
+                # above otherwise), so the marker head matches what
+                # the guard reads next cycle — no asymmetry.
+                _sess["last_rebase_attempt"] = {
+                    "main_sha": current_main,
+                    "head_sha": _head,
+                    "outcome": _job.outcome.value,
+                }
+                logger.info(
+                    "rebase.triggered", reason="proactive_conflict",
+                    card_id=_cid, branch=_cand.get("branch", ""),
+                    prev_main_sha=prev_main, current_main_sha=current_main,
+                    outcome=_job.outcome.value,
+                )
+                if _job.outcome == RebaseOutcome.BLOCKED:
+                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
+        except Exception as exc:  # per-card isolation (FR-006)
+            logger.warning(
+                "check_board.proactive_rebase_failed",
+                card_id=_cid, error=str(exc),
+            )
+            continue
+
+
+def _refresh_current_card_metadata(
+    state: CoordinareState, board: dict[str, Any],
+) -> None:
     # 045: Refresh current_card metadata from the fresh board snapshot whenever
     # we have an active card.  Without this, fields that aren't persisted in
     # WorkflowSnapshot (or that change between restarts — title edits, label
@@ -950,6 +987,10 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 if fresh_content_id:
                     active_card["issue_id"] = fresh_content_id
 
+
+async def _reconcile_stale_checkboard_sessions(
+    state: CoordinareState,
+) -> None:
     # 065 Fix 22: re-dispatch stale monitor sessions after restart.  When the
     # daemon restarts mid-flight, snapshot restore brings back the previous
     # session_id and phase=monitoring_performer/monitoring_agent, but the
@@ -1021,6 +1062,10 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     from coordinare.services.reconciliation import handle_potentially_stale_session
                     await handle_potentially_stale_session(state, _cid)
 
+
+async def _ownership_gate(
+    state: CoordinareState, github: GitHubServiceProtocol, board: dict[str, Any],
+) -> tuple[list[str], list[str], list[str], list[str], list[str], OwnershipPolicy, dict[str, Any]]:
     in_progress = state["board_snapshot"].get("IN_PROGRESS", [])
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
     blocked = state["board_snapshot"].get("BLOCKED", [])
@@ -1095,7 +1140,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     # cancel live work.
     all_blocked = state["board_snapshot"].get("BLOCKED", [])
     blocked = filter_owned(_ownership, all_blocked, _assignees, context="blocked")
+    return in_progress, in_review, blocked, todo, all_blocked, _ownership, _assignees
 
+
+async def _active_card_disappeared(
+    state: CoordinareState, in_progress: list[str], in_review: list[str], all_blocked: list[str], todo: list[str],
+) -> bool:
     # 026: Detect active card removed from all known columns (cancellation)
     active_card = state.get("current_card")
     active_phase = state.get("phase", "idle")
@@ -1116,8 +1166,13 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             )
             from coordinare.cancel import cancel_active_card
             await cancel_active_card(state, move_to_todo=False)
-            return state
+            return True
+    return False
 
+
+async def _handle_in_review_cards(
+    state: CoordinareState, board: dict[str, Any], in_review: list[str], _ownership: OwnershipPolicy, _assignees: dict[str, Any], max_cards: int,
+) -> CoordinareState | None:
     if in_review:
         # Preserve dispatching phase from classify_human_feedback even if
         # the GitHub move to IN_PROGRESS failed and the card is still in
@@ -1142,7 +1197,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         # active_sessions for any N (including N=1).  These sessions sit in
         # the passive `monitoring_pr` phase and don't consume a concurrency
         # slot, so we fall through to TODO pickup to fill open slots.
-        active_sessions: dict = state.get("active_sessions") or {}
+        active_sessions: dict[str, Any] = state.get("active_sessions") or {}
         already_active_ids = set(active_sessions.keys())
         titles_m = board.get("titles", {})  # kept for the log statement below
         readopted_any = False
@@ -1180,6 +1235,84 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             state["phase"] = "monitoring_pr"
             return state
         # Fall through to TODO pickup; passive sessions don't block new work.
+    return None
+
+
+async def _readopt_in_progress_cards(
+    state: CoordinareState, github: GitHubServiceProtocol, board: dict[str, Any], in_progress: list[str], _ownership: OwnershipPolicy, _assignees: dict[str, Any],
+) -> None:
+    # 066 T014/FR-002: unified IN_PROGRESS re-adopt for any N (including
+    # N=1).  Re-adopt every uncovered IN_PROGRESS card into active_sessions
+    # so the per-session graph invocations have a session to land in.
+    # IN_PROGRESS sessions consume a concurrency slot (unlike the passive
+    # monitoring_pr re-adoptions in the IN_REVIEW branch).
+    active_sessions: dict[str, Any] = state.get("active_sessions") or {}
+    already_active_ids = set(active_sessions.keys())
+    titles_p = board.get("titles", {})  # kept for the log statement below
+    readopted_any = False
+    # 076 (live QA #150): resume-stage policy used when no snapshot stage is
+    # available.  The old policy blindly downgraded assessor/architect →
+    # implementing (assuming a re-adopted IN_PROGRESS card was always
+    # mid-implementation), which skipped an assessor/architect that never
+    # actually finished.  We now derive the resume stage from the card's
+    # completed-stage artifacts on its branch (see _derive_resume_stage),
+    # resuming at the earliest INCOMPLETE stage.
+    lifecycle_seq = [
+        str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
+        if isinstance(stage, str) and stage
+    ]
+    _flat_cur = state.get("current_card") if isinstance(state.get("current_card"), dict) else None
+    _flat_cur_id = str(_flat_cur.get("id", "")) if isinstance(_flat_cur, dict) else ""
+    for item in in_progress:
+        if item in already_active_ids:
+            continue
+        if not owns_card(_ownership, item, _assignees):
+            continue  # 160: a human moved someone else's card here
+        # 066 FR-002: when the flat current_card matches the card we are
+        # readopting (post-restart restore path), reuse it as the seed so
+        # PR-specific fields (pr_url, pr_node_id) persist through readopt.
+        if _flat_cur_id and _flat_cur_id == item and isinstance(_flat_cur, dict):
+            card_dict = dict(_flat_cur)
+            card_dict["status"] = "IN_PROGRESS"
+            card_dict.setdefault("previous_status", "IN_PROGRESS")
+        else:
+            card_dict = _build_card_dict(item, board, "IN_PROGRESS")
+        sess = create_session_from_card(card_dict)
+        # 065 Fix 7a: if the snapshot restored a performer_stage for this
+        # card, preserve it and resume monitoring rather than re-dispatch.
+        _snapshot_stage = _snapshot_stage_for_card(state, item)
+        if _snapshot_stage:
+            sess["performer_stage"] = _snapshot_stage
+        else:
+            # 076 (live QA #150): no durable stage to restore — derive the
+            # resume stage from completed-stage artifacts on the card branch
+            # so we resume at the earliest INCOMPLETE stage rather than the
+            # blind "implementing" default (which skipped an assessor /
+            # architect that never finished).  Falls back to that default
+            # only when derivation can't determine a stage.
+            _derived_stage = await _derive_resume_stage(github, card_dict, lifecycle_seq)
+            if _derived_stage:
+                sess["performer_stage"] = _derived_stage
+        # 069: a freshly-readopted session has no agent_dispatch.session_id,
+        # so monitor_performer cannot poll status — leave the default
+        # phase="dispatching" from create_session_from_card so a fresh
+        # container spins up. (Snapshot-restored sessions that carry a real
+        # session_id are handled by Fix 22 above and never reach this loop.)
+        active_sessions[item] = sess
+        already_active_ids.add(item)
+        readopted_any = True
+        logger.info(
+            "check_board.readopted_in_progress_card",
+            card_id=item,
+            title=str(titles_p.get(item, "")),
+        )
+    if readopted_any:
+        state["active_sessions"] = active_sessions
+
+
+async def _handle_in_progress_cards(
+    state: CoordinareState, github: GitHubServiceProtocol, board: dict[str, Any], in_progress: list[str], _ownership: OwnershipPolicy, _assignees: dict[str, Any], max_cards: int,
+) -> CoordinareState | None:
     if in_progress:
         # Fresh-start recovery (no current_card) should re-adopt the active
         # board card even if stale system_error_count residue exists.
@@ -1225,73 +1358,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         # phase, so the live performer/dispatch state stays intact for the
         # per-session invocation that owns it.
 
-        # 066 T014/FR-002: unified IN_PROGRESS re-adopt for any N (including
-        # N=1).  Re-adopt every uncovered IN_PROGRESS card into active_sessions
-        # so the per-session graph invocations have a session to land in.
-        # IN_PROGRESS sessions consume a concurrency slot (unlike the passive
-        # monitoring_pr re-adoptions in the IN_REVIEW branch).
-        active_sessions: dict = state.get("active_sessions") or {}
-        already_active_ids = set(active_sessions.keys())
-        titles_p = board.get("titles", {})  # kept for the log statement below
-        readopted_any = False
-        # 076 (live QA #150): resume-stage policy used when no snapshot stage is
-        # available.  The old policy blindly downgraded assessor/architect →
-        # implementing (assuming a re-adopted IN_PROGRESS card was always
-        # mid-implementation), which skipped an assessor/architect that never
-        # actually finished.  We now derive the resume stage from the card's
-        # completed-stage artifacts on its branch (see _derive_resume_stage),
-        # resuming at the earliest INCOMPLETE stage.
-        lifecycle_seq = [
-            str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
-            if isinstance(stage, str) and stage
-        ]
-        _flat_cur = state.get("current_card") if isinstance(state.get("current_card"), dict) else None
-        _flat_cur_id = str(_flat_cur.get("id", "")) if isinstance(_flat_cur, dict) else ""
-        for item in in_progress:
-            if item in already_active_ids:
-                continue
-            if not owns_card(_ownership, item, _assignees):
-                continue  # 160: a human moved someone else's card here
-            # 066 FR-002: when the flat current_card matches the card we are
-            # readopting (post-restart restore path), reuse it as the seed so
-            # PR-specific fields (pr_url, pr_node_id) persist through readopt.
-            if _flat_cur_id and _flat_cur_id == item and isinstance(_flat_cur, dict):
-                card_dict = dict(_flat_cur)
-                card_dict["status"] = "IN_PROGRESS"
-                card_dict.setdefault("previous_status", "IN_PROGRESS")
-            else:
-                card_dict = _build_card_dict(item, board, "IN_PROGRESS")
-            sess = create_session_from_card(card_dict)
-            # 065 Fix 7a: if the snapshot restored a performer_stage for this
-            # card, preserve it and resume monitoring rather than re-dispatch.
-            _snapshot_stage = _snapshot_stage_for_card(state, item)
-            if _snapshot_stage:
-                sess["performer_stage"] = _snapshot_stage
-            else:
-                # 076 (live QA #150): no durable stage to restore — derive the
-                # resume stage from completed-stage artifacts on the card branch
-                # so we resume at the earliest INCOMPLETE stage rather than the
-                # blind "implementing" default (which skipped an assessor /
-                # architect that never finished).  Falls back to that default
-                # only when derivation can't determine a stage.
-                _derived_stage = await _derive_resume_stage(github, card_dict, lifecycle_seq)
-                if _derived_stage:
-                    sess["performer_stage"] = _derived_stage
-            # 069: a freshly-readopted session has no agent_dispatch.session_id,
-            # so monitor_performer cannot poll status — leave the default
-            # phase="dispatching" from create_session_from_card so a fresh
-            # container spins up. (Snapshot-restored sessions that carry a real
-            # session_id are handled by Fix 22 above and never reach this loop.)
-            active_sessions[item] = sess
-            already_active_ids.add(item)
-            readopted_any = True
-            logger.info(
-                "check_board.readopted_in_progress_card",
-                card_id=item,
-                title=str(titles_p.get(item, "")),
-            )
-        if readopted_any:
-            state["active_sessions"] = active_sessions
+        await _readopt_in_progress_cards(state, github, board, in_progress, _ownership, _assignees)
         # If this per-session invocation is for an IN_PROGRESS card, preserve
         # monitoring_agent for that session and return — the bootstrap
         # invocation (no current_card, or current_card not in in_progress)
@@ -1325,6 +1392,103 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 return state
             # else: primary in-flight session, open slots remain — fall through.
         # Fall through to TODO pickup so remaining concurrency slots fill.
+    return None
+
+
+async def _collect_blocked_clarification(
+    state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], item: str, content_node_ids: dict[str, Any],
+) -> CoordinareState | None:
+    # 069 follow-up: prefer the per-card session watermark over the
+    # top-level mirror.  The top-level value is reset to None when the
+    # daemon restores from snapshot (or when handle_blocked's no-questions
+    # requeue path fires), but the session-level value survives via
+    # PersistedSession.last_blocked_notified_at.  Without this fallback,
+    # check_board can never detect new user comments after a restart and
+    # the card stays blocked indefinitely.  Mirrors handle_blocked.py:152.
+    sess_for_watermark = (state.get("active_sessions") or {}).get(item)
+    sess_last = (
+        sess_for_watermark.get("last_blocked_notified_at")
+        if isinstance(sess_for_watermark, dict)
+        else None
+    )
+    last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
+    issue_node_id = str(content_node_ids.get(item, ""))
+    if last_notified is not None and isinstance(last_notified, datetime):
+        try:
+            details = await board_provider.get_card(issue_node_id or item)
+        except Exception as exc:
+            logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
+            state["phase"] = "blocked"
+            return state
+        comments_node = details.get("comments")
+        comments = (
+            comments_node.get("nodes", [])
+            if isinstance(comments_node, dict)
+            else []
+        )
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            # 042: Skip comments authored by the coordinare bot itself.
+            # GitHub's ``createdAt`` is second-precision while our local
+            # ``last_blocked_notified_at`` is sub-second — so the bot's
+            # own freshly-posted reminder comment can appear "newer than
+            # the cutoff" due to rounding, get misread as a user answer,
+            # and trigger an infinite blocked → dispatch loop.  Filtering
+            # by author is the correct primary check (only humans can
+            # supply answers); the timestamp remains a secondary guard
+            # so very old human comments from prior rounds don't count.
+            author = comment.get("author") or {}
+            author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
+            if author_login.endswith("[bot]") or author_login == "vivi-coordinare":
+                continue
+            created_raw = comment.get("createdAt", "")
+            if not isinstance(created_raw, str) or not created_raw:
+                continue
+            try:
+                created_at = datetime.fromisoformat(created_raw)
+                if created_at > last_notified:
+                    # Record the user's answer alongside the questions that
+                    # were asked, so assess_card can pass the full Q&A history
+                    # to Claude and avoid asking the same questions again.
+                    answer_body = str(comment.get("body", "")).strip()
+                    prior_questions = [
+                        str(q) for q in (state.get("open_questions") or [])
+                    ]
+                    clarification: dict[str, Any] = {
+                        "questions": prior_questions,
+                        "answer": answer_body,
+                    }
+                    existing = state.get("card_clarifications") or []
+                    state["card_clarifications"] = [*existing, clarification]
+                    state["open_questions"] = []
+                    state["agent_dispatch"] = {}
+
+                    await move_card_or_warn(board_provider, item, "IN_PROGRESS")
+                    # 066 T018/FR-011: write through the session entry only.
+                    # The session map is authoritative;
+                    # _rederive_current_card at end of check_board
+                    # propagates the change to the top-level mirror.
+                    _sessions_qa: dict[str, Any] = state.get("active_sessions") or {}
+                    _sess_qa = _sessions_qa.get(item)
+                    if isinstance(_sess_qa, dict):
+                        _sess_card_qa = _sess_qa.get("current_card")
+                        if isinstance(_sess_card_qa, dict):
+                            _sess_card_qa["previous_status"] = "BLOCKED"
+                            _sess_card_qa["status"] = "IN_PROGRESS"
+                    # Re-run assess_card with full Q&A history rather than
+                    # trying to check status on an already-terminated performer.
+                    state["phase"] = "dispatching"
+                    state["last_blocked_notified_at"] = None
+                    return state
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+async def _handle_blocked_cards(
+    state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], blocked: list[str], todo: list[str],
+) -> CoordinareState | None:
     if blocked:
         # Multi-card mode: per-session graph invocations re-enter check_board
         # with state["current_card"] already populated by session_to_state.
@@ -1379,92 +1543,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 state["active_card_id"] = item
             _rederive_current_card(state)
 
-            # 069 follow-up: prefer the per-card session watermark over the
-            # top-level mirror.  The top-level value is reset to None when the
-            # daemon restores from snapshot (or when handle_blocked's no-questions
-            # requeue path fires), but the session-level value survives via
-            # PersistedSession.last_blocked_notified_at.  Without this fallback,
-            # check_board can never detect new user comments after a restart and
-            # the card stays blocked indefinitely.  Mirrors handle_blocked.py:152.
-            sess_for_watermark = (state.get("active_sessions") or {}).get(item)
-            sess_last = (
-                sess_for_watermark.get("last_blocked_notified_at")
-                if isinstance(sess_for_watermark, dict)
-                else None
-            )
-            last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
-            issue_node_id = str(content_node_ids.get(item, ""))
-            if last_notified is not None and isinstance(last_notified, datetime):
-                try:
-                    details = await board_provider.get_card(issue_node_id or item)
-                except Exception as exc:
-                    logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
-                    state["phase"] = "blocked"
-                    return state
-                comments_node = details.get("comments")
-                comments = (
-                    comments_node.get("nodes", [])
-                    if isinstance(comments_node, dict)
-                    else []
-                )
-                for comment in comments:
-                    if not isinstance(comment, dict):
-                        continue
-                    # 042: Skip comments authored by the coordinare bot itself.
-                    # GitHub's ``createdAt`` is second-precision while our local
-                    # ``last_blocked_notified_at`` is sub-second — so the bot's
-                    # own freshly-posted reminder comment can appear "newer than
-                    # the cutoff" due to rounding, get misread as a user answer,
-                    # and trigger an infinite blocked → dispatch loop.  Filtering
-                    # by author is the correct primary check (only humans can
-                    # supply answers); the timestamp remains a secondary guard
-                    # so very old human comments from prior rounds don't count.
-                    author = comment.get("author") or {}
-                    author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
-                    if author_login.endswith("[bot]") or author_login == "vivi-coordinare":
-                        continue
-                    created_raw = comment.get("createdAt", "")
-                    if not isinstance(created_raw, str) or not created_raw:
-                        continue
-                    try:
-                        created_at = datetime.fromisoformat(created_raw)
-                        if created_at > last_notified:
-                            # Record the user's answer alongside the questions that
-                            # were asked, so assess_card can pass the full Q&A history
-                            # to Claude and avoid asking the same questions again.
-                            answer_body = str(comment.get("body", "")).strip()
-                            prior_questions = [
-                                str(q) for q in (state.get("open_questions") or [])
-                            ]
-                            clarification: dict = {
-                                "questions": prior_questions,
-                                "answer": answer_body,
-                            }
-                            existing = state.get("card_clarifications") or []
-                            state["card_clarifications"] = [*existing, clarification]
-                            state["open_questions"] = []
-                            state["agent_dispatch"] = {}
-
-                            await move_card_or_warn(board_provider, item, "IN_PROGRESS")
-                            # 066 T018/FR-011: write through the session entry only.
-                            # The session map is authoritative;
-                            # _rederive_current_card at end of check_board
-                            # propagates the change to the top-level mirror.
-                            _sessions_qa: dict = state.get("active_sessions") or {}
-                            _sess_qa = _sessions_qa.get(item)
-                            if isinstance(_sess_qa, dict):
-                                _sess_card_qa = _sess_qa.get("current_card")
-                                if isinstance(_sess_card_qa, dict):
-                                    _sess_card_qa["previous_status"] = "BLOCKED"
-                                    _sess_card_qa["status"] = "IN_PROGRESS"
-                            # Re-run assess_card with full Q&A history rather than
-                            # trying to check status on an already-terminated performer.
-                            state["phase"] = "dispatching"
-                            state["last_blocked_notified_at"] = None
-                            return state
-                    except (ValueError, TypeError):
-                        continue
-
+            result = await _collect_blocked_clarification(state, board_provider, board, item, content_node_ids)
+            if result is not None:
+                return result
             # 069 follow-up: always route a still-blocked card to
             # handle_blocked. The previous "phase=idle when reminder not due"
             # branch wedged the session — state_to_session mirrored that "idle"
@@ -1484,334 +1565,387 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             # active_sessions entries get dispatched on the next cycle.
             if not todo:
                 return state
-    if todo:
-        # 173 (FR-022): exclude only ESCALATED issues. An escalated issue is one
-        # a human now owns, and picking it up would work against them. An issue
-        # the advocate merely ANSWERED used to be excluded too, which meant a
-        # feature request it acknowledged could never become work: permanently
-        # invisible to the board, with nothing saying so.
-        advocate_labels = set()
-        escalation = state.get("advocate_escalation_label", "")
-        if escalation:
-            advocate_labels.add(str(escalation))
+    return None
 
-        item_labels = board.get("item_labels", {})
-        eligible_todo = [
-            item_id for item_id in todo
-            if not (set(item_labels.get(item_id, [])) & advocate_labels)
-        ]
 
-        # 050/160: only cards this coordinare owns (see card_ownership).
-        config = state.get("config")
-        eligible_todo = filter_owned(_ownership, eligible_todo, _assignees, context="todo")
+def _select_eligible_todo(
+    state: CoordinareState, board: dict[str, Any], todo: list[str], _ownership: OwnershipPolicy, _assignees: dict[str, Any],
+) -> list[str]:
+    # 173 (FR-022): exclude only ESCALATED issues. An escalated issue is one
+    # a human now owns, and picking it up would work against them. An issue
+    # the advocate merely ANSWERED used to be excluded too, which meant a
+    # feature request it acknowledged could never become work: permanently
+    # invisible to the board, with nothing saying so.
+    advocate_labels = set()
+    escalation = state.get("advocate_escalation_label", "")
+    if escalation:
+        advocate_labels.add(str(escalation))
 
-        # 025: Sort by priority field if configured
-        if config is not None and hasattr(config, "priority"):
-            prio_cfg = config.priority
-            if prio_cfg.field_name:
-                item_field_values = board.get("item_field_values", {})
-                has_field = any(
-                    prio_cfg.field_name in item_field_values.get(iid, {})
-                    for iid in eligible_todo
-                )
-                if has_field:
-                    eligible_todo = _sort_by_priority(
-                        eligible_todo, item_field_values,
-                        prio_cfg.field_name, prio_cfg.priority_order,
-                    )
-                else:
-                    logger.debug(
-                        "check_board.priority_field_not_found_on_cards",
-                        field_name=prio_cfg.field_name,
-                    )
+    item_labels = board.get("item_labels", {})
+    eligible_todo = [
+        item_id for item_id in todo
+        if not (set(item_labels.get(item_id, [])) & advocate_labels)
+    ]
 
-        # 046: Filter out cards whose explicit dependencies haven't reached DONE.
-        # Build the dependency graph from the full board (not just TODO) so we
-        # can resolve blocker statuses across all columns.  Circular deps are
-        # detected here too; cycle members are handled after filtering.
-        # Clear blocked_by_dependencies here (not at cycle top) so early-return
-        # paths for in_progress / in_review / blocked cards don't lose the
-        # dependency context that was set on a previous cycle.
-        state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
-        if eligible_todo:
-            dep_graph = build_graph(board)
-            # 046: Resolve off-board dependencies by checking GitHub issue state.
-            # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
-            # were removed from the project board after completion.
-            github = state.get("github_service")
-            board_provider = board_of(state)
-            config = state.get("config")
-            repo_slug = ""
-            if config is not None:
-                org = getattr(config, "github_org", "")
-                project = getattr(config, "project_name", "")
-                if org and project:
-                    repo_slug = f"{org}/{project}"
-            await resolve_off_board_dependencies(dep_graph, github, repo_slug)
-            pre_filter_list = list(eligible_todo)  # preserve priority-sorted order
-            eligible_todo = _dep_filter(eligible_todo, dep_graph)
-            post_filter_set = set(eligible_todo)
-            # Keep insertion order from pre_filter_list so the first filtered
-            # card is the highest-priority one (not an arbitrary set member).
-            filtered_ids = [iid for iid in pre_filter_list if iid not in post_filter_set]
-            if filtered_ids:
-                logger.info(
-                    "check_board.dependency_filtered",
-                    filtered_count=len(filtered_ids),
-                    remaining_count=len(eligible_todo),
-                )
-                # Populate blocked_by_dependencies for the first filtered card
-                # (in the priority-sorted eligible_todo order, not raw board
-                # order) so the operator sees the highest-priority blocker.
-                titles_map = board.get("titles", {})
-                issue_urls_map = board.get("issue_urls", {})
-                content_node_ids = board.get("content_node_ids", {})
-                allowed_host = _allowed_github_host(config)
-                blocked_deps_for_state: list[dict] = []
-                for item_id in filtered_ids:
-                    deps = dep_graph.by_dependent.get(item_id, [])
-                    for d in deps:
-                        if d.status != DependencyStatus.SATISFIED:
-                            blocker_item = dep_graph.issue_to_item.get(d.blocker_issue_number)
-                            raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
-                            blocked_deps_for_state.append({
-                                "issue_number": d.blocker_issue_number,
-                                "title": titles_map.get(blocker_item, "") if blocker_item else None,
-                                "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
-                                "issue_url": _safe_issue_url(raw_url, allowed_host),
-                                "source": d.source.value,
-                            })
-                    if blocked_deps_for_state:
-                        break  # show deps for first blocked card only
-                state["blocked_by_dependencies"] = blocked_deps_for_state  # type: ignore[typeddict-unknown-key]
+    # 050/160: only cards this coordinare owns (see card_ownership).
+    config = state.get("config")
+    eligible_todo = filter_owned(_ownership, eligible_todo, _assignees, context="todo")
 
-                # FR-010: Cards with UNRESOLVABLE deps (off-board issue not
-                # closed) must be blocked with a comment, not silently left
-                # in TODO.  Move them to BLOCKED and post a diagnostic — but
-                # only ONCE per (item_id, blocker-set) so a card stuck for
-                # many cycles doesn't accumulate duplicate comments.
-                github_svc = state.get("github_service")
-                board_provider = board_of(state)
-                announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[typeddict-unknown-key]
-                if github_svc is not None:
-                    for item_id in filtered_ids:
-                        unresolvable = [
-                            d for d in dep_graph.by_dependent.get(item_id, [])
-                            if d.status == DependencyStatus.UNRESOLVABLE
-                        ]
-                        if not unresolvable:
-                            continue
-                        signature = _dep_announcement_signature(
-                            item_id,
-                            "unresolvable",
-                            [d.blocker_issue_number for d in unresolvable],
-                        )
-                        if announced.get(item_id) == signature:
-                            continue  # already announced this exact blocker set
-                        import contextlib
-                        dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
-                        with contextlib.suppress(Exception):
-                            await move_card_or_warn(board_provider, item_id, "BLOCKED")
-                        issue_node = content_node_ids.get(item_id)
-                        if issue_node:
-                            with contextlib.suppress(Exception):
-                                header = coordinare_attribution(state.get("config"), None)
-                                await board_provider.add_card_comment(
-                                    issue_node,
-                                    f"{header}\n\n"
-                                    f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
-                                    "The referenced issue(s) are not on the project board "
-                                    "and could not be verified as closed (the issue may be "
-                                    "open, missing, or the API check failed).  Add them to "
-                                    "the board or close them to unblock this card.",
-                                )
-                        announced[item_id] = signature
-                    state["_dep_announcements"] = announced  # type: ignore[typeddict-unknown-key]
-            # (No else needed — blocked_by_dependencies is reset at the top
-            # of every poll cycle; it's only populated when cards are filtered.)
-
-            # Block cards involved in circular dependencies — move them to
-            # BLOCKED on the board and post a diagnostic comment so operators
-            # know which cards are deadlocked.
-            if dep_graph.cycles:
-                cycle_item_ids = {iid for cycle in dep_graph.cycles for iid in cycle}
-                issue_numbers_map = board.get("issue_numbers", {})
-                cycle_issues = [
-                    f"#{issue_numbers_map.get(iid, '?')}" for iid in sorted(cycle_item_ids)
-                ]
-                cycle_desc = ", ".join(cycle_issues)
-                logger.warning(
-                    "check_board.circular_dependency_detected",
-                    cycle_item_ids=sorted(cycle_item_ids),
-                    cycle_description=cycle_desc,
-                )
-                # Remove cycle members from eligible (they can't be dispatched)
-                eligible_todo = [
-                    iid for iid in eligible_todo if iid not in cycle_item_ids
-                ]
-                # Best-effort: move cycle members to BLOCKED on the board and
-                # post a comment.  This is a fire-and-forget — if it fails,
-                # the cards stay in TODO but still won't be dispatched (the
-                # filter already removed them).
-                github = state.get("github_service")
-                board_provider = board_of(state)
-                content_node_ids = board.get("content_node_ids", {})
-                import contextlib
-
-                # Only move TODO cards to BLOCKED — DONE/IN_PROGRESS/etc. cards
-                # may appear in cycle_item_ids because build_graph parses all
-                # descriptions, but moving a DONE card back to BLOCKED would be
-                # destructive.
-                todo_set = set(todo)
-                if github is not None:
-                    cycle_announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[typeddict-unknown-key]
-                    cycle_blockers = [
-                        issue_numbers_map.get(iid, 0) for iid in sorted(cycle_item_ids)
-                    ]
-                    for iid in cycle_item_ids:
-                        if iid not in todo_set:
-                            continue
-                        signature = _dep_announcement_signature(
-                            iid, "cycle", cycle_blockers,
-                        )
-                        if cycle_announced.get(iid) == signature:
-                            continue  # already announced this exact cycle
-                        with contextlib.suppress(Exception):
-                            await move_card_or_warn(board_provider, iid, "BLOCKED")
-                        issue_node_id = content_node_ids.get(iid)
-                        if issue_node_id:
-                            with contextlib.suppress(Exception):
-                                header = coordinare_attribution(state.get("config"), None)
-                                await board_provider.add_card_comment(
-                                    issue_node_id,
-                                    f"{header}\n\n"
-                                    f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"
-                                    "These cards form a dependency cycle — none can "
-                                    "proceed.  Resolve by removing or reordering the "
-                                    "dependency declarations in one of the issue bodies.",
-                                )
-                        cycle_announced[iid] = signature
-                    state["_dep_announcements"] = cycle_announced  # type: ignore[typeddict-unknown-key]
-
-        if eligible_todo:
-            titles = board.get("titles", {})
-            descriptions = board.get("descriptions", {})
-            issue_numbers = board.get("issue_numbers", {})
-            issue_urls = board.get("issue_urls", {})
-            content_node_ids = board.get("content_node_ids", {})
-
-            # 035: Multi-card pickup — fill active_sessions up to concurrency limit
-            max_cards = 1
-            config = state.get("config")
-            if config is not None and hasattr(config, "max_concurrent_cards"):
-                max_cards = max(1, int(config.max_concurrent_cards))
-
-            active_sessions: dict = state.get("active_sessions") or {}
-            already_active_ids = set(active_sessions.keys())
-
-            # 066 T016/FR-002: unified un-block reset for any N (including N=1).
-            # When the operator moves a card from BLOCKED back to TODO, the
-            # existing session is retained with current_card.status="BLOCKED"
-            # and phase="blocked".  Detect that the card is now eligible again
-            # and reset feedback_cycle_count to 0 so the next dispatch gets a
-            # fresh budget.  Monotonic stats (total_feedback_cycles,
-            # triage_blocks) are preserved.
-            _eligible_set = set(eligible_todo)
-            _unblocked_ids: set[str] = set()
-            for _cid, _sess in active_sessions.items():
-                if _cid not in _eligible_set:
-                    continue
-                _sess_card = _sess.get("current_card") or {}
-                if str(_sess_card.get("status", "")) != "BLOCKED":
-                    continue
-                _prior_count = int(_sess.get("feedback_cycle_count") or 0)
-                _sess["feedback_cycle_count"] = 0
-                # 123 US3: reset the split bounce budget too so an un-blocked
-                # card gets a fresh content + transient budget on re-dispatch.
-                _sess["content_feedback_cycles"] = 0
-                _sess["transient_error_cycles"] = 0
-                # 123 US4: clear stale assessor Q&A so a fresh attempt does not
-                # re-inject prior_clarifications answered in the last attempt.
-                _sess["assessor_open_questions"] = []
-                _sess_card["previous_status"] = "BLOCKED"
-                _sess_card["status"] = "TODO"
-                _sess["current_card"] = _sess_card
-                # Re-enter the lifecycle so the next graph step dispatches.
-                _sess["phase"] = "dispatching"
-                _sess["open_questions"] = []
-                _unblocked_ids.add(_cid)
-                # 066 FR-010 I3: re-derive flat mirror for legacy callers
-                # and the single-card un-block path that started here.
-                if state.get("active_card_id") == _cid or not state.get("active_card_id"):
-                    state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
-                    state["content_feedback_cycles"] = 0  # type: ignore[typeddict-unknown-key]
-                    state["transient_error_cycles"] = 0  # type: ignore[typeddict-unknown-key]
-                    state["assessor_open_questions"] = []  # type: ignore[typeddict-unknown-key]
-                    state["phase"] = "dispatching"
-                    state["open_questions"] = []
-                    if not state.get("active_card_id"):
-                        state["active_card_id"] = _cid
-                    _rederive_current_card(state)
-                logger.info(
-                    "dispatcher.feedback_cycle_reset",
-                    card_id=_cid,
-                    prior_count=_prior_count,
-                    total_feedback_cycles=int(_sess.get("total_feedback_cycles") or 0),
-                    triage_blocks=int(_sess.get("triage_blocks") or 0),
-                    mode="multi" if max_cards > 1 else "single",
-                )
-
-            # Restored TODO sessions retain their history but reconcile to idle.
-            # Rehydrate them from the board instead of skipping them forever as
-            # already active. The pipeline admission guard controls dispatch.
-            for item in eligible_todo:
-                sess = active_sessions.get(item)
-                if sess is None or sess.get("phase") != "idle":
-                    continue
-                sess["current_card"] = {
-                    **(sess.get("current_card") or {}),
-                    **_build_card_dict(item, board, "TODO"),
-                }
-                sess["phase"] = "dispatching"
-                if state.get("active_card_id") == item:
-                    session_to_state(sess, state)
-
-            # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
-            # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
-            active_count = sum(
-                1 for sess in active_sessions.values()
-                if sess.get("phase") not in NON_SLOT_PHASES
+    # 025: Sort by priority field if configured
+    if config is not None and hasattr(config, "priority"):
+        prio_cfg = config.priority
+        if prio_cfg.field_name:
+            item_field_values = board.get("item_field_values", {})
+            has_field = any(
+                prio_cfg.field_name in item_field_values.get(iid, {})
+                for iid in eligible_todo
             )
-            slots_available = max(0, max_cards - active_count)
-            lifecycle_seq = [
-                str(s) for s in (state.get("lifecycle_sequence") or ["implementing"])
-                if isinstance(s, str) and s
+            if has_field:
+                eligible_todo = _sort_by_priority(
+                    eligible_todo, item_field_values,
+                    prio_cfg.field_name, prio_cfg.priority_order,
+                )
+            else:
+                logger.debug(
+                    "check_board.priority_field_not_found_on_cards",
+                    field_name=prio_cfg.field_name,
+                )
+    return eligible_todo
+
+
+async def _dep_filter_cards(
+    state: CoordinareState, board: dict[str, Any], eligible_todo: list[str],
+) -> tuple[list[str], list[str], DependencyGraph]:
+    dep_graph = build_graph(board)
+
+    # 046: Resolve off-board dependencies by checking GitHub issue state.
+
+    # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
+
+    # were removed from the project board after completion.
+
+    github = state.get("github_service")
+
+    config = state.get("config")
+
+    repo_slug = ""
+
+    if config is not None:
+
+        org = getattr(config, "github_org", "")
+
+        project = getattr(config, "project_name", "")
+
+        if org and project:
+
+            repo_slug = f"{org}/{project}"
+
+    await resolve_off_board_dependencies(dep_graph, github, repo_slug)
+
+    pre_filter_list = list(eligible_todo)  # preserve priority-sorted order
+
+    eligible_todo = _dep_filter(eligible_todo, dep_graph)
+
+    post_filter_set = set(eligible_todo)
+
+    # Keep insertion order from pre_filter_list so the first filtered
+
+    # card is the highest-priority one (not an arbitrary set member).
+
+    filtered_ids = [iid for iid in pre_filter_list if iid not in post_filter_set]
+    return eligible_todo, filtered_ids, dep_graph
+
+
+async def _announce_unresolvable_deps(
+    state: CoordinareState, board: dict[str, Any], dep_graph: DependencyGraph, filtered_ids: list[str], config: ProjectConfiguration | None,
+) -> None:
+    # Populate blocked_by_dependencies for the first filtered card
+    # (in the priority-sorted eligible_todo order, not raw board
+    # order) so the operator sees the highest-priority blocker.
+    titles_map = board.get("titles", {})
+    issue_urls_map = board.get("issue_urls", {})
+    content_node_ids = board.get("content_node_ids", {})
+    allowed_host = _allowed_github_host(config)
+    blocked_deps_for_state: list[dict[str, Any]] = []
+    for item_id in filtered_ids:
+        deps = dep_graph.by_dependent.get(item_id, [])
+        for d in deps:
+            if d.status != DependencyStatus.SATISFIED:
+                blocker_item = dep_graph.issue_to_item.get(d.blocker_issue_number)
+                raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                blocked_deps_for_state.append({
+                    "issue_number": d.blocker_issue_number,
+                    "title": titles_map.get(blocker_item, "") if blocker_item else None,
+                    "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
+                    "issue_url": _safe_issue_url(raw_url, allowed_host),
+                    "source": d.source.value,
+                })
+        if blocked_deps_for_state:
+            break  # show deps for first blocked card only
+    state["blocked_by_dependencies"] = blocked_deps_for_state
+
+    # FR-010: Cards with UNRESOLVABLE deps (off-board issue not
+    # closed) must be blocked with a comment, not silently left
+    # in TODO.  Move them to BLOCKED and post a diagnostic — but
+    # only ONCE per (item_id, blocker-set) so a card stuck for
+    # many cycles doesn't accumulate duplicate comments.
+    github_svc = state.get("github_service")
+    board_provider = board_of(state)
+    announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[ assignment]
+    if github_svc is not None:
+        for item_id in filtered_ids:
+            unresolvable = [
+                d for d in dep_graph.by_dependent.get(item_id, [])
+                if d.status == DependencyStatus.UNRESOLVABLE
             ]
-            _start_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
-            picked = 0
-            for item in eligible_todo:
-                if picked >= slots_available:
-                    break
-                if item in already_active_ids:
-                    continue  # deduplicate — covers both pre-existing sessions
-                    # and duplicate IDs within eligible_todo
-                card_dict = _build_card_dict(item, board, "TODO")
-                sess = create_session_from_card(card_dict)
-                # Honor configured lifecycle start stage (single-card parity).
-                sess["performer_stage"] = _start_stage
-                active_sessions[item] = sess
-                already_active_ids.add(item)
-                picked += 1
+            if not unresolvable:
+                continue
+            signature = _dep_announcement_signature(
+                item_id,
+                "unresolvable",
+                [d.blocker_issue_number for d in unresolvable],
+            )
+            if announced.get(item_id) == signature:
+                continue  # already announced this exact blocker set
+            import contextlib
+            dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
+            with contextlib.suppress(Exception):
+                await move_card_or_warn(board_provider, item_id, "BLOCKED")
+            issue_node = content_node_ids.get(item_id)
+            if issue_node and board_provider is not None:
+                with contextlib.suppress(Exception):
+                    header = coordinare_attribution(state.get("config"), None)
+                    await board_provider.add_card_comment(
+                        issue_node,
+                        f"{header}\n\n"
+                        f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
+                        "The referenced issue(s) are not on the project board "
+                        "and could not be verified as closed (the issue may be "
+                        "open, missing, or the API check failed).  Add them to "
+                        "the board or close them to unblock this card.",
+                    )
+            announced[item_id] = signature
+        state["_dep_announcements"] = announced  # type: ignore[typeddict-unknown-key]
 
-            state["active_sessions"] = active_sessions
 
-            # 066 FR-002: bootstrap (active_card_id + session_to_state) is
-            # hoisted to the public ``check_board`` wrapper so the same logic
-            # applies regardless of which branch populated active_sessions.
-            if not active_sessions:
-                state["phase"] = "idle"
-            return state
+async def _handle_dep_cycles(
+    state: CoordinareState, board: dict[str, Any], todo: list[str], dep_graph: DependencyGraph, eligible_todo: list[str],
+) -> list[str]:
+    cycle_item_ids = {iid for cycle in dep_graph.cycles for iid in cycle}
+    issue_numbers_map = board.get("issue_numbers", {})
+    cycle_issues = [
+        f"#{issue_numbers_map.get(iid, '?')}" for iid in sorted(cycle_item_ids)
+    ]
+    cycle_desc = ", ".join(cycle_issues)
+    logger.warning(
+        "check_board.circular_dependency_detected",
+        cycle_item_ids=sorted(cycle_item_ids),
+        cycle_description=cycle_desc,
+    )
+    # Remove cycle members from eligible (they can't be dispatched)
+    eligible_todo = [
+        iid for iid in eligible_todo if iid not in cycle_item_ids
+    ]
+    # Best-effort: move cycle members to BLOCKED on the board and
+    # post a comment.  This is a fire-and-forget — if it fails,
+    # the cards stay in TODO but still won't be dispatched (the
+    # filter already removed them).
+    github = state.get("github_service")
+    board_provider = board_of(state)
+    content_node_ids = board.get("content_node_ids", {})
+    import contextlib
 
+    # Only move TODO cards to BLOCKED — DONE/IN_PROGRESS/etc. cards
+    # may appear in cycle_item_ids because build_graph parses all
+    # descriptions, but moving a DONE card back to BLOCKED would be
+    # destructive.
+    todo_set = set(todo)
+    if github is not None:
+        cycle_announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[ assignment]
+        cycle_blockers = [
+            issue_numbers_map.get(iid, 0) for iid in sorted(cycle_item_ids)
+        ]
+        for iid in cycle_item_ids:
+            if iid not in todo_set:
+                continue
+            signature = _dep_announcement_signature(
+                iid, "cycle", cycle_blockers,
+            )
+            if cycle_announced.get(iid) == signature:
+                continue  # already announced this exact cycle
+            with contextlib.suppress(Exception):
+                await move_card_or_warn(board_provider, iid, "BLOCKED")
+            issue_node_id = content_node_ids.get(iid)
+            if issue_node_id and board_provider is not None:
+                with contextlib.suppress(Exception):
+                    header = coordinare_attribution(state.get("config"), None)
+                    await board_provider.add_card_comment(
+                        issue_node_id,
+                        f"{header}\n\n"
+                        f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"
+                        "These cards form a dependency cycle — none can "
+                        "proceed.  Resolve by removing or reordering the "
+                        "dependency declarations in one of the issue bodies.",
+                    )
+            cycle_announced[iid] = signature
+        state["_dep_announcements"] = cycle_announced  # type: ignore[typeddict-unknown-key]
+    return eligible_todo
+
+
+async def _apply_todo_dependencies(
+    state: CoordinareState, board: dict[str, Any], todo: list[str], eligible_todo: list[str],
+) -> list[str]:
+    config = state.get("config")
+    # 046: Filter out cards whose explicit dependencies haven't reached DONE.
+    # Build the dependency graph from the full board (not just TODO) so we
+    # can resolve blocker statuses across all columns.  Circular deps are
+    # detected here too; cycle members are handled after filtering.
+    # Clear blocked_by_dependencies here (not at cycle top) so early-return
+    # paths for in_progress / in_review / blocked cards don't lose the
+    # dependency context that was set on a previous cycle.
+    state["blocked_by_dependencies"] = []
+    if eligible_todo:
+        eligible_todo, filtered_ids, dep_graph = await _dep_filter_cards(state, board, eligible_todo)
+        if filtered_ids:
+            logger.info(
+                "check_board.dependency_filtered",
+                filtered_count=len(filtered_ids),
+                remaining_count=len(eligible_todo),
+            )
+        await _announce_unresolvable_deps(state, board, dep_graph, filtered_ids, config)
+        if dep_graph.cycles:
+            eligible_todo = await _handle_dep_cycles(state, board, todo, dep_graph, eligible_todo)
+    return eligible_todo
+
+
+async def _reset_and_rehydrate(
+    state: CoordinareState, board: dict[str, Any], eligible_todo: list[str], max_cards: int, active_sessions: dict[str, Any],
+) -> None:
+    # 066 T016/FR-002: unified un-block reset for any N (including N=1).
+    # When the operator moves a card from BLOCKED back to TODO, the
+    # existing session is retained with current_card.status="BLOCKED"
+    # and phase="blocked".  Detect that the card is now eligible again
+    # and reset feedback_cycle_count to 0 so the next dispatch gets a
+    # fresh budget.  Monotonic stats (total_feedback_cycles,
+    # triage_blocks) are preserved.
+    _eligible_set = set(eligible_todo)
+    _unblocked_ids: set[str] = set()
+    for _cid, _sess in active_sessions.items():
+        if _cid not in _eligible_set:
+            continue
+        _sess_card = _sess.get("current_card") or {}
+        if str(_sess_card.get("status", "")) != "BLOCKED":
+            continue
+        _prior_count = int(_sess.get("feedback_cycle_count") or 0)
+        _sess["feedback_cycle_count"] = 0
+        # 123 US3: reset the split bounce budget too so an un-blocked
+        # card gets a fresh content + transient budget on re-dispatch.
+        _sess["content_feedback_cycles"] = 0
+        _sess["transient_error_cycles"] = 0
+        # 123 US4: clear stale assessor Q&A so a fresh attempt does not
+        # re-inject prior_clarifications answered in the last attempt.
+        _sess["assessor_open_questions"] = []
+        _sess_card["previous_status"] = "BLOCKED"
+        _sess_card["status"] = "TODO"
+        _sess["current_card"] = _sess_card
+        # Re-enter the lifecycle so the next graph step dispatches.
+        _sess["phase"] = "dispatching"
+        _sess["open_questions"] = []
+        _unblocked_ids.add(_cid)
+        # 066 FR-010 I3: re-derive flat mirror for legacy callers
+        # and the single-card un-block path that started here.
+        if state.get("active_card_id") == _cid or not state.get("active_card_id"):
+            state["feedback_cycle_count"] = 0
+            state["content_feedback_cycles"] = 0
+            state["transient_error_cycles"] = 0
+            state["assessor_open_questions"] = []
+            state["phase"] = "dispatching"
+            state["open_questions"] = []
+            if not state.get("active_card_id"):
+                state["active_card_id"] = _cid
+            _rederive_current_card(state)
+        logger.info(
+            "dispatcher.feedback_cycle_reset",
+            card_id=_cid,
+            prior_count=_prior_count,
+            total_feedback_cycles=int(_sess.get("total_feedback_cycles") or 0),
+            triage_blocks=int(_sess.get("triage_blocks") or 0),
+            mode="multi" if max_cards > 1 else "single",
+        )
+
+    # Restored TODO sessions retain their history but reconcile to idle.
+    # Rehydrate them from the board instead of skipping them forever as
+    # already active. The pipeline admission guard controls dispatch.
+    for item in eligible_todo:
+        sess = active_sessions.get(item)
+        if sess is None or sess.get("phase") != "idle":
+            continue
+        sess["current_card"] = {
+            **(sess.get("current_card") or {}),
+            **_build_card_dict(item, board, "TODO"),
+        }
+        sess["phase"] = "dispatching"
+        if state.get("active_card_id") == item:
+            session_to_state(sess, state)
+
+
+async def _pickup_todo_cards(
+    state: CoordinareState, board: dict[str, Any], eligible_todo: list[str],
+) -> CoordinareState:
+    # 035: Multi-card pickup — fill active_sessions up to concurrency limit
+    max_cards = 1
+    config = state.get("config")
+    if config is not None and hasattr(config, "max_concurrent_cards"):
+        max_cards = max(1, int(config.max_concurrent_cards))
+
+    active_sessions: dict[str, Any] = state.get("active_sessions") or {}
+    already_active_ids = set(active_sessions.keys())
+    await _reset_and_rehydrate(state, board, eligible_todo, max_cards, active_sessions)
+    # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
+    # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
+    active_count = sum(
+        1 for sess in active_sessions.values()
+        if sess.get("phase") not in NON_SLOT_PHASES
+    )
+    slots_available = max(0, max_cards - active_count)
+    lifecycle_seq = [
+        str(s) for s in (state.get("lifecycle_sequence") or ["implementing"])
+        if isinstance(s, str) and s
+    ]
+    _start_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
+    picked = 0
+    for item in eligible_todo:
+        if picked >= slots_available:
+            break
+        if item in already_active_ids:
+            continue  # deduplicate — covers both pre-existing sessions
+            # and duplicate IDs within eligible_todo
+        card_dict = _build_card_dict(item, board, "TODO")
+        sess = create_session_from_card(card_dict)
+        # Honor configured lifecycle start stage (single-card parity).
+        sess["performer_stage"] = _start_stage
+        active_sessions[item] = sess
+        already_active_ids.add(item)
+        picked += 1
+
+    state["active_sessions"] = active_sessions
+
+    # 066 FR-002: bootstrap (active_card_id + session_to_state) is
+    # hoisted to the public ``check_board`` wrapper so the same logic
+    # applies regardless of which branch populated active_sessions.
+    if not active_sessions:
+        state["phase"] = "idle"
+    return state
+
+
+async def _handle_todo_cards(
+    state: CoordinareState, board: dict[str, Any], todo: list[str], _ownership: OwnershipPolicy, _assignees: dict[str, Any],
+) -> CoordinareState | None:
+    if todo:
+        eligible_todo = _select_eligible_todo(state, board, todo, _ownership, _assignees)
+        eligible_todo = await _apply_todo_dependencies(state, board, todo, eligible_todo)
+        if eligible_todo:
+            return await _pickup_todo_cards(state, board, eligible_todo)
         # All TODO items filtered (by advocate labels or dependencies).
         # If blocked_by_dependencies is non-empty, some cards are waiting on
         # blockers — log it so operators know the board isn't truly empty.
@@ -1830,6 +1964,81 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         # Clear stale current_card so persisted snapshots don't carry
         # forward a card that's no longer eligible.
         _retire_active_session(state, trigger="todo_ineligible")
+    return None
+
+
+
+async def _check_board_impl(state: CoordinareState) -> CoordinareState:
+    github = state.get("github_service")
+    board_provider = board_of(state)
+    logger.info(
+        "check_board.entered",
+        github_present=github is not None,
+        github_type=type(github).__name__ if github is not None else None,
+        project_id=getattr(github, "project_id", None) if github is not None else None,
+        active_sessions=len(state.get("active_sessions") or {}),
+        current_symphony=state.get("current_symphony"),
+    )
+    if github is None:
+        logger.warning("check_board.no_github_service")
+        state["phase"] = "idle"
+        return state
+    if board_provider is None:
+        logger.warning("check_board.no_board_service")
+        state["phase"] = "idle"
+        return state
+
+    # In multi-session mode the daemon invokes the graph once per active
+    # session within a single cycle.  Cache the board result to avoid
+    # redundant GitHub polls.  Only used when max_concurrent_cards > 1;
+    # single-card mode always polls fresh to avoid stale cache issues.
+    config = state.get("config")
+    _raw_max = getattr(config, "max_concurrent_cards", 1) if config else 1
+    max_cards = _raw_max if isinstance(_raw_max, int) else 1
+    board = await _poll_board_once(state, github, board_provider, config, max_cards)
+    if board is None:
+        return state
+
+    snapshot = board.get("snapshot")
+    state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
+    # 046: Stash titles and issue_numbers so assess_card can inject active-card
+    # context into the assessor's prompt for implicit dependency detection.
+    state["_board_titles"] = board.get("titles", {})
+    state["_board_issue_numbers"] = board.get("issue_numbers", {})
+    state["_board_issue_urls"] = board.get("issue_urls", {})
+    state["_board_pr_urls"] = board.get("pr_urls", {})
+    # 410: card labels ride the dispatch payload so a no-brief implementer run
+    # can infer its lane from them (docs, config, dependency, chore).
+    state["_board_item_labels"] = board.get("item_labels", {})
+
+    # 047: Detect external merges (non-coordinare PRs merged by humans) by
+    # comparing last_known_main_sha against the current main HEAD.  If
+    # changed, trigger a rebase round for all active sessions.
+    await _maybe_rebase_on_main_change(state, github, config, max_cards)
+
+    _refresh_current_card_metadata(state, board)
+
+    await _reconcile_stale_checkboard_sessions(state)
+
+    (
+        in_progress, in_review, blocked, todo, all_blocked, _ownership, _assignees,
+    ) = await _ownership_gate(state, github, board)
+
+    if await _active_card_disappeared(state, in_progress, in_review, all_blocked, todo):
+        return state
+
+    result = await _handle_in_review_cards(state, board, in_review, _ownership, _assignees, max_cards)
+    if result is not None:
+        return result
+    result = await _handle_in_progress_cards(state, github, board, in_progress, _ownership, _assignees, max_cards)
+    if result is not None:
+        return result
+    result = await _handle_blocked_cards(state, board_provider, board, blocked, todo)
+    if result is not None:
+        return result
+    result = await _handle_todo_cards(state, board, todo, _ownership, _assignees)
+    if result is not None:
+        return result
 
     # 069: same guard for the no-TODO path — an IN_PROGRESS session with an
     # empty TODO column would otherwise be clobbered to phase="idle" and
