@@ -98,6 +98,9 @@ ignore = [
 # 435: monitor decomposition helpers are keyword-only by design; the arg count
 # is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/graph/nodes/monitor/**" = ["PLR0913"]
+# 437: check_board decomposition helpers take the context they need; the arg
+# count is the price of keeping each extracted phase helper <= 100 lines.
+"src/coordinare/graph/nodes/check_board.py" = ["PLR0913"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["coordinare"]
@@ -161,7 +164,6 @@ module = [    "coordinare.auth",
     "coordinare.eval.reviewer_scenarios",
     "coordinare.eval.security_scenarios",
     "coordinare.graph.nodes.assess_card",
-    "coordinare.graph.nodes.check_board",
     "coordinare.graph.nodes.classify_human_feedback",    "coordinare.graph.nodes.github_retry",
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.graph.nodes.handle_system_error",

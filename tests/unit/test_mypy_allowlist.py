@@ -31,7 +31,6 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.eval.reviewer_scenarios",
     "coordinare.eval.security_scenarios",
     "coordinare.graph.nodes.assess_card",
-    "coordinare.graph.nodes.check_board",
     "coordinare.graph.nodes.classify_human_feedback",
     "coordinare.graph.nodes.github_retry",
     "coordinare.graph.nodes.handle_blocked",
