@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from performer.workflows.base import WorkflowMetrics
 from performer.workflows.budget import ModelReply
 from performer.workflows.qa.dom import read_dom
 from performer.workflows.toolkit import Toolkit
+
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once; fallback preserves prior behavior
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -106,4 +109,4 @@ def gateway_toolkit(repo: Path) -> Toolkit:
 
 
 def git_available() -> bool:
-    return subprocess.run(["git", "--version"], capture_output=True).returncode == 0
+    return subprocess.run([_GIT, "--version"], capture_output=True, timeout=30).returncode == 0

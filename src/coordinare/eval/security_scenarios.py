@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,8 @@ from tests.eval.security_scenarios.stub_model import (
     stub_model_for,
 )
 
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once; fallback preserves prior behavior
+
 
 def _live_workspace(fixture: Fixture) -> Path:
     """A real git repo holding the fixture's files so the tools and the survey have something to read."""
@@ -42,10 +45,10 @@ def _live_workspace(fixture: Fixture) -> Path:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
-    git = ["git", "-c", "user.email=e@x", "-c", "user.name=eval"]
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run([*git, "add", "-A"], cwd=root, check=True)
-    subprocess.run([*git, "commit", "-qm", "fixture"], cwd=root, check=True)
+    git = [_GIT, "-c", "user.email=e@x", "-c", "user.name=eval"]
+    subprocess.run([_GIT, "init", "-q"], cwd=root, check=True, timeout=120)
+    subprocess.run([*git, "add", "-A"], cwd=root, check=True, timeout=120)
+    subprocess.run([*git, "commit", "-qm", "fixture"], cwd=root, check=True, timeout=120)
     return root
 
 

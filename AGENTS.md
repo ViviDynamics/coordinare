@@ -60,6 +60,7 @@ without the env. (`make run` / `make start` do this for you.)
 - Async tests use `@pytest.mark.asyncio`.
 - Tests that call config discovery must mock `Path.cwd()` — a real `config.yaml` exists in the project root and will be picked up otherwise.
 - `VolumeMount.container_path` is a `PurePosixPath`; use `str()` when comparing to string literals in tests.
+- `filterwarnings` in `pyproject.toml` must not carry a blanket `ignore::DeprecationWarning` — deprecation debt has to surface in test output. Add one narrow, justified ignore per offending dependency and delete it when the dependency moves.
 
 ## Workflow
 

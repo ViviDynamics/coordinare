@@ -285,7 +285,7 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     attempt = dict(candidate)
     token = attempt.get("github_token")
     if is_env_placeholder(token) or token is None:
-        attempt["github_token"] = "ghp_placeholder_for_validation"
+        attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
 
     try:
         CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
@@ -309,7 +309,7 @@ def _load_config_for_refs(candidate: dict[str, Any]) -> CoordinareConfiguration:
     attempt = dict(candidate)
     token = attempt.get("github_token")
     if is_env_placeholder(token) or token is None:
-        attempt["github_token"] = "ghp_placeholder_for_validation"
+        attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
     return CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
 
 

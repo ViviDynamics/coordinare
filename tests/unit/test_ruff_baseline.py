@@ -48,10 +48,17 @@ class TestCompare:
 
 class TestBaselineFile:
     def test_committed_baseline_covers_the_debt_families(self) -> None:
-        """The snapshot exists and carries counts for every debt family."""
+        """The snapshot exists and carries counts for every debt family.
+
+        A family that reaches zero is promoted into the normal ruff select
+        (the T201/S607 mechanic) and legitimately vanishes from the
+        snapshot; the families listed here are the ones still carrying
+        debt. Extend this tuple, never delete from it, until the family
+        itself is promoted.
+        """
         doc = ruff_baseline.json.loads((SCRIPT.parent / "ruff-baseline.json").read_text())
         assert doc["comment"].startswith("432 ratchet")
         rules = doc["rules"]
-        for family in ("PERF401", "PLR", "TRY", "ASYNC", "S", "PTH", "T20", "PLC"):
+        for family in ("PERF401", "PLR", "TRY", "ASYNC", "S", "PTH", "PLC"):
             assert any(code.startswith(family) for code in rules), family
         assert all(count > 0 for count in rules.values())

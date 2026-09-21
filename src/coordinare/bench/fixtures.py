@@ -25,6 +25,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from coordinare.services.fake_github import FakeGitHubService
 
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once; fallback preserves prior behavior
+
 
 class Fixture(BaseModel):
     id: str
@@ -90,21 +92,21 @@ def materialize_repo(fixtures: list[Fixture], dest_dir: str | Path) -> Path:
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     seed = Path(tempfile.mkdtemp(prefix="bench-seed-", dir=dest))
-    _run(["git", "init", "-b", "main", "."], seed)
+    _run([_GIT, "init", "-b", "main", "."], seed)
     for fx in fixtures:
         for rel, content in fx.base_files.items():
             target = seed / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
-    _run(["git", "add", "-A"], seed)
-    _run(["git", "-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-m", "seed"], seed)
+    _run([_GIT, "add", "-A"], seed)
+    _run([_GIT, "-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-m", "seed"], seed)
 
     bare = dest / "repo.git"
     # -b main so the bare's HEAD points at main (not the git default "master");
     # otherwise fresh clones check out an unborn branch and lose main's files.
-    _run(["git", "init", "--bare", "-b", "main", str(bare)], dest)
-    _run(["git", "remote", "add", "origin", str(bare)], seed)
-    _run(["git", "push", "origin", "main"], seed)
+    _run([_GIT, "init", "--bare", "-b", "main", str(bare)], dest)
+    _run([_GIT, "remote", "add", "origin", str(bare)], seed)
+    _run([_GIT, "push", "origin", "main"], seed)
     return bare
 
 
@@ -119,17 +121,17 @@ def apply_solution_branch(
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
     clone = Path(tempfile.mkdtemp(prefix="bench-sol-", dir=work))
-    _run(["git", "clone", "--quiet", str(bare_repo), str(clone)], work)
+    _run([_GIT, "clone", "--quiet", str(bare_repo), str(clone)], work)
     # Branch explicitly off origin/<base> so the new branch carries base's files
     # regardless of what the clone's default HEAD resolved to.
-    _run(["git", "checkout", "-b", branch, f"origin/{base}"], clone)
+    _run([_GIT, "checkout", "-b", branch, f"origin/{base}"], clone)
     for rel, content in files.items():
         target = clone / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-    _run(["git", "add", "-A"], clone)
-    _run(["git", "-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-m", f"implement {branch}"], clone)
-    _run(["git", "push", "--quiet", "origin", branch], clone)
+    _run([_GIT, "add", "-A"], clone)
+    _run([_GIT, "-c", "user.email=bench@local", "-c", "user.name=bench", "commit", "-m", f"implement {branch}"], clone)
+    _run([_GIT, "push", "--quiet", "origin", branch], clone)
     shutil.rmtree(clone, ignore_errors=True)
 
 

@@ -21,6 +21,7 @@ Design invariants (see specs/134-board-sim-benchmark/):
 from __future__ import annotations
 
 import asyncio
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,9 @@ logger = structlog.get_logger(__name__)
 # Default CI command run against a PR-head checkout. Overridable per run so a
 # fixture can express its own acceptance suite.
 DEFAULT_TEST_COMMAND: tuple[str, ...] = (sys.executable, "-m", "pytest", "-q")
+
+
+GIT_BIN = shutil.which("git") or "git"  # absolute git path; "git" fallback preserves prior behavior
 
 
 class _PrChecksCache(dict[Any, Any]):
@@ -232,7 +236,7 @@ class FakeGitHubService(CardIdentityMap):
     async def _git(self, *args: str, cwd: str | Path | None = None) -> subprocess.CompletedProcess[str]:
         def run() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                ["git", *args],
+                [GIT_BIN, *args],
                 cwd=str(cwd or self._bare_repo),
                 capture_output=True,
                 text=True,
@@ -556,13 +560,13 @@ class FakeGitHubService(CardIdentityMap):
             def run() -> int:
                 if not checkout.exists():
                     clone = subprocess.run(
-                        ["git", "clone", "--quiet", str(self._bare_repo), str(checkout)],
+                        [GIT_BIN, "clone", "--quiet", str(self._bare_repo), str(checkout)],
                         capture_output=True, text=True, timeout=120,
                     )
                     if clone.returncode != 0:
                         return 1
                     co = subprocess.run(
-                        ["git", "-C", str(checkout), "checkout", "--quiet", head_sha],
+                        [GIT_BIN, "-C", str(checkout), "checkout", "--quiet", head_sha],
                         capture_output=True, text=True, timeout=60,
                     )
                     if co.returncode != 0:
@@ -707,12 +711,12 @@ class FakeGitHubService(CardIdentityMap):
             def run() -> str:
                 base, head = pr["base_ref"], pr["head_ref"]
                 steps = [
-                    ["git", "clone", "--quiet", str(self._bare_repo), str(tmp)],
-                    ["git", "-C", str(tmp), "checkout", "--quiet", base],
-                    ["git", "-C", str(tmp), "merge", "--squash", f"origin/{head}"],
-                    ["git", "-C", str(tmp), "-c", "user.email=bench@local",
+                    [GIT_BIN, "clone", "--quiet", str(self._bare_repo), str(tmp)],
+                    [GIT_BIN, "-C", str(tmp), "checkout", "--quiet", base],
+                    [GIT_BIN, "-C", str(tmp), "merge", "--squash", f"origin/{head}"],
+                    [GIT_BIN, "-C", str(tmp), "-c", "user.email=bench@local",
                      "-c", "user.name=bench", "commit", "-m", f"Squash merge {head}"],
-                    ["git", "-C", str(tmp), "push", "--quiet", "origin", base],
+                    [GIT_BIN, "-C", str(tmp), "push", "--quiet", "origin", base],
                 ]
                 for step in steps:
                     r = subprocess.run(step, capture_output=True, text=True, timeout=120)
@@ -720,7 +724,7 @@ class FakeGitHubService(CardIdentityMap):
                         logger.warning("fake_github.merge_step_failed", step=step[-1], err=r.stderr[:200])
                         return ""
                 rev = subprocess.run(
-                    ["git", "-C", str(tmp), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30,
+                    [GIT_BIN, "-C", str(tmp), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30,
                 )
                 return rev.stdout.strip() if rev.returncode == 0 else ""
 

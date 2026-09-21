@@ -46,7 +46,7 @@ SettingType = Literal["string", "int", "float", "bool", "enum", "list", "text", 
 Store = Literal["config_yaml", "routing_yaml"]
 SectionKind = Literal["scalar_group", "collection"]
 
-SECRET_MASK = "••••••"  # ••••••
+SECRET_MASK = "••••••"  # display mask, not a credential
 
 
 class ConfigSetting(BaseModel):
@@ -733,7 +733,7 @@ def load_config_best_effort(
     if is_env_placeholder(token) or token is None:
         # Substitute a non-placeholder token so the pat-auth validator passes;
         # the real on-disk value (incl. ${VAR}) is preserved in raw_values.
-        attempt["github_token"] = "ghp_placeholder_for_validation"
+        attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
 
     invalid: dict[str, str] = {}
     config: CoordinareConfiguration | None = None

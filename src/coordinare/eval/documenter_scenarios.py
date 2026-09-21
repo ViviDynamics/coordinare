@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -34,6 +35,8 @@ from tests.unit.workflows.documenter._repo import (
     trivial_change,
 )
 
+_GIT = shutil.which("git") or "git"
+
 
 def _build(fixture: Fixture, root: Path) -> tuple[Path, str]:
     repo = make_repo(root, with_wiki=fixture.with_wiki, agents_md=fixture.agents_md)
@@ -46,8 +49,8 @@ def _build(fixture: Fixture, root: Path) -> tuple[Path, str]:
         (repo / f"pkg{i}" / "__init__.py").write_text("x = 1\n" * (i + 1) * 10)
         (repo / f"pkg{i}" / "tests").mkdir()
         (repo / f"pkg{i}" / "tests" / "test_x.py").write_text("def test_x():\n    assert True\n")
-    sh(["git", "-c", "user.email=e@x", "-c", "user.name=eval", "add", "-A"], repo)
-    sh(["git", "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-qm", "packages"], repo)
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "add", "-A"], repo)
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-qm", "packages"], repo)
     return repo, ""
 
 

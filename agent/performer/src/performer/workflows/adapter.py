@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,7 @@ from performer.workflows import get_workflow
 from performer.workflows.base import SchemaViolation, WorkflowMetrics, WorkflowResult
 from performer.workflows.budget import ModelReply
 from performer.workflows.toolkit import Toolkit
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once
 
 if TYPE_CHECKING:
     from performer.models import BackendEvent, Score, Stand
@@ -210,7 +212,7 @@ def build_agent_turn_runner(
 
         # Record starting state
         git_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [_GIT, "rev-parse", "HEAD"],
             cwd=str(stand.path),
             capture_output=True,
             text=True,
@@ -220,7 +222,7 @@ def build_agent_turn_runner(
 
         # Record untracked/dirty snapshot for initial state
         subprocess.run(
-            ["git", "status", "--porcelain"],
+            [_GIT, "status", "--porcelain"],
             cwd=str(stand.path),
             capture_output=True,
             text=True,
@@ -292,7 +294,7 @@ def build_agent_turn_runner(
         # Compute changed files
         # Get working tree changes (git status --porcelain)
         status_result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            [_GIT, "status", "--porcelain"],
             cwd=str(stand.path),
             capture_output=True,
             text=True,
@@ -314,7 +316,7 @@ def build_agent_turn_runner(
 
         # Get committed changes (git diff --name-only --name-status)
         diff_result = subprocess.run(
-            ["git", "diff", "--name-status", start_sha],
+            [_GIT, "diff", "--name-status", start_sha],
             cwd=str(stand.path),
             capture_output=True,
             text=True,
@@ -342,7 +344,7 @@ def build_agent_turn_runner(
 
         # Get commits made during the turn
         commits_result = subprocess.run(
-            ["git", "rev-list", f"{start_sha}..HEAD"],
+            [_GIT, "rev-list", f"{start_sha}..HEAD"],
             cwd=str(stand.path),
             capture_output=True,
             text=True,

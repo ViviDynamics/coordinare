@@ -9,6 +9,7 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once
 
 __all__ = [
     "head_sha",
@@ -76,7 +77,7 @@ def head_sha(workspace: Path) -> str:
 
     try:
         result = subprocess.run(
-            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            [_GIT, "-C", str(workspace), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -96,7 +97,7 @@ async def changed_paths_since(workspace: Path, since_sha: str) -> dict[str, str]
     paths: dict[str, str] = {}
 
     rc, stdout = await _run_git_stdout(
-        ["git", "diff", "--name-status", since_sha],
+        [_GIT, "diff", "--name-status", since_sha],
         workspace,
     )
     if rc == 0:
@@ -114,7 +115,7 @@ async def changed_paths_since(workspace: Path, since_sha: str) -> dict[str, str]
                     paths[path] = "deleted"
 
     rc, stdout = await _run_git_stdout(
-        ["git", "status", "--porcelain", "-uall"],
+        [_GIT, "status", "--porcelain", "-uall"],
         workspace,
     )
     if rc == 0:
@@ -148,14 +149,14 @@ async def squash_turn_commits(workspace: Path, start_sha: str) -> int:
         return 0
 
     rc, stderr = await _run_git(
-        ["git", "reset", "--soft", start_sha],
+        [_GIT, "reset", "--soft", start_sha],
         workspace,
     )
     if rc != 0:
         raise RuntimeError(f"git reset --soft failed: {stderr}")
 
     rc, stdout = await _run_git_stdout(
-        ["git", "rev-list", "--count", f"{start_sha}..{head}"],
+        [_GIT, "rev-list", "--count", f"{start_sha}..{head}"],
         workspace,
     )
     if rc == 0:
@@ -180,14 +181,14 @@ async def revert_paths(workspace: Path, paths: list[str]) -> list[str]:
         path_obj = workspace / path
 
         rc, stdout = await _run_git_stdout(
-            ["git", "ls-files", "--", path],
+            [_GIT, "ls-files", "--", path],
             workspace,
         )
         is_tracked = rc == 0 and stdout.strip()
 
         if is_tracked:
             rc, _stderr = await _run_git(
-                ["git", "checkout", "--", path],
+                [_GIT, "checkout", "--", path],
                 workspace,
             )
             if rc == 0:
@@ -213,35 +214,35 @@ async def commit_paths(workspace: Path, paths: list[str], message: str) -> str |
         return None
 
     rc, _stderr = await _run_git(
-        ["git", "config", "user.name", "coordinare-performer"],
+        [_GIT, "config", "user.name", "coordinare-performer"],
         workspace,
     )
     if rc != 0:
         raise RuntimeError("Failed to set git user.name")
 
     rc, _stderr = await _run_git(
-        ["git", "config", "user.email", "coordinare@noreply"],
+        [_GIT, "config", "user.email", "coordinare@noreply"],
         workspace,
     )
     if rc != 0:
         raise RuntimeError("Failed to set git user.email")
 
     rc, _stderr = await _run_git(
-        ["git", "add", "-A", "--"] + paths,
+        [_GIT, "add", "-A", "--"] + paths,
         workspace,
     )
     if rc != 0:
         raise RuntimeError(f"git add failed: {_stderr}")
 
     rc, _stderr = await _run_git(
-        ["git", "diff", "--cached", "--quiet"],
+        [_GIT, "diff", "--cached", "--quiet"],
         workspace,
     )
     if rc == 0:
         return None
 
     rc, _stderr = await _run_git(
-        ["git", "commit", "-m", message],
+        [_GIT, "commit", "-m", message],
         workspace,
     )
     if rc != 0:
@@ -266,7 +267,7 @@ async def branch_commit_entries(
     for candidate in base_candidates:
         if not candidate:
             continue
-        rc, _out = await _run_git_stdout(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], workspace)
+        rc, _out = await _run_git_stdout([_GIT, "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], workspace)
         if rc == 0:
             base = candidate
             break
@@ -278,7 +279,7 @@ async def branch_commit_entries(
         # octal-escaped quoted string ("src/\346\226\207.py"). That path then
         # matches nothing on disk, so the resume rule silently never engages for
         # such a repository.
-        ["git", "-c", "core.quotepath=false", "log", "--no-merges", "--format=%x00%s", "--name-only", f"{base}..HEAD"],
+        [_GIT, "-c", "core.quotepath=false", "log", "--no-merges", "--format=%x00%s", "--name-only", f"{base}..HEAD"],
         workspace,
     )
     if rc != 0:
