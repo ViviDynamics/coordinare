@@ -72,7 +72,7 @@ def collect(state: CoordinareState, stage: str, marker: str, status: dict[str, A
     record = report.get(key) if key else report
     if not isinstance(record, dict):
         return
-    findings = {}
+    findings: dict[str, Any] = {}
     for field in fields:
         if field not in record:
             continue

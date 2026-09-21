@@ -24,6 +24,7 @@ import structlog
 from coordinare.lib.subprocess_env import BASE_ENV_ALLOWLIST, inherited_host_env
 
 if TYPE_CHECKING:
+    from coordinare.auth.protocol import GitHubAuth
     from coordinare.config import ProjectConfiguration
 
 logger = structlog.get_logger(__name__)
@@ -217,7 +218,7 @@ class WorkspaceManager:
     and injected into ``CoordinareState`` like other services.
     """
 
-    def __init__(self, config: ProjectConfiguration, auth: Any = None, github_service: Any = None) -> None:
+    def __init__(self, config: ProjectConfiguration, auth: GitHubAuth | None = None, github_service: Any = None) -> None:
         self._config = config
         self._github_org: str = config.github_org
         self._project_name: str = config.project_name

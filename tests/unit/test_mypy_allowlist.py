@@ -11,7 +11,6 @@ SRC = PYPROJECT.parent / "src"
 
 _SNAPSHOT: tuple[str, ...] = (
     "coordinare.auth",
-    "coordinare.bench.space",
     "coordinare.bench.sweep",
     "coordinare.config",
     "coordinare.config_descriptors",
@@ -23,27 +22,17 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.eval.documenter_scenarios",
     "coordinare.eval.implementer_scenarios",
     "coordinare.eval.qa_scenarios",
-    "coordinare.eval.reviewer_scenarios",
     "coordinare.eval.security_scenarios",
     "coordinare.graph.nodes.assess_card",
-    "coordinare.graph.nodes.classify_human_feedback",
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.graph.nodes.handle_system_error",
     "coordinare.graph.nodes.monitor_pr",
-    "coordinare.graph.nodes.notify",
-    "coordinare.graph.nodes.route_issue_comments",
     "coordinare.graph.state",
-    "coordinare.localhost_guard",
     "coordinare.protocol",
     "coordinare.services.base_gate",
-    "coordinare.services.ci_gate",
     "coordinare.services.claude",
-    "coordinare.services.conducting",
     "coordinare.services.config_write_service",
     "coordinare.services.dispatch_guard",
-    "coordinare.services.documentation_findings",
-    "coordinare.services.documenting_side",
-    "coordinare.services.failure_classification",
     "coordinare.services.github",
     "coordinare.services.http_performer_service",
     "coordinare.services.kubernetes_egress",
@@ -55,7 +44,6 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.services.workflow_step",
     "coordinare.session",
     "coordinare.state_store",
-    "coordinare.workspace",
 )
 
 def _ratchet_overrides() -> list[str]:

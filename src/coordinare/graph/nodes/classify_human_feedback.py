@@ -359,7 +359,7 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     state["processed_review_ids"] = processed_ids | new_ids
     if state.get("last_attempt_id"):
         state["last_attempt_failure_source"] = "human"
-    state["relay_feedback"] = pending_reviews  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = pending_reviews
     state["pending_reviews"] = []
     state["performer_stage"] = target_stage
     state["phase"] = "dispatching"

@@ -259,7 +259,7 @@ async def _emit_ci_gate_rollup(
 
 
 def _event_type_for_phase(
-    phase: str, card: dict, commit_summary: str | None,
+    phase: str, card: dict[str, Any], commit_summary: str | None,
 ) -> EventType:
     """Map (phase, card, commit_summary) to a notification event type.
 
