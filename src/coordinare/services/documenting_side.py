@@ -55,7 +55,7 @@ def should_dispatch(session: dict[str, Any]) -> tuple[bool, str]:
     side = session.get("documenting_side")
     if isinstance(side, dict) and (side.get("status") == "running" or side.get("writer_active")):
         return False, "documentation writer already running"
-    bp_hash = str(blueprint.get("blueprint_hash") or "")
+    bp_hash = str((blueprint or {}).get("blueprint_hash") or "")
     if isinstance(side, dict) and side.get("blueprint_hash") == bp_hash and (side.get("findings_hash") or content_hash({})) == content_hash(clean_findings(session.get("documentation_findings"))):
         return False, f"already {side.get('status', 'recorded')} for this blueprint"
     return True, "documentation brief present, not yet dispatched for this blueprint"

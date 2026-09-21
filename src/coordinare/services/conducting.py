@@ -35,7 +35,7 @@ def _build_assess_prompt(card: dict[str, Any]) -> str:
     title = str(card.get("title", "")).strip()
     body = str(card.get("body", "") or card.get("description", "")).strip()
     url = str(card.get("url", "")).strip()
-    clarifications: list[dict] = card.get("clarifications", []) if isinstance(card, dict) else []
+    clarifications: list[dict[str, Any]] = card.get("clarifications", []) if isinstance(card, dict) else []
 
     # Labels
     labels_node = card.get("labels")

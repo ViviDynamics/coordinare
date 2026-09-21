@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -67,7 +67,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     handled = 0
 
     conducting_backend = state.get("conducting_backend")
-    clarifications: list[dict] = list(state.get("card_clarifications") or [])
+    clarifications: list[dict[str, Any]] = list(state.get("card_clarifications") or [])
     requirements_changed: bool = bool(state.get("requirements_changed"))
 
     for event in events:

@@ -32,7 +32,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -172,7 +172,21 @@ def is_loopback_bind(host: str) -> bool:
     return _is_loopback_address(value)
 
 
-def warn_if_dashboard_exposed(host: str, port: int, *, log: object | None = None) -> bool:
+class _WarningLogger(Protocol):
+    """Structlog-style logger accepted by ``warn_if_dashboard_exposed``.
+
+    The warning call passes structured kwargs, which a stdlib
+    ``logging.Logger`` rejects with a TypeError (unknown LogRecord keys).
+    ``bind`` is the structlog marker that keeps stdlib loggers out of the
+    contract; only structlog loggers are actually passed today.
+    """
+
+    def bind(self, **kwargs: Any) -> Any: ...
+
+    def warning(self, event: str, **details: Any) -> Any: ...
+
+
+def warn_if_dashboard_exposed(host: str, port: int, *, log: _WarningLogger | None = None) -> bool:
     """Warn when the dashboard is bound beyond loopback. Returns whether it warned.
 
     Lives here rather than inline in ``__main__`` for two reasons. It keeps one

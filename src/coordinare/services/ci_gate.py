@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -201,8 +202,8 @@ class CIGateDecision(BaseModel):
                 )
 
         if len(classified_names) != len(set(classified_names)):
-            seen: set[str] = set()
-            dupes = sorted({n for n in classified_names if n in seen or seen.add(n)})
+            counts = Counter(classified_names)
+            dupes = sorted(name for name, count in counts.items() if count > 1)
             raise ValueError(
                 f"checks classified in more than one list: {dupes}",
             )

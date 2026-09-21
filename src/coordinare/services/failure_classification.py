@@ -51,11 +51,14 @@ baseline reason into :func:`compare_signatures` for collision detection.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from coordinare.services.ci_gate import FailedCheckWithSignature, compare_signatures
+
+if TYPE_CHECKING:
+    from coordinare.config import EnvSignaturePattern
 
 Classification = Literal["env_blocked", "inherited", "introduced", "flake", "unknown"]
 
@@ -113,7 +116,7 @@ def classify_failure_origin(
     head_check: FailedCheckWithSignature,
     head_reason: str,
     baseline_index: dict[str, BaselineFailure] | None,
-    env_patterns: list | None = None,
+    env_patterns: list[EnvSignaturePattern] | None = None,
 ) -> Classification:
     """Classify one failing HEAD check against the baseline (source-order table).
 

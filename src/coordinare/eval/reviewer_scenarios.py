@@ -20,6 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.reviewer import ReviewerWorkflow
@@ -53,7 +54,7 @@ def _live_workspace(fixture: Fixture) -> Path:
     return root
 
 
-async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = None) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = None) -> tuple[Score, dict[str, Any]]:
     poster = RecordingPoster()
     if live:
         from coordinare.eval.gateway import _call_model, _run_command
