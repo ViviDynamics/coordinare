@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from typing import Any
 
-def route_from_board_check(state: dict[str, object]) -> str:
+
+def route_from_board_check(state: dict[str, Any]) -> str:
     phase = state.get("phase", "idle")
     if phase == "dispatching":
         # When the lifecycle includes "assessing", the assessor runs as a
         # proper performer via dispatch_performer → monitor_performer.  Skip
         # the legacy assess_card node and go straight to dispatch.
-        lifecycle: list[str] = list(state.get("lifecycle_sequence") or [])  # type: ignore[arg-type]
+        lifecycle: list[str] = list(state.get("lifecycle_sequence") or [])
         if "assessing" in lifecycle:
             return "dispatch"
         return "assess"
