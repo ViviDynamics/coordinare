@@ -56,7 +56,20 @@ fail_under = 90
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+# Ruff's defaults (E4, E7, E9, F) plus the hygiene rules 440 binds explicitly:
+# no print in library code, no hardcoded secrets, no partial executable paths.
+select = ["E4", "E7", "E9", "F", "T201", "S105", "S607"]
+
 [tool.ruff.lint.per-file-ignores]
+# 440: the CLI's stdout tables are the product (T201), the tool-budget hook
+# speaks one JSON line on stdout by contract (T201), and the git-show parser
+# compares argv tokens to the literal "git" while the scanner substitutes the
+# changed-file list at a "{{files}}" placeholder — none of these are secrets
+# (S105).
+"src/performer/cli.py" = ["T201"]
+"src/performer/backends/_tool_budget_hook.py" = ["T201"]
+"src/performer/workflows/security/**" = ["S105"]
 # 438: the decomposition keeps the `patch("performer.main.<name>")` surface
 # intact, which forces three shapes ruff would otherwise flag. Collaborators
 # are imported at call time (a module-level from-import binds before the

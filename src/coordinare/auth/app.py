@@ -21,7 +21,7 @@ class AppAuth:
     Tokens are cached and refreshed automatically when fewer than 5 minutes remain.
     """
 
-    TOKEN_URL_TEMPLATE = (
+    TOKEN_URL_TEMPLATE = (  # URL template, not a credential
         "{api_url}/app/installations/{installation_id}/access_tokens"
     )
     REFRESH_BUFFER_SECONDS: int = 300  # refresh when < 5 min remain

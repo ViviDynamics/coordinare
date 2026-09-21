@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,8 @@ from tests.eval.architect_scenarios.fixtures import FIXTURES, Fixture
 from tests.eval.architect_scenarios.scoring import Score, score_run
 from tests.eval.architect_scenarios.stub_model import stub_model_for
 
+_GIT = shutil.which("git") or "git"  # 440: resolve the real git path once; fallback preserves prior behavior
+
 
 def materialise_repo(fixture: Fixture, root: Path) -> Path:
     repo = root / fixture.name
@@ -33,9 +36,9 @@ def materialise_repo(fixture: Fixture, root: Path) -> Path:
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=e@x", "-c", "user.name=eval", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-q", "-m", "fixture"], cwd=repo, check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main"], cwd=repo, check=True, timeout=120)
+    subprocess.run([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "add", "."], cwd=repo, check=True, timeout=120)
+    subprocess.run([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-q", "-m", "fixture"], cwd=repo, check=True, timeout=120)
     return repo
 
 

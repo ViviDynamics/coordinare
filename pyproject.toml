@@ -87,20 +87,50 @@ select = [
     "PIE",   # flake8-pie (432)
     "FURB",  # refurb (432)
     "COM",   # flake8-commas (432: trailing commas enforced by the autofix sweep)
+    "T201",  # 440: no print in library code; CLI entry points are exempt below
+    "S607",  # 440: no partial executable paths; resolve via shutil.which at module load
 ]
 ignore = [
     "E501",  # line length handled by formatter
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["TC001", "TC002", "TC003"]  # test files need runtime access to type-annotation imports
-"src/coordinare/__main__.py" = ["E402"]  # warnings.filterwarnings must precede third-party imports
+# 440: test files need runtime annotation imports; tests may print diagnostics.
+# Integration tests probe the ambient toolchain (docker, kubectl, bash, node,
+# psql) by design, and unit tests drive fixture git repos; PATH lookup is the
+# interface being exercised, so S607 (partial executable path) is exempt here.
+"tests/**" = ["TC001", "TC002", "TC003", "T201", "S607"]
+"src/coordinare/__main__.py" = ["E402", "T201"]  # CLI entry point; T201: user-facing output is the interface
 # 435: monitor decomposition helpers are keyword-only by design; the arg count
 # is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/graph/nodes/monitor/**" = ["PLR0913"]
 # 437: check_board decomposition helpers take the context they need; the arg
 # count is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/graph/nodes/check_board.py" = ["PLR0913"]
+# 440: eval scenarios drive the harness with fixture tokens (like "t"), never
+# real credentials; the scenario files are standalone CLI entry points whose
+# scenario reports are stdout output. Their git fixture setup passes static,
+# repo-local command lists (S603's dynamic-list heuristic fires on any
+# variable-headed list, hence the ignore).
+"src/coordinare/eval/**" = ["S106", "T201", "S603"]
+# 440: fake_github and the bench fixtures run a fixed, repo-local git
+# vocabulary over their own fixture paths — no user input reaches the command
+# lists. S603 stays live everywhere a config-supplied command is really run
+# (monitor/verdict.py, security_scanner.py).
+"src/coordinare/services/fake_github.py" = ["S603"]
+"src/coordinare/bench/fixtures.py" = ["S603"]
+# 440: remaining S105 hits are not credentials (triaged in the issue): a URL
+# template, a display mask, and validator placeholders that never carry a
+# real token.
+"src/coordinare/auth/app.py" = ["S105"]
+"src/coordinare/config_descriptors.py" = ["S105"]
+"src/coordinare/services/config_write_service.py" = ["S105"]
+# 440: benchmark report tools and the bench stub are standalone CLI entry
+# points (python -m coordinare.bench....); their stdout tables are the product.
+"src/coordinare/bench/**" = ["T201"]
+# 440: startup config validation writes an actionable error to stderr and
+# SystemExits before the daemon's structured pipeline is up.
+"src/coordinare/auth/__init__.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["coordinare"]
@@ -223,7 +253,10 @@ markers = [
     "real: Real-model board-sim benchmark (opt-in; requires RUN_REAL_BENCH + Docker + a model endpoint)",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning",
+    # 440: no blanket ignore::DeprecationWarning — deprecation debt must surface
+    # in test output. Narrow, justified ignores live here; add one per offending
+    # dependency with the reason, and delete it when the dependency moves.
+
     # langchain_core uses pydantic v1 internals not supported on Python 3.14+
     "ignore:Core Pydantic V1 functionality:UserWarning:langchain_core",
 ]
