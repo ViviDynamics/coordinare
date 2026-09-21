@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 
 class RebaseOutcome(StrEnum):
@@ -39,7 +40,7 @@ class RebaseJob:
     repo_dir: str = ""
     tmp_dir: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "card_id": self.card_id,
             "branch": self.branch,
@@ -63,7 +64,7 @@ class RebaseRound:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     jobs: list[RebaseJob] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "trigger_pr_number": self.trigger_pr_number,
             "trigger_sha": self.trigger_sha,

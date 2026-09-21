@@ -14,5 +14,8 @@ dependencies = [
     "structlog>=24.1.0",
 ]
 
+[tool.setuptools.package-data]
+coordinare_ci_detection = ["py.typed"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

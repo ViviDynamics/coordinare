@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -201,7 +201,7 @@ def _detect_python(workspace: Path) -> CIDetectionResult | None:
     return None
 
 
-def _node_package_manager(workspace: Path, data: dict) -> str:
+def _node_package_manager(workspace: Path, data: dict[str, Any]) -> str:
     """409: the runner is not always npm. packageManager pins it; lockfiles
     name it; npm remains the fallback."""
     package_manager = data.get("packageManager")

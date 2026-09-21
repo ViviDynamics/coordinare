@@ -37,13 +37,10 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.graph.nodes.monitor_pr",
     "coordinare.graph.nodes.notify",
     "coordinare.graph.nodes.route_issue_comments",
-    "coordinare.graph.routing",
     "coordinare.graph.state",
     "coordinare.localhost_guard",
-    "coordinare.models.rebase",
     "coordinare.protocol",
     "coordinare.services.base_gate",
-    "coordinare.services.ci_detection",
     "coordinare.services.ci_gate",
     "coordinare.services.claude",
     "coordinare.services.conducting",
@@ -102,3 +99,11 @@ class TestAllowlist:
         doc = tomllib.loads(PYPROJECT.read_text())
         strict = doc["tool"]["mypy"]["strict"]
         assert strict is True
+
+
+def test_ci_detection_package_ships_py_typed() -> None:
+    """The shim's import check depends on the marker staying shipped (PEP 561)."""
+    marker = PYPROJECT.parent / "packages" / "ci_detection" / "src" / "coordinare_ci_detection" / "py.typed"
+    assert marker.exists(), "py.typed must stay committed"
+    pkg = tomllib.loads((marker.parents[2] / "pyproject.toml").read_text())
+    assert pkg["tool"]["setuptools"]["package-data"]["coordinare_ci_detection"] == ["py.typed"]
