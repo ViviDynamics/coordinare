@@ -22,7 +22,7 @@ table this implements.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 QaRoute = Literal["advance", "hold", "bounce"]
 
@@ -30,7 +30,7 @@ QaRoute = Literal["advance", "hold", "bounce"]
 def _as_int(value: object) -> int:
     """Coerce a report count to int, defaulting to 0 on any non-numeric value."""
     try:
-        return int(value or 0)
+        return int(value) if isinstance(value, (int, float, str, bytes)) else 0
     except (TypeError, ValueError):
         return 0
 
@@ -52,7 +52,7 @@ def _url_is_verifiable(path_or_url: object) -> bool:
     return "/raw/qa-assets/" in s
 
 
-def _visual_evidence_present(report: dict) -> bool:
+def _visual_evidence_present(report: dict[str, Any]) -> bool:
     """True when at least one visual_evidence item carries a verifiable path_or_url."""
     items = report.get("visual_evidence")
     if not isinstance(items, list):
@@ -60,7 +60,7 @@ def _visual_evidence_present(report: dict) -> bool:
     return any(isinstance(ev, dict) and _url_is_verifiable(ev.get("path_or_url")) for ev in items)
 
 
-def _has_env_signal(report: dict, env_cache_health_failed: bool) -> bool:
+def _has_env_signal(report: dict[str, Any], env_cache_health_failed: bool) -> bool:
     """True when the run carries an environment-failure signal.
 
     Either the QA report's honest ``environment_error`` ("couldn't verify") or
@@ -70,7 +70,7 @@ def _has_env_signal(report: dict, env_cache_health_failed: bool) -> bool:
     return bool(env_cache_health_failed) or bool(report.get("environment_error"))
 
 
-def _capture_tooling_unavailable(report: dict) -> bool:
+def _capture_tooling_unavailable(report: dict[str, Any]) -> bool:
     """129 (US2): True when visual capture failed because the CAPTURE TOOLING /
     runtime was unavailable (screenshot service, headless browser, display) —
     NOT because the app failed to render. This is a recoverable environment
@@ -104,7 +104,7 @@ def _capture_tooling_unavailable(report: dict) -> bool:
     return any(p in err for p in phrases)
 
 
-def qa_unsubstantiated_reason(report: dict | None) -> str | None:
+def qa_unsubstantiated_reason(report: dict[str, Any] | None) -> str | None:
     """Return a names/counts-only reason when a ``qa_passed`` is unsubstantiated.
 
     Returns ``None`` when the pass is substantiated (or there was genuinely no
@@ -123,7 +123,7 @@ def qa_unsubstantiated_reason(report: dict | None) -> str | None:
 
 def classify_qa_verdict(
     status: str,
-    report: dict | None,
+    report: dict[str, Any] | None,
     env_cache_health_failed: bool = False,
     capture_recovery_enabled: bool = False,
 ) -> QaRoute:

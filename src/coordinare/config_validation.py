@@ -5,7 +5,7 @@ import difflib
 import os
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import ValidationError
@@ -143,7 +143,7 @@ DEPRECATION_REGISTRY: dict[str, DeprecationEntry] = {
 # ---------------------------------------------------------------------------
 
 
-def _load_raw_yaml(path: Path) -> dict:
+def _load_raw_yaml(path: Path) -> dict[str, Any]:
     """Load a YAML config file and return its content as a dict.
 
     Raises FileNotFoundError if path does not exist or is not a file.
@@ -164,7 +164,7 @@ def _load_raw_yaml(path: Path) -> dict:
     return loaded
 
 
-def _dotted_path(loc: tuple) -> str:
+def _dotted_path(loc: tuple[Any, ...]) -> str:
     """Convert a pydantic error loc tuple to a dotted field path string."""
     result = ""
     for item in loc:
@@ -188,7 +188,7 @@ def _map_pydantic_error_type(pydantic_type: str) -> ErrorType:
     return ErrorType.invalid_value
 
 
-def is_multi_symphony_config(raw: dict) -> bool:
+def is_multi_symphony_config(raw: dict[str, Any]) -> bool:
     """Return True if the config uses the multi-symphony format (spec 057).
 
     An empty or absent 'symphonies' key falls back to single-symphony mode per spec FR-001.
@@ -202,7 +202,7 @@ def is_multi_symphony_config(raw: dict) -> bool:
     return not (isinstance(val, list) and len(val) == 0)
 
 
-def coerce_multi_symphony_raw(raw: dict) -> dict:
+def coerce_multi_symphony_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Build the CoordinareConfiguration constructor dict from a multi-symphony raw config.
 
     Separates the symphony/orchestra top-level keys from the global config fields.
@@ -215,7 +215,7 @@ def coerce_multi_symphony_raw(raw: dict) -> dict:
     }
 
 
-def wrap_legacy_config(raw: dict) -> dict:
+def wrap_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     """Auto-wrap a legacy single-project config as a CoordinareConfiguration dict.
 
     Takes a legacy flat ProjectConfiguration dict and wraps it in a
@@ -243,7 +243,7 @@ def wrap_legacy_config(raw: dict) -> dict:
     }
 
 
-def _count_env_var_fields(raw: dict, config: object) -> int:
+def _count_env_var_fields(raw: dict[str, Any], config: object) -> int:
     """Count top-level scalar fields resolved from COORDINARE_* env vars (T011/DD-3)."""
     from coordinare.config import ProjectConfiguration
 
@@ -257,8 +257,9 @@ def _count_env_var_fields(raw: dict, config: object) -> int:
             count += 1
         else:
             resolved = getattr(config, field_name, None)
-            if hasattr(resolved, "get_secret_value"):
-                resolved_str = resolved.get_secret_value()
+            getter = getattr(resolved, "get_secret_value", None)
+            if callable(getter):
+                resolved_str = str(getter())
             else:
                 resolved_str = str(resolved) if resolved is not None else ""
             if str(raw.get(field_name, "")) != resolved_str:
@@ -272,7 +273,7 @@ def _count_env_var_fields(raw: dict, config: object) -> int:
 
 
 def pre_validate_raw(
-    raw: dict,
+    raw: dict[str, Any],
 ) -> tuple[list[ConfigFieldError], list[ConfigDeprecationWarning]]:
     """Check raw YAML dict for deprecated and unknown fields before pydantic validation.
 
@@ -362,7 +363,7 @@ SUPPORTED_PERFORMER_BACKENDS: frozenset[str] = frozenset(
 )
 
 
-def _validate_performer_backends(raw: dict) -> list[ConfigFieldError]:
+def _validate_performer_backends(raw: dict[str, Any]) -> list[ConfigFieldError]:
     """077 FR-007: reject an unknown ``performers.<role>.backend`` value before
     dispatch (it is the authoritative ``get_backend`` argument via score.backend).
 
@@ -425,7 +426,7 @@ def validate_config(
         )
 
     # Step 2: Load raw YAML (empty dict if no file)
-    raw: dict = {}
+    raw: dict[str, Any] = {}
     if resolved_path is not None:
         try:
             raw = _load_raw_yaml(resolved_path)

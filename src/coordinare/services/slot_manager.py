@@ -247,11 +247,11 @@ class SlotManager:
         # but don't have a slot (e.g. after a restart where the SlotManager
         # was reconstructed but active_sessions were restored from state).
         for stage, card_id in active_performer_cards:
-            pool = self.pools.get(stage)
-            if pool is not None and card_id not in pool.active_slots:
-                idx = pool.free_service_index()
+            slot_pool = self.pools.get(stage)
+            if slot_pool is not None and card_id not in slot_pool.active_slots:
+                idx = slot_pool.free_service_index()
                 if idx is not None:
-                    pool.active_slots[card_id] = PerformerSlot(
+                    slot_pool.active_slots[card_id] = PerformerSlot(
                         role=stage,
                         card_id=card_id,
                         service_index=idx,

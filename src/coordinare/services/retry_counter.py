@@ -55,10 +55,10 @@ def _get_retries_dict(state: CoordinareState, card_id: str) -> dict[str, dict[st
     sessions = state.get("active_sessions") or {}
     if not isinstance(sessions, dict):
         # Fall back to state root for legacy single-card shape
-        return state.setdefault("idle_timeout_retries", {})  # type: ignore[no-any-return]
+        return state.setdefault("idle_timeout_retries", {})
     sess = sessions.get(card_id)
     if not isinstance(sess, dict):
-        return state.setdefault("idle_timeout_retries", {})  # type: ignore[no-any-return]
+        return state.setdefault("idle_timeout_retries", {})
     retries = sess.get("idle_timeout_retries")
     if not isinstance(retries, dict):
         retries = {}
