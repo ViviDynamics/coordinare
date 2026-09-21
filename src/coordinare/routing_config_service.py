@@ -354,9 +354,8 @@ def create_routing_entry(
     location: RoutingLocation | None, entry: dict[str, Any], base_hash: str,
 ) -> Any:
     """Append a new routing entry and stage it for the next performer job (T036)."""
-    readonly = _readonly_guard(location)
-    if readonly is not None:
-        return readonly
+    if location is None or not location.host_path.is_file():
+        return _readonly_guard(location)
 
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.
@@ -381,9 +380,8 @@ def update_routing_entry(
     """
     from coordinare.services.config_write_service import FieldError, SaveResult
 
-    readonly = _readonly_guard(location)
-    if readonly is not None:
-        return readonly
+    if location is None or not location.host_path.is_file():
+        return _readonly_guard(location)
 
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.
@@ -441,9 +439,8 @@ def delete_routing_entry(
     """Delete the routing entry at ``index`` and re-stage the table (T036)."""
     from coordinare.services.config_write_service import FieldError, SaveResult
 
-    readonly = _readonly_guard(location)
-    if readonly is not None:
-        return readonly
+    if location is None or not location.host_path.is_file():
+        return _readonly_guard(location)
 
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.

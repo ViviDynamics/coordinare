@@ -25,11 +25,13 @@ this codebase:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 if TYPE_CHECKING:
+    import asyncio
+
     from coordinare.models.env_cache import EnvCacheState
 
 logger = structlog.get_logger(__name__)
@@ -82,7 +84,7 @@ def should_run(
     backoff = 2 ** min(attempts, _MAX_BACKOFF_EXPONENT)
     wait_seconds = interval_seconds * backoff
     elapsed = ((now or datetime.now(UTC)) - last_run).total_seconds()
-    return elapsed >= wait_seconds
+    return bool(elapsed >= wait_seconds)
 
 
 def register_failure(
@@ -185,10 +187,10 @@ def build_card_context(
     repo: str,
     persona: str,
     backend: str,
-    model_block: dict | None = None,
+    model_block: dict[str, Any] | None = None,
     project_id: str = "",
     workflow_env: dict[str, str] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """The hand-built context for a card-less dispatch.
 
     The identifier key is ``id``. It is NOT ``card_id``: the transport reads
@@ -214,7 +216,7 @@ def build_card_context(
             "and add the ready ones to the board's backlog for a human to promote."
         ),
     }
-    context: dict = {
+    context: dict[str, Any] = {
         "id": f"{role}-{safe or 'symphony'}",
         "role": role,
         "workflow": role,
@@ -240,7 +242,7 @@ def build_card_context(
 #: budget is a failure, including a run still working.
 #: Strong references to in-flight snapshot flushes, so the event loop cannot
 #: collect one before it runs.
-_PENDING_FLUSHES: set = set()
+_PENDING_FLUSHES: set[asyncio.Task[None]] = set()
 
 TERMINAL_BY_ROLE: dict[str, str] = {
     "advocate": "advocate_complete",
@@ -248,7 +250,7 @@ TERMINAL_BY_ROLE: dict[str, str] = {
 }
 
 
-def flush_snapshot(state: dict) -> bool:
+def flush_snapshot(state: dict[str, Any]) -> bool:
     """Force the snapshot to disk after a card-less completion.
 
     A run that owns no card moves no lifecycle signature, and the daemon's save
@@ -278,7 +280,7 @@ def flush_snapshot(state: dict) -> bool:
     return True
 
 
-def _record_metrics(role: IntakeRole, record: dict, report: dict) -> None:
+def _record_metrics(role: IntakeRole, record: dict[str, Any], report: dict[str, Any]) -> None:
     """Feed the spec-007 advocate counters from the run's own record.
 
     Coordinare no longer performs the scan, so these numbers now arrive one hop
@@ -311,8 +313,8 @@ def _record_metrics(role: IntakeRole, record: dict, report: dict) -> None:
 def handle_run_result(
     cache_state: EnvCacheState,
     role: IntakeRole,
-    status: dict | None,
-    daemon_state: dict,
+    status: dict[str, Any] | None,
+    daemon_state: dict[str, Any],
     *,
     max_attempts: int = 3,
     now: datetime | None = None,

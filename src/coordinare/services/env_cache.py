@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -165,7 +165,7 @@ def get_env_volume_for_symphony(
     container_path = f"{container_devenv_root}/{state.sanitised_name}"
     return VolumeMount(
         host_path=state.cache_dir,
-        container_path=container_path,
+        container_path=PurePosixPath(container_path),
         mode="rw" if is_bootstrap else "ro",
     ), container_path
 
@@ -196,7 +196,7 @@ def _collect_env_volumes_for_persistent_performer(
         mounts.append(
             VolumeMount(
                 host_path=state.cache_dir,
-                container_path=container_path,
+                container_path=PurePosixPath(container_path),
                 mode="ro",
             ),
         )
@@ -562,7 +562,7 @@ class EnvCacheService:
             prior_manifest=prior,
             content_fetcher=_fetch,
         )
-        return key[:12]
+        return str(key)[:12]
 
     async def check_and_trigger(
         self,
@@ -1087,7 +1087,7 @@ class EnvCacheService:
         cache_mount_path: str,
         llm_chat: ChatJson | None,
         declared_services: list[dict[str, Any]] | None = None,
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[str | None, bool, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
         activate_provided)``.
