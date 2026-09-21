@@ -26,6 +26,7 @@ _GIT = shutil.which("git") or "git"  # 440: resolve the real git path once; fall
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import Any
 
 
 def _base_url() -> str:
@@ -57,7 +58,7 @@ def _model() -> str:
     return model
 
 
-async def _call_model(persona: str, content: list[dict], max_tokens: int) -> ModelReply:
+async def _call_model(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
     key = os.getenv("LITELLM_MASTER_KEY", "")
     body = {
         "model": _model(),
@@ -82,7 +83,7 @@ async def _call_model(persona: str, content: list[dict], max_tokens: int) -> Mod
     )
 
 
-async def _run_command(cmd: str, cwd, timeout_s: int) -> tuple[int, str]:
+async def _run_command(cmd: str, cwd: Path | str | None, timeout_s: int) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_shell(
         cmd,
         cwd=str(cwd) if cwd else None,

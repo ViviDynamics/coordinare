@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.budget import ModelReply
@@ -28,11 +29,11 @@ from tests.eval.curator_scenarios.scoring import Score, score_run
 from tests.unit.workflows.curator._fakes import FakeBoard
 
 
-async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict[str, Any]]:
     board = FakeBoard(on_board=set(fixture.on_board))
     calls = {"n": 0}
 
-    async def stub(persona, content, max_tokens: int = 0) -> ModelReply:
+    async def stub(persona: str, content: list[dict[str, Any]], max_tokens: int = 0) -> ModelReply:
         calls["n"] += 1
         return ModelReply(
             content=json.dumps(fixture.stub_reply or {"judgements": []}),
@@ -46,7 +47,7 @@ async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
         # round rather than in any stubbed test.
         from coordinare.eval.gateway import _call_model
 
-        async def counted(persona, content, max_tokens: int = 0) -> ModelReply:
+        async def counted(persona: str, content: list[dict[str, Any]], max_tokens: int = 0) -> ModelReply:
             calls["n"] += 1
             return await _call_model(persona, content, max_tokens)
 
@@ -54,7 +55,7 @@ async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
 
     toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=None, call_limit=8)
 
-    async def lister() -> list[dict]:
+    async def lister() -> list[dict[str, Any]]:
         return list(fixture.issues)
 
     started = time.monotonic()

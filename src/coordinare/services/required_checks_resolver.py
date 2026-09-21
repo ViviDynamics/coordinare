@@ -17,7 +17,7 @@ without 074 via ``persona_check_map.<persona>.any``.
 from __future__ import annotations
 
 import fnmatch
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 ResolverSource = Literal["persona_check_map", "branch_protection", "all_head_checks"]
 
@@ -29,10 +29,10 @@ class RequiredChecksList(TypedDict):
 
 def resolve(
     *,
-    scope: dict | None = None,
+    scope: dict[str, Any] | None = None,
     branch_protection_set: set[str] | None = None,
     all_head_checks: list[str] | set[str],
-    persona_check_map: dict | None = None,
+    persona_check_map: dict[str, Any] | None = None,
 ) -> RequiredChecksList:
     """Resolve the required-check names set for this HEAD.
 

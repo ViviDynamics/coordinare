@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows import get_workflow
 from performer.workflows.base import WorkflowMetrics
@@ -24,7 +25,7 @@ from tests.eval.assessor_scenarios.scoring import Score, score_run
 from tests.eval.assessor_scenarios.stub_model import stub_model_for
 
 
-async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict[str, Any]]:
     """Run the assessor workflow against a fixture.
 
     Args:
