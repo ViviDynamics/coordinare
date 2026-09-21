@@ -302,7 +302,7 @@ def _build_monitor_ctx(state: CoordinareState) -> _BodyCtx:
     if bail:
         state["phase"] = "idle"
     card = state.get("current_card")
-    card_id = str(card.get("id", "")) if not bail else ""
+    card_id = str(card.get("id", "")) if isinstance(card, dict) else ""
     return _BodyCtx(
         stage=stage,
         performer_services=performer_services,
@@ -354,7 +354,7 @@ async def _phase_ephemeral_gate(
             # active this cycle — clear the dedup state so a later recurrence of
             # the same (head, pattern) re-notifies (auto-resume / flapping).
             if "env_blocked" not in ci_updates and not _retain_infrastructure_hold(state, ci_updates):
-                state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
+                state["env_blocked"] = None
             if ci_stop:
                 return state
             advance_updates = _advance_stage(state, None)
@@ -567,7 +567,6 @@ async def phase_458(
     service = ctx.service
     session_id = ctx.session_id
     stage = ctx.stage
-    status_payload = ctx.status_payload
     # Include a fresh GitHub token in the status check so the performer
     # can refresh its credentials mid-session (App tokens expire after 1 hour).
     # Use the public ``get_fresh_github_token`` accessor rather than
@@ -1048,7 +1047,8 @@ async def phase_811(
             )
 
             stamp_blueprint_signature(state)
-            if not isinstance(state.get("documenting_side"), dict) or (state["documenting_side"].get("status") != "running" and not state["documenting_side"].get("writer_active")):
+            _doc_side = state.get("documenting_side")
+            if not isinstance(_doc_side, dict) or (_doc_side.get("status") != "running" and not _doc_side.get("writer_active")):
                 state["documenting_side"] = None
             logger.info(
                 "blueprint.lifted",
@@ -1079,9 +1079,10 @@ async def _phase_assessment_complete(
         _assess_report = status.get("report") if isinstance(status.get("report"), dict) else {}
         _assess = _assess_report.get("assessment")
         if isinstance(_assess, dict) and _assess.get("goal"):
-            state["assessment"] = dict(_assess)
-            if "recorded_at" not in state["assessment"]:
-                state["assessment"]["recorded_at"] = datetime.now(UTC).isoformat()
+            _assessment = dict(_assess)
+            if "recorded_at" not in _assessment:
+                _assessment["recorded_at"] = datetime.now(UTC).isoformat()
+            state["assessment"] = _assessment
             logger.info(
                 "assessment.lifted",
                 card_id=card_id,
@@ -1543,7 +1544,7 @@ async def _phase_terminal_markers(
                     symphony=_sym_name,
                     error=str(_exc),
                 )
-        state["env_health_hold_reason"] = f"qa_env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
+        state["env_health_hold_reason"] = f"qa_env_blocked: {_reason}"
         state["phase"] = "dispatching"
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
@@ -1608,7 +1609,7 @@ async def _phase_local_test_gate_s1(
     # cache that is fine; on 2026-09-13 that regen cost two bootstraps.
     _gate_report = (status.get("report") or {}).get("local_test_gate") if isinstance(status.get("report"), dict) else None
     _budget_exceeded = bool(isinstance(_gate_report, dict) and _gate_report.get("budget_exceeded"))
-    if _budget_exceeded:
+    if _budget_exceeded and isinstance(_gate_report, dict):
         logger.warning("monitor_performer.env_blocked_budget_exceeded", card_id=card_id,
                        performer_stage=stage, timeout_seconds=_gate_report.get("timeout_seconds"),
                        duration_seconds=_gate_report.get("duration_seconds"))
@@ -1651,7 +1652,7 @@ async def _phase_local_test_gate_s2(
     # same over-budget suite, block it again, and oscillate at a full run
     # per cycle. Raising the budget is a human action; the hold waits for it.
     if not _budget_exceeded:
-        state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
+        state["env_blocked"] = {
             "pattern_id": "local_test_gate",
             "stage": stage,
             "reason": _reason[:500],
@@ -1660,7 +1661,7 @@ async def _phase_local_test_gate_s2(
             "action": "Nothing to do by hand: the env cache regenerates and "
                       "recovery lifts the card once it verifies healthy",
         }
-    state["env_health_hold_reason"] = (  # type: ignore[typeddict-unknown-key]
+    state["env_health_hold_reason"] = (
         f"env_blocked (test budget exceeded, services healthy): {_reason}"
         if _budget_exceeded else f"env_blocked: {_reason}"
     )
@@ -1669,7 +1670,7 @@ async def _phase_local_test_gate_s2(
     # it toward the per-card transient budget (accumulates across the card's
     # lifetime; reset only on un-block) so it stays off the content budget
     # and the accounting is consistent with the system_error/unknown path.
-    state["transient_error_cycles"] = int(  # type: ignore[typeddict-unknown-key]
+    state["transient_error_cycles"] = int(
         state.get("transient_error_cycles") or 0,
     ) + 1
     return None
@@ -1803,7 +1804,7 @@ async def _phase_terminal_success_s1(
             card_id=card_id,
             marker=marker,
         )
-        state["env_health_hold_reason"] = "terminal_success_env_health_failed"  # type: ignore[typeddict-unknown-key]
+        state["env_health_hold_reason"] = "terminal_success_env_health_failed"
         state["phase"] = "dispatching"
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
@@ -1871,7 +1872,7 @@ async def _phase_terminal_success_s2(
         # 095 (FR-008): clear stale env-hold dedup state on any non-env
         # verdict so a recurrence re-notifies (auto-resume / flapping).
         if "env_blocked" not in ci_updates and not _retain_infrastructure_hold(state, ci_updates):
-            state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
+            state["env_blocked"] = None
         if ci_stop:
             return state
     ctx.card = card
@@ -2155,7 +2156,7 @@ async def _phase_review_routes_s2(
         _counter = dict(state.get("local_fix_counter") or {})
         _count = _counter.get(_head, 0) + 1
         _counter[_head] = _count
-        state["local_fix_counter"] = _counter  # type: ignore[typeddict-unknown-key]
+        state["local_fix_counter"] = _counter
         if _count <= _max_attempts:
             logger.info(
                 "monitor_performer.local_test_failed_redispatch",
@@ -2165,7 +2166,7 @@ async def _phase_review_routes_s2(
                 attempt=_count,
                 max_fix_attempts=_max_attempts,
             )
-            state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
+            state["relay_feedback"] = comments
             state["performer_stage"] = "implementing"
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
@@ -2222,7 +2223,7 @@ async def _phase_review_routes_s3(
     if not comments and not body:
         _empty_retries = int(state.get("review_empty_retry_count", 0) or 0)
         if stage == "reviewing" and _empty_retries < 1:
-            state["review_empty_retry_count"] = _empty_retries + 1  # type: ignore[typeddict-unknown-key]
+            state["review_empty_retry_count"] = _empty_retries + 1
             logger.warning(
                 "monitor_performer.changes_requested_empty_re_review",
                 performer_stage=stage,
@@ -2241,7 +2242,7 @@ async def _phase_review_routes_s3(
             card_id=card_id,
             empty_retries=_empty_retries,
         )
-        state["review_empty_retry_count"] = 0  # type: ignore[typeddict-unknown-key]
+        state["review_empty_retry_count"] = 0
         state["phase"] = "blocked"
         state["system_error_reason"] = (
             f"performer reported changes_requested with no actionable "
@@ -2257,7 +2258,7 @@ async def _phase_review_routes_s3(
         state["agent_dispatch_at"] = None
         return state
     # Actionable feedback present — reset the empty-review retry counter.
-    state["review_empty_retry_count"] = 0  # type: ignore[typeddict-unknown-key]
+    state["review_empty_retry_count"] = 0
     # 065 Fix 4b: synthesise a comment from the prose body when the
     # performer rejected with explanation but no structured comments.
     if not comments and body:
@@ -2288,7 +2289,7 @@ async def _phase_review_routes_s4(
     comments = _stamp_feedback_bounce(
         state, comments, raiser=stage, origin_sha=_settled_head(status),
     )
-    state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = comments
     # 123 US5 (FR-012/FR-013/FR-014): when REVIEWER feedback spans 2+
     # distinct concern categories, the work needs re-scoping — route it
     # through the assessor first (feedback rides along as relay context)
@@ -2365,7 +2366,7 @@ async def _phase_security_failed_s1(
             card_id=card_id,
             halt_count=len(halt_findings),
         )
-        state["relay_feedback"] = findings  # type: ignore[typeddict-unknown-key]
+        state["relay_feedback"] = findings
         state["phase"] = "blocked"
         state["system_error_reason"] = (
             "security scan floor unavailable — fail-closed halt"
@@ -2437,7 +2438,7 @@ async def _phase_security_failed_s2(
     # workflow ran and findings route to the implementer.
     _security_report = status.get("report") if isinstance(status.get("report"), dict) else {}
     _lift_security_findings(state, _security_report, target_stage)
-    state["relay_feedback"] = relevant_findings  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = relevant_findings
     state["performer_stage"] = target_stage
     state["phase"] = "dispatching"
     state["agent_dispatch"] = {}
@@ -2492,7 +2493,7 @@ async def _phase_qa_failed(
         failures = _stamp_feedback_bounce(
             state, failures, raiser="qa", origin_sha=_settled_head(status),
         )
-        state["relay_feedback"] = failures  # type: ignore[typeddict-unknown-key]
+        state["relay_feedback"] = failures
         state["performer_stage"] = "implementing"
         state["phase"] = "dispatching"
         state["agent_dispatch"] = {}
@@ -2832,7 +2833,7 @@ async def _phase_error_status_s2(
         else:
             state["system_error_reason"] = reason
         state["open_questions"] = []
-        state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
+        state["relay_feedback"] = []
         state["phase"] = "system_error"
         return state
     return None
@@ -2870,7 +2871,7 @@ async def _phase_error_status_s3(
             return exhausted
         lifecycle = list(state.get("lifecycle_sequence") or [])
         if "implementing" in lifecycle:
-            state["relay_feedback"] = feedback  # type: ignore[typeddict-unknown-key]
+            state["relay_feedback"] = feedback
             state["performer_stage"] = "implementing"
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
@@ -3231,7 +3232,7 @@ async def _phase_feedback_bounce_s3(
     """Phase helper: return a state to short-circuit, or None to continue."""
     relay_body = ctx.relay_body
     stage = ctx.stage
-    state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+    state["relay_feedback"] = [
         {"body": relay_body, "author_login": "coordinare"},
     ]
     # 072: preserve the originating stage rather than coercing to
@@ -3319,7 +3320,7 @@ async def _phase_no_progress_relay_s2(
             head=head_before,
             relays=_spent_nc,
         )
-        state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+        state["relay_feedback"] = [
             {
                 "body": (
                     "Your previous turn ended without pushing any new "
@@ -3418,7 +3419,7 @@ async def _phase_no_progress_relay_s4(
             clarifications_delta=_clar_now - _clar_at_dispatch,
             relays=_spent_zp,
         )
-        state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+        state["relay_feedback"] = [
             {"body": resume_directive, "author_login": "coordinare"},
         ]
         state["performer_stage"] = stage
@@ -3448,7 +3449,7 @@ async def _phase_no_progress_relay_s5(
         # Distinct from open_questions above (blocked-card diagnostic
         # surface): stored as {"question","answer"} carry-forward Q&A.
         if stage == "assessing":
-            state["assessor_open_questions"] = [  # type: ignore[typeddict-unknown-key]
+            state["assessor_open_questions"] = [
                 {"question": str(item), "answer": ""} for item in questions
             ]
     else:

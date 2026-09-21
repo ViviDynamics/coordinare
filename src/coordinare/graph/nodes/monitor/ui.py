@@ -21,7 +21,7 @@ _STATS_POLL_INTERVAL_SECONDS = 30
 
 
 async def _refresh_backend_ui(
-    state: dict[str, Any],
+    state: CoordinareState,
     service: Any,
     card_id: str,
 ) -> None:

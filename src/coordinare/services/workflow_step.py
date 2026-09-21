@@ -24,9 +24,12 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
 
@@ -100,7 +103,7 @@ def _event_time(event: Mapping, *, observed_at: datetime) -> datetime:
 
 
 def latch_workflow_step(
-    state: dict[str, Any],
+    state: CoordinareState,
     events: list[Any],
     *,
     observed_at: datetime | None = None,
@@ -146,7 +149,7 @@ def latch_workflow_step(
     return True
 
 
-def latch_declared_steps(state: dict, status: dict) -> None:
+def latch_declared_steps(state: CoordinareState, status: dict) -> None:
     """Record the step sequence the performer says its workflow will run.
 
     ``latch_workflow_step`` records what HAS happened. This is what is coming,
