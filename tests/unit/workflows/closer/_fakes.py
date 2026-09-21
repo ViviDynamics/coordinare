@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 
 def comment(author: str, body: str, at: str = "2026-09-07T10:00:00Z") -> dict:
@@ -43,7 +44,7 @@ class FakeGitHub:
         return {"html_url": f"https://github.com/{owner}/{repo}/pull/{number}#review-{len(self.reviews)}"}
 
 
-def score(**over):
+def score(**over: Any) -> SimpleNamespace:
     base = {"pr_url": "https://github.com/o/r/pull/7", "owner_repo": ("o", "r"), "effective_github_token": "tok",
                 "backend": "codex", "model": "m", "workflow_env": {}, "head_sha": "abc1234"}
     base.update(over)

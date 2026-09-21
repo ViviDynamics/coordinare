@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.budget import ModelReply
@@ -26,17 +27,17 @@ from tests.unit.workflows.closer._fakes import FakeGitHub
 from tests.unit.workflows.closer._fakes import score as fixture_score
 
 
-async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict[str, Any]]:
     gh = FakeGitHub(fixture.threads, resolve_failures=set(fixture.resolve_failures))
     calls = {"n": 0}
     if live:
         from coordinare.eval.gateway import _call_model
 
-        async def model_call(persona, content, max_tokens):
+        async def model_call(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             calls["n"] += 1
             return await _call_model(persona, content, max_tokens)
     else:
-        async def model_call(persona, content, max_tokens):
+        async def model_call(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             calls["n"] += 1
             return ModelReply(content=json.dumps({"judgements": fixture.judgements}), finish_reason="stop")
 

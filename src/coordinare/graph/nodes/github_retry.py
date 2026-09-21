@@ -34,11 +34,13 @@ def _queue(state: CoordinareState) -> list[dict[str, Any]]:
 
 
 def _recompute_global_retry_after(state: CoordinareState) -> None:
-    retry_ats = [
-        entry.get("retry_at")
-        for entry in _queue(state)
-        if isinstance(entry, dict) and isinstance(entry.get("retry_at"), datetime)
-    ]
+    retry_ats: list[datetime] = []
+    for entry in _queue(state):
+        if not isinstance(entry, dict):
+            continue
+        retry_at = entry.get("retry_at")
+        if isinstance(retry_at, datetime):
+            retry_ats.append(retry_at)
     state["github_retry_after"] = min(retry_ats) if retry_ats else None
 
 
