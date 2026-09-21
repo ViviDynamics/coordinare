@@ -141,5 +141,5 @@ async def _teardown_workspace(state: CoordinareState) -> None:
         # 052: Clear backend transparency fields when session ends.
         state["backend_ui_url"] = None
         state["session_stats"] = None
-        state.pop("_backend_stats_fetched_at", None)  # type: ignore[typeddict-item]
+        state.pop("_backend_stats_fetched_at", None)
 

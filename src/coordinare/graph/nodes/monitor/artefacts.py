@@ -17,7 +17,7 @@ logger = structlog.get_logger(__name__)
 def _record_pr_artefacts(
     state: CoordinareState,
     status: dict[str, Any] | None,
-) -> dict[str, Any]:
+) -> CoordinareState:
     """076 (T073) FR-015 / FR-016: write through any new PR identifiers
     reported by the performer.
 
@@ -50,7 +50,7 @@ def _record_pr_artefacts(
     if not any((pr_url, pr_node_id, pr_number, head_sha, pushed_branch, plan_path)):
         return {}
 
-    updates: dict[str, Any] = {}
+    updates: CoordinareState = {}
     card = dict(state.get("current_card") or {})
     if pr_url:
         card["pr_url"] = pr_url
@@ -87,7 +87,7 @@ def _record_pr_artefacts(
     return updates
 
 
-def _lift_review_findings(state: dict[str, Any], report: dict[str, Any], stage: str) -> None:
+def _lift_review_findings(state: CoordinareState, report: dict[str, Any], stage: str) -> None:
     """169 (T038): lift reviewer findings into state when reviewer reports changes_requested.
 
     Findings are cleared on reviewer re-dispatch and injected into implementing stage only.
@@ -113,7 +113,7 @@ def _lift_review_findings(state: dict[str, Any], report: dict[str, Any], stage: 
                 categories.add(finding.get("category", "unknown"))
         logger.info(
             "review_findings.lifted",
-            card_id=state.get("current_card", {}).get("id", "unknown"),
+            card_id=(state.get("current_card") or {}).get("id", "unknown"),
             count=len(_review.get("findings", [])),
             categories=list(categories),
             verdict=_review.get("verdict"),
@@ -121,13 +121,13 @@ def _lift_review_findings(state: dict[str, Any], report: dict[str, Any], stage: 
     elif isinstance(_review, dict):
         logger.info(
             "review_findings.not_lifted",
-            card_id=state.get("current_card", {}).get("id", "unknown"),
+            card_id=(state.get("current_card") or {}).get("id", "unknown"),
             has_review=isinstance(_review, dict),
             missing_fields=not (isinstance(_review.get("changed_files"), list) and isinstance(_review.get("verdict"), str)),
         )
 
 
-def _lift_security_findings(state: dict[str, Any], report: dict[str, Any], target_stage: str) -> None:
+def _lift_security_findings(state: CoordinareState, report: dict[str, Any], target_stage: str) -> None:
     """170: lift security workflow findings into state when routed to implementer.
 
     Report structure: {"security": {...}, "workflow_metrics": {...}}. The "security" key
@@ -174,7 +174,7 @@ def _lift_security_findings(state: dict[str, Any], report: dict[str, Any], targe
         categories = {f.get("category", "unknown") for f in implementer_findings}
         logger.info(
             "review_findings.lifted",
-            card_id=state.get("current_card", {}).get("id", "unknown"),
+            card_id=(state.get("current_card") or {}).get("id", "unknown"),
             source="security",
             count=len(implementer_findings),
             categories=list(categories),

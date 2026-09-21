@@ -61,7 +61,7 @@ def clean_findings(value: Any) -> dict[str, Any]:
     return result
 
 
-def collect(state: dict[str, Any], stage: str, marker: str, status: dict[str, Any]) -> None:
+def collect(state: CoordinareState, stage: str, marker: str, status: dict[str, Any]) -> None:
     """Record completed structured analysis; prose/unknown reports add nothing."""
     if stage not in _FIELDS or marker not in _TERMINALS or status.get("env_cache_health_failed"):
         return

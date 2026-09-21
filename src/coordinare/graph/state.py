@@ -343,6 +343,15 @@ class CoordinareState(TypedDict, total=False):
     blocked_by_dependencies: list[dict[str, Any]]
     # 390: consecutive relays per STAGE that produced no commit.
     no_progress_relays: dict[str, int]
+    # 434: performer-stage bookkeeping that monitor/body.py wrote and read
+    # while the module sat on the strict-mypy allowlist. local_fix_counter
+    # and review_empty_retry_count are persisted via PersistedSession (v8).
+    card_context: dict[str, Any]
+    convergence_reason: str | None
+    qa_findings: list[dict[str, Any]]
+    local_fix_counter: dict[str, int]
+    review_empty_retry_count: int
+    env_health_hold_reason: str | None
     # 047: Auto-rebase — track main HEAD SHA to detect external merges, and
     # store the last rebase round for dashboard display.
     last_known_main_sha: str | None
@@ -353,6 +362,7 @@ class CoordinareState(TypedDict, total=False):
     slot_manager: Any
     # 052: Backend transparency — live URL and session stats from the performer backend.
     backend_ui_url: str | None
+    _backend_stats_fetched_at: datetime | None  # 052: stats-poll throttle
     session_stats: Any  # SessionStats | None; typed Any — LangGraph resolves annotations at runtime
     # Deferred GitHub retries for transient outages (DNS/service down/circuit open).
     github_retry_queue: list[dict[str, Any]]
