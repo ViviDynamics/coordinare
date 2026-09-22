@@ -25,7 +25,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import structlog
@@ -43,6 +43,7 @@ from coordinare.upstream_errors import UpstreamHTTPError, strip_base_url_credent
 
 if TYPE_CHECKING:
     from coordinare.models.performer_endpoint import (
+        JobAcceptResponse,
         JobInitPayload,
         PerformerEndpointConfig,
         VolumeMount,
@@ -396,7 +397,9 @@ class HTTPPerformerService:
                 "reason": f"performer busy ({reason})" + (f": {detail}" if detail else ""),
             }
 
-        job_id = response.job_id
+        # post_job's union collapses to JobAcceptResponse once the accepted=False
+        # guard above has returned the only other shape.
+        job_id = cast("JobAcceptResponse", response).job_id
         if ephemeral_job is not None:
             # 076 (T016/T017) — _active_jobs is keyed on coordinare-allocated
             # session_id (not the job-runner's job_id); job_id stays on
@@ -581,7 +584,7 @@ class HTTPPerformerService:
         if is_terminal and status.result is not None and status.result.summary:
             # _perform_job serialises the full PerformerResponse as JSON in summary.
             try:
-                parsed = json.loads(status.result.summary)
+                parsed: dict[str, Any] = json.loads(status.result.summary)
                 # Ensure parsed response includes JobState for job lifecycle tracking.
                 if "state" not in parsed:
                     parsed["state"] = status.state

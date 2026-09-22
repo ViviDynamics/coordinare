@@ -25,6 +25,8 @@ from pydantic import BaseModel, ConfigDict
 from coordinare.services.dispatcher_dedup_models import CanonicalBranchName
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
@@ -154,7 +156,12 @@ class _MutexHeldContext:
             )
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self._lock.release()
 
 
@@ -183,7 +190,7 @@ def compute_title_slug(title: str) -> str:
     return cut[0] or s[:60]
 
 
-def canonical_branch_name(card: dict) -> CanonicalBranchName:
+def canonical_branch_name(card: dict[str, Any]) -> CanonicalBranchName:
     """Build the canonical branch name for a card.
 
     The card dict MUST contain ``id`` and ``title``.  Raises ``ValueError``

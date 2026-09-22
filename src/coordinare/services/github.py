@@ -637,7 +637,9 @@ class GitHubService(CardIdentityMap):
         import contextlib
         if self._client is not None:
             with contextlib.suppress(Exception):
-                await self._client.close_async()
+                # gql ships py.typed but Client.close_async itself is unannotated,
+                # so disallow_untyped_calls flags it; the call is correct at runtime.
+                await self._client.close_async()  # type: ignore[no-untyped-call]
             self._client = None
 
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
@@ -1795,7 +1797,8 @@ class GitHubService(CardIdentityMap):
         for existing callers; richer PR-level context is via
         ``get_pr_review_context``."""
         ctx = await self.get_pr_review_context(pr_id)
-        return ctx["reviews"]
+        reviews: list[dict[str, Any]] = ctx["reviews"]
+        return reviews
 
     async def get_pr_review_context(self, pr_id: str) -> dict[str, Any]:
         """128: single-query PR review context — parsed reviews (with

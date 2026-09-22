@@ -251,7 +251,7 @@ def rank_candidates(points: list[PointResult]) -> list[str]:
     """Point ids by mean scalar descending; unrankable (failed/None) last."""
     rankable = [p for p in points if not p.failed and p.mean_scalar is not None]
     unrankable = [p for p in points if p.failed or p.mean_scalar is None]
-    ordered = sorted(rankable, key=lambda p: p.mean_scalar, reverse=True)
+    ordered = sorted(rankable, key=lambda p: float(p.mean_scalar or 0.0), reverse=True)
     return [p.point_id for p in ordered] + [p.point_id for p in unrankable]
 
 

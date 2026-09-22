@@ -82,7 +82,7 @@ def is_step_event(event: Any) -> bool:
     return text.split(".", 1)[0] in KNOWN_STEP_PREFIXES
 
 
-def _event_time(event: Mapping, *, observed_at: datetime) -> datetime:
+def _event_time(event: Mapping[str, Any], *, observed_at: datetime) -> datetime:
     """The step's entry time: the performer's stamp, else when we saw it.
 
     Both clocks are host-derived under docker and k8s, and the error when
@@ -149,7 +149,7 @@ def latch_workflow_step(
     return True
 
 
-def latch_declared_steps(state: CoordinareState, status: dict) -> None:
+def latch_declared_steps(state: CoordinareState, status: dict[str, Any]) -> None:
     """Record the step sequence the performer says its workflow will run.
 
     ``latch_workflow_step`` records what HAS happened. This is what is coming,

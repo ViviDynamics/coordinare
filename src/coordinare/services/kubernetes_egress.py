@@ -211,7 +211,7 @@ async def probe_network_policy_enforcement(
                 core_v1.read_namespaced_pod, name=name, namespace=namespace,
             )
             if pod.status.phase == "Running" and pod.status.pod_ip:
-                return pod.status.pod_ip
+                return str(pod.status.pod_ip)
             if pod.status.phase in {"Failed", "Succeeded"}:
                 return None
             await asyncio.sleep(2)

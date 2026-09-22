@@ -143,7 +143,7 @@ async def _surface_stale_change_request(
     FRESH / none     → no-op (existing behavior). Fully fail-safe.
     """
     board_provider = board_of(state)
-    surfaced: dict[str, str] = state.setdefault("surfaced_stale_reviews", {})  # type: ignore[assignment]
+    surfaced: dict[str, str] = state.setdefault("surfaced_stale_reviews", {})
 
     # FR-011: verdict cleared (approved/dismissed) → drop dedup markers so a
     # future change-request re-surfaces, and let the normal merge path resume.
@@ -210,7 +210,7 @@ async def _surface_stale_change_request(
         reviewer = str(gating.get("author_login", ""))
         try:
             if hasattr(github, "request_reviews"):
-                await github.request_reviews(pr_id=str(card.get("pr_node_id") or ""), reviewer_logins=[reviewer])  # type: ignore[attr-defined]
+                await github.request_reviews(pr_id=str(card.get("pr_node_id") or ""), reviewer_logins=[reviewer])
                 logger.info("stale_review.re_requested", card_id=card_id, reviewer=reviewer)
         except Exception as exc:  # fail-safe: never crash the cycle
             logger.warning("stale_review.re_request_failed", card_id=card_id, error=str(exc))

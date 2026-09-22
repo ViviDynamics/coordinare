@@ -165,7 +165,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         # performer_error, so a card repeatedly hitting infra failures becomes
         # operator-actionable instead of silently churning.
         transient_cycles = int(state.get("transient_error_cycles") or 0) + 1
-        state["transient_error_cycles"] = transient_cycles  # type: ignore[typeddict-unknown-key]
+        state["transient_error_cycles"] = transient_cycles
         if transient_cycles >= _TRANSIENT_ERROR_CYCLE_LIMIT and not is_env_blocked:
             is_env_blocked = True
             cause = (
@@ -231,7 +231,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         if is_env_blocked:
             # Per-card ENV_BLOCKED marker (spec-095 shape) so the surfacing is
             # deduped and operator-visible. No head_sha at the assessing stage.
-            state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
+            state["env_blocked"] = {
                 "head_sha": "",
                 "pattern_id": env_pattern_id,
                 "cause": cause,
