@@ -405,7 +405,7 @@ def detect_wedged_state(
             card_window.append(ts)
     card_window.append(now)
     windows[card_id] = card_window
-    state["wedge_count_window"] = windows  # type: ignore[typeddict-unknown-key]
+    state["wedge_count_window"] = windows
     window = card_window  # local alias for the rest of the function
 
     logger.warning(
