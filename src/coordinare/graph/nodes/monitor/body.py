@@ -2544,8 +2544,6 @@ async def _phase_token_limit(
             if config is not None and hasattr(config, "performers") else None
         )
         current_max = getattr(role_config, "max_tokens", None)
-        if current_max is None:
-            current_max = state.get("card_context", {}).get("max_tokens")
         if current_max:
             advice = (
                 f"The {stage} performer hit its output token cap ({current_max:,} tokens). "

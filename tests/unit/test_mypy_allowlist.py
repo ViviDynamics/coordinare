@@ -18,7 +18,6 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.eval.qa_scenarios",
     "coordinare.graph.nodes.assess_card",
     "coordinare.graph.nodes.handle_blocked",
-    "coordinare.graph.state",
     "coordinare.protocol",
     "coordinare.services.config_write_service",
     "coordinare.services.kubernetes_runtime",

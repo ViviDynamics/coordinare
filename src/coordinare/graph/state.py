@@ -190,15 +190,15 @@ class CoordinareState(TypedDict, total=False):
     blocked_reminder_hours: int
 
     open_questions: list[str]
-    card_clarifications: list[dict]  # [{"questions": [...], "answer": str}]
+    card_clarifications: list[dict[str, Any]]  # [{"questions": [...], "answer": str}]
     agent_dispatch: dict[str, Any]
     system_error_count: int
     system_error_last_at: datetime | None
     system_error_reason: str | None
     system_error_notified: bool
     agent_dispatch_at: datetime | None
-    performer_events: list[dict]
-    performer_metrics: dict | None
+    performer_events: list[dict[str, Any]]
+    performer_metrics: dict[str, Any] | None
     commit_summary: str | None
     agent_health_status: str | None
     last_blocked_notified_at: datetime | None
@@ -262,6 +262,12 @@ class CoordinareState(TypedDict, total=False):
     # the TypedDict must carry it for strict typing.
     _pipeline_selected: set[str] | None
     idle_timeout_retries: dict[str, dict[str, Any]]
+    # 076 dispatcher dedup — declared so the initial_state() defaults type-check
+    # and the keys survive LangGraph's state merge (types mirror CardSession).
+    pr_artefacts_recorded_at: datetime | None
+    multi_pr_divergence: dict[str, Any] | None
+    wedge_count_window: dict[str, list[datetime]]
+    reconciliation_decisions_last_startup: dict[str, str]
     # 045: Number of times reviewer/security/qa has returned a non-terminal
     # "changes_requested" / "_failed" marker for this card, routing back to
     # an earlier stage (usually implementer).  Bounded by
@@ -291,7 +297,7 @@ class CoordinareState(TypedDict, total=False):
     # 123: answered assessor Q&A ({"question","answer"} dicts) carried across
     # bounce cycles; injected as prior_clarifications on assessor re-dispatch.
     # Distinct from open_questions (list[str], blocked-card diagnostics) above.
-    assessor_open_questions: list[dict]
+    assessor_open_questions: list[dict[str, Any]]
     # 125: stage-verdict memory.  {stage: {"head_sha","verdict","recorded_at"}}
     # plain dicts; written by monitor_performer on passing terminal markers,
     # consulted by dispatch_performer's verdict-cache skip.  Round-trips
@@ -355,7 +361,7 @@ class CoordinareState(TypedDict, total=False):
     # 047: Auto-rebase — track main HEAD SHA to detect external merges, and
     # store the last rebase round for dashboard display.
     last_known_main_sha: str | None
-    last_rebase_round: dict | None
+    last_rebase_round: dict[str, Any] | None
     # 048: Per-role performer slot manager.  Typed as Any because LangGraph's
     # get_type_hints() resolves annotations at runtime — a TYPE_CHECKING
     # import of SlotManager would cause NameError.
@@ -530,7 +536,7 @@ def initial_state() -> CoordinareState:
     }
 
 
-def _set_current_card(state: CoordinareState, card: dict) -> None:
+def _set_current_card(state: CoordinareState, card: dict[str, Any]) -> None:
     """066 FR-010: single write-site for current_card.
 
     Mutates the active session entry's ``current_card`` (creating a transient
