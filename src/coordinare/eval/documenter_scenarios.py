@@ -18,6 +18,10 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from performer.workflows.budget import ModelReply
 
 from performer.models import Stand
 from performer.workflows.base import WorkflowMetrics
@@ -54,7 +58,7 @@ def _build(fixture: Fixture, root: Path) -> tuple[Path, str]:
     return repo, ""
 
 
-async def _run_command(cmd, cwd, timeout_s):
+async def _run_command(cmd: str, cwd: Path | str | None, timeout_s: int) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_shell(cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
@@ -64,7 +68,7 @@ async def _run_command(cmd, cwd, timeout_s):
     return proc.returncode or 0, out.decode(errors="replace")
 
 
-async def run_fixture(fixture: Fixture, *, live: bool, root: Path | None = None) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool, root: Path | None = None) -> tuple[Score, dict[str, Any]]:
     root = root or Path(tempfile.mkdtemp(prefix="documenter-eval-"))
     repo, diff = _build(fixture, root)
     before = head(repo)
@@ -72,13 +76,13 @@ async def run_fixture(fixture: Fixture, *, live: bool, root: Path | None = None)
     if live:
         from coordinare.eval.gateway import _call_model
 
-        async def model_call(persona, content, max_tokens):
+        async def model_call(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             calls["i"] += 1
             return await _call_model(persona, content, max_tokens)
     else:
         stub = stub_model_for(fixture)
 
-        async def model_call(persona, content, max_tokens):
+        async def model_call(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             calls["i"] += 1
             return await stub(persona, content, max_tokens)
     toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=_run_command, call_limit=20)

@@ -19,6 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows import get_workflow
 from performer.workflows.base import WorkflowMetrics
@@ -42,7 +43,7 @@ def materialise_repo(fixture: Fixture, root: Path) -> Path:
     return repo
 
 
-async def _local_runner(cmd: str, cwd, timeout_s: int) -> tuple[int, str]:
+async def _local_runner(cmd: str, cwd: Path | str | None, timeout_s: int) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_shell(
         cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
@@ -54,18 +55,18 @@ async def _local_runner(cmd: str, cwd, timeout_s: int) -> tuple[int, str]:
     return proc.returncode or 0, out.decode(errors="replace")
 
 
-def _score_for(fixture: Fixture):
+def _score_for(fixture: Fixture) -> SimpleNamespace:
     return SimpleNamespace(
         title=fixture.title, description=fixture.description, acceptance_criteria=list(fixture.criteria),
         clarifications=[], issue_number=None, workflow_env={},
     )
 
 
-async def run_fixture(fixture: Fixture, *, live: bool, root: Path) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool, root: Path) -> tuple[Score, dict[str, Any]]:
     repo = materialise_repo(fixture, root)
     ran: list[str] = []
 
-    async def recording_runner(cmd, cwd, timeout_s):
+    async def recording_runner(cmd: str, cwd: Path | str | None, timeout_s: int) -> tuple[int, str]:
         ran.append(cmd)
         return await _local_runner(cmd, cwd, timeout_s)
 
