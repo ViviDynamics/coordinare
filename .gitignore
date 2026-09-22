@@ -278,3 +278,6 @@ credentials.json
 
 # Operational attempt telemetry
 logs/attempts/
+
+# Local token/repo config for coordinare-conventions scripts (never commit)
+repo.env

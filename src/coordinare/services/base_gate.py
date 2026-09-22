@@ -34,7 +34,7 @@ the gate is never latched (FR-006).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,9 +65,9 @@ class BaseGateDecision(BaseModel):
 
 def evaluate_base_gate(
     base_rollup: CheckRollup | None,
-    scope: dict | None = None,
+    scope: dict[str, Any] | None = None,
     *,
-    persona_check_map: dict | None = None,
+    persona_check_map: dict[str, Any] | None = None,
     now: datetime | None = None,
     pending_timeout_seconds: int = 900,
 ) -> BaseGateDecision:

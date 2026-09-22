@@ -215,11 +215,11 @@ class ClaudeService:
         if getattr(response, "content", None):
             blocks = response.content
             if blocks and hasattr(blocks[0], "text"):
-                return blocks[0].text
+                return str(blocks[0].text)
         return ""
 
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]:
-        clarifications: list[dict] = card.get("clarifications", []) if isinstance(card, dict) else []
+        clarifications: list[dict[str, Any]] = card.get("clarifications", []) if isinstance(card, dict) else []
 
         if clarifications:
             history_lines = []

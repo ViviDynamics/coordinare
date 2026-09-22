@@ -97,7 +97,7 @@ class PerformerPool:
 
         state = PerformerEndpointState(
             id=config.id,
-            mode=config.mode,  # type: ignore
+            mode=config.mode,
             endpoint=config.endpoint,
             roles=normalized_roles,
             availability="unknown",
@@ -207,6 +207,7 @@ class PerformerPool:
         if state is None or service is None:
             return
 
+        error_msg: str | None
         try:
             # Network call outside lock to avoid blocking concurrent polls.
             status = await service.check_health()

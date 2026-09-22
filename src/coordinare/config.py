@@ -652,7 +652,7 @@ class PerformersConfig(BaseModel):
         max_tokens=0 in a role config is the "unlimited" sentinel: it overrides a
         default max_tokens and resolves to None (omitted from the backend payload).
         """
-        role = getattr(self, role_name, None)
+        role: PerformerRoleConfig | None = getattr(self, role_name, None)
         if role is None:
             return None
         if self.default is None:
@@ -1899,6 +1899,10 @@ class OrchestraConfig(BaseModel):
     allocation_strategy: Literal["round_robin", "priority_order"] = "priority_order"
 
 
+def _default_multi_pr_check_triggers() -> list[Literal["dispatch", "restart", "webhook"]]:
+    return ["dispatch", "restart", "webhook"]
+
+
 class DispatcherDedupConfig(BaseModel):
     """Dispatcher deduplication / reconciliation tunables (spec 076).
 
@@ -1933,7 +1937,7 @@ class DispatcherDedupConfig(BaseModel):
     wedge_block_threshold: int = Field(default=3, ge=1, le=100)
     wedge_block_window_hours: int = Field(default=24, ge=1, le=168)
     multi_pr_check_triggers: list[Literal["dispatch", "restart", "webhook"]] = Field(
-        default_factory=lambda: ["dispatch", "restart", "webhook"],
+        default_factory=_default_multi_pr_check_triggers,
     )
 
     @field_validator("multi_pr_check_triggers")

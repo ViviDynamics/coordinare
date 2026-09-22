@@ -164,6 +164,8 @@ module = [
     "prometheus_client.*",
     "coordinare_service_inference.*",
     "performer.*",
+    "kubernetes",
+    "kubernetes.*",
 ]
 ignore_missing_imports = true
 
@@ -175,33 +177,20 @@ ignore_errors = true
 # 433 ratchet: per-module strict-mypy allowlist. Covers exactly the files that
 module = [
     "coordinare.auth",
-    "coordinare.bench.sweep",
-    "coordinare.config",
     "coordinare.config_descriptors",
     "coordinare.daemon",
     "coordinare.dashboard",
-    "coordinare.doctor",
     "coordinare.eval.implementer_scenarios",
     "coordinare.eval.qa_scenarios",
     "coordinare.graph.nodes.assess_card",
     "coordinare.graph.nodes.handle_blocked",
-    "coordinare.graph.nodes.handle_system_error",
-    "coordinare.graph.nodes.monitor_pr",
     "coordinare.graph.state",
     "coordinare.protocol",
-    "coordinare.services.base_gate",
-    "coordinare.services.claude",
     "coordinare.services.config_write_service",
-    "coordinare.services.dispatch_guard",
-    "coordinare.services.github",
-    "coordinare.services.http_performer_service",
-    "coordinare.services.kubernetes_egress",
     "coordinare.services.kubernetes_runtime",
-    "coordinare.services.performer_pool",
     "coordinare.services.rebase",
     "coordinare.services.reconciliation",
     "coordinare.services.security_scanner",
-    "coordinare.services.workflow_step",
     "coordinare.session",
     "coordinare.state_store",
 ]
