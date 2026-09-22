@@ -247,8 +247,8 @@ class PersistedSession(BaseModel):
     # head has advanced past the recorded oid. Backward-compatible default.
     surfaced_stale_reviews: dict[str, str] = Field(default_factory=dict)
     open_questions: list[str] = Field(default_factory=list)
-    card_clarifications: list[dict] = Field(default_factory=list)
-    relay_feedback: list[dict] = Field(default_factory=list)
+    card_clarifications: list[dict[str, Any]] = Field(default_factory=list)
+    relay_feedback: list[dict[str, Any]] = Field(default_factory=list)
     system_error_count: int = 0
     system_error_reason: str | None = None
     system_error_notified: bool = False
@@ -401,7 +401,7 @@ class PersistedSession(BaseModel):
     # Deliberately DISTINCT from ``open_questions: list[str]`` above (the
     # blocked-card diagnostic surface).  Optional / default ``[]`` keeps v1-v11
     # snapshots loading unchanged.
-    assessor_open_questions: list[dict] = Field(default_factory=list)
+    assessor_open_questions: list[dict[str, Any]] = Field(default_factory=list)
     # 125 (schema v13+): stage-verdict memory.  One StageVerdict slot per
     # verdict stage (reviewing/security/qa/documenting/closing_review) holding
     # the PR head SHA the stage's passing verdict was issued against.  Dispatch
@@ -674,7 +674,7 @@ class WorkflowSnapshot(BaseModel):
     agent_session_id: str | None = None
 
     open_questions: list[str] = Field(default_factory=list)
-    card_clarifications: list[dict] = Field(default_factory=list)
+    card_clarifications: list[dict[str, Any]] = Field(default_factory=list)
     active_card_issue_id: str | None = None
     # 045: Persist the rest of the card fields so restore-from-snapshot doesn't
     # dispatch with ``issue_number=0`` / empty description after a restart —
