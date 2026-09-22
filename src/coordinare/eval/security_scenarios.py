@@ -21,6 +21,11 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from performer.workflows.budget import ModelReply
+    from performer.workflows.toolkit import CommandRunner
 
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.security import SecurityWorkflow
@@ -52,8 +57,9 @@ def _live_workspace(fixture: Fixture) -> Path:
     return root
 
 
-async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = None) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = None) -> tuple[Score, dict[str, Any]]:
     poster = RecordingPoster()
+    runner: CommandRunner
     if live:
         from coordinare.eval.gateway import _call_model, _run_command
 
@@ -61,7 +67,7 @@ async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = 
         workspace = workspace or _live_workspace(fixture)
         model_calls = {"i": 0}
 
-        async def counting(persona, content, max_tokens):
+        async def counting(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             model_calls["i"] += 1
             return await model_call(persona, content, max_tokens)
 

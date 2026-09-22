@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from performer.workflows.toolkit import CommandRunner
 
 from performer.workflows.budget import ModelReply
 
@@ -120,8 +124,8 @@ def fake_scanner_for(fixture: Fixture):
     return runner
 
 
-def stub_command_runner():
-    async def runner(cmd: str, cwd, timeout_s: int):
+def stub_command_runner() -> CommandRunner:
+    async def runner(cmd: str, cwd: Path | str | None, timeout_s: int) -> tuple[int, str]:
         if cmd.startswith("git status"):
             return 0, ""
         return 0, "abc123 change\n"

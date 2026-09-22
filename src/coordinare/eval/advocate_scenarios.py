@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from performer.workflows.advocate import AdvocateWorkflow
 from performer.workflows.base import WorkflowMetrics
@@ -28,11 +29,11 @@ from tests.eval.advocate_scenarios.scoring import Score, score_run
 from tests.unit.workflows.advocate._fakes import FakeGitHub
 
 
-async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
+async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict[str, Any]]:
     gh = FakeGitHub(fixture.issues)
     calls = {"n": 0}
 
-    async def stub(persona, content, max_tokens: int = 0) -> ModelReply:
+    async def stub(persona: str, content: list[dict[str, Any]], max_tokens: int = 0) -> ModelReply:
         # The real Toolkit unwraps ModelReply.content; returning a bare string
         # makes every call fail with "'str' object has no attribute 'content'"
         # and every issue escalate as unclassified.
@@ -49,7 +50,7 @@ async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict]:
         # round rather than in any stubbed test.
         from coordinare.eval.gateway import _call_model
 
-        async def counted(persona, content, max_tokens: int = 0) -> ModelReply:
+        async def counted(persona: str, content: list[dict[str, Any]], max_tokens: int = 0) -> ModelReply:
             calls["n"] += 1
             return await _call_model(persona, content, max_tokens)
 
