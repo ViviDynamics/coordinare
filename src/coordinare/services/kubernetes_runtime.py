@@ -387,7 +387,7 @@ class KubernetesRuntime:
             pod_ip = pod.status.pod_ip
 
             if phase == "Running" and pod_ip:
-                return pod_ip
+                return str(pod_ip)
             if phase in {"Failed", "Succeeded"}:
                 raise classify_pod_failure(phase, message=pod.status.reason or "")
 

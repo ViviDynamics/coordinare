@@ -38,7 +38,13 @@ from pydantic_core import PydanticUndefined
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
-    from coordinare.config import CoordinareConfiguration, ProjectConfiguration
+    from coordinare.config import (
+        CoordinareConfiguration,
+        Endpoint,
+        Mode,
+        ModelEndpoint,
+        ProjectConfiguration,
+    )
 
 # --- transfer objects (data-model E1/E2/E3/E5) ---------------------------------
 
@@ -444,7 +450,7 @@ def _build_global_section(
         if not _is_scalar_field(finfo):
             continue
         dotted = f"global.{fname}"
-        is_invalid = bool(invalid) and dotted in invalid
+        is_invalid = dotted in (invalid or {})
         if raw_values is not None and dotted in raw_values:
             value = raw_values[dotted]
         else:
@@ -516,7 +522,7 @@ def _build_catalog_section(
     section_id: str,
     title: str,
     description: str,
-    items: list[BaseModel],
+    items: list[Endpoint | ModelEndpoint | Mode],
     ref_map: dict[str, list[str]],
 ) -> ConfigSection:
     catalog_items = [

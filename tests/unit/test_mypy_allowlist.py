@@ -11,7 +11,6 @@ SRC = PYPROJECT.parent / "src"
 
 _SNAPSHOT: tuple[str, ...] = (
     "coordinare.auth",
-    "coordinare.config_descriptors",
     "coordinare.daemon",
     "coordinare.dashboard",
     "coordinare.eval.implementer_scenarios",
@@ -20,12 +19,10 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.graph.nodes.handle_blocked",
     "coordinare.protocol",
     "coordinare.services.config_write_service",
-    "coordinare.services.kubernetes_runtime",
     "coordinare.services.rebase",
     "coordinare.services.reconciliation",
     "coordinare.services.security_scanner",
     "coordinare.session",
-    "coordinare.state_store",
 )
 
 def _ratchet_overrides() -> list[str]:
