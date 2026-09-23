@@ -44,7 +44,15 @@ class under test from its real module and assert the behaviour the goal
 describes. Never define, stub or fall back to the thing under test inside the
 test file (no try/except ImportError shims, no placeholder functions, no
 skips): a test that passes without the implementation is rejected and you
-will be asked again. Do not implement the behaviour in this turn."""
+will be asked again. Do not implement the behaviour in this turn.
+
+When the milestone changes the schema (a migration, a new table, column,
+index or model), there is no function to import: ask the schema whether the
+object exists, expecting the post-migration answer. The answer is no until
+the migration runs, so the assertion fails before the migration and passes
+after it, which is the red this milestone needs. A schema test that asserts
+what the current schema already satisfies passes without the migration and
+is rejected."""
 
 IMPLEMENT = """Make exactly these tests pass:
 
@@ -75,6 +83,11 @@ The usual causes: the test defines or stubs the thing under test itself, catches
 the ImportError, skips, or asserts something the current code already does.
 Import the function or class from its real module and assert the new behaviour,
 so the test fails with ImportError or AssertionError until it is implemented.
+
+When the milestone changes the schema, the usual cause is different: the test
+asserted what the current schema already satisfies. Rewrite it to ask the
+schema whether the object exists, expecting the post-migration answer, so it
+fails before the migration and passes after it runs.
 
 Do not change source files.
 Do not create or edit documentation.
