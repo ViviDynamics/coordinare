@@ -97,10 +97,16 @@ def _make_blocked_snapshot() -> MagicMock:
     """WorkflowSnapshot-like mock for a blocked card with open questions."""
     snap = MagicMock()
     snap.phase = "blocked"
+    snap.active_card_id = "card-xyz789"
     snap.active_card_title = "Refactor Auth Module"
     snap.active_card_column = "Blocked"
+    snap.active_card_issue_number = 106
+    snap.active_card_issue_url = "https://github.com/org/repo/issues/106"
     snap.pr_url = None
     snap.agent_session_id = "sess-xyz789"
+    snap.performer_stage = "implementing"
+    snap.last_blocked_notified_at = None
+    snap.card_clarifications = []
     snap.open_questions = [
         "Should we use OAuth2 or API keys?",
         "Which teams need access to this endpoint?",
@@ -256,7 +262,7 @@ def test_s2_sse_initial_event_contains_card_data() -> None:
 
 
 def test_s3_blocked_snapshot_has_open_questions() -> None:
-    """S3: Blocked phase snapshot includes the list of open questions."""
+    """S3: Blocked phase snapshot includes card-attributed open questions."""
     store = DashboardStore()
     daemon = _make_mock_daemon(phase="blocked", snapshot=_make_blocked_snapshot())
     metrics = _make_mock_metrics()
@@ -268,7 +274,10 @@ def test_s3_blocked_snapshot_has_open_questions() -> None:
     assert snap["phase_label"] == "Blocked"
     assert snap["active_card_title"] == "Refactor Auth Module"
     assert len(snap["open_questions"]) == 2
-    assert "OAuth2" in snap["open_questions"][0]
+    assert "OAuth2" in snap["open_questions"][0]["text"]
+    assert snap["open_questions"][0]["card_number"] == 106
+    assert snap["open_questions"][0]["card_title"] == "Refactor Auth Module"
+    assert snap["open_questions"][0]["stage"] == "implementing"
     assert snap["agent_session_id"] == "sess-xyz789"
 
 
@@ -277,7 +286,7 @@ def test_s3_sse_delivers_open_questions() -> None:
 
     async def _collect() -> dict:
         store = DashboardStore()
-        daemon = _make_mock_daemon(snapshot=_make_blocked_snapshot())
+        daemon = _make_mock_daemon(phase="blocked", snapshot=_make_blocked_snapshot())
         gen = store.sse_stream(daemon, _make_mock_metrics(), _make_mock_health())
         try:
             raw = await gen.__anext__()
@@ -288,6 +297,8 @@ def test_s3_sse_delivers_open_questions() -> None:
     payload = asyncio.run(_collect())
     assert payload["phase"] == "blocked"
     assert len(payload["open_questions"]) == 2
+    assert "OAuth2" in payload["open_questions"][0]["text"]
+    assert payload["open_questions"][0]["card_number"] == 106
 
 
 # ---------------------------------------------------------------------------
