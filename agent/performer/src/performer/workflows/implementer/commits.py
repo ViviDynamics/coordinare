@@ -9,7 +9,12 @@ import asyncio
 import os
 import shutil
 from pathlib import Path
+
+from performer import degeneracy
+from performer.degeneracy import format_refusal
+
 _GIT = shutil.which("git") or "git"  # 440: resolve the real git path once
+_READ_CHUNK = 1 << 20
 
 __all__ = [
     "head_sha",
@@ -18,7 +23,188 @@ __all__ = [
     "revert_paths",
     "commit_paths",
     "branch_commit_entries",
+    "staged_paths",
+    "staged_blob_prefix",
+    "classify_staged_blob",
+    "unstage_paths",
+    "unstage_degenerate_staged",
 ]
+
+
+async def staged_paths(workspace: Path) -> list[str]:
+    """Paths currently staged (index vs HEAD), from ``git diff --cached`` (#396).
+
+    Empty on any git failure: the seams that consume this list fail open to
+    their own content checks rather than blocking on a probe error.
+    """
+    rc, stdout = await _run_git_stdout(
+        [_GIT, "diff", "--cached", "--name-only", "-z"],
+        workspace,
+    )
+    if rc != 0:
+        return []
+    return [p for p in stdout.split("\0") if p]
+
+
+async def unstage_paths(workspace: Path, paths: list[str]) -> None:
+    """Reset index entries for *paths* to HEAD, best-effort (#396).
+
+    ``git commit -m`` commits the whole index, so content staged earlier in
+    the turn would ride along with any later commit. Resetting the entry
+    removes it from the index; the worktree file, if any, is left for the
+    normal revert/cleanup paths.
+    """
+    if not paths:
+        return
+    await _run_git([_GIT, "reset", "-q", "--"] + paths, workspace)
+
+
+async def staged_blob_prefix(
+    workspace: Path, path: str, limit: int,
+) -> tuple[int, bytes] | None:
+    """The staged blob's true size plus at most *limit* leading bytes (#396).
+
+    The stream is cut off after *limit* bytes: a multi-gigabyte staged blob
+    is never buffered whole. None on any failure (path not in the index, git
+    error): callers fail open to their own content checks rather than
+    blocking on a probe error.
+    """
+    rc, stdout = await _run_git_stdout(
+        [_GIT, "cat-file", "-s", f":{path}"],
+        workspace,
+    )
+    if rc != 0:
+        return None
+    try:
+        size = int(stdout.strip())
+    except ValueError:
+        return None
+
+    proc = await asyncio.create_subprocess_exec(
+        _GIT, "show", f":{path}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(workspace),
+    )
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    try:
+        while remaining > 0:
+            chunk = await proc.stdout.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        # wait() alone can deadlock: a killed child's stdout pipe may still
+        # hold unread bytes, and the transport never drains them. communicate
+        # drains stdout to EOF (the killed child closes the pipe) first.
+        await proc.communicate()
+    return size, b"".join(chunks)[:limit]
+
+
+async def classify_staged_blob(
+    workspace: Path, path: str, **kwargs: object,
+) -> "degeneracy.DegeneracyVerdict | None":
+    """Stream-classify the blob staged at *path* in full (#396).
+
+    The blob is streamed from ``git show`` through the bounded incremental
+    scanner, so a multi-gigabyte staged blob is classified whole — prefix
+    and tail — without being buffered. Every streamed chunk is sniffed for
+    NUL, so a binary asset whose early bytes are text-like is still
+    skipped; the size rule, when enabled, then rejects an oversized text
+    blob from its true ``cat-file -s`` size. None on any probe failure:
+    callers fail open to their own content checks rather than blocking on a
+    probe error.
+    """
+    rc, stdout = await _run_git_stdout(
+        [_GIT, "cat-file", "-s", f":{path}"],
+        workspace,
+    )
+    if rc != 0:
+        return None
+    try:
+        size = int(stdout.strip())
+    except ValueError:
+        return None
+
+    proc = await asyncio.create_subprocess_exec(
+        _GIT, "show", f":{path}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(workspace),
+    )
+    if proc.stdout is None:
+        return None
+    cap = kwargs.get("size_cap") if "size_cap" in kwargs else degeneracy.DEFAULT_SIZE_CAP
+    scanner = degeneracy.stream_scanner(**kwargs)
+    verdict: "degeneracy.DegeneracyVerdict | None" = None
+    try:
+        while True:
+            chunk = await proc.stdout.read(_READ_CHUNK)
+            if not chunk:
+                break
+            if b"\x00" in chunk:
+                # Binary anywhere in the blob: skipped, not classified as a
+                # degenerate text artifact. The scanner is memory-bounded, so
+                # the whole blob is streamed before the size verdict.
+                return degeneracy.DegeneracyVerdict(degenerate=False)
+            scanner.feed(chunk)
+        if cap is not None and size > int(cap):
+            return degeneracy.DegeneracyVerdict(
+                degenerate=True,
+                reasons=(degeneracy._size_reason(size, int(cap)),),
+            )
+        verdict = scanner.finish()
+    finally:
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        # wait() alone can deadlock: a killed child's stdout pipe may still
+        # hold unread bytes, and the transport never drains them. communicate
+        # drains stdout to EOF (the killed child closes the pipe) first.
+        await proc.communicate()
+    return verdict
+
+
+async def unstage_degenerate_staged(
+    workspace: Path, keep: dict[str, str] | set[str],
+) -> list[dict[str, str]]:
+    """Unstage any degenerate blob in the index that *keep* does not cover.
+
+    ``commit_paths`` stages its paths and then commits the whole index, so a
+    degenerate blob staged but absent from the change set (agent state, a
+    parser miss) would ride a healthy commit. Degenerate leftovers are
+    unstaged — the worktree copy, if any, is left for the normal cleanup
+    paths — and one entry per unstaged path is returned. Fail-open: a probe
+    error (missing workspace, git failure) leaves the index untouched.
+    """
+    removed: list[dict[str, str]] = []
+    try:
+        staged = await staged_paths(workspace)
+        suspects = [p for p in staged if p not in keep]
+        for path in suspects:
+            verdict = await classify_staged_blob(workspace, path, size_cap=None)
+            if verdict is None or not verdict.degenerate:
+                continue
+            await unstage_paths(workspace, [path])
+            removed.append(
+                {
+                    "path": path,
+                    "kind": "unstaged_degenerate",
+                    "reason": format_refusal(path, verdict),
+                }
+            )
+    except OSError:
+        return removed
+    return removed
 
 
 async def _run_git(
@@ -179,6 +365,12 @@ async def revert_paths(workspace: Path, paths: list[str]) -> list[str]:
 
     for path in paths:
         path_obj = workspace / path
+
+        # Unstage first: ls-files reads the index, so a staged-but-never-
+        # committed path would be reported as tracked and "restored" by
+        # checkout from its own staged blob, leaving the content in the index
+        # for the next index-wide commit (#396).
+        await unstage_paths(workspace, [path])
 
         rc, stdout = await _run_git_stdout(
             [_GIT, "ls-files", "--", path],

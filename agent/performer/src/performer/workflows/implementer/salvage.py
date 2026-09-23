@@ -38,9 +38,13 @@ a crash and lose the reason an operator needs. The caller enforces that; see
 """
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
 import structlog
+
+from performer.degeneracy import classify_file
 
 log = structlog.get_logger(__name__)
 
@@ -63,6 +67,20 @@ _ARTIFACT_SUFFIXES = (".pyc", ".pyo")
 
 def _is_artifact(path: str) -> bool:
     return path.endswith(_ARTIFACT_SUFFIXES) or any(m in path for m in _ARTIFACT_MARKERS)
+
+
+def _degenerate_paths(workspace: Path, paths: list[str]) -> list[str]:
+    """396: a degenerate artifact is never salvaged onto the branch.
+
+    Repetition rules only (size_cap off): a large honest source file is
+    legitimate, and exact-line repetition is the incident's signature.
+    """
+    flagged: list[str] = []
+    for p in paths:
+        verdict = classify_file(workspace / p, size_cap=None)
+        if verdict.degenerate:
+            flagged.append(p)
+    return flagged
 
 
 def should_salvage(paths: dict[str, str] | None) -> bool:
@@ -113,11 +131,34 @@ async def salvage_failed_work(
         log.warning("implementer.salvage_scan_failed", error=str(exc)[:200])
         return False
 
-    if not should_salvage(paths):
+    keep = sorted(p for p in paths if not _is_artifact(p))
+    degenerate = await asyncio.to_thread(_degenerate_paths, workspace, keep)
+    if degenerate:
+        log.warning(
+            "implementer.salvage_degenerate_excluded",
+            paths=degenerate[:10],
+            count=len(degenerate),
+        )
+        keep = [p for p in keep if p not in degenerate]
+        # The salvage commit is index-wide: a squashed index entry for an
+        # excluded path would ride along even though it is not in `keep`.
+        await git.unstage_paths(workspace, degenerate)
+    leftovers = await git.unstage_degenerate_staged(workspace, set(keep))
+    if leftovers:
+        log.warning(
+            "implementer.salvage_degenerate_staged_unstaged",
+            paths=len(leftovers),
+            entries=leftovers[:10],
+        )
+    discard = degenerate + [entry["path"] for entry in leftovers]
+    if discard:
+        # The push below rebases when the branch already exists remotely, and
+        # a rebase refuses on a dirty tree: degenerate artifacts left in the
+        # worktree would sink the healthy salvage commit with them (#396).
+        await git.revert_paths(workspace, discard)
+    if not keep or not should_salvage(paths):
         log.info("implementer.salvage_nothing_to_keep", paths=len(paths or {}))
         return False
-
-    keep = sorted(p for p in paths if not _is_artifact(p))
     try:
         sha = await commit_paths(workspace, keep, salvage_message(
             int(getattr(ctx, "issue_number", 0) or 0), reason))

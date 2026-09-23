@@ -20,6 +20,7 @@ timed out or errored leaves the tree exactly as it was.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from typing import Any
 import structlog
 
 from performer.backends._card_docs import completed_documentation_prompt_section
+from performer.degeneracy import classify_file, format_refusal
 from performer.noise_paths import AGENT_CONFIG_DIRS
 from performer.test_results import TestSummary
 from performer.workflows.implementer import commits as git
@@ -150,6 +152,70 @@ def _is_build_artifact(path: str) -> bool:
 
 def _forbidden_paths(kind: str) -> list[str]:
     return [DOCS_TREE, "README.md"] if kind != "tests" else [DOCS_TREE, "README.md", "src/", "app/", "lib/"]
+
+
+async def _degenerate_leftovers(
+    ctx: "RunContext",
+    changed: dict[str, str],
+    reverts: list[dict[str, str]],
+    kind: str,
+) -> bool:
+    """Revert and unstage every degenerate artifact of the turn (#396).
+
+    The changed-tree sweep reverts in-scope degenerate edits; the staged
+    sweep unstages degenerate index entries the change filters never
+    surfaced (agent state, a parser miss) so they cannot ride the index-wide
+    commit. Returns True when no healthy work remains to commit.
+    """
+    degenerate = await _revert_degenerate(ctx.workspace, changed)
+    reverts.extend(degenerate)
+    leftovers = await git.unstage_degenerate_staged(ctx.workspace, changed)
+    if leftovers:
+        reverts.extend(leftovers)
+        log.info(
+            "implementer.degenerate_staged_unstaged",
+            paths=len(leftovers),
+            kind=kind,
+        )
+    return bool(degenerate or leftovers) and not changed
+
+
+async def _revert_degenerate(workspace: Path, changed: dict[str, str]) -> list[dict[str, str]]:
+    """396: degenerate artifacts (repeated-token narration) never reach a commit.
+
+    Runs over the turn's surviving changed paths — in scope, so the scope
+    filter did not stop them — and reverts any whose text is degenerate.
+    Reverted paths are recorded like scope reverts: loudly, with the reason.
+    The size rule is off here: a large honest source file is legitimate, and
+    exact-line repetition is the incident's signature.
+    """
+    flagged: list[dict[str, str]] = []
+    for path, status in sorted(changed.items()):
+        if status == "deleted":
+            continue
+        verdict = await asyncio.to_thread(classify_file, workspace / path, size_cap=None)
+        if not verdict.degenerate:
+            continue
+        flagged.append({"path": path, "kind": "reverted_degenerate", "reason": format_refusal(path, verdict)})
+    if flagged:
+        paths = [f["path"] for f in flagged]
+        # The turn may have squashed work into the index. Reset the index
+        # entry first: `git checkout --` restores from the index, so an
+        # index-added artifact would be "reverted" to the very content that
+        # carries it, and the index-wide commit would still take it.
+        await git.unstage_paths(workspace, paths)
+        reverted = await git.revert_paths(workspace, paths)
+        for f in flagged:
+            # Pop regardless of revert success: the unstage guarantees the
+            # index no longer carries the path, so it can never be re-added
+            # or committed by this turn.
+            changed.pop(f["path"], None)
+        log.warning(
+            "implementer.degenerate_paths_reverted",
+            paths=paths,
+            reverted=reverted,
+        )
+    return flagged
 
 
 def _scope_list(milestone: MilestonePlan) -> list[str]:
@@ -286,6 +352,12 @@ async def run_turn(
                 reverts = violations
                 for v in violations:
                     changed.pop(v["path"], None)
+            if await _degenerate_leftovers(ctx, changed, reverts, brief.kind):
+                # Every degenerate artifact of the turn is now reverted or
+                # unstaged and no healthy work remains to commit, so the turn
+                # cannot count as "done" — the lane would mark the milestone
+                # complete with nothing implemented (#396).
+                result = result.model_copy(update={"exit_state": "error"})
     ctx.scope_reverts.extend(reverts)
     attempt = PerTurnAttempt(
         kind=brief.kind,

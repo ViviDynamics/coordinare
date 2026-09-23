@@ -17,8 +17,16 @@ from typing import Literal
 
 import structlog
 
+from performer.degeneracy import (
+    DegenerateArtifactError,
+    classify_text,
+)
 from performer.models import Score, Stand
 from performer.noise_paths import exclude_globs, path_has_agent_config
+from performer.workflows.implementer.commits import (
+    classify_staged_blob as _classify_staged_blob,
+)
+from performer.workflows.implementer.commits import staged_paths as _staged_paths
 
 log = structlog.get_logger(__name__)
 
@@ -1404,6 +1412,29 @@ def _stand_git_runners(stand: Stand, env: dict[str, str]):
     return _git, _git_out
 
 
+async def _refuse_staged_degenerate(stand: Stand, seam: str) -> None:
+    """396: refuse pre-staged degenerate content before an index-wide commit.
+
+    ``git commit -m`` commits the whole index, so a degenerate artifact the
+    agent staged earlier would ride along with a commit of perfectly healthy
+    files. Scan the staged set and refuse loudly instead. The INDEX blob is
+    classified, not the worktree file: the agent can stage junk and then
+    change or delete the worktree copy, and the index version is what a
+    later ``git commit -m`` would commit.
+    """
+    for staged in await _staged_paths(stand.path):
+        staged_verdict = await _classify_staged_blob(stand.path, staged)
+        if staged_verdict is None or not staged_verdict.degenerate:
+            continue
+        log.warning(
+            "commit.degenerate_staged_refused",
+            seam=seam,
+            path=staged,
+            reasons=list(staged_verdict.reasons),
+        )
+        raise DegenerateArtifactError(staged, staged_verdict.reasons)
+
+
 async def commit_file(
     stand: Stand, path: str, content: str, message: str, *, score: Score | None = None,
 ) -> None:
@@ -1418,6 +1449,14 @@ async def commit_file(
     # Validate path is relative and doesn't escape the workspace.
     if os.path.isabs(path) or ".." in Path(path).parts:
         raise WorkspaceSetupError(f"commit_file: unsafe path rejected: {path!r}")
+
+    # 396: a degenerate artifact (repeated-token narration) is never committed
+    # or pushed; the refusal is loud, not silent.
+    verdict = classify_text(content)
+    if verdict.degenerate:
+        log.warning("commit_file.degenerate_refused", path=path, reasons=list(verdict.reasons))
+        raise DegenerateArtifactError(path, verdict.reasons)
+    await _refuse_staged_degenerate(stand, "commit_file")
 
     abs_path = stand.path / path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,6 +1580,20 @@ async def commit_files(
     del_paths = _safe_doc_deletions(deletions)
     if not files and not del_paths:
         return []
+
+    # 396: refuse the WHOLE batch before anything is written or committed —
+    # one degenerate page must not land alongside healthy ones.
+    for f in files:
+        path = f.get("path", "") if isinstance(f.get("path"), str) else ""
+        if not path or Path(path).is_absolute() or ".." in Path(path).parts:
+            continue
+        content = f.get("content", "")
+        if isinstance(content, str):
+            verdict = classify_text(content)
+            if verdict.degenerate:
+                log.warning("commit_files.degenerate_refused", path=path, reasons=list(verdict.reasons))
+                raise DegenerateArtifactError(path, verdict.reasons)
+    await _refuse_staged_degenerate(stand, "commit_files")
 
     env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
     committed: list[str] = []
