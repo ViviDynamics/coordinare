@@ -125,6 +125,25 @@ def test_last_blocked_slack_delivered_at_round_trips() -> None:
     assert recovered["last_blocked_slack_delivered_at"] == stamp
 
 
+def test_slot_queued_since_round_trips() -> None:
+    """354: dispatch_performer stamps this queued-wait marker on the session
+    dict; if it's missing from _SESSION_FIELDS the daemon's cycle merge drops
+    it and a card queued on a saturated pool loses its wait elapsed every
+    cycle — the board row shows "Queued for implementing · —" forever."""
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC)
+    session = create_session_from_card(_sample_card())
+    session["slot_queued_since"] = stamp
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["slot_queued_since"] == stamp
+
+    recovered = state_to_session(state)
+    assert recovered["slot_queued_since"] == stamp
+
+
 def test_lifecycle_completed_at_round_trips() -> None:
     """Regression: monitor_performer._advance_stage stamps this cutoff when a
     card hands off to monitoring_pr; if it's missing from _SESSION_FIELDS the

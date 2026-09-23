@@ -471,6 +471,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             else None,
             assessment=assessment,
             review_findings=review_findings,
+            # 354: persist the queued-for-slot stamp so the board row's wait
+            # elapsed survives a daemon restart.
+            slot_queued_since=sess.get("slot_queued_since"),
         )
     return out
 
@@ -1174,6 +1177,9 @@ class CoordinareDaemon:
                         if persisted.documenting_side is not None
                         else None
                     ),
+                    # 354: restore the queued-for-slot stamp so a card that was
+                    # waiting on a saturated pool keeps its real wait elapsed.
+                    "slot_queued_since": persisted.slot_queued_since,
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that

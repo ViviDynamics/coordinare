@@ -259,6 +259,11 @@ class CardSession(TypedDict, total=False):
     last_attempt_id: str | None
     last_attempt_log_path: str | None
     last_attempt_failure_source: str | None
+    # 354: first cycle this card wanted a performer slot and none was free.
+    # Stamped by dispatch_performer's at-capacity branch; cleared on acquire.
+    # MUST round-trip through session ↔ state or the queued wait resets every
+    # cycle and the board row loses its elapsed time.
+    slot_queued_since: datetime | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -370,6 +375,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "last_attempt_id",
     "last_attempt_log_path",
     "last_attempt_failure_source",
+    # 354: queued-for-slot marker (first cycle wanting a slot, cleared on
+    # acquire). Round-trips so the board row's wait elapsed survives restarts.
+    "slot_queued_since",
 )
 
 
@@ -464,6 +472,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         last_attempt_id=None,
         last_attempt_log_path=None,
         last_attempt_failure_source=None,
+        # 354: a freshly-picked-up card is not queued for anything yet
+        slot_queued_since=None,
     )
 
 

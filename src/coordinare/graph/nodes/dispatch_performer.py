@@ -1112,10 +1112,19 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             # Override produced a terminal-for-this-cycle state (blocked /
             # monitoring_pr); honour it directly.  The body in
             # _dispatch_performer_body will not run.
+            # 354: leaving dispatching ends the current queue stint — the
+            # next queue (after an unblock or restart) re-stamps from
+            # scratch, so the board never reports a wait that spans the
+            # block.
+            override_result["slot_queued_since"] = None
             github_for_override = state.get("github_service")
             return await _apply_override_terminal(override_result, state.get("current_card"), github_for_override)
         # Override kept us in dispatching with mutated state — proceed.
         state = override_result
+        # 354: the override may move the card to another role — any prior
+        # queued-for-slot wait belongs to the old queue, not this one. The
+        # next at-capacity cycle re-stamps from now.
+        state["slot_queued_since"] = None
 
     card = state.get("current_card")
     performer_stage = str(state.get("performer_stage") or "")
@@ -1551,12 +1560,22 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if service is None and hasattr(slot_manager, "is_at_capacity") and slot_manager.is_at_capacity(performer_stage):
             # At capacity — card waits. Return without changing phase so
             # the next poll cycle retries.
+            # 354: stamp the FIRST cycle this card wanted a slot and none
+            # was free; the dashboard renders the real wait from it. Later
+            # queued cycles must not overwrite the stamp, and it clears
+            # the moment the card acquires a slot below.
+            if state.get("slot_queued_since") is None:
+                state["slot_queued_since"] = datetime.now(UTC)
             logger.info(
                 "dispatch_performer.at_capacity",
                 performer_stage=performer_stage,
                 card_id=card_id,
             )
             return state
+        # 354: a slot is in hand (acquired, or the stage falls back to the
+        # legacy single-service path) — whatever wait the card endured is
+        # over, so the queued marker resets.
+        state["slot_queued_since"] = None
         # If slot_manager returned None but NOT at capacity:
         # - Stage has no pool (unknown) → fall through to legacy
         # - Stage has pool with max=0 (disabled) → don't fall through

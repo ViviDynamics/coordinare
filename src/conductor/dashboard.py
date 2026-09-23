@@ -664,6 +664,11 @@ class DashboardStore:
                     if isinstance(_sess_dispatch, datetime)
                     else None
                 ),
+                "slot_queued_since": (
+                    _sess_queued.isoformat()
+                    if isinstance((_sess_queued := sess.get("slot_queued_since")), datetime)
+                    else (str(_sess_queued) if _sess_queued else None)
+                ),
                 "container_id": _sess_agent_dispatch.get("container_id"),
             })
         # Single-session mode compatibility: when multi-card ``active_sessions``
@@ -718,6 +723,11 @@ class DashboardStore:
                     _top_dispatch.isoformat()
                     if isinstance(_top_dispatch, datetime)
                     else None
+                ),
+                "slot_queued_since": (
+                    _top_queued.isoformat()
+                    if isinstance((_top_queued := daemon.state.get("slot_queued_since")), datetime)
+                    else (str(_top_queued) if _top_queued else None)
                 ),
                 "container_id": _dispatch.get("container_id"),
             })
@@ -3247,6 +3257,18 @@ window.addEventListener('popstate', function() { router(); });
 
 // 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
 // BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
+// 354: queued-for-slot board-row presentation. A card whose role pool is
+// saturated sits in phase 'dispatching' with no slot; it renders as
+// "Queued for <stage>" with a real wait (from the persisted
+// slot_queued_since stamp) instead of a misleading "Dispatching". Returns
+// null when the card is not queued, so callers keep their ordinary label.
+// Queue position is deliberately not shown: the slot manager keeps no
+// ordering, so a per-card position would be invented.
+function queuedPhaseLabel(sess) {
+  if (!sess || sess.phase !== 'dispatching' || !sess.slot_queued_since) return null;
+  return 'Queued for ' + (sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : 'performer');
+}
+
 // in-flight work the coordinare is reasoning about.
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
@@ -3376,19 +3398,26 @@ function renderActiveWorkPanels(s) {
     var liveLine = '';
     if (sess) {
       var skip = (s.session_skip_reasons || {})[iid];
+      // 354: a card waiting on a saturated pool is queued, not dispatching.
+      var queuedLabel = queuedPhaseLabel(sess);
       var phaseLabel = skip && skip.reason === 'pipeline_capacity'
-        ? 'Queued — issue limit reached' : formatPhaseLabel(sess.phase || '');
+        ? 'Queued — issue limit reached' : (queuedLabel || formatPhaseLabel(sess.phase || ''));
       var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '';
-      var elapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '') : '';
+      // Queued wait is measured from the queued stamp; an actively
+      // dispatching card measures from when its dispatch began.
+      var waitSource = queuedLabel ? sess.slot_queued_since : sess.agent_dispatch_at;
+      var elapsed = waitSource ? (fmtAge(waitSource) || '') : '';
       var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
       var elapsedHtml = elapsed
-        ? (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed))
+        ? (queuedLabel
+          ? '<span style="color:var(--color-accent-yellow)">' + esc(elapsed) + '</span>'
+          : (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed)))
         : '';
       var costStr = sess.agent_dispatch_at
         ? '$' + (Number(sess.card_cost_estimate) || 0).toFixed(4)
         : '—';
       var parts = [phaseLabel];
-      if (stage) parts.push('<code>' + stage + '</code>');
+      if (!queuedLabel && stage) parts.push('<code>' + stage + '</code>');
       if (elapsedHtml) parts.push(elapsedHtml);
       parts.push(esc(costStr));
       liveLine = '<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px">' + parts.join(' · ') + '</div>';
