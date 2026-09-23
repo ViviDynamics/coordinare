@@ -115,3 +115,31 @@ def test_the_live_path_wires_the_real_gateway_helper(monkeypatch, module, fixtur
     runner = importlib.import_module(f"coordinare.eval.{module}")
     scores = asyncio.run(runner.run_all(live=True, only=fixture))
     assert scores and scores[0].passed, getattr(scores[0], "notes", None)
+
+
+def test_security_live_model_call_reaches_gateway_without_recursion(monkeypatch):
+    """Regression #456: the live branch rebound ``model_call = counting`` after
+    defining ``counting``, so the closure's free variable resolved to the wrapper
+    itself and the first live model call recursed to RecursionError. The gateway
+    callable is stubbed with a sentinel: reaching it must raise the sentinel and
+    unwind, not recurse."""
+    from coordinare.eval import gateway
+
+    class GatewayReachedError(Exception):
+        pass
+
+    async def _sentinel(persona, content, max_tokens):
+        raise GatewayReachedError
+
+    monkeypatch.setattr(gateway, "_call_model", _sentinel)
+    with pytest.raises(GatewayReachedError):
+        asyncio.run(security_scenarios.run_all(live=True, only="secret"))
+
+
+def test_architect_local_runner_accepts_cwd_none():
+    """Regression #456: ``_local_runner`` did ``cwd=str(cwd)`` unconditionally, so
+    the ``Toolkit.run_command`` default of ``cwd=None`` became the chdir target
+    ``"None"`` and the subprocess failed to spawn."""
+    code, out = asyncio.run(architect_scenarios._local_runner("echo hi", None, 5))
+    assert code == 0
+    assert "hi" in out

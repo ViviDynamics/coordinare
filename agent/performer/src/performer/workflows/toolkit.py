@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 M = TypeVar("M", bound=BaseModel)
 
 #: (cmd, cwd, timeout) -> (exit_code, output)
-CommandRunner = Callable[[str, Any, int], Awaitable[tuple[int, str]]]
+CommandRunner = Callable[[str, Path | str | None, int], Awaitable[tuple[int, str]]]
 #: (persona, content, max_tokens) -> ModelReply
 ModelCall = Callable[[str, list[dict], int], Awaitable[ModelReply]]
 #: (brief: dict, *, timeout_s: float) -> TurnResult dict
