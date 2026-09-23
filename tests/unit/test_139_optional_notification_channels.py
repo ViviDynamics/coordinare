@@ -397,16 +397,23 @@ class TestTheStallIsLoggedWithNothingElseConfigured:
         """One policy, not two.
 
         Two independent dedup policies for the same event disagree eventually, and
-        the disagreement shows up as either log spam or a missing warning.
+        the disagreement shows up as either log spam or a missing warning. 398:
+        the key is derived once (``stuck_dedup_key``, which handles the cardless
+        case) and handed to both the stall log and the dispatch.
         """
         import inspect
 
         from coordinare import daemon
 
         source = inspect.getsource(daemon)
-        key_expr = "stuck:{_card.get('id', '')}:{_stuck_phase}"
-        assert source.count(key_expr) >= 2, (
-            "the stall log and the notification dispatch must derive the same key"
+        key_at = source.index("_stuck_key = stuck_dedup_key(")
+        log_at = source.index("if should_log_stall(")
+        dispatch_at = source.index("dedup_key=_stuck_key,")
+
+        assert log_at > key_at, "the log must use the derived key"
+        assert dispatch_at > key_at, "the dispatch must use the derived key"
+        assert source.count("_stuck_key = stuck_dedup_key(") == 1, (
+            "the key must be derived exactly once — two derivations drift apart"
         )
 
 
