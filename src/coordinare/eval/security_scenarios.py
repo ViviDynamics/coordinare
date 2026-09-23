@@ -66,10 +66,11 @@ async def run_fixture(fixture: Fixture, *, live: bool, workspace: Path | None = 
         model_call, runner, scan_runner = _call_model, _run_command, default_runner
         workspace = workspace or _live_workspace(fixture)
         model_calls = {"i": 0}
+        base = _call_model
 
         async def counting(persona: str, content: list[dict[str, Any]], max_tokens: int) -> ModelReply:
             model_calls["i"] += 1
-            return await model_call(persona, content, max_tokens)
+            return await base(persona, content, max_tokens)
 
         model_call = counting
     else:
