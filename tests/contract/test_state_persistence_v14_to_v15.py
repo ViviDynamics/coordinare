@@ -38,8 +38,8 @@ _ITEM = {
 
 
 def test_current_schema_version_is_24() -> None:
-    """343 adds the per-session workflow step trail; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 24  # 343: + workflow_step / entered_at / trail
+    """354 adds the per-session queued-for-slot wait stamp; prior fields remain supported."""
+    assert CURRENT_SCHEMA_VERSION == 25  # 354: + slot_queued_since
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

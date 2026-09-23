@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 24  # 343: workflow_step trail for per-performer position
+CURRENT_SCHEMA_VERSION: int = 25  # 354: slot_queued_since on PersistedSession
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -112,8 +112,12 @@ CURRENT_SCHEMA_VERSION: int = 24  # 343: workflow_step trail for per-performer p
 # (not a dict, missing changed_files or verdict) drops to None on load, never
 # failing the snapshot. Review findings are cleared when the reviewer is
 # dispatched (reset_review_findings_for_reviewer) and injected into the
-# implementing stage only (inject_review_findings). Finding anchors and verdict
-# text only; never secret values.
+# implementing stage only (inject_review_findings).
+# v25 (354) adds slot_queued_since on PersistedSession: the first cycle this
+# card wanted a performer slot and none was free, stamped by
+# dispatch_performer's at-capacity branch and cleared on acquire. v1-v24
+# snapshots load with None — the wait is unknown until the next queued cycle
+# re-stamps it. One datetime only; never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -448,6 +452,11 @@ class PersistedSession(BaseModel):
     # blueprint_hash and created_at; briefs are projected from it at dispatch
     # and never stored. Defaults keep v1-v16 snapshots loading unchanged.
     documentation_findings: dict[str, Any] = Field(default_factory=dict)
+    # 354 (schema v25+): first cycle this card wanted a performer slot and
+    # none was free (dispatch_performer at-capacity stamp). None = not queued.
+    # Cleared the moment the card acquires a slot. Optional / default ``None``
+    # keeps v1-v24 snapshots loading unchanged.
+    slot_queued_since: datetime | None = None
 
     @field_validator("documentation_findings", mode="before")
     @classmethod

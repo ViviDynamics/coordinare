@@ -223,6 +223,10 @@ class CoordinareState(TypedDict, total=False):
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
     role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
+    # 354: first cycle the card wanted a performer slot and none was free.
+    # Stamped by dispatch_performer's at-capacity branch, cleared on acquire;
+    # the dashboard renders the real queued wait from it.
+    slot_queued_since: datetime | None
     phase_entered_at: datetime | None  # 028: timestamp when current phase was entered
     requirements_changed: bool  # 030: True if card requirements changed during monitoring
     requirements_changed_details: dict[str, Any]  # 030: diff details
@@ -496,6 +500,9 @@ def initial_state() -> CoordinareState:
         "last_attempt_id": None,
         "last_attempt_log_path": None,
         "last_attempt_failure_source": None,
+        # 354: queued-for-slot marker; stamped by dispatch_performer's
+        # at-capacity branch, cleared when the card acquires a slot.
+        "slot_queued_since": None,
         "blocked_by_dependencies": [],
         "no_progress_relays": {},
         "last_known_main_sha": None,
