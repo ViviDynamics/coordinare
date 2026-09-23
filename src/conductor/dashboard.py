@@ -564,7 +564,11 @@ class DashboardStore:
         card_dict = card if isinstance(card, dict) else {}
         active_card_issue_url = str(card_dict.get("issue_url", "")) or None
 
-        card_clarifications = list(snapshot.card_clarifications) if snapshot else []
+        card_clarifications = self._annotate_clarifications(
+            list(snapshot.card_clarifications) if snapshot else [],
+            card_dict,
+            snapshot,
+        )
         performer_events = list(daemon.state.get("performer_events") or [])
         performer_metrics = daemon.state.get("performer_metrics")
         performer_backend = str(
@@ -777,7 +781,7 @@ class DashboardStore:
                 if isinstance(daemon.state.get("agent_dispatch_at"), datetime)
                 else None
             ),
-            "open_questions": list(snapshot.open_questions) if snapshot else [],
+            "open_questions": self._serialize_open_questions(daemon, snapshot, card_dict),
             "card_clarifications": card_clarifications,
             "performer_events": performer_events,
             "performer_metrics": performer_metrics,
@@ -839,6 +843,113 @@ class DashboardStore:
                 "config_version": daemon.state.get("config_version", 0),
             },
         }
+
+    @staticmethod
+    def _serialize_open_questions(
+        daemon: Any,
+        snapshot: Any,
+        card_dict: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """355: card-attributed open questions, scoped to live blocked state.
+
+        Each entry is ``{card_id, card_number, card_title, stage, text,
+        asked_at, issue_url}`` instead of the pre-355 bare string, so the
+        Open Questions panel can say which card asked what, when, and link
+        to it.
+
+        Sessions are authoritative: a question renders only while its owning
+        session's phase is still ``blocked`` (FR: the panel must not outlive
+        the condition that produced it — the #355 incident showed an
+        env-blocker question persisting after the card had left the Blocked
+        column). The legacy fallback below keeps single-card / pre-355
+        snapshots renderable, gated on the daemon's LIVE phase rather than
+        the snapshot's, which is what makes the stale panel go away.
+        """
+        questions: list[dict[str, Any]] = []
+        sessions = daemon.state.get("active_sessions") or {}
+        for sid, sess in sessions.items():
+            if not isinstance(sess, dict) or str(sess.get("phase") or "") != "blocked":
+                continue
+            sess_card = sess.get("current_card") or {}
+            sess_card = sess_card if isinstance(sess_card, dict) else {}
+            asked_at = sess.get("last_blocked_notified_at")
+            stage = sess.get("performer_stage")
+            questions.extend(
+                {
+                    "card_id": str(sid),
+                    "card_number": sess_card.get("issue_number"),
+                    "card_title": str(sess_card.get("title", "")),
+                    "stage": str(stage) if isinstance(stage, str) else "",
+                    "text": str(q),
+                    "asked_at": asked_at.isoformat() if isinstance(asked_at, datetime) else None,
+                    "issue_url": str(sess_card.get("issue_url", "")) or None,
+                }
+                for q in sess.get("open_questions") or []
+            )
+        if questions or sessions:
+            return questions
+        # Legacy fallback: flat bare strings from the snapshot (single-card
+        # mode, or a pre-355 persisted snapshot). Attributed to the top-level
+        # active card and gated on the LIVE phase so a question whose card
+        # has moved on never renders.
+        live_phase = str(daemon.state.get("phase", "idle"))
+        if live_phase != "blocked" or not snapshot or not snapshot.open_questions:
+            return []
+        asked_at = snapshot.last_blocked_notified_at
+        return [
+            {
+                "card_id": snapshot.active_card_id,
+                "card_number": card_dict.get("issue_number") or snapshot.active_card_issue_number,
+                "card_title": str(
+                    card_dict.get("title") or snapshot.active_card_title or "",
+                ),
+                "stage": str(snapshot.performer_stage) if snapshot.performer_stage else "",
+                "text": str(q),
+                "asked_at": asked_at.isoformat() if isinstance(asked_at, datetime) else None,
+                "issue_url": str(card_dict.get("issue_url", "")) or snapshot.active_card_issue_url,
+            }
+            for q in snapshot.open_questions
+        ]
+
+    @staticmethod
+    def _annotate_clarifications(
+        rounds: list[Any],
+        card_dict: dict[str, Any],
+        snapshot: Any,
+    ) -> list[dict[str, Any]]:
+        """355: label each Clarification History round with its card and stage.
+
+        The snapshot's rounds belong to the card that was active when they
+        were collected (flat state mirrors the active card in both single- and
+        multi-card modes), so attribution comes from the top-level card
+        fields. Round content is otherwise preserved byte-identically.
+        """
+        if not rounds:
+            return []
+        card_number = card_dict.get("issue_number") or (
+            snapshot.active_card_issue_number if snapshot else None
+        )
+        card_title = str(card_dict.get("title") or (snapshot.active_card_title if snapshot else "") or "")
+        stage = (snapshot.performer_stage if snapshot else None) or ""
+        card_id = snapshot.active_card_id if snapshot else None
+        issue_url = str(card_dict.get("issue_url", "")) or (
+            snapshot.active_card_issue_url if snapshot else None
+        )
+        annotated: list[dict[str, Any]] = []
+        for rnd in rounds:
+            if isinstance(rnd, dict):
+                entry = dict(rnd)
+                # setdefault, not overwrite: a round that already carries its
+                # own attribution (a future writer) must not be relabelled.
+                entry.setdefault("card_id", card_id)
+                entry.setdefault("card_number", card_number)
+                entry.setdefault("card_title", card_title)
+                entry.setdefault("stage", stage)
+                entry.setdefault("issue_url", issue_url)
+                annotated.append(entry)
+            else:
+                annotated.append(rnd)
+        return annotated
 
     @staticmethod
     def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:
@@ -1750,17 +1861,39 @@ function renderState(s) {
     utilCard.style.display = 'none';
   }
 
-  // Open questions (blocked phase)
+  // Open questions (355: card-attributed; the server scopes the list to
+  // sessions still in the blocked phase, so a question never outlives its
+  // card's blocked state). Each entry is {card_id, card_number, card_title,
+  // stage, text, asked_at, issue_url}; a bare legacy string renders as the
+  // question text alone with the panel-level issue link.
   var qCard = document.getElementById('questions-card');
   var qList = document.getElementById('questions-list');
   if (s.open_questions && s.open_questions.length > 0) {
     qCard.style.display = '';
-    var issueHref = s.issue_url && /^https?:\\/\\//i.test(s.issue_url) ? s.issue_url : null;
     qList.innerHTML = s.open_questions.map(function(q) {
-      var link = issueHref
-        ? ' <a href="' + esc(issueHref) + '" target="_blank" rel="noopener" style="font-size:0.85em;white-space:nowrap">View issue &#8599;</a>'
-        : '';
-      return '<li>' + esc(q) + link + '</li>';
+      var obj = (typeof q === 'string') ? { text: q } : (q || {});
+      var text = (typeof obj.text === 'string') ? obj.text : '';
+      var head = '';
+      if (obj.card_number != null) {
+        var num = '#' + String(obj.card_number);
+        head = obj.issue_url
+          ? '<a href="' + esc(obj.issue_url) + '" target="_blank" rel="noopener">' + esc(num) + '</a>'
+          : esc(num);
+        if (obj.card_title) head += ' ' + esc(obj.card_title);
+      } else if (obj.card_title) {
+        head = esc(obj.card_title);
+      }
+      if (obj.stage) head += ' <span class="muted">(' + esc(obj.stage) + ')</span>';
+      var ageTxt = obj.asked_at ? fmtAge(obj.asked_at) : null;
+      var age = ageTxt ? ' <span class="muted">asked ' + esc(ageTxt) + ' ago</span>' : '';
+      var body = head ? head + ': ' + esc(text) : esc(text);
+      if (!obj.card_number) {
+        var issueHref = s.issue_url && /^https?:\\/\\//i.test(s.issue_url) ? s.issue_url : null;
+        if (issueHref) {
+          body += ' <a href="' + esc(issueHref) + '" target="_blank" rel="noopener" style="font-size:0.85em;white-space:nowrap">View issue &#8599;</a>';
+        }
+      }
+      return '<li>' + body + age + '</li>';
     }).join('');
   } else {
     qCard.style.display = 'none';
@@ -1797,18 +1930,32 @@ function renderState(s) {
     rebaseCard.style.display = 'none';
   }
 
-  // Clarification history
+  // Clarification history (355: each round labelled with the card and stage
+  // it belongs to; rounds stay collapsed as before)
   var clCard = document.getElementById('clarifications-card');
   var clList = document.getElementById('clarifications-list');
   if (s.card_clarifications && s.card_clarifications.length > 0) {
     clCard.style.display = '';
     clList.innerHTML = s.card_clarifications.map(function(round, i) {
+      round = round || {};
       var qs = (round.questions || []).map(function(q) {
         return '<li>' + esc(q) + '</li>';
       }).join('');
       var ans = round.answer ? '<div class="qa-round-a">&#x1F4AC; ' + esc(round.answer) + '</div>' : '';
+      var attr = '';
+      if (round.card_number != null) {
+        var num = '#' + String(round.card_number);
+        attr = round.issue_url
+          ? '<a href="' + esc(round.issue_url) + '" target="_blank" rel="noopener">' + esc(num) + '</a>'
+          : esc(num);
+        if (round.card_title) attr += ' ' + esc(round.card_title);
+      } else if (round.card_title) {
+        attr = esc(round.card_title);
+      }
+      if (round.stage) attr += ' <span class="muted">(' + esc(round.stage) + ')</span>';
+      var header = 'Round ' + (i + 1) + (attr ? ' — ' + attr : '');
       return '<div class="qa-round">' +
-        '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">Round ' + (i+1) + '</div>' +
+        '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">' + header + '</div>' +
         (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
         ans +
         '</div>';
