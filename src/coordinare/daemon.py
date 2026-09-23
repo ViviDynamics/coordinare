@@ -807,6 +807,41 @@ def should_log_stall(
     return True
 
 
+def resolve_stuck_card(state: CoordinareState) -> dict[str, Any]:
+    """398: the card whose identity a card_stuck alert should carry.
+
+    The ``current_card`` mirror is absent exactly when no card is pinned — the
+    common case in ``dispatching``. When exactly one session is in flight it
+    names the stuck card; with zero or several there is no single answer, and
+    guessing one would be wrong.
+    """
+    card = state.get("current_card") or {}
+    if card:
+        return card
+    sessions = state.get("active_sessions") or {}
+    if len(sessions) == 1:
+        only = next(iter(sessions.values()))
+        sess_card = only.get("current_card") if isinstance(only, dict) else None
+        if isinstance(sess_card, dict) and sess_card:
+            return sess_card
+    return {}
+
+
+def stuck_dedup_key(card_id: str, phase: str, phase_entered: Any) -> str:
+    """398: the one dedup key policy for the stall log and the notification.
+
+    With a card identity, key on it — two cards stuck in the same phase are
+    different stalls. Without one (the phase was entered before any card was
+    adopted; ``dispatching`` is the common case), key on the phase entry
+    instead: every cardless stall in a phase used to degrade to a single
+    ``stuck::phase`` key, so the second cardless stall was suppressed, not
+    just anonymous.
+    """
+    if card_id:
+        return f"stuck:{card_id}:{phase}"
+    return f"stuck:(no-card):{phase}:{phase_entered}"
+
+
 class CoordinareDaemon:
     def __init__(
         self,
@@ -3945,9 +3980,10 @@ class CoordinareDaemon:
                                     NotificationSeverity,
                                 )
 
-                                _card = self._state.get("current_card") or {}
+                                _card = resolve_stuck_card(self._state)
                                 _card_title = str(_card.get("title", ""))[:50]
                                 _card_num = _card.get("issue_number", "")
+                                _card_id = str(_card.get("id", ""))
                                 _card_ref = f"#{_card_num} " if _card_num else ""
                                 _summary = f"⏰ {_card_ref}{_card_title} — stuck in {_stuck_phase} for {round(_elapsed // 60)} min"
                                 # 138: the destination that always exists. The bug
@@ -3961,13 +3997,15 @@ class CoordinareDaemon:
                                 # nowhere an operator could see. The only log line
                                 # near here was about the *notification* failing —
                                 # and with no channels there is nothing to fail.
-                                _stuck_key = f"stuck:{_card.get('id', '')}:{_stuck_phase}"
+                                _stuck_key = stuck_dedup_key(
+                                    _card_id, _stuck_phase, _phase_entered,
+                                )
                                 if should_log_stall(
                                     self._logged_stalls, _stuck_key, time.monotonic(),
                                 ):
                                     logger.warning(
                                         "card_stuck",
-                                        card_id=str(_card.get("id", "")),
+                                        card_id=_card_id,
                                         card_number=_card_num,
                                         card_title=_card_title,
                                         stage=_stuck_phase,
@@ -4005,7 +4043,7 @@ class CoordinareDaemon:
                                                     "summary": _summary,
                                                 },
                                                 source="daemon",
-                                                dedup_key=f"stuck:{_card.get('id', '')}:{_stuck_phase}",
+                                                dedup_key=_stuck_key,
                                             ),
                                         )
                                 except Exception as _exc:
