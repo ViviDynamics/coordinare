@@ -298,6 +298,103 @@ check('restored history is newest-first',
       /a2/.test(feed.rows[0]) && /a1/.test(feed.rows[3]));
 
 // ---------------------------------------------------------------------------
+// 353 — collapsed group lines must carry a content preview drawn from the
+// group's entries, and stream_truncated markers must fold into the group they
+// truncated instead of spending a top-level line. These call afGroups() and
+// afRowHtml() directly: the grouped render path is pure string building, so
+// the DOM stub needs no querySelector support.
+// ---------------------------------------------------------------------------
+function feedEntry(seq, text, over) {
+  return Object.assign({
+    seq: seq, timestamp: iso(0), card_id: 'PVTI_demo1', card_number: 142,
+    card_title: 'Add retry budget', stage: 'implementing',
+    activity_type: 'tool_use', text: text, truncated: false,
+    session_id: 's353', performer_id: 'implementer',
+  }, over || {});
+}
+
+function truncatedEntry(seq) {
+  return feedEntry(seq, 'stream st' + seq + ' exceeded 200 updates (looping ' +
+    'or unusually long); further deltas are truncated',
+    { activity_type: 'stream_truncated', stream_id: 'st' + seq });
+}
+
+section('353 — collapsed lines carry content, truncation is a badge');
+resetFeed();
+_afEntries.push(feedEntry(1, 'bash: rspec x1'), feedEntry(2, 'bash: rspec x2'),
+                feedEntry(3, 'bash: rspec x3'));
+const toolGroups = afGroups();
+check('a same-session tool stream forms ONE group', toolGroups.length === 1,
+      String(toolGroups.length));
+const toolRow = afRowHtml(toolGroups[0].entries[0], toolGroups[0]);
+check('collapsed tool line shows the LATEST tool invocation text',
+      toolRow.includes('<span class="af-summary">bash: rspec x3 (3 updates)</span>'),
+      toolRow.slice(0, 240));
+check('generic tool sentence gone from the collapsed line',
+      !toolRow.includes('Performer used a tool.'));
+
+resetFeed();
+_afEntries.push(feedEntry(10, 'Milestone 3/6: lock rules', { activity_type: 'progress' }),
+                feedEntry(11, 'Milestone 4/6: persistence', { activity_type: 'progress' }));
+const progressRow = afRowHtml(null, afGroups()[0]);
+check('collapsed progress line shows the latest progress text',
+      progressRow.includes('<span class="af-summary">Milestone 4/6: persistence (2 updates)</span>'),
+      progressRow.slice(0, 240));
+
+resetFeed();
+_afEntries.push(feedEntry(20, 'line one\nline two\r\n   line three'));
+const oneLineRow = afRowHtml(_afEntries[0], afGroups()[0]);
+check('preview is ONE line — newlines collapse to spaces',
+      oneLineRow.includes('af-summary">line one line two line three (1 update)'),
+      oneLineRow.slice(0, 240));
+
+resetFeed();
+_afEntries.push(feedEntry(21, 'x'.repeat(300)));
+const cappedRow = afRowHtml(_afEntries[0], afGroups()[0]);
+check('preview is capped to one short line with an ellipsis',
+      cappedRow.includes('x'.repeat(119) + '\u2026 (1 update)'), cappedRow.slice(0, 240));
+
+resetFeed();
+_afEntries.push(feedEntry(22, '</div><script>alert(1)</script>'));
+const escapedRow = afRowHtml(_afEntries[0], afGroups()[0]);
+check('preview is HTML-escaped', !/<script>/.test(escapedRow), escapedRow.slice(0, 240));
+
+resetFeed();
+_afEntries.push(feedEntry(23, ''));
+const fallbackRow = afRowHtml(_afEntries[0], afGroups()[0]);
+check('empty text falls back to the generic summary sentence',
+      fallbackRow.includes('af-summary">Performer used a tool. (1 update)'),
+      fallbackRow.slice(0, 240));
+
+resetFeed();
+_afEntries.push(feedEntry(30, 'bash: rspec a'), feedEntry(31, 'bash: rspec b'),
+                truncatedEntry(32));
+const foldedGroups = afGroups();
+check('truncation marker folded into the group it truncated',
+      foldedGroups.length === 1, String(foldedGroups.length));
+check('folded marker counted on the group',
+      foldedGroups[0].truncatedCount === 1, String(foldedGroups[0].truncatedCount));
+const badgeRow = afRowHtml(foldedGroups[0].entries[0], foldedGroups[0]);
+check('folded group shows a truncated badge',
+      badgeRow.includes('af-truncated">truncated</span>'), badgeRow.slice(0, 240));
+check('badge does not take over the chip',
+      badgeRow.includes('ev-tool_use') && !badgeRow.includes('ev-stream_truncated'));
+check('folded marker still visible in the raw view',
+      badgeRow.includes('further deltas are truncated'));
+
+resetFeed();
+_afEntries.push(feedEntry(40, 'bash: rspec a'), truncatedEntry(41),
+                feedEntry(42, 'bash: rspec c'));
+check('a stream continues in the same group after its truncation marker',
+      afGroups().length === 1, String(afGroups().length));
+
+resetFeed();
+_afEntries.push(truncatedEntry(50));
+const orphanRow = afRowHtml(_afEntries[0], afGroups()[0]);
+check('orphan truncation marker keeps its own line', afGroups().length === 1);
+check('orphan marker renders as TRUNCATED chip', orphanRow.includes('ev-stream_truncated'));
+
+// ---------------------------------------------------------------------------
 section('escaping — feed text is backend output and reaches innerHTML');
 resetFeed();
 afAppend([entry(300, {

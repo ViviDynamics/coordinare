@@ -24,8 +24,9 @@ def test_stream_groups_english_summary_and_live_expansion(page, live_server_url)
     # The expandable entry spans the feed, including the old timestamp column.
     assert summary.bounding_box()['width'] > rows.bounding_box()['width'] * 0.9
     expect(summary).to_contain_text('100 updates')
-    expect(summary).to_contain_text('implementing Performer')
-    assert '正在' not in summary.inner_text()
+    # 353: the collapsed line leads with the newest entry's own text instead of
+    # the generic English sentence, so the operator can tell WHAT happened.
+    expect(summary).to_contain_text('正在处理 99 (100 updates)')
     expect(rows.locator('.af-raw')).not_to_be_visible()
     summary.click()
     summary.focus()
@@ -42,12 +43,13 @@ def test_stream_groups_english_summary_and_live_expansion(page, live_server_url)
     # Replayed SSE backfill cannot inflate the count.
     page.evaluate('entries => afAppend(entries)', [_event(i) for i in range(101)])
     expect(summary).to_contain_text('101 updates')
-    # Failures interrupt grouping and stay visible in English.
+    # Failures interrupt grouping and stay visible; the collapsed line carries
+    # the escaped failure text itself (353), never a script element.
     failure = _event(101)
     failure.update(activity_type='error', text='失败 <script>alert(1)</script>')
     page.evaluate('entries => afAppend(entries)', [failure, _event(102)])
     expect(rows).to_have_count(3)
-    expect(rows.nth(1).locator('summary')).to_contain_text('An error was reported.')
+    expect(rows.nth(1).locator('summary')).to_contain_text('失败 <script>alert(1)</script>')
     assert page.locator('#activity-feed script').count() == 0
 
 
@@ -127,7 +129,9 @@ def test_usage_reports_stay_with_stream_without_splitting_text_or_hiding_lifecyc
     row = page.locator('#activity-feed > .af-row')
     expect(row).to_have_count(1)
     summary = row.locator('details > summary').first
-    expect(summary).to_contain_text('Performer used a tool. (5 updates)')
+    # 353: the collapsed line carries the newest non-cost entry's own text
+    # ('pytest tests/') rather than the generic 'Performer used a tool.'.
+    expect(summary).to_contain_text('pytest tests/ (5 updates)')
     summary.click()
     summary.focus()
     assert row.locator('.af-raw > p').text_content() == 'We can proceed.'
