@@ -18,14 +18,119 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from performer.config import Settings
     from performer.models import Performance
 
 log = structlog.get_logger(__name__)
+
+
+def _plan_artifact_refusal(
+    perf: Performance, plan_content: str, tasks_content: str
+) -> PerformerResponse | None:
+    """Refuse an empty or degenerate architecture plan/tasks (#396).
+
+    A degenerate artifact (repeated-token narration) must never be committed:
+    the turn fails and reports why, before anything is written.
+    """
+    if not plan_content:
+        perf.state = "error"
+        perf.error_reason = "Backend produced an empty architecture plan"
+        return PerformerResponse(
+            status="error",
+            session_id=perf.session_id,
+            reason="Backend produced an empty architecture plan",
+        )
+    for artifact_name, artifact_content in (("plan", plan_content), ("tasks", tasks_content)):
+        if not artifact_content:
+            continue
+        verdict = classify_text(artifact_content)
+        if verdict.degenerate:
+            log.warning(
+                "architect.plan_degenerate",
+                artifact=artifact_name,
+                reasons=list(verdict.reasons),
+                session_id=perf.session_id,
+            )
+            perf.state = "error"
+            perf.error_reason = (
+                f"degenerate artifact refused ({artifact_name}): "
+                + "; ".join(verdict.reasons)
+            )
+            return PerformerResponse(
+                status="error",
+                session_id=perf.session_id,
+                reason=perf.error_reason,
+            )
+    return None
+
+
+def _workspace_file_refusal(
+    perf: Performance, artifact_name: str, path: "Path",
+) -> PerformerResponse | None:
+    """Classify a workspace file BEFORE reading it into memory (#396).
+
+    ``classify_file`` bounds its reads, so a multi-gigabyte plan.md is
+    refused without ever being materialized; only a clean file is read whole.
+    """
+    verdict = classify_file(path)
+    if not verdict.degenerate:
+        return None
+    log.warning(
+        "architect.plan_degenerate",
+        artifact=artifact_name,
+        reasons=list(verdict.reasons),
+        session_id=perf.session_id,
+    )
+    perf.state = "error"
+    perf.error_reason = (
+        f"degenerate artifact refused ({artifact_name}): "
+        + "; ".join(verdict.reasons)
+    )
+    return PerformerResponse(
+        status="error",
+        session_id=perf.session_id,
+        reason=perf.error_reason,
+    )
+
+
+def _read_workspace_plan(
+    perf: Performance, folder: str,
+) -> tuple[str, str, PerformerResponse | None]:
+    """Read plan/tasks from the workspace, classifying BEFORE reading (#396).
+
+    ``classify_file`` bounds its reads, so a multi-gigabyte plan.md is
+    refused without ever being materialized; only a clean file is read whole.
+    """
+    ws_plan = perf.stand.path / folder / "plan.md"
+    ws_tasks = perf.stand.path / folder / "tasks.md"
+    if not ws_plan.is_file():
+        return "", "", None
+    file_refusal = _workspace_file_refusal(perf, "plan", ws_plan)
+    if file_refusal:
+        return "", "", file_refusal
+    try:
+        plan_content = ws_plan.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log.warning("architect.read_workspace_plan_failed", path=str(ws_plan), error=str(exc))
+        plan_content = ""
+    if not plan_content or not ws_tasks.is_file():
+        return plan_content, "", None
+    tasks_refusal = _workspace_file_refusal(perf, "tasks", ws_tasks)
+    if tasks_refusal:
+        return "", "", tasks_refusal
+    try:
+        tasks_content = ws_tasks.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log.warning("architect.read_workspace_tasks_failed", path=str(ws_tasks), error=str(exc))
+        tasks_content = ""
+    return plan_content, tasks_content, None
 
 
 async def architect_path(
@@ -72,36 +177,39 @@ async def architect_path(
             plan_content = parts[0].strip()
             tasks_content = parts[1].strip()
     else:
-        ws_plan = perf.stand.path / folder / "plan.md"
-        ws_tasks = perf.stand.path / folder / "tasks.md"
-        if ws_plan.is_file():
-            try:
-                plan_content = ws_plan.read_text(encoding="utf-8").strip()
-            except OSError as exc:
-                log.warning("architect.read_workspace_plan_failed", path=str(ws_plan), error=str(exc))
-                plan_content = ""
-            if plan_content and ws_tasks.is_file():
-                try:
-                    tasks_content = ws_tasks.read_text(encoding="utf-8").strip()
-                except OSError as exc:
-                    log.warning("architect.read_workspace_tasks_failed", path=str(ws_tasks), error=str(exc))
-            if plan_content:
-                plan_source = "workspace"
+        plan_content, tasks_content, ws_refusal = _read_workspace_plan(perf, folder)
+        if ws_refusal:
+            return ws_refusal
+        if plan_content:
+            plan_source = "workspace"
 
-    if not plan_content:
-        perf.state = "error"
-        perf.error_reason = "Backend produced an empty architecture plan"
-        return PerformerResponse(
-            status="error",
-            session_id=perf.session_id,
-            reason="Backend produced an empty architecture plan",
-        )
+    refusal = _plan_artifact_refusal(perf, plan_content, tasks_content)
+    if refusal:
+        return refusal
 
     log.info("architect.plan_source", source=plan_source, session_id=perf.session_id)
 
     plan_path = f"{folder}/plan.md"
     commit_msg = f"chore: add architecture plan for #{issue_num}" if issue_num else "chore: add architecture plan"
-    await commit_file(perf.stand, plan_path, plan_content, commit_msg)
+    try:
+        await commit_file(perf.stand, plan_path, plan_content, commit_msg)
+    except DegenerateArtifactError as exc:
+        # commit_file also scans the index: a degenerate blob staged before
+        # the turn reaches this refusal even though the inline content is
+        # clean. Translate it into a turn failure, not a crash (#396).
+        log.warning(
+            "architect.plan_degenerate",
+            artifact="plan",
+            reasons=list(exc.reasons),
+            session_id=perf.session_id,
+        )
+        perf.state = "error"
+        perf.error_reason = str(exc)
+        return PerformerResponse(
+            status="error",
+            session_id=perf.session_id,
+            reason=perf.error_reason,
+        )
 
     if tasks_content:
         tasks_path = f"{folder}/tasks.md"
