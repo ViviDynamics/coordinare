@@ -33,7 +33,7 @@ _FEED_END = "var banner = document.getElementById('disconnected-banner');"
 _EXPECTED_FUNCTIONS = frozenset({
     "esc", "afLabel", "afTime", "afRowHtml", "afMatches", "afAppend", "afRender",
     "afUpdateEmpty", "afUpdateFilterOptions", "onActivityFilterChange",
-    "afSetLive", "afNoteMessage", "afQuietTick", "afTick",
+    "afSetLive", "afNoteMessage", "afQuietTick", "afTick", "afPreview",
 })
 
 

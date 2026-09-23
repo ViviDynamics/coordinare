@@ -1105,6 +1105,9 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .af-body { min-width: 0; word-break: break-word; color: var(--color-text-primary); }
 .af-kind { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px; letter-spacing: .04em; font-weight: bold; }
 .af-card { color: var(--color-text-muted); margin: 0 4px; }
+/* 353: truncation markers fold into the group they truncated; the badge reuses
+   existing colour tokens so no new contrast pairing is introduced. */
+.af-truncated { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; font-size: 10px; color: var(--color-text-muted); border: 1px solid var(--color-border); }
 .af-stale-note { color: var(--color-accent-yellow); font-size: 11px; padding: 5px 6px; border-bottom: 1px solid var(--color-bg-surface); }
 /* Performers card */
 .perf-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -4186,6 +4189,23 @@ _ACTIVITY_STREAM_JS = """var AF_SUMMARIES = {
   workflow_step: 'Workflow step started.'
 };
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
+// 353: collapsed group lines lead with the newest entry's own text instead of
+// the generic sentence, so the feed answers "which tool? doing what?" without
+// expanding the group. The ingest path already folds the backend's detail
+// field into text and redacts it; the preview renders only what the group
+// already carries, so there is no new leak path. Flattened to one line and
+// capped here because the row is a single summary span.
+var AF_PREVIEW_MAX = 120;
+function afPreview(entries) {
+  for (var i = entries.length - 1; i >= 0; i--) {
+    var e = entries[i];
+    if (e.activity_type === 'cost' || e.activity_type === 'stream_truncated') continue;
+    var text = String(e.text || '').replace(/\\s+/g, ' ').trim();
+    if (text) return text.length > AF_PREVIEW_MAX
+      ? text.slice(0, AF_PREVIEW_MAX - 1) + '\u2026' : text;
+  }
+  return '';
+}
 function afRawHtml(entries) {
   var blocks = [];
   var usage = [];
@@ -4217,7 +4237,8 @@ function afRawHtml(entries) {
 }
 function afRepresentative(entries) {
   for (var i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].activity_type !== 'cost') return entries[i];
+    if (entries[i].activity_type !== 'cost' &&
+        entries[i].activity_type !== 'stream_truncated') return entries[i];
   }
   return entries[entries.length - 1];
 }
@@ -4228,11 +4249,37 @@ function afCanGroup(a, b) {
     a.card_id === b.card_id && a.stage === b.stage &&
     a.session_id === b.session_id && a.performer_id === b.performer_id);
 }
+// 353: the anchor skips folded truncation markers, so a stream that keeps
+// flowing after its own truncation notice rejoins the group it belongs to.
+function afGroupAnchor(group) {
+  for (var i = group.entries.length - 1; i >= 0; i--) {
+    if (group.entries[i].activity_type !== 'stream_truncated') {
+      return group.entries[i];
+    }
+  }
+  return null;
+}
+// 353: a truncation marker annotates the stream it truncated — fold it into
+// that group as a badge rather than spending a top-level line on bookkeeping.
+// An orphan marker (no matching group before it) keeps the legacy standalone
+// line, which is the only sensible render when nothing precedes it.
+function afCanFold(group, e) {
+  var a = group ? afGroupAnchor(group) : null;
+  return !!(a && a.session_id && a.card_id === e.card_id &&
+    a.stage === e.stage && a.session_id === e.session_id &&
+    a.performer_id === e.performer_id);
+}
 function afGroups() {
   var groups = [];
   _afEntries.forEach(function(e) {
-    var g = groups[groups.length - 1];
-    if (g && afCanGroup(g.entries[g.entries.length - 1], e)) g.entries.push(e);
+    var g = groups.length ? groups[groups.length - 1] : null;
+    if (e.activity_type === 'stream_truncated' && afCanFold(g, e)) {
+      g.entries.push(e);
+      g.truncatedCount = (g.truncatedCount || 0) + 1;
+      return;
+    }
+    var anchor = g ? afGroupAnchor(g) : null;
+    if (g && anchor && afCanGroup(anchor, e)) g.entries.push(e);
     else groups.push({key: e._afGroupKey == null ? e.seq : e._afGroupKey, entries:[e]});
   });
   return groups;
@@ -4245,13 +4292,16 @@ function afRowHtml(e, group) {
   var where = who + (e.stage ? ' ' + e.stage : '');
   var count = entries.length;
   var key = group ? group.key : e.seq;
+  var preview = afPreview(entries) || afSummary(e);
+  var badge = group && group.truncatedCount
+    ? '<span class="af-truncated">truncated</span>' : '';
   return '<div class="af-row">' +
     '<details id="af-group-' + esc(String(key)) + '">' +
     '<summary><span class="af-time">' + esc(afTime(latest.timestamp)) + '</span> ' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
-    '<span class="af-summary">' + esc(afSummary(e)) + ' (' + count +
-    (count === 1 ? ' update)' : ' updates)') + '</span></summary>' +
+    '<span class="af-summary">' + esc(preview) + ' (' + count +
+    (count === 1 ? ' update)' : ' updates)') + '</span>' + badge + '</summary>' +
     '<div class="af-raw-label">Raw output (may contain other languages; retained text only)</div>' +
     '<div class="af-raw">' + afRawHtml(entries) + '</div>' +
     '</details></div>';
@@ -4275,8 +4325,21 @@ function afSyncGroups(reset) {
     var chip = node.querySelector('.af-kind');
     chip.className = 'af-kind ev-' + e.activity_type;
     chip.textContent = afLabel(e.activity_type);
-    node.querySelector('.af-summary').textContent = afSummary(e) + ' (' +
+    // 353: the collapsed line carries the newest entry's text; the truncation
+    // badge is inserted or removed to match the folded marker count.
+    var summary = afPreview(g.entries) || afSummary(e);
+    var summaryEl = node.querySelector('.af-summary');
+    summaryEl.textContent = summary + ' (' +
       g.entries.length + (g.entries.length === 1 ? ' update)' : ' updates)');
+    var badge = node.querySelector('.af-truncated');
+    if (g.truncatedCount && !badge) {
+      var mark = document.createElement('span');
+      mark.className = 'af-truncated';
+      mark.textContent = 'truncated';
+      summaryEl.parentNode.insertBefore(mark, summaryEl.nextSibling);
+    } else if (!g.truncatedCount && badge) {
+      badge.remove();
+    }
     var raw = node.querySelector('.af-raw');
     var signature = g.entries[0].seq + ':' + latest.seq;
     if (raw.getAttribute('data-events') !== signature) {
