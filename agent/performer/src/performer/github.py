@@ -91,6 +91,8 @@ async def get_pr_head_sha(owner: str, repo: str, pr_number: int, token: str) -> 
 
 _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
 _PASSING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+_LIST_PER_PAGE = 100
+_LIST_MAX_PAGES = 10
 
 
 def _require_token(token: str, operation: str) -> None:
@@ -109,11 +111,18 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
     _require_token(token, "get_check_runs")
     url = f"{_github_api()}/repos/{owner}/{repo}/commits/{ref}/check-runs"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    runs: list[dict] = []  # type: ignore[type-arg]
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers=headers, params={"per_page": "100"})
-    if not resp.is_success:
-        raise GitHubAPIError(resp.status_code, resp.text)
-    runs = resp.json().get("check_runs", [])
+        page = 1
+        while True:
+            resp = await client.get(url, headers=headers, params={"per_page": str(_LIST_PER_PAGE), "page": str(page)})
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text)
+            batch = resp.json().get("check_runs", [])
+            runs.extend(batch)
+            if len(batch) < _LIST_PER_PAGE or page >= _LIST_MAX_PAGES:
+                break
+            page += 1
     from performer.ci_evidence import fetch_failure_evidence
 
     for run in runs:
@@ -128,6 +137,72 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
             output["summary"] = "\n".join([str(output.get("summary") or ""), *messages])
             run["output"] = output
     return runs
+
+
+async def get_commit_statuses(owner: str, repo: str, ref: str, token: str) -> list[dict]:  # type: ignore[type-arg]
+    """Return the commit statuses for *ref* via the REST commit-status API.
+
+    Repos whose CI is a plain status context (Jenkins, older CircleCI) carry
+    no check runs at all, so the CI gate folds these in as pseudo runs.
+    Paginated like the check-run listing: the combined `/status` view caps
+    its ``statuses`` array at 30, and a failing context beyond the first page
+    must not slip past the gate — so this walks the history endpoint.
+    """
+    _require_token(token, "get_commit_statuses")
+    url = f"{_github_api()}/repos/{owner}/{repo}/statuses/{ref}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=30) as client:
+        for page in range(1, _LIST_MAX_PAGES + 1):
+            resp = await client.get(url, headers=headers, params={"per_page": str(_LIST_PER_PAGE), "page": str(page)})
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text)
+            batch = resp.json()
+            out.extend(batch)
+            if len(batch) < _LIST_PER_PAGE:
+                break
+    return out
+
+
+async def fetch_pr_review_context(owner: str, repo: str, pr_number: int, token: str) -> dict:  # type: ignore[type-arg]
+    """The review facts a closer must not guess: PR author, reviewDecision,
+    and the logins behind any CHANGES_REQUESTED review, bots excluded.
+
+    A repo whose CI is green but whose human reviewer hit "Request changes"
+    keeps the verdict changes_requested; a bot's CHANGES_REQUESTED does not
+    outrank the work.
+    """
+    _require_token(token, "fetch_pr_review_context")
+    base = f"{_github_api()}/repos/{owner}/{repo}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        pr_resp = await client.get(f"{base}/pulls/{pr_number}", headers=headers)
+        if not pr_resp.is_success:
+            raise GitHubAPIError(pr_resp.status_code, pr_resp.text[:200])
+        pr = pr_resp.json()
+        reviews: list[dict] = []
+        page = 1
+        while True:
+            resp = await client.get(f"{base}/pulls/{pr_number}/reviews", headers=headers, params={"per_page": str(_LIST_PER_PAGE), "page": str(page)})
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text[:200])
+            batch = resp.json()
+            reviews.extend(batch)
+            if len(batch) < _LIST_PER_PAGE or page >= _LIST_MAX_PAGES:
+                break
+            page += 1
+    changes_requested_humans = [
+        login
+        for review in reviews
+        if review.get("state") == "CHANGES_REQUESTED"
+        for login in [str((review.get("user") or {}).get("login", "") or "")]
+        if login and not login.endswith("[bot]")
+    ]
+    return {
+        "pr_author": str((pr.get("user") or {}).get("login", "") or ""),
+        "review_decision": str(pr.get("review_decision") or ""),
+        "changes_requested_humans": changes_requested_humans,
+    }
 
 
 async def get_check_run_logs(
@@ -401,6 +476,7 @@ def _comment_dict(comment_node: dict) -> dict:  # type: ignore[type-arg]
         "author": str(author.get("login", "") or ""),
         "body": comment_node.get("body", "") or "",
         "created_at": comment_node.get("createdAt", "") or "",
+        "author_association": str(comment_node.get("authorAssociation") or "NONE"),
     }
 
 
@@ -412,7 +488,7 @@ async def _fetch_thread_comments(client, graphql_url: str, headers: dict, thread
         ... on PullRequestReviewThread {
           comments(first: 100, after: $cursor) {
             pageInfo { hasNextPage endCursor }
-            nodes { author { login } body createdAt }
+            nodes { author { login } authorAssociation body createdAt }
           }
         }
       }
@@ -478,6 +554,7 @@ async def fetch_review_threads(
                 pageInfo { hasNextPage endCursor }
                 nodes {
                   author { login }
+                  authorAssociation
                   body
                   createdAt
                 }

@@ -17,10 +17,12 @@ class FakeGitHub:
     """Records what the workflow fetched, posted and resolved."""
 
     def __init__(self, threads: list[dict], *, pages: int = 1, fetch_error: str | None = None,
-                 post_error: str | None = None, resolve_failures: set[str] | None = None) -> None:
+                 post_error: str | None = None, resolve_failures: set[str] | None = None,
+                 review_context: dict | None = None) -> None:
         self.threads, self.pages = threads, pages
         self.fetch_error, self.post_error = fetch_error, post_error
         self.resolve_failures = resolve_failures or set()
+        self.review_context = review_context or {}
         self.reviews: list[dict] = []
         self.resolved: list[str] = []
 
@@ -29,7 +31,7 @@ class FakeGitHub:
             raise RuntimeError(self.fetch_error)
         from performer.workflows.closer.models import Thread
 
-        return [Thread.model_validate(t) for t in self.threads], self.pages
+        return [Thread.model_validate(t) for t in self.threads], self.pages, dict(self.review_context)
 
     async def resolver(self, score, ids: list[str]):
         ok = [i for i in ids if i not in self.resolve_failures]

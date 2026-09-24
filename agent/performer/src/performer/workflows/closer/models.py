@@ -19,6 +19,12 @@ class ThreadComment(BaseModel):
     author: str = Field(..., description="GitHub login or empty string if deleted")
     body: str = Field(..., max_length=4000, description="Comment text")
     created_at: str = Field(..., description="ISO 8601 timestamp")
+    author_association: str = Field(default="NONE", description="GitHub author association (MEMBER, COLLABORATOR, OWNER, NONE, ...)")
+
+    @property
+    def is_bot(self) -> bool:
+        """True when the login follows GitHub's bot convention (login[bot])."""
+        return self.author.endswith("[bot]")
 
 
 class Thread(BaseModel):

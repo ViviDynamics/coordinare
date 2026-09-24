@@ -25,10 +25,12 @@ def attribution_header(score: Any) -> str:
     return f"{marker}\n> 🤖 **Closer** · harness `{harness}` · model `{model}`"
 
 
-def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thread], header: str) -> tuple[str, str]:
+def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thread], header: str, changes_requested_by: list[str] | None = None) -> tuple[str, str]:
     """(event, body). The event is always COMMENT."""
-    verdict = "CHANGES REQUESTED" if open_threads else "APPROVED"
+    verdict = "CHANGES REQUESTED" if open_threads or changes_requested_by else "APPROVED"
     body = f"{header}\n\n**Bot Closer Review: {verdict}**\n\n"
+    if changes_requested_by:
+        body += f"A human reviewer requested changes: {', '.join(changes_requested_by)}.\n"
     if open_threads:
         body += f"{len(open_threads)} review thread(s) still open:\n"
         for t in open_threads:
@@ -44,13 +46,13 @@ def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thr
     return "COMMENT", body
 
 
-async def post_closing_review(score: Any, resolved: list[tuple[str, str]], open_threads: list[Thread], poster: Poster | None = None) -> PostOutcome:
+async def post_closing_review(score: Any, resolved: list[tuple[str, str]], open_threads: list[Thread], poster: Poster | None = None, changes_requested_by: list[str] | None = None) -> PostOutcome:
     if poster is None:
         from performer.github import post_pull_request_review as poster  # noqa: PLC0415 - late import keeps the workflow importable without network deps
     number = pr_number_from_url(getattr(score, "pr_url", "") or "")
     if number <= 0:
         return PostOutcome(error=f"pr_url is missing or invalid ({getattr(score, 'pr_url', None)!r})")
-    event, body = build_closing_review(resolved, open_threads, attribution_header(score))
+    event, body = build_closing_review(resolved, open_threads, attribution_header(score), changes_requested_by)
     try:
         owner, repo = score.owner_repo
         result = await poster(owner, repo, number, event=event, body=body, comments=[], token=score.effective_github_token)

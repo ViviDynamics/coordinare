@@ -28,7 +28,8 @@ from tests.unit.workflows.closer._fakes import score as fixture_score
 
 
 async def run_fixture(fixture: Fixture, *, live: bool) -> tuple[Score, dict[str, Any]]:
-    gh = FakeGitHub(fixture.threads, resolve_failures=set(fixture.resolve_failures))
+    gh = FakeGitHub(fixture.threads, resolve_failures=set(fixture.resolve_failures),
+                    review_context=dict(getattr(fixture, "review", None) or {}))
     calls = {"n": 0}
     if live:
         from coordinare.eval.gateway import _call_model

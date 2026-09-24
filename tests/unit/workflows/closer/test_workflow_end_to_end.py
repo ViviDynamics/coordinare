@@ -18,6 +18,7 @@ from tests.unit.workflows.closer._fakes import FakeGitHub, comment, score, threa
 
 ASK = comment("reviewer", "This needs a guard for the empty case.", "2026-09-07T10:00:00Z")
 REPLY = comment("implementer", "Added the guard in commit abc123; it returns early when the list is empty.", "2026-09-07T11:00:00Z")
+CONFIRM = comment("reviewer", "Confirmed, works now", "2026-09-07T12:00:00Z")  # the raiser's sign-off: the quote authority
 
 
 def _toolkit(judgements=None):
@@ -60,11 +61,11 @@ async def test_a_pull_request_with_no_threads_passes():
 
 @pytest.mark.asyncio
 async def test_an_answered_thread_is_judged_then_resolved_with_its_quote():
-    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": ""}]
-    record, _r, gh, _e, calls = await _run([thread("t1", ASK, REPLY)], judgements)
+    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": ""}]
+    record, _r, gh, _e, calls = await _run([thread("t1", ASK, REPLY, CONFIRM)], judgements)
     assert calls["n"] == 1 and "thread t1 at src/app.py:10" in calls["personas"][0]
     assert record.verdict == "approved" and gh.resolved == ["t1"]
-    assert record.resolved[0]["thread_id"] == "t1" and "Added the guard" in record.resolved[0]["reason"]
+    assert record.resolved[0]["thread_id"] == "t1" and "Confirmed" in record.resolved[0]["reason"]
     assert record.judgements[0].accepted and record.judgements[0].discard_reason is None
     assert "Resolved by this run (1)" in gh.reviews[0]["body"]
 
@@ -106,9 +107,9 @@ async def test_an_outdated_thread_is_resolved_by_rule_without_the_model():
 
 @pytest.mark.asyncio
 async def test_a_judgement_for_a_thread_that_was_not_sent_is_discarded():
-    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": ""},
+    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": ""},
                   {"thread_id": "ghost", "addressed": True, "quote": "anything", "reason": ""}]
-    record, _r, gh, _e, _c = await _run([thread("t1", ASK, REPLY)], judgements)
+    record, _r, gh, _e, _c = await _run([thread("t1", ASK, REPLY, CONFIRM)], judgements)
     ghost = next(j for j in record.judgements if j.thread_id == "ghost")
     assert not ghost.accepted and ghost.discard_reason == "thread_not_sent"
     assert gh.resolved == ["t1"] and record.verdict == "approved"
@@ -116,10 +117,10 @@ async def test_a_judgement_for_a_thread_that_was_not_sent_is_discarded():
 
 @pytest.mark.asyncio
 async def test_a_thread_the_model_did_not_judge_stays_open():
-    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": ""}]
-    record, _r, gh, _e, _c = await _run([thread("t1", ASK, REPLY), thread("t2", ASK, REPLY, path="src/db.py")], judgements)
+    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": ""}]
+    record, _r, gh, _e, _c = await _run([thread("t1", ASK, REPLY, CONFIRM), thread("t2", ASK, REPLY, CONFIRM, path="src/db.py")], judgements)
     assert record.verdict == "changes_requested" and [t["thread_id"] for t in record.open_threads] == ["t2"]
-    assert gh.resolved == [], "nothing is resolved on a failing verdict"
+    assert gh.resolved == ["t1"], "the accepted thread still resolves even though the verdict fails"
 
 
 @pytest.mark.asyncio
@@ -132,7 +133,8 @@ async def test_a_failed_fetch_holds_before_anything_else():
 @pytest.mark.asyncio
 async def test_a_failed_post_holds_and_resolves_nothing():
     record, _r, gh, _e, _c = await _run([], gh=FakeGitHub([thread("t1", ASK, outdated=True)], post_error="422 Unprocessable"))
-    assert record.verdict == "env_blocked" and "422" in record.hold_reason and gh.resolved == []
+    assert record.verdict == "env_blocked" and "422" in record.hold_reason, "the failed post holds the card"
+    assert gh.resolved == ["t1"], "act runs before post: the thread is resolved, but the failed post still blocks the card"
 
 
 @pytest.mark.asyncio
@@ -140,21 +142,22 @@ async def test_a_failed_resolution_holds_rather_than_approving():
     """FR-009: a card must never advance carrying a thread the closer believed closed."""
     record, _r, gh, _e, _c = await _run([], gh=FakeGitHub([thread("t1", ASK, outdated=True)], resolve_failures={"t1"}))
     assert record.verdict == "env_blocked" and "could not resolve 1 thread" in record.hold_reason
-    assert record.resolved == [] and len(gh.reviews) == 1, "the review was posted before the failed resolution"
+    assert record.resolved == []
+    assert len(gh.reviews) == 1 and "CHANGES REQUESTED" in gh.reviews[0]["body"], "the review names the thread that failed to resolve instead of approving"
 
 
 @pytest.mark.asyncio
 async def test_only_the_ambiguous_threads_reach_the_model():
     threads = [thread("resolved1", ASK, resolved=True), thread("stale1", ASK, outdated=True),
-               thread("open1", ASK), thread("answered1", ASK, REPLY, path="src/db.py")]
-    judgements = [{"thread_id": "answered1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": ""}]
+               thread("open1", ASK), thread("answered1", ASK, REPLY, CONFIRM, path="src/db.py")]
+    judgements = [{"thread_id": "answered1", "addressed": True, "quote": "Confirmed, works now", "reason": ""}]
     record, _r, gh, _e, calls = await _run(threads, judgements)
     persona = calls["personas"][0]
     assert calls["n"] == 1 and "answered1" in persona
     for other in ("resolved1", "stale1", "open1"):
         assert other not in persona, other
     assert record.verdict == "changes_requested", "open1 still blocks"
-    assert gh.resolved == [], "nothing is resolved on a failing verdict, not even the stale thread"
+    assert gh.resolved == ["stale1", "answered1"], "act runs before post: the closed threads resolve even though the verdict fails"
 
 
 @pytest.mark.asyncio
@@ -165,10 +168,10 @@ async def test_every_step_is_timed_and_logged(monkeypatch):
 
     fake = FakeLog()
     monkeypatch.setattr(closer_mod, "log", fake)
-    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": ""}]
-    _record, result, _gh, _e, _c = await _run([thread("t1", ASK, REPLY)], judgements)
+    judgements = [{"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": ""}]
+    _record, result, _gh, _e, _c = await _run([thread("t1", ASK, REPLY, CONFIRM)], judgements)
     durations = result.metrics.step_durations_ms
-    assert list(durations) == ["intake", "classify", "judge", "gate", "post", "act"]
+    assert list(durations) == ["intake", "classify", "judge", "gate", "act", "post"], durations
     assert result.report["workflow_metrics"]["step_durations_ms"] == durations
     events = {e["event"]: e for e in fake.entries}
     assert events["closer.intake"]["threads"] == 1 and events["closer.gate"]["verdict"] == "approved"
