@@ -12,7 +12,6 @@ SRC = PYPROJECT.parent / "src"
 _SNAPSHOT: tuple[str, ...] = (
     "coordinare.auth",
     "coordinare.daemon",
-    "coordinare.dashboard",
     "coordinare.eval.implementer_scenarios",
     "coordinare.eval.qa_scenarios",
     "coordinare.graph.nodes.assess_card",

@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DASHBOARD = Path(__file__).resolve().parents[3] / "src" / "coordinare" / "dashboard.py"
+DASHBOARD = Path(__file__).resolve().parents[3] / "src" / "coordinare" / "dashboard" / "templates"
 
 
 def _js_object_keys(var_name: str) -> set[str]:
@@ -25,8 +25,14 @@ def _js_object_keys(var_name: str) -> set[str]:
     brace, rather than scanning the whole file for anything that looks like a
     key -- a loose scan over a 4000-line module with several JS blobs would
     match unrelated text.
+
+    436: the inline JS moved from the single ``dashboard.py`` module into the
+    dashboard package templates, so the scan reads every template the browser
+    is actually served.
     """
-    source = DASHBOARD.read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(DASHBOARD.glob("*"))
+    )
     match = re.search(rf"var {re.escape(var_name)} = \{{(.*?)\n\}};", source, re.DOTALL)
     assert match, f"{var_name} object literal not found in dashboard.py"
     body = match.group(1)

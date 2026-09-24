@@ -1,0 +1,217 @@
+<!-- 155 (#202): the config assistant. Proposes; the operator applies. -->
+<div id="assistant-page" style="display:none">
+  <div class="card">
+    <h2>Config Assistant</h2>
+    <p class="empty-state" id="assistant-note">
+      Ask for help configuring coordinare. The assistant proposes changes &mdash; you apply them.
+    </p>
+    <p class="empty-state">
+      Your stored secrets are masked before coordinare sends anything. What you type here is not
+      &mdash; it goes to the model endpoint as written, so do not paste tokens or keys.
+    </p>
+    <div id="assistant-log" aria-live="polite" style="max-height:52vh;overflow-y:auto;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px">
+      <input id="assistant-input" type="text" style="flex:1" placeholder="e.g. how many cards should run at once?"
+             onkeydown="if(event.key==='Enter'){assistantSend();}">
+      <button id="assistant-send" onclick="assistantSend()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// 155 (#202): config assistant. The conversation lives here and nowhere else —
+// the server keeps nothing between requests, so session-scoped is structural.
+var _asstHistory = [];
+var _asstBusy = false;
+var _asstCurrent = {};   // current editable global values, for the "before" side of a diff
+var _asstBaseHash = null; // the config hash the model's context was built from
+
+function assistantAvailable() {
+  // Nav link appears only when enabled; disabled shows no trace of the feature.
+  fetch('/api/assistant/status').then(function(r) {
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(d) {
+    if (!d || !d.enabled) return;
+    var link = document.getElementById('nav-assistant');
+    if (link) link.style.display = '';
+  }).catch(function() { /* route absent = disabled */ });
+}
+
+function initAssistant() {
+  fetch('/api/assistant/status').then(function(r) { return r.json(); }).then(function(d) {
+    var note = document.getElementById('assistant-note');
+    if (note && d && !d.ready) {
+      note.textContent = 'The assistant is enabled but not ready: ' + (d.reason || 'unknown');
+    } else if (d && d.opening) {
+      var log = document.getElementById('assistant-log');
+      if (log && !log.childNodes.length) assistantAppend('assistant', d.opening);
+    }
+  }).catch(function() {});
+  assistantRefreshBaseline();
+}
+
+function assistantAppend(role, text) {
+  var log = document.getElementById('assistant-log');
+  if (!log) return null;
+  var row = document.createElement('div');
+  row.className = 'assistant-row assistant-' + role;
+  row.style.margin = '8px 0';
+  var who = document.createElement('strong');
+  who.textContent = (role === 'operator' ? 'You' : 'Assistant') + ': ';
+  row.appendChild(who);
+  var body = document.createElement('span');
+  body.textContent = text;
+  row.appendChild(body);
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row;
+}
+
+function assistantRefreshBaseline() {
+  // Returns a promise, and the turn waits on it. Fire-and-forget meant a proposal
+  // could be rendered before the hash it belongs to was known, and then applied
+  // with whatever happened to be in the variable — or with nothing.
+  var a = fetch('/api/config/all').then(function(r) { return r.json(); }).then(function(d) {
+    _asstBaseHash = (d && d.content_hashes) ? d.content_hashes.config_yaml : null;
+  }).catch(function() { _asstBaseHash = null; });
+  var b = fetch('/api/config/global').then(function(r) { return r.json(); }).then(function(d) {
+    _asstCurrent = d || {};
+  }).catch(function() { _asstCurrent = {}; });
+  return Promise.all([a, b]);
+}
+
+function assistantRenderProposal(proposal) {
+  // A diff, so applying is a decision made by reading rather than by trusting.
+  var log = document.getElementById('assistant-log');
+  if (!log || !proposal) return;
+  var card = document.createElement('div');
+  card.className = 'card';
+  card.style.margin = '8px 0';
+
+  var head = document.createElement('div');
+  head.innerHTML = '<strong>Proposed change to ' + esc(proposal.section) + '</strong>';
+  card.appendChild(head);
+
+  if (proposal.reason) {
+    var why = document.createElement('div');
+    why.className = 'empty-state';
+    why.textContent = proposal.reason;
+    card.appendChild(why);
+  }
+
+  var table = document.createElement('table');
+  table.style.margin = '8px 0';
+  Object.keys(proposal.values).forEach(function(k) {
+    var tr = document.createElement('tr');
+    var before = (_asstCurrent && k in _asstCurrent) ? _asstCurrent[k] : '(unset)';
+    tr.innerHTML = '<td style="padding-right:12px"><code>' + esc(k) + '</code></td>' +
+                   '<td style="padding-right:12px">' + esc(String(before)) + '</td>' +
+                   '<td>&rarr; <strong>' + esc(String(proposal.values[k])) + '</strong></td>';
+    table.appendChild(tr);
+  });
+  card.appendChild(table);
+
+  var apply = document.createElement('button');
+  apply.textContent = 'Apply';
+  // Captured now, not at click time: this is the config the model actually saw.
+  var baseHash = _asstBaseHash;
+  apply.onclick = function() { assistantApply(proposal, baseHash, card, apply); };
+  card.appendChild(apply);
+
+  log.appendChild(card);
+  log.scrollTop = log.scrollHeight;
+}
+
+function assistantApply(proposal, baseHash, card, button) {
+  // Sends the hash this was built against; a concurrent edit refuses the write.
+  if (!baseHash) {
+    // Fail closed. The baseline fetch is asynchronous and can fail or still be in
+    // flight, and without it this would write with no guard at all — silently, and
+    // exactly when the dashboard is already having trouble talking to the server.
+    // "Applying always goes through the guard" has to be true or it is not a claim.
+    var blocked = document.createElement('div');
+    blocked.textContent = 'Not applied: could not read the current configuration '
+                        + 'version, so this cannot be applied safely. Reload and ask again.';
+    card.appendChild(blocked);
+    assistantRefreshBaseline();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Applying...';
+  var body = {};
+  Object.keys(proposal.values).forEach(function(k) { body[k] = proposal.values[k]; });
+  body.expected_hash = baseHash;
+
+  fetch('/api/config/global', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r) {
+    return r.json().then(function(d) { return {ok: r.ok, status: r.status, body: d}; });
+  }).then(function(res) {
+    var note = document.createElement('div');
+    if (res.ok) {
+      note.textContent = 'Applied.';
+      button.textContent = 'Applied';
+      assistantRefreshBaseline();  // everything proposed before this is now stale
+    } else if (res.status === 409) {
+      note.textContent = 'Not applied: the configuration changed since this was proposed. '
+                       + 'Reload the Config page and ask again.';
+      button.disabled = false;
+      button.textContent = 'Apply';
+    } else {
+      note.textContent = 'Not applied: ' + ((res.body && res.body.error) || 'unknown error');
+      button.disabled = false;
+      button.textContent = 'Apply';
+    }
+    card.appendChild(note);
+  }).catch(function(e) {
+    button.disabled = false;
+    button.textContent = 'Apply';
+    var note = document.createElement('div');
+    note.textContent = 'Not applied: ' + e;
+    card.appendChild(note);
+  });
+}
+
+function assistantSend() {
+  if (_asstBusy) return;
+  var input = document.getElementById('assistant-input');
+  if (!input) return;
+  var message = (input.value || '').trim();
+  if (!message) return;
+  input.value = '';
+  _asstBusy = true;
+  document.getElementById('assistant-send').disabled = true;
+
+  assistantAppend('operator', message);
+  var pending = assistantAppend('assistant', 'thinking...');
+
+  // The applied hash must be the one the model's context was built from, not the
+  // newest at click time — that would defeat the guard by always agreeing. Also
+  // means arriving here without opening Config still gets a guarded write.
+  assistantRefreshBaseline().then(function() {
+  return fetch('/api/assistant/message', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: message, history: _asstHistory})
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (pending && pending.parentNode) pending.parentNode.removeChild(pending);
+    if (d.reply) assistantAppend('assistant', d.reply);
+    if (d.error) assistantAppend('assistant', '(' + d.error + ')');
+    if (d.proposal) assistantRenderProposal(d.proposal);
+    _asstHistory.push({role: 'operator', text: message});
+    if (d.reply) _asstHistory.push({role: 'assistant', text: d.reply});
+    if (_asstHistory.length > 20) _asstHistory = _asstHistory.slice(-20);
+  }).catch(function(e) {
+    if (pending && pending.parentNode) pending.parentNode.removeChild(pending);
+    assistantAppend('assistant', '(the assistant is unreachable: ' + e + ')');
+  }).then(function() {
+    _asstBusy = false;
+    document.getElementById('assistant-send').disabled = false;
+  });
+  });
+}
+
+</script>

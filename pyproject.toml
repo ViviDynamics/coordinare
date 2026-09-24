@@ -178,7 +178,6 @@ ignore_errors = true
 module = [
     "coordinare.auth",
     "coordinare.daemon",
-    "coordinare.dashboard",
     "coordinare.eval.implementer_scenarios",
     "coordinare.eval.qa_scenarios",
     "coordinare.graph.nodes.assess_card",
