@@ -1,0 +1,1900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coordinare Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --color-bg-base:            #0d1117;
+  --color-bg-surface:         #161b22;
+  --color-bg-elevated:        #21262d;
+  --color-border:             #30363d;
+  --color-border-subtle:      #21262d;
+  --color-text-primary:       #c9d1d9;
+  --color-text-muted:         #8b949e;
+  --color-accent-blue:        #58a6ff;
+  --color-accent-green:       #3fb950;
+  --color-accent-yellow:      #d29922;
+  --color-accent-red:         #f85149;
+  --color-accent-orange:      #f0883e;
+  --color-healthy:            var(--color-accent-green);
+  --color-degraded:           var(--color-accent-yellow);
+  --color-error:              var(--color-accent-red);
+  --color-active:             var(--color-accent-blue);
+  --color-bg-healthy:         #1f4a1f;
+  --color-bg-degraded:        #4a3a1f;
+  --color-bg-error:           #4a1f1f;
+  --color-bg-accent:          #1a2a3a;
+  --color-bg-subtle:          #1e1e2e;
+  --color-ev-progress:        #1a2a1a;
+  --color-ev-thinking:        #2a2a1a;
+  --color-ev-error:           #2a1a1a;
+  --color-ev-output:          #1e1e1e;
+  --color-ev-quiet:           #1e2430;
+  --color-ev-stall:           #2a2010;
+  --color-ev-stuck:           #3a1520;
+  --color-bg-row-hover:       #132035;
+  --color-bg-row-selected:    #1b2940;
+  --color-bg-pill:            #111827;
+  --color-accent-blue-subtle: #58a6ff33;
+  --color-bar-track:          #333;
+  --color-bar-fill:           #27ae60;
+  --color-bar-full:           #e74c3c;
+  --color-btn-success:        #238636;
+  --color-bg-delete:          #3d1f1f;
+  --color-border-delete:      #6e2e2e;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: monospace; font-size: 14px; background: var(--color-bg-base); color: var(--color-text-primary); padding: 16px; }
+h1 { font-size: 18px; color: var(--color-accent-blue); margin-bottom: 16px; }
+h2 { font-size: 13px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; margin-top: 16px; }
+.grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 900px) {
+  .grid { grid-template-columns: 1fr 1fr; }
+  .full { grid-column: 1 / -1; }
+}
+.card { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; }
+.phase { font-size: 22px; font-weight: bold; }
+.phase-idle { color: var(--color-text-muted); }
+.phase-dispatching, .phase-monitoring { color: var(--color-accent-blue); }
+.phase-merging { color: var(--color-accent-green); }
+.phase-blocked { color: var(--color-accent-yellow); }
+.phase-recovery { color: var(--color-accent-red); }
+.phase-desc { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
+.badge-healthy { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.badge-degraded { background: var(--color-bg-degraded); color: var(--color-accent-yellow); }
+.badge-unavailable { background: var(--color-bg-error); color: var(--color-accent-red); }
+.badge-success { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.badge-error { background: var(--color-bg-error); color: var(--color-accent-red); }
+.badge-required { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.badge-optional { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.label { color: var(--color-text-muted); margin-right: 6px; }
+a { color: var(--color-accent-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--color-text-muted); padding: 4px 8px; border-bottom: 1px solid var(--color-border); }
+td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
+.empty-state { color: var(--color-text-muted); font-style: italic; padding: 8px 0; }
+.card-warning { border-color: var(--color-accent-yellow) !important; }
+.empty-state-warning { color: var(--color-accent-yellow); font-weight: bold; padding: 8px 0; }
+.swimlane-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.swimlane-col { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 4px; min-height: 60px; display: flex; flex-direction: column; }
+.swimlane-col-header { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); padding: 6px 10px; border-bottom: 1px solid var(--color-border); display: flex; justify-content: space-between; align-items: center; }
+.swimlane-col-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; color: var(--color-text-primary); }
+.swimlane-col-body { padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.swimlane-card { background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 4px; padding: 8px 10px; }
+.swimlane-card[tabindex]:hover { background: var(--color-bg-row-hover); border-color: var(--color-accent-blue); }
+.swimlane-empty { color: var(--color-text-muted); font-style: italic; font-size: 12px; padding: 4px 6px; }
+.swimlane-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; }
+.swimlane-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.swimlane-tab:hover { color: var(--color-text-primary); }
+.swimlane-tab.active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
+.swimlane-tab-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; margin-left: 4px; color: var(--color-text-primary); }
+.metric-row { display: flex; gap: 24px; flex-wrap: wrap; }
+.metric { display: flex; flex-direction: column; }
+.metric-value { font-size: 20px; font-weight: bold; color: var(--color-text-primary); }
+.metric-label { font-size: 11px; color: var(--color-text-muted); }
+.daemon-start { font-size: 13px; color: var(--color-text-muted); margin-top: 8px; }
+.daemon-start strong { color: var(--color-accent-yellow); }
+.action-btn {
+  margin-top: 10px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+  background: var(--color-bg-elevated); color: var(--color-accent-blue); border: 1px solid var(--color-border);
+  border-radius: 6px; cursor: pointer;
+}
+.action-btn:hover:not(:disabled) { background: var(--color-border); }
+.action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.action-msg { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; min-height: 14px; }
+#disconnected-banner {
+  display: none; position: fixed; top: 0; left: 0; right: 0;
+  background: var(--color-bg-error); color: var(--color-accent-red); text-align: center;
+  padding: 8px; font-weight: bold; z-index: 999;
+}
+#flow-chart { overflow-x: auto; }
+#flow-chart svg { max-width: 100%; height: auto; }
+.qa-round { margin-bottom: 10px; padding: 8px; background: var(--color-bg-base); border-radius: 4px; border-left: 3px solid var(--color-border); }
+.qa-round-q { color: var(--color-text-muted); font-size: 12px; margin-bottom: 4px; }
+.qa-round-q li { margin-left: 16px; line-height: 1.6; }
+.qa-round-a { color: var(--color-text-primary); font-size: 13px; margin-top: 4px; white-space: pre-wrap; }
+.session-age { font-size: 12px; color: var(--color-accent-blue); margin-top: 6px; }
+.ev-progress  { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-tool_use  { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.ev-thinking  { background: var(--color-ev-thinking); color: var(--color-accent-yellow); }
+.ev-cost      { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.ev-error     { background: var(--color-ev-error); color: var(--color-accent-red); }
+.ev-output    { background: var(--color-ev-output); color: var(--color-text-muted); }
+.ev-stage_change { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-recovered { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-quiet     { background: var(--color-ev-quiet); color: var(--color-text-muted); }
+.ev-stall     { background: var(--color-ev-stall); color: var(--color-accent-orange); }
+.ev-stuck     { background: var(--color-ev-stuck); color: var(--color-accent-red); }
+/* 138: activity feed */
+.af-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: 12px; }
+.af-controls label { color: var(--color-text-muted); }
+/* min-width:0 lets a long card title shrink instead of widening the row past
+   the card at the narrowest supported viewport. */
+#af-filter { background: var(--color-bg-base); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: 12px; max-width: 100%; min-width: 0; }
+#af-filter:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 1px; }
+.af-liveness { margin-left: auto; color: var(--color-accent-green); white-space: nowrap; }
+.af-liveness.af-not-live { color: var(--color-accent-yellow); }
+.af-log { max-height: 320px; overflow-y: auto; overflow-x: hidden; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; font-size: 12px; }
+.af-raw { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 12px; }
+.af-tool { white-space: pre-wrap; overflow-wrap: anywhere; }
+.af-raw-label { color: var(--color-text-muted); padding: 6px 12px; }
+.af-row details { grid-column: 1 / -1; min-width: 0; width: 100%; }
+.af-row summary { cursor: pointer; }
+.af-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px; padding: 3px 6px; border-bottom: 1px solid var(--color-bg-surface); align-items: start; }
+.af-row:last-child { border-bottom: none; }
+.af-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
+.af-body { min-width: 0; word-break: break-word; color: var(--color-text-primary); }
+.af-kind { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px; letter-spacing: .04em; font-weight: bold; }
+.af-card { color: var(--color-text-muted); margin: 0 4px; }
+/* 353: truncation markers fold into the group they truncated; the badge reuses
+   existing colour tokens so no new contrast pairing is introduced. */
+.af-truncated { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; font-size: 10px; color: var(--color-text-muted); border: 1px solid var(--color-border); }
+.af-stale-note { color: var(--color-accent-yellow); font-size: 11px; padding: 5px 6px; border-bottom: 1px solid var(--color-bg-surface); }
+/* Performers card */
+.perf-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.perf-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.perf-running { background: var(--color-accent-green); animation: pulse-dot 1.5s ease-in-out infinite; }
+.perf-idle    { background: var(--color-text-muted); }
+.perf-error   { background: var(--color-accent-red); }
+@keyframes pulse-dot { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(63,185,80,.5); } 50% { opacity: 0.8; box-shadow: 0 0 0 5px rgba(63,185,80,0); } }
+.perf-metrics { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; margin-bottom: 10px; padding: 8px; background: var(--color-bg-base); border-radius: 4px; }
+.perf-metric { display: flex; flex-direction: column; }
+.perf-metric-value { font-size: 15px; font-weight: bold; color: var(--color-text-primary); }
+.perf-metric-label { font-size: 10px; color: var(--color-text-muted); }
+.perf-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; color: var(--color-text-muted); border-top: 1px solid var(--color-bg-elevated); padding-top: 8px; }
+.perf-log { max-height: 300px; overflow-y: auto; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; font-size: 12px; }
+.perf-log-row { display: grid; grid-template-columns: 68px 82px 1fr; gap: 4px; padding: 3px 6px; border-bottom: 1px solid var(--color-bg-surface); align-items: start; }
+.perf-log-row:last-child { border-bottom: none; }
+.perf-log-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
+.perf-log-text { word-break: break-word; color: var(--color-text-primary); }
+.jump-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+.cfg-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: monospace; }
+.cfg-btn:hover:not(:disabled) { border-color: var(--color-accent-blue); }
+.cfg-btn:disabled { opacity: .45; cursor: not-allowed; }
+.cfg-btn-danger { color: var(--color-accent-red); }
+.cfg-btn-danger:hover:not(:disabled) { border-color: var(--color-accent-red); }
+.perf-list-row { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; cursor: pointer; transition: border-color .15s; }
+.perf-list-row:hover { border-color: var(--color-accent-blue); }
+.perf-list-chevron { margin-left: auto; color: var(--color-text-muted); font-size: 14px; }
+.perf-back-btn { background: none; border: none; color: var(--color-accent-blue); cursor: pointer; font-size: 13px; font-family: monospace; padding: 0; margin-bottom: 10px; display: flex; align-items: center; gap: 4px; }
+/* 049: Navbar */
+#navbar { display: flex; align-items: center; gap: 0; background: var(--color-bg-surface); border-bottom: 1px solid var(--color-border); padding: 0 16px; margin: -16px -16px 16px -16px; position: sticky; top: 0; z-index: 100; }
+#navbar .nav-brand { color: var(--color-accent-blue); font-weight: bold; font-size: 15px; padding: 12px 16px 12px 0; margin-right: 8px; border-right: 1px solid var(--color-border); white-space: nowrap; }
+#navbar a.nav-link { color: var(--color-text-muted); text-decoration: none; padding: 12px 14px; font-size: 13px; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; display: inline-block; }
+#navbar a.nav-link:hover { color: var(--color-text-primary); text-decoration: none; }
+#navbar a.nav-link.nav-active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
+#navbar .nav-spacer { flex: 1; }
+#navbar .nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: 6px; }
+#navbar .nav-status-dot.disconnected { background: var(--color-accent-red); }
+#navbar-hamburger { display: none; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 20px; padding: 10px; margin-left: auto; }
+#navbar-menu { display: flex; align-items: center; gap: 0; }
+@media (max-width: 899px) {
+  #navbar { flex-wrap: wrap; }
+  #navbar-hamburger { display: block; }
+  #navbar-menu { display: none; width: 100%; flex-direction: column; align-items: flex-start; padding: 8px 0; }
+  #navbar-menu.open { display: flex; }
+  #navbar a.nav-link { padding: 10px 16px; width: 100%; }
+}
+/* 049: Active-performer tiles */
+#active-performers { margin-bottom: 4px; }
+.ap-tiles { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.ap-tile { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; transition: border-color .15s; }
+.ap-tile:hover { border-color: var(--color-accent-blue-subtle); }
+.ap-tile-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-muted); display: flex; align-items: center; gap: 6px; }
+.ap-tile-phase { font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; }
+.ap-tile-title { font-size: 14px; font-weight: bold; color: var(--color-text-primary); margin-bottom: 8px; line-height: 1.35; word-break: break-word; }
+.ap-tile-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.ap-pill { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-pill); }
+.ap-pill strong { color: var(--color-text-primary); font-weight: 600; }
+.ap-tile-elapsed { color: var(--color-accent-blue); }
+.ap-idle { background: var(--color-bg-base); border: 1px dashed var(--color-border); border-radius: 6px; padding: 12px; }
+.ap-idle-title { color: var(--color-text-primary); font-size: 13px; font-weight: bold; margin-bottom: 8px; }
+.ap-idle-rows { display: flex; flex-direction: column; gap: 8px; }
+.ap-idle-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 053: Workflow card readability without expand/collapse controls */
+#flow-chart { max-height: none; overflow-x: auto; overflow-y: hidden; cursor: default; position: relative; }
+/* 053: Performers page list/detail drilldown */
+#performers-page-content table { table-layout: fixed; }
+#performers-page tbody tr.performers-row { cursor: pointer; }
+#performers-page tbody tr.performers-row:hover { background: var(--color-bg-row-hover); }
+#performers-page tbody tr.performers-row.row-selected { background: var(--color-bg-row-selected); }
+#performers-page tbody tr.performers-row:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: -2px; }
+#performers-page-detail-view { margin-top: 12px; border-top: 1px solid var(--color-border); padding-top: 12px; }
+#performers-page-detail { font-size: 12px; line-height: 1.5; }
+#performers-page-back:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 2px; border-radius: 3px; }
+#performers-page .muted { color: var(--color-text-muted); }
+#performers-page .detail-badge { display: inline-block; margin-left: 8px; }
+#performers-page .detail-block { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 6px; padding: 10px; margin-top: 10px; }
+#performers-page .detail-log { max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 11px; }
+#performers-page .detail-list { margin: 6px 0 0 0; padding-left: 18px; }
+.role-status-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+.role-active { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.role-idle { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.perf-page-events { max-height: 120px; overflow-y: auto; font-size: 11px; color: var(--color-text-muted); }
+</style>
+</head>
+<body>
+<div id="disconnected-banner">&#9888; Disconnected — reconnecting...</div>
+<nav id="navbar">
+  <span class="nav-brand">&#9670; Coordinare</span>
+  <button id="navbar-hamburger" onclick="toggleNavMenu()" aria-label="Menu">&#9776;</button>
+  <div id="navbar-menu">
+    <a href="/" class="nav-link" onclick="navigate(event,'/')">Dashboard</a>
+    <a href="/performers" class="nav-link" onclick="navigate(event,'/performers')">Performers</a>
+    <a href="/personas" class="nav-link" onclick="navigate(event,'/personas')">Personas</a>
+    <a href="/history" class="nav-link" onclick="navigate(event,'/history')">History</a>
+    <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')">Symphonies</a>
+    <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Global Config</a>
+    <a href="/config" class="nav-link" onclick="navigate(event,'/config')">Config</a>
+    <a href="/assistant" id="nav-assistant" class="nav-link" style="display:none" onclick="navigate(event,'/assistant')">Assistant</a>
+  </div>
+  <span class="nav-spacer"></span>
+  <span role="status" aria-live="polite"><span id="nav-sse-dot" class="nav-status-dot" title="SSE connected"></span><span id="project-link" style="font-size:12px;color:var(--color-text-muted)"></span></span>
+</nav>
+<div id="main-content">
+<!-- 049: Dashboard page -->
+<div id="dashboard-page">
+<main class="grid">
+
+<div id="active-performers" class="card" style="display:none">
+  <h2>Active Performers</h2>
+  <div id="active-performer-tiles" class="ap-tiles"></div>
+</div>
+
+<!-- 138: activity feed -->
+<div id="activity-feed-card" class="card full">
+  <h2>Activity</h2>
+  <div class="af-controls">
+    <label for="af-filter">Card</label>
+    <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
+      <option value="">All cards</option>
+    </select>
+    <span id="af-liveness" class="af-liveness" role="status" aria-live="polite">Live</span>
+  </div>
+  <div id="af-stale-note" class="af-stale-note" style="display:none">
+    Stream not live &mdash; entries below may be out of date.
+  </div>
+  <div id="activity-feed" class="af-log" role="log" aria-live="polite" aria-relevant="additions"
+       aria-label="Activity feed, newest first"></div>
+  <div id="af-empty" class="empty-state">
+    No activity yet &mdash; this feed covers only the current daemon run.
+  </div>
+</div>
+
+<div class="card">
+  <h2>Phase</h2>
+  <div id="phase" class="phase phase-idle">Idle</div>
+  <div id="phase-desc" class="phase-desc"></div>
+  <div id="session-age" class="session-age" style="display:none"></div>
+  <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"
+    aria-label="Trigger immediate board poll">Check Board Now</button>
+  <div id="force-poll-msg" class="action-msg"></div>
+</div>
+
+<div class="card" id="active-work-card">
+  <h2>Board</h2>
+  <div id="swimlane-tabs" class="swimlane-tabs" style="display:none"></div>
+  <div id="swimlane-section">
+    <span class="empty-state">Waiting for board snapshot&hellip;</span>
+  </div>
+  <div id="card-detail-view" style="display:none">
+    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Board</button>
+    <div id="card-detail-content"></div>
+  </div>
+</div>
+
+<div id="idle-panel" class="card" style="display:none">
+  <h2>Coordinare is Idle</h2>
+  <div id="idle-panel-content"></div>
+</div>
+
+<div class="card">
+  <h2>Workflow</h2>
+  <div id="flow-chart"><span class="empty-state">Loading flowchart...</span></div>
+</div>
+
+<div id="questions-card" class="card" style="display:none">
+  <h2>Open Questions</h2>
+  <ul id="questions-list" style="padding-left:20px;line-height:1.8"></ul>
+</div>
+
+<div id="clarifications-card" class="card" style="display:none">
+  <h2>Clarification History</h2>
+  <div id="clarifications-list" style="max-height:300px;overflow-y:auto"></div>
+</div>
+
+<div class="card">
+  <h2>Metrics</h2>
+  <div class="metric-row">
+    <div class="metric">
+      <span class="metric-value" id="cycles-completed">—</span>
+      <span class="metric-label">Cycles Completed</span>
+    </div>
+    <div class="metric">
+      <span class="metric-value" id="last-duration">—</span>
+      <span class="metric-label">Last Cycle Duration</span>
+    </div>
+    <div class="metric">
+      <span class="metric-value" id="error-count">—</span>
+      <span class="metric-label">Consecutive Errors</span>
+    </div>
+  </div>
+  <div class="metric-row" style="margin-top:8px">
+    <div class="metric">
+      <span class="metric-value" id="card-tokens-total">0</span>
+      <span class="metric-label">Card Tokens</span>
+    </div>
+    <div class="metric">
+      <span class="metric-value" id="card-cost-estimate">$0.00</span>
+      <span class="metric-label">Estimated Cost</span>
+    </div>
+  </div>
+  <div class="daemon-start">
+    Daemon started: <strong id="daemon-start-time">—</strong>
+  </div>
+  <div id="agent-session" style="margin-top:8px;display:none">
+    <span class="label">Agent Session:</span><span id="agent-session-id"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Subsystem Health</h2>
+  <div id="subsystems-section"><span class="empty-state">Loading...</span></div>
+</div>
+
+<div class="card">
+  <h2>Recent Cycles</h2>
+  <div id="history-section"><span class="empty-state">Loading...</span></div>
+</div>
+
+<!-- 049: Persona editor moved to /personas page — hidden on main dashboard -->
+<div class="card full" id="personas-main-card" style="display:none">
+  <h2>Personas</h2>
+  <div id="personas-section"><span class="empty-state">Loading...</span></div>
+</div>
+
+</main>
+</div><!-- /#dashboard-page -->
+
+<!-- 049: Performers page -->
+<div id="performers-page" style="display:none">
+  <div id="performers-page-content">
+    <h2 style="margin-bottom:12px">Performers</h2>
+    <div id="performers-page-list-view">
+      <table>
+        <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active / Idle / Max</th></tr></thead>
+        <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div id="performers-page-detail-view" style="display:none">
+      <button id="performers-page-back" class="perf-back-btn" onclick="hidePerformerRoleDetail()">&#8592; Back to performers</button>
+      <div id="performers-page-detail"><span class="empty-state">Select a role to view details.</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 049: Personas page -->
+<div id="personas-page" style="display:none">
+  <div class="card">
+    <h2>Personas</h2>
+    <div id="personas-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<!-- 049: History page -->
+<div id="history-page" style="display:none">
+  <div class="card">
+    <h2>History</h2>
+    <div id="history-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<!-- 057: Symphonies page -->
+<div id="symphonies-page" style="display:none">
+  <div class="card">
+    <h2>Symphonies</h2>
+    <div id="symphonies-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<div id="admin-config-page" style="display:none">
+  <div class="card">
+    <h2>Global Config</h2>
+    <div id="admin-config-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<div id="config-page" style="display:none">
+  <div class="card">
+    <h2>Configuration</h2>
+    <div id="config-page-section" aria-live="polite"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+</div><!-- /#main-content -->
+
+<script src="/static/activity-streams.js"></script>
+<!--349-static-js-->
+<script>
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  themeVariables: {
+    background: '#161b22',
+    primaryColor: '#21262d',
+    primaryTextColor: '#c9d1d9',
+    primaryBorderColor: '#30363d',
+    lineColor: '#8b949e',
+    secondaryColor: '#161b22',
+    tertiaryColor: '#0d1117',
+  },
+  flowchart: { curve: 'basis', useMaxWidth: true },
+});
+
+// Maps a phase to the node ID that should be highlighted
+var PHASE_NODE = {
+  'idle':             'CB',
+  'dispatching':      'AC',
+  'monitoring_agent': 'MA',
+  'monitoring_performer': 'MA',
+  'monitoring_pr':    'MP',
+  'merging':          'MR',
+  'relay_feedback':   'RF',
+  'blocked':          'HB',
+  'recovery':         'CB',
+};
+
+var _lastRenderedPhase = null;
+
+function buildFlowDef(phase) {
+  var active = PHASE_NODE[phase] || '';
+  var lines = [
+    'graph TD',
+    '  CB["check_board"]',
+    '  AC["assess_card"]',
+    '  DC["dispatch_card"]',
+    '  MA["monitor_agent"]',
+    '  MP["monitor_pr"]',
+    '  MR["merge_pr"]',
+    '  RF["relay_feedback"]',
+    '  HB["handle_blocked"]',
+    '  N["notify"]',
+    '  IDLE(["idle — waiting"])',
+    '  WAIT1(["wait next cycle"])',
+    '  WAIT2(["wait next cycle"])',
+    '  DONE1(["done"])',
+    '  DONE2(["done"])',
+    '  DONE3(["done"])',
+    '',
+    '  CB -->|"todo"| AC',
+    '  CB -->|"in_progress"| MA',
+    '  CB -->|"in_review"| MP',
+    '  CB -->|"blocked"| HB',
+    '  CB -->|"idle"| IDLE',
+    '',
+    '  AC -->|"sufficient"| DC',
+    '  AC -->|"needs info"| HB',
+    '',
+    '  DC -->|"dispatched"| N',
+    '  DC -->|"error"| HB',
+    '',
+    '  MA -->|"pr opened"| MP',
+    '  MA -->|"blocked"| HB',
+    '  MA -->|"working"| WAIT1',
+    '',
+    '  MP -->|"approved"| MR',
+    '  MP -->|"changes"| RF',
+    '  MP -->|"blocked"| HB',
+    '  MP -->|"pending"| WAIT2',
+    '',
+    '  MR --> N',
+    '  HB --> N',
+    '  N --> DONE1',
+    '  RF --> DONE2',
+    '',
+    '  classDef default fill:#21262d,stroke:#30363d,color:#c9d1d9',
+    '  classDef terminal fill:#0d1117,stroke:#30363d,color:#8b949e,font-style:italic',
+    '  classDef active fill:#1f3a5f,stroke:#58a6ff,color:#ffffff,font-weight:bold,stroke-width:2px',
+    '  class IDLE,WAIT1,WAIT2,DONE1,DONE2,DONE3 terminal',
+  ];
+  if (active) lines.push('  class ' + active + ' active');
+  return lines.join('\n');
+}
+
+var _renderSeq = 0;
+async function updateFlowChart(phase) {
+  if (phase === _lastRenderedPhase) return;
+  _lastRenderedPhase = phase;
+  var seq = ++_renderSeq;
+  var def = buildFlowDef(phase);
+  try {
+    var id = 'fc' + seq;
+    var result = await mermaid.render(id, def);
+    if (seq === _renderSeq) {
+      document.getElementById('flow-chart').innerHTML = result.svg;
+    }
+  } catch(e) {
+    console.error('mermaid render failed', e);
+  }
+}
+
+function phaseClass(phase) {
+  if (phase === 'idle') return 'phase-idle';
+  if (phase === 'merging') return 'phase-merging';
+  if (phase === 'blocked') return 'phase-blocked';
+  if (phase === 'recovery') return 'phase-recovery';
+  return 'phase-monitoring';
+}
+
+// fmtDuration/fmtTime/fmtAge: /static/helpers.js (#349)
+// 343: the step trail. Completed steps from the observed transitions, the
+// current one marked and carrying a live elapsed timer seeded from snapshot
+// state -- so it survives a browser reload and a daemon restart, neither of
+// which a client-side counter would.
+function stepTrailHtml(sess, slowAfterSeconds) {
+  var cur = sess.workflow_step;
+  if (!cur) return '';
+  var trail = Array.isArray(sess.workflow_step_trail) ? sess.workflow_step_trail : [];
+  var shortName = function(n) { var s = String(n || ''); var i = s.indexOf('.'); return i < 0 ? s : s.slice(i + 1); };
+  // Only steps before the current one are done; the current entry is the last.
+  var done = trail.slice(0, Math.max(0, trail.length - 1));
+  var parts = done.slice(-6).map(function(e) {
+    return '<span class="muted">' + esc(shortName(e.step)) + ' &check;</span>';
+  });
+  var age = fmtAge(sess.workflow_step_entered_at);
+  var secs = sess.workflow_step_entered_at
+    ? Math.floor((Date.now() - new Date(sess.workflow_step_entered_at).getTime()) / 1000) : 0;
+  // 0 means the operator has not said what "too long" is, so say nothing.
+  var slow = slowAfterSeconds > 0 && secs > slowAfterSeconds;
+  var style = slow ? 'color:var(--color-degraded)' : 'color:var(--color-accent-blue)';
+  parts.push('<span style="' + style + ';font-weight:bold" data-step-since="'
+    + esc(sess.workflow_step_entered_at || '') + '">&bull; ' + esc(shortName(cur))
+    + (age ? ' ' + esc(age) : '') + '</span>');
+  var more = done.length > 6 ? '<span class="muted">+' + String(done.length - 6) + ' earlier &middot; </span>' : '';
+  return '<div class="step-trail" style="margin-top:4px;font-size:12px">' + more + parts.join('<span class="muted"> &middot; </span>') + '</div>';
+}
+
+// humanPhase + formatPhaseLabel: /static/helpers.js (#349)
+function computeOverallHealth(subsystems) {
+  var required = (subsystems || []).filter(function(s) { return s.required; });
+  if (!required.length || required.every(function(s) { return s.status === 'healthy'; })) return 'healthy';
+  if (required.some(function(s) { return s.status === 'unavailable'; })) return 'unavailable';
+  return 'degraded';
+}
+
+function isIdle(s) {
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  return sessions.length === 0 && s.phase === 'idle';
+}
+
+function renderCycleHistoryInto(container, cycleHistory) {
+  if (!container) return;
+  var history = Array.isArray(cycleHistory) ? cycleHistory : [];
+  if (history.length === 0) {
+    container.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
+    return;
+  }
+  container.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
+    '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
+    '</tr></thead><tbody>' +
+    history.map(function(e) {
+      return '<tr>' +
+        '<td>' + fmtTime(e.timestamp) + '</td>' +
+        '<td>' + humanPhase(e.phase) + '</td>' +
+        '<td>' + fmtDuration(e.duration_seconds) + '</td>' +
+        '<td><span class="badge badge-' + esc(e.outcome || 'success') + '">' + esc(e.outcome || 'success') + '</span></td>' +
+        '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
+function findActivePerformerSession(s) {
+  // Multi-card mode: flat top-level fields can reflect any session's last sync.
+  // For aggregate UI indicators, derive from active_sessions instead.
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  for (var i = 0; i < sessions.length; i++) {
+    var p = sessions[i].phase;
+    if (p === 'monitoring_performer' || p === 'monitoring_agent' || p === 'relay_feedback') {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
+function renderState(s) {
+  // Phase — prefer aggregate session state over flat top-level fields, which
+  // get clobbered by whichever session last synced to CoordinareState.
+  var activeSess = findActivePerformerSession(s);
+  var effectivePhase = activeSess ? activeSess.phase : s.phase;
+  var effectiveDispatchAt = activeSess ? activeSess.agent_dispatch_at : s.agent_dispatch_at;
+  var phaseEl = document.getElementById('phase');
+  phaseEl.textContent = activeSess
+    ? (formatPhaseLabel(activeSess.phase) || s.phase_label || s.phase)
+    : (s.phase_label || s.phase);
+  phaseEl.className = 'phase ' + phaseClass(effectivePhase);
+  var phaseDescriptions = {
+    'idle':             'Waiting for a card to enter the TODO column on the GitHub Project board.',
+    'running':          'Processing a work cycle.',
+    'blocked':          'Work is paused — review the Open Questions below and take action.',
+    'dispatching':      'Assessing and dispatching card to the performer agent.',
+    'monitoring_agent': 'Performer agent is actively working on the card.',
+    'monitoring_performer': 'Performer agent is actively working on the card.',
+    'monitoring_pr':    'Waiting for PR review approval.',
+    'merging':          'Merging the approved pull request.',
+    'relay_feedback':   'Relaying PR review feedback to the performer agent.',
+    'recovery':         'A cycle error occurred; the daemon is recovering before retrying.',
+  };
+  document.getElementById('phase-desc').textContent = phaseDescriptions[effectivePhase] || '';
+
+  // Session age (shown when a performer is actively running on any session)
+  var ageEl = document.getElementById('session-age');
+  if (activeSess && effectiveDispatchAt) {
+    ageEl.style.display = '';
+    ageEl.textContent = 'Agent running for: ' + (fmtAge(effectiveDispatchAt) || '—');
+  } else {
+    ageEl.style.display = 'none';
+  }
+
+  // Flowchart (async)
+  updateFlowChart(s.phase);
+
+  // Active Work + Awaiting Review panels
+  renderActiveWorkPanels(s);
+
+  // Idle state panel (059 Phase G)
+  var idlePanel = document.getElementById('idle-panel');
+  var workCard = document.getElementById('active-work-card');
+  if (idlePanel) {
+    if (isIdle(s)) {
+      idlePanel.style.display = '';
+      if (workCard) workCard.style.display = '';
+      var idleSummary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
+      var bCount = function(k) { var v = idleSummary[k]; return Number.isFinite(v) ? v : 0; };
+      var idleTotal = bCount('TODO') + bCount('IN_PROGRESS') + bCount('IN_REVIEW') + bCount('DONE');
+      var idleInProg = bCount('IN_PROGRESS');
+      var idlePoll = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '\u2014';
+      var idleCycles = s.cycles_completed != null ? esc(String(s.cycles_completed)) : '\u2014';
+      var idleFilterText = s.ownership_hint ? esc(s.ownership_hint) : '';
+      var idleFilter = idleFilterText ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + idleFilterText + ')</span>' : '';
+      document.getElementById('idle-panel-content').innerHTML =
+        '<table style="border-collapse:collapse;font-size:13px">' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Board total</td>' +
+              '<td style="padding:4px 0"><strong>' + idleTotal + '</strong>' + idleFilter + '</td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">In progress</td>' +
+              '<td style="padding:4px 0"><strong>' + idleInProg + '</strong></td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Last poll</td>' +
+              '<td style="padding:4px 0"><strong>' + idlePoll + '</strong></td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Cycles completed</td>' +
+              '<td style="padding:4px 0"><strong>' + idleCycles + '</strong></td></tr>' +
+        '</table>';
+    } else {
+      idlePanel.style.display = 'none';
+      if (workCard) workCard.style.display = '';
+    }
+  }
+
+  // T032: Live-update card detail view if one is open
+  if (_selectedCardId) {
+    var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+    var activeSess = sessions.find(function(ss) { return ss.card_id === _selectedCardId; });
+    if (activeSess) {
+      var detailContent = document.getElementById('card-detail-content');
+      if (detailContent) detailContent.innerHTML = renderCardDetailContent(activeSess, s);
+    } else {
+      // Session ended while detail was open — close back to the list.
+      closeCardDetail();
+    }
+  }
+
+  // 046: Dependency blockers
+  var depCard = document.getElementById('dependency-blockers-card');
+  if (!depCard) {
+    depCard = document.createElement('div');
+    depCard.id = 'dependency-blockers-card';
+    depCard.className = 'card';
+    depCard.style.display = 'none';
+    depCard.innerHTML = '<h3>Blocked by Dependencies</h3><ul id="dependency-blockers-list"></ul>';
+    var questionsCard = document.getElementById('questions-card');
+    if (questionsCard && questionsCard.parentNode) {
+      questionsCard.parentNode.insertBefore(depCard, questionsCard);
+    }
+  }
+  var depList = document.getElementById('dependency-blockers-list');
+  if (s.blocked_by_dependencies && s.blocked_by_dependencies.length > 0) {
+    depCard.style.display = '';
+    depList.innerHTML = s.blocked_by_dependencies.map(function(d) {
+      var label = '#' + d.issue_number;
+      if (d.title) label += ' — ' + esc(d.title);
+      var col = d.column || 'off-board';
+      var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)
+        ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
+        : esc(label);
+      return '<li>' + link + ' <span style="opacity:0.7">(' + esc(col) + ')</span></li>';
+    }).join('');
+  } else {
+    depCard.style.display = 'none';
+  }
+
+  // 048: Performer utilization
+  var utilCard = document.getElementById('role-utilization-card');
+  if (!utilCard) {
+    utilCard = document.createElement('div');
+    utilCard.id = 'role-utilization-card';
+    utilCard.className = 'card';
+    utilCard.style.display = 'none';
+    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Role</th><th>Active / Idle / Max</th></tr></thead><tbody></tbody></table>';
+    var qCardRef = document.getElementById('questions-card');
+    if (qCardRef && qCardRef.parentNode) { qCardRef.parentNode.insertBefore(utilCard, qCardRef); }
+  }
+  var utilTbody = utilCard.querySelector('tbody');
+  if (s.role_utilization && s.role_utilization.length > 0) {
+    utilCard.style.display = '';
+    utilTbody.innerHTML = s.role_utilization.map(function(r) {
+      var pct = r.max > 0 ? Math.min(100, Math.round(r.active / r.max * 100)) : 0;
+      var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? 'var(--color-bar-full)' : 'var(--color-bar-fill)') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
+      var idle = Math.max(0, r.max - r.active);
+      return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + idle + ' / ' + r.max + '</td></tr>';
+    }).join('');
+  } else {
+    utilCard.style.display = 'none';
+  }
+
+  // Open questions (355: card-attributed; the server scopes the list to
+  // sessions still in the blocked phase, so a question never outlives its
+  // card's blocked state). Each entry is {card_id, card_number, card_title,
+  // stage, text, asked_at, issue_url}; a bare legacy string renders as the
+  // question text alone with the panel-level issue link.
+  var qCard = document.getElementById('questions-card');
+  var qList = document.getElementById('questions-list');
+  if (s.open_questions && s.open_questions.length > 0) {
+    qCard.style.display = '';
+    qList.innerHTML = s.open_questions.map(function(q) {
+      var obj = (typeof q === 'string') ? { text: q } : (q || {});
+      var text = (typeof obj.text === 'string') ? obj.text : '';
+      var head = '';
+      if (obj.card_number != null) {
+        var num = '#' + String(obj.card_number);
+        head = obj.issue_url
+          ? '<a href="' + esc(obj.issue_url) + '" target="_blank" rel="noopener">' + esc(num) + '</a>'
+          : esc(num);
+        if (obj.card_title) head += ' ' + esc(obj.card_title);
+      } else if (obj.card_title) {
+        head = esc(obj.card_title);
+      }
+      if (obj.stage) head += ' <span class="muted">(' + esc(obj.stage) + ')</span>';
+      var ageTxt = obj.asked_at ? fmtAge(obj.asked_at) : null;
+      var age = ageTxt ? ' <span class="muted">asked ' + esc(ageTxt) + ' ago</span>' : '';
+      var body = head ? head + ': ' + esc(text) : esc(text);
+      if (!obj.card_number) {
+        var issueHref = s.issue_url && /^https?:\/\//i.test(s.issue_url) ? s.issue_url : null;
+        if (issueHref) {
+          body += ' <a href="' + esc(issueHref) + '" target="_blank" rel="noopener" style="font-size:0.85em;white-space:nowrap">View issue &#8599;</a>';
+        }
+      }
+      return '<li>' + body + age + '</li>';
+    }).join('');
+  } else {
+    qCard.style.display = 'none';
+  }
+
+  // 047: Rebase status
+  var rebaseCard = document.getElementById('rebase-status-card');
+  if (!rebaseCard) {
+    rebaseCard = document.createElement('div');
+    rebaseCard.id = 'rebase-status-card';
+    rebaseCard.className = 'card';
+    rebaseCard.style.display = 'none';
+    rebaseCard.innerHTML = '<h3>Last Rebase Round</h3><ul id="rebase-status-list"></ul>';
+    var anchor = document.getElementById('questions-card');
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(rebaseCard, anchor);
+    }
+  }
+  var rebaseList = document.getElementById('rebase-status-list');
+  if (s.last_rebase_round && s.last_rebase_round.jobs && s.last_rebase_round.jobs.length > 0) {
+    rebaseCard.style.display = '';
+    var outcomeEmoji = {clean: '\u2705', performer_resolved: '\ud83d\udee0', blocked: '\ud83d\udeab', skipped: '\u23e9', failed: '\u274c'};
+    rebaseList.innerHTML = s.last_rebase_round.jobs.map(function(j) {
+      var emoji = outcomeEmoji[j.outcome] || '\u2753';
+      var sha = j.post_rebase_sha ? j.post_rebase_sha.substring(0, 8) : '';
+      var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ' — ' + esc(j.outcome);
+      if (sha) label += ' (' + esc(sha) + ')';
+      if (j.conflicted_files && j.conflicted_files.length > 0) {
+        label += ' [' + j.conflicted_files.map(esc).join(', ') + ']';
+      }
+      return '<li>' + label + '</li>';
+    }).join('');
+  } else {
+    rebaseCard.style.display = 'none';
+  }
+
+  // Clarification history (355: each round labelled with the card and stage
+  // it belongs to; rounds stay collapsed as before)
+  var clCard = document.getElementById('clarifications-card');
+  var clList = document.getElementById('clarifications-list');
+  if (s.card_clarifications && s.card_clarifications.length > 0) {
+    clCard.style.display = '';
+    clList.innerHTML = s.card_clarifications.map(function(round, i) {
+      round = round || {};
+      var qs = (round.questions || []).map(function(q) {
+        return '<li>' + esc(q) + '</li>';
+      }).join('');
+      var ans = round.answer ? '<div class="qa-round-a">&#x1F4AC; ' + esc(round.answer) + '</div>' : '';
+      var attr = '';
+      if (round.card_number != null) {
+        var num = '#' + String(round.card_number);
+        attr = round.issue_url
+          ? '<a href="' + esc(round.issue_url) + '" target="_blank" rel="noopener">' + esc(num) + '</a>'
+          : esc(num);
+        if (round.card_title) attr += ' ' + esc(round.card_title);
+      } else if (round.card_title) {
+        attr = esc(round.card_title);
+      }
+      if (round.stage) attr += ' <span class="muted">(' + esc(round.stage) + ')</span>';
+      var header = 'Round ' + (i + 1) + (attr ? ' — ' + attr : '');
+      return '<div class="qa-round">' +
+        '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">' + header + '</div>' +
+        (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
+        ans +
+        '</div>';
+    }).join('');
+  } else {
+    clCard.style.display = 'none';
+  }
+
+  // Metrics
+  document.getElementById('cycles-completed').textContent = s.cycles_completed;
+  document.getElementById('last-duration').textContent = fmtDuration(s.last_cycle_duration_seconds);
+  document.getElementById('error-count').textContent = s.consecutive_error_count;
+  document.getElementById('daemon-start-time').textContent = fmtTime(s.daemon_start_time);
+  if (s.project_board_url && s.project_name) {
+    var linkEl = document.getElementById('project-link');
+    linkEl.textContent = '— ';
+    var a = document.createElement('a');
+    a.href = s.project_board_url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.cssText = 'color:var(--color-accent-blue);text-decoration:none';
+    a.textContent = s.project_name + ' Board';
+    linkEl.appendChild(a);
+  }
+  // 348/305: prefer the monitored session; top-level is empty in shared-pool
+  // mode, which is why live usage displayed a flat zero.
+  var tokenSource = activeSess || s;
+  var cardTokensTotal = (tokenSource.card_tokens_total || s.card_tokens_total || 0);
+  if (!(cardTokensTotal > 0)) {
+    var fallbackTokens = derivePerformerTokenTotal(tokenSource);
+    if (fallbackTokens == null && tokenSource !== s) fallbackTokens = derivePerformerTokenTotal(s);
+    if (fallbackTokens != null) cardTokensTotal = fallbackTokens;
+  }
+  document.getElementById('card-tokens-total').textContent =
+    cardTokensTotal.toLocaleString();
+  document.getElementById('card-cost-estimate').textContent =
+    '$' + (s.card_cost_estimate || 0).toFixed(2);
+
+  // Agent session
+  var agentEl = document.getElementById('agent-session');
+  if (s.agent_session_id) {
+    agentEl.style.display = '';
+    document.getElementById('agent-session-id').textContent = s.agent_session_id;
+  } else {
+    agentEl.style.display = 'none';
+  }
+
+  // Subsystems
+  var subsEl = document.getElementById('subsystems-section');
+  if (!s.subsystems || s.subsystems.length === 0) {
+    subsEl.innerHTML = '<span class="empty-state">No subsystems registered</span>';
+  } else {
+    var overall = s.overall_health || computeOverallHealth(s.subsystems);
+    var isHealthy = overall === 'healthy';
+    var summaryIcon = isHealthy ? '&#9679;' : (overall === 'unavailable' ? '&#10005;' : '&#9888;');
+    var summaryClass = isHealthy ? 'color:var(--color-healthy)' : (overall === 'unavailable' ? 'color:var(--color-error)' : 'color:var(--color-degraded)');
+    var degradedCount = s.subsystems.filter(function(sub) { return sub.required && sub.status !== 'healthy'; }).length;
+    var summaryText = isHealthy
+      ? 'All systems healthy'
+      : (degradedCount + (degradedCount === 1 ? ' system ' : ' systems ') + (overall === 'unavailable' ? 'unavailable' : 'degraded'));
+    var rows = s.subsystems.map(function(sub) {
+      var rowStyle = sub.status !== 'healthy' ? ' style="background:var(--color-bg-' + (sub.status === 'unavailable' ? 'error' : 'degraded') + ')"' : '';
+      return '<tr' + rowStyle + '>' +
+        '<td>' + esc(sub.name) + '</td>' +
+        '<td><span class="badge badge-' + esc(sub.status) + '">' + esc(sub.status) + '</span></td>' +
+        '<td><span class="badge ' + (sub.required ? 'badge-required' : 'badge-optional') + '">' +
+          (sub.required ? 'required' : 'optional') + '</span></td>' +
+        '<td>' + esc(sub.details || '') + '</td>' +
+        '</tr>';
+    }).join('');
+    subsEl.innerHTML =
+      '<details' + (isHealthy ? '' : ' open') + '>' +
+        '<summary style="cursor:pointer;list-style:none;padding:2px 0">' +
+          '<span style="' + summaryClass + '">' + summaryIcon + ' ' + esc(summaryText) + '</span>' +
+        '</summary>' +
+        '<div style="margin-top:8px">' +
+          '<table><thead><tr>' +
+            '<th>Subsystem</th><th>Status</th><th>Required</th><th>Details</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>' +
+        '</div>' +
+      '</details>';
+  }
+
+  // Force-poll button state (016-force-poll)
+  var fpBtn = document.getElementById('force-poll-btn');
+  var fpMsg = document.getElementById('force-poll-msg');
+  if (fpBtn) {
+    var shouldDisable = s.cycle_active || !s.daemon_running;
+    fpBtn.disabled = shouldDisable;
+    if (!shouldDisable) fpMsg.textContent = '';
+  }
+
+  renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history);
+}
+
+// esc + fmtBytes: /static/helpers.js (#349)
+var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
+
+var _selectedCardId = null;   // card_id shown in card-detail-view
+var _swimlaneTab = null;      // currently selected symphony tab (null = no symphonies)
+function selectSwimlaneTab(name) {
+  _swimlaneTab = name;
+  if (_lastState) renderActiveWorkPanels(_lastState);
+}
+
+// parseTokenCount + derivePerformerTokenTotal: /static/performers.js (#349)
+// Refresh session age counter every 10s while monitoring_agent
+var _lastState = null;
+var _performersSelectedRole = null;
+var _performersDetailOpen = false;
+
+// 049: Client-side router
+function showPage(pageId) {
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page','config-page','assistant-page'];
+  pages.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = id === pageId ? '' : 'none';
+  });
+}
+
+function setActiveNav(path) {
+  var links = document.querySelectorAll('.nav-link');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    var active = (path === '/' && href === '/') || (path !== '/' && href !== '/' && path.startsWith(href));
+    link.classList.toggle('nav-active', active);
+    if (active) { link.setAttribute('aria-current', 'page'); }
+    else { link.removeAttribute('aria-current'); }
+  });
+}
+
+function updateNavActive(path) {
+  setActiveNav(path);
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
+  document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
+}
+
+function renderSymphoniesPage(s) {
+  var el = document.getElementById('symphonies-page-section');
+  if (!el) return;
+  var syms = Array.isArray(s.symphonies) ? s.symphonies : [];
+  var path = location.pathname;
+  var detail = path.startsWith('/symphonies/') ? decodeURIComponent(path.slice('/symphonies/'.length)) : null;
+  if (detail) {
+    // On SSE updates, avoid re-fetching if the page is already rendered:
+    // update only the volatile status table cells from the SSE state payload.
+    var sym = syms.find(function(x) { return x.name === detail; });
+    var tbl = el.querySelector('table[data-detail]');
+    if (tbl && sym) {
+      var rows = tbl.querySelectorAll('tbody tr');
+      function _setTd(row, val) { if (row) { var td = row.querySelector('td'); if (td) td.textContent = val; } }
+      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : '—');
+      _setTd(rows[2], sym.error_count != null ? sym.error_count : '—');
+      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : '—');
+      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : '—');
+      return;
+    }
+    loadSymphonyDetail(detail, el);
+    return;
+  }
+  // List view
+  var addFormHtml = '<div id="sym-add-form" style="display:none;margin-top:16px;padding:12px;background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:10px;font-size:13px">Add Symphony</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+    + '<div><label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">Name (alphanumeric + dash)</label>'
+    + '<input id="sym-add-name" type="text" placeholder="e.g. frontend" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '<div><label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">GitHub Project Number</label>'
+    + '<input id="sym-add-proj" type="number" min="1" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<button class="action-btn" onclick="submitAddSymphony()">Add</button>'
+    + '<button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'none\'">Cancel</button>'
+    + '<span id="sym-add-msg" class="action-msg"></span>'
+    + '</div></div>';
+  if (!syms.length) {
+    el.innerHTML = '<span class="empty-state">No symphonies configured.</span>'
+      + '<div style="margin-top:12px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
+      + addFormHtml;
+    return;
+  }
+  var rows = syms.map(function(sym) {
+    var bootBtn = sym.env_bootstrap_performer_id
+      ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
+      : '<span style="color:var(--color-text-muted)">—</span>';
+    // 077: at-a-glance bootstrap status badge (colored dot + label) so a failing
+    // env bootstrap is visible on the overview without opening the symphony.
+    var bootStatus = '';
+    if (sym.env_bootstrap_performer_id) {
+      var bsColor, bsText;
+      if (sym.bootstrap_in_flight) { bsColor = 'var(--color-accent-blue)'; bsText = 'bootstrapping…'; }
+      else if (sym.last_bootstrap_succeeded === false) { bsColor = 'var(--color-accent-red)'; bsText = 'failed'; }
+      else if (sym.cache_dir_ready && sym.last_bootstrap_succeeded === true) { bsColor = 'var(--color-accent-green)'; bsText = 'ready'; }
+      else { bsColor = 'var(--color-text-muted)'; bsText = 'not bootstrapped'; }
+      var bsTitle = (sym.last_bootstrap_succeeded === false && sym.last_bootstrap_error)
+        ? ' title="' + esc(sym.last_bootstrap_error) + '"' : '';
+      bootStatus = '<span' + bsTitle + ' style="display:inline-flex;align-items:center;gap:5px;margin-right:8px;font-size:11px;color:' + bsColor + '">'
+        + '<span style="width:8px;height:8px;border-radius:50%;background:' + bsColor + ';display:inline-block;flex:none"></span>'
+        + bsText + '</span>';
+    }
+    return '<tr>'
+      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
+      + '<td style="color:var(--color-text-muted)">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
+      + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
+      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
+      + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
+      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
+      + '<td>' + bootStatus + bootBtn + '</td>'
+      + '</tr>';
+  }).join('');
+  el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
+    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th><th style="text-align:left">Env</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
+    + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
+    + addFormHtml;
+  el.querySelectorAll('.sym-row-bootstrap').forEach(function(b) {
+    b.addEventListener('click', async function() {
+      var n = b.getAttribute('data-sym');
+      var msg = document.getElementById('sym-list-msg');
+      b.disabled = true;
+      msg.textContent = 'Dispatching ' + n + '...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(n) + '/env-bootstrap', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) { msg.textContent = n + ': accepted'; msg.style.color = 'var(--color-accent-green)'; }
+        else { msg.textContent = n + ': ' + (d.error || ('error ' + r.status)); msg.style.color = 'var(--color-accent-red)'; }
+      } catch(e) { msg.textContent = n + ': network error'; msg.style.color = 'var(--color-accent-red)'; }
+      b.disabled = false;
+    });
+  });
+}
+
+async function loadSymphonyDetail(name, el) {
+  el.innerHTML = '<span class="empty-state">Loading...</span>';
+  var backLink = '<a href="/symphonies" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue);font-size:13px">&#8592; All symphonies</a>';
+  var res, data;
+  try {
+    res = await fetch('/api/symphonies/' + encodeURIComponent(name));
+    _symCfgHash = res.headers.get('ETag');
+    data = await res.json();
+  } catch(e) {
+    el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">Failed to load symphony</div>';
+    return;
+  }
+  if (!res.ok) {
+    el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">' + esc(data.error || 'Symphony not found') + '</div>';
+    return;
+  }
+  var st = data.state || {};
+  var ov = data.overrides || {};
+  var personas = data.personas || {};
+  var overrideFields = [
+    {key:'max_concurrent_cards', label:'Max concurrent cards', type:'number', placeholder:'1'},
+    {key:'poll_interval_seconds', label:'Poll interval (seconds)', type:'number', placeholder:'30'},
+    {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
+    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
+    {key:'assignee_filter', label:'Assignee filter (GitHub login)', type:'text', placeholder:'(no filter)'},
+  ];
+  var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
+  var statusRows = [
+    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : '—'],
+    ['Cycles', st.cycle_count != null ? st.cycle_count : '—'],
+    ['Errors', st.error_count != null ? st.error_count : '—'],
+    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—'],
+    ['Last poll', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
+    ['Last error', st.last_error ? esc(st.last_error) : '—'],
+  ].map(function(r) {
+    return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
+  }).join('');
+  var overrideInputs = overrideFields.map(function(f) {
+    var val = ov[f.key] != null ? ov[f.key] : '';
+    return '<div style="margin-bottom:8px">'
+      + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(f.label) + '</label>'
+      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(val)) + '" placeholder="' + esc(f.placeholder) + '" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px">'
+      + '</div>';
+  }).join('');
+  var enabledChecked = data.enabled !== false ? 'checked' : '';
+  var specFiles = data.env_spec_files || ['README.md'];
+  var specFileTags = specFiles.map(function(f) {
+    return '<span data-spec-file="' + esc(f) + '" style="display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:12px;padding:2px 8px;font-size:11px;margin:2px">'
+      + esc(f)
+      + '<button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:13px;padding:0 0 0 2px;line-height:1">&times;</button>'
+      + '</span>';
+  }).join('');
+  var personaInputs = personaRoles.map(function(role) {
+    var instr = (personas[role] && personas[role].instructions) ? personas[role].instructions : '';
+    return '<div style="margin-bottom:10px">'
+      + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(role) + '</label>'
+      + '<textarea data-persona-role="' + esc(role) + '" rows="3" placeholder="(inherits global default)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;resize:vertical">' + esc(instr) + '</textarea>'
+      + '</div>';
+  }).join('');
+  var ec = data.env_cache;
+  var ecBootstrapId = data.env_bootstrap_performer_id;
+  var ecSection = '';
+  if (ecBootstrapId) {
+    var ecRows;
+    if (ec) {
+      var inFlight = ec.bootstrap_in_flight;
+      var ready = ec.cache_dir_ready;
+      var lastOk = ec.last_bootstrap_succeeded;
+      var statusColor;
+      var statusText;
+      if (inFlight) { statusColor = 'var(--color-accent-blue)'; statusText = 'in flight'; }
+      else if (lastOk === true && ready) { statusColor = 'var(--color-accent-green)'; statusText = 'ready'; }
+      else if (lastOk === false) { statusColor = 'var(--color-accent-red)'; statusText = 'last bootstrap failed'; }
+      else { statusColor = 'var(--color-text-muted)'; statusText = 'not yet bootstrapped'; }
+      var infRow;
+      if (ec.last_inference_skipped_reason) {
+        infRow = '<span style="color:var(--color-text-muted)">skipped: '
+          + esc(ec.last_inference_skipped_reason) + '</span>';
+      } else if (ec.last_inference_succeeded === true) {
+        var svcs = (ec.last_inference_services || []).join(', ') || '(none)';
+        infRow = '<span style="color:var(--color-accent-green)">ok</span> '
+          + esc(svcs)
+          + ' <span style="color:var(--color-text-muted)">('
+          + esc(String(ec.last_inference_attempts || '?')) + ' attempt'
+          + ((ec.last_inference_attempts || 0) === 1 ? '' : 's') + ', '
+          + esc(ec.last_inference_agent_version || '?') + ')</span>';
+      } else if (ec.last_inference_succeeded === false) {
+        infRow = '<span style="color:var(--color-accent-red)">failed</span> '
+          + '<span style="color:var(--color-text-muted)">('
+          + esc(String(ec.last_inference_attempts || '?')) + ' attempts, '
+          + esc(ec.last_inference_agent_version || '?') + ')</span>';
+      } else {
+        infRow = '—';
+      }
+      ecRows = [
+        ['Status', '<span style="color:' + statusColor + '">' + statusText + '</span>'],
+        ['Performer', esc(ecBootstrapId)],
+        ['Cache dir', esc(ec.cache_dir || '—')],
+        ['Cache ready', ready ? 'yes' : 'no'],
+        ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
+        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : '—'],
+        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : '—'],
+        ['Service inference', infRow],
+        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : '—'],
+      ].map(function(r) {
+        return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
+      }).join('');
+    } else {
+      ecRows = '<tr><td style="font-size:12px;color:var(--color-text-muted)">Env cache state not initialised yet.</td></tr>';
+    }
+    var disabled = (ec && ec.bootstrap_in_flight) ? 'disabled' : '';
+    // 077: prominent error banner when the last bootstrap failed, with the reason
+    // (verify failure / dispatch error / reap reason) so an operator sees WHY.
+    var ecErrBanner = (ec && ec.last_bootstrap_succeeded === false && ec.last_bootstrap_error)
+      ? '<div style="background:rgba(220,50,50,0.12);border:1px solid var(--color-accent-red);'
+        + 'border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--color-accent-red)">'
+        + '⚠ <strong>Env bootstrap failing for ' + esc(name) + ':</strong> '
+        + esc(ec.last_bootstrap_error)
+        + '</div>'
+      : '';
+    ecSection = '<div class="card" style="margin-bottom:14px">'
+      + '<div style="font-weight:bold;margin-bottom:10px;font-size:13px">Env bootstrap</div>'
+      + ecErrBanner
+      + '<table style="font-size:12px;margin-bottom:10px"><tbody>' + ecRows + '</tbody></table>'
+      + '<button class="action-btn" id="sym-env-bootstrap-btn" ' + disabled + '>Force bootstrap now</button>'
+      + ' <span id="sym-env-bootstrap-msg" class="action-msg"></span>'
+      + ' <button class="action-btn" id="sym-wiki-init-btn">Init wiki</button>'
+      + ' <span id="sym-wiki-init-msg" class="action-msg"></span>'
+      + '</div>';
+  }
+  el.innerHTML = backLink
+    + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
+    + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
+    + ecSection
+    + '<div style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:12px;font-size:13px">Configuration</div>'
+    + '<div style="margin-bottom:10px">'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-text-primary);cursor:pointer">'
+    + '<input id="sym-enabled" type="checkbox" ' + enabledChecked + '> Enabled</label>'
+    + '</div>'
+    + overrideInputs
+    + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
+    + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
+    + personaInputs
+    + '</div>'
+    + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
+    + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Env spec files (any change triggers a bootstrap)</div>'
+    + '<div id="sym-spec-files-list" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">' + specFileTags + '</div>'
+    + '<div style="display:flex;gap:6px">'
+    + '<input id="sym-spec-file-input" type="text" placeholder="e.g. pyproject.toml" style="flex:1;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:4px 8px;font-size:12px">'
+    + '<button type="button" class="action-btn" id="sym-spec-file-add-btn" style="padding:4px 10px;font-size:12px">Add</button>'
+    + '</div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:4px">'
+    + '<button class="action-btn" id="sym-save-btn">Save</button>'
+    + '<button class="action-btn" id="sym-delete-btn" style="background:var(--color-bg-delete);border-color:var(--color-border-delete);color:var(--color-accent-red)">Delete symphony</button>'
+    + '<span id="sym-save-msg" class="action-msg"></span>'
+    + '</div>'
+    + '</div>';
+  var ecBtn = document.getElementById('sym-env-bootstrap-btn');
+  if (ecBtn) {
+    ecBtn.addEventListener('click', async function() {
+      var msg = document.getElementById('sym-env-bootstrap-msg');
+      ecBtn.disabled = true;
+      msg.textContent = 'Dispatching...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/env-bootstrap', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) {
+          msg.textContent = 'Accepted — bootstrap will fire on the next cycle';
+          msg.style.color = 'var(--color-accent-green)';
+          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
+        } else {
+          msg.textContent = d.error || ('Error ' + r.status);
+          msg.style.color = 'var(--color-accent-red)';
+          ecBtn.disabled = false;
+        }
+      } catch(e) {
+        msg.textContent = 'Network error';
+        msg.style.color = 'var(--color-accent-red)';
+        ecBtn.disabled = false;
+      }
+    });
+  }
+  var wikiBtn = document.getElementById('sym-wiki-init-btn');
+  if (wikiBtn) {
+    wikiBtn.addEventListener('click', async function() {
+      var msg = document.getElementById('sym-wiki-init-msg');
+      wikiBtn.disabled = true;
+      msg.textContent = 'Dispatching...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) {
+          msg.textContent = 'Accepted — building the wiki, a seed PR will open on completion';
+          msg.style.color = 'var(--color-accent-green)';
+          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
+        } else {
+          msg.textContent = d.error || ('Error ' + r.status);
+          msg.style.color = 'var(--color-accent-red)';
+          wikiBtn.disabled = false;
+        }
+      } catch(e) {
+        msg.textContent = 'Network error';
+        msg.style.color = 'var(--color-accent-red)';
+        wikiBtn.disabled = false;
+      }
+    });
+  }
+  document.getElementById('sym-spec-file-add-btn').addEventListener('click', function() {
+    var inp = document.getElementById('sym-spec-file-input');
+    var val = inp.value.trim();
+    if (!val) return;
+    var list = document.getElementById('sym-spec-files-list');
+    var tag = document.createElement('span');
+    tag.setAttribute('data-spec-file', val);
+    tag.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:12px;padding:2px 8px;font-size:11px;margin:2px');
+    tag.innerHTML = esc(val) + '<button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:13px;padding:0 0 0 2px;line-height:1">&times;</button>';
+    list.appendChild(tag);
+    inp.value = '';
+  });
+  document.getElementById('sym-save-btn').addEventListener('click', async function() {
+    var msg = document.getElementById('sym-save-msg');
+    var overrides = {};
+    el.querySelectorAll('[data-override-key]').forEach(function(inp) {
+      var k = inp.getAttribute('data-override-key');
+      var v = inp.value.trim();
+      if (v === '') return;
+      var numFields = ['max_concurrent_cards','poll_interval_seconds','max_feedback_cycles','max_closed_pr_attempts_per_issue'];
+      overrides[k] = numFields.includes(k) ? Number(v) : v;
+    });
+    var personas = {};
+    el.querySelectorAll('[data-persona-role]').forEach(function(ta) {
+      var role = ta.getAttribute('data-persona-role');
+      var v = ta.value.trim();
+      if (v) personas[role] = {instructions: v};
+    });
+    var specFilesList = [];
+    el.querySelectorAll('[data-spec-file]').forEach(function(tag) {
+      specFilesList.push(tag.getAttribute('data-spec-file'));
+    });
+    if (specFilesList.length === 0) specFilesList = ['README.md'];
+    var enabled = document.getElementById('sym-enabled').checked;
+    try {
+      var r = await fetch('/api/symphonies/' + encodeURIComponent(name), {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json', 'If-Match': _symCfgHash || ''},
+        body: JSON.stringify({overrides: Object.keys(overrides).length ? overrides : null, personas: Object.keys(personas).length ? personas : null, enabled: enabled, env_spec_files: specFilesList}),
+      });
+      var d = await r.json();
+      if (r.ok) {
+        _symCfgHash = r.headers.get('ETag') || _symCfgHash;
+        msg.textContent = 'Saved';
+        msg.style.color = 'var(--color-accent-green)';
+      } else {
+        msg.textContent = versionErrorText(r.status, d);
+        msg.style.color = 'var(--color-accent-red)';
+      }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = 'var(--color-accent-red)'; }
+    setTimeout(function(){ if(msg) msg.textContent=''; }, 4000);
+  });
+  document.getElementById('sym-delete-btn').addEventListener('click', async function() {
+    if (!confirm('Delete symphony "' + name + '"? This cannot be undone.')) return;
+    var msg = document.getElementById('sym-save-msg');
+    try {
+      var r = await fetch('/api/symphonies/' + encodeURIComponent(name), {
+        method: 'DELETE',
+        headers: {'If-Match': _symCfgHash || ''},
+      });
+      var d = await r.json();
+      if (r.ok) {
+        navigate(null, '/symphonies');
+      } else {
+        msg.textContent = versionErrorText(r.status, d);
+        msg.style.color = 'var(--color-accent-red)';
+      }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = 'var(--color-accent-red)'; }
+  });
+}
+
+async function submitAddSymphony() {
+  var nameVal = (document.getElementById('sym-add-name') || {}).value || '';
+  var projVal = (document.getElementById('sym-add-proj') || {}).value || '';
+  var msg = document.getElementById('sym-add-msg');
+  if (!nameVal.trim() || !projVal.trim()) { msg.textContent = 'Name and project number are required'; msg.style.color='var(--color-accent-red)'; return; }
+  try {
+    var r = await fetch('/api/symphonies', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'If-Match': (await currentConfigVersion()) || ''},
+      body: JSON.stringify({name: nameVal.trim(), github_project_number: Number(projVal)}),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      navigate(null, '/symphonies/' + encodeURIComponent(nameVal.trim()));
+    } else {
+      msg.textContent = versionErrorText(r.status, d);
+      msg.style.color = 'var(--color-accent-red)';
+    }
+  } catch(e) { msg.textContent = 'Network error'; msg.style.color='var(--color-accent-red)'; }
+}
+
+// 081 config-editing UI: /static/config.js (#349)
+function router() {
+  var path = location.pathname;
+  updateNavActive(path);
+  if (path === '/performers') {
+    showPage('performers-page');
+    if (_lastState) renderPerformersPage(_lastState);
+  } else if (path === '/personas') {
+    showPage('personas-page');
+    loadPersonasPage();
+  } else if (path === '/history') {
+    showPage('history-page');
+    if (_lastState) renderHistoryPage(_lastState);
+  } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
+    showPage('symphonies-page');
+    if (_lastState) renderSymphoniesPage(_lastState);
+  } else if (path === '/admin/config') {
+    showPage('admin-config-page');
+    loadGlobalConfigPage();
+  } else if (path === '/config') {
+    showPage('config-page');
+    loadConfigPage();
+  } else if (path === '/assistant') {
+    showPage('assistant-page');
+    if (typeof initAssistant === 'function') initAssistant();
+  } else {
+    showPage('dashboard-page');
+    if (_lastState) renderDashboardExtras(_lastState);
+  }
+}
+
+function navigate(e, path) {
+  // Only intercept plain left-clicks; let ctrl/cmd/middle-click open new tabs normally
+  if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
+  if (e) { e.preventDefault(); }
+  history.pushState(null, '', path);
+  var menu = document.getElementById('navbar-menu');
+  if (menu) menu.classList.remove('open');
+  router();
+}
+
+function toggleNavMenu() {
+  var menu = document.getElementById('navbar-menu');
+  menu.classList.toggle('open');
+}
+
+window.addEventListener('popstate', function() { router(); });
+
+// 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
+// BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
+// performers-page + active-work rendering: /static/performers.js (#349)
+function renderHistoryPage(s) {
+  renderCycleHistoryInto(document.getElementById('history-page-section'), s.cycle_history);
+}
+
+// 049: Personas page
+var _personasPageLoaded = false;
+function loadPersonasPage(force) {
+  var section = document.getElementById('personas-page-section');
+  if (!section) return;
+  if (_personasPageLoaded && !force) return;  // skip if already loaded
+  _personasPageLoaded = true;
+  section.innerHTML = '<span class="empty-state">Loading...</span>';
+  fetch('/api/personas').then(function(r){ _personaCfgHash = r.headers.get('ETag'); return r.json(); }).then(function(data) {
+    var html = data.map(function(p, idx) {
+      return '<div style="margin-bottom:16px" data-persona-idx="' + idx + '">' +
+        '<label style="font-weight:bold;color:var(--color-text-primary);display:block;margin-bottom:4px">' + esc(p.role) + '</label>' +
+        '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
+        '<div style="margin-top:4px;display:flex;gap:8px">' +
+        '<button class="action-btn persona-save-btn">Save</button>' +
+        '<button class="action-btn persona-reset-btn">Reset</button>' +
+        '</div><div class="persona-page-msg action-msg"></div></div>';
+    }).join('');
+    section.innerHTML = html || '<span class="empty-state">No personas configured</span>';
+    // Wire save/reset via event delegation (safe for all role names)
+    section.querySelectorAll('[data-persona-idx]').forEach(function(el, i) {
+      var role = data[i] && data[i].role;
+      if (!role) return;
+      var ta = el.querySelector('.persona-page-ta');
+      var msg = el.querySelector('.persona-page-msg');
+      el.querySelector('.persona-save-btn').addEventListener('click', async function() {
+        if (!ta || !msg) return;
+        try {
+          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'PUT', headers: {'Content-Type':'application/json', 'If-Match': _personaCfgHash || ''}, body: JSON.stringify({instructions: ta.value}) });
+          if (res.ok) _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
+          // The body has to be read: versionErrorText keys on `conflict` to tell a
+          // version clash from a duplicate name, and passing null made every 409
+          // read 'Error 409'.
+          var pd = res.ok ? null : await res.json().catch(function(){ return {}; });
+          msg.textContent = res.ok ? 'Saved' : versionErrorText(res.status, pd);
+          setTimeout(function(){ msg.textContent=''; }, 3000);
+        } catch(e) { msg.textContent = 'Error'; }
+      });
+      el.querySelector('.persona-reset-btn').addEventListener('click', async function() {
+        if (!confirm('Reset ' + role + ' instructions to default?')) return;
+        try {
+          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'DELETE', headers: {'If-Match': _personaCfgHash || ''} });
+          if (res.ok) { loadPersonasPage(true); }
+          else if (msg) {
+            var rd = await res.json().catch(function(){ return {}; });
+            msg.textContent = versionErrorText(res.status, rd);
+          }
+        } catch(e) { if (msg) msg.textContent = 'Error'; }
+      });
+    });
+  }).catch(function() { section.innerHTML = '<span class="empty-state">Failed to load personas</span>'; });
+}
+
+// resetPersonaPage wired inline via event delegation in loadPersonasPage()
+
+setInterval(function() {
+  if (!_lastState) return;
+  var activeSess = findActivePerformerSession(_lastState);
+  var dispatchAt = activeSess ? activeSess.agent_dispatch_at : null;
+  if (dispatchAt) {
+    var age = fmtAge(dispatchAt) || '—';
+    var ageEl = document.getElementById('session-age');
+    if (ageEl) ageEl.textContent = 'Agent running for: ' + age;
+  }
+}, 10000);
+
+async function forcePoll() {
+  var btn = document.getElementById('force-poll-btn');
+  var msg = document.getElementById('force-poll-msg');
+  btn.disabled = true;
+  msg.textContent = '';
+  try {
+    var res = await fetch('/api/force-poll', { method: 'POST' });
+    if (res.status === 409) {
+      msg.textContent = 'Cycle already running';
+      btn.disabled = false;
+    }
+    // 202: stay disabled until SSE delivers cycle_active=false
+  } catch(err) {
+    msg.textContent = 'Could not reach server';
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Personas panel (018-performer-personas)
+// ---------------------------------------------------------------------------
+
+async function loadPersonas() {
+  var section = document.getElementById('personas-section');
+  if (!section) return;
+  try {
+    var res = await fetch('/api/personas');
+    _personaCfgHash = res.headers.get('ETag');
+    if (!res.ok) {
+      section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(res.status + ' ' + res.statusText) + '</span>';
+      return;
+    }
+    var personas = await res.json();
+    renderPersonas(personas);
+  } catch(err) {
+    section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(String(err)) + '</span>';
+  }
+}
+
+function renderPersonas(personas) {
+  var section = document.getElementById('personas-section');
+  if (!section) return;
+  var rows = personas.map(function(p) {
+    var badge = p.is_default
+      ? '<span style="font-size:11px;color:var(--color-text-muted);margin-left:6px">using default</span>'
+      : '<span style="font-size:11px;color:var(--color-accent-blue);margin-left:6px">custom</span>';
+    return '<div style="margin-bottom:16px;border-bottom:1px solid var(--color-bg-elevated);padding-bottom:14px">' +
+      '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+        '<strong style="font-size:13px">' + esc(p.role) + '</strong>' + badge +
+      '</div>' +
+      '<textarea id="persona-ta-' + esc(p.role) + '" rows="4" style="width:100%;box-sizing:border-box;' +
+        'background:var(--color-bg-base);border:1px solid var(--color-border);color:var(--color-text-primary);padding:6px;font-family:monospace;' +
+        'font-size:12px;border-radius:4px;resize:vertical">' + esc(p.instructions) + '</textarea>' +
+      '<div style="margin-top:6px;display:flex;gap:8px;align-items:center">' +
+        '<button onclick="savePersona(\'' + esc(p.role) + '\')" ' +
+          'id="persona-save-' + esc(p.role) + '" ' +
+          'style="background:var(--color-btn-success);border:none;color:var(--color-text-primary);padding:4px 12px;border-radius:4px;cursor:pointer">' +
+          'Save</button>' +
+        '<button onclick="resetPersona(\'' + esc(p.role) + '\')" ' +
+          'id="persona-reset-' + esc(p.role) + '" ' +
+          'style="background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-primary);padding:4px 12px;' +
+          'border-radius:4px;cursor:pointer">Reset to defaults</button>' +
+        '<span id="persona-msg-' + esc(p.role) + '" style="font-size:12px;color:var(--color-text-muted)"></span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  section.innerHTML = rows || '<span class="empty-state">No personas found.</span>';
+}
+
+async function savePersona(role) {
+  var ta = document.getElementById('persona-ta-' + role);
+  var btn = document.getElementById('persona-save-' + role);
+  var msg = document.getElementById('persona-msg-' + role);
+  if (!ta || !btn) return;
+  btn.disabled = true;
+  msg.textContent = 'Saving...';
+  try {
+    var res = await fetch('/api/personas/' + encodeURIComponent(role), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json', 'If-Match': _personaCfgHash || ''},
+      body: JSON.stringify({instructions: ta.value}),
+    });
+    if (res.ok) _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
+    var data = res.headers.get('content-type') && res.headers.get('content-type').includes('application/json')
+      ? await res.json() : {};
+    if (!res.ok) {
+      msg.textContent = versionErrorText(res.status, data);
+      msg.style.color = 'var(--color-accent-red)';
+    } else {
+      msg.textContent = 'Saved.';
+      msg.style.color = 'var(--color-accent-green)';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
+      loadPersonas();
+    }
+  } catch(err) {
+    msg.textContent = 'Network error';
+    msg.style.color = 'var(--color-accent-red)';
+  }
+  btn.disabled = false;
+}
+
+async function resetPersona(role) {
+  var btn = document.getElementById('persona-reset-' + role);
+  var msg = document.getElementById('persona-msg-' + role);
+  if (!btn) return;
+  btn.disabled = true;
+  msg.textContent = 'Resetting...';
+  try {
+    var res = await fetch('/api/personas/' + encodeURIComponent(role), {
+      method: 'DELETE',
+      headers: {'If-Match': _personaCfgHash || ''},
+    });
+    if (res.status === 204 || res.ok) {
+      _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
+      msg.textContent = 'Reset to defaults.';
+      msg.style.color = 'var(--color-accent-green)';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
+      loadPersonas();
+    } else {
+      var data = await res.json().catch(function() { return {}; });
+      msg.textContent = versionErrorText(res.status, data);
+      msg.style.color = 'var(--color-accent-red)';
+    }
+  } catch(err) {
+    msg.textContent = 'Network error';
+    msg.style.color = 'var(--color-accent-red)';
+  }
+  btn.disabled = false;
+}
+
+// 049: Personas load lazily on /personas page visit via loadPersonasPage().
+// The original loadPersonas() targets #personas-section on the main page (now hidden).
+// The new loadPersonasPage() targets #personas-page-section and uses event delegation.
+
+// ---------------------------------------------------------------------------
+// 138: activity feed
+// ---------------------------------------------------------------------------
+var AF_MAX_ROWS = 2000;
+var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
+var AF_LABELS = {
+  progress: 'PROGRESS', tool_use: 'TOOL', thinking: 'THINKING', cost: 'COST',
+  stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED',
+  // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
+  // back to the raw uppercased type while every other type had a short label.
+  stream_truncated: 'TRUNCATED',
+  // 343: step boundaries are the spine of the trail; give them their own chip.
+  workflow_step: 'STEP'
+};
+var _afGroupingActive = false; // older SSE payloads lack session attribution
+var _afEntries = [];        // retained entries, oldest-first
+var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
+var _afFilter = '';
+var _afLastMsgAt = Date.now();
+var _afLive = true;
+var _afQuietCards = {};     // card_id -> true while that card is in a quiet episode
+
+function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
+
+function afTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; }
+}
+
+
+function afMatches(e) { return !_afFilter || e.card_id === _afFilter; }
+
+function afAppend(entries) {
+  var feed = document.getElementById('activity-feed');
+  if (!feed || !entries || !entries.length) return;
+  var html = '';
+  var added = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e == null || _afSeen[e.seq]) continue;
+    if (e.session_id) _afGroupingActive = true;
+    _afSeen[e.seq] = true;
+    var prev = _afEntries[_afEntries.length - 1];
+    e._afGroupKey = afCanGroup(prev, e) ? prev._afGroupKey : e.seq;
+    _afEntries.push(e);
+    // FR-032: any real entry ends the card's quiet episode.
+    if (e.card_id && e.activity_type !== 'quiet') delete _afQuietCards[e.card_id];
+    if (!afMatches(e)) continue;
+    html = afRowHtml(e) + html;   // batch is oldest-first; newest ends up on top
+    added++;
+  }
+  while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
+  if (_afGroupingActive) {
+    afSyncGroups(false);
+    afUpdateEmpty();
+    afUpdateFilterOptions();
+    return;
+  }
+  if (added) {
+    // Prepend ONLY the new rows. A full re-render would make
+    // aria-relevant="additions" re-announce every existing row.
+    feed.insertAdjacentHTML('afterbegin', html);
+    while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
+    while (feed.childElementCount > AF_MAX_ROWS) feed.removeChild(feed.lastElementChild);
+  }
+  afUpdateEmpty();
+  afUpdateFilterOptions();
+}
+
+function afRender() {
+  // Full re-render — filter changes only, never a live update.
+  var feed = document.getElementById('activity-feed');
+  if (!feed) return;
+  if (_afGroupingActive) {
+    afSyncGroups(true);
+    afUpdateEmpty();
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < _afEntries.length; i++) {
+    if (afMatches(_afEntries[i])) html = afRowHtml(_afEntries[i]) + html;
+  }
+  feed.innerHTML = html;
+  afUpdateEmpty();
+}
+
+function afUpdateEmpty() {
+  var feed = document.getElementById('activity-feed');
+  var empty = document.getElementById('af-empty');
+  if (!feed || !empty) return;
+  empty.style.display = feed.childElementCount ? 'none' : '';
+}
+
+function afUpdateFilterOptions() {
+  var sel = document.getElementById('af-filter');
+  if (!sel) return;
+  var seen = {}, cards = [];
+  for (var i = 0; i < _afEntries.length; i++) {
+    var e = _afEntries[i];
+    if (!e.card_id || seen[e.card_id]) continue;
+    seen[e.card_id] = true;
+    cards.push(e);
+  }
+  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:_afFilter + ' (no retained activity)'});
+  var key = cards.map(function(e) { return e.card_id; }).join(',');
+  if (key === sel.getAttribute('data-cards')) return;
+  sel.setAttribute('data-cards', key);
+  var html = '<option value="">All cards</option>';
+  cards.forEach(function(e) {
+    var label = (e.card_number ? '#' + e.card_number + ' ' : '') + (e.card_title || e.card_id);
+    html += '<option value="' + esc(e.card_id) + '">' + esc(label) + '</option>';
+  });
+  sel.innerHTML = html;
+  sel.value = _afFilter;
+  if (sel.value !== _afFilter) { _afFilter = ''; sel.value = ''; afRender(); }
+}
+
+function onActivityFilterChange() {
+  var sel = document.getElementById('af-filter');
+  _afFilter = sel ? sel.value : '';
+  afRender();
+}
+
+function afSetLive(live) {
+  if (live === _afLive) return;
+  _afLive = live;
+  var el = document.getElementById('af-liveness');
+  if (el) {
+    el.textContent = live ? 'Live' : 'Not live';
+    if (live) el.classList.remove('af-not-live'); else el.classList.add('af-not-live');
+  }
+  // Retained entries stay visible and are marked possibly out of date; the
+  // feed is never cleared on disconnect (FR-027).
+  var note = document.getElementById('af-stale-note');
+  if (note) note.style.display = live ? 'none' : '';
+  // Reuse the existing connection indicators rather than adding a second one.
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) {
+    if (live) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
+    else { dot.classList.add('disconnected'); dot.title = 'SSE silent — no messages'; }
+  }
+  var bnr = document.getElementById('disconnected-banner');
+  if (bnr && !live) bnr.style.display = 'block';
+}
+
+function afNoteMessage() {
+  _afLastMsgAt = Date.now();
+  afSetLive(true);
+}
+
+function afQuietTick() {
+  var s = _lastState;
+  if (!s) return;
+  var threshold = s.activity_quiet_threshold_seconds;
+  if (!threshold || threshold <= 0) return;   // 0 disables
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var now = Date.now();
+  var newest = {};
+  for (var i = 0; i < _afEntries.length; i++) {
+    var e = _afEntries[i];
+    if (!e.card_id || e.activity_type === 'quiet') continue;
+    var t = Date.parse(e.timestamp);
+    if (!isNaN(t) && (!newest[e.card_id] || t > newest[e.card_id])) newest[e.card_id] = t;
+  }
+  var marked = false;
+  sessions.forEach(function(sess) {
+    var cid = sess.card_id;
+    if (!cid || _afQuietCards[cid]) return;
+    // Anchor on max(newest entry, agent_dispatch_at), skipping whichever is
+    // absent. Entry-only anchoring leaves a session restored after a daemon
+    // restart unmarked forever — the exact card this exists for (FR-028).
+    var lastHeard = newest[cid] || NaN;
+    var dispatched = sess.agent_dispatch_at ? Date.parse(sess.agent_dispatch_at) : NaN;
+    if (!isNaN(dispatched)) lastHeard = isNaN(lastHeard) ? dispatched : Math.max(lastHeard, dispatched);
+    if (isNaN(lastHeard)) return;   // never mark quiet off a missing timestamp
+    if ((now - lastHeard) / 1000 <= threshold) return;
+    _afQuietCards[cid] = true;
+    marked = true;
+    // One synthetic row per episode. Synthetic rows never enter the stored log
+    // on the daemon and never count as progress (FR-031, FR-033).
+    afAppend([{
+      seq: 'q:' + cid + ':' + lastHeard,
+      timestamp: new Date().toISOString(),
+      card_id: cid,
+      card_number: sess.issue_number,
+      card_title: sess.card_title,
+      stage: sess.performer_stage || '',
+      activity_type: 'quiet',
+      text: 'No activity for ' + Math.round((now - lastHeard) / 1000) + 's',
+      truncated: false
+    }]);
+  });
+  if (marked) renderActivePerformers(s);
+}
+
+function afTick() {
+  afSetLive(Date.now() - _afLastMsgAt < AF_SILENCE_MS);
+  afQuietTick();
+}
+
+var banner = document.getElementById('disconnected-banner');
+var es = new EventSource('/events');
+es.addEventListener('activity_event', function(e) {
+  afNoteMessage();
+  try { afAppend(JSON.parse(e.data).entries); }
+  catch(err) { console.error('activity parse error', err); }
+});
+es.addEventListener('heartbeat', function() { afNoteMessage(); });
+es.addEventListener('state_update', function(e) {
+  afNoteMessage();
+  try {
+    _lastState = JSON.parse(e.data);
+    renderState(_lastState);
+    // 049: re-render current page with new state
+    var path = location.pathname;
+    if (path === '/performers') renderPerformersPage(_lastState);
+    else if (path === '/history') renderHistoryPage(_lastState);
+    else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
+    else renderDashboardExtras(_lastState);
+  } catch(err) { console.error('parse error', err); }
+});
+es.onerror = function() {
+  banner.style.display = 'block';
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) { dot.classList.add('disconnected'); dot.title = 'SSE disconnected — reconnecting'; }
+  var fpBtn = document.getElementById('force-poll-btn');
+  if (fpBtn) fpBtn.disabled = true;
+};
+es.onopen = function() {
+  banner.style.display = 'none';
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
+};
+
+document.addEventListener('DOMContentLoaded', function() {
+  router(); // initial route
+  if (typeof assistantAvailable === 'function') assistantAvailable();
+  setInterval(afTick, 5000);   // 138: silence timer + quiet detection
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _selectedCardId) closeCardDetail();
+});
+</script>
+</body>
+</html>

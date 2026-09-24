@@ -27,13 +27,21 @@ from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES, DashboardStore, create_dashboard_app
 from coordinare.services.config_write_service import compute_content_hash
 
-DASHBOARD = Path("src/coordinare/dashboard.py")
+DASHBOARD = Path("src/coordinare/dashboard")
 
 
 def _frontend_source() -> str:
     """Everything the browser executes: the inline Python string plus the JS the
-    349 extraction moved to /static files, concatenated for scanning."""
-    return DASHBOARD.read_text() + "\n" + "\n".join(_DASHBOARD_JS_SOURCES.values())
+    349 extraction moved to /static files, concatenated for scanning.
+
+    436: also the templates, because that is where the inline JS lives now.
+    """
+    parts = [_dashboard_source()]
+    parts.append("\n".join(_DASHBOARD_JS_SOURCES.values()))
+    parts.extend(
+        path.read_text() for path in sorted((DASHBOARD / "templates").glob("*"))
+    )
+    return "\n".join(parts)
 
 #: Anything that ends up writing config.yaml. A route reaching one of these without
 #: a version check is the defect this spec exists to remove.
@@ -101,8 +109,15 @@ def _dashboard_source() -> str:
     Every fix in this spec since round four has been verified by editing
     `dashboard.py` and re-running, so a derivation that answers from before the edit
     would quietly make a mutation look caught, or look missed.
+
+    436: dashboard.py became a package, so the "source" is every module under it,
+    concatenated in a stable order. The derivations only walk top-level defs, so
+    the concatenation is faithful.
     """
-    return DASHBOARD.read_text()
+    root = DASHBOARD
+    return "\n\n".join(
+        path.read_text() for path in sorted(root.rglob("*.py"))
+    )
 
 
 @lru_cache(maxsize=4)
@@ -203,7 +218,7 @@ class TestEveryConfigWritingRouteChecksAVersion:
 
     @staticmethod
     def _routes_reaching_a_writer() -> list[tuple[str, str, bool]]:
-        tree = ast.parse(DASHBOARD.read_text())
+        tree = ast.parse(_dashboard_source())
         found: list[tuple[str, str, bool]] = []
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -382,7 +397,7 @@ class TestNothingElseChanged:
 def test_the_helper_exists_once_rather_than_five_times() -> None:
     """FR-008 — five copies of a concurrency check is five chances to differ, and
     the difference shows up as a lost edit, which is the failure nobody notices."""
-    source = DASHBOARD.read_text()
+    source = _dashboard_source()
 
     assert source.count("def _version_refusal(") == 1
     assert len(re.findall(r"_version_refusal\(config_path", source)) >= 5
@@ -761,7 +776,7 @@ class TestTheTwoKindsOf409AreDistinguishable:
 
     def test_nothing_else_in_the_file_claims_conflict(self) -> None:
         """The flag is set in exactly the two places that mean it."""
-        source = DASHBOARD.read_text()
+        source = _dashboard_source()
 
         assert source.count('"conflict": True') == 2, (
             "a new 409 has claimed to be a version conflict; the UI will mislabel it"
@@ -852,7 +867,7 @@ class TestARefusalTouchesNoStateAtAll:
         """
         import ast
 
-        tree = ast.parse(DASHBOARD.read_text())
+        tree = ast.parse(_dashboard_source())
         handlers = _guarded_write_handlers()
         offenders: list[str] = []
         for node in ast.walk(tree):
@@ -1089,7 +1104,7 @@ class TestAnUnreadableConfigIsNotACrash:
         """
         import ast
 
-        tree = ast.parse(DASHBOARD.read_text())
+        tree = ast.parse(_dashboard_source())
         unhandled: list[int] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Try):
@@ -1163,7 +1178,11 @@ class TestNo403LeaksThePath:
         import ast
 
         offenders: list[str] = []
-        for path in (DASHBOARD, Path("src/coordinare/services/config_write_service.py")):
+        sources = [
+            *sorted(DASHBOARD.rglob("*.py")),
+            Path("src/coordinare/services/config_write_service.py"),
+        ]
+        for path in sources:
             tree = ast.parse(path.read_text())
             for handler in (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)):
                 name = handler.name
