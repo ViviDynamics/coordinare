@@ -4,7 +4,7 @@ description: Runs the coordinare daemon in-cluster, managing performers as Pods 
 type: application
 
 # Chart version. Bumped on chart changes; independent of the app version below.
-version: 0.1.0
+version: 0.1.1
 
 # The coordinare release this chart installs by default. values.yaml pins image.tag
 # to this, so a Pod reschedule cannot silently change the running version.

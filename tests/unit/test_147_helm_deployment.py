@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import ClassVar
 
@@ -173,6 +174,92 @@ class TestStatePersistence:
         sts = _one(_render(**{"state.storageClass": "fast-ssd"}), "StatefulSet")
         claim = sts["spec"]["volumeClaimTemplates"][0]
         assert claim["spec"]["storageClassName"] == "fast-ssd"
+
+
+# ---------------------------------------------------------------------------
+# Issue #394 — the VCT metadata is immutable, so no version-derived label can
+# ride in it
+# ---------------------------------------------------------------------------
+
+
+class TestVolumeClaimTemplateLabelsAreUpgradeStable:
+    """Kubernetes forbids updates to ``volumeClaimTemplates``, metadata included.
+
+    ``coordinare.labels`` carries ``app.kubernetes.io/version`` (Chart.appVersion)
+    and ``helm.sh/chart`` (Chart.version), so every release bump changed an
+    immutable field and the upgrade was rejected outright. The claim itself was
+    byte-identical; only the labels moved. Rendering the version into the claim
+    metadata means a chart release is not an upgrade but a delete-and-recreate
+    of the StatefulSet, with the PVC retained by luck of the reclaim policy.
+    """
+
+    #: Rendered from Chart metadata, so they change on every bump.
+    VERSION_DERIVED_LABELS = ("app.kubernetes.io/version", "helm.sh/chart")
+
+    def _vct_labels(self) -> dict:
+        claim = _one(_render(), "StatefulSet")["spec"]["volumeClaimTemplates"][0]
+        return claim["metadata"]["labels"]
+
+    def test_no_version_derived_label_on_the_claim(self) -> None:
+        leaked = [k for k in self.VERSION_DERIVED_LABELS if k in self._vct_labels()]
+        assert not leaked, (
+            f"{leaked} change with every release, and volumeClaimTemplates "
+            "metadata is immutable — the upgrade fails with 'Forbidden'"
+        )
+
+    def test_the_claim_still_carries_the_stable_identity_labels(self) -> None:
+        labels = self._vct_labels()
+        assert labels.get("app.kubernetes.io/name") == "coordinare"
+        assert labels.get("app.kubernetes.io/instance") == RELEASE
+        assert labels.get("app.kubernetes.io/managed-by") == "coordinare"
+
+    def test_the_version_label_still_reaches_the_pod_template(self) -> None:
+        """Removing the version everywhere would be overcorrection.
+
+        Pod template metadata is mutable, so the version label costs nothing
+        there and remains how `kubectl get pod -l app.kubernetes.io/version=...`
+        finds what is running.
+        """
+        pod_labels = (
+            _one(_render(), "StatefulSet")["spec"]["template"]["metadata"]["labels"]
+        )
+        assert "app.kubernetes.io/version" in pod_labels
+
+    def test_a_bumped_app_version_leaves_the_claim_metadata_identical(self) -> None:
+        """The real failure, simulated: an upgrade from one appVersion to the next.
+
+        Copies the chart, rewrites Chart.yaml's appVersion the way a release
+        does, and compares the rendered claim metadata. This is the test a
+        key-absence assertion can only approximate: any label that still
+        derives from chart metadata under a new name is caught here.
+        """
+        import re
+
+        import yaml as yaml_lib
+
+        source = Path(CHART).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            bumped_chart = Path(tmp, "coordinare")
+            shutil.copytree(source, bumped_chart)
+            manifest = bumped_chart / "Chart.yaml"
+            text = manifest.read_text()
+            bumped = re.sub(r'appVersion:\s*"[^"]*"', 'appVersion: "9999.0.0"', text, count=1)
+            assert bumped != text, "the rewrite did not apply"
+            manifest.write_text(bumped)
+            yaml.safe_load(manifest.read_text())  # must remain valid YAML
+
+            args = ["helm", "template", RELEASE, str(bumped_chart), "--namespace", NAMESPACE]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+            assert result.returncode == 0, result.stderr
+            docs = [d for d in yaml_lib.safe_load_all(result.stdout) if d]
+            bumped_claim = _one(docs, "StatefulSet")["spec"]["volumeClaimTemplates"][0]
+
+        current_claim = _one(_render(), "StatefulSet")["spec"]["volumeClaimTemplates"][0]
+        assert bumped_claim["metadata"] == current_claim["metadata"], (
+            "the claim metadata must not change across an appVersion bump: "
+            "volumeClaimTemplates metadata is immutable, so a diff here is a "
+            "forbidden update"
+        )
 
 
 # ---------------------------------------------------------------------------
