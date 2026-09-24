@@ -4,7 +4,8 @@ Each fixture carries the card as the architect would receive it, the files a
 tiny repository holds so the survey has something to read, the canned model
 answers the stub returns, and the expectations scoring checks. Deterministic
 by construction; the live mode swaps the stub for the gateway and keeps the
-expectations.
+expectations. Blueprint paths the tree does not have yet carry a 'new:' prefix
+(417 path validation refuses undeclared ones).
 """
 from __future__ import annotations
 
@@ -73,11 +74,11 @@ FEATURE = Fixture(
     blueprint={
         "summary": "Parse HH:mm and decimal duration input into canonical minutes on TimeEntry.",
         "milestones": [
-            {"goal": "duration parser", "scope": ["app/lib/duration_parser.rb", "spec/lib/duration_parser_spec.rb"], "done_when": "parser specs pass for both formats and rejections"},
+            {"goal": "duration parser", "scope": ["new:app/lib/duration_parser.rb", "new:spec/lib/duration_parser_spec.rb"], "done_when": "parser specs pass for both formats and rejections"},
             {"goal": "wire the parser into TimeEntry", "scope": ["app/models/time_entry.rb"], "done_when": "model accepts a duration string and stores minutes"},
-            {"goal": "form validation message", "scope": ["app/views/time_entries", "config/locales"], "done_when": "invalid input shows the error"},
+            {"goal": "form validation message", "scope": ["new:app/views/time_entries", "new:config/locales"], "done_when": "invalid input shows the error"},
         ],
-        "modules": [{"path": "app/models/", "note": "TimeEntry gains a virtual duration attribute"}, {"path": "app/lib/", "note": "new parser"}],
+        "modules": [{"path": "app/models/", "note": "TimeEntry gains a virtual duration attribute"}, {"path": "new:app/lib/", "note": "new parser"}],
         "data_model": {"changes": []},
         "interfaces": [],
         "risks": ["locale decimal separators"],
@@ -101,12 +102,12 @@ SCHEMA = Fixture(
     blueprint={
         "summary": "Introduce timesheet submissions with a state machine and an approval endpoint.",
         "milestones": [
-            {"goal": "migration and model", "scope": ["db/migrate", "app/models/timesheet_submission.rb"], "done_when": "model specs pass"},
-            {"goal": "lifecycle transitions", "scope": ["app/models/timesheet_submission.rb"], "done_when": "submit and approve transitions covered by specs"},
-            {"goal": "approval endpoint", "scope": ["app/controllers/admin/timesheets_controller.rb", "config/routes.rb"], "done_when": "request specs pass"},
+            {"goal": "migration and model", "scope": ["new:db/migrate", "new:app/models/timesheet_submission.rb"], "done_when": "model specs pass"},
+            {"goal": "lifecycle transitions", "scope": ["new:app/models/timesheet_submission.rb"], "done_when": "submit and approve transitions covered by specs"},
+            {"goal": "approval endpoint", "scope": ["new:app/controllers/admin/timesheets_controller.rb", "new:config/routes.rb"], "done_when": "request specs pass"},
             {"goal": "lock entries on approval", "scope": ["app/models/time_entry.rb"], "done_when": "approved weeks reject edits"},
         ],
-        "modules": [{"path": "app/models/", "note": "new model, TimeEntry lock"}, {"path": "app/controllers/admin/", "note": "approval"}, {"path": "db/migrate/", "note": "new table"}],
+        "modules": [{"path": "app/models/", "note": "new model, TimeEntry lock"}, {"path": "new:app/controllers/admin/", "note": "approval"}, {"path": "new:db/migrate/", "note": "new table"}],
         "data_model": {"changes": [
             {"kind": "table", "name": "timesheet_submissions", "note": "employee, period_start, status, submitted_at, approved_at"},
             {"kind": "index", "name": "timesheet_submissions_employee_period", "note": "unique per employee and period"},

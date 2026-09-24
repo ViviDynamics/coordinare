@@ -100,12 +100,35 @@ def _read_capped(path: Path) -> str:
     return text[:_MAX_DOC_CHARS]
 
 
+def resolve_package_root(score, workspace: Path) -> Path:
+    """The subtree the card targets, from the card's workflow_env (417).
+
+    Monorepos survey and read their agent instructions from a package, not the
+    repository root. ``ARCHITECT_PACKAGE_ROOT`` names the package relative to
+    the workspace; anything that escapes the workspace falls back to it.
+    """
+    workspace = Path(workspace)
+    raw = ""
+    env = getattr(score, "workflow_env", None) or {}
+    raw = str(env.get("ARCHITECT_PACKAGE_ROOT") or "").strip()
+    if not raw:
+        return workspace
+    base = workspace.resolve()
+    candidate = (workspace / raw).resolve()
+    if base != candidate and base not in candidate.parents:
+        return workspace
+    return candidate
+
+
 def build_intake(score, workspace: Path) -> Intake:
     """Pure assembly from *score* and files already in *workspace*.
 
     166: assessment may come from the Score (workflow report, as a dict) or from
-    the workspace (legacy prose path, as a string).
+    the workspace (legacy prose path, as a string). 417: the package's
+    ``AGENTS.md``/``CLAUDE.md`` and card docs are read when the card names a
+    package root, falling back to the repository root otherwise.
     """
+    package_root = resolve_package_root(score, workspace)
     # 166: check for workflow assessment in score first (takes precedence).
     assessment = getattr(score, "assessment", None)
     if not assessment:
@@ -113,9 +136,9 @@ def build_intake(score, workspace: Path) -> Intake:
         folder = getattr(score, "doc_folder", None)
         candidates = []
         if folder:
-            candidates.append(Path(workspace) / str(folder) / "assessment.md")
+            candidates.append(package_root / str(folder) / "assessment.md")
         issue = getattr(score, "issue_number", None)
-        cards_dir = Path(workspace) / "docs" / "cards"
+        cards_dir = package_root / "docs" / "cards"
         if issue and cards_dir.is_dir():
             candidates.extend(sorted(cards_dir.glob(f"{issue}-*/assessment.md")))
         for cand in candidates:
@@ -127,7 +150,7 @@ def build_intake(score, workspace: Path) -> Intake:
 
     agent_text = ""
     for name in _AGENT_FILES:
-        p = Path(workspace) / name
+        p = package_root / name
         if p.is_file():
             agent_text = _read_capped(p)
             break

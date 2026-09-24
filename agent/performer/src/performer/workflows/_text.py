@@ -1,17 +1,54 @@
 """Text helpers for spec 166: token normalization and overlap matching.
 
 Spec 166 FR-007: drop questions that match an answered clarification under
-case-fold, punctuation strip, and 60 percent token overlap.
+case-fold, punctuation strip, and 60 percent token overlap. 417: the overlap
+is the symmetric Dice coefficient (a short new question is not swallowed by a
+long answered one) and CJK text tokenizes per character, since it has no
+whitespace to split on.
 """
 from __future__ import annotations
 
-import string
+import re
+
+# Unicode punctuation and symbols are stripped by ``[^\w\s]``, which also
+# removes CJK punctuation (，。) — \w keeps letters and digits, \s whitespace.
+_UNICODE_NOISE = re.compile(r"[^\w\s]+", re.UNICODE)
+
+# Scripts with no whitespace word boundaries: one character, one token.
+_CJK_RANGES = (
+    ("\u3040", "\u30ff"),  # hiragana + katakana
+    ("\u3400", "\u4dbf"),  # CJK ideograph extension A
+    ("\u4e00", "\u9fff"),  # CJK ideographs
+    ("\uf900", "\ufaff"),  # CJK compatibility ideographs
+    ("\uac00", "\ud7af"),  # Hangul syllables
+)
+
+
+def _is_cjk(ch: str) -> bool:
+    return any(lo <= ch <= hi for lo, hi in _CJK_RANGES)
+
+
+def _split_cjk(word: str) -> list[str]:
+    chunks: list[str] = []
+    buffered = ""
+    for ch in word:
+        if _is_cjk(ch):
+            if buffered:
+                chunks.append(buffered)
+                buffered = ""
+            chunks.append(ch)
+        else:
+            buffered += ch
+    if buffered:
+        chunks.append(buffered)
+    return chunks
 
 
 def normalize_tokens(text: str) -> frozenset[str]:
     """Normalize text to a frozenset of tokens.
 
-    Case-fold, strip punctuation, tokenize on whitespace.
+    Case-fold, strip punctuation (Unicode, not just ASCII), tokenize on
+    whitespace; CJK characters become one token each.
 
     Args:
         text: The text to normalize.
@@ -23,16 +60,20 @@ def normalize_tokens(text: str) -> frozenset[str]:
         return frozenset()
 
     lowered = text.casefold()
-    no_punct = lowered.translate(str.maketrans("", "", string.punctuation))
-    tokens = no_punct.split()
+    no_punct = _UNICODE_NOISE.sub(" ", lowered)
+    tokens: list[str] = []
+    for word in no_punct.split():
+        tokens.extend(_split_cjk(word))
     return frozenset(tokens)
 
 
 def token_overlap(a: str, b: str, threshold: float = 0.6) -> bool:
     """Compute token overlap between two strings.
 
-    Tokens are normalized (case-fold, strip punctuation, split on whitespace).
-    Overlap is: |A intersect B| / min(|A|, |B|).
+    Tokens are normalized (case-fold, strip punctuation, split on whitespace,
+    CJK per character). The overlap is the symmetric Dice coefficient:
+    2 * |A intersect B| / (|A| + |B|) — symmetric in its arguments, so a short
+    new question is never swallowed by a long answered one (417).
 
     Args:
         a: First string.
@@ -46,12 +87,11 @@ def token_overlap(a: str, b: str, threshold: float = 0.6) -> bool:
     tokens_a = normalize_tokens(a)
     tokens_b = normalize_tokens(b)
 
-    min_size = min(len(tokens_a), len(tokens_b))
-    if min_size == 0:
+    if not tokens_a or not tokens_b:
         return False
 
-    intersection = tokens_a & tokens_b
-    overlap = len(intersection) / min_size
+    intersection = len(tokens_a & tokens_b)
+    overlap = 2 * intersection / (len(tokens_a) + len(tokens_b))
     return overlap >= threshold
 
 

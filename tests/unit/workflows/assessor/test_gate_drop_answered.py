@@ -33,12 +33,22 @@ def test_drop_answered_exact_match():
 
 
 def test_drop_answered_token_overlap():
-    """Question with 60% token overlap is dropped."""
-    qs = ["What is the goal?"]
-    answered = [ClarificationRound(question="What's the goal?", answer="To fix it")]
+    """Question with symmetric (Dice) overlap >= 60% is dropped."""
+    qs = ["What is the deployment?"]
+    answered = [ClarificationRound(question="What is the deployment target?", answer="prod")]
     kept, dropped, _assumptions = drop_answered(qs, answered, threshold=0.6)
     assert kept == []
-    assert dropped == ["What is the goal?"]
+    assert dropped == ["What is the deployment?"]
+
+
+def test_drop_answered_short_question_not_swallowed_by_long_answer():
+    """417: a short NEW question survives against a long answered one."""
+    long_answered = "what did you decide about the release build for the friday train"
+    qs = ["Build?"]
+    answered = [ClarificationRound(question=long_answered, answer="ship it")]
+    kept, dropped, _assumptions = drop_answered(qs, answered, threshold=0.6)
+    assert kept == ["Build?"]
+    assert dropped == []
 
 
 def test_drop_answered_low_overlap():

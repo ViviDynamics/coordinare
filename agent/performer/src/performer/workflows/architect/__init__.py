@@ -18,8 +18,14 @@ import structlog
 
 from performer.models import BackendEvent, BackendEventType
 from performer.workflows.architect.blueprint import run_blueprint_step
-from performer.workflows.architect.intake import build_intake
-from performer.workflows.architect.report import build_report, write_free_check
+from performer.workflows.architect.intake import build_intake, resolve_package_root
+from performer.workflows.architect.report import (
+    build_report,
+    enforce_blueprint_paths,
+    enforce_plan_guards,
+    tree_state,
+    write_free_check,
+)
 from performer.workflows.architect.size import size_of
 from performer.workflows.architect.survey import SurveyBudget, run_survey_step
 from performer.workflows.base import WorkflowResult
@@ -53,17 +59,23 @@ class ArchitectWorkflow:
         def timed(name: str, started: float) -> None:
             durations[name] = int((time.monotonic() - started) * 1000)
 
+        # 0. 417: snapshot the dirty paths BEFORE anything runs, so the final
+        # write-free check judges only what the architect itself produced.
+        baseline = await tree_state(toolkit, workspace)
+
         # 1. intake: no model call
         self._step(toolkit, "intake")
         t = time.monotonic()
         intake = build_intake(score, workspace)
         timed("intake", t)
 
-        # 2. survey: model proposes, allow-list decides, code runs
+        # 2. survey: model proposes, allow-list decides, code runs. 417: a
+        # monorepo card may name a package root — commands and cwd follow it.
         self._step(toolkit, "survey")
         t = time.monotonic()
         budget = SurveyBudget.from_env(getattr(score, "workflow_env", None) or {})
-        survey = await run_survey_step(toolkit, intake.as_text(), workspace, budget)
+        survey_root = resolve_package_root(score, workspace)
+        survey = await run_survey_step(toolkit, intake.as_text(), survey_root, budget)
         timed("survey", t)
         log.info("architect.survey_done", commands=len(survey.records), refused=survey.refused)
 
@@ -72,6 +84,11 @@ class ArchitectWorkflow:
         t = time.monotonic()
         blueprint = await run_blueprint_step(toolkit, intake.as_text(), survey.as_text())
         timed("blueprint", t)
+        # 417: the plan itself is guarded before anything downstream trusts it
+        # — paths must exist (or be declared new), and the plan must not be
+        # degenerate. This is the 396 prose guard applied to the workflow path.
+        enforce_blueprint_paths(blueprint, workspace)
+        enforce_plan_guards(blueprint)
 
         # 4. size: pure function, never the model
         self._step(toolkit, "size")
@@ -79,10 +96,10 @@ class ArchitectWorkflow:
         size = size_of(blueprint)
         timed("size", t)
 
-        # 5. report: prove the tree is clean, then package
+        # 5. report: prove the tree gained no dirt, then package
         self._step(toolkit, "report")
         t = time.monotonic()
-        check = await write_free_check(toolkit, workspace)
+        check = await write_free_check(toolkit, workspace, baseline)
         timed("report", t)  # before build_report copies the durations into the report
         report = build_report(blueprint, size, survey, check, metrics)
         log.info(

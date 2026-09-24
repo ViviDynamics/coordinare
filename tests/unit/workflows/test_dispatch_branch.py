@@ -262,10 +262,12 @@ async def test_the_architect_workflow_runs_behind_the_same_adapter_seam(tmp_path
 
     from tests.unit.workflows.architect.test_workflow_end_to_end import (
         _TRIVIAL_BP,
+        _materialize_tree,
         _score,
         _stub_toolkit,
     )
 
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, ran, _events = _stub_toolkit(_TRIVIAL_BP, ["ls app"])
     adapter = WorkflowAdapter("architect", toolkit_factory=lambda metrics, sink: tk)
     await adapter.start(SimpleNamespace(path=tmp_path), _score())
@@ -274,7 +276,7 @@ async def test_the_architect_workflow_runs_behind_the_same_adapter_seam(tmp_path
     assert status.state == "done"
     report = json.loads(status.output)
     assert report["blueprint"]["size"] == "small" and report["write_free_check"]["passed"] is True
-    assert ran == ["ls app", "git status --porcelain"]
+    assert ran == ["git status --porcelain", "ls app", "git status --porcelain"]
 
 
 @pytest.mark.asyncio
