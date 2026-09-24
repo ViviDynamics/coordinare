@@ -24,10 +24,16 @@ from fastapi.testclient import TestClient
 
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
-from coordinare.dashboard import DashboardStore, create_dashboard_app
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES, DashboardStore, create_dashboard_app
 from coordinare.services.config_write_service import compute_content_hash
 
 DASHBOARD = Path("src/coordinare/dashboard.py")
+
+
+def _frontend_source() -> str:
+    """Everything the browser executes: the inline Python string plus the JS the
+    349 extraction moved to /static files, concatenated for scanning."""
+    return DASHBOARD.read_text() + "\n" + "\n".join(_DASHBOARD_JS_SOURCES.values())
 
 #: Anything that ends up writing config.yaml. A route reaching one of these without
 #: a version check is the defect this spec exists to remove.
@@ -523,7 +529,7 @@ class TestTheClientActuallySendsIt:
 
     @staticmethod
     def _write_fetches() -> list[tuple[str, str, bool]]:
-        source = DASHBOARD.read_text()
+        source = _frontend_source()
         rows: list[tuple[str, str, bool]] = []
         for callee, call, before in _fetch_calls(source):
             method = _js_method(call)
@@ -931,7 +937,7 @@ class TestAConflictIsReportedUsefully:
 
     @staticmethod
     def _guarded_write_sites() -> list[tuple[str, str]]:
-        source = DASHBOARD.read_text()
+        source = _frontend_source()
         guarded = {
             f"{route.split(' ', 1)[0]} {_route_skeleton(route.split(' ', 1)[1])}"
             for route, _fn, is_guarded in (
@@ -988,7 +994,7 @@ class TestAConflictIsReportedUsefully:
         This is how the persona save reported every 409 as 'Error 409' while looking
         entirely correct -- the call was there, the argument was not.
         """
-        source = DASHBOARD.read_text()
+        source = _frontend_source()
 
         null_bodied = re.findall(r"versionErrorText\(\s*[^,]+,\s*null\s*\)", source)
 
