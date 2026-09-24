@@ -111,6 +111,27 @@ releases load older snapshots, applying defaults for fields that did not exist
 when the snapshot was written. **Downgrades are not supported**: an older
 coordinare has no way to understand a newer snapshot, and it will not pretend to.
 
+The state claim's metadata carries only labels that do not change with a
+release (chart 0.1.1 and later). Kubernetes forbids updates to
+`volumeClaimTemplates` metadata, so a version-derived label there would reject
+every upgrade outright; the claim renders version-stable labels instead and the
+Pod template keeps the version.
+
+Releases installed from chart 0.1.0 or earlier already carry the old labels, and
+one recreation is needed to shed them. Throughout this README `coordinare` is
+the example: substitute your release and namespace wherever you see it. Scope
+the delete by the release label rather than the StatefulSet name, so it works
+whatever the release is called:
+
+```bash
+kubectl -n coordinare delete statefulset -l app.kubernetes.io/instance=coordinare
+helm upgrade coordinare deploy/helm/coordinare -n coordinare --reuse-values
+```
+
+The claim (and its data) is retained through the delete; the StatefulSet
+reattaches it on the next install. Every later version bump is an ordinary
+rolling update.
+
 Take a copy before a major upgrade if the work in flight matters:
 
 ```bash

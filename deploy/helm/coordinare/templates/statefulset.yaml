@@ -110,7 +110,7 @@ spec:
     - metadata:
         name: state
         labels:
-          {{- include "coordinare.labels" . | nindent 10 }}
+          {{- include "coordinare.stableLabels" . | nindent 10 }}
       spec:
         accessModes: ["ReadWriteOnce"]
         {{- if .Values.state.storageClass }}

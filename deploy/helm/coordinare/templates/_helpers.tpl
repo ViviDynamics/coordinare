@@ -27,6 +27,20 @@ app.kubernetes.io/name: {{ include "coordinare.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+Labels that never change with a release.
+
+Kubernetes forbids updates to a StatefulSet's volumeClaimTemplates metadata,
+and the claim's only mutable-by-design fields live in its spec, not its
+metadata. Anything derived from chart metadata (app.kubernetes.io/version,
+helm.sh/chart) therefore rejects every upgrade before the spec is even
+compared. The version label belongs on the Pod template, which rolls freely.
+*/}}
+{{- define "coordinare.stableLabels" -}}
+{{- include "coordinare.selectorLabels" . }}
+app.kubernetes.io/managed-by: coordinare
+{{- end -}}
+
 {{- define "coordinare.serviceAccountName" -}}
 {{- default (include "coordinare.fullname" .) .Values.serviceAccount.name -}}
 {{- end -}}
