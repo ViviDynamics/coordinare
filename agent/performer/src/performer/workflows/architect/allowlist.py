@@ -14,15 +14,18 @@ import re
 import shlex
 
 _READ_ONLY_PROGRAMS: frozenset[str] = frozenset(
-    {"ls", "cat", "head", "tail", "sed", "rg", "grep", "find", "wc", "sort", "uniq", "git", "tr", "cut"},
+    {"ls", "cat", "head", "tail", "sed", "rg", "grep", "find", "wc", "sort", "uniq", "git", "tr", "cut",
+     "awk", "jq", "tree", "stat", "diff", "comm", "basename", "dirname", "file", "xargs"},
 )
 _GIT_READ_ONLY: frozenset[str] = frozenset(
-    {"log", "show", "diff", "ls-files", "status", "blame", "rev-parse", "ls-tree", "branch"},
+    {"log", "show", "diff", "ls-files", "status", "blame", "rev-parse", "ls-tree", "branch", "grep"},
 )
 _FIND_FORBIDDEN: frozenset[str] = frozenset(
     {"-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"},
 )
-_SHELL_META = re.compile(r"[><`$]")  # redirections and substitutions
+# 417: redirections and substitutions are refused on UNQUOTED text only, so a
+# regex anchor like ``"^func.*{$"`` or ``"Vec<"`` is a pattern, not a redirect.
+# Double quotes are NOT a safe zone for ``$`` and backticks: bash expands both.
 # The two stderr redirects a survey legitimately uses; live models attach them
 # to most commands. Stripped before the meta scan, nothing else with `>` is.
 _HARMLESS_REDIRECTS = re.compile(r"\s2>(/dev/null|&1)(?=\s|$)")
@@ -46,14 +49,17 @@ def is_allowed(command: str) -> tuple[bool, str]:
 
     ``;``, ``&&`` and ``|`` chains are allowed only when every segment is
     allowed on its own. Redirections and substitutions are refused outright,
-    because they turn a read into a write.
+    because they turn a read into a write — but the rule reads the UNQUOTED
+    text only (417), so a quoted regex anchor is a pattern. Double quotes do
+    not protect ``$`` and backticks: the shell expands both inside them.
     """
     text = (command or "").strip()
     if not text:
         return False, "empty command"
     text = _HARMLESS_REDIRECTS.sub("", text)
-    if _SHELL_META.search(text):
-        return False, "redirection or substitution is not read-only"
+    violation = _meta_violation(text)
+    if violation:
+        return False, violation
     try:
         segments = _split_chain(text)
     except ValueError as exc:
@@ -63,6 +69,45 @@ def is_allowed(command: str) -> tuple[bool, str]:
         if not ok:
             return False, reason
     return True, "read-only"
+
+
+def _meta_violation(text: str) -> str | None:
+    """Scan for redirections and substitutions on unquoted text only (417).
+
+    Single-quoted spans are literal to the shell and skipped whole. Inside
+    double quotes ``>`` and ``<`` are literal, but ``$(``, a backtick, and
+    ``$`` before a name or ``{`` still expand, so they are refused.
+    """
+    quote: str | None = None
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+            elif ch == "`":
+                return "command substitution inside double quotes is not read-only"
+            elif ch == "$" and i + 1 < n and (text[i + 1] in "({" or text[i + 1].isalnum()):
+                return "expansion inside double quotes is not read-only"
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch in "><`$":
+            return "redirection or substitution is not read-only"
+        i += 1
+    return None
 
 
 def _split_chain(text: str) -> list[list[str]]:
@@ -140,6 +185,10 @@ def _git_rule(args: list[str]) -> tuple[bool, str]:
     for a in rest:
         if a.startswith(_GIT_FORBIDDEN_PREFIXES):
             return False, f"git {sub} {a.split('=')[0]} writes a file or runs a helper"
+    if sub == "grep":
+        pager = [a for a in rest if a.split("=")[0] in ("-O", "--open-files-in-pager")]
+        if pager:
+            return False, "git grep -O opens a pager"
     if sub == "branch":
         bad = [a for a in rest if a.split("=")[0] in _GIT_BRANCH_WRITES]
         if bad:
@@ -190,6 +239,78 @@ def _uniq_rule(args: list[str]) -> tuple[bool, str]:
     return True, "read-only"
 
 
+def _xargs_rule(args: list[str]) -> tuple[bool, str]:
+    """xargs runs its child once per input line, so the child inherits this
+    policy: it must itself be an allow-listed read-only program (417)."""
+    value_opts = ("-I", "-L", "-n", "-p", "-P", "-s", "-S", "-E", "-a")
+    rest = list(args)
+    skip_next = False
+    child_start = None
+    for idx, a in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--":
+            child_start = idx + 1
+            break
+        if a.startswith("--") or a == "-0":
+            continue
+        if a.startswith("-"):
+            skip_next = a in value_opts
+            continue
+        child_start = idx
+        break
+    child = rest[child_start:] if child_start is not None else []
+    if not child:
+        return True, "read-only"  # bare xargs echoes its input
+    ok, reason = _segment_allowed(child)
+    if not ok:
+        return False, f"xargs: {reason}"
+    return True, "read-only"
+
+
+def _awk_rule(args: list[str]) -> tuple[bool, str]:
+    """awk can write files (``print > "f"``), pipe to commands and run
+    ``system()``, so the program text carries the rule (417). Loading a
+    program or an extension from a file is refused outright."""
+    options = ("-f", "-W", "-i", "-l", "--file", "--include", "--exec", "--source")
+    for a in args:
+        if a.startswith("-") and any(a == o or a.startswith(o) for o in options):
+            return False, "awk -f/-W/-i/-l loads a program or extension from a file"
+    value_opts = ("-F", "-v")
+    program: str | None = None
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a.startswith("-"):
+            skip = any(a == o for o in value_opts) and len(a) == len("-F")
+            continue
+        if program is None:
+            program = a
+    if program and _AWK_PROGRAM_BANNED.search(program):
+        return False, "awk program must not write files or run commands"
+    return True, "read-only"
+
+
+def _diff_rule(args: list[str]) -> tuple[bool, str]:
+    for a in args:
+        if a.startswith(("-o", "--output")):
+            return False, "diff --output writes a file"
+    return True, "read-only"
+
+
+def _file_rule(args: list[str]) -> tuple[bool, str]:
+    for a in args:
+        if a.split("=")[0] in ("-C", "--compile"):
+            return False, "file -C compiles a magic file"
+    return True, "read-only"
+
+
+_AWK_PROGRAM_BANNED = re.compile(r"system\s*\(|getline|close\s*\(|fflush|[>|]")
+
+
 _PROGRAM_RULES = {
     "git": _git_rule,
     "find": _find_rule,
@@ -198,4 +319,8 @@ _PROGRAM_RULES = {
     "grep": _grep_rule,
     "sort": _sort_rule,
     "uniq": _uniq_rule,
+    "xargs": _xargs_rule,
+    "awk": _awk_rule,
+    "diff": _diff_rule,
+    "file": _file_rule,
 }

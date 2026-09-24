@@ -115,7 +115,7 @@ def test_dedupe_runs_before_the_cap_so_an_answered_question_does_not_take_a_slot
     )
     intake = SimpleNamespace(
         answered_rounds=1,
-        clarifications=[ClarificationRound(question="Which audience?", answer="Prospective clients")],
+        clarifications=[ClarificationRound(question="Which audience is this page for anyway?", answer="Prospective clients")],
         criteria=["Visitors can read the offer"],
     )
     assessment, record = run_gate(model, intake)

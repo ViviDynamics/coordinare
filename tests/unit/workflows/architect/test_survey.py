@@ -44,12 +44,14 @@ async def test_refused_commands_are_recorded_and_never_executed():
 
 
 @pytest.mark.asyncio
-async def test_the_command_budget_caps_execution_and_refusals_consume_it():
+async def test_the_command_budget_caps_execution_and_refusals_are_free():
+    """417: a refusal is recorded but does not consume budget."""
     cmds = ["bundle install"] + [f"ls dir{i}" for i in range(20)]
     tk = _TK(cmds)
     survey = await run_survey_step(tk, "card", Path("/w"), SurveyBudget(max_commands=5))
-    assert len(survey.records) == 5
-    assert len(tk.ran) == 4, "the refused command consumed one unit of budget"
+    assert len(survey.records) == 6
+    assert survey.refused == 1
+    assert len(tk.ran) == 5, "refusals are free, so all five commands ran"
 
 
 @pytest.mark.asyncio

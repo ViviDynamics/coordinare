@@ -43,9 +43,27 @@ _TRIVIAL_BP = {
 }
 
 
-def _stub_toolkit(blueprint: dict, proposed: list[str], tree_status: str = ""):
+def _materialize_tree(tmp_path, blueprint: dict) -> None:
+    """417: the blueprint's paths are validated against the tree, so the fake
+    workspace must contain what the architect 'surveyed'. A path whose last
+    segment carries a dot becomes a file, the rest a directory."""
+    cited: list[str] = []
+    for milestone in blueprint["milestones"]:
+        cited.extend(milestone["scope"])
+    cited.extend(module["path"] for module in blueprint["modules"])
+    for raw in cited:
+        target = tmp_path / raw.rstrip("/")
+        if "." in raw.rstrip("/").rsplit("/", 1)[-1]:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("placeholder", encoding="utf-8")
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+
+
+def _stub_toolkit(blueprint: dict, proposed: list[str], tree_status: str = "", tree_status_after: str | None = None):
     """A Toolkit whose model answers the survey then the blueprint, and whose
-    command runner records every command and reports a (configurable) tree."""
+    command runner records every command and reports a (configurable) tree.
+    The first ``git status`` is the pre-run baseline, the second the check."""
     ran: list[str] = []
     answers = iter([
         json.dumps({"commands": [{"command": c, "reason": "orient"} for c in proposed]}),
@@ -58,7 +76,8 @@ def _stub_toolkit(blueprint: dict, proposed: list[str], tree_status: str = ""):
     async def runner(cmd, cwd, timeout_s):
         ran.append(cmd)
         if cmd == "git status --porcelain":
-            return 0, tree_status
+            seen = ran.count("git status --porcelain")
+            return 0, tree_status if seen == 1 or tree_status_after is None else tree_status_after
         return 0, f"output of {cmd}"
 
     events = []
@@ -76,11 +95,13 @@ def _score(**over):
 
 @pytest.mark.asyncio
 async def test_large_card_end_to_end(tmp_path):
+    _materialize_tree(tmp_path, _SCHEMA_BP)
     tk, ran, events = _stub_toolkit(_SCHEMA_BP, ["ls app/models", "bundle install", "git log --oneline -5"])
     result = await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(), tk)
 
-    # nothing but read-only commands and the write-free check ran
-    assert ran == ["ls app/models", "git log --oneline -5", "git status --porcelain"]
+    # nothing but read-only commands and the write-free checks ran (417 adds
+    # the pre-run baseline, so the porcelain comes first and last)
+    assert ran == ["git status --porcelain", "ls app/models", "git log --oneline -5", "git status --porcelain"]
     # the refused command is recorded
     assert result.report["write_free_check"]["refused_commands"] == 1
     # blueprint validated, size derived by code
@@ -95,6 +116,7 @@ async def test_large_card_end_to_end(tmp_path):
 
 @pytest.mark.asyncio
 async def test_trivial_card_is_small_with_no_docs(tmp_path):
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, _ran, _ = _stub_toolkit(_TRIVIAL_BP, ["cat app/views/contact/index.html.erb"])
     result = await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(title="typo"), tk)
     assert result.report["size"] == "small"
@@ -105,18 +127,37 @@ async def test_trivial_card_is_small_with_no_docs(tmp_path):
 async def test_the_architect_never_writes(tmp_path):
     """No commit, push or file write primitive is ever reached: the toolkit has
     none, and the executed git status is the proof recorded in the report."""
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, ran, _ = _stub_toolkit(_TRIVIAL_BP, ["sed -i 's/a/b/' f", "cat f > g", "ls"])
     result = await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(), tk)
-    assert ran == ["ls", "git status --porcelain"]
+    assert ran == ["git status --porcelain", "ls", "git status --porcelain"]
     assert result.report["write_free_check"]["passed"] is True
     assert result.report["write_free_check"]["refused_commands"] == 2
 
 
 @pytest.mark.asyncio
 async def test_a_dirty_tree_after_the_run_is_an_error_not_a_plan(tmp_path):
-    tk, _, _ = _stub_toolkit(_TRIVIAL_BP, ["ls"], tree_status="?? db/migrate/new.rb\n")
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
+    tk, _, _ = _stub_toolkit(
+        _TRIVIAL_BP, ["ls"], tree_status="", tree_status_after="?? db/migrate/new.rb\n",
+    )
     with pytest.raises(ArchitectWroteToTree, match=r"db/migrate/new\.rb"):
         await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(), tk)
+
+
+@pytest.mark.asyncio
+async def test_pre_existing_dirt_is_reported_but_not_fatal(tmp_path):
+    """417: dirt that was already there when the architect started does not
+    fail the run — only NEW dirt does."""
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
+    tk, _, _ = _stub_toolkit(
+        _TRIVIAL_BP, ["ls"], tree_status="?? docs/old.md\n", tree_status_after="?? docs/old.md\n",
+    )
+    result = await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(), tk)
+    check = result.report["write_free_check"]
+    assert check["passed"] is True
+    assert check["pre_existing"] == ["docs/old.md"]
+    assert check["dirty_paths"] == []
 
 
 @pytest.mark.asyncio
@@ -139,9 +180,10 @@ async def test_a_hollow_blueprint_raises_naming_the_field(tmp_path):
 
 @pytest.mark.asyncio
 async def test_survey_budget_from_workflow_env(tmp_path):
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, ran, _ = _stub_toolkit(_TRIVIAL_BP, [f"ls d{i}" for i in range(10)])
     await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(workflow_env={"ARCHITECT_SURVEY_MAX_COMMANDS": "3"}), tk)
-    assert ran[:-1] == ["ls d0", "ls d1", "ls d2"]
+    assert ran[1:-1] == ["ls d0", "ls d1", "ls d2"]
 
 
 # --- review of #266 ------------------------------------------------------------
@@ -152,6 +194,7 @@ async def test_the_architect_touches_only_read_primitives_on_the_toolkit(tmp_pat
     call_model, run_command and the metrics only. Any write primitive a
     future Toolkit grows (commit_file, push_branch, write_file) would show up
     here by name."""
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, _, _ = _stub_toolkit(_TRIVIAL_BP, ["ls"])
     touched: list[str] = []
 
@@ -176,6 +219,7 @@ async def test_every_step_is_timed_and_the_steps_are_logged(tmp_path, monkeypatc
 
     fake = FakeLog()
     monkeypatch.setattr(arch_mod, "log", fake)
+    _materialize_tree(tmp_path, _TRIVIAL_BP)
     tk, _, _ = _stub_toolkit(_TRIVIAL_BP, ["ls", "cat f > g"])
     result = await ArchitectWorkflow().run(SimpleNamespace(path=tmp_path), _score(), tk)
 

@@ -1,9 +1,10 @@
 """Survey (spec 165 FR-004): the model proposes, the allow-list decides.
 
 One model call returns a short list of read-only commands with reasons. Each
-is checked by :mod:`allowlist` before it runs; refused commands are recorded,
-consume budget, and never execute. Outputs are truncated per command, and the
-survey stops at the command budget however many the model asked for.
+is checked by :mod:`allowlist` before it runs; refused commands are recorded
+but do not consume the command budget (417), and never execute. Outputs are
+truncated per command, and the survey stops at the command budget however
+many the model asked for.
 """
 from __future__ import annotations
 
@@ -87,19 +88,26 @@ class Survey:
 
 
 async def run_survey_step(toolkit, intake_text: str, workspace: Path, budget: SurveyBudget) -> Survey:
+    """Run the survey in *workspace* — the repository root, or the card's
+    package root for a monorepo (417)."""
     proposal = await toolkit.call_model(
         persona=SURVEY,
         schema=SurveyProposal,
         content=[{"type": "text", "text": (
             f"{intake_text}\n\nPropose at most {budget.max_commands} read-only commands, "
-            "most useful first. The working directory is the repository root."
+            f"most useful first. The working directory is {workspace}."
         )}],
         budget=Budget.for_step("survey"),
     )
     survey = Survey()
-    for proposed in proposal.commands[: budget.max_commands]:
+    executed = 0
+    for proposed in proposal.commands:
+        if executed >= budget.max_commands:
+            break
         ok, reason = is_allowed(proposed.command)
         if not ok:
+            # 417: a refusal is recorded for the record but costs no budget —
+            # otherwise one bad proposal batch starves the survey entirely.
             log.info("architect.survey", command=proposed.command[:120], allowed=False, reason=reason)
             survey.records.append(SurveyRecord(command=proposed.command, allowed=False, refusal_reason=reason))
             continue
@@ -114,4 +122,5 @@ async def run_survey_step(toolkit, intake_text: str, workspace: Path, budget: Su
             command=proposed.command, allowed=True, exit_code=result.exit_code,
             output=output[: budget.max_output_chars], truncated=truncated,
         ))
+        executed += 1
     return survey
