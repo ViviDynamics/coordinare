@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from coordinare.dashboard import (
     _DASHBOARD_HTML,
+    _DASHBOARD_JS_SOURCES,
     DashboardStore,
     SSEBroadcaster,
     _json_default,
@@ -22,6 +23,12 @@ from coordinare.dashboard import (
     is_session_stale,
     render_performer_pool_widget,
 )
+
+# 349: the extracted front-end JS. Assertions about functions that moved to
+# /static read the shipped source, not the page string.
+_JS_HELPERS = _DASHBOARD_JS_SOURCES["helpers"]
+_JS_CONFIG = _DASHBOARD_JS_SOURCES["config"]
+_JS_PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
 
 
 def _version_header(config_path) -> dict[str, str]:
@@ -148,24 +155,24 @@ def test_config_view_page_containers_present() -> None:
     """081 T018: the live-config view ships its page container and loader hook."""
     assert 'id="config-page"' in _DASHBOARD_HTML
     assert 'id="config-page-section"' in _DASHBOARD_HTML
-    assert "loadConfigPage" in _DASHBOARD_HTML
+    assert "loadConfigPage" in _JS_CONFIG
     # T019: routing read-only empty state renders the section's guidance banner,
     # not an error — the renderer surfaces invalid_banner as a status region.
-    assert "cfgSectionBlock" in _DASHBOARD_HTML
+    assert "cfgSectionBlock" in _JS_CONFIG
     # T041 (US3): routing-table CRUD wired to /api/config/routing with a
     # "applies to next performer job" label, distinct from the catalog endpoints.
-    assert "cfgRoutingEntryBlock" in _DASHBOARD_HTML
-    assert "loadRoutingEntries" in _DASHBOARD_HTML
-    assert "/api/config/routing/entry" in _DASHBOARD_HTML
-    assert "next performer job" in _DASHBOARD_HTML
+    assert "cfgRoutingEntryBlock" in _JS_CONFIG
+    assert "loadRoutingEntries" in _JS_CONFIG
+    assert "/api/config/routing/entry" in _JS_CONFIG
+    assert "next performer job" in _JS_CONFIG
 
 
 def test_config_stale_reference_is_preserved_and_flagged() -> None:
     """A stored reference not in the catalog is kept as a selected, flagged option."""
     # cfgRefSelect injects the unknown current value as a selected option ...
-    assert "not in catalog" in _DASHBOARD_HTML
+    assert "not in catalog" in _JS_CONFIG
     # ... and only when it is non-empty and unmatched (preserve, never drop).
-    assert "if (cur !== '' && !known)" in _DASHBOARD_HTML
+    assert "if (cur !== '' && !known)" in _JS_CONFIG
 
 
 def test_cfg_opt_hint_keys_off_stable_schema_key() -> None:
@@ -173,11 +180,11 @@ def test_cfg_opt_hint_keys_off_stable_schema_key() -> None:
     component), falling back to the user-facing label only when key is absent —
     so humanizing labels never breaks the modes/model_endpoints hints."""
     # Stable-key derivation: last dotted component of s.key.
-    assert "String(s.key).split('.').pop()" in _DASHBOARD_HTML
+    assert "String(s.key).split('.').pop()" in _JS_CONFIG
     # Label is only a fallback when s.key is absent.
-    assert "s.key ? String(s.key).split('.').pop() : s.label" in _DASHBOARD_HTML
+    assert "s.key ? String(s.key).split('.').pop() : s.label" in _JS_CONFIG
     # The brittle label-only map is gone.
-    assert "byLabel[s.label] = s.current_value" not in _DASHBOARD_HTML
+    assert "byLabel[s.label] = s.current_value" not in _JS_CONFIG
 
 
 def test_cfg_field_row_renders_length_constraints() -> None:
@@ -185,10 +192,10 @@ def test_cfg_field_row_renders_length_constraints() -> None:
     shapes, plus partial bounds, so string/collection length constraints render
     real numbers instead of `undefined`."""
     # The length shape is detected and labeled "length".
-    assert "min_length" in _DASHBOARD_HTML
-    assert "max_length" in _DASHBOARD_HTML
+    assert "min_length" in _JS_CONFIG
+    assert "max_length" in _JS_CONFIG
     # Partial bounds render with comparison operators rather than "X to undefined".
-    assert "\\u2265" in _DASHBOARD_HTML or "≥" in _DASHBOARD_HTML
+    assert "\\u2265" in _JS_CONFIG or "≥" in _JS_CONFIG
 
 
 def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
@@ -198,28 +205,18 @@ def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
     is confusing and violates the read-only requirement. cfgItemBlock forces every
     field read-only (a shallow copy with editable:false) before delegating to
     cfgFieldRow when the section itself is not editable."""
-    assert "Object.assign({}, s, {editable: false})" in _DASHBOARD_HTML
+    assert "Object.assign({}, s, {editable: false})" in _JS_CONFIG
     # It must NOT pass cfgFieldRow the raw settings unconditionally any more.
-    assert "(item.settings || []).map(cfgFieldRow)" not in _DASHBOARD_HTML
+    assert "(item.settings || []).map(cfgFieldRow)" not in _JS_CONFIG
 
 
 def test_dashboard_html_under_168kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 168 KB size budget (raised to accommodate
-    multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
-    Global Config edit page — 058, CSS design tokens + phase-label + health widget — 059,
-    env-bootstrap card + symphonies-list bootstrap button — 060, the 081 live-config
-    edit UI: per-field inputs, save/validation feedback, catalog create/edit/delete — 081, the
-    081 US3 routing-table CRUD surface: nested target editors + create/edit/delete — T041, and
-    the 081 Copilot-review hardening: store-aware save payloads + stable-key field derivation, and
-    the 138 activity feed: panel markup, .ev-* severity tokens, live append with seq dedup,
-    silence timer, client-side quiet detection, and the per-card filter, and the 348 per-session
-    performer telemetry panels).
-
-    Raised 160 -> 168 KB for 348, which landed with 170 bytes of headroom left under the old
-    cap -- tight enough that the next unrelated change would have failed here. The guard is
-    against unbounded growth, not against this KB in particular. Inlining the whole front end
-    in one Python string is what makes the budget bite; /static/activity-streams.js is the
-    precedent for moving JS out, and #349 tracks doing that.
+    """T036: _DASHBOARD_HTML must not exceed the size budget, lowered by #349
+    after the bulk of the front end (shared helpers, the 081 config-editing UI,
+    the performers-page rendering) moved to /static/*.js. The inline remainder
+    is the markup, CSS tokens, the SSE/activity-feed bootstrap and the router.
+    The cap was ratcheted 160 -> 168 KB for 348, which landed with 170 bytes of
+    headroom; extraction is what was owed instead of another raise.
     """
     from coordinare.dashboard import DASHBOARD_HTML_BUDGET_BYTES
 
@@ -2216,58 +2213,58 @@ def test_build_snapshot_preserves_fields_under_session_mirror() -> None:
 def test_config_reference_fields_render_as_dropdowns() -> None:
     """The five catalog-reference fields are wired to render as <select> dropdowns."""
     # Static label -> catalog map drives which fields become dropdowns.
-    assert "_CFG_REFS" in _DASHBOARD_HTML
-    assert "cfgRefSelect" in _DASHBOARD_HTML
-    assert "_cfgOptions" in _DASHBOARD_HTML
+    assert "_CFG_REFS" in _JS_CONFIG
+    assert "cfgRefSelect" in _JS_CONFIG
+    assert "_cfgOptions" in _JS_CONFIG
     # Every reference field label and its target catalog is declared.
     for pair in (
         "endpoint:", "tool:", "thinking:", "classifier:", "mode:",
     ):
-        assert pair in _DASHBOARD_HTML, f"missing _CFG_REFS entry {pair}"
+        assert pair in _JS_CONFIG, f"missing _CFG_REFS entry {pair}"
     # Nullable references offer an explicit none option.
-    assert "\\u2014 none \\u2014" in _DASHBOARD_HTML or "— none —" in _DASHBOARD_HTML
+    assert "\\u2014 none \\u2014" in _JS_CONFIG or "— none —" in _JS_CONFIG
     # Selects carry data-ref so coercion and option-source are discoverable in the DOM.
-    assert 'data-ref="' in _DASHBOARD_HTML
+    assert 'data-ref="' in _JS_CONFIG
 
 
 def test_config_options_index_built_from_payload() -> None:
     """loadConfigPage rebuilds the dropdown option index from the fetched sections."""
-    assert "cfgBuildOptions" in _DASHBOARD_HTML
+    assert "cfgBuildOptions" in _JS_CONFIG
     # The builder is invoked during load (before sections are rendered).
-    assert "_cfgOptions = cfgBuildOptions(" in _DASHBOARD_HTML
+    assert "_cfgOptions = cfgBuildOptions(" in _JS_CONFIG
     # Options carry both the stored value and a display hint.
-    assert "cfgOptHint(" in _DASHBOARD_HTML
+    assert "cfgOptHint(" in _JS_CONFIG
 
 
 def test_config_empty_reference_coerces_to_null() -> None:
     """An empty reference <select> (— none —) coerces to null, not an empty string."""
     # cfgCoerce special-cases controls carrying data-ref with an empty value.
-    assert "getAttribute('data-ref')" in _DASHBOARD_HTML
+    assert "getAttribute('data-ref')" in _JS_CONFIG
     # The null branch appears in the coercion path.
-    assert "return null" in _DASHBOARD_HTML
+    assert "return null" in _JS_CONFIG
 
 
 def test_config_page_renders_tabbed_layout() -> None:
     """The config page renders a tablist + one tabpanel per section, not a long scroll."""
-    assert "cfgTabBar" in _DASHBOARD_HTML
-    assert "cfgSelectTab" in _DASHBOARD_HTML
-    assert 'role="tablist"' in _DASHBOARD_HTML
-    assert 'role="tab"' in _DASHBOARD_HTML
-    assert 'role="tabpanel"' in _DASHBOARD_HTML
+    assert "cfgTabBar" in _JS_CONFIG
+    assert "cfgSelectTab" in _JS_CONFIG
+    assert 'role="tablist"' in _JS_CONFIG
+    assert 'role="tab"' in _JS_CONFIG
+    assert 'role="tabpanel"' in _JS_CONFIG
     # Tabs reuse the existing swimlane tab styling — no new visual language.
-    assert "swimlane-tabs" in _DASHBOARD_HTML
+    assert "swimlane-tabs" in _JS_CONFIG
     # Each section is wrapped in a panel and the active tab is hash-derived.
-    assert "cfgPanelId(" in _DASHBOARD_HTML
-    assert "location.hash" in _DASHBOARD_HTML
+    assert "cfgPanelId(" in _JS_CONFIG
+    assert "location.hash" in _JS_CONFIG
 
 
 def test_config_tabs_support_keyboard_navigation() -> None:
     """Tab strip supports Arrow/Home/End keyboard navigation (WAI-ARIA tabs)."""
-    assert "function cfgTabKey(" in _DASHBOARD_HTML
-    assert "ArrowRight" in _DASHBOARD_HTML
-    assert "ArrowLeft" in _DASHBOARD_HTML
-    assert "Home" in _DASHBOARD_HTML
-    assert "End" in _DASHBOARD_HTML
+    assert "function cfgTabKey(" in _JS_CONFIG
+    assert "ArrowRight" in _JS_CONFIG
+    assert "ArrowLeft" in _JS_CONFIG
+    assert "Home" in _JS_CONFIG
+    assert "End" in _JS_CONFIG
 
 
 # ---------------------------------------------------------------------------

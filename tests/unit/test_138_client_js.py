@@ -20,9 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_HTML
+from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
+
+# 349: the shared `esc` helper moved to /static/helpers.js; the feed block
+# itself is still inline (it is part of the SSE bootstrap the issue keeps on
+# the page).
+_HELPERS_JS = _DASHBOARD_JS_SOURCES["helpers"]
 
 # Slice boundaries. Both must match exactly once — a marker that drifts would
 # silently shrink the slice and leave the checks running against nothing, so
@@ -49,9 +54,9 @@ def _extract_feed_js() -> str:
     end = _DASHBOARD_HTML.index(_FEED_END)
     feed_js = _DASHBOARD_HTML[start:end]
 
-    esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
+    esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:
-        raise AssertionError("the shared esc() helper is no longer in _DASHBOARD_HTML")
+        raise AssertionError("the shared esc() helper is no longer in helpers.js")
     return esc.group(0) + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
 
 

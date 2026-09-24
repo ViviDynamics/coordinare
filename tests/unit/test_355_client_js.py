@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML
+from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "question_panels_checks.js"
 
@@ -24,6 +24,10 @@ _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "question_panels_check
 _START_Q = "// Open questions (355"
 _START_CL = "// Clarification history (355"
 _END = "document.getElementById('cycles-completed')"
+
+# 349: the panels themselves render inside the inline renderState and stay in
+# _DASHBOARD_HTML, but their esc/fmtAge helpers moved to /static/helpers.js.
+_HELPERS_JS = _DASHBOARD_JS_SOURCES["helpers"]
 
 
 def _extract_panels_js() -> str:
@@ -37,12 +41,12 @@ def _extract_panels_js() -> str:
     end = _DASHBOARD_HTML.index(_END)
     panels_js = _DASHBOARD_HTML[start_q:start_cl] + _DASHBOARD_HTML[start_cl:end]
 
-    esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
+    esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:
-        raise AssertionError("the shared esc() helper is no longer in _DASHBOARD_HTML")
-    fmt_age = re.search(r"function fmtAge\(iso\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
+        raise AssertionError("the shared esc() helper is no longer in helpers.js")
+    fmt_age = re.search(r"function fmtAge\(iso\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if fmt_age is None:
-        raise AssertionError("the shared fmtAge() helper is no longer in _DASHBOARD_HTML")
+        raise AssertionError("the shared fmtAge() helper is no longer in helpers.js")
     return (
         esc.group(0) + "\n\n" + fmt_age.group(0) + "\n\n"
         + "function renderQuestionPanels(s) {\n" + panels_js + "\n}\n"

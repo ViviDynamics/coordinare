@@ -129,9 +129,9 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
 
     def test_the_page_refuses_to_save_without_a_version(self) -> None:
         """157: the page fails closed rather than collecting a 428 from the server."""
-        from coordinare.dashboard import _DASHBOARD_HTML
+        from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "this page did not load a configuration version" in _DASHBOARD_HTML
+        assert "this page did not load a configuration version" in _DASHBOARD_JS_SOURCES["config"]
 
     def test_the_page_sends_the_hash_it_loaded_with(self) -> None:
         """FR-003, asserted on the page's own code.
@@ -139,9 +139,10 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
         A round trip through a browser is not available here, and the failure this
         guards against is silent: the page would keep working, just unguarded.
         """
-        from coordinare.dashboard import _DASHBOARD_HTML
+        from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        page = _DASHBOARD_HTML
+        # 349: the guarded save lives in the extracted /static/config.js.
+        page = _DASHBOARD_JS_SOURCES["config"]
         assert "_adminCfgHash = res.headers.get('ETag')" in page, (
             "the page never captures the version it is editing"
         )
@@ -151,9 +152,9 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
 
     def test_the_page_explains_a_refusal(self ) -> None:
         """FR-005 — a raw 409 is not an explanation."""
-        from coordinare.dashboard import _DASHBOARD_HTML
+        from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "the configuration changed since this page loaded" in _DASHBOARD_HTML
+        assert "the configuration changed since this page loaded" in _DASHBOARD_JS_SOURCES["config"]
 
 
 class TestTheRemainingGapIsVisible:
@@ -261,9 +262,9 @@ class TestTheGuardHoldsForEverySaveNotJustTheFirst:
         assert "# meanwhile" in temp_config_path.read_text()
 
     def test_the_page_carries_the_new_hash_forward(self) -> None:
-        from coordinare.dashboard import _DASHBOARD_HTML
+        from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "_adminCfgHash = d.new_hash || null;" in _DASHBOARD_HTML, (
+        assert "_adminCfgHash = d.new_hash || null;" in _DASHBOARD_JS_SOURCES["config"], (
             "the page drops its baseline after saving, so its next save is unguarded"
         )
 

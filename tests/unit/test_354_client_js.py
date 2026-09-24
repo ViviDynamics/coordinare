@@ -14,35 +14,40 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "queued_board_checks.js"
 
 _QUEUED_FN_START = "// 354: queued-for-slot board-row presentation"
 _QUEUED_FN = "function queuedPhaseLabel"
 
+# 349: queuedPhaseLabel moved to /static/performers.js and the formatters it
+# calls to /static/helpers.js, so both slices read the shipped sources.
+_PERFORMERS_JS = _DASHBOARD_JS_SOURCES["performers"]
+_HELPERS_JS = _DASHBOARD_JS_SOURCES["helpers"]
+
 
 def _extract_queued_js() -> str:
     """Return the pure queued-label helper plus the formatters it calls."""
-    if _DASHBOARD_HTML.count(_QUEUED_FN_START) != 1:
-        raise AssertionError(f"marker {_QUEUED_FN_START!r} is not unique in _DASHBOARD_HTML")
-    if _DASHBOARD_HTML.count(_QUEUED_FN) != 1:
-        raise AssertionError(f"{_QUEUED_FN} is not unique in _DASHBOARD_HTML")
+    if _PERFORMERS_JS.count(_QUEUED_FN_START) != 1:
+        raise AssertionError(f"marker {_QUEUED_FN_START!r} is not unique in performers.js")
+    if _PERFORMERS_JS.count(_QUEUED_FN) != 1:
+        raise AssertionError(f"{_QUEUED_FN} is not unique in performers.js")
 
-    marker = _DASHBOARD_HTML.index(_QUEUED_FN_START)
-    start = _DASHBOARD_HTML.index("function queuedPhaseLabel", marker)
-    end = _DASHBOARD_HTML.index("}", start) + 1
-    queued_js = _DASHBOARD_HTML[start:end]
+    marker = _PERFORMERS_JS.index(_QUEUED_FN_START)
+    start = _PERFORMERS_JS.index("function queuedPhaseLabel", marker)
+    end = _PERFORMERS_JS.index("}", start) + 1
+    queued_js = _PERFORMERS_JS[start:end]
 
-    esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
+    esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:
-        raise AssertionError("the shared esc() helper is no longer in _DASHBOARD_HTML")
-    fmt = re.search(r"function humanPhase\(phase\) \{.*?\n\}", _DASHBOARD_HTML, re.DOTALL)
+        raise AssertionError("the shared esc() helper is no longer in helpers.js")
+    fmt = re.search(r"function humanPhase\(phase\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if fmt is None:
-        raise AssertionError("the shared humanPhase() helper is no longer in _DASHBOARD_HTML")
+        raise AssertionError("the shared humanPhase() helper is no longer in helpers.js")
     alias = "var formatPhaseLabel = humanPhase;"
-    if alias not in _DASHBOARD_HTML:
-        raise AssertionError("the formatPhaseLabel alias is no longer in _DASHBOARD_HTML")
+    if alias not in _HELPERS_JS:
+        raise AssertionError("the formatPhaseLabel alias is no longer in helpers.js")
     return esc.group(0) + "\n\n" + fmt.group(0) + "\n\n" + alias + "\n\n" + queued_js
 
 
