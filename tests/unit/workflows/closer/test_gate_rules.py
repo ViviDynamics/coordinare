@@ -16,12 +16,13 @@ from tests.unit.workflows.closer._fakes import comment, thread
 
 ASK = comment("reviewer", "This needs a guard for the empty case.")
 REPLY = comment("implementer", "Added the guard in commit abc123; it returns early when the list is empty.", "2026-09-07T11:00:00Z")
-T1 = Thread.model_validate(thread("t1", ASK, REPLY))
+CONFIRM = comment("reviewer", "Confirmed, works now", "2026-09-07T12:00:00Z")  # the raiser's sign-off: the quote authority
+T1 = Thread.model_validate(thread("t1", ASK, REPLY, CONFIRM))
 BY_ID = {"t1": T1}
 
 
 def _j(**over) -> Judgement:
-    base = {"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": "", "accepted": False}
+    base = {"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": "", "accepted": False}
     base.update(over)
     return Judgement(**base)
 

@@ -126,6 +126,7 @@ class RunContext:
     push: Callable[[], Awaitable[None]] = _noop_async
     open_or_update_pr: Callable[[], Awaitable[tuple[str, str]]] | None = None
     get_check_runs: Callable[[str], Awaitable[list[dict]]] | None = None
+    get_commit_statuses: Callable[[str], Awaitable[list[dict]]] | None = None
     get_check_run_logs: Callable[[dict], Awaitable[str]] | None = None
     local_gate: Callable[[], Awaitable[tuple[str, str]]] | None = None
     sleep: Callable[[float], Awaitable[None]] = _noop_async

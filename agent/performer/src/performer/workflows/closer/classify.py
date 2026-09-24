@@ -24,13 +24,16 @@ def is_answered(t: Thread) -> bool:
     """Answered: unresolved, not outdated, and the last comment is by someone
     else later than the first comment.
 
-    A thread whose last comment is the raiser's own follow-up is open, not answered.
+    A thread whose last comment is the raiser's own follow-up is open, not
+    answered — unless a non-raiser reply precedes it: confirmation and
+    complaint look identical to code, so that ambiguity goes to the judge.
     """
+    if t.resolved or t.outdated or len(t.comments) < 2:
+        return False
+    if t.last_author != t.first_author:
+        return not _earlier(t.comments[-1].created_at, t.comments[0].created_at)
     return (
-        not t.resolved
-        and not t.outdated
-        and len(t.comments) >= 2
-        and t.last_author != t.first_author
+        any(c.author != t.first_author for c in t.comments[1:])
         and not _earlier(t.comments[-1].created_at, t.comments[0].created_at)
     )
 

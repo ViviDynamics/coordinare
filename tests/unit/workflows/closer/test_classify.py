@@ -55,12 +55,22 @@ class TestIsAnswered:
         t = Thread(id="T1", path="f.py", line=1, resolved=False, outdated=False, comments=comments)
         assert is_answered(t) is True
 
-    def test_raiser_own_followup_is_not_answered(self) -> None:
-        """If the last comment is by the raiser themselves, it is open."""
+    def test_raiser_own_followup_reaches_the_judge(self) -> None:
+        """A raiser commenting after a reply re-opens the thread for judgement (spec 414):
+        classify only decides ambiguity, and the gate owns quote authority."""
         comments = [
             ThreadComment(author="alice", body="needs fix", created_at="2026-01-01T00:00:00Z"),
             ThreadComment(author="bob", body="done", created_at="2026-01-02T00:00:00Z"),
             ThreadComment(author="alice", body="thanks", created_at="2026-01-03T00:00:00Z"),
+        ]
+        t = Thread(id="T1", path="f.py", line=1, resolved=False, outdated=False, comments=comments)
+        assert is_answered(t) is True
+
+    def test_raiser_double_comment_without_a_reply_stays_open(self) -> None:
+        """Two raiser comments with no reply in between: nobody answered."""
+        comments = [
+            ThreadComment(author="alice", body="needs fix", created_at="2026-01-01T00:00:00Z"),
+            ThreadComment(author="alice", body="to be clear: it raises IndexError", created_at="2026-01-03T00:00:00Z"),
         ]
         t = Thread(id="T1", path="f.py", line=1, resolved=False, outdated=False, comments=comments)
         assert is_answered(t) is False

@@ -35,7 +35,7 @@ from performer.workflows.implementer.baseline import (  # noqa: I001
 from performer.workflows.implementer import commits as git
 from performer.workflows.implementer.budgets import ImplementerBudgets
 from performer.infrastructure import CIInfrastructureBlocked, InfrastructureBlocked
-from performer.workflows.implementer.ci import CIFailed, CIPending, run_ci_phase
+from performer.workflows.implementer.ci import CIFailed, CINoCI, CIPending, run_ci_phase
 from performer.workflows.implementer.driver import MilestoneFailed, RunContext, _green_phase, run_milestone
 from performer.workflows.implementer.models import MilestonePlan, PerMilestoneRecord, RunRecord
 from performer.workflows.implementer.plan import LaneNotForImplementer, build_plan
@@ -131,6 +131,9 @@ class ImplementerWorkflow:
         async def get_check_runs(sha: str) -> list[dict]:
             return await github.get_check_runs(owner, repo, sha, token)
 
+        async def get_commit_statuses(sha: str) -> list[dict]:
+            return await github.get_commit_statuses(owner, repo, sha, token)
+
         async def get_check_run_logs(run: dict) -> str:
             job_id = int(run.get("id") or 0)
             return await github.get_check_run_logs(owner, repo, job_id, token) if job_id else ""
@@ -176,6 +179,8 @@ class ImplementerWorkflow:
             ctx.open_or_update_pr = open_or_update_pr
         if ctx.get_check_runs is None:
             ctx.get_check_runs = get_check_runs
+        if ctx.get_commit_statuses is None:
+            ctx.get_commit_statuses = get_commit_statuses
         if ctx.get_check_run_logs is None:
             ctx.get_check_run_logs = get_check_run_logs
         if ctx.local_gate is None:
@@ -384,6 +389,8 @@ class ImplementerWorkflow:
 
             self._step(toolkit, "handoff", ctx.pr_url or "")
             status, reason = "pr_opened", "all checks green"
+        except CINoCI as exc:
+            status, reason = "env_blocked", str(exc)
         except MilestoneFailed as exc:
             status, reason, next_focus = "partial_progress", exc.reason, exc.goal
         except QualityFailed as exc:

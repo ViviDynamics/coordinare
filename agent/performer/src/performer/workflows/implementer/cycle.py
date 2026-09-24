@@ -303,22 +303,29 @@ def scope_violations(
 
 
 def no_progress_check(prior_failing: list[str], current_failing: list[str]) -> bool:
-    """Check for no progress on CI: same checks failing twice (FR-013).
+    """Check for no progress on CI: the same failures twice (FR-013).
+
+    Entries may carry a failure ground after the first colon ("name: ground");
+    two polls failing with the same names but a different ground is progress.
 
     Args:
-        prior_failing: List of failing check names from previous poll.
-        current_failing: List of failing check names from current poll.
+        prior_failing: Failing check signatures from the previous poll.
+        current_failing: Failing check signatures from the current poll.
 
     Returns:
-        True if no progress detected (same checks failing twice).
+        True if no progress detected (same checks failing the same way twice).
     """
     if not prior_failing or not current_failing:
         return False
 
-    prior_set = set(prior_failing)
-    current_set = set(current_failing)
+    def _grounded(names: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for entry in names:
+            name, _, ground = str(entry).partition(":")
+            out[name.strip()] = ground.strip() if ground else None
+        return out
 
-    return prior_set == current_set
+    return _grounded(prior_failing) == _grounded(current_failing)
 
 
 def next_attempt_allowed(kind: str, attempts_so_far: int, budgets) -> bool:

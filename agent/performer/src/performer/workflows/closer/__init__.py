@@ -1,13 +1,15 @@
-"""Closer role workflow (spec 172): intake, classify, judge, gate, post, act, report.
+"""Closer role workflow (spec 172): intake, classify, judge, gate, act, post, report.
 
 The closing review confirms one thing: that every review thread is resolved
 before a human is asked to look. GitHub already answers that for most threads,
 so code classifies them all and only the genuinely ambiguous ones (unresolved,
 not outdated, answered by someone other than the raiser) reach one
 schema-guarded model call. Every judgement must quote the thread's own words or
-it is discarded. The verdict is derived by code, one review is posted, and only
-then are the earned threads resolved. A card whose threads are all resolved
-makes no model call at all.
+it is discarded, and the words must come from the thread's raiser or a
+maintainer — the PR author's own replies close nothing. The earned threads are
+resolved first, so the one review posted afterwards reflects what actually
+resolved: a resolution that failed keeps its thread open and holds the run. A
+card whose threads are all resolved makes no model call at all.
 
 Remote CI is never consulted here: spec 064's rollup gate owns it, and closers
 rejecting on pending checks is what caused the bounce loop that directive exists
@@ -35,7 +37,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-STATES: tuple[str, ...] = ("intake", "classify", "judge", "gate", "post", "act", "report")
+STATES: tuple[str, ...] = ("intake", "classify", "judge", "gate", "act", "post", "report")
+_FETCH_TUPLE_WITH_CONTEXT = 3  # (threads, pages, review_context) — injected fetchers may omit the third
 
 
 class CloserWorkflow:
@@ -76,7 +79,7 @@ class CloserWorkflow:
         t = time.monotonic()
         pr_url = str(getattr(score, "pr_url", "") or "")
         try:
-            threads, pages = await self._fetch(score, budgets)
+            threads, pages, review_context = await self._fetch(score, budgets)
         except Exception as exc:  # noqa: BLE001 - the hold names the failure
             timed("intake", t)
             log.warning("closer.fetch_failed", error=str(exc)[:300])
@@ -115,9 +118,10 @@ class CloserWorkflow:
         # gate: accept what is traceable, derive the verdict
         self._step(toolkit, "gate")
         t = time.monotonic()
-        outcome = run_gate(classifications, judged, sent_ids, by_id)
+        outcome = run_gate(classifications, judged, sent_ids, by_id, review_context)
         timed("gate", t)
         open_threads = [by_id[i] for i in outcome.open_thread_ids if i in by_id]
+        changes_requested_by = list((review_context or {}).get("changes_requested_humans", [])) if outcome.verdict == "changes_requested" else []
         log.info("closer.gate", verdict=outcome.verdict, open=len(open_threads),
                  accepted=sum(1 for j in outcome.judgements if j.accepted),
                  discarded=[j.discard_reason for j in outcome.judgements if j.discard_reason])
@@ -130,20 +134,9 @@ class CloserWorkflow:
             verdict=outcome.verdict,
         )
 
-        # post: one review, before anything is resolved (FR-007)
-        self._step(toolkit, "post", record.verdict)
-        t = time.monotonic()
-        posted = await post_closing_review(score, outcome.resolve if record.verdict == "approved" else [], open_threads, poster=self._poster)
-        timed("post", t)
-        log.info("closer.post", verdict=record.verdict, posted=posted.ok, url=posted.url, error=posted.error)
-        if not posted.ok:
-            record.verdict = "env_blocked"
-            record.hold_reason = posted.error
-            return finish(record)
-        record.posted_review_url = posted.url
-
-        # act: resolve only what earned it, and only on a passing verdict (FR-008)
-        if record.verdict == "approved" and outcome.resolve:
+        # act: resolve what earned it, BEFORE posting, so the review is truthful
+        resolved_pairs: list[tuple[str, str]] = []
+        if outcome.resolve:
             self._step(toolkit, "act", f"{len(outcome.resolve)} thread(s)")
             t = time.monotonic()
             ids = [tid for tid, _reason in outcome.resolve]
@@ -152,19 +145,44 @@ class CloserWorkflow:
             except Exception as exc:  # noqa: BLE001 - the hold names the failure
                 resolved_ids, failures = [], [{"error": str(exc)[:300]}]
             timed("act", t)
-            record.resolved = [{"thread_id": tid, "reason": reason} for tid, reason in outcome.resolve if tid in set(resolved_ids)]
-            missing = [tid for tid in ids if tid not in set(resolved_ids)]
+            resolved_set = set(resolved_ids)
+            resolved_pairs = [(tid, reason) for tid, reason in outcome.resolve if tid in resolved_set]
+            record.resolved = [{"thread_id": tid, "reason": reason} for tid, reason in resolved_pairs]
+            missing = [tid for tid in ids if tid not in resolved_set]
             log.info("closer.act", resolved=len(resolved_ids), failed=len(missing))
             if missing:
                 # FR-009: never approve carrying a thread the closer believed closed.
                 record.verdict = "env_blocked"
                 record.hold_reason = f"could not resolve {len(missing)} thread(s): {failures[:2]}"
+        resolved_ids_done = {tid for tid, _reason in resolved_pairs}
+        remaining_open = [th for th in open_threads if th.id not in resolved_ids_done]
+        remaining_open += [by_id[tid] for tid, _reason in outcome.resolve if tid not in resolved_ids_done and tid in by_id and by_id[tid] not in remaining_open]
+        record.open_threads = [{"thread_id": th.id, "path": th.path, "line": th.line,
+                                "excerpt": (th.comments[0].body.strip()[:300] if th.comments else "")} for th in remaining_open]
+
+        # post: one review, after resolution so it reports what actually resolved.
+        # Every failed resolution leaves its thread in remaining_open, so the
+        # review is always CHANGES REQUESTED when the run holds — never a lie.
+        self._step(toolkit, "post", record.verdict)
+        t = time.monotonic()
+        posted = await post_closing_review(score, resolved_pairs, remaining_open, poster=self._poster, changes_requested_by=changes_requested_by)
+        timed("post", t)
+        log.info("closer.post", verdict=record.verdict, posted=posted.ok, url=posted.url, error=posted.error)
+        if not posted.ok:
+            record.verdict = "env_blocked"
+            record.hold_reason = posted.error
+            return finish(record)
+        record.posted_review_url = posted.url
         return finish(record)
 
-    async def _fetch(self, score, budgets) -> tuple[list[Thread], int]:
+    async def _fetch(self, score, budgets) -> tuple[list[Thread], int, dict]:
         if self._fetcher is not None:
-            return await self._fetcher(score, budgets)
-        from performer.github import fetch_review_threads  # noqa: PLC0415 - late import keeps the workflow importable without network deps
+            fetched = await self._fetcher(score, budgets)
+            if len(fetched) == _FETCH_TUPLE_WITH_CONTEXT:
+                return fetched
+            threads, pages = fetched
+            return threads, pages, {}
+        from performer.github import fetch_pr_review_context, fetch_review_threads  # noqa: PLC0415 - late import keeps the workflow importable without network deps
         from performer.workflows.reviewer.post import pr_number_from_url  # noqa: PLC0415
 
         number = pr_number_from_url(getattr(score, "pr_url", "") or "")
@@ -172,7 +190,12 @@ class CloserWorkflow:
             raise ValueError(f"pr_url is missing or invalid ({getattr(score, 'pr_url', None)!r})")
         owner, repo = score.owner_repo
         raw, pages = await fetch_review_threads(owner, repo, number, score.effective_github_token, max_pages=budgets.max_pages)
-        return [Thread.model_validate(t) for t in raw], pages
+        threads = [Thread.model_validate(t) for t in raw]
+        # a failed review-context fetch must hold the run, not degrade to an
+        # empty context: without it the gate would approve without checking
+        # the human review state (fail closed)
+        review_context = await fetch_pr_review_context(owner, repo, number, score.effective_github_token)
+        return threads, pages, review_context
 
     async def _resolve(self, score, ids: list[str]) -> tuple[list[str], list[dict]]:
         if self._resolver is not None:
