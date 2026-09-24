@@ -42,12 +42,51 @@ from tests.unit.workflows.documenter._repo import (
 _GIT = shutil.which("git") or "git"
 
 
+def _mkdocs_repo(repo: Path) -> Path:
+    (repo / "mkdocs.yml").write_text("site_name: demo\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "index.md").write_text("# demo\n\nWelcome. See [usage](usage.md).\n")
+    (repo / "docs" / "usage.md").write_text("---\nkind: how-to\n---\n# Usage\n\nRun the app; navigation is configured in `mkdocs.yml`.\n")
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "add", "-A"], repo)
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-qm", "mkdocs site"], repo)
+    return repo
+
+
+def _sphinx_repo(repo: Path) -> Path:
+    (repo / "doc" / "source").mkdir(parents=True)
+    (repo / "doc" / "source" / "conf.py").write_text("project = 'demo'\n")
+    (repo / "doc" / "source" / "index.md").write_text("# demo\n\nWelcome.\n")
+    (repo / "doc" / "source" / "usage.md").write_text("---\nkind: how-to\n---\n# Usage\n\nRun the app.\n")
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "add", "-A"], repo)
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-qm", "sphinx tree"], repo)
+    return repo
+
+
+def _monorepo_change(repo: Path) -> str:
+    sh(["git", "checkout", "-q", "-b", "feat/services"], repo)
+    for name in ("web", "api"):
+        (repo / "apps" / name).mkdir(parents=True)
+    (repo / "apps" / "web" / "main.py").write_text("def serve() -> str:\n    return 'web'\n")
+    (repo / "apps" / "web" / "package.json").write_text('{"name": "web"}\n')
+    (repo / "apps" / "api" / "api.py").write_text("def route() -> str:\n    return 'api'\n")
+    (repo / "apps" / "api" / "package.json").write_text('{"name": "api"}\n')
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "add", "-A"], repo)
+    sh([_GIT, "-c", "user.email=e@x", "-c", "user.name=eval", "commit", "-qm", "feat: services"], repo)
+    return sh(["git", "diff", "main...HEAD"], repo)
+
+
 def _build(fixture: Fixture, root: Path) -> tuple[Path, str]:
     repo = make_repo(root, with_wiki=fixture.with_wiki, agents_md=fixture.agents_md)
     if fixture.change == "payments":
         return repo, add_payments(repo)
     if fixture.change == "trivial":
         return repo, trivial_change(repo)
+    if fixture.change == "mkdocs":
+        return _mkdocs_repo(repo), add_payments(repo)
+    if fixture.change == "sphinx":
+        return _sphinx_repo(repo), add_payments(repo)
+    if fixture.change == "monorepo":
+        return repo, _monorepo_change(repo)
     for i in range(6):
         (repo / f"pkg{i}").mkdir()
         (repo / f"pkg{i}" / "__init__.py").write_text("x = 1\n" * (i + 1) * 10)
@@ -87,7 +126,8 @@ async def run_fixture(fixture: Fixture, *, live: bool, root: Path | None = None)
             return await stub(persona, content, max_tokens)
     toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=_run_command, call_limit=20)
     score = SimpleNamespace(pr_diff=diff, documentation_brief=dict(fixture.brief), doc_mode=fixture.mode, issue_number=7, title=f"eval {fixture.name}",
-                            description="Documenter eval fixture", workflow_env={}, owner_repo=("eval", "repo"), effective_github_token="unused")
+                            description="Documenter eval fixture", workflow_env=dict(fixture.workflow_env), owner_repo=("eval", "repo"),
+                            effective_github_token="unused", documenting_side_run=False)  # 415: evals run final reconciliation
     result = await DocumenterWorkflow(committer=local_committer).run(Stand(path=repo, branch="feat/eval"), score, toolkit)
     return score_run(fixture, result.report, repo, before, calls["i"], live=live), result.report
 

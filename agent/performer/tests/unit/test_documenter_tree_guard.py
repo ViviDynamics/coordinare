@@ -53,7 +53,7 @@ async def test_documenter_commits_inside_the_tree_are_pushed(tmp_path, monkeypat
     monkeypatch.setattr(workspace, "_run_git", git)
     monkeypatch.setattr(workspace, "_run_git_stdout", git)
     await push_branch(Stand(path=tmp_path, branch="feat/x"), _score())
-    assert git.subs() == ["ls-remote", "fetch", "diff", "rebase", "push"]
+    assert git.subs() == ["ls-remote", "ls-files", "fetch", "diff", "rebase", "push"]
 
 
 @pytest.mark.asyncio
@@ -87,6 +87,29 @@ async def test_the_tree_root_is_configurable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_guard_follows_the_repositorys_docs_root(tmp_path, monkeypatch):
+    """415: a side run in an MkDocs or Sphinx repository commits under the docs
+    root the discovery resolves -- doc/source here -- not under a hardcoded docs/."""
+    git = _Git({"ls-remote": (0, "x"), "ls-files": (0, "doc/source/conf.py\ndoc/source/usage.md\n"),
+                "diff": (0, "doc/source/usage.md\n")})
+    monkeypatch.setattr(workspace, "_run_git", git)
+    monkeypatch.setattr(workspace, "_run_git_stdout", git)
+    await push_branch(Stand(path=tmp_path, branch="feat/x"), _score())
+    assert "push" in git.subs(), "the discovered docs root is the guard's tree"
+
+
+@pytest.mark.asyncio
+async def test_a_commit_outside_the_discovered_root_is_refused(tmp_path, monkeypatch):
+    git = _Git({"ls-remote": (0, "x"), "ls-files": (0, "doc/source/conf.py\n"),
+                "diff": (0, "docs/wiki/other.md\n")})
+    monkeypatch.setattr(workspace, "_run_git", git)
+    monkeypatch.setattr(workspace, "_run_git_stdout", git)
+    with pytest.raises(WorkspaceSetupError, match=r"tree_violation.*docs/wiki/other\.md"):
+        await push_branch(Stand(path=tmp_path, branch="feat/x"), _score())
+    assert "push" not in git.subs()
+
+
+@pytest.mark.asyncio
 async def test_other_roles_and_the_end_of_lifecycle_documenter_are_not_guarded(tmp_path, monkeypatch):
     """The guard keys on the side run (a documentation brief present). The
     implementer, and the spec-125 documenting pass with no brief, push as before."""
@@ -96,3 +119,15 @@ async def test_other_roles_and_the_end_of_lifecycle_documenter_are_not_guarded(t
         monkeypatch.setattr(workspace, "_run_git_stdout", git)
         await push_branch(Stand(path=tmp_path, branch="feat/x"), score)
         assert "diff" not in git.subs() and "push" in git.subs()
+
+
+@pytest.mark.asyncio
+async def test_the_guard_honours_the_symphonys_docts_root_override(tmp_path, monkeypatch):
+    """415 review: the guard uses the same root the workflow used -- a symphony
+    that pinned DOCS_ROOT=handbook pushes handbook/ writes without a discovery
+    fallback inventing docs/wiki under it."""
+    git = _Git({"ls-remote": (0, "x"), "ls-files": (0, "README.md\n"), "diff": (0, "handbook/guide.md\n")})
+    monkeypatch.setattr(workspace, "_run_git", git)
+    monkeypatch.setattr(workspace, "_run_git_stdout", git)
+    await push_branch(Stand(path=tmp_path, branch="feat/x"), _score(env={"DOCS_ROOT": "handbook"}))
+    assert "push" in git.subs()

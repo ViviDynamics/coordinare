@@ -25,12 +25,13 @@ def render_pointer_section(entrypoint: str, first_three: list[tuple[str, str]]) 
     Returns:
         The pointer section between markers.
     """
+    docs_dir = entrypoint.rsplit("/", 1)[0] + "/" if "/" in entrypoint else "./"
     lines = [
         POINTER_MARKERS[0],  # Start marker
         "",
         "# Living Documentation",
         "",
-        "This repository maintains a living wiki in `docs/wiki/` that serves as the",
+        f"This repository maintains a living wiki in `{docs_dir}` that serves as the",
         "source of truth for how the project works. The wiki is designed to be read",
         "by both humans and AI agents.",
         "",

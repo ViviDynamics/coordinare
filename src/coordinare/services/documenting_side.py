@@ -85,7 +85,7 @@ def build_card_context(
         "repo_url": repo_url,
         "branch": str(session.get("workspace_branch") or card.get("branch") or ""),
         "base_branch": base_branch,
-        "persona_instructions": persona + "\nEarly documentation side run: write only under docs/. Leave root AGENTS.md and CLAUDE.md pointer updates to final reconciliation.",
+        "persona_instructions": persona + "\nEarly documentation side run: write only inside the repository's documentation tree. Leave root AGENTS.md and CLAUDE.md pointer updates to final reconciliation.",
         "backend": backend,
         "documentation_brief": project_brief(blueprint, _DOCUMENTATION_BRIEF_FIELDS),
         "issue_number": card.get("issue_number"),

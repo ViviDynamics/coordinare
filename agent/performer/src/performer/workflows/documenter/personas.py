@@ -31,14 +31,14 @@ KIND_GUIDANCE = {
 }
 
 
-def render_write_persona(*, path: str, kind: str, current_content: str, say: list[str], evidence: str, changed_hunks: str, max_chars: int, allow_retire: bool = False) -> str:
+def render_write_persona(*, path: str, kind: str, current_content: str, say: list[str], evidence: str, changed_hunks: str, max_chars: int, allow_retire: bool = False, docs_root: str = "docs/wiki") -> str:
     headings = ", ".join(f"`## {h}`" for h in REQUIRED_HEADINGS.get(kind, ())) or "(none required)"
     guidance = KIND_GUIDANCE.get(kind, KIND_GUIDANCE["reference"]).format(headings=headings)
     say_text = "\n".join(f"- {s}" for s in say if s) or "(the brief says nothing specific; write from the evidence)"
     frontmatter = f"---\nkind: {kind}\n---"
     status = "The page does not exist yet: write it." if not current_content else "The page exists: rewrite it, or answer unchanged when it is already right."
     return (
-        f"You maintain the project wiki under `docs/wiki/`. Write the page `{path}`. {status}\n\n"
+        f"You maintain the project documentation under `{docs_root}/`. Write the page `{path}`. {status}\n\n"
         f"## Kind\n{guidance}\n\nStart the page with this frontmatter exactly:\n```\n{frontmatter}\n```\n\n"
         + WRITING_RULES.format(kind=kind, max_chars=max_chars)
         + f"\n## What the brief asks this page to say\n{say_text}\n\n"

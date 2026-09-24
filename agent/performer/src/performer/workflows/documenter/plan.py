@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from performer.workflows.documenter.models import DOC_PATH_PREFIXES, DOC_ROOT_FILES, POINTER_FILES, PagePlan, WikiPage, RepositoryLayout
+from performer.workflows.documenter.docsroot import DOCS_ROOT_DEFAULT, needs_documentation
+from performer.workflows.documenter.models import DOC_PATH_PREFIXES, DOC_ROOT_FILES, KINDS, POINTER_FILES, PagePlan, WikiPage, RepositoryLayout
 
 __all__ = [
     "is_doc_path",
@@ -49,44 +50,29 @@ def is_doc_path(path: str) -> bool:
     return False
 
 
-def select_pages(
+def _plannable_brief_location(location: str, docs_root: str) -> bool:
+    """A brief location is plannable only when it is path-safe and under the
+    repository's resolved docs root (415 review): anything else would recreate
+    a parallel documentation tree or escape it."""
+    if not location or location.startswith("/") or ".." in location.split("/") or "\\" in location:
+        return False
+    return location.startswith(f"{docs_root.rstrip('/')}/")
+
+
+def _collect_brief_entries(
     brief_docs: list[dict[str, Any]],
-    changed_files: list[str],
     inventory: list[WikiPage],
-    cap: int,
-) -> tuple[list[PagePlan], list[str], list[str]]:
-    """Select pages for update mode (FR-003).
-
-    Process:
-    1. Brief entries (location only, dedup), doc paths only
-    2. Inventory pages whose citations hit changed files
-    3. README always when any page selected
-    4. Slice to cap, overflow as deferred
-    5. Non-doc-paths as refused
-
-    Args:
-        brief_docs: Brief docs entries with 'location' and optionally 'kind' and 'say'.
-        changed_files: List of changed file paths.
-        inventory: Inventory pages.
-        cap: Maximum pages in the plan.
-
-    Returns:
-        (plan, deferred paths, refused paths)
-    """
-    plans = []
-    deferred = []
-    refused = []
-    seen_paths = set()
-
-    # Step 1: Process brief entries, collecting all say texts for duplicate locations
+    refused: list[str],
+    docs_root: str = DOCS_ROOT_DEFAULT,
+) -> dict[str, dict[str, Any]]:
+    """Group brief entries by location, merging say texts and modules."""
     brief_by_location = {}
     for entry in brief_docs:
         location = entry.get("location", "")
         if not location:
             continue
 
-        # Check if it's a doc path
-        if not is_doc_path(location):
+        if not _plannable_brief_location(location, docs_root):
             if location not in refused:
                 refused.append(location)
             continue
@@ -111,23 +97,16 @@ def select_pages(
         elif not say:
             say = []
         brief_by_location[location]["say"].extend(say)
+    return brief_by_location
 
-    # Create plan entries from collected brief data
-    for location, data in brief_by_location.items():
-        seen_paths.add(location)
-        plans.append(
-            PagePlan(
-                path=location,
-                kind=data["kind"],
-                source="brief",
-                justification=data["topic"],
-                exists=any(page.path == location for page in inventory),
-                say=data["say"],
-                modules=data["modules"],
-            ),
-        )
 
-    # Step 2: Add inventory pages whose citations match changed files
+def _select_inventory_pages(
+    inventory: list[WikiPage],
+    changed_files: list[str],
+    seen_paths: set[str],
+) -> list[PagePlan]:
+    """Inventory pages whose citations match changed files."""
+    plans = []
     for page in inventory:
         if page.path in seen_paths:
             continue
@@ -151,15 +130,26 @@ def select_pages(
                 if not citation.endswith("/") and changed.startswith(citation + "/"):
                     match = True
                     break
+                # 415 review: a slashless citation names a file by basename, so
+                # match it against any changed path's last segment (a monorepo's
+                # "package.json" cites "apps/web/package.json")
+                if "/" not in citation and changed.rsplit("/", 1)[-1] == citation:
+                    match = True
+                    break
             if match:
                 break
 
         if match:
             seen_paths.add(page.path)
+            # 415: a page the documenter did not write has no coordinare
+            # frontmatter (or an unknown kind) -- it is still maintained, as a
+            # reference page, rather than dropped for failing a vocabulary it
+            # never joined.
+            kind = page.kind if page.kind in KINDS else "reference"
             plans.append(
                 PagePlan(
                     path=page.path,
-                    kind=page.kind,
+                    kind=kind,
                     source="inventory",
                     justification=f"Cites changed file(s): {', '.join(page.citations[:2])}",
                     exists=True,
@@ -167,9 +157,63 @@ def select_pages(
                     modules=[],
                 ),
             )
+    return plans
+
+
+def select_pages(
+    brief_docs: list[dict[str, Any]],
+    changed_files: list[str],
+    inventory: list[WikiPage],
+    cap: int,
+    docs_root: str = DOCS_ROOT_DEFAULT,
+) -> tuple[list[PagePlan], list[str], list[str]]:
+    """Select pages for update mode (FR-003).
+
+    Process:
+    1. Brief entries (location only, dedup), doc paths only
+    2. Inventory pages whose citations hit changed files
+    3. README always when any page selected
+    4. Slice to cap, overflow as deferred
+    5. Non-doc-paths as refused
+
+    Args:
+        brief_docs: Brief docs entries with 'location' and optionally 'kind' and 'say'.
+        changed_files: List of changed file paths.
+        inventory: Inventory pages.
+        cap: Maximum pages in the plan.
+        docs_root: The repository's documentation root (415).
+
+    Returns:
+        (plan, deferred paths, refused paths)
+    """
+    plans = []
+    deferred = []
+    refused = []
+    seen_paths = set()
+
+    # Step 1: Process brief entries, collecting all say texts for duplicate locations
+    brief_by_location = _collect_brief_entries(brief_docs, inventory, refused, docs_root)
+
+    # Create plan entries from collected brief data
+    for location, data in brief_by_location.items():
+        seen_paths.add(location)
+        plans.append(
+            PagePlan(
+                path=location,
+                kind=data["kind"],
+                source="brief",
+                justification=data["topic"],
+                exists=any(page.path == location for page in inventory),
+                say=data["say"],
+                modules=data["modules"],
+            ),
+        )
+
+    # Step 2: Add inventory pages whose citations match changed files
+    plans.extend(_select_inventory_pages(inventory, changed_files, seen_paths))
 
     # Step 3: Always append README when any page selected
-    readme_path = "docs/wiki/README.md"
+    readme_path = f"{docs_root}/README.md"  # 415: the index lives under the repository's docs root
     if not plans:
         return plans, deferred, refused
     # The README always rides along when any page is selected, so it keeps a
@@ -187,15 +231,16 @@ def init_skeleton(
     layout: RepositoryLayout,
     inventory: list[WikiPage],
     cap: int,
+    docs_root: str = DOCS_ROOT_DEFAULT,
 ) -> tuple[list[PagePlan], list[str]]:
     """Build skeleton for init mode (FR-003).
 
     Pages in order:
     1. README (index)
-    2. docs/wiki/architecture.md (explanation)
-    3. docs/wiki/setup.md (how-to)
-    4. docs/wiki/testing.md (how-to)
-    5. docs/wiki/<package>.md (reference) for each package with tests, largest first
+    2. <docs_root>/architecture.md (explanation)
+    3. <docs_root>/setup.md (how-to)
+    4. <docs_root>/testing.md (how-to)
+    5. <docs_root>/<package>.md (reference) for each package with tests, largest first
 
     Existing inventory pages keep their kind. Capped at cap.
 
@@ -203,6 +248,7 @@ def init_skeleton(
         layout: Repository layout.
         inventory: Existing pages (to preserve kinds).
         cap: Maximum pages.
+        docs_root: The documentation root the skeleton is built under (415).
 
     Returns:
         (plan, deferred paths)
@@ -215,7 +261,7 @@ def init_skeleton(
     existing_map = {p.path: p for p in inventory}
 
     # 1. README
-    readme_path = "docs/wiki/README.md"
+    readme_path = f"{docs_root}/README.md"
     existing = existing_map.get(readme_path)
     plans.append(
         PagePlan(
@@ -229,7 +275,7 @@ def init_skeleton(
     seen_paths.add(readme_path)
 
     # 2. Architecture
-    arch_path = "docs/wiki/architecture.md"
+    arch_path = f"{docs_root}/architecture.md"
     existing = existing_map.get(arch_path)
     plans.append(
         PagePlan(
@@ -243,7 +289,7 @@ def init_skeleton(
     seen_paths.add(arch_path)
 
     # 3. Setup
-    setup_path = "docs/wiki/setup.md"
+    setup_path = f"{docs_root}/setup.md"
     existing = existing_map.get(setup_path)
     plans.append(
         PagePlan(
@@ -257,7 +303,7 @@ def init_skeleton(
     seen_paths.add(setup_path)
 
     # 4. Testing
-    test_path = "docs/wiki/testing.md"
+    test_path = f"{docs_root}/testing.md"
     existing = existing_map.get(test_path)
     plans.append(
         PagePlan(
@@ -277,7 +323,7 @@ def init_skeleton(
             deferred.append(pkg["path"])
             continue
 
-        pkg_page = f"docs/wiki/{pkg['path'].split('/')[-1]}.md"
+        pkg_page = f"{docs_root}/{pkg['path'].split('/')[-1]}.md"
         existing = existing_map.get(pkg_page)
         plans.append(
             PagePlan(
@@ -305,6 +351,8 @@ def build_plan(
     inventory: list[WikiPage],
     layout: RepositoryLayout | None,
     cap: int,
+    docs_root: str = DOCS_ROOT_DEFAULT,
+    diff_text: str = "",
 ) -> tuple[list[PagePlan], list[str], list[str]]:
     """Build the documentation plan based on mode.
 
@@ -315,13 +363,21 @@ def build_plan(
         inventory: Current wiki inventory.
         layout: Repository layout (for init mode).
         cap: Page cap.
+        docs_root: The repository's documentation root (415).
+        diff_text: The raw unified diff, for new-file detection in the
+            needs-documentation judgement (415).
 
     Returns:
         (plan, deferred, refused)
     """
     if mode == "update":
-        return select_pages(brief_docs, changed_files, inventory, cap)
+        # 415: selection first asks whether this change needs documentation at
+        # all. A dependency bump or a refactor of thirty modified files churns
+        # nothing; anything named in the brief is documented regardless.
+        if not needs_documentation(changed_files, diff_text, brief_docs):
+            return [], [], []
+        return select_pages(brief_docs, changed_files, inventory, cap, docs_root)
     if mode == "init":
-        plans, deferred = init_skeleton(layout or RepositoryLayout(project_name="", packages=[], has_ci=False), inventory, cap)
+        plans, deferred = init_skeleton(layout or RepositoryLayout(project_name="", packages=[], has_ci=False), inventory, cap, docs_root)
         return plans, deferred, []
     return [], [], []

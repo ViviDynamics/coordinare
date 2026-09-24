@@ -33,7 +33,7 @@ def _report(verdict="docs_committed", written=None, retired=None, pointers=None,
             "plan": [{"path": "docs/wiki/a.md", "kind": "reference", "source": "brief", "justification": "brief: a", "exists": False}],
             "deferred": [], "refused_paths": [], "evidence": {}, "results": [{"path": "docs/wiki/a.md", "action": "write", "dropped": False}],
             "files_written": written if written is not None else ["docs/wiki/a.md", "docs/wiki/README.md"], "files_retired": retired or [],
-            "readme_generated": True, "pointers_refreshed": pointers or [], "reverted_paths": [], "commit_sha": over.pop("commit_sha", "abc123"),
+            "readme_generated": True, "pointers_refreshed": pointers or [], "commit_sha": over.pop("commit_sha", "abc123"),
             "verdict": verdict, "hold_reason": over.pop("hold_reason", None), "workflow_metrics": {}}
     return {"docs": docs, "write_free_check": {"passed": True}, "workflow_metrics": {"step_durations_ms": {"intake": 1}}}
 

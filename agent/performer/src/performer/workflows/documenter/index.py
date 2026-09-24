@@ -14,7 +14,7 @@ __all__ = [
 ]
 
 
-def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> str:
+def generate_readme(project_name: str, summary: str, pages: list[WikiPage], readme_path: str = "docs/wiki/README.md") -> str:
     """Generate README in llms.txt shape (FR-009).
 
     Structure:
@@ -28,6 +28,8 @@ def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> s
         project_name: The project name.
         summary: Summary text (will be truncated to 300 chars).
         pages: Inventory pages to link.
+        readme_path: Where the README itself will be written (415); page links
+            are computed relative to its directory.
 
     Returns:
         The generated README markdown.
@@ -51,6 +53,8 @@ def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> s
             lines.append(">")
     lines.append("")
 
+    readme_dir = readme_path.rsplit("/", 1)[0] if "/" in readme_path else ""
+
     # Build section content by kind
     section_pages: dict[str, list[WikiPage]] = {section: [] for section in README_SECTIONS}
     section_pages["Optional"] = []
@@ -69,9 +73,8 @@ def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> s
         section_list = section_pages.get(section, [])
         if section_list:
             for page in section_list:
-                # Page name is relative path from project root
-                relative_path = page.path
-                relative_path = relative_path.removeprefix("docs/wiki/")  # Strip docs/wiki/
+                # Link path is relative to the README's own directory (415)
+                relative_path = _relative_link(readme_dir, page.path)
                 # Get one-line description (first paragraph)
                 one_line = (page.summary or "No summary yet.").rstrip(".") + "."
                 # Could extract first line from page content, but we don't have it here
@@ -83,6 +86,22 @@ def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> s
 
     # Optional section
     return "\n".join(lines)
+
+
+def _relative_link(readme_dir: str, page_path: str) -> str:
+    """The link from a README at ``readme_dir`` to ``page_path``, lexically (415)."""
+    if not readme_dir:
+        return page_path
+    page_parts = page_path.split("/")
+    base_parts = [p for p in readme_dir.split("/") if p]
+    common = 0
+    for a, b in zip(base_parts, page_parts):
+        if a != b:
+            break
+        common += 1
+    rest = page_parts[common:]
+    ups = len(base_parts) - common
+    return "/".join([".."] * ups + rest)
 
 
 def readme_shape_ok(content: str, pages: list[WikiPage]) -> list[str]:

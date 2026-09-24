@@ -3175,6 +3175,7 @@ class CoordinareDaemon:
 
         cfg = self._state.get("config")
         persona, backend, model_block = "", "hermes", {}
+        role_workflow_env: dict[str, str] = {}
         if cfg is not None:
             try:
                 persona = get_effective_instructions("tech_writer", cfg.personas)
@@ -3183,6 +3184,7 @@ class CoordinareDaemon:
             rc = cfg.performers.resolved_role("tech_writer") if hasattr(cfg, "performers") else None
             if rc is not None and getattr(rc, "backend", None):
                 backend = rc.backend
+            role_workflow_env = dict(getattr(rc, "workflow_env", None) or {})
             try:
                 model_block = cfg.resolve_performer_dispatch_model("tech_writer")
             except Exception:
@@ -3203,6 +3205,15 @@ class CoordinareDaemon:
             ),
             "persona_instructions": persona,
             "backend": backend,
+            # 415: pointer-file creation is opt-in for documentation updates;
+            # the wiki-init card is the opt-in -- its whole job is to seed the
+            # pointer section the update runs then refresh. It is not a side
+            # run (it builds the wiki on its own branch), and the workflow
+            # refreshes pointers only for an explicit False, so say so. The
+            # role's workflow_env (notably a configured DOCS_ROOT) rides along;
+            # the pointer opt-in is forced on top of it.
+            "workflow_env": {**role_workflow_env, "DOCS_CREATE_POINTERS": "1"},
+            "documenting_side_run": False,
             **model_block,
         }
         # The documenting role gets its GITHUB_TOKEN secret from

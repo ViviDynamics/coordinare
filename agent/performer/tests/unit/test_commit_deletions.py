@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from performer.models import Score
 from performer.workspace import Stand, _safe_doc_deletions, commit_files
 
 
@@ -112,3 +113,47 @@ async def test_commit_files_nonexistent_deletion_is_noop(stand: Stand) -> None:
     changed = await commit_files(stand, [], "docs: noop",
                                  deletions=["docs/wiki/never-existed.md"])
     assert changed == []
+
+
+# --------------------------------------------------------------------------
+# 415 review: deletions follow the run's resolved documentation root
+# --------------------------------------------------------------------------
+def _side_score(env: dict[str, str]) -> Score:
+    return Score(
+        card_id="c1", title="t", description="d", acceptance_criteria=[],
+        repo_url="https://github.com/org/repo", branch="feat/x", base_branch="main", github_token="ghp",
+        role="documenting",
+        documentation_brief={"docs": [{"topic": "t", "location": "handbook/seed.md", "say": "s"}]},
+        workflow_env=env,
+        documenting_side_run=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_files_deletion_follows_the_resolved_root(stand: Stand) -> None:
+    """A side run whose docs root resolved to handbook/ retires handbook pages,
+    and the legacy docs/ scope no longer accepts them."""
+    (stand.path / "handbook").mkdir()
+    (stand.path / "handbook" / "seed.md").write_text("# H\n", encoding="utf-8")
+    _git(["add", "handbook/seed.md"], stand.path)
+    _git(["commit", "-m", "seed handbook"], stand.path)
+    score = _side_score({"DOCS_ROOT": "handbook"})
+    changed = await commit_files(stand, [], "docs: retire handbook page",
+                                 deletions=["handbook/seed.md"], score=score)
+    assert changed == ["handbook/seed.md"]
+    assert not (stand.path / "handbook" / "seed.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_commit_files_deletion_outside_the_resolved_root_is_refused(stand: Stand) -> None:
+    score = _side_score({"DOCS_ROOT": "handbook"})
+    changed = await commit_files(stand, [], "docs: noop",
+                                 deletions=["docs/wiki/stale.md"], score=score)
+    assert changed == []
+    assert (stand.path / "docs" / "wiki" / "stale.md").exists()
+
+
+def test_safe_doc_deletions_honours_the_docs_root_parameter() -> None:
+    assert _safe_doc_deletions(["handbook/guide.md"], docs_root="handbook") == ["handbook/guide.md"]
+    assert _safe_doc_deletions(["docs/wiki/dead.md", "AGENTS.md"], docs_root="handbook") == []
+    assert _safe_doc_deletions(["docs/wiki/dead.md"], docs_root=None) == ["docs/wiki/dead.md"]

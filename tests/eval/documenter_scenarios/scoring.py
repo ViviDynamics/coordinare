@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from performer.workflows.documenter.docsroot import resolve_docs_root
+from performer.workflows.documenter.gate import citations_exist
 from performer.workflows.documenter.index import readme_shape_ok
 from performer.workflows.documenter.inventory import build_inventory, extract_citations
 from performer.workflows.documenter.models import DocsRecord
@@ -54,16 +56,18 @@ def score_run(fixture: Fixture, report: dict, repo: Path, head_before: str, mode
     s.checks["readme_generated"] = record.readme_generated == exp.readme_generated if not live else True
     s.checks["pointers"] = (bool(record.pointers_refreshed) == exp.pointers) if not live else True
     tree = set(_git(repo, "ls-files").split())
-    pages = build_inventory(repo, tree)
-    if (repo / "docs/wiki/README.md").exists() and record.readme_generated:
-        failures = readme_shape_ok((repo / "docs/wiki/README.md").read_text(), [p for p in pages if p.path != "docs/wiki/README.md"])
+    docs_root = resolve_docs_root(tree)  # 415: the README lives wherever the repository's docs do
+    pages = build_inventory(repo, tree, docs_root)
+    readme_path = f"{docs_root}/README.md"
+    if (repo / readme_path).exists() and record.readme_generated:
+        failures = readme_shape_ok((repo / readme_path).read_text(), [p for p in pages if p.path != readme_path])
         s.checks["readme_shape"] = not failures
         if failures:
             s.notes.append("readme shape: " + ", ".join(failures))
     for page in pages:
         text = (repo / page.path).read_text()
-        cited = extract_citations(text, tree | set(page.citations))
-        missing = [c for c in cited if c.rstrip("/") not in tree and not any(t.startswith(c.rstrip("/") + "/") for t in tree)]
+        cited = extract_citations(text, tree | set(page.citations), docs_root, page.path)
+        missing = citations_exist(cited, tree)
         if missing:
             s.checks[f"citations:{page.path}"] = False
             s.notes.append(f"{page.path} cites missing {missing[:3]}")
