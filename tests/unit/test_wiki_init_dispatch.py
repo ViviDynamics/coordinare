@@ -83,7 +83,35 @@ async def test_execute_wiki_init_dispatch_builds_cardless_init_context() -> None
     assert wi.path is None  # performer self-clones
     assert wi.repo_url == "https://github.com/acme/repo.git"
     assert wi.branch == cc["branch"]
+    assert cc["documenting_side_run"] is False
+    assert cc["workflow_env"] == {"DOCS_CREATE_POINTERS": "1"}
     assert ec.wiki_in_flight is True
+
+
+@pytest.mark.asyncio
+async def test_execute_wiki_init_dispatch_merges_the_roles_workflow_env() -> None:
+    """415 review: a configured DOCS_ROOT rides into the init dispatch; only the
+    pointer opt-in is forced on top."""
+    d = _daemon()
+    ec = _ec()
+    d._state["env_cache"] = {"sym": ec}
+    d._state["symphony_workspace_managers"] = _workspace_managers("tok")
+    role = MagicMock()
+    role.backend = "codex"
+    role.workflow_env = {"DOCS_ROOT": "handbook"}
+    cfg = MagicMock()
+    cfg.personas = {}
+    cfg.performers.resolved_role.return_value = role
+    cfg.resolve_performer_dispatch_model.return_value = {}
+    d._state["config"] = cfg
+    svc = MagicMock()
+    svc.dispatch_card = AsyncMock(return_value={"session_id": "s1"})
+    d._state["performer_services"] = {"documenting": svc}
+    d._poll_wiki_init_completion = _noop_poll
+    await d._execute_wiki_init_dispatch("sym", _github())
+    cc = svc.dispatch_card.call_args[0][0]
+    assert cc["workflow_env"]["DOCS_ROOT"] == "handbook"
+    assert cc["workflow_env"]["DOCS_CREATE_POINTERS"] == "1"
 
 
 @pytest.mark.asyncio

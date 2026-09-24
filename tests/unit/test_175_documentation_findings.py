@@ -101,7 +101,9 @@ def test_actual_score_accepts_side_payload_and_final_pointers_are_distinct():
     ctx = side.build_card_context(state["current_card"], state, persona="p", backend="codex", model_block={}, repo_url="https://example.com/org/repo.git", base_branch="main")
     score = Score.model_validate(ctx)
     assert score.doc_mode == "update" and score.documenting_side_run is True
-    assert _documenter_tree(score) == "docs/"
+    # 415: the guard resolves the repository's docs root; with no tree given
+    # the default wiki tree holds until push_branch discovers the real one.
+    assert _documenter_tree(score) == "docs/wiki/"
     inject(ctx, state, "documenting")
     final = Score.model_validate(ctx)
     assert final.documenting_side_run is False and _documenter_tree(final) is None

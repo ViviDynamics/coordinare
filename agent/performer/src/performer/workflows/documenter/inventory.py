@@ -1,19 +1,29 @@
-"""Build wiki inventory and detect repository layout (spec 171)."""
+"""Build wiki inventory and detect repository layout (spec 171).
+
+415: the inventory, the link resolution and the layout reading are all
+docs-root aware -- the documenter serves the documentation system the
+repository actually has, not only ``docs/wiki``.
+"""
 from __future__ import annotations
 
 import re
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
+from performer.workflows.documenter.docsroot import normalize_repo_path
 from performer.workflows.documenter.markdown import parse_frontmatter, backticked_tokens, links
 from performer.workflows.documenter.models import WikiPage, RepositoryLayout
+
+_MIN_SPLIT_FILES = 2  # a nested source dir needs this many files to split into its own package (415)
 
 __all__ = [
     "extract_citations",
     "wiki_links",
     "build_inventory",
     "repository_layout",
+    "layout_from_shape",
+    "has_tests_in",
 ]
 
 
@@ -30,7 +40,7 @@ _KNOWN_EXTENSIONS = (
 _FILE_WITH_EXTENSION = re.compile(r"^[A-Za-z_-][A-Za-z0-9_.-]*\.(?:" + "|".join(_KNOWN_EXTENSIONS) + r")$")
 
 
-def path_like_tokens(text: str) -> set[str]:
+def path_like_tokens(text: str, docs_root: str = "docs/wiki") -> set[str]:
     """Backticked tokens that look like repository paths, whether or not they exist.
 
     A repository path is relative (``src/app.py``, ``tests/``) or a bare file
@@ -49,14 +59,14 @@ def path_like_tokens(text: str) -> set[str]:
             continue
         if "(" in t or ")" in t or "=" in t or ":" in t:
             continue
-        if t.rstrip("/") == "docs/wiki" or t.startswith("docs/wiki/"):
-            continue  # a wiki page or the wiki itself is a link target, checked by links_resolve, never a citation
+        if t.rstrip("/") == docs_root or t.startswith(docs_root + "/"):
+            continue  # a docs page or the docs root itself is a link target, checked by links_resolve, never a citation
         if _RELATIVE_PATH.match(t) or _FILE_WITH_EXTENSION.match(t):
             out.add(t.rstrip("/"))
     return out
 
 
-def extract_citations(text: str, tree: set[str]) -> list[str]:
+def extract_citations(text: str, tree: set[str], docs_root: str = "docs/wiki", page_path: str | None = None) -> list[str]:
     """Extract citations from markdown content.
 
     Citations are backticked tokens containing "/" or a file extension,
@@ -65,6 +75,11 @@ def extract_citations(text: str, tree: set[str]) -> list[str]:
     Args:
         text: The markdown content.
         tree: Set of repository paths.
+        docs_root: The repository's documentation root (link targets there are
+            page references, not file citations).
+        page_path: Path of the page the text belongs to; when given, relative
+            link targets are resolved against its directory as repository
+            paths rather than as the machine's absolute paths.
 
     Returns:
         Sorted list of unique citations that exist in tree.
@@ -88,36 +103,43 @@ def extract_citations(text: str, tree: set[str]) -> list[str]:
                         citations.append(token)
                     break
 
-    # Extract link targets that resolve to tree files outside wiki
+    # Extract link targets that resolve to tree files outside the docs root
     link_list = links(text)
     for link in link_list:
         target = link.target
-        # Normalize the path
-        target = target.removeprefix("./")
-        if target.startswith("../"):
-            # Resolve relative paths (basic implementation)
-            pass
-        # Check if it's in the tree and not a markdown file in wiki
-        if target in tree and not target.endswith(".md"):
+        if page_path:
+            # Resolve ../ and ./ against the page's directory, lexically: this
+            # is a repository path, not a filesystem path (415).
+            target = normalize_repo_path(str(Path(page_path).parent), target)
+        else:
+            target = target.removeprefix("./")
+        # Check if it's in the tree and not a documentation page
+        if target in tree and not target.endswith(".md") and not target.startswith(docs_root + "/"):
             if target not in citations:
                 citations.append(target)
 
     return citations
 
 
-def wiki_links(text: str, page_path: str) -> list[str]:
-    """Extract wiki links that resolve to .md files in docs/wiki/.
+def wiki_links(text: str, page_path: str, docs_root: str = "docs/wiki") -> list[str]:
+    """Extract wiki links resolved to repository paths.
+
+    ``../`` and ``./`` targets are resolved against the page's directory
+    lexically -- no ``Path.resolve()``, which bound links to the machine's
+    absolute paths (415). Targets under the docs root or repo-relative targets
+    pass through unchanged.
 
     Args:
         text: The markdown content.
         page_path: Path to the current page.
+        docs_root: The repository's documentation root.
 
     Returns:
         List of resolved wiki link targets as repo paths.
     """
     resolved = []
     link_list = links(text)
-    page_dir = Path(page_path).parent
+    page_dir = str(Path(page_path).parent) if "/" in page_path else "."
 
     for link in link_list:
         target = link.target
@@ -127,25 +149,16 @@ def wiki_links(text: str, page_path: str) -> list[str]:
         if not target.endswith(".md"):
             continue
 
-        # Resolve relative paths
         if target.startswith("/"):
             # Absolute from repo root
             resolved_path = target.lstrip("/")
-        elif target.startswith("docs/wiki/"):
+        elif target.startswith(docs_root + "/"):
             # Repository-relative, the convention Google's docguide asks for (review finding: doubled path)
             resolved_path = target
-        elif target.startswith("./"):
-            # Relative to current dir
-            resolved_path = str(page_dir / target[2:])
-        elif target.startswith("../"):
-            # Parent directory
-            resolved_path = str((page_dir / target).resolve())
         else:
-            # Relative to current dir
-            resolved_path = str(page_dir / target)
+            # Relative to the page's directory, with . and .. resolved lexically
+            resolved_path = normalize_repo_path(page_dir, target)
 
-        # Normalize path
-        resolved_path = str(Path(resolved_path)).replace("\\", "/")
         if resolved_path not in resolved:
             resolved.append(resolved_path)
 
@@ -175,18 +188,20 @@ def first_paragraph(text: str) -> str:
     return " ".join(" ".join(para).split())[:120]
 
 
-def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
-    """Build inventory of all pages in docs/wiki/.
+def build_inventory(workspace: Path, tree: set[str], docs_root: str = "docs/wiki") -> list[WikiPage]:
+    """Build inventory of all pages under the repository's docs root.
 
     Args:
         workspace: The repository root.
         tree: Set of all repository paths.
+        docs_root: The documentation root to enumerate (415: any docs system,
+            not only ``docs/wiki``).
 
     Returns:
-        List of WikiPage objects for each page in docs/wiki/.
+        List of WikiPage objects for each page under docs_root.
     """
     pages = []
-    wiki_dir = workspace / "docs" / "wiki"
+    wiki_dir = workspace / docs_root
 
     if not wiki_dir.exists():
         return pages
@@ -208,8 +223,8 @@ def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
         title = next((h.text for h in h_list if h.level == 1), md_file.stem)
 
         # Extract citations and links
-        citations = extract_citations(content, tree | path_like_tokens(content))
-        page_links = wiki_links(content, path_str)
+        citations = extract_citations(content, tree | path_like_tokens(content, docs_root), docs_root, path_str)
+        page_links = wiki_links(content, path_str, docs_root)
 
         # File size
         size = len(content)
@@ -229,48 +244,76 @@ def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
     return pages
 
 
-async def repository_layout(toolkit: Any, workspace: Path, tree: set[str]) -> RepositoryLayout:
-    """What this repository is, as the model read it (#367).
+_TEST_DIR_SEGMENTS = ("tests", "test", "spec", "specs", "__tests__", "testing")
 
-    This used to probe for ``pyproject.toml``, ``package.json``, ``pytest.ini``
-    and ``setup.cfg``, map the first hit to ``pytest`` or ``npm test``, and pick
-    out source directories with an 18-entry file-extension table and a hardcoded
-    list of directory names to skip. It therefore understood Python and Node
-    repositories, and produced an empty picture for everything else -- silently,
-    which is how a documenter came to write about projects it could not read.
 
-    The model reads the layout and the root files and says what the project is.
-    What stays mechanical here is arithmetic over paths the model named: how big
-    a directory is and whether tests live in it. That is counting, not judgement.
+def has_tests_in(paths: Iterable[str]) -> bool:
+    """Do these paths include tests, whatever convention names them (415)?
 
-    Raises:
-        ProjectShapeUnknown: the model could not characterise the repository, so
-            the card stops rather than documenting a blank picture.
+    Recognises test directories at any depth (``tests/``, ``test/``,
+    ``spec/``, ``__tests__/``, ``testing/``) and the filename conventions of
+    the common runners: ``test_*.py`` (pytest), ``*_test.go`` (go test),
+    ``*_test.rb`` (minitest), ``*.spec.*``/``*.test.*`` (jest/vitest).
     """
-    from performer.workflows.project_shape import detect_shape
+    for p in paths:
+        parts = Path(p).parts
+        if any(seg in _TEST_DIR_SEGMENTS for seg in parts[:-1]):
+            return True
+        name = parts[-1]
+        if name.startswith("test_") or name.endswith(("_test.go", "_test.rb", "_test.py", "_test.ts", "_test.js")):
+            return True
+        if ".spec." in name or ".test." in name:
+            return True
+    return False
 
-    shape = await detect_shape(toolkit, workspace, tree)
 
-    by_dir: dict[str, list[str]] = {}
-    for path_str in tree:
-        if "/" not in path_str:
+def _package(named: str, files: list[str], workspace: Path) -> dict[str, Any]:
+    size = 0
+    for f in files:
+        try:
+            size += (workspace / f).stat().st_size
+        except OSError:
             continue
-        by_dir.setdefault(path_str.split("/", 1)[0], []).append(path_str)
+    return {"path": named, "size": size, "has_tests": has_tests_in(files)}
 
-    repo_has_tests = any(p.split("/", 1)[0] in ("tests", "test") for p in tree if "/" in p)
-    packages = []
-    for top in shape.source_dirs:
-        files = by_dir.get(top)
-        if not files:
-            continue  # the model named a directory the tree does not have
-        size = 0
-        for f in files:
-            try:
-                size += (workspace / f).stat().st_size
-            except OSError:
-                continue
-        inner_tests = any(part in ("tests", "test") for f in files for part in Path(f).parts[1:-1])
-        packages.append({"path": top, "size": size, "has_tests": repo_has_tests or inner_tests})
+
+def _split_packages(named: str, tree: set[str], workspace: Path) -> list[dict[str, Any]]:
+    """One model-named source dir as one or more packages, never a flattened blob.
+
+    A monorepo whose source dirs are nested (``apps/web`` and ``apps/api``
+    under a model-named ``apps``) becomes one package per nested directory
+    that holds real content, not a single undifferentiated ``apps`` (415).
+    """
+    prefix = named.rstrip("/") + "/"
+    files = sorted(p for p in tree if p.startswith(prefix))
+    if not files:
+        return []  # the model named a directory the tree does not have
+    subdirs: dict[str, list[str]] = {}
+    for p in files:
+        rel = p[len(prefix):]
+        if "/" in rel:
+            subdirs.setdefault(rel.split("/", 1)[0], []).append(p)
+    standalone = {d: fs for d, fs in subdirs.items() if len(fs) >= _MIN_SPLIT_FILES and len(subdirs) > 1}
+    if not standalone:
+        return [_package(named, files, workspace)]
+    out: list[dict[str, Any]] = []
+    direct = [p for p in files if p[len(prefix):].split("/", 1)[0] not in standalone]
+    if len(direct) >= _MIN_SPLIT_FILES:
+        out.append(_package(named, direct, workspace))
+    for d, fs in sorted(standalone.items()):
+        out.append(_package(f"{named}/{d}", fs, workspace))
+    return out
+
+
+def layout_from_shape(shape: Any, workspace: Path, tree: set[str]) -> RepositoryLayout:
+    """The mechanical half of the layout reading: arithmetic over the paths the model named.
+
+    What stays mechanical here is counting: how big a directory is and whether
+    tests live in it. The judgement about what counts as source is the model's.
+    """
+    packages: list[dict[str, Any]] = []
+    for named in shape.source_dirs:
+        packages.extend(_split_packages(named, tree, workspace))
     packages.sort(key=lambda p: p["size"], reverse=True)
 
     # GitHub's workflow path, which is knowledge of the platform coordinare runs
@@ -283,3 +326,25 @@ async def repository_layout(toolkit: Any, workspace: Path, tree: set[str]) -> Re
         has_ci=has_ci,
         test_command_hint=shape.test_command,
     )
+
+
+async def repository_layout(toolkit: Any, workspace: Path, tree: set[str]) -> RepositoryLayout:
+    """What this repository is, as the model read it (#367).
+
+    This used to probe for ``pyproject.toml``, ``package.json``, ``pytest.ini``
+    and ``setup.cfg``, map the first hit to ``pytest`` or ``npm test``, and pick
+    out source directories with an 18-entry file-extension table and a hardcoded
+    list of directory names to skip. It therefore understood Python and Node
+    repositories, and produced an empty picture for everything else -- silently,
+    which is how a documenter came to write about projects it could not read.
+
+    The model reads the layout and the root files and says what the project is.
+
+    Raises:
+        ProjectShapeUnknown: the model could not characterise the repository, so
+            the card stops rather than documenting a blank picture.
+    """
+    from performer.workflows.project_shape import detect_shape
+
+    shape = await detect_shape(toolkit, workspace, tree)
+    return layout_from_shape(shape, workspace, tree)

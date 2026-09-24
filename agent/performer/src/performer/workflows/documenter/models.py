@@ -149,7 +149,6 @@ class DocsRecord(BaseModel):
     files_retired: list[str] = Field(default_factory=list)
     readme_generated: bool = False
     pointers_refreshed: list[str] = Field(default_factory=list)
-    reverted_paths: list[str] = Field(default_factory=list)
     commit_sha: str | None = None
     verdict: Literal["docs_committed", "env_blocked"]
     hold_reason: str | None = None

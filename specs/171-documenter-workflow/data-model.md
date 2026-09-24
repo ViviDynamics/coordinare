@@ -50,7 +50,7 @@ BAD_LINK_TEXT = ("here", "link", "this")
 
 ## DocsRecord
 
-`mode`, `brief_present`, `changed_files: list[str]`, `diff_truncated`, `inventory_size`, `plan: list[PagePlan]`, `deferred: list[str]`, `refused_paths: list[str]`, `evidence: dict[path, PageEvidence]`, `results: list[PageResult]`, `files_written: list[str]`, `files_retired: list[str]`, `readme_generated: bool`, `pointers_refreshed: list[str]`, `reverted_paths: list[str]`, `commit_sha: str | None`, `verdict: Literal["docs_committed", "env_blocked"]`, `hold_reason: str | None`, `workflow_metrics: dict`.
+`mode`, `brief_present`, `changed_files: list[str]`, `diff_truncated`, `inventory_size`, `plan: list[PagePlan]`, `deferred: list[str]`, `refused_paths: list[str]`, `evidence: dict[path, PageEvidence]`, `results: list[PageResult]`, `files_written: list[str]`, `files_retired: list[str]`, `readme_generated: bool`, `pointers_refreshed: list[str]`, `commit_sha: str | None`, `verdict: Literal["docs_committed", "env_blocked"]`, `hold_reason: str | None`, `workflow_metrics: dict`.
 
 ## Rule predicates (the exact operands the gate tests mutate)
 

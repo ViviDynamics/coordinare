@@ -20,7 +20,6 @@
     "files_retired": {"type": "array", "items": {"type": "string"}, "default": []},
     "readme_generated": {"type": "boolean", "default": false},
     "pointers_refreshed": {"type": "array", "items": {"type": "string"}, "default": []},
-    "reverted_paths": {"type": "array", "items": {"type": "string"}, "default": []},
     "commit_sha": {"type": ["string", "null"], "default": null},
     "verdict": {"type": "string", "enum": ["docs_committed", "env_blocked"]},
     "hold_reason": {"type": ["string", "null"], "default": null},

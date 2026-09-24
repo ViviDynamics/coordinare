@@ -27,6 +27,7 @@ from performer.workflows.implementer.commits import (
     classify_staged_blob as _classify_staged_blob,
 )
 from performer.workflows.implementer.commits import staged_paths as _staged_paths
+from performer.workflows.documenter.docsroot import resolve_docs_root
 
 log = structlog.get_logger(__name__)
 
@@ -1178,9 +1179,19 @@ def stop_all_env_cache_services() -> None:
 DEFAULT_DOCUMENTER_TREE = "docs/"
 
 
-def _documenter_tree(score: Score) -> str | None:
+def _documenter_tree(score: Score, repo_tree: set[str] | None = None) -> str | None:
     """The only path prefix a documenter side run may commit under, or None
-    when this dispatch is not a documenter side run (165 FR-015)."""
+    when this dispatch is not a documenter side run (165 FR-015).
+
+    The flag is set explicitly in production (True for side runs, False for
+    final reconciliation). Only an explicit False lifts the tree guard (415):
+    an ambiguous None keeps the guard, the same reading as the workflow, which
+    refreshes root pointers only for an explicit False.
+
+    The prefix follows the repository's own documentation root (415): a side
+    run in an MkDocs or Sphinx repository commits under where its docs really
+    live, not under a hardcoded docs/. ``DOCUMENTER_TREE`` overrides; with no
+    tree information the coordinare default ``docs/`` still applies."""
     if getattr(score, "role", "") != "documenting":
         return None
     if getattr(score, "documenting_side_run", None) is False:
@@ -1188,8 +1199,9 @@ def _documenter_tree(score: Score) -> str | None:
     if not (getattr(score, "documentation_brief", None) or {}):
         return None
     env = getattr(score, "workflow_env", None) or {}
-    tree = str(env.get("DOCUMENTER_TREE") or DEFAULT_DOCUMENTER_TREE).strip().lstrip("/")
-    return tree if tree.endswith("/") else tree + "/"
+    root = env.get("DOCUMENTER_TREE") or resolve_docs_root(repo_tree or set(), env.get("DOCS_ROOT"))
+    tree = str(root).strip().lstrip("/").rstrip("/")
+    return tree + "/" if tree else DEFAULT_DOCUMENTER_TREE
 
 
 def paths_outside_tree(changed: list[str], tree: str) -> list[str]:
@@ -1316,7 +1328,12 @@ async def _push_head_without_clobbering(
     # blind.
     ls_rc, _ = await git_run(["ls-remote", "--exit-code", "--heads", remote, branch], "push")
     remote_branch_missing = ls_rc == 2
-    tree = _documenter_tree(score) if score is not None else None
+    tree = None
+    if score is not None and _documenter_tree(score) is not None:
+        # 415: resolve the guard prefix from the repository's real docs root,
+        # not a hardcoded docs/ -- the same discovery the workflow used.
+        files_rc, files_out = await git_out(["ls-files"], "push")
+        tree = _documenter_tree(score, set(files_out.split()) if files_rc == 0 else set())
 
     if not remote_branch_missing:
         fetch_rc, fetch_err = await git_run(["fetch", remote, branch], "fetch")
@@ -1532,14 +1549,16 @@ async def _git_ignored_subset(
     return {line for line in out.decode("utf-8", "replace").splitlines() if line}
 
 
-def _safe_doc_deletions(deletions: list | None) -> list[str]:
+def _safe_doc_deletions(deletions: list | None, docs_root: str | None = None) -> list[str]:
     """Filter model-supplied deletion paths to safe, docs-scoped relative paths.
 
     124: the documenter may retire dead wiki pages, but deletion is a sharp tool —
-    restrict it to ``docs/`` (the documenter's domain) so a hallucinated or wrong
+    restrict it to the documenter's domain (``docs/`` by default, or wherever
+    this run's resolved documentation root lives, 415) so a hallucinated or wrong
     path can never ``git rm`` source code or a root file like ``AGENTS.md`` /
     ``README.md``. Absolute paths and ``..`` traversal are rejected outright.
     """
+    root_parts = tuple(Path(docs_root).parts) if docs_root else ("docs",)
     safe: list[str] = []
     for d in deletions or []:
         if not isinstance(d, str) or not d:
@@ -1547,11 +1566,33 @@ def _safe_doc_deletions(deletions: list | None) -> list[str]:
         if os.path.isabs(d) or ".." in Path(d).parts:
             log.warning("commit_files.unsafe_deletion_skipped", path=d)
             continue
-        if Path(d).parts[:1] != ("docs",):
-            log.warning("commit_files.non_docs_deletion_skipped", path=d)
+        if Path(d).parts[:len(root_parts)] != root_parts:
+            log.warning("commit_files.non_docs_deletion_skipped", path=d, docs_root="/".join(root_parts))
             continue
         safe.append(d)
     return safe
+
+
+async def _resolved_docs_root(stand: Stand, score: Score | None) -> str | None:
+    """The documentation root this documenter run commits under (415), or None.
+
+    Resolved from the workspace's actual tracked tree so deletions follow the
+    same root the push guard enforces; None when this is not a documenter side
+    run (the legacy ``docs`` scoping in :func:`_safe_doc_deletions` applies)."""
+    if score is None:
+        return None
+    try:
+        rc, out = await _run_git_stdout(
+            ["git", "ls-files", "-z"], stand.path,
+            {**os.environ, **stand.git_env} if stand.git_env else {**os.environ},
+        )
+    except (TimeoutError, OSError):
+        return None
+    if rc != 0:
+        return None
+    tracked = {p for p in out.split("\0") if p}
+    root = _documenter_tree(score, tracked)
+    return root.rstrip("/") if root else None
 
 
 async def commit_files(
@@ -1577,7 +1618,8 @@ async def commit_files(
     handler to produce 1 commit instead of N.
     """
     files = files or []
-    del_paths = _safe_doc_deletions(deletions)
+    docs_root = await _resolved_docs_root(stand, score) if deletions else None
+    del_paths = _safe_doc_deletions(deletions, docs_root)
     if not files and not del_paths:
         return []
 

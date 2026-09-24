@@ -28,15 +28,26 @@ __all__ = [
     "citations_exist", "links_resolve", "is_changelog_heading", "contract_failures", "accept_retire", "gate_page",
 ]
 
-_ISSUE_REF = re.compile(r"#\d+")
+#: A heading is a changelog heading when it names an issue-ish reference next
+#: to the words that name the work ("Card #123 changes"), or when it names a
+#: changelog. A bare ``#``-number ("Port #8080") is not a changelog heading:
+#: the live round dropped a legitimate section to that false positive (415).
+_ISSUE_REF = re.compile(r"\b(?:card|issue|pr|pull request|ticket|task)\s*#\d+", re.IGNORECASE)
 
 
 def citations_exist(citations: Iterable[str], tree: set[str]) -> list[str]:
-    """The citations that name nothing in the tree (file or directory prefix)."""
+    """The citations that name nothing in the tree (file or directory prefix).
+
+    A bare file name (``package.json``) counts as existing when any path in
+    the tree ends with it -- the file named in a page can live in a package
+    directory the citation does not prefix (415).
+    """
     missing = []
     for c in citations:
         c = c.rstrip("/")
         if c in tree or any(t.startswith(c + "/") for t in tree):
+            continue
+        if "/" not in c and any(t == c or t.endswith("/" + c) or f"/{c}/" in f"/{t}/" for t in tree):
             continue
         missing.append(c)
     return missing
@@ -113,6 +124,10 @@ class GateInput:
     tree: set[str]
     pages_after_run: set[str]
     inventory_page: WikiPage | None = None
+    #: Where decision records live in this repository (415: the repository's
+    #: ADR directory when it has one, not a fixed path).
+    decisions_dir: str = "docs/wiki/decisions"
+    docs_root: str = "docs/wiki"
     extra: dict = field(default_factory=dict)
 
 
@@ -127,11 +142,17 @@ def gate_page(g: GateInput) -> PageResult:
         ok = accept_retire(g.plan, g.inventory_page, g.tree)
         return PageResult(path=g.plan.path, kind=g.plan.kind, action="retire", reason=g.reason[:300], dropped=not ok,
                           drop_reason=None if ok else "retire_not_justified")
-    citations = extract_citations(g.content, g.tree | path_like_tokens(g.content))
+    citations = extract_citations(g.content, g.tree | path_like_tokens(g.content, g.docs_root), g.docs_root, g.plan.path)
     missing = citations_exist(citations, g.tree)
-    links_missing = links_resolve(wiki_links(g.content, g.plan.path), g.pages_after_run)
+    # A link may also point at an existing Markdown file outside the docs root
+    # (root README, agent instruction files, package-level notes). Those exist
+    # in the tree and are not going away, so they resolve; a retired wiki page
+    # is inside the root and stays rejected because it never joins
+    # pages_after_run (415 review).
+    existing_md_elsewhere = {p for p in g.tree if p.endswith(".md") and not p.startswith(g.docs_root.rstrip("/") + "/")}
+    links_missing = links_resolve(wiki_links(g.content, g.plan.path, g.docs_root), g.pages_after_run | existing_md_elsewhere)
     failures = contract_failures(g.plan.kind, g.content)
-    if g.plan.kind == "decision" and not g.plan.path.startswith("docs/wiki/decisions/"):
+    if g.plan.kind == "decision" and not g.plan.path.startswith(g.decisions_dir.rstrip("/") + "/"):
         failures.append("decision_outside_decisions_dir")  # FR-010
     dropped = bool(missing or links_missing or failures)
     reason = None

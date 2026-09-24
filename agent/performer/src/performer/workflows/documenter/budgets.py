@@ -47,7 +47,10 @@ class DocumenterBudgets:
             except (ValueError, TypeError):
                 return default
 
-        plan_cap = parse_int("DOC_PLAN_CAP", 8, max_val=8)
+        # 415: a cap of 1 defers every page but the first to a run that will
+        # never happen -- the README alone eats the slot. Two pages is the
+        # smallest plan that can still make progress in one turn.
+        plan_cap = max(2, parse_int("DOC_PLAN_CAP", 8, max_val=8))
         gather_max_commands = parse_int("DOC_GATHER_MAX_COMMANDS", 6)
         gather_max_output_chars = parse_int("DOC_GATHER_MAX_OUTPUT_CHARS", 4000)
         page_max_chars = parse_int("DOC_PAGE_MAX_CHARS", 12000)

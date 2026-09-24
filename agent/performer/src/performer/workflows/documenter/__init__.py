@@ -21,13 +21,14 @@ from performer.models import BackendEvent, BackendEventType
 from performer.workflows.base import WorkflowResult
 from performer.workflows.documenter.budgets import DocumenterBudgets
 from performer.workflows.documenter.commit import commit_docs
+from performer.workflows.documenter.docsroot import resolve_decisions_dir, resolve_docs_root
 from performer.workflows.documenter.gate import GateInput, gate_page
 from performer.workflows.documenter.gather import gather_page, hunks_for_page, with_analysis_inputs
 from performer.workflows.documenter.index import generate_readme
-from performer.workflows.documenter.inventory import build_inventory, extract_citations, first_paragraph, path_like_tokens, repository_layout
+from performer.workflows.documenter.inventory import build_inventory, extract_citations, first_paragraph, has_tests_in, path_like_tokens, repository_layout
 from performer.workflows.project_shape import ProjectShapeUnknown, repo_tree
 from performer.workflows.documenter.models import POINTER_FILES, DocsRecord, PageResult, WikiPage
-from performer.workflows.documenter.plan import build_plan
+from performer.workflows.documenter.plan import build_plan, is_doc_path
 from performer.workflows.documenter.pointers import render_pointer_section, replace_between_markers
 from performer.workflows.documenter.report import build_report, write_free_check
 from performer.workflows.documenter.write import run_write_step
@@ -79,11 +80,19 @@ class DocumenterWorkflow:
                                 hold_reason="the tree was dirty at start: " + ", ".join(clean.get("dirty_paths") or ["(unknown)"]))
             return self._finish(toolkit, record, metrics)
         tree = await _tree(toolkit, workspace)
+        env = dict(getattr(score, "workflow_env", None) or {})
+        # 415: one resolution per run. The symphony's configuration wins; then
+        # the docs system the tree already has (the documenter updates it in
+        # place and never forks a parallel tree beside it); then the
+        # coordinare-created default.
+        docs_root = resolve_docs_root(tree, env.get("DOCS_ROOT"))
+        decisions_dir = resolve_decisions_dir(tree, docs_root)
+        readme_path = f"{docs_root}/README.md"
         diff_text = str(getattr(score, "pr_diff", "") or "")
         changed = parse_unified_diff(diff_text)
         brief = getattr(score, "documentation_brief", None)
         brief = dict(brief) if isinstance(brief, dict) and brief else {}
-        inventory = build_inventory(workspace, tree)
+        inventory = build_inventory(workspace, tree, docs_root)
         # 367: the model reads the repository and says what it is. Asked once
         # and only when something actually needs it -- init mode plans from the
         # layout, and the write path puts the project's name on a page. A card
@@ -121,7 +130,7 @@ class DocumenterWorkflow:
                                 verdict="env_blocked",
                                 hold_reason="could not work out what this repository is: " + exc.reason[:300])
             return self._finish(toolkit, record, metrics)
-        plans, deferred, refused = build_plan(mode, brief_docs, list(dict.fromkeys([f.path for f in changed] + analysis_paths)), inventory, layout, budgets.plan_cap)
+        plans, deferred, refused = build_plan(mode, brief_docs, list(dict.fromkeys([f.path for f in changed] + analysis_paths)), inventory, layout, budgets.plan_cap, docs_root=docs_root, diff_text=diff_text)
         # A brief page without modules of its own gathers the brief's modules, else the
         # changed files: the live round gathered nothing for a new page and the model,
         # rightly, refused to invent paths.
@@ -158,13 +167,13 @@ class DocumenterWorkflow:
 
             self._step(toolkit, "write", plan.path)
             t = time.monotonic()
-            out = await run_write_step(toolkit, plan, current_content=current, evidence=evidence_text, changed_hunks=hunks, max_chars=budgets.page_max_chars)
+            out = await run_write_step(toolkit, plan, current_content=current, evidence=evidence_text, changed_hunks=hunks, max_chars=budgets.page_max_chars, docs_root=docs_root)
             durations["write"] = durations.get("write", 0) + int((time.monotonic() - t) * 1000)
 
             self._step(toolkit, "gate", plan.path)
             t = time.monotonic()
             pages_after = (set(pages_by_path) | {p.path for p in plans}) - set(retirements)
-            result = gate_page(GateInput(plan=plan, action=out.action, content=out.content, reason=out.reason, tree=tree, pages_after_run=pages_after, inventory_page=page))
+            result = gate_page(GateInput(plan=plan, action=out.action, content=out.content, reason=out.reason, tree=tree, pages_after_run=pages_after, inventory_page=page, decisions_dir=decisions_dir, docs_root=docs_root))
             results.append(result)
             durations["gate"] = durations.get("gate", 0) + int((time.monotonic() - t) * 1000)
             log.info("documenter.gate", path=plan.path, action=result.action, dropped=result.dropped, reason=result.drop_reason)
@@ -176,11 +185,11 @@ class DocumenterWorkflow:
                 retirements.append(plan.path)
 
         # index: the README is generated by code from the surviving inventory
-        final_pages = _final_inventory(inventory, writes, retirements, tree)
+        final_pages = _final_inventory(inventory, writes, retirements, tree, docs_root)
         changed_wiki = bool(writes) or bool(retirements)
         index_only = all(pl.source == "index" for pl in plans)
         if changed_wiki or mode == "init" or index_only:
-            summary = _summary(inventory, brief, workspace)
+            summary = _summary(inventory, brief, workspace, readme_path)
             # The second call site for the reading, and the one the laziness
             # created: in update mode the plan never asked, so this is where a
             # repository nobody could characterise first surfaces. Adversarial
@@ -194,26 +203,23 @@ class DocumenterWorkflow:
                 record.verdict = "env_blocked"
                 record.hold_reason = "could not work out what this repository is: " + exc.reason[:300]
                 return self._finish(toolkit, record, metrics)
-            readme = generate_readme(project, summary, [p for p in final_pages if p.path != WIKI_README])
-            writes[WIKI_README] = readme
+            readme = generate_readme(project, summary, [p for p in final_pages if p.path != readme_path and p.path not in POINTER_FILES], readme_path)
+            writes[readme_path] = readme
             record.readme_generated = True
-            results.append(PageResult(path=WIKI_README, kind=None, action="generated", dropped=False, size=len(readme)))
+            results.append(PageResult(path=readme_path, kind=None, action="generated", dropped=False, size=len(readme)))
 
         # Early runs share the implementation branch and stay strictly in docs/.
-        # Root agent pointers are refreshed only by final reconciliation.
-        # pointers
-        if not getattr(score, "documenting_side_run", False) and (changed_wiki or mode == "init" or index_only):
+        # Root agent pointers are refreshed only by final reconciliation --
+        # only an explicit False is that; an ambiguous None is treated as a
+        # side run (the tree guard holds, pointers wait), matching
+        # workspace._documenter_tree (415).
+        if getattr(score, "documenting_side_run", None) is False and (changed_wiki or mode == "init" or index_only):
             self._step(toolkit, "pointers")
             t = time.monotonic()
-            first_three = [(p.title, p.path) for p in final_pages if p.path != WIKI_README][:3]
-            section = render_pointer_section(WIKI_README, first_three)
-            for name in POINTER_FILES:
-                target = workspace / name
-                existing = target.read_text() if target.exists() else ""
-                updated = replace_between_markers(existing, section)
-                if updated != existing:
-                    writes[name] = updated
-                    record.pointers_refreshed.append(name)
+            first_three = [(p.title, p.path) for p in final_pages if p.path != readme_path][:3]
+            pointer_writes = refresh_pointer_files(workspace, readme_path, first_three, create=_truthy(env.get("DOCS_CREATE_POINTERS")))
+            writes.update(pointer_writes)
+            record.pointers_refreshed = sorted(pointer_writes)
             timed("pointers", t)
 
         record.results = results
@@ -258,22 +264,26 @@ async def _head(toolkit, workspace: Path) -> str | None:
     return sha[0][:40] if sha and result.exit_code == 0 else None
 
 
-def _final_inventory(inventory: list[WikiPage], writes: dict[str, str], retirements: list[str], tree: set[str]) -> list[WikiPage]:
+def _final_inventory(inventory: list[WikiPage], writes: dict[str, str], retirements: list[str], tree: set[str], docs_root: str = "docs/wiki") -> list[WikiPage]:
     by_path = {p.path: p for p in inventory if p.path not in retirements}
     for path, content in writes.items():
-        if not path.startswith("docs/wiki/"):
+        # 415: a page joins the index when it lives under the repository's
+        # resolved docs root (handbook/, website/, ...) -- is_doc_path alone
+        # only knows the docs/ and doc/ prefixes.
+        under_root = path.startswith(f"{docs_root.rstrip('/')}/")
+        if not (under_root or is_doc_path(path)):
             continue
         from performer.workflows.documenter import markdown as md  # noqa: PLC0415
         fm, _body = md.parse_frontmatter(content)
         h1 = [h.text for h in md.headings(content) if h.level == 1]
-        by_path[path] = WikiPage(path=path, kind=fm.get("kind"), title=(h1[0] if h1 else Path(path).stem), citations=extract_citations(content, tree | path_like_tokens(content)), links=[], size=len(content), summary=first_paragraph(content))
+        by_path[path] = WikiPage(path=path, kind=fm.get("kind"), title=(h1[0] if h1 else Path(path).stem), citations=extract_citations(content, tree | path_like_tokens(content, docs_root), docs_root, path), links=[], size=len(content), summary=first_paragraph(content))
     return sorted(by_path.values(), key=lambda p: p.path)
 
 
-def _summary(inventory: list[WikiPage], brief: dict, workspace: Path) -> str:
+def _summary(inventory: list[WikiPage], brief: dict, workspace: Path, readme_path: str = "docs/wiki/README.md") -> str:
     from performer.workflows.documenter import markdown as md  # noqa: PLC0415
 
-    readme = workspace / WIKI_README
+    readme = workspace / readme_path
     if readme.exists():
         quote = md.blockquote_under_h1(readme.read_text())
         if quote:
@@ -298,11 +308,13 @@ def _init_modules(plan, tree: set[str], layout) -> list[str]:
     nothing and nothing recorded that.
 
     Root files are bounded in number by the repository's own shape, so take them
-    all rather than naming the ones coordinare happens to know. Source files come
-    from the directories the MODEL named as holding the source, so they need no
+    all rather than naming the ones coordinare happens to know. Dotfiles sort
+    last (415): alphabetical order made ``.env`` outrank every manifest, and a
+    dotfile is rarely what a setup page opens first. Source files come from the
+    directories the MODEL named as holding the source, so they need no
     extension filter: that judgement was already made.
     """
-    project_files = sorted(p for p in tree if "/" not in p)[:MAX_ROOT_EVIDENCE]
+    project_files = sorted(sorted(p for p in tree if "/" not in p), key=lambda p: p.startswith("."))[:MAX_ROOT_EVIDENCE]
     ci = sorted(p for p in tree if p.startswith(".github/workflows/"))[:2]
     stem = Path(plan.path).stem
     if stem == "architecture":
@@ -312,7 +324,7 @@ def _init_modules(plan, tree: set[str], layout) -> list[str]:
             files = sorted(
                 p for p in tree
                 if p.startswith(prefix)
-                and not any(seg in ("tests", "test") for seg in p.split("/")[1:-1])
+                and not has_tests_in([p])
             )
             mains.extend(files[:1])
         # Two root files rather than one: without a name list there is no
@@ -323,10 +335,40 @@ def _init_modules(plan, tree: set[str], layout) -> list[str]:
     if stem == "setup":
         return project_files + ci
     if stem == "testing":
-        tests = sorted(p for p in tree if p.split("/", 1)[0] in ("tests", "test") or "/tests/" in p or "/test/" in p)
+        tests = sorted(p for p in tree if has_tests_in([p]))
         return project_files[:1] + tests[:4]
-    pkg_files = sorted(p for p in tree if p.startswith(stem + "/") and not any(seg in ("tests", "test") for seg in p.split("/")[1:-1]))
+    pkg_files = sorted(p for p in tree if p.startswith(stem + "/") and not has_tests_in([p]))
     return pkg_files[:5]
+
+
+def refresh_pointer_files(workspace: Path, readme_path: str, first_three: list[tuple[str, str]], *, create: bool) -> dict[str, str]:
+    """Refresh the wiki pointer section in the root agent files.
+
+    Files that exist are refreshed in place. Files that do not exist are only
+    created when the symphony opted in (``DOCS_CREATE_POINTERS``, 415): a
+    repository that never had agent instruction files does not grow them as a
+    side effect of a documentation update.
+
+    Returns the files to write (path -> updated content).
+    """
+    section = render_pointer_section(readme_path, first_three)
+    writes: dict[str, str] = {}
+    for name in POINTER_FILES:
+        target = workspace / name
+        exists = target.exists()
+        existing = target.read_text() if exists else ""
+        # 415: an existing but empty file still exists -- refresh it in place
+        # even without the create opt-in; only true absence needs opting in.
+        if not exists and not create:
+            continue
+        updated = replace_between_markers(existing, section)
+        if updated != existing:
+            writes[name] = updated
+    return writes
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _project_name(workspace: Path) -> str:
@@ -337,8 +379,8 @@ def _commit_summary(brief: dict, writes: dict[str, str]) -> str:
     text = str(brief.get("summary") or "").strip()
     if text:
         return text[:60]
-    pages = [Path(p).stem for p in writes if p.startswith("docs/wiki/")]
-    return ("update wiki: " + ", ".join(pages[:4]))[:72] if pages else "update documentation"
+    pages = [Path(p).stem for p in writes if is_doc_path(p) and p not in POINTER_FILES]
+    return ("update docs: " + ", ".join(pages[:4]))[:72] if pages else "update documentation"
 
 
 __all__ = ["DocumenterWorkflow", "STATES"]

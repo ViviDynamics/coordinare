@@ -1,29 +1,26 @@
 """Documenter commit step (spec 171 FR-012): one commit through the existing path.
 
-Writes the surviving pages, the generated README and the pointer sections, removes
-accepted retirements, and calls ``performer.workspace.commit_files`` once (it
-stages, commits and pushes). Anything the run touched outside the documentation
-paths is reverted before the commit. Injectable ``committer`` for tests.
+Writes the surviving pages, the generated README and the pointer sections and
+removes accepted retirements through ``performer.workspace.commit_files``
+(it stages, commits and pushes). Injectable ``committer`` for tests.
+
+There is no stray-path revert: the workflow only writes documentation paths
+(``is_doc_path``) and the run record lists every file it wrote, so anything
+that goes wrong surfaces in the report rather than being silently reverted
+(415: the revert path was dead code -- nothing ever populated it).
 """
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Iterable
+from typing import Awaitable, Callable
 
 import structlog
 
-from performer.workflows.documenter.plan import is_doc_path
-
 log = structlog.get_logger(__name__)
 
-__all__ = ["stray_paths", "commit_docs", "Committer"]
+__all__ = ["commit_docs", "Committer"]
+
 
 Committer = Callable[..., Awaitable[list[str]]]
-
-
-def stray_paths(changed: Iterable[str], allowed: set[str]) -> list[str]:
-    """Paths that changed but are neither planned writes nor documentation paths."""
-    return sorted(p for p in changed if p not in allowed and not is_doc_path(p))
-
 
 async def commit_docs(stand, score, *, files: list[dict[str, str]], deletions: list[str], message: str, committer: Committer | None = None) -> list[str]:
     """Commit and push once; returns the changed paths. Raises on failure (the caller holds)."""

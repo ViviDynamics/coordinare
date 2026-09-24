@@ -129,7 +129,8 @@ def _toolkit(replies_by_path: dict[str, dict]):
 
 def _score(diff, brief=None, mode="update"):
     return SimpleNamespace(pr_diff=diff, documentation_brief=brief or {}, doc_mode=mode, issue_number=7, title="Add payments",
-                           description="Charge users", workflow_env={}, owner_repo=("o", "r"), effective_github_token="t")
+                           description="Charge users", workflow_env={}, owner_repo=("o", "r"), effective_github_token="t",
+                           documenting_side_run=False)  # final reconciliation: the only run that touches root pointers
 
 
 BRIEF = {"summary": "Add the payments module", "docs": [{"topic": "Payments module", "location": "docs/wiki/payments.md", "say": "Describe charge() and where charges are stored.", "kind": "reference"}], "modules": ["src/payments.py"]}
@@ -143,7 +144,7 @@ async def _run(repo, score, replies, committer=local_committer):
 
 @pytest.mark.asyncio
 async def test_feature_writes_the_brief_page_the_cited_page_and_the_index_in_one_commit(tmp_path):
-    repo = make_repo(tmp_path)
+    repo = make_repo(tmp_path, agents_md="# Agents\n")
     diff = add_payments(repo)
     before = head(repo)
     record, _result, events, calls = await _run(repo, _score(diff, BRIEF), {"docs/wiki/payments.md": _reply("write", PAYMENTS_PAGE)})
@@ -153,7 +154,9 @@ async def test_feature_writes_the_brief_page_the_cited_page_and_the_index_in_one
     assert record.evidence["docs/wiki/payments.md"]["chars"] > 0, "the new page gathered evidence to cite (live round: none, and the model refused to invent)"
     assert calls["paths"] == ["docs/wiki/payments.md", "docs/wiki/architecture.md"], "one write call per non-index page, none for the README"
     assert record.verdict == "docs_committed" and record.readme_generated
-    assert set(record.files_written) >= {"docs/wiki/payments.md", WIKI_README, "AGENTS.md", "CLAUDE.md"}
+    # 415: an existing pointer file is refreshed in place; absent ones are not
+    # created unless the symphony opted in (DOCS_CREATE_POINTERS).
+    assert set(record.files_written) >= {"docs/wiki/payments.md", WIKI_README, "AGENTS.md"}
     assert head(repo) != before and log(repo)[0].startswith("docs(#7):")
     readme = (repo / WIKI_README).read_text()
     assert readme.count("(payments.md)") == 1 and readme.count("(architecture.md)") == 1 and readme.count("(setup.md)") == 1
@@ -288,7 +291,10 @@ async def test_init_mode_builds_a_capped_skeleton_and_adds_pointers(tmp_path):
     replies = {"docs/wiki/architecture.md": generic("explanation", "Architecture"), "docs/wiki/setup.md": generic("how-to", "Set up"), "docs/wiki/testing.md": generic("how-to", "Run the tests")}
     for i in range(6):
         replies[f"docs/wiki/pkg{i}.md"] = generic("reference", f"pkg{i}")
-    record, _, _, _calls = await _run(repo, _score("", None, mode="init"), replies)
+    # Production init dispatch (daemon.py) opts into pointer creation.
+    score = _score("", None, mode="init")
+    score.workflow_env = {"DOCS_CREATE_POINTERS": "1"}
+    record, _, _, _calls = await _run(repo, score, replies)
     assert len(record.plan) <= 8 and record.plan[0].path == WIKI_README and record.deferred, record.deferred
     assert record.verdict == "docs_committed" and (repo / WIKI_README).exists() and (repo / "CLAUDE.md").exists()
     readme = (repo / WIKI_README).read_text()
