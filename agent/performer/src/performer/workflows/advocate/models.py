@@ -32,6 +32,7 @@ class IssueCandidate(BaseModel):
     title: str = ""
     body: str = ""
     url: str = ""
+    created_at: str = ""
     labels: list[str] = Field(default_factory=list)
 
     @property

@@ -21,6 +21,7 @@ class IssueCandidate(BaseModel):
     title: str = ""
     body: str = ""
     url: str = ""
+    created_at: str = ""
     labels: list[str] = Field(default_factory=list)
 
     @property
@@ -48,7 +49,7 @@ class SelectionBatch(BaseModel):
 class CurationOutcome(BaseModel):
     issue_id: str
     number: int = 0
-    action: Literal["added", "skipped", "rejected"]
+    action: Literal["added", "skipped", "rejected", "escalated"]
     reason: str = ""
     #: The passage from the issue that justified a promotion. On the record as
     #: well as in the comment, so the justification can be checked without
@@ -56,6 +57,9 @@ class CurationOutcome(BaseModel):
     quote: str = ""
     board_item_id: str | None = None
     column: str | None = None
+    #: 416: whether the public comment went out, and why not when it did not.
+    comment_posted: bool = False
+    comment_withheld_reason: str | None = None
 
 
 class CurationRecord(BaseModel):

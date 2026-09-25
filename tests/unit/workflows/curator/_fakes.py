@@ -17,6 +17,7 @@ class FakeBoard:
         self.labels: list[tuple[str, str]] = []
         self.comments: list[tuple[int, str]] = []
         self.moved: list[tuple[str, str]] = []
+        self.columns_set: list[tuple[str, str]] = []
 
     async def on_board_ids(self) -> set[str]:
         return set(self._on_board)
@@ -35,6 +36,9 @@ class FakeBoard:
 
     async def move(self, item_id: str, column: str) -> None:
         self.moved.append((item_id, column))
+
+    async def set_column(self, item_id: str, column: str) -> None:
+        self.columns_set.append((item_id, column))
 
 
 class FakeToolkit:

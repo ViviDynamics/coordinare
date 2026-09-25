@@ -176,6 +176,10 @@ def build_workflow_env(role: IntakeRole, config: object) -> dict[str, str]:
         "CURATOR_BACKLOG_COLUMN": text("backlog_column"),
         "CURATOR_CRITERIA": json.dumps(list(getattr(config, "criteria", []))),
         "CURATOR_MAX_PER_RUN": str(getattr(config, "max_per_run", 5)),
+        "CURATOR_SKIPPED_LABEL": text("skipped_label"),
+        "CURATOR_ESCALATION_LABEL": text("escalation_label"),
+        "CURATOR_SENSITIVE_KEYWORDS": json.dumps(list(getattr(config, "sensitive_keywords", []))),
+        "CURATOR_MAX_PER_CALL": str(getattr(config, "max_per_call", 10)),
     }
 
 

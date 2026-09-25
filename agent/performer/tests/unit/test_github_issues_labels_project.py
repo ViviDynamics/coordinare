@@ -17,6 +17,7 @@ from performer.github import (
     add_item_to_project,
     add_labels,
     list_open_issues,
+    list_project_item_ids,
 )
 
 
@@ -79,7 +80,8 @@ async def test_open_issues_are_returned_with_their_labels(monkeypatch: pytest.Mo
     issues = await list_open_issues("o", "r", "tok")
     assert issues == [{
         "id": "I_1", "number": 1, "title": "t1", "body": "b1",
-        "url": "https://github.com/o/r/issues/1", "labels": ["bug", "advocate-handled"],
+        "url": "https://github.com/o/r/issues/1", "created_at": "",
+        "labels": ["bug", "advocate-handled"],
     }]
 
 
@@ -193,3 +195,42 @@ async def test_a_board_add_returning_no_item_raises(monkeypatch: pytest.MonkeyPa
     _install(monkeypatch, [_Resp({"data": {"addProjectV2ItemById": {"item": {}}}})])
     with pytest.raises(GitHubAPIError):
         await add_item_to_project("PVT_1", "I_1", "tok")
+
+
+# ---------------------------------------------------------------- list_project_item_ids
+
+
+def _items_page(nodes: list[dict]) -> _Resp:
+    return _Resp({"data": {"node": {"items": {
+        "nodes": nodes,
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+    }}}})
+
+
+@pytest.mark.asyncio
+async def test_board_item_ids_are_read_from_the_project_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, [_items_page([
+        {"content": {"__typename": "Issue", "id": "I_7"}},
+        {"content": {"__typename": "Issue", "id": "I_9"}},
+        {"content": None},
+    ])])
+    assert await list_project_item_ids("PVT_1", "tok") == ["I_7", "I_9"]
+
+
+@pytest.mark.asyncio
+async def test_a_null_project_node_raises_instead_of_reading_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GraphQL answers `node: null` for an invalid or inaccessible project id
+    with no errors body. Reading that as an empty board would let the
+    fail-closed dedup proceed on exactly the boards it must not trust."""
+    _install(monkeypatch, [_Resp({"data": {"node": None}})])
+    with pytest.raises(GitHubAPIError):
+        await list_project_item_ids("PVT_missing", "tok")
+
+
+@pytest.mark.asyncio
+async def test_a_node_without_an_items_connection_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(monkeypatch, [_Resp({"data": {"node": {"id": "PVT_1"}}})])
+    with pytest.raises(GitHubAPIError):
+        await list_project_item_ids("PVT_1", "tok")

@@ -27,7 +27,13 @@ def select_candidates(
     handled_label: str,
     escalation_label: str,
 ) -> list[IssueCandidate]:
-    """The unhandled open issues, in the order the listing returned them."""
+    """The unhandled open issues, oldest first.
+
+    416: the listing is newest-first, which pinned the newest unhandled issues
+    on every run and starved everything older.  The scan advances from the
+    oldest unlabelled issue down; issues without a date keep their listing
+    order behind the dated ones.
+    """
     candidates: list[IssueCandidate] = []
     for issue in issues:
         labels = [str(x) for x in (issue.get("labels") or [])]
@@ -44,6 +50,8 @@ def select_candidates(
             title=str(issue.get("title") or ""),
             body=str(issue.get("body") or ""),
             url=str(issue.get("url") or ""),
+            created_at=str(issue.get("created_at") or ""),
             labels=labels,
         ))
+    candidates.sort(key=lambda c: c.created_at or "9999")
     return candidates

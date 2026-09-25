@@ -730,7 +730,10 @@ class AdvocateConfig(BaseModel):
 #: Columns coordinare dispatches work from.  The curator proposes; a human
 #: promotes.  Targeting one of these would put work straight into the pipeline
 #: on a model's judgement, which is the one thing the role must not do.
-_DISPATCH_COLUMNS = frozenset({"TODO", "IN_PROGRESS", "IN_REVIEW"})
+# 416: "READY" joins the set. GitHub's default automation files newly added
+# items in Ready, so a curator pointed there would load the dispatch column
+# by accident rather than by choice -- the exact promotion the role forbids.
+_DISPATCH_COLUMNS = frozenset({"TODO", "IN_PROGRESS", "IN_REVIEW", "READY"})
 
 _DEFAULT_SELECTION_CRITERIA = [
     "Clear, testable acceptance criteria",
@@ -746,18 +749,33 @@ class CuratorConfig(BaseModel):
     github_repo: str = ""
     label: str = "curator-proposed"
     backlog_column: str = "Backlog"
+    #: 416: columns an operator's board dispatches from beyond the defaults,
+    #: declared so the backlog_column check can refuse them too.
+    dispatch_columns: list[str] = Field(default_factory=list)
     criteria: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_SELECTION_CRITERIA),
     )
     scan_interval_seconds: int = Field(default=3600, ge=60, le=86400)
     max_per_run: int = Field(default=5, ge=1, le=50)
+    #: 416: the skipped label is what makes a decline durable, the escalation
+    #: label and sensitive keywords are the intake triage, and max_per_call
+    #: bounds how much issue text one gateway conversation may see at once.
+    skipped_label: str = "curator-skipped"
+    escalation_label: str = "needs-human"
+    sensitive_keywords: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_SENSITIVE_KEYWORDS),
+    )
+    max_per_call: int = Field(default=10, ge=1, le=50)
 
     @model_validator(mode="after")
     def _validate_when_enabled(self) -> CuratorConfig:
         if self.enabled and not self.github_repo.strip():
             msg = "curator.github_repo must be non-empty when curator.enabled is True"
             raise ValueError(msg)
-        if self.backlog_column.strip().upper().replace(" ", "_") in _DISPATCH_COLUMNS:
+        dispatch_columns = _DISPATCH_COLUMNS | {
+            column.strip().upper().replace(" ", "_") for column in self.dispatch_columns
+        }
+        if self.backlog_column.strip().upper().replace(" ", "_") in dispatch_columns:
             msg = (
                 f"curator.backlog_column must not be a column coordinare "
                 f"dispatches from (got {self.backlog_column!r}); the curator "

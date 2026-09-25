@@ -106,9 +106,14 @@ class AdvocateWorkflow:
             record.error = reason
             return finish()
 
-        owner_repo = str(getattr(score, "owner_repo", "") or "")
-        owner, _, repo = owner_repo.partition("/")
-        token = str(getattr(score, "github_token", "") or "")
+        # Score.owner_repo is a property parsing repo_url; 416's review caught
+        # the advocate still stringifying it, which env-blocked every
+        # production run before the label-creating Poster could be built.
+        try:
+            owner, repo = getattr(score, "owner_repo", ())
+        except (TypeError, ValueError):
+            owner = repo = ""
+        token = str(getattr(score, "effective_github_token", None) or getattr(score, "github_token", "") or "")
         lister = self._lister
         poster = self._poster
         if lister is None or poster is None:

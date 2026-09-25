@@ -42,6 +42,43 @@ def path_like_tokens(answer: str) -> list[str]:
     return out
 
 
+_EXTENSIONLESS = re.compile(r"^[A-Z][a-z]+file$|^[A-Z][A-Z_]*[A-Z]$")
+
+
+def citation_tokens(answer: str) -> list[str]:
+    """Backticked spans shaped like a document reference.
+
+    Extends :func:`path_like_tokens` with extensionless repository files —
+    ``Dockerfile``, ``Makefile``, ``LICENSE``, ``CODEOWNERS`` — because the
+    prose-citation gate accepts those by exact match, so the undeclared check
+    must reject them by the same forms (416). All-caps-with-underscores and
+    CamelCase "file" names are file references; lowercase backticked words
+    are commands and jargon, and issue ids like ``I_1`` end in a digit.
+    """
+    out: list[str] = []
+    for span in _BACKTICKED.findall(answer or ""):
+        token = span.strip()
+        if token and token not in out and (_PATH_LIKE.match(token) or _EXTENSIONLESS.match(token)):
+            out.append(token)
+    return out
+
+
+def backticked(answer: str) -> list[str]:
+    """Every distinct backticked span in *answer*.
+
+    The prose-citation gate uses this rather than the path-shaped filter:
+    ``Dockerfile`` or ``Makefile`` name real documents while failing the
+    "must have an extension" heuristic, and a citation that exactly matches
+    a configured document path is a citation by construction.
+    """
+    out: list[str] = []
+    for span in _BACKTICKED.findall(answer or ""):
+        token = span.strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
 def undeclared_citations(answer: str, documents: list[DocumentRead]) -> list[str]:
     """File-shaped tokens the answer names that this run never read.
 
@@ -51,7 +88,7 @@ def undeclared_citations(answer: str, documents: list[DocumentRead]) -> list[str
     checked, because a reader believes the prose, not the metadata.
     """
     known = {d.path for d in documents if d.read}
-    return [t for t in path_like_tokens(answer) if t not in known]
+    return [t for t in citation_tokens(answer) if t not in known]
 
 
 def claimed_paths(classification: Classification) -> list[str]:
@@ -72,34 +109,53 @@ def unknown_citations(classification: Classification, documents: list[DocumentRe
     return [p for p in claimed_paths(classification) if p not in known]
 
 
+def _citation_problem(
+    classification: Classification,
+    documents: list[DocumentRead],
+) -> str | None:
+    """Why the citations fail the answer, or None when they hold.
+
+    Three conditions, all required: at least one document is cited, because an
+    uncited answer is the model speaking from its own memory of a project it
+    has never seen; every cited document is one this run read, and the
+    answer's own prose points at a document this run read (416: metadata alone
+    could satisfy the old check, while the text the stranger actually reads
+    pointed nowhere); and every file the prose names is one this run read.
+    """
+    claimed = claimed_paths(classification)
+    if not claimed:
+        return "the answer cites no documentation"
+    unknown = unknown_citations(classification, documents)
+    if unknown:
+        return f"cites documents this run never read: {', '.join(sorted(unknown))}"
+    known = {d.path for d in documents if d.read}
+    prose = [t for t in backticked(classification.answer or "") if t in known]
+    if not prose:
+        return "the answer's prose cites no document this run read"
+    undeclared = undeclared_citations(classification.answer or "", documents)
+    if undeclared:
+        return (
+            f"the answer text names files this run never read: {', '.join(sorted(undeclared))}"
+        )
+    return None
+
+
 def answer_is_grounded(
     classification: Classification,
     documents: list[DocumentRead],
 ) -> tuple[bool, str]:
     """Whether this answer may be posted, and why not when it may not.
 
-    Three conditions, all required:
-
-    * the kind is one an answer is allowed for at all,
-    * at least one document is cited, because an uncited answer is the model
-      speaking from its own memory of a project it has never seen,
-    * every cited document is one this run read.
+    The kind must be one an answer is allowed for at all, there must be
+    answer text, and the citation rules must hold (:func:`_citation_problem`).
     """
     if classification.classification not in ANSWERABLE_KINDS:
         return False, f"an answer is not permitted for {classification.classification}"
     if not (classification.answer or "").strip():
         return False, "no answer text"
-    claimed = claimed_paths(classification)
-    if not claimed:
-        return False, "the answer cites no documentation"
-    unknown = unknown_citations(classification, documents)
-    if unknown:
-        return False, f"cites documents this run never read: {', '.join(sorted(unknown))}"
-    undeclared = undeclared_citations(classification.answer or "", documents)
-    if undeclared:
-        return False, (
-            f"the answer text names files this run never read: {', '.join(sorted(undeclared))}"
-        )
+    problem = _citation_problem(classification, documents)
+    if problem is not None:
+        return False, problem
     return True, ""
 
 
