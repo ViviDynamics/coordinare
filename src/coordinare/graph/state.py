@@ -266,6 +266,11 @@ class CoordinareState(TypedDict, total=False):
     observer_backend: ConductingBackendProtocol | None
     observer_repetition_count: int
     observer_verdict: str | None
+    # 426 — pending observer correction, {signature, body}. Written by the
+    # monitor's observer phase, merged into the NEXT dispatch payload's
+    # relay_feedback by dispatch_performer, and cleared on successful dispatch
+    # (consumed once). Transient: not session-round-tripped, a restart drops it.
+    observer_correction: dict[str, Any] | None
     # 048: per-cycle pipeline admission set, computed in daemon and consulted by
     # dispatch_has_pipeline_slot. Underscore keys are written via state[...], so
     # the TypedDict must carry it for strict typing.

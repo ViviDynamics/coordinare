@@ -184,6 +184,7 @@ async def cancel_active_card(
     state["system_error_last_at"] = None
     state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
     state["relay_feedback"] = []
+    state["observer_correction"] = None
     state["pending_reviews"] = []
     state["pending_override"] = None  # 031: clear any queued override
     state["card_tokens_total"] = 0  # 034: clear token counters

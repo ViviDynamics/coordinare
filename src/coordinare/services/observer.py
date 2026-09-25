@@ -14,6 +14,7 @@ monitoring behaves exactly as it did before the observer existed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -41,6 +42,55 @@ _REASON_CAP = 300
 _PROMPT_TEXT_CAP = 400
 _PROMPT_RECENT_ITEMS = 5
 _PROMPT_BUDGET = 8000
+_CORRECTION_BODY_CAP = 800
+
+
+def correction_signature(text: str) -> str:
+    """A 12-hex digest of the correction text, normalised for comparison.
+
+    Whitespace runs and casing are not steering changes: rewording the same
+    directive collapses, any real change of content replaces.
+    """
+    normalized = " ".join((text or "").split()).casefold()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:12]
+
+
+def correction_body(text: str, evidence: dict[str, Any] | None) -> str:
+    """The human-feedback text that rides the next turn's payload.
+
+    The prompt never carries raw telemetry (425), so the evidence summary is
+    the scalar evidence fields only — type and length preserve the shape.
+    """
+    parts = [f"Observer correction: {(text or '').strip()}"]
+    if evidence:
+        pairs = sorted(
+            f"{key}={value}"
+            for key, value in evidence.items()
+            if isinstance(value, (str, int, float, bool))
+        )
+        if pairs:
+            parts.append(f"Evidence summary: {', '.join(pairs)}")
+    body = "\n".join(parts)
+    if len(body) > _CORRECTION_BODY_CAP:
+        body = body[: _CORRECTION_BODY_CAP - 1] + "…"
+    return body
+
+
+def record_correction(
+    pending: dict[str, Any] | None,
+    text: str,
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Fold a correction verdict into the pending correction.
+
+    Returns the new pending correction when the directive is new or changed
+    (replacing whatever was pending), and ``None`` when the same correction
+    repeats — collapsing it, never re-sending an identical text.
+    """
+    signature = correction_signature(text)
+    if pending and pending.get("signature") == signature:
+        return None
+    return {"signature": signature, "body": correction_body(text, evidence)}
 
 
 @dataclass(frozen=True)

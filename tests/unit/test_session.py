@@ -383,7 +383,8 @@ def test_session_fields_match_card_session_keys() -> None:
     # 425: session-optional fields round-trip when present but are not
     # initialized by create_session_from_card — a fresh session must keep
     # them absent so the default-off observer path stays byte-identical.
-    session_optional = {"observer_repetition_count", "observer_verdict"}
+    # 426: observer_correction joins that family (pended on demand).
+    session_optional = {"observer_repetition_count", "observer_verdict", "observer_correction"}
     for field in _SESSION_FIELDS:
         if field in session_optional:
             continue
@@ -425,7 +426,28 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         # otherwise so disabled monitoring is byte-identical.
         "observer_repetition_count",
         "observer_verdict",
+        # 426: same observer family — pended by the monitor phase, consumed
+        # by the next dispatch. Absent (never defaulted) keeps monitoring
+        # byte-identical when the observer is disabled.
+        "observer_correction",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:
             assert field in state, f"{field} missing from initial_state"
+
+
+def test_observer_correction_round_trips() -> None:
+    """426: the monitor phase pends the correction and the NEXT dispatch
+    delivers it; if it's missing from _SESSION_FIELDS the daemon's fanout
+    merge drops it and a correction observed in multi-card mode never
+    reaches any performer."""
+    correction = {"signature": "abc", "body": "Observer correction: steer"}
+    session = create_session_from_card(_sample_card())
+    session["observer_correction"] = correction
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["observer_correction"] == correction
+
+    recovered = state_to_session(state)
+    assert recovered["observer_correction"] == correction

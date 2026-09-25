@@ -455,6 +455,27 @@ def inject_review_findings(card_context: dict[str, Any], state: Any, *, performe
     card_context["review_findings"] = deepcopy(review_findings)
 
 
+def inject_observer_correction(card_context: dict[str, Any], state: Any) -> None:
+    """426: merge the pending observer correction into the dispatch payload.
+
+    Merged into the payload's relay_feedback only — never into
+    state["relay_feedback"], which is dispatch-causing feedback (rebase-guard
+    bypass, verdict-cache bypass, blueprint invalidation). A correction rides
+    the next turn; it never triggers or redirects a dispatch of its own, and
+    the pending copy is cleared after a successful dispatch by the caller.
+    The payload list is always a fresh copy: the flat state's list is shared
+    into the payload by _base_card_context, and mutating it here would turn
+    the correction into dispatch-causing state feedback.
+    """
+    correction = state.get("observer_correction") if hasattr(state, "get") else None
+    if not isinstance(correction, dict) or not correction.get("body"):
+        return
+    existing = card_context.get("relay_feedback")
+    items = list(existing) if isinstance(existing, list) else []
+    items.append({"body": correction["body"], "author_login": "observer"})
+    card_context["relay_feedback"] = items
+
+
 def inject_briefs(card_context: dict[str, Any], state: Any, *, role: str | None) -> None:
     """165 (FR-010, FR-013): hand each reader its slice of the blueprint.
 
@@ -1973,6 +1994,9 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
     relay_feedback: list[dict[str, Any]] | None = state.get("relay_feedback")
     if relay_feedback:
         card_context["relay_feedback"] = relay_feedback
+    # 426: the observer's pending correction rides the payload's feedback list
+    # (appended after any bounce feedback) without touching state["relay_feedback"].
+    inject_observer_correction(card_context, state)
 
     # 020: Include architecture plan in dispatch payload for downstream roles (FR-007).
     # The plan_path is set on the card by monitor_performer when the architect
@@ -2623,6 +2647,11 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
 
     # Clear relay_feedback so it isn't re-sent to subsequent roles.
     state["relay_feedback"] = []
+    # 426: the correction was just delivered — consume it. A failed dispatch
+    # never reaches this point, so the correction stays pending for the retry.
+    # Written only when actually pending so the absent-key contract holds.
+    if state.get("observer_correction") is not None:
+        state["observer_correction"] = None
     state["agent_dispatch"] = result
     state["agent_dispatch_at"] = datetime.now(UTC)
     state["performer_events"] = []
