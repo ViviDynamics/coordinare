@@ -26,6 +26,7 @@ from coordinare.models.performer_endpoint import (
     detect_duplicate_endpoints,
 )
 from coordinare.services.observer import OBSERVER_TRIGGERS
+from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 
 # ---------------------------------------------------------------------------
 # 052 — Branch collision strategy
@@ -1831,6 +1832,17 @@ class TestEnvConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _retune_bound_not_int(value: Any) -> bool:
+    """True unless the value is a genuine int (bools excluded, they subclass int)."""
+    return isinstance(value, bool) or not isinstance(value, int)
+
+
+#: The performer contract's max_tool_calls domain (agent/performer Score model):
+#: a bound outside it would turn a clamped retune into a dispatch failure.
+PERFORMER_MAX_TOOL_CALLS_MIN = 1
+PERFORMER_MAX_TOOL_CALLS_MAX = 500
+
+
 class ObserverConfig(BaseModel):
     """Configuration for the observer: a lightweight judge woken when mechanical
     triggers fire during monitoring.
@@ -1854,6 +1866,64 @@ class ObserverConfig(BaseModel):
     token_burn_min_tokens: int = Field(default=200_000, ge=0)
     # Bounds for a future retune action (426+); carried in the prompt evidence.
     retune_bounds: dict[str, Any] | None = None
+
+    @field_validator("retune_bounds")
+    @classmethod
+    def _validate_retune_bounds(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """428: the retunable knobs and their floor/ceiling, loud at load.
+
+        A malformed bound is a config error, not a runtime surprise: retune
+        never touches a knob the operator did not explicitly declare.
+        """
+        if v is None:
+            return None
+        unknown = set(v) - RETUNE_KNOBS
+        if unknown:
+            msg = (
+                f"unknown retunable knobs: {sorted(unknown)}; "
+                f"retunable vocabulary is {sorted(RETUNE_KNOBS)}"
+            )
+            raise ValueError(msg)
+        for knob, bound in v.items():
+            if not isinstance(bound, dict) or "floor" not in bound or "ceiling" not in bound:
+                msg = f"retune_bounds['{knob}'] must declare floor and ceiling"
+                raise ValueError(msg)
+            if knob == "effort":
+                for side in ("floor", "ceiling"):
+                    if bound[side] not in EFFORT_RANK:
+                        msg = (
+                            f"retune_bounds['effort'].{side} must be low|medium|high, "
+                            f"got {bound[side]!r}"
+                        )
+                        raise ValueError(msg)
+                if EFFORT_RANK[bound["floor"]] > EFFORT_RANK[bound["ceiling"]]:
+                    msg = "retune_bounds['effort'] floor must not exceed ceiling"
+                    raise ValueError(msg)
+            else:
+                for side in ("floor", "ceiling"):
+                    side_value = bound[side]
+                    if _retune_bound_not_int(side_value):
+                        msg = f"retune_bounds['{knob}'].{side} must be integers, got {side_value!r}"
+                        raise ValueError(msg)
+                if bound["floor"] > bound["ceiling"]:
+                    msg = f"retune_bounds['{knob}'] floor must not exceed ceiling"
+                    raise ValueError(msg)
+                if knob == "max_tool_calls" and (
+                    bound["floor"] < PERFORMER_MAX_TOOL_CALLS_MIN
+                    or bound["ceiling"] > PERFORMER_MAX_TOOL_CALLS_MAX
+                ):
+                    msg = (
+                        "retune_bounds['max_tool_calls'] must sit inside the performer "
+                        f"domain 1..500, got [{bound['floor']}, {bound['ceiling']}]"
+                    )
+                    raise ValueError(msg)
+                if knob == "max_tokens" and bound["floor"] < 1:
+                    msg = (
+                        "retune_bounds['max_tokens'] must bound a positive per-turn "
+                        f"token budget, got floor {bound['floor']!r}"
+                    )
+                    raise ValueError(msg)
+        return v
 
     @field_validator("triggers")
     @classmethod

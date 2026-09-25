@@ -271,6 +271,16 @@ class CoordinareState(TypedDict, total=False):
     # relay_feedback by dispatch_performer, and cleared on successful dispatch
     # (consumed once). Transient: not session-round-tripped, a restart drops it.
     observer_correction: dict[str, Any] | None
+    # 428 — retuned orchestration knobs, {symphony: {knob: applied_value}}.
+    # Written by the monitor's observer phase on a retune verdict, applied by
+    # dispatch_performer over the role tuning, cleared on session retirement
+    # (survives the session, resets with it). Transient: not
+    # session-round-tripped, a restart drops it — the retune resets too.
+    observer_retunes: dict[str, dict[str, Any]]
+    # 428 — append-only audit of retune decisions ({at, symphony, card_id,
+    # knob, before, requested, applied, outcome}), bounded, the structured
+    # event a config diff can be reconstructed from. Same transient lifetime.
+    observer_retune_audit: list[dict[str, Any]]
     # 048: per-cycle pipeline admission set, computed in daemon and consulted by
     # dispatch_has_pipeline_slot. Underscore keys are written via state[...], so
     # the TypedDict must carry it for strict typing.
@@ -614,6 +624,22 @@ def _retire_active_session(state: CoordinareState, *, trigger: str = "session_re
         del sessions[active_id]
     state["active_card_id"] = None
     _rederive_current_card(state)
+    # 428: retuned knobs belong to the session being retired — survive the
+    # session, reset with it. Only the RETIRING symphony's entries go; a
+    # sibling symphony's retained retunes and audit history must survive
+    # (state is shared and its keys are symphony-scoped). Guarded so the
+    # default-off path (observer disabled, nothing ever retuned) writes
+    # nothing at all.
+    sym_name = state.get("current_symphony")
+    if sym_name and state.get("observer_retunes"):
+        retunes = dict(state["observer_retunes"])
+        retunes.pop(sym_name, None)
+        state["observer_retunes"] = retunes
+    if sym_name and state.get("observer_retune_audit"):
+        state["observer_retune_audit"] = [
+            entry for entry in state["observer_retune_audit"]
+            if entry.get("symphony") != sym_name
+        ]
 
 
 def _rederive_current_card(state: CoordinareState) -> None:
