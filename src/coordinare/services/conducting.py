@@ -660,3 +660,36 @@ def build_conducting_backend(
         case _:
             msg = f"Unknown conducting backend: {a.backend!r}"
             raise ValueError(msg)
+
+
+def build_model_endpoint_backend(config: ProjectConfiguration | None, name: str | None) -> AnthropicApiBackend | OpenAiApiBackend | None:
+    """Resolve a named {model @ endpoint} pair (080) into a prompt backend.
+
+    Returns None when the name is absent from the catalogs — callers treat that
+    as "no observer", never as a failure (425 fail-safe).
+    """
+    import os
+
+    if not name or config is None:
+        return None
+    me = config.resolve_model_endpoint(name)
+    if me is None:
+        return None
+    ep = config.resolve_endpoint(me.endpoint)
+    if ep is None:
+        return None
+    if ep.kind == "anthropic":
+        from coordinare.services.claude import ClaudeService
+        api_key_env = ep.auth_env or "ANTHROPIC_API_KEY"
+        claude = ClaudeService(
+            api_key=os.getenv(api_key_env),
+            model=me.model,
+            base_url=None,
+        )
+        return AnthropicApiBackend(claude)
+    api_key_env = ep.auth_env or "OPENAI_API_KEY"
+    return OpenAiApiBackend(
+        api_key=os.getenv(api_key_env),
+        model=me.model,
+        base_url=ep.base_url,
+    )

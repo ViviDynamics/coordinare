@@ -32,6 +32,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
 from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.services.test_env_loader import TestEnvFileError
@@ -2637,6 +2638,14 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
     # production clock above it. Left behind, a run that spent its reprieve in
     # an earlier stage silently denies it to every stage after.
     state["convergence_reprieves"] = 0
+    # 425: the observer's repetition streak and last verdict belong to ONE
+    # performer run, exactly like the production clock above them. Left
+    # behind, a streak from the prior stage would wake the observer on the
+    # new stage's first poll. Guarded so the default-off path stays
+    # byte-identical: dispatch must not write observer keys at all.
+    if observer_enabled(state):
+        state["observer_repetition_count"] = 0
+        state["observer_verdict"] = None
     # 072 FR-072-5(c): snapshot the pre-turn clarifications count so the
     # per-role zero-progress guardrail can tell whether new clarifications
     # arrived during this performer turn (via route_issue_comments or
