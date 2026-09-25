@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 import structlog
@@ -694,7 +694,7 @@ async def list_open_issues(
     token: str,
     *,
     first: int = 50,
-    max_pages: int = 5,
+    max_pages: int = 10,
 ) -> list[dict]:  # type: ignore[type-arg]
     """Every open issue, with the labels that say whether it was already handled.
 
@@ -720,7 +720,7 @@ async def list_open_issues(
         issues(states: OPEN, first: $first, after: $cursor,
                orderBy: {field: CREATED_AT, direction: DESC}) {
           nodes {
-            id number title body url
+            id number title body url createdAt
             labels(first: 20) { nodes { name } }
           }
           pageInfo { hasNextPage endCursor }
@@ -758,6 +758,7 @@ async def list_open_issues(
                     "title": node.get("title") or "",
                     "body": node.get("body") or "",
                     "url": node.get("url") or "",
+                    "created_at": str(node.get("createdAt") or ""),
                     "labels": [str(x.get("name") or "") for x in label_nodes if x],
                 })
 
@@ -768,6 +769,65 @@ async def list_open_issues(
             cursor = page_info.get("endCursor")
 
     return issues
+
+
+async def ensure_label(owner: str, repo: str, name: str, token: str) -> None:
+    """Create a label in a repository if it is missing; raise if that fails.
+
+    416: the advocate needs a durable mark, but repositories are not required
+    to have pre-created labels -- one that never bootstrapped them would 404
+    on every cycle.  Creation lives in its own function rather than a keyword
+    on ``add_labels``: inventing labels is a policy decision, and the caller
+    who wants it asks for it by name.
+    """
+    _require_token(token, "ensure_label")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    query = """
+    query($owner: String!, $repo: String!, $name: String!) {
+      repository(owner: $owner, name: $repo) { id label(name: $name) { id } }
+    }
+    """
+    mutation = (
+        "mutation($repositoryId: ID!, $name: String!, $color: String!) { "
+        "createLabel(input: {repositoryId: $repositoryId, name: $name, color: $color}) "
+        "{ label { id } } }"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(graphql_url, headers=headers, json={
+            "query": query,
+            "variables": {"owner": owner, "repo": repo, "name": name},
+        })
+        if not resp.is_success:
+            raise GitHubAPIError(resp.status_code, resp.text[:200])
+        payload = resp.json()
+        if payload.get("errors"):
+            raise GitHubAPIError(200, str(payload["errors"]))
+        repository = ((payload.get("data") or {}).get("repository")) or {}
+        label = repository.get("label") or {}
+        if label.get("id"):
+            return
+        repository_id = str(repository.get("id") or "")
+        if not repository_id:
+            raise GitHubAPIError(404, f"label {name!r} does not exist in {owner}/{repo}")
+        create_resp = await client.post(graphql_url, headers=headers, json={
+            "query": mutation,
+            "variables": {"repositoryId": repository_id, "name": name, "color": "ededed"},
+        })
+        if not create_resp.is_success:
+            raise GitHubAPIError(create_resp.status_code, create_resp.text[:200])
+        created = create_resp.json()
+        if created.get("errors"):
+            raise GitHubAPIError(200, str(created["errors"]))
+        created_id = str(
+            (((created.get("data") or {}).get("createLabel") or {}).get("label") or {})
+            .get("id") or ""
+        )
+        if not created_id:
+            raise GitHubAPIError(404, f"label {name!r} could not be created in {owner}/{repo}")
 
 
 async def add_labels(
@@ -782,10 +842,9 @@ async def add_labels(
     173: labelling lived only in coordinare.  Labels are resolved by name first
     because ``addLabelsToLabelable`` takes ids; a name with no label raises
     rather than passing silently, since a label that never lands is what makes
-    an advocate re-answer the same issue on the next cycle.
-
-    This never CREATES a label: coordinare's bootstrap already ensures the two
-    advocate labels exist, and a run inventing labels is a surprise.
+    an advocate re-answer the same issue on the next cycle.  A label that does
+    not exist yet can be created first with :func:`ensure_label` (416); this
+    function itself never creates one, so it cannot invent a label by accident.
     """
     if not label_names:
         return
@@ -798,7 +857,7 @@ async def add_labels(
 
     label_query = """
     query($owner: String!, $repo: String!, $name: String!) {
-      repository(owner: $owner, name: $repo) { label(name: $name) { id } }
+      repository(owner: $owner, name: $repo) { id label(name: $name) { id } }
     }
     """
     mutation = (
@@ -819,7 +878,7 @@ async def add_labels(
             payload = resp.json()
             if payload.get("errors"):
                 raise GitHubAPIError(200, str(payload["errors"]))
-            label = ((payload.get("data") or {}).get("repository") or {}).get("label") or {}
+            label = (((payload.get("data") or {}).get("repository")) or {}).get("label") or {}
             label_id = str(label.get("id") or "")
             if not label_id:
                 raise GitHubAPIError(404, f"label {name!r} does not exist in {owner}/{repo}")
@@ -874,6 +933,165 @@ async def add_item_to_project(project_id: str, content_id: str, token: str) -> s
     if not item_id:
         raise GitHubAPIError(200, "addProjectV2ItemById returned no item")
     return item_id
+
+
+async def set_project_item_field(
+    project_id: str,
+    item_id: str,
+    option_name: str,
+    token: str,
+    *,
+    field_name: str = "Status",
+) -> None:
+    """Set a single-select project field's option on a board item.
+
+    416: ``add_item_to_project`` only adds, and GitHub's own "item added, set
+    Status" automation then files the item in its default column, which is a
+    dispatch column.  The column has to be written through
+    ``updateProjectV2ItemFieldValue`` after the add, or the curator's
+    ``backlog_column`` is decoration.
+
+    An unknown column option raises rather than passing silently: an item left
+    in the automation's default is exactly the bug this prevents.
+    """
+    _require_token(token, "set_project_item_field")
+    if not project_id.strip():
+        raise GitHubAPIError(400, "project_id is required to set a field on an item")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    field_query = """
+    query($projectId: ID!, $fieldName: String!) {
+      node(id: $projectId) {
+        ... on ProjectV2 {
+          field(name: $fieldName) {
+            ... on ProjectV2SingleSelectField {
+              id
+              options { id name }
+            }
+          }
+        }
+      }
+    }
+    """
+    mutation = (
+        "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) { "
+        "updateProjectV2ItemFieldValue(input: {projectId: $projectId, itemId: $itemId, "
+        "fieldId: $fieldId, value: {singleSelectOptionId: $optionId}}) "
+        "{ projectV2Item { id } } }"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(graphql_url, headers=headers, json={
+            "query": field_query,
+            "variables": {"projectId": project_id, "fieldName": field_name},
+        })
+        if not resp.is_success:
+            raise GitHubAPIError(resp.status_code, resp.text[:200])
+        payload = resp.json()
+        if payload.get("errors"):
+            raise GitHubAPIError(200, str(payload["errors"]))
+        field = (((payload.get("data") or {}).get("node") or {}).get("field")) or {}
+        field_id = str(field.get("id") or "")
+        if not field_id:
+            raise GitHubAPIError(200, f"project field {field_name!r} does not exist")
+        option_id = next(
+            (str(o.get("id") or "") for o in (field.get("options") or [])
+             if str(o.get("name") or "").strip().lower() == option_name.strip().lower()),
+            "",
+        )
+        if not option_id:
+            raise GitHubAPIError(200, f"option {option_name!r} is not a {field_name!r} choice")
+        write = await client.post(graphql_url, headers=headers, json={
+            "query": mutation,
+            "variables": {
+                "projectId": project_id, "itemId": item_id,
+                "fieldId": field_id, "optionId": option_id,
+            },
+        })
+        if not write.is_success:
+            raise GitHubAPIError(write.status_code, write.text[:200])
+        written = write.json()
+        if written.get("errors"):
+            raise GitHubAPIError(200, str(written["errors"]))
+
+
+def _project_items_or_raise(payload: dict[str, Any]) -> dict[str, Any]:
+    """The ``items`` connection of a ProjectV2 node, or a raised error.
+
+    A ``node`` of ``null`` (invalid or inaccessible project id) or a node the
+    ProjectV2 fragment does not apply to yield no items key; returning an
+    empty list there would read as a healthy empty board and defeat the
+    fail-closed dedup, so the shape is validated instead.
+    """
+    node = (payload.get("data") or {}).get("node")
+    items = node.get("items") if isinstance(node, dict) else None
+    if not isinstance(items, dict):
+        raise GitHubAPIError(200, "project items connection missing from response")
+    return items
+
+
+async def list_project_item_ids(
+    project_id: str,
+    token: str,
+    *,
+    first: int = 100,
+    max_pages: int = 5,
+) -> list[str]:
+    """The content ids (issue node ids) already on a project board.
+
+    416: the production board never exposed this, so the curator's dedup check
+    was dead code outside the test fakes.  Paged within a budget like
+    ``list_open_issues``; raises GitHubAPIError on a non-success, a GraphQL
+    errors body, or a response whose node or items connection is missing.
+    """
+    _require_token(token, "list_project_item_ids")
+    if not project_id.strip():
+        raise GitHubAPIError(400, "project_id is required to list a board's items")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    query = """
+    query($projectId: ID!, $first: Int!, $cursor: String) {
+      node(id: $projectId) {
+        ... on ProjectV2 {
+          items(first: $first, after: $cursor) {
+            nodes { content { __typename ... on Issue { id } } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }
+    """
+    ids: list[str] = []
+    cursor: str | None = None
+    pages_read = 0
+    async with httpx.AsyncClient(timeout=30) as client:
+        while pages_read < max_pages:
+            resp = await client.post(graphql_url, headers=headers, json={
+                "query": query,
+                "variables": {"projectId": project_id, "first": first, "cursor": cursor},
+            })
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text[:200])
+            payload = resp.json()
+            if payload.get("errors"):
+                raise GitHubAPIError(200, str(payload["errors"]))
+            items = _project_items_or_raise(payload)
+            for node in items.get("nodes") or []:
+                content = (node or {}).get("content") or {}
+                content_id = str(content.get("id") or "")
+                if content_id:
+                    ids.append(content_id)
+            pages_read += 1
+            page_info = items.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+    return ids
 
 
 async def resolve_pr_review_threads(

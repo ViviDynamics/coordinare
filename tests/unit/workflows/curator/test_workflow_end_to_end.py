@@ -84,7 +84,7 @@ async def test_a_judgement_about_an_unsent_issue_is_rejected(tmp_path: Path) -> 
     rec = await _run([issue(1)], board,
                      FakeToolkit([batch(judgement("I_99"))]), tmp_path)
     assert board.added == []
-    assert "did not send" in rec["rejected_judgements"][0]["reason"]
+    assert "was not in this batch" in rec["rejected_judgements"][0]["reason"]
 
 
 @pytest.mark.asyncio

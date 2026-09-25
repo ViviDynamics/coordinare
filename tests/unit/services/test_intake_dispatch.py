@@ -203,6 +203,35 @@ def test_a_malformed_env_list_falls_back_rather_than_taking_the_role_down() -> N
     assert "billing" in settings.sensitive_keywords
 
 
+def test_curator_settings_round_trip_through_the_env_channel() -> None:
+    """416: the curator's new tunables ride the same scalar channel, and a
+    coordinare config that only sets some of them still yields the workflow's
+    defaults for the rest."""
+    from performer.workflows.curator.settings import CuratorSettings
+
+    from coordinare.config import CuratorConfig
+    from coordinare.services.intake_dispatch import build_workflow_env
+
+    cfg = CuratorConfig(
+        label="proposed", backlog_column="Backlog", criteria=["small"],
+        max_per_run=5, skipped_label="wont-triage",
+        escalation_label="human", sensitive_keywords=["legal"],
+        max_per_call=4,
+    )
+    env = build_workflow_env("curator", cfg)
+    assert all(isinstance(v, str) for v in env.values()), "workflow_env is scalars only"
+
+    settings = CuratorSettings.from_env(env)
+    assert settings.label == "proposed"
+    assert settings.backlog_column == "Backlog"
+    assert settings.criteria == ["small"]
+    assert settings.max_per_run == 5
+    assert settings.skipped_label == "wont-triage"
+    assert settings.escalation_label == "human"
+    assert settings.sensitive_keywords == ["legal"]
+    assert settings.max_per_call == 4
+
+
 # ---------------------------------------------------------------- completing a run
 
 

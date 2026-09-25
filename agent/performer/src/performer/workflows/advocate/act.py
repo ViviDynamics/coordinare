@@ -1,10 +1,11 @@
 """Advocate actions (spec 173): what the run does to an issue, and in what order.
 
-The label is applied before the comment, deliberately and preserved from the
-service this replaces. If the comment succeeds and the label fails, the next
-run sees an unlabelled issue and answers it again; labelling first means the
-worst case is a labelled issue with no reply, which a human notices once rather
-than a stranger receiving the same automated answer every cycle.
+The label is applied before the comment.  416 sharpened the other half of the
+promise: when the label does not land, the comment is withheld entirely, so
+the worst case is an issue nobody spoke on twice, not a stranger receiving the
+same automated answer every cycle.  The Poster creates a missing label rather
+than letting the repo 404 forever, and the refusal is the backstop for when
+even that fails.
 """
 from __future__ import annotations
 
@@ -33,9 +34,17 @@ class Poster:
         self._owner, self._repo, self._token = owner, repo, token
 
     async def label(self, issue_id: str, label: str) -> None:
-        from performer.github import add_labels
+        from performer.github import add_labels, ensure_label
 
-        await add_labels(self._owner, self._repo, issue_id, [label], self._token)
+        # 416: a repository without the labels pre-created is not a 404 on
+        # every cycle -- create the label once, then retry the apply.  If even
+        # the retry fails, the exception propagates and the comment is
+        # withheld, which is the durable-refusal contract.
+        try:
+            await add_labels(self._owner, self._repo, issue_id, [label], self._token)
+        except Exception:
+            await ensure_label(self._owner, self._repo, label, self._token)
+            await add_labels(self._owner, self._repo, issue_id, [label], self._token)
 
     async def comment(self, issue_number: int, body: str) -> None:
         from performer.github import post_issue_comment
@@ -74,10 +83,13 @@ async def apply_outcome(
     classification: Classification | None = None,
     escalation_reason: str | None = None,
 ) -> IssueOutcome:
-    """Label, then comment. Returns what actually happened.
+    """Label, then comment — and never comment when the label did not land.
 
     A failure on either call is recorded on the outcome rather than raised: one
-    unreachable issue must not abandon the rest of the run.
+    unreachable issue must not abandon the rest of the run.  416: a failed
+    label now withholds the comment as well.  Posting the comment anyway is
+    what made a repository without the labels answer the same issue every
+    cycle, because the label is the only durable "already handled" mark.
     """
     outcome = IssueOutcome(
         issue_id=issue.issue_id,
@@ -91,7 +103,11 @@ async def apply_outcome(
         await poster.label(issue.issue_id, label)
         outcome.label_applied = label
     except Exception as exc:  # noqa: BLE001
-        log.warning("advocate.label_failed", issue=issue.issue_id, error=str(exc))
+        log.warning(
+            "advocate.comment_withheld", issue=issue.issue_id,
+            reason="label_failed", error=str(exc),
+        )
+        return outcome
 
     if body:
         try:
