@@ -55,6 +55,7 @@ dev = [
     "types-pyyaml>=6.0",
     "jsonschema>=4.26.0",
     "openapi-spec-validator>=0.7",
+    "mutmut>=3.8",
 ]
 
 [project.scripts]
@@ -249,3 +250,63 @@ exclude_lines = [
 
 [dependency-groups]
 dev = []
+
+# 439: mutation-testing pilot on the dispatch and monitoring core services.
+# mutmut copies the sources into mutants/, mutates the copies, and runs pytest
+# incrementally against them, so this is safe alongside the normal suite.
+# Run locally from the repo root: `uv run mutmut run` (or `mutmut run` with the
+# venv active). Baseline scores and survivor triage live in
+# docs/qa/2026-09-25-mutation-testing-pilot.md.
+[tool.mutmut]
+# All of src is copied into mutants/ (the tests must import the whole package,
+# __init__.py and all); only_mutate restricts actual mutation to the six pilot
+# files. Pointing source_paths at the six files directly instead leaves
+# mutants/src/coordinare without an __init__.py, the tests then import the
+# installed (unmutated) package, and every mutant "survives" for a reason that
+# has nothing to do with test quality.
+source_paths = ["src"]
+only_mutate = [
+    "src/coordinare/services/dispatch_guard.py",
+    "src/coordinare/services/retry_counter.py",
+    "src/coordinare/services/no_progress.py",
+    "src/coordinare/services/base_gate.py",
+    "src/coordinare/services/failure_classification.py",
+    "src/coordinare/services/required_checks_resolver.py",
+]
+# The selection must contain every test that reaches the pilot modules:
+# tests/unit as a whole also runs the repo-artifact suite (LICENSE, README, bin/
+# scripts), which reads files mutmut does not copy into mutants/ and fails there
+# — and none of those tests touch the pilot modules, so excluding them costs
+# nothing in verdict quality. tests/unit/services has the dedicated files,
+# tests/unit/graph the node-level callers, and the two root files are the only
+# root-level importers of the pilot modules.
+pytest_add_cli_args_test_selection = [
+    "tests/unit/services",
+    "tests/unit/graph",
+    "tests/unit/test_335_watchdog_graph.py",
+    "tests/unit/test_390_no_progress_budget.py",
+]
+# Exclude lines whose mutation is never worth a verdict: logging calls have no
+# assertable return value, and exception-construction lines are exercised via
+# the surrounding verdict logic (which stays mutated). Lines matching any
+# pattern are skipped entirely.
+do_not_mutate_patterns = [
+    "^\\s*log\\.",
+    "structlog.get_logger",
+    "\\braise\\b",
+]
+# The stats run happens in mutmut's own process, whose stdout is the live UI
+# capture; a module-level structlog logger imported there binds the closed
+# capture and the first test that logs raises "I/O operation on closed file".
+# Forking a clean server process for the test runs sidesteps it.
+process_isolation = "forkserver"
+# 433-sequencing note: the mypy type-check filter (type_check_command) was
+# tried and is deliberately OFF for the pilot. Both runs of `mypy -p coordinare`
+# inside mutants/ produced diagnostics mutmut cannot map to a mutant —
+# "Unused type: ignore comment" (suppressed with --no-warn-unused-ignores, but
+# then) "module is installed, but missing library stubs or py.typed marker" on
+# an import line — and mutmut aborts ("Could not find mutant for type error")
+# on any diagnostic it cannot attribute to a mutant's line range. Revisit when
+# upstream handles file-level diagnostics; until then invalid mutants are
+# simply killed by the tests erroring, at a small compute cost.
+type_check_command = []

@@ -1,0 +1,52 @@
+name: Mutation Testing
+
+# 439: opt-in mutation-testing pilot. Deliberately NOT a PR job: a fresh mutmut
+# run over even the six pilot modules costs the stats phase (a full unit-suite
+# run) plus one test batch per mutant, so every-PR execution would spend hours
+# of cluster-runner time per push. Run it manually from the Actions tab
+# (workflow_dispatch), or locally per docs/qa/2026-09-25-mutation-testing-pilot.md. Not
+# required to merge; the score is a tracked baseline, not a gate.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: mutation-testing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    name: Mutation Testing (pilot)
+    continue-on-error: true
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - cluster
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install coordinare and performer packages
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install -e "agent/performer[dev]"
+
+      - name: Run mutation pilot
+        run: uv run --extra dev mutmut run
+
+      - name: Upload mutation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results
+          path: mutants/mutmut-stats.json
+          if-no-files-found: ignore
