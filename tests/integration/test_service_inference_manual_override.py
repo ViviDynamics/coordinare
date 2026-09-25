@@ -88,7 +88,7 @@ def _write_fake_service(bin_dir: Path) -> Path:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('127.0.0.1', int(${{PORT}})))
-            s.listen(1)
+            s.listen(128)
             while True:
                 time.sleep(60)
             "
@@ -126,6 +126,13 @@ async def test_manual_override_end_to_end_starts_and_stops_service(
                 "data_dir": str(tmp_path / "data"),
                 "port": port,
                 "why_needed": "integration test for spec 063 Phase 1",
+                "kind": "generic",
+                "start_args": [str(fake_binary), f"--port={port}"],
+                "health_command": [
+                    "bash",
+                    "-c",
+                    f"exec 3<>/dev/tcp/127.0.0.1/{port}",
+                ],
                 "sources": [".coordinare/score.json"],
             },
         ],

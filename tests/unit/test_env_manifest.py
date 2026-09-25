@@ -543,6 +543,8 @@ class TestServiceInstallDerivation:
             port=9000,
             why_needed="bespoke daemon",
             sources=["docker-compose.yml"],
+            start_args=["widgetd", "--port", "9000"],
+            health_command=["widgetd", "--health"],
         )
         assert derive_service_install_items([generic]) == []
         assert derive_service_install_items([]) == []

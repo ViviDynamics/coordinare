@@ -426,10 +426,13 @@ def test_qa_persona_uses_system_python_for_playwright() -> None:
 
 
 def test_qa_persona_says_db_is_prestarted_and_forbids_initdb() -> None:
-    """Coordinare's services-start already runs postgres/redis with the test DB
-    created; a QA run wasted a whole cycle doing `initdb` itself (failed as
-    root / non-root) → qa_env_blocked 0/5. The persona must tell QA the DB is
-    already up and forbid managing its own."""
+    """Coordinare's services-start already launches every manifest service (its
+    kind-owned init recipe applied); a QA run wasted a whole cycle doing
+    `initdb` itself (failed as root / non-root) → qa_env_blocked 0/5. The
+    persona must tell QA the services are already up and forbid managing their
+    own. Issue 413: the wording is kind-neutral (any managed kind, not just
+    postgres/redis)."""
     qa = DEFAULT_INSTRUCTIONS["qa"].lower()
-    assert "already running" in qa
+    assert "already up" in qa
+    assert "services manifest" in qa  # kind-neutral, no postgres/redis hardcode
     assert "initdb" in qa  # explicitly names what NOT to do

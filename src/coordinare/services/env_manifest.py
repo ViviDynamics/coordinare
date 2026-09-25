@@ -150,16 +150,22 @@ _PARSERS = {
 }
 
 
-# 091: a declared service `kind` → the system package(s) the coordinare-owned
-# service recipe needs in the cache. The server package supplies the daemon +
-# init/teardown tools (initdb/postgres/pg_ctl); the client package supplies the
-# readiness probe (pg_isready) and the create-db tooling (psql/createdb) that
+# 091 (widened by issue 413): a declared service `kind` → the system package(s)
+# the coordinare-owned service recipe needs in the cache. The server package
+# supplies the daemon + init/teardown tools; the client package (where the kind
+# needs one) supplies the readiness probe and admin tooling that
 # services-start.sh and services-health.sh invoke. Only kinds coordinare knows how
 # to host appear here; 'generic' services bring their own binary via the project
 # spec files / start_args and derive nothing. (D3, C-14, FR-006.)
 _SERVICE_KIND_PACKAGES: dict[str, tuple[str, ...]] = {
     "postgres": ("postgresql", "postgresql-client"),
     "redis": ("redis-server",),
+    "mysql": ("mariadb-server", "mariadb-client"),
+    "mongodb": ("mongodb-server", "mongodb-clients"),
+    "rabbitmq": ("rabbitmq-server",),
+    "elasticsearch": ("elasticsearch", "curl"),
+    "memcached": ("memcached",),
+    "minio": ("minio", "curl"),
 }
 
 
@@ -167,7 +173,7 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
     """Turn declared stateful services into service-binary install items (091).
 
     Each :class:`~coordinare_service_inference.schema.ServiceEntry` with a coordinare-known
-    ``kind`` (postgres, redis) contributes one or more ``system`` ManifestItems
+    ``kind`` (postgres, redis, ...) contributes one or more ``system`` ManifestItems
     naming the deb package(s) the env-bootstrap must fetch into ``<cache>/debs/``
     — the SAME delivery the existing system-package path uses, so the base image
     gains nothing (FR-006, FR-007, SC-004). For ``kind == "postgres"`` the set
@@ -175,11 +181,19 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
     services-health.sh) so that binary is guaranteed present, not assumed
     image-baked (C-11, C-14).
 
+    Issue 413: ``mongodb-server``/``mongodb-clients`` and ``elasticsearch`` are
+    not in the Debian archive the performer base image configures — their
+    deb(s) come from vendor repositories (MongoDB Inc., elastic.co), so the
+    fetch environment must have those repos configured. The install_hint says
+    so explicitly so the failure is attributed at fetch time rather than
+    discovered as an opaque apt error.
+
     ``services`` items are ServiceEntry models (duck-typed: ``external_required``,
     ``kind``, ``name``). External services host nothing in-container and derive
     nothing. Packages are de-duplicated across services, preferring the first
     service that names them.
     """
+    vendor_repo_kinds = {"mongodb", "elasticsearch"}
     items: list[ManifestItem] = []
     seen: set[str] = set()
     for svc in services:
@@ -190,6 +204,11 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
         if not packages:
             continue
         svc_name = getattr(svc, "name", kind)
+        vendor_note = (
+            " (NOTE: this deb ships only from the vendor repository, not the "
+            "Debian archive — the fetch environment must have the vendor repo "
+            "configured)" if kind in vendor_repo_kinds else ""
+        )
         for pkg in packages:
             if pkg in seen:
                 continue
@@ -201,7 +220,7 @@ def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
                     source=f"services.json:{svc_name}",
                     install_hint=(
                         f"service '{svc_name}' (kind={kind}); fetch as .deb into "
-                        "<cache>/debs/ via the system-package path"
+                        "<cache>/debs/ via the system-package path" + vendor_note
                     ),
                 ),
             )
@@ -345,7 +364,49 @@ def _service_readiness_check(svc: Any) -> str | None:
             f'else echo "FAIL: service {name} not responding to PING on {port}"; '
             f"FAILED=1; fi"
         )
-    # generic / unknown kind → coordinare doesn't manage its lifecycle; no probe.
+    if svc.kind == "mysql":
+        return (
+            'mariadb_bin="$(command -v mariadb-admin || command -v mysqladmin)"; '
+            f'if [ -n "$mariadb_bin" ] && "$mariadb_bin" '
+            f'-h 127.0.0.1 -P {port} ping 2>&1 | grep -q "is alive"; then '
+            f'echo "OK: service {name} alive on {port}"; '
+            f'else echo "FAIL: service {name} not alive on {port} (mariadb-admin ping)"; '
+            f"FAILED=1; fi"
+        )
+    if svc.kind == "mongodb":
+        return (
+            f"if mongosh --quiet --host 127.0.0.1 --port {port} "
+            f"--eval 'db.runCommand({{ ping: 1 }})' >/dev/null 2>&1; then "
+            f'echo "OK: service {name} answering ping on {port}"; '
+            f'else echo "FAIL: service {name} not answering ping on {port} (mongosh)"; '
+            f"FAILED=1; fi"
+        )
+    if svc.kind == "rabbitmq":
+        return (
+            f"if rabbitmq-diagnostics -q ping >/dev/null 2>&1; then "
+            f'echo "OK: service {name} node alive on {port}"; '
+            f'else echo "FAIL: service {name} node not alive on {port} (rabbitmq-diagnostics)"; '
+            f"FAILED=1; fi"
+        )
+    if svc.kind == "elasticsearch":
+        return (
+            f'if curl -fsS "http://127.0.0.1:{port}/_cluster/health'
+            f'?wait_for_status=yellow&timeout=2s" >/dev/null 2>&1; then '
+            f'echo "OK: service {name} cluster healthy on {port}"; '
+            f'else echo "FAIL: service {name} cluster health not OK on {port}"; '
+            f"FAILED=1; fi"
+        )
+    if svc.kind == "minio":
+        return (
+            f'if curl -fsS "http://127.0.0.1:{port}/minio/health/live" '
+            f">/dev/null 2>&1; then "
+            f'echo "OK: service {name} liveness endpoint OK on {port}"; '
+            f'else echo "FAIL: service {name} liveness endpoint not OK on {port}"; '
+            f"FAILED=1; fi"
+        )
+    # memcached's protocol probe is a multi-line helper services-health.sh owns
+    # (no single-line client tool); generic / unknown kind → coordinare doesn't
+    # manage the lifecycle claim here. Neither gets a verify.sh probe line.
     return None
 
 
@@ -523,6 +584,23 @@ def render_activate_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
         # dirs too (version-agnostic via the * for <NN>).
         "# --- coordinare-managed service server binaries (e.g. postgresql-NN) ---",
         'for _s in "$DEVENV"/*/usr/lib/postgresql/*/bin; do',
+        '  [ -d "$_s" ] && export PATH="$_s:$PATH"',
+        "done",
+        "",
+        # Issue 413: mariadb-server ships mysqld/mariadb-install-db under
+        # /usr/sbin (server daemons land there on Debian), and rabbitmq-server /
+        # rabbitmq-diagnostics are also /usr/sbin residents — /usr/bin alone is
+        # not enough for the mysql/rabbitmq launch + readiness recipes.
+        "# --- coordinare-managed service sbin binaries (mysqld, rabbitmq-*) ---",
+        'for _s in "$DEVENV"/*/usr/sbin; do',
+        '  [ -d "$_s" ] && export PATH="$_s:$PATH"',
+        "done",
+        "",
+        # Issue 413: the elasticsearch deb's executable lives under
+        # /usr/share/elasticsearch/bin (its /usr/bin symlink may not survive
+        # extraction), so surface that tree on PATH too.
+        "# --- elasticsearch extracted bin tree ---",
+        'for _s in "$DEVENV"/*/usr/share/elasticsearch/bin; do',
         '  [ -d "$_s" ] && export PATH="$_s:$PATH"',
         "done",
         "",

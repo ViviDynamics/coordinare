@@ -32,16 +32,22 @@ def output_root(tmp_path: Path) -> Path:
 
 
 def _good_manifest() -> dict[str, Any]:
+    # Issue 413: this manifest must exercise the run-validation path, so the
+    # service is an in-container generic (the only kind run-validation covers);
+    # the binary must resolve on PATH/absolutely — /bin/sh does everywhere —
+    # and the generic contract now requires launch + probe args.
     return {
         "services": [
             {
                 "name": "redis",
-                "binary": "/usr/bin/redis-server",
+                "binary": "/bin/sh",
                 "version": "7.2",
                 "data_dir": "/tmp/redis",
                 "port": 6379,
                 "why_needed": "session store",
-                "sources": ["Gemfile"],
+                "kind": "generic",
+                "start_args": ["/bin/sh", "-c", "exec /bin/app"],
+                "health_command": ["/bin/app", "--health"],
             },
         ],
         "cache_inputs": ["Gemfile"],
@@ -331,6 +337,8 @@ def _mixed_manifest() -> dict[str, Any]:
                 "why_needed": "background jobs",
                 "sources": ["Procfile"],
                 "kind": "generic",
+                "start_args": ["/bin/sh", "-c", "exec /bin/app"],
+                "health_command": ["/bin/app", "--health"],
             },
         ],
         "cache_inputs": ["Gemfile"],

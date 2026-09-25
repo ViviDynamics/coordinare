@@ -20,6 +20,7 @@ def _redis() -> ServiceEntry:
         port=6379,
         why_needed="Sidekiq queue backend",
         sources=["Gemfile.lock"],
+        kind="redis",
     )
 
 
@@ -32,6 +33,7 @@ def _postgres() -> ServiceEntry:
         port=5432,
         why_needed="Primary application database",
         sources=["config/database.yml"],
+        kind="postgres",
     )
 
 
@@ -161,6 +163,7 @@ def test_render_start_args_are_shell_quoted():
         port=5432,
         why_needed="db",
         start_args=["postgres", "-D", "/tmp/pg; rm -rf /", "-c", "shared_buffers=128MB"],
+        health_command=["pg_isready", "-p", "5432"],
     )
     manifest = ServicesManifest(
         services=[entry], cache_inputs=[], agent_version="test-quote",
@@ -175,7 +178,11 @@ def test_render_start_args_are_shell_quoted():
     assert " /tmp/pg; rm -rf / " not in scripts.start
 
 
-def test_render_synthesises_default_when_start_args_none():
+def test_managed_kind_renders_coordinare_recipe_without_start_args():
+    # Issue 413: the redis-shaped default launch is REMOVED. A managed kind
+    # needs no start_args — its coordinare-owned launch recipe renders instead
+    # (redis: --port=<port> --dir=<data_dir>) — and the old --data-dir default
+    # is gone (redis's chdir flag is --dir).
     entry = ServiceEntry(
         name="redis",
         binary="redis-server",
@@ -183,6 +190,7 @@ def test_render_synthesises_default_when_start_args_none():
         data_dir="/tmp/r",
         port=6379,
         why_needed="cache",
+        kind="redis",
         start_args=None,
     )
     manifest = ServicesManifest(
@@ -191,8 +199,9 @@ def test_render_synthesises_default_when_start_args_none():
 
     scripts = render(manifest)
 
-    assert "--port=6379" in scripts.start
-    assert "--data-dir=" in scripts.start
+    assert '--port="${REDIS_PORT}"' in scripts.start
+    assert "--dir=" in scripts.start
+    assert "--data-dir=" not in scripts.start
 
 
 # --- spec 091: postgres init / kind-aware rendering (T007-T010, T014b) ---
@@ -426,10 +435,11 @@ def test_generic_redis_render_unchanged_by_postgres_support():
     s = scripts.start
     for token in ("initdb", "PG_VERSION", "pg_isready", "createdb", "_PGDATA"):
         assert token not in s, f"postgres token {token!r} leaked into generic render"
-    # the redis launch line is emitted verbatim (it inherits the spec-115 script-level
-    # LD_LIBRARY_PATH export so the cached redis-server's libs resolve).
+    # the redis launch line is the coordinare-owned recipe (issue 413: --dir, not
+    # the old --data-dir default); it inherits the spec-115 script-level
+    # LD_LIBRARY_PATH export so the cached redis-server's libs resolve.
     assert (
-        "  redis-server --port=6379 --data-dir=/tmp/redis-data "
+        'redis-server --port="${REDIS_PORT}" --dir="${REDIS_DATA_DIR}" '
         '>"${REDIS_DATA_DIR}/redis.log" 2>&1 &' in s
     )
     assert "pg_isready" not in scripts.health
@@ -439,13 +449,15 @@ def test_generic_redis_render_unchanged_by_postgres_support():
 # C-11, C-12: readiness probe (T010)
 
 
-def test_postgres_health_uses_pg_isready_redis_retains_port_check():
-    # C-11: postgres health is a connect-level pg_isready probe; redis keeps the
-    # existing port/liveness check.
+def test_postgres_health_uses_pg_isready_redis_uses_protocol_probe():
+    # C-11 as widened by issue 413: postgres health is a connect-level pg_isready
+    # probe; redis now answers a redis-cli PING (the bare TCP _port_open fallback
+    # is gone — a bound port alone is not readiness).
     scripts = render(_manifest([_postgres_init(), _redis()]))
     h = scripts.health
     assert "pg_isready -h 127.0.0.1 -p 5432" in h
-    assert '_port_open "6379"' in h
+    assert "redis-cli -h 127.0.0.1 -p 6379" in h
+    assert "_port_open" not in h
 
 
 def test_postgres_readiness_wait_is_bounded_and_attributed():

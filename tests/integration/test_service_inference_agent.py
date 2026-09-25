@@ -64,7 +64,7 @@ def _write_fake_service(bin_dir: Path) -> Path:
             s = socket.socket()
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(('127.0.0.1', int(${{PORT}})))
-            s.listen(1)
+            s.listen(128)
             while True:
                 time.sleep(60)
             "
@@ -139,6 +139,13 @@ async def test_rails_postgres_redis_end_to_end(tmp_path: Path) -> None:
                 "data_dir": str(tmp_path / "pgdata"),
                 "port": pg_port,
                 "why_needed": "rails ActiveRecord adapter cited in config/database.yml",
+                "kind": "generic",
+                "start_args": [str(fake_bin), f"--port={pg_port}"],
+                "health_command": [
+                    "bash",
+                    "-c",
+                    f"exec 3<>/dev/tcp/127.0.0.1/{pg_port}",
+                ],
                 "sources": ["config/database.yml", "Gemfile"],
             },
             {
@@ -148,6 +155,13 @@ async def test_rails_postgres_redis_end_to_end(tmp_path: Path) -> None:
                 "data_dir": str(tmp_path / "redisdata"),
                 "port": redis_port,
                 "why_needed": "rails session/cache store cited in Gemfile",
+                "kind": "generic",
+                "start_args": [str(fake_bin), f"--port={redis_port}"],
+                "health_command": [
+                    "bash",
+                    "-c",
+                    f"exec 3<>/dev/tcp/127.0.0.1/{redis_port}",
+                ],
                 "sources": ["Gemfile"],
             },
         ],
@@ -208,6 +222,13 @@ async def test_go_postgres_cache_inputs_reflect_go_shape(tmp_path: Path) -> None
                 "data_dir": str(tmp_path / "pgdata"),
                 "port": pg_port,
                 "why_needed": "lib/pq driver imported in go.mod and main.go",
+                "kind": "generic",
+                "start_args": [str(fake_bin), f"--port={pg_port}"],
+                "health_command": [
+                    "bash",
+                    "-c",
+                    f"exec 3<>/dev/tcp/127.0.0.1/{pg_port}",
+                ],
                 "sources": ["go.mod", "main.go"],
             },
         ],
