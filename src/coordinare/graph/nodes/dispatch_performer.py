@@ -17,17 +17,31 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.nodes.monitor_performer import _advance_stage
 from coordinare.graph.state import _set_current_card
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.models.rebase import RebaseOutcome
 from coordinare.services.board_provider import board_of, move_card_or_warn
-from coordinare.services.env_cache import verify_env_cache_clean
+from coordinare.services.env_cache import (
+    DEFAULT_DEVENV_ROOT,
+    _cache_dir_has_activate,
+    bootstrap_hold_detail,
+    get_env_volume_for_symphony,
+    resolve_test_env_vars,
+    verify_env_cache_clean,
+)
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
+from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.security_scanner import ScannerError, scan_diff
+from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 from coordinare.workspace import WorkspaceSetupError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from coordinare.graph.state import AgentServiceProtocol, CoordinareState
 
 logger = structlog.get_logger(__name__)
@@ -921,8 +935,27 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
     returns ``False`` once it has CONFIRMED the branch is conflicting/behind.
     Reuses spec-096/047 machinery; writes 096's anti-thrash marker.
     """
-    import contextlib
+    gate = _rebase_guard_gate(state)
+    if gate is None:
+        return True
+    card, pr_node_id, github, config = gate
+    try:
+        outcome, rebase_ctx = await _rebase_guard_classify(
+            state, card_id, github, config, pr_node_id,
+        )
+        if outcome is not None:
+            return outcome
+        return await _rebase_guard_run(state, card, card_id, rebase_ctx or {}, github)
+    except Exception as exc:  # FR-009: a guard bug must never block dispatch
+        logger.warning(
+            "dispatch_performer.pre_dispatch_guard_failed",
+            card_id=card_id, error=str(exc),
+        )
+        return True
 
+
+def _rebase_guard_gate(state: CoordinareState) -> tuple[dict[str, Any] | None, str | None, Any, Any] | None:
+    """Sync gate: relay feedback + prerequisites; None = fail-open."""
     # A feedback-driven dispatch (review feedback, or 047 conflict-resolution
     # feedback) carries explicit work for the performer — let it through so the
     # guard never starves the conflict-resolution path it set up on a prior cycle.
@@ -932,7 +965,7 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
     # marker (blocked_thrash) on a later cycle. So a conflict resolves in at most
     # one performer attempt per head before the card is held for an operator.
     if state.get("relay_feedback"):
-        return True
+        return None
 
     card = state.get("current_card") or {}
     pr_url = card.get("pr_url") if isinstance(card, dict) else None
@@ -942,143 +975,217 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
     # Guard N/A → dispatch as today: no open published PR (first run that will
     # create the branch), or missing deps (FR-006).
     if not (pr_url and pr_node_id and github is not None and config is not None):
-        return True
+        return None
+    return card, pr_node_id, github, config
 
-    try:
-        from coordinare.models.rebase import RebaseOutcome
-        from coordinare.services.rebase import (
-            classify_pre_dispatch,
-            fetch_main_sha,
-            prepare_conflict_resolution,
-            repo_url_from_config,
-            run_rebase_round,
+
+async def _rebase_guard_classify(state: CoordinareState, card_id: str, github: Any, config: Any, pr_node_id: str | None) -> tuple[bool | None, dict[str, Any] | None]:
+    """(True,None) proceed, (False,None) defer, (None,ctx) auto-rebase."""
+    import contextlib
+
+    from coordinare.services.rebase import (
+        classify_pre_dispatch,
+        fetch_main_sha,
+        repo_url_from_config,
+    )
+
+    repo_url = repo_url_from_config(config)
+    token = ""
+    if hasattr(github, "_current_token"):
+        with contextlib.suppress(Exception):
+            token = await github._current_token()
+    if not (repo_url and token):
+        return True, None  # auto-rebase not available (same gate as 047/096)
+
+    current_main = state.get("last_known_main_sha")
+    if not current_main:
+        with contextlib.suppress(Exception):
+            current_main = await fetch_main_sha(repo_url, token)
+    if not current_main:
+        return True, None
+
+    mc = await github.check_mergeability(pr_node_id)
+    raw = mc.get("mergeable_raw") or ""
+    mss = mc.get("merge_state_status") or ""
+    head = mc.get("head_ref_oid") or ""
+    decision = classify_pre_dispatch(raw, mss, head, state, current_main)
+
+    if decision == "proceed":
+        return True, None
+    if decision == "defer":
+        logger.info(
+            "dispatch_performer.pre_dispatch_defer",
+            card_id=card_id, mergeable=raw or "?",
         )
-
-        repo_url = repo_url_from_config(config)
-        token = ""
-        if hasattr(github, "_current_token"):
-            with contextlib.suppress(Exception):
-                token = await github._current_token()
-        if not (repo_url and token):
-            return True  # auto-rebase not available (same gate as 047/096)
-
-        current_main = state.get("last_known_main_sha")
-        if not current_main:
-            with contextlib.suppress(Exception):
-                current_main = await fetch_main_sha(repo_url, token)
-        if not current_main:
-            return True
-
-        mc = await github.check_mergeability(pr_node_id)
-        raw = mc.get("mergeable_raw") or ""
-        mss = mc.get("merge_state_status") or ""
-        head = mc.get("head_ref_oid") or ""
-        decision = classify_pre_dispatch(raw, mss, head, state, current_main)
-
-        if decision == "proceed":
-            return True
-        if decision == "defer":
-            logger.info(
-                "dispatch_performer.pre_dispatch_defer",
-                card_id=card_id, mergeable=raw or "?",
-            )
-            return False
-        if decision == "blocked_thrash":
-            # Confirmed CONFLICTING and already BLOCKED/FAILED against this same
-            # (main, head): do NOT dispatch a fresh performer onto it.
-            logger.warning(
-                "dispatch_performer.pre_dispatch_held_on_conflict",
-                card_id=card_id, branch=str(mc.get("head_ref_name") or ""),
-            )
-            return False
-
-        # decision == "rebase". Rebase the branch directly — source it from the PR
-        # (head_ref_name), NOT workspace_branch (which may be unset pre-dispatch).
-        branch = str(mc.get("head_ref_name") or state.get("workspace_branch") or "")
-        if not branch.startswith("coordinare/"):
-            # Confirmed conflicting/behind but we cannot identify the branch to
-            # rebase — DO NOT dispatch onto the conflicting base (FR-002). Record a
-            # marker so we don't re-attempt this every cycle (FR-008), then defer;
-            # 096's check_board sweep (no active performer now) can still heal it.
-            if head:
-                state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
-                    "main_sha": current_main, "head_sha": head, "outcome": "failed",
-                }
-            logger.warning(
-                "dispatch_performer.pre_dispatch_branch_unknown",
-                card_id=card_id, mergeable=raw or "?",
-            )
-            return False
-
-        # Build an explicit session carrying the branch so detect_stale_branches
-        # (inside run_rebase_round) includes it regardless of workspace_branch.
-        rebase_session = {
-            "workspace_branch": branch,
-            "phase": "dispatching",
-            "current_card": card,
-            "last_rebase_attempt": state.get("last_rebase_attempt"),
-        }
-        rr = await run_rebase_round(
-            {card_id: rebase_session}, current_main, repo_url, token,
-            notification_service=state.get("notification_service"),
-            github=github, human_reviewers=state.get("human_reviewers"),
-        )
-        if not rr.jobs:
-            # A confirmed-conflicting branch we could not rebase — do NOT dispatch
-            # onto it (this is the bug 097 exists to prevent). Record a marker so
-            # the guard doesn't re-rebase it every cycle (FR-008), then defer.
-            if head:
-                state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
-                    "main_sha": current_main, "head_sha": head, "outcome": "failed",
-                }
-            logger.warning(
-                "dispatch_performer.pre_dispatch_rebase_no_op",
-                card_id=card_id, branch=branch,
-            )
-            return False
-
-        prev_main = current_main
-        proceed = True
-        for job in rr.jobs:
-            # Marker head: after a clean rebase the branch head is the new
-            # post-rebase commit (what the next cycle's check_mergeability will
-            # report); on a non-pushing outcome (BLOCKED/FAILED) it is the head we
-            # just checked.
-            if job.outcome in (RebaseOutcome.CLEAN, RebaseOutcome.PERFORMER_RESOLVED) and job.post_rebase_sha:
-                marker_head = job.post_rebase_sha
-            else:
-                marker_head = head or job.pre_rebase_sha or ""
-            state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
-                "main_sha": current_main,
-                "head_sha": marker_head,
-                "outcome": job.outcome.value,
-            }
-            logger.info(
-                "rebase.triggered", reason="pre_dispatch",
-                card_id=card_id, branch=job.branch,
-                prev_main_sha=prev_main, current_main_sha=current_main,
-                outcome=job.outcome.value,
-            )
-            if job.outcome == RebaseOutcome.BLOCKED:
-                # 047 US2: set up performer-driven conflict resolution (relay
-                # feedback + implementer stage), then DEFER. Next cycle re-enters
-                # dispatch_performer where check_inflight re-validates the new
-                # stage (FR-004) and this guard lets the feedback-bearing dispatch
-                # through to resolve the conflict.
-                prepare_conflict_resolution(job, state, human_reviewers=state.get("human_reviewers"))
-                proceed = False
-            elif job.outcome == RebaseOutcome.FAILED:
-                proceed = False  # do not dispatch onto a failed rebase; retry next cycle
-        # Record the main we reconciled against (mirror check_board), so the
-        # marker comparison stays consistent across cycles.
-        state["last_known_main_sha"] = current_main
-        return proceed
-    except Exception as exc:  # FR-009: a guard bug must never block dispatch
+        return False, None
+    if decision == "blocked_thrash":
+        # Confirmed CONFLICTING and already BLOCKED/FAILED against this same
+        # (main, head): do NOT dispatch a fresh performer onto it.
         logger.warning(
-            "dispatch_performer.pre_dispatch_guard_failed",
-            card_id=card_id, error=str(exc),
+            "dispatch_performer.pre_dispatch_held_on_conflict",
+            card_id=card_id, branch=str(mc.get("head_ref_name") or ""),
         )
-        return True
+        return False, None
+    return None, {
+        "current_main": current_main, "repo_url": repo_url, "token": token,
+        "mc": mc, "raw": raw, "head": head,
+    }
+
+
+async def _rebase_guard_run(state: CoordinareState, card: dict[str, Any] | None, card_id: str, ctx: dict[str, Any], github: Any) -> bool:
+    """Runs the auto-rebase round after classify returned (None, ctx)."""
+    from coordinare.services.rebase import (
+        prepare_conflict_resolution,
+        run_rebase_round,
+    )
+    current_main = ctx["current_main"]
+    repo_url = ctx["repo_url"]
+    token = ctx["token"]
+    mc = ctx["mc"]
+    raw = ctx["raw"]
+    head = ctx["head"]
+    # decision == "rebase". Rebase the branch directly — source it from the PR
+    # (head_ref_name), NOT workspace_branch (which may be unset pre-dispatch).
+    branch = str(mc.get("head_ref_name") or state.get("workspace_branch") or "")
+    if not branch.startswith("coordinare/"):
+        # Confirmed conflicting/behind but we cannot identify the branch to
+        # rebase — DO NOT dispatch onto the conflicting base (FR-002). Record a
+        # marker so we don't re-attempt this every cycle (FR-008), then defer;
+        # 096's check_board sweep (no active performer now) can still heal it.
+        if head:
+            state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+                "main_sha": current_main, "head_sha": head, "outcome": "failed",
+            }
+        logger.warning(
+            "dispatch_performer.pre_dispatch_branch_unknown",
+            card_id=card_id, mergeable=raw or "?",
+        )
+        return False
+
+    # Build an explicit session carrying the branch so detect_stale_branches
+    # (inside run_rebase_round) includes it regardless of workspace_branch.
+    rebase_session = {
+        "workspace_branch": branch,
+        "phase": "dispatching",
+        "current_card": card,
+        "last_rebase_attempt": state.get("last_rebase_attempt"),
+    }
+    rr = await run_rebase_round(
+        {card_id: rebase_session}, current_main, repo_url, token,
+        notification_service=state.get("notification_service"),
+        github=github, human_reviewers=state.get("human_reviewers"),
+    )
+    if not rr.jobs:
+        # A confirmed-conflicting branch we could not rebase — do NOT dispatch
+        # onto it (this is the bug 097 exists to prevent). Record a marker so
+        # the guard doesn't re-rebase it every cycle (FR-008), then defer.
+        if head:
+            state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+                "main_sha": current_main, "head_sha": head, "outcome": "failed",
+            }
+        logger.warning(
+            "dispatch_performer.pre_dispatch_rebase_no_op",
+            card_id=card_id, branch=branch,
+        )
+        return False
+
+    prev_main = current_main
+    proceed = True
+    for job in rr.jobs:
+        # Marker head: after a clean rebase the branch head is the new
+        # post-rebase commit (what the next cycle's check_mergeability will
+        # report); on a non-pushing outcome (BLOCKED/FAILED) it is the head we
+        # just checked.
+        if job.outcome in (RebaseOutcome.CLEAN, RebaseOutcome.PERFORMER_RESOLVED) and job.post_rebase_sha:
+            marker_head = job.post_rebase_sha
+        else:
+            marker_head = head or job.pre_rebase_sha or ""
+        state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+            "main_sha": current_main,
+            "head_sha": marker_head,
+            "outcome": job.outcome.value,
+        }
+        logger.info(
+            "rebase.triggered", reason="pre_dispatch",
+            card_id=card_id, branch=job.branch,
+            prev_main_sha=prev_main, current_main_sha=current_main,
+            outcome=job.outcome.value,
+        )
+        if job.outcome == RebaseOutcome.BLOCKED:
+            # 047 US2: set up performer-driven conflict resolution (relay
+            # feedback + implementer stage), then DEFER. Next cycle re-enters
+            # dispatch_performer where check_inflight re-validates the new
+            # stage (FR-004) and this guard lets the feedback-bearing dispatch
+            # through to resolve the conflict.
+            prepare_conflict_resolution(job, state, human_reviewers=state.get("human_reviewers"))
+            proceed = False
+        elif job.outcome == RebaseOutcome.FAILED:
+            proceed = False  # do not dispatch onto a failed rebase; retry next cycle
+    # Record the main we reconciled against (mirror check_board), so the
+    # marker comparison stays consistent across cycles.
+    state["last_known_main_sha"] = current_main
+    return proceed
+
+
+async def _inflight_gates(state: CoordinareState, card_id: str, performer_stage: str) -> CoordinareState | None:
+    """Side-writer probe, in-flight check and multi-PR divergence guard."""
+    from coordinare.services.dispatch_guard import check_inflight
+    side_writer = state.get("documenting_side") or {}
+    if performer_stage == "documenting" and isinstance(side_writer, dict):
+        if side_writer.get("status") == "running":
+            logger.info("documenting_side.final_waiting", card_id=card_id)
+            return state
+        if side_writer.get("writer_active"):
+            state["phase"] = "blocked"
+            state["system_error_reason"] = "Early documenter status is unavailable; confirm that its writer has stopped before final documentation can run."
+            logger.warning("documenting_side.writer_unconfirmed", card_id=card_id)
+            return state
+
+    guard = await check_inflight(state, card_id, performer_stage)
+    if guard.advice == "refuse":
+        # Another in-flight session for this (card, stage) already
+        # exists and is live.  Return state UNMODIFIED so the graph
+        # loops back through monitor_performer for the existing
+        # session.  The structured log event is emitted from
+        # check_inflight (`dispatch_performer.in_flight_guard_tripped`).
+        return state
+
+    # 076 (T112, FR-024): multi-PR detection at the DISPATCH trigger.
+    # If we'd be about to launch a performer for a card with > 1
+    # open PR on the canonical prefix, refuse with a structured
+    # event so the operator can resolve the divergence manually.
+    try:
+        from coordinare.services.dispatch_guard import detect_multi_pr_divergence
+
+        github = state.get("github_service")
+        current_card = state.get("current_card") or {}
+        pr_url = current_card.get("pr_url") if isinstance(current_card, dict) else None
+        owner, repo = _owner_repo_from_pr_url(pr_url) if pr_url else (None, None)
+        if github is not None and owner and repo:
+            divergence = await detect_multi_pr_divergence(
+                state,
+                card_id,
+                github_service=github,
+                owner=owner,
+                repo=repo,
+                trigger="dispatch",
+            )
+            if divergence is not None:
+                logger.warning(
+                    "dispatch_performer.multi_pr_divergence_refused",
+                    card_id=card_id,
+                    pr_numbers=divergence.get("pr_numbers"),
+                )
+                return state
+    except Exception as _exc:  # pragma: no cover — exercised via test_multi_pr_check_crash
+        # Detection failure MUST NOT block dispatch — that path
+        # historically produced today's bug.  Log and proceed.
+        logger.warning(
+            "dispatch_performer.multi_pr_divergence_check_crashed",
+            card_id=card_id,
+            error=str(_exc),
+        )
+    return None
 
 
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
@@ -1100,7 +1207,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     their identifiers are not stable until they have been applied.
     """
     from coordinare.graph.nodes.monitor_performer import _apply_pending_override
-    from coordinare.services.dispatch_guard import check_inflight, dispatch_mutex
+    from coordinare.services.dispatch_guard import dispatch_mutex
 
     # Apply any operator override OUTSIDE the mutex.  Override return values
     # are honoured directly (some terminate dispatch entirely; the
@@ -1143,62 +1250,9 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         return state
 
     async with dispatch_mutex(card_id, performer_stage):
-        side_writer = state.get("documenting_side") or {}
-        if performer_stage == "documenting" and isinstance(side_writer, dict):
-            if side_writer.get("status") == "running":
-                logger.info("documenting_side.final_waiting", card_id=card_id)
-                return state
-            if side_writer.get("writer_active"):
-                state["phase"] = "blocked"
-                state["system_error_reason"] = "Early documenter status is unavailable; confirm that its writer has stopped before final documentation can run."
-                logger.warning("documenting_side.writer_unconfirmed", card_id=card_id)
-                return state
-
-        guard = await check_inflight(state, card_id, performer_stage)
-        if guard.advice == "refuse":
-            # Another in-flight session for this (card, stage) already
-            # exists and is live.  Return state UNMODIFIED so the graph
-            # loops back through monitor_performer for the existing
-            # session.  The structured log event is emitted from
-            # check_inflight (`dispatch_performer.in_flight_guard_tripped`).
-            return state
-
-        # 076 (T112, FR-024): multi-PR detection at the DISPATCH trigger.
-        # If we'd be about to launch a performer for a card with > 1
-        # open PR on the canonical prefix, refuse with a structured
-        # event so the operator can resolve the divergence manually.
-        try:
-            from coordinare.services.dispatch_guard import detect_multi_pr_divergence
-
-            github = state.get("github_service")
-            current_card = state.get("current_card") or {}
-            pr_url = current_card.get("pr_url") if isinstance(current_card, dict) else None
-            owner, repo = _owner_repo_from_pr_url(pr_url) if pr_url else (None, None)
-            if github is not None and owner and repo:
-                divergence = await detect_multi_pr_divergence(
-                    state,
-                    card_id,
-                    github_service=github,
-                    owner=owner,
-                    repo=repo,
-                    trigger="dispatch",
-                )
-                if divergence is not None:
-                    logger.warning(
-                        "dispatch_performer.multi_pr_divergence_refused",
-                        card_id=card_id,
-                        pr_numbers=divergence.get("pr_numbers"),
-                    )
-                    return state
-        except Exception as _exc:  # pragma: no cover — exercised via test_multi_pr_check_crash
-            # Detection failure MUST NOT block dispatch — that path
-            # historically produced today's bug.  Log and proceed.
-            logger.warning(
-                "dispatch_performer.multi_pr_divergence_check_crashed",
-                card_id=card_id,
-                error=str(_exc),
-            )
-
+        inflight = await _inflight_gates(state, card_id, performer_stage)
+        if inflight is not None:
+            return inflight
         # 097: pre-dispatch rebase guard. We are past check_inflight (no performer
         # is running for this (card, stage) — FR-004 holds by construction) and
         # about to start one. If this in-flight card's open-PR branch is
@@ -1270,6 +1324,24 @@ async def _apply_override_terminal(
     return override_result
 
 
+async def _run_dispatch_gates(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Sequential dispatch gates; each returns a terminal state or None."""
+    # Each gate returns a terminal CoordinareState to short-circuit the
+    # dispatch, or None to proceed to the next gate.
+    for gate in (
+        _persona_scope_skip,
+        _stage_advance_gates,
+        _documenting_gate_skip,
+        _closed_pr_churn_gate,
+        _recover_pr_context,
+        _acquire_via_slot_manager,
+    ):
+        terminal = await gate(state, ctx)
+        if terminal is not None:
+            return terminal
+    return None
+
+
 async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     """Original dispatch_performer body (pre-076 logic).
 
@@ -1287,21 +1359,15 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     into ``dispatch_performer`` so the override path runs outside the
     mutex (overrides MUST NOT block on a stuck dispatch).
     """
-    # Lazy import to avoid circular dependency -- monitor_performer is created
-    # in parallel and will exist by the time this node is actually invoked.
-    from coordinare.graph.nodes.monitor_performer import _advance_stage
-
     card: dict[str, Any] | None = state.get("current_card")
     github = state.get("github_service")
     board_provider = board_of(state)
-
     # 076 (T034): The pending-override handler used to live here.  It has
     # been hoisted into the public ``dispatch_performer`` wrapper so the
     # override path runs OUTSIDE the per-card mutex.  By the time this
     # body runs, the override (if any) has already been applied to state.
     performer_stage: str = state.get("performer_stage", "")
     performer_services: dict[str, Any] = state.get("performer_services", {})
-
     if not isinstance(card, dict) or github is None or not performer_stage:
         logger.warning(
             "dispatch_performer.missing_prerequisites",
@@ -1311,13 +1377,75 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         )
         state["phase"] = "idle"
         return state
-
     # PR-dependent stages cannot run without PR identifiers. If they're missing,
     # recover from the linked issue's open PR when possible; otherwise route
     # back to implementing so a fresh PR can be created.
     card_id = str(card.get("id", ""))
     issue_id = str(card.get("issue_id") or "").strip()
+    ctx: dict[str, Any] = {
+        "card": card,
+        "github": github,
+        "board_provider": board_provider,
+        "performer_stage": performer_stage,
+        "card_id": card_id,
+        "issue_id": issue_id,
+        "performer_services": performer_services,
+    }
+    terminal = await _run_dispatch_gates(state, ctx)
+    if terminal is not None:
+        return terminal
+    service = ctx["service"]
+    # 048: If we acquired a slot from the SlotManager, we must release it
+    # on any early error return (health check, workspace, transport failure)
+    # to prevent slot leaks.
+    def _release_slot_on_error() -> None:
+        slot_manager = ctx.get("slot_manager")
+        if slot_manager is not None and hasattr(slot_manager, "release") and service is not None:
+            slot_manager.release(ctx["performer_stage"], ctx["card_id"])
 
+    terminal = await _check_service_health(
+        state, service, ctx["performer_stage"], ctx["card_id"],
+        _release_slot_on_error,
+    )
+    if terminal is not None:
+        return terminal
+    # --- Workspace setup (011) ---
+    workspace_manager = state.get("workspace_manager")
+    workspace_info = None
+    if workspace_manager is not None:
+        workspace_info, terminal = await _setup_workspace(
+            state, ctx["card"], ctx["card_id"], ctx["performer_stage"],
+            workspace_manager, ctx["board_provider"], _release_slot_on_error,
+        )
+        if terminal is not None:
+            return terminal
+        ctx["workspace_info"] = workspace_info
+        ctx["workspace_manager"] = workspace_manager
+    card_context, role = _base_card_context(
+        state, ctx["card"], ctx["card_id"], ctx["performer_stage"],
+    )
+    ctx["card_context"] = card_context
+    ctx["role"] = role
+    await _inject_documentation_findings(state, ctx)
+    reset_blueprint_for_architect(state, performer_stage)
+    inject_briefs(card_context, state, role=role)
+    await _inject_pr_context(state, ctx)
+    _apply_role_tuning(state, card_context, role)
+    _apply_persona_scope_tier(state, ctx["card_id"], role, ctx["card_context"])
+    _apply_local_test_gate(state, card_context, role)
+    _extra_volumes, terminal = await _prepare_env_dispatch(
+        state, service, ctx["card_id"], ctx["performer_stage"], card_context,
+        _release_slot_on_error,
+    )
+    if terminal is not None:
+        return terminal
+    return await _execute_dispatch(state, ctx, _extra_volumes, _release_slot_on_error)
+
+
+async def _persona_scope_skip(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Persona scope tiering: advance past skip-depth roles (FR-008/FR-010)."""
+    performer_stage = ctx["performer_stage"]
+    card_id = ctx["card_id"]
     # Persona scope skip routing (FR-008, FR-010): if the persona has opted
     # into scope tiering and the classifier set depth=skip, advance past it.
     # Closer is scope-invariant (FR-009) so applying uniformly is safe.
@@ -1343,7 +1471,14 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             for key, value in updates.items():
                 state[key] = value  # type: ignore[literal-required]
             return state
+    return None
 
+
+async def _stage_advance_gates(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Blueprint dispatch and verdict-cache short-circuit (125 US3)."""
+    performer_stage = ctx["performer_stage"]
+    card_id = ctx["card_id"]
+    card = ctx["card"]
     # NOTE (125 rebase onto 124): spec 124 removed the docs-path skip so its
     # living-wiki documenter always runs. Per an explicit product decision,
     # 125 RESTORES conditional documenting with the SHA-keyed gate below —
@@ -1383,7 +1518,16 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             for key, value in updates.items():
                 state[key] = value  # type: ignore[literal-required]
             return state
+    ctx["live_head"] = live_head
+    return None
 
+
+async def _documenting_gate_skip(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Documenting-stage SHA gate; stashes the shared PR fetch in ctx."""
+    performer_stage = ctx["performer_stage"]
+    card_id = ctx["card_id"]
+    card = ctx["card"]
+    live_head = ctx["live_head"]
     # Documenting gate (123 US1 + 125 US2, contract D0-D5).  D0: queued relay
     # feedback is explicit work — never gate it away.  D1-D2: with a prior
     # documentation pass, the compare between the last documented SHA and the
@@ -1420,7 +1564,18 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             for key, value in updates.items():
                 state[key] = value  # type: ignore[literal-required]
             return state
+    ctx["pr_data"] = pr_data
+    return None
 
+
+async def _closed_pr_churn_gate(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Defers dispatch when the linked PR is closed or merged (churn)."""
+    performer_stage = ctx["performer_stage"]
+    card_id = ctx["card_id"]
+    card = ctx["card"]
+    issue_id = ctx["issue_id"]
+    github = ctx["github"]
+    board_provider = ctx["board_provider"]
     # 053: Guard against repeated PR churn for the same issue.
     config = state.get("config")
     raw_closed_pr_limit = getattr(config, "max_closed_pr_attempts_per_issue", 0) if config else 0
@@ -1497,7 +1652,15 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     ),
                 ]
                 return state
+    return None
 
+
+async def _recover_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Recovers PR identifiers from the linked issue when missing."""
+    performer_stage = ctx["performer_stage"]
+    card = ctx["card"]
+    issue_id = ctx["issue_id"]
+    github = ctx["github"]
     if performer_stage in _PR_REQUIRED_STAGES and issue_id:
         pr_url = str(card.get("pr_url") or "").strip()
         pr_node_id = str(card.get("pr_node_id") or "").strip()
@@ -1547,7 +1710,14 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     ),
                 ]
                 return state
+    return None
 
+
+async def _acquire_via_slot_manager(state: CoordinareState, ctx: dict[str, Any]) -> CoordinareState | None:
+    """Acquires a service slot (048) and stashes service/slot in ctx."""
+    performer_stage = ctx["performer_stage"]
+    card_id = ctx["card_id"]
+    performer_services = ctx["performer_services"]
     # 048: Resolve the service for this stage via SlotManager if available.
     # The SlotManager enforces per-role max_concurrency and returns a free
     # service instance, or None if at capacity (card retries next cycle).
@@ -1605,23 +1775,13 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         for key, value in updates.items():
             state[key] = value  # type: ignore[literal-required]
         return state
+    ctx["service"] = service
+    ctx["slot_manager"] = slot_manager
+    return None
 
-    # 048: If we acquired a slot from the SlotManager, we must release it
-    # on any early error return (health check, workspace, transport failure)
-    # to prevent slot leaks.
-    _acquired_via_slot_mgr = (
-        slot_manager is not None
-        and hasattr(slot_manager, "release")
-        and service is not None
-    )
 
-    def _release_slot_on_error() -> None:
-        if _acquired_via_slot_mgr and slot_manager is not None:
-            slot_manager.release(performer_stage, card_id)
-
-    # --- Health check with retry (033) ---
-    card_id = str(card.get("id", ""))
-
+async def _check_service_health(state: CoordinareState, service: Any, performer_stage: str, card_id: str, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
+    """Health check with retry (033); returns terminal state on failure."""
     config = state.get("config")
     max_attempts = 3
     backoff_base = 1.0
@@ -1682,49 +1842,92 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         ]
         _release_slot_on_error()
         return state
+    return None
 
-    # --- Workspace setup (011) ---
-    workspace_manager = state.get("workspace_manager")
-    workspace_info = None
 
-    if workspace_manager is not None:
+async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str, workspace_manager: Any, board_provider: Any, _release_slot_on_error: Callable[[], None]) -> tuple[Any | None, CoordinareState | None]:
+    """Prepares the workspace; returns (workspace_info, terminal_state)."""
+    try:
+        workspace_info = await workspace_manager.prepare(card)
+        state["workspace_path"] = workspace_info.path
+        state["workspace_branch"] = workspace_info.branch
+    except WorkspaceSetupError as exc:
+        logger.error(
+            "workspace_setup_failed.card_blocked",
+            card_id=card_id,
+            performer_stage=performer_stage,
+            error=str(exc),
+        )
         try:
-            workspace_info = await workspace_manager.prepare(card)
-            state["workspace_path"] = workspace_info.path
-            state["workspace_branch"] = workspace_info.branch
-        except WorkspaceSetupError as exc:
-            logger.error(
-                "workspace_setup_failed.card_blocked",
+            await move_card_or_warn(board_provider, card_id, "BLOCKED")
+        except Exception as move_exc:
+            logger.warning(
+                "dispatch_performer.move_card_to_blocked_failed",
                 card_id=card_id,
-                performer_stage=performer_stage,
-                error=str(exc),
+                error=str(move_exc),
             )
-            try:
-                await move_card_or_warn(board_provider, card_id, "BLOCKED")
-            except Exception as move_exc:
-                logger.warning(
-                    "dispatch_performer.move_card_to_blocked_failed",
-                    card_id=card_id,
-                    error=str(move_exc),
-                )
-            state["workspace_path"] = None
-            state["workspace_branch"] = None
-            _release_slot_on_error()
-            state["phase"] = "blocked"
-            state["open_questions"] = [str(exc)]
-            return state
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
+        state["workspace_path"] = None
+        state["workspace_branch"] = None
+        _release_slot_on_error()
+        state["phase"] = "blocked"
+        state["open_questions"] = [str(exc)]
+        return None, state
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        reason = (
+            f"Workspace setup failed unexpectedly ({type(exc).__name__}). "
+            "Check coordinare logs for details."
+        )
+        logger.error(
+            "workspace_setup_unexpected_error.card_blocked",
+            card_id=card_id,
+            performer_stage=performer_stage,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        try:
+            await move_card_or_warn(board_provider, card_id, "BLOCKED")
+        except Exception as move_exc:
+            logger.warning(
+                "dispatch_performer.move_card_to_blocked_failed",
+                card_id=card_id,
+                error=str(move_exc),
+            )
+        state["workspace_path"] = None
+        state["workspace_branch"] = None
+        _release_slot_on_error()
+        state["phase"] = "blocked"
+        state["open_questions"] = [reason]
+        return None, state
+    terminal = await _validate_workspace_fields(
+        state, card_id, performer_stage, workspace_info,
+        workspace_manager, board_provider, _release_slot_on_error,
+    )
+    if terminal is not None:
+        return None, terminal
+    return workspace_info, None
+
+
+async def _validate_workspace_fields(state: CoordinareState, card_id: str, performer_stage: str, workspace_info: Any, workspace_manager: Any, board_provider: Any, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
+    """Blocks dispatch when required workspace fields are missing."""
+    if workspace_info is not None:
+        required: list[tuple[str, str]] = [
+            ("repo_url", workspace_info.repo_url),
+            ("branch", workspace_info.branch),
+        ]
+        if workspace_info.path is not None:
+            required.append(("github_token", workspace_info.github_token))
+        missing = [field for field, value in required if not value]
+        if missing:
             reason = (
-                f"Workspace setup failed unexpectedly ({type(exc).__name__}). "
-                "Check coordinare logs for details."
+                f"Workspace context incomplete -- missing required fields: "
+                f"{', '.join(missing)}"
             )
             logger.error(
-                "workspace_setup_unexpected_error.card_blocked",
+                "dispatch_performer.incomplete_workspace",
                 card_id=card_id,
                 performer_stage=performer_stage,
-                error=f"{type(exc).__name__}: {exc}",
+                missing=missing,
             )
             try:
                 await move_card_or_warn(board_provider, card_id, "BLOCKED")
@@ -1734,59 +1937,27 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     card_id=card_id,
                     error=str(move_exc),
                 )
+            if workspace_info.path is not None:
+                try:
+                    await workspace_manager.teardown(workspace_info.path)
+                except Exception:
+                    logger.warning(
+                        "workspace_teardown_failed.after_incomplete_workspace",
+                        card_id=card_id,
+                    )
             state["workspace_path"] = None
             state["workspace_branch"] = None
             _release_slot_on_error()
             state["phase"] = "blocked"
             state["open_questions"] = [reason]
             return state
+    return None
 
-        # Validate required workspace fields before dispatching.
-        if workspace_info is not None:
-            required: list[tuple[str, str]] = [
-                ("repo_url", workspace_info.repo_url),
-                ("branch", workspace_info.branch),
-            ]
-            if workspace_info.path is not None:
-                required.append(("github_token", workspace_info.github_token))
-            missing = [field for field, value in required if not value]
-            if missing:
-                reason = (
-                    f"Workspace context incomplete -- missing required fields: "
-                    f"{', '.join(missing)}"
-                )
-                logger.error(
-                    "dispatch_performer.incomplete_workspace",
-                    card_id=card_id,
-                    performer_stage=performer_stage,
-                    missing=missing,
-                )
-                try:
-                    await move_card_or_warn(board_provider, card_id, "BLOCKED")
-                except Exception as move_exc:
-                    logger.warning(
-                        "dispatch_performer.move_card_to_blocked_failed",
-                        card_id=card_id,
-                        error=str(move_exc),
-                    )
-                if workspace_info.path is not None:
-                    try:
-                        await workspace_manager.teardown(workspace_info.path)
-                    except Exception:
-                        logger.warning(
-                            "workspace_teardown_failed.after_incomplete_workspace",
-                            card_id=card_id,
-                        )
-                state["workspace_path"] = None
-                state["workspace_branch"] = None
-                _release_slot_on_error()
-                state["phase"] = "blocked"
-                state["open_questions"] = [reason]
-                return state
 
-    # --- Build card context with persona instructions ---
+def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str) -> tuple[dict[str, Any], str | None]:
+    """Builds card context with persona instructions and prior-QA ride."""
     personas = load_personas_hot(state.get("config_path"), state.get("config"))
-    card_context: dict[str, Any] = dict(card)
+    card_context: dict[str, Any] = dict(card or {})
 
     role = _persona_role_for_stage(performer_stage)
     if role is not None:
@@ -1805,7 +1976,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # 020: Include architecture plan in dispatch payload for downstream roles (FR-007).
     # The plan_path is set on the card by monitor_performer when the architect
     # returns plan_committed.
-    plan_path = card.get("plan_path")
+    plan_path = (card or {}).get("plan_path")
     if plan_path and performer_stage != "architecting":
         # Include plan path reference; downstream performers read from branch.
         card_context["architecture_plan_path"] = plan_path
@@ -1837,7 +2008,15 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         card_clarifications = state.get("card_clarifications") or []
         if card_clarifications:
             card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
+    return card_context, role
 
+
+async def _inject_documentation_findings(state: CoordinareState, ctx: dict[str, Any]) -> None:
+    """170 security floor + 164/166/169/165 findings injection (async)."""
+    performer_stage = ctx["performer_stage"]
+    card = ctx["card"]
+    card_context = ctx["card_context"]
+    role = ctx["role"]
     # 170: when the security role runs the workflow, skip the 083 floor: the
     # workflow runs its own scanner inside the performer. Set scanner_findings
     # to [] so the monitor floor merge is skipped (it checks for a report key
@@ -1870,9 +2049,16 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     inject_review_findings(card_context, state, performer_stage=performer_stage)
     # 165: a re-dispatched architect replaces the blueprint; until it reports,
     # there is none. Then hand each reader its slice.
-    reset_blueprint_for_architect(state, performer_stage)
-    inject_briefs(card_context, state, role=role)
 
+
+async def _inject_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> None:
+    """PR diff for review roles, disputes, QA main sha, GitHub URLs."""
+    performer_stage = ctx["performer_stage"]
+    card = ctx["card"]
+    card_context = ctx["card_context"]
+    role = ctx["role"]
+    card_id = ctx["card_id"]
+    pr_data = ctx.get("pr_data")
     # Inject the raw PR diff for review roles so a model that does not fetch the
     # diff itself still has the changes to assess (drive-by fix: reviewer was
     # rejecting PRs with "no code changes were supplied for review"). Best-effort:
@@ -1932,8 +2118,12 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # payload-model/env change); the performer applies it via a main.py override.
     if config is not None and hasattr(config, "github_graphql_url"):
         card_context["github_graphql_url"] = config.github_graphql_url
+    ctx["pr_data"] = pr_data
 
-    # 037/055: Include per-role backend, model, and tuning params in dispatch payload.
+
+def _apply_role_tuning(state: CoordinareState, card_context: dict[str, Any], role: str | None) -> None:
+    """Applies role-specific model/instruction tuning from config."""
+    config = state.get("config")
     if config is not None and hasattr(config, "performers") and role is not None:
         role_config = config.performers.resolved_role(role)
         if role_config is not None:
@@ -1958,6 +2148,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 card_context["orchestration"] = _orch
             card_context.update(translate_tuning(role_config))
 
+
+def _apply_persona_scope_tier(state: CoordinareState, card_id: str, role: str | None, card_context: dict[str, Any]) -> None:
+    """Records persona-scope tier metadata on the card context."""
     # Apply per-persona scope_behavior tier (FR-007, FR-009, FR-010).
     # max_tool_calls + prompt_addon land as structured card_context fields;
     # the base persona prompt is never mutated.  Closer is scope-invariant
@@ -1989,6 +2182,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                             depth=depth,
                         )
 
+
+def _apply_local_test_gate(state: CoordinareState, card_context: dict[str, Any], role: str | None) -> None:
+    """Applies local-test gating metadata for the dispatching role."""
     # 089: implementer local-test gate — coordinare-configured but executes in
     # the performer, so the enable flag + timeout must ride the dispatch payload
     # (Score.local_test_gate). Implementer-only; max_fix_attempts stays
@@ -2016,336 +2212,398 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if repair_mandate:
             card_context["repair_mandate"] = repair_mandate
 
-    # --- Dispatch ---
-    # T022/T033/T037 (060): Attach per-symphony env-cache volume so performers find
-    # pre-built dev environments without burning tokens on re-installation.
+
+async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: str, performer_stage: str, card_context: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> tuple[list[Any] | None, CoordinareState | None]:
+    """Env-cache gates + volume/test-env injection (060/077/093)."""
     _extra_volumes = None
     _symphony_name_for_ec = state.get("current_symphony")
     _env_cache_for_ec = state.get("env_cache")
     if _symphony_name_for_ec is not None and _env_cache_for_ec:
-        from coordinare.models.env_cache import EnvCacheState
-        from coordinare.services.env_cache import (
-            DEFAULT_DEVENV_ROOT,
-            _cache_dir_has_activate,
-            bootstrap_hold_detail,
-            get_env_volume_for_symphony,
-            resolve_test_env_vars,
-        )
-        from coordinare.services.http_performer_service import HTTPPerformerService
-        from coordinare.services.test_env_loader import TestEnvFileError
-
-        # 077: Gate consumer dispatch on the env cache being CURRENT and VERIFIED
-        # for this symphony. A consumer must not run until the env_bootstrap phase
-        # has *successfully* completed for the CURRENT spec — otherwise it runs
-        # against a stale/incomplete toolchain (the bug that let cards sail through
-        # on a Chrome-less cache while a re-bootstrap was in flight or had failed).
-        # The env_bootstrap role itself is exempt — it's the run that populates the
-        # cache. "Current + verified" requires ALL of:
-        #   * cache_dir_ready             — at least one bootstrap succeeded
-        #   * last_bootstrap_succeeded    — the most recent one verified-passed
-        #     (the verify.sh gate defines "succeeded")
-        #   * not bootstrap_in_flight     — no bootstrap is mid-run
-        #   * activate.sh present on disk — the cache dir physically exists
-        #   * readme_sha == last_seen_spec_sha — the cache reflects the CURRENT
-        #     spec; check_and_trigger refreshes last_seen_spec_sha every cycle, so
-        #     a README/spec change holds consumers until a fresh bootstrap succeeds
-        #     for it (closes the stale-cache window).
-        # Held cards are DEFERRED (slot released), not failed — they retry on the
-        # next pickup cycle. (Supersedes the old activate.sh-only + opt-in
-        # serialize_env_bootstrap gates.)
         _ec_state_for_sym = _env_cache_for_ec.get(_symphony_name_for_ec)
 
         _is_bootstrap_dispatch = performer_stage == "env_bootstrap"
-        if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
-            _current_and_verified = (
-                _ec_state_for_sym.cache_dir_ready
-                and bool(_ec_state_for_sym.last_bootstrap_succeeded)
-                and not _ec_state_for_sym.bootstrap_in_flight
-                and _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
-                and _ec_state_for_sym.last_seen_spec_sha is not None
-                and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
-            )
-            if not _current_and_verified:
-                logger.info(
-                    "dispatch_performer.env_cache_not_current",
-                    card_id=card_id,
-                    performer_stage=performer_stage,
-                    symphony=_symphony_name_for_ec,
-                    cache_dir_ready=_ec_state_for_sym.cache_dir_ready,
-                    last_bootstrap_succeeded=_ec_state_for_sym.last_bootstrap_succeeded,
-                    bootstrap_in_flight=_ec_state_for_sym.bootstrap_in_flight,
-                    readme_sha=_ec_state_for_sym.readme_sha,
-                    last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
-                    bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
-                    # 088 (FR-010): names the exhausted breaker when tripped.
-                    detail=bootstrap_hold_detail(_ec_state_for_sym),
-                )
-                _release_slot_on_error()
-                return state
+        terminal = await _env_cache_hold(
+            state, card_id, performer_stage, _symphony_name_for_ec,
+            _ec_state_for_sym, _is_bootstrap_dispatch, _release_slot_on_error,
+        )
+        if terminal is not None:
+            return _extra_volumes, terminal
+        terminal = await _env_readiness_gate(
+            state, service, card_id, performer_stage, _symphony_name_for_ec,
+            _ec_state_for_sym, _is_bootstrap_dispatch, _release_slot_on_error,
+        )
+        if terminal is not None:
+            return _extra_volumes, terminal
+        _extra_volumes = await _resolve_env_volumes(
+            state, service, card_id, performer_stage, card_context,
+            _symphony_name_for_ec, _env_cache_for_ec, _is_bootstrap_dispatch,
+        )
+        await _inject_test_env_vars(
+            state, card_context, card_id, _symphony_name_for_ec,
+            _ec_state_for_sym, _is_bootstrap_dispatch,
+        )
+    return _extra_volumes, None
 
-            # 093: Toolchain-readiness dispatch gate. The "current + verified"
-            # guard above keys on last_bootstrap_succeeded — a persisted flag from
-            # the LAST bootstrap, which can be true while the toolchain for THIS
-            # spec sha is still being built (the live website-symphony race: QA
-            # dispatched against a cache whose ruby wasn't installed yet). Re-run
-            # the manifest-driven verify.sh checklist in a clean-context container
-            # on EVERY code-running dispatch (no cached verdict, FR-006) so the
-            # decision keys on what is actually present/running/usable now.
-            #   True  (exit 0)  ⇒ proceed with dispatch.
-            #   False (nonzero) ⇒ withhold + release slot; the FAIL falls into the
-            #     same env_cache_not_current hold (re-bootstrap is triggered by the
-            #     bootstrap-completion path / budget machinery — single hold point).
-            #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
-            #     fall through on the legacy last_bootstrap_succeeded path.
-            _readiness_passed, _readiness_detail = await verify_env_cache_clean(
-                state, _symphony_name_for_ec, service,
-            )
-            if _readiness_passed is False:
-                logger.info(
-                    "dispatch_performer.env_cache_not_current",
-                    card_id=card_id,
-                    performer_stage=performer_stage,
-                    symphony=_symphony_name_for_ec,
-                    # 093: the readiness gate (not the current+verified guard) is
-                    # the deciding factor here — the toolchain for this spec sha is
-                    # not yet usable. Keys/paths only (secret invariant).
-                    readiness="fail",
-                    readme_sha=_ec_state_for_sym.readme_sha,
-                    last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
-                    bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
-                    detail=_readiness_detail,
-                )
-                # 093 (FR-007): kick the cache back to env-bootstrap. Reuse the
-                # existing forced-regen seam (the same one monitor_performer uses
-                # for a services-health failure) — mark_runtime_health_failed
-                # flags the cache so the next check_and_trigger cycle dispatches a
-                # re-bootstrap for the current spec sha and the dispatch falls
-                # into the existing bootstrap_in_flight hold. The loop is bounded
-                # by the EXISTING env_bootstrap_max_attempts budget (check_and_trigger
-                # gates the forced regen on `not bootstrap_exhausted`), so a
-                # genuinely-broken cache surfaces the existing bootstrap_exhausted
-                # env-blocked verdict instead of thrashing — no new counter.
-                _env_cache_svc = state.get("env_cache_service")
-                if _env_cache_svc is not None:
-                    try:
-                        _env_cache_svc.mark_runtime_health_failed(
-                            _symphony_name_for_ec, state,
-                        )
-                    except Exception as _exc:  # pragma: no cover - defensive
-                        logger.warning(
-                            "dispatch_performer.readiness_rebootstrap_error",
-                            symphony=_symphony_name_for_ec,
-                            error=str(_exc),
-                        )
-                _release_slot_on_error()
-                return state
 
-        _devenv_root = DEFAULT_DEVENV_ROOT
-        if isinstance(service, HTTPPerformerService):
-            _devenv_root = service.devenv_root
-        if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
-            _has_ready_caches = any(
-                isinstance(s, EnvCacheState) and _cache_dir_has_activate(s.cache_dir)
-                for s in _env_cache_for_ec.values()
+async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
+    """077: holds consumer dispatch until the env cache is CURRENT+VERIFIED."""
+    if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
+        _current_and_verified = (
+            _ec_state_for_sym.cache_dir_ready
+            and bool(_ec_state_for_sym.last_bootstrap_succeeded)
+            and not _ec_state_for_sym.bootstrap_in_flight
+            and _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
+            and _ec_state_for_sym.last_seen_spec_sha is not None
+            and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
+        )
+        if not _current_and_verified:
+            logger.info(
+                "dispatch_performer.env_cache_not_current",
+                card_id=card_id,
+                performer_stage=performer_stage,
+                symphony=_symphony_name_for_ec,
+                cache_dir_ready=_ec_state_for_sym.cache_dir_ready,
+                last_bootstrap_succeeded=_ec_state_for_sym.last_bootstrap_succeeded,
+                bootstrap_in_flight=_ec_state_for_sym.bootstrap_in_flight,
+                readme_sha=_ec_state_for_sym.readme_sha,
+                last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
+                bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
+                # 088 (FR-010): names the exhausted breaker when tripped.
+                detail=bootstrap_hold_detail(_ec_state_for_sym),
             )
-            if _has_ready_caches:
-                logger.warning(
-                    "env_cache.persistent_performer_volumes_not_live_mountable",
-                    performer_stage=performer_stage,
-                    detail=(
-                        "Env-cache volumes cannot be added to a running persistent container. "
-                        "Restart the performer container to pick up the mount."
-                    ),
-                )
-            # Do not pass volumes to persistent performers — the container is
-            # already running and Docker cannot hot-add mounts.
-        else:
-            _ec_result = get_env_volume_for_symphony(
-                _symphony_name_for_ec,
-                _env_cache_for_ec,
-                is_bootstrap=_is_bootstrap_dispatch,
-                container_devenv_root=_devenv_root,
-            )
-            if _ec_result is not None:
-                _ec_vol, _ec_container_path = _ec_result
-                _extra_volumes = [_ec_vol]
-                card_context["env_cache_path"] = _ec_container_path
+            _release_slot_on_error()
+            return state
+    return None
 
-        # 092 US2: inject the symphony's configured (or agent-discovered) test-env
-        # vars into the consumer/QA-runtime dispatch via the redacted `secrets`
-        # channel (http_performer_service routes card_context["test_env_vars"] →
-        # secrets, BEFORE operational secrets so a test file can never clobber
-        # them). The configured `test_env` block always wins (resolve_test_env_vars
-        # ignores fallback_source when test_env is set); absent one, the persisted
-        # agent-discovered path is reloaded. Bootstrap dispatch is exempt — it
-        # receives test-env vars through the BootstrapJobPayload secrets seam.
-        if not _is_bootstrap_dispatch:
-            _sym_cfg_for_te = (state.get("symphony_configs") or {}).get(
-                _symphony_name_for_ec,
+
+async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
+    """093: toolchain-readiness gate keyed on the live bootstrap state."""
+    if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
+        # 093: Toolchain-readiness dispatch gate. The "current + verified"
+        # guard above keys on last_bootstrap_succeeded — a persisted flag from
+        # the LAST bootstrap, which can be true while the toolchain for THIS
+        # spec sha is still being built (the live website-symphony race: QA
+        # dispatched against a cache whose ruby wasn't installed yet). Re-run
+        # the manifest-driven verify.sh checklist in a clean-context container
+        # on EVERY code-running dispatch (no cached verdict, FR-006) so the
+        # decision keys on what is actually present/running/usable now.
+        #   True  (exit 0)  ⇒ proceed with dispatch.
+        #   False (nonzero) ⇒ withhold + release slot; the FAIL falls into the
+        #     same env_cache_not_current hold (re-bootstrap is triggered by the
+        #     bootstrap-completion path / budget machinery — single hold point).
+        #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
+        #     fall through on the legacy last_bootstrap_succeeded path.
+        _readiness_passed, _readiness_detail = await verify_env_cache_clean(
+            state, _symphony_name_for_ec, service,
+        )
+        if _readiness_passed is False:
+            logger.info(
+                "dispatch_performer.env_cache_not_current",
+                card_id=card_id,
+                performer_stage=performer_stage,
+                symphony=_symphony_name_for_ec,
+                # 093: the readiness gate (not the current+verified guard) is
+                # the deciding factor here — the toolchain for this spec sha is
+                # not yet usable. Keys/paths only (secret invariant).
+                readiness="fail",
+                readme_sha=_ec_state_for_sym.readme_sha,
+                last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
+                bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
+                detail=_readiness_detail,
             )
-            _config_for_te = state.get("config")
-            _github_for_te = state.get("github_service")
-            if (
-                _sym_cfg_for_te is not None
-                and _config_for_te is not None
-                and _github_for_te is not None
-            ):
-                # state["config"] is already the ProjectConfiguration (the
-                # global config), not a CoordinareConfiguration wrapper — pass it
-                # directly to effective_config(), which expects a
-                # ProjectConfiguration as its base.
-                _eff_for_te = _sym_cfg_for_te.effective_config(_config_for_te)
-                _fallback_src = (
-                    _ec_state_for_sym.test_env_source
-                    if isinstance(_ec_state_for_sym, EnvCacheState)
-                    else None
-                )
+            # 093 (FR-007): kick the cache back to env-bootstrap. Reuse the
+            # existing forced-regen seam (the same one monitor_performer uses
+            # for a services-health failure) — mark_runtime_health_failed
+            # flags the cache so the next check_and_trigger cycle dispatches a
+            # re-bootstrap for the current spec sha and the dispatch falls
+            # into the existing bootstrap_in_flight hold. The loop is bounded
+            # by the EXISTING env_bootstrap_max_attempts budget (check_and_trigger
+            # gates the forced regen on `not bootstrap_exhausted`), so a
+            # genuinely-broken cache surfaces the existing bootstrap_exhausted
+            # env-blocked verdict instead of thrashing — no new counter.
+            _env_cache_svc = state.get("env_cache_service")
+            if _env_cache_svc is not None:
                 try:
-                    _test_env_vars = await resolve_test_env_vars(
-                        symphony_name=_symphony_name_for_ec,
-                        test_env=getattr(_sym_cfg_for_te, "test_env", None),
-                        github_org=_eff_for_te.github_org,
-                        repo=_eff_for_te.project_name or _symphony_name_for_ec,
-                        github_service=_github_for_te,
-                        fallback_source=_fallback_src,
+                    _env_cache_svc.mark_runtime_health_failed(
+                        _symphony_name_for_ec, state,
                     )
-                except TestEnvFileError as exc:
-                    # A configured-but-missing file is a clear coordinare-side
-                    # error (logged), never a silent empty dict. The consumer
-                    # proceeds without the var and the genuinely-unset var still
-                    # trips the services-start.sh exit-75 gate downstream.
+                except Exception as _exc:  # pragma: no cover - defensive
                     logger.warning(
-                        "dispatch_performer.test_env_load_failed",
-                        card_id=card_id,
+                        "dispatch_performer.readiness_rebootstrap_error",
                         symphony=_symphony_name_for_ec,
-                        error=str(exc),
+                        error=str(_exc),
                     )
-                    _test_env_vars = {}
-                if _test_env_vars:
-                    card_context["test_env_vars"] = _test_env_vars
+            _release_slot_on_error()
+            return state
+    return None
 
+
+async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: str, performer_stage: str, card_context: dict[str, Any], _symphony_name_for_ec: Any, _env_cache_for_ec: Any, _is_bootstrap_dispatch: bool) -> list[Any] | None:
+    """Resolves the per-symphony env-cache volume mount (060)."""
+    _extra_volumes = None
+    _devenv_root = DEFAULT_DEVENV_ROOT
+    if isinstance(service, HTTPPerformerService):
+        _devenv_root = service.devenv_root
+    if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
+        _has_ready_caches = any(
+            isinstance(s, EnvCacheState) and _cache_dir_has_activate(s.cache_dir)
+            for s in _env_cache_for_ec.values()
+        )
+        if _has_ready_caches:
+            logger.warning(
+                "env_cache.persistent_performer_volumes_not_live_mountable",
+                performer_stage=performer_stage,
+                detail=(
+                    "Env-cache volumes cannot be added to a running persistent container. "
+                    "Restart the performer container to pick up the mount."
+                ),
+            )
+        # Do not pass volumes to persistent performers — the container is
+        # already running and Docker cannot hot-add mounts.
+    else:
+        _ec_result = get_env_volume_for_symphony(
+            _symphony_name_for_ec,
+            _env_cache_for_ec,
+            is_bootstrap=_is_bootstrap_dispatch,
+            container_devenv_root=_devenv_root,
+        )
+        if _ec_result is not None:
+            _ec_vol, _ec_container_path = _ec_result
+            _extra_volumes = [_ec_vol]
+            card_context["env_cache_path"] = _ec_container_path
+    return _extra_volumes
+
+
+async def _inject_test_env_vars(state: CoordinareState, card_context: dict[str, Any], card_id: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool) -> None:
+    """Injects curated test-env vars for the consumer/QA dispatch (092)."""
+    # 092 US2: inject the symphony's configured (or agent-discovered) test-env
+    # vars into the consumer/QA-runtime dispatch via the redacted `secrets`
+    # channel (http_performer_service routes card_context["test_env_vars"] →
+    # secrets, BEFORE operational secrets so a test file can never clobber
+    # them). The configured `test_env` block always wins (resolve_test_env_vars
+    # ignores fallback_source when test_env is set); absent one, the persisted
+    # agent-discovered path is reloaded. Bootstrap dispatch is exempt — it
+    # receives test-env vars through the BootstrapJobPayload secrets seam.
+    if not _is_bootstrap_dispatch:
+        _sym_cfg_for_te = (state.get("symphony_configs") or {}).get(
+            _symphony_name_for_ec,
+        )
+        _config_for_te = state.get("config")
+        _github_for_te = state.get("github_service")
+        if (
+            _sym_cfg_for_te is not None
+            and _config_for_te is not None
+            and _github_for_te is not None
+        ):
+            # state["config"] is already the ProjectConfiguration (the
+            # global config), not a CoordinareConfiguration wrapper — pass it
+            # directly to effective_config(), which expects a
+            # ProjectConfiguration as its base.
+            _eff_for_te = _sym_cfg_for_te.effective_config(_config_for_te)
+            _fallback_src = (
+                _ec_state_for_sym.test_env_source
+                if isinstance(_ec_state_for_sym, EnvCacheState)
+                else None
+            )
+            try:
+                _test_env_vars = await resolve_test_env_vars(
+                    symphony_name=_symphony_name_for_ec,
+                    test_env=getattr(_sym_cfg_for_te, "test_env", None),
+                    github_org=_eff_for_te.github_org,
+                    repo=_eff_for_te.project_name or _symphony_name_for_ec,
+                    github_service=_github_for_te,
+                    fallback_source=_fallback_src,
+                )
+            except TestEnvFileError as exc:
+                # A configured-but-missing file is a clear coordinare-side
+                # error (logged), never a silent empty dict. The consumer
+                # proceeds without the var and the genuinely-unset var still
+                # trips the services-start.sh exit-75 gate downstream.
+                logger.warning(
+                    "dispatch_performer.test_env_load_failed",
+                    card_id=card_id,
+                    symphony=_symphony_name_for_ec,
+                    error=str(exc),
+                )
+                _test_env_vars = {}
+            if _test_env_vars:
+                card_context["test_env_vars"] = _test_env_vars
+
+
+async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_volumes: list[Any] | None, _release_slot_on_error: Callable[[], None]) -> CoordinareState:
+    """Dispatches the card and routes failures to their handlers."""
+    card_context = ctx["card_context"]
+    card_id = ctx["card_id"]
+    board_provider = ctx["board_provider"]
+    service = ctx["service"]
+    workspace_info = ctx.get("workspace_info")
     try:
         await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
         _dispatch_kwargs: dict[str, Any] = {"workspace_info": workspace_info}
-        if _extra_volumes is not None:
-            from coordinare.services.http_performer_service import HTTPPerformerService
-            if isinstance(service, HTTPPerformerService):
+        if _extra_volumes is not None and isinstance(service, HTTPPerformerService):
+
+
                 _dispatch_kwargs["extra_volumes"] = _extra_volumes
         result = await service.dispatch_card(card_context, **_dispatch_kwargs)
     except PerformerAuthError as exc:
-        logger.error(
-            "dispatch_performer.permanent_config_error",
-            card_id=card_id,
-            performer_stage=performer_stage,
-            error=str(exc),
-        )
-        try:
-            await move_card_or_warn(board_provider, card_id, "BLOCKED")
-        except Exception as move_exc:
-            logger.warning(
-                "dispatch_performer.move_card_to_blocked_failed",
-                card_id=card_id,
-                error=str(move_exc),
-            )
-        if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
-            try:
-                await workspace_manager.teardown(workspace_info.path)
-            except Exception:
-                logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
-        state["workspace_path"] = None
-        state["workspace_branch"] = None
-        _release_slot_on_error()
-        state["phase"] = "blocked"
-        state["open_questions"] = [f"Performer config error: {exc}"]
-        return state
+        return await _dispatch_auth_error(state, exc, ctx, _release_slot_on_error)
     except TransportError as exc:
-        reason = f"Transport failure during dispatch: {type(exc).__name__}"
-        logger.warning(
-            "dispatch_performer.transport_error",
-            card_id=card_id,
-            performer_stage=performer_stage,
-            exc_type=type(exc).__name__,
-        )
-        # Reset stale error state from a previous card so this card gets
-        # its full retry budget.
-        if state.get("system_error_notified"):
-            state["system_error_count"] = 0
-            state["system_error_notified"] = False
-        state["system_error_count"] = state.get("system_error_count", 0) + 1
-        state["system_error_last_at"] = datetime.now(UTC)
-        state["system_error_reason"] = reason
-        _release_slot_on_error()
-        state["phase"] = "system_error"
-        card["previous_status"] = card.get("status", "TODO")
-        card["status"] = "IN_PROGRESS"
-        _set_current_card(state, card)
-        # Tear down workspace to avoid leaking temp directories.
-        if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
-            try:
-                await workspace_manager.teardown(workspace_info.path)
-            except Exception:
-                logger.warning(
-                    "workspace_teardown_failed.after_transport_error",
-                    card_id=card_id,
-                )
-        state["workspace_path"] = None
-        state["workspace_branch"] = None
-        return state
+        return await _dispatch_transport_error(state, exc, ctx, _release_slot_on_error)
     except PermanentGitHubError as exc:
-        logger.error(
-            "permanent_service_failure.card_blocked",
-            card_id=card_id,
-            performer_stage=performer_stage,
-            error=str(exc),
-        )
-        try:
-            await move_card_or_warn(board_provider, card_id, "BLOCKED")
-        except Exception as move_exc:
-            logger.warning(
-                "dispatch_performer.move_card_to_blocked_failed",
-                card_id=card_id,
-                error=str(move_exc),
-            )
-        # Tear down workspace to avoid leaking temp directories.
-        if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
-            try:
-                await workspace_manager.teardown(workspace_info.path)
-            except Exception:
-                logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
-        state["workspace_path"] = None
-        state["workspace_branch"] = None
-        _release_slot_on_error()
-        state["phase"] = "blocked"
-        state["open_questions"] = [f"Permanent service failure: {exc}"]
-        return state
-
+        return await _dispatch_permanent_error(state, exc, ctx, _release_slot_on_error)
     if result.get("status") == "error":
-        reason = str(result.get("reason", "Performer returned an error on dispatch."))
-        logger.error(
-            "dispatch_performer.performer_error",
-            card_id=card_id,
-            performer_stage=performer_stage,
-            reason=reason,
-        )
-        # Tear down workspace to avoid leaking temp directories.
-        if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
-            try:
-                await workspace_manager.teardown(workspace_info.path)
-            except Exception:
-                logger.warning("workspace_teardown_failed.after_dispatch_error", card_id=card_id)
-        state["workspace_path"] = None
-        state["workspace_branch"] = None
-        # Reset stale error state from a previous card.
-        if state.get("system_error_notified"):
-            state["system_error_count"] = 0
-            state["system_error_notified"] = False
-        state["system_error_count"] = state.get("system_error_count", 0) + 1
-        state["system_error_last_at"] = datetime.now(UTC)
-        state["system_error_reason"] = f"Performer dispatch failed ({performer_stage}): {reason}"
-        _release_slot_on_error()
-        state["phase"] = "system_error"
-        return state
+        return await _dispatch_result_error(state, result, ctx, _release_slot_on_error)
+    return await _finalise_success(state, result, ctx)
 
+
+async def _dispatch_auth_error(state: CoordinareState, exc: Exception, ctx: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> CoordinareState:
+    """044/048: permanent config error; blocks the card."""
+    card_id = ctx["card_id"]
+    performer_stage = ctx["performer_stage"]
+    board_provider = ctx["board_provider"]
+    workspace_manager = state.get("workspace_manager")
+    workspace_info = ctx.get("workspace_info")
+    logger.error(
+        "dispatch_performer.permanent_config_error",
+        card_id=card_id,
+        performer_stage=performer_stage,
+        error=str(exc),
+    )
+    try:
+        await move_card_or_warn(board_provider, card_id, "BLOCKED")
+    except Exception as move_exc:
+        logger.warning(
+            "dispatch_performer.move_card_to_blocked_failed",
+            card_id=card_id,
+            error=str(move_exc),
+        )
+    if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
+        try:
+            await workspace_manager.teardown(workspace_info.path)
+        except Exception:
+            logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
+    state["workspace_path"] = None
+    state["workspace_branch"] = None
+    _release_slot_on_error()
+    state["phase"] = "blocked"
+    state["open_questions"] = [f"Performer config error: {exc}"]
+    return state
+
+
+async def _dispatch_transport_error(state: CoordinareState, exc: Exception, ctx: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> CoordinareState:
+    """048: transport failure; releases the slot for a later re-dispatch."""
+    card_id = ctx["card_id"]
+    performer_stage = ctx["performer_stage"]
+    card = ctx["card"]
+    workspace_manager = state.get("workspace_manager")
+    workspace_info = ctx.get("workspace_info")
+    reason = f"Transport failure during dispatch: {type(exc).__name__}"
+    logger.warning(
+        "dispatch_performer.transport_error",
+        card_id=card_id,
+        performer_stage=performer_stage,
+        exc_type=type(exc).__name__,
+    )
+    # Reset stale error state from a previous card so this card gets
+    # its full retry budget.
+    if state.get("system_error_notified"):
+        state["system_error_count"] = 0
+        state["system_error_notified"] = False
+    state["system_error_count"] = state.get("system_error_count", 0) + 1
+    state["system_error_last_at"] = datetime.now(UTC)
+    state["system_error_reason"] = reason
+    _release_slot_on_error()
+    state["phase"] = "system_error"
+    card["previous_status"] = card.get("status", "TODO")
+    card["status"] = "IN_PROGRESS"
+    _set_current_card(state, card)
+    # Tear down workspace to avoid leaking temp directories.
+    if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
+        try:
+            await workspace_manager.teardown(workspace_info.path)
+        except Exception:
+            logger.warning(
+                "workspace_teardown_failed.after_transport_error",
+                card_id=card_id,
+            )
+    state["workspace_path"] = None
+    state["workspace_branch"] = None
+    return state
+
+
+async def _dispatch_permanent_error(state: CoordinareState, exc: Exception, ctx: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> CoordinareState:
+    """Permanent GitHub error; blocks the card and releases the slot."""
+    card_id = ctx["card_id"]
+    performer_stage = ctx["performer_stage"]
+    board_provider = ctx["board_provider"]
+    workspace_manager = state.get("workspace_manager")
+    workspace_info = ctx.get("workspace_info")
+    logger.error(
+        "permanent_service_failure.card_blocked",
+        card_id=card_id,
+        performer_stage=performer_stage,
+        error=str(exc),
+    )
+    try:
+        await move_card_or_warn(board_provider, card_id, "BLOCKED")
+    except Exception as move_exc:
+        logger.warning(
+            "dispatch_performer.move_card_to_blocked_failed",
+            card_id=card_id,
+            error=str(move_exc),
+        )
+    # Tear down workspace to avoid leaking temp directories.
+    if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
+        try:
+            await workspace_manager.teardown(workspace_info.path)
+        except Exception:
+            logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
+    state["workspace_path"] = None
+    state["workspace_branch"] = None
+    _release_slot_on_error()
+    state["phase"] = "blocked"
+    state["open_questions"] = [f"Permanent service failure: {exc}"]
+    return state
+
+
+async def _dispatch_result_error(state: CoordinareState, result: Any, ctx: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> CoordinareState:
+    """Non-success dispatch result: blocked card, slot released."""
+    card_id = ctx["card_id"]
+    performer_stage = ctx["performer_stage"]
+    workspace_manager = state.get("workspace_manager")
+    workspace_info = ctx.get("workspace_info")
+    reason = str(result.get("reason", "Performer returned an error on dispatch."))
+    logger.error(
+        "dispatch_performer.performer_error",
+        card_id=card_id,
+        performer_stage=performer_stage,
+        reason=reason,
+    )
+    # Tear down workspace to avoid leaking temp directories.
+    if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
+        try:
+            await workspace_manager.teardown(workspace_info.path)
+        except Exception:
+            logger.warning("workspace_teardown_failed.after_dispatch_error", card_id=card_id)
+    state["workspace_path"] = None
+    state["workspace_branch"] = None
+    # Reset stale error state from a previous card.
+    if state.get("system_error_notified"):
+        state["system_error_count"] = 0
+        state["system_error_notified"] = False
+    state["system_error_count"] = state.get("system_error_count", 0) + 1
+    state["system_error_last_at"] = datetime.now(UTC)
+    state["system_error_reason"] = f"Performer dispatch failed ({performer_stage}): {reason}"
+    _release_slot_on_error()
+    state["phase"] = "system_error"
+    return state
+
+
+async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, Any]) -> CoordinareState:
+    """Successful dispatch: records PR artefacts and advance metadata."""
+    card_context = ctx["card_context"]
+    performer_stage = ctx["performer_stage"]
+    card = ctx["card"]
     # --- Success ---
     # 034: Reset token counters when dispatching the first role for a new card.
     lifecycle = list(state.get("lifecycle_sequence") or [])
