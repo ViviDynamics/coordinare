@@ -175,6 +175,7 @@ from coordinare.services.progress_evidence import (  # noqa: E402
     read_evidence,
 )
 from coordinare.services.retry_counter import record_observer_kill  # noqa: E402
+from coordinare.services.retune import apply_retune  # noqa: E402
 
 
 @dataclass
@@ -3608,7 +3609,12 @@ async def _phase_observer(
             stage=stage,
             triggers=triggers,
             evidence=evidence,
-            prompt=build_prompt(evidence, triggers, recent_meta),
+            prompt=build_prompt(
+                evidence,
+                triggers,
+                recent_meta,
+                retune_bounds=getattr(observer_cfg, "retune_bounds", None),
+            ),
         ),
     )
     if verdict is not None:
@@ -3680,7 +3686,108 @@ async def _phase_observer(
                 if _slot_mgr is not None and hasattr(_slot_mgr, "release"):
                     _slot_mgr.release(stage, card_id)
                 return exhausted
+        # 428: a structured retune request may ride ANY verdict (retune-on-
+        # continue) — apply it whenever one is present. Kill keeps precedence
+        # (it returns above); correction and continue fall through to here.
+        if verdict.retune:
+            _apply_observer_retune(state, ctx, verdict, observer_cfg)
     return None
+
+
+_RETUNE_AUDIT_CAP = 50
+
+
+def _apply_observer_retune(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+    verdict: ObserverVerdict,
+    observer_cfg: Any,
+) -> None:
+    """428: fold a ``retune`` verdict into the symphony's orchestration knobs.
+
+    Bounded by explicit config: only knobs declared in ``retune_bounds`` are
+    adjustable, requests clamp into their floor/ceiling, and mode switches are
+    refused outright. Fail-safe by construction: the override store is written
+    only after the pure apply succeeds, so a retune failure leaves the previous
+    value in place and never errors the cycle. Values survive the session and
+    reset with it (``_retire_active_session`` clears them; a restart drops
+    them — the store is not durably persisted).
+    """
+    card_id = ctx.card_id
+    stage = ctx.stage
+    sym_name = state.get("current_symphony")
+    bounds = getattr(observer_cfg, "retune_bounds", None)
+    if not sym_name or not bounds:
+        logger.info(
+            "observer.retune_ignored",
+            card_id=card_id,
+            performer_stage=stage,
+            symphony=sym_name,
+            reason="no_retunable_knobs_configured" if not bounds else "no_symphony_context",
+        )
+        return
+    requested = verdict.retune or {}
+    if not requested:
+        logger.info(
+            "observer.retune_ignored",
+            card_id=card_id,
+            performer_stage=stage,
+            symphony=sym_name,
+            reason="no_structured_request",
+        )
+        return
+    stores = dict(state.get("observer_retunes") or {})
+    current = dict(stores.get(sym_name) or {})
+    audit = list(state.get("observer_retune_audit") or [])
+    try:
+        new_overrides, decisions = apply_retune(current, requested, bounds)
+    except Exception as exc:  # pragma: no cover — apply_retune is total; belt-and-suspenders fail-safe
+        logger.warning(
+            "observer.retune_failed",
+            card_id=card_id,
+            performer_stage=stage,
+            symphony=sym_name,
+            error=repr(exc),
+        )
+        return
+    now = datetime.now(UTC)
+    for decision in decisions:
+        audit.append({
+            "at": now.isoformat(),
+            "symphony": sym_name,
+            "card_id": card_id,
+            "knob": decision.knob,
+            "before": decision.before,
+            "requested": decision.requested,
+            "applied": decision.applied,
+            "outcome": decision.outcome,
+        })
+        if decision.accepted:
+            logger.info(
+                "observer.retune_applied",
+                card_id=card_id,
+                performer_stage=stage,
+                symphony=sym_name,
+                knob=decision.knob,
+                before=decision.before,
+                requested=decision.requested,
+                applied=decision.applied,
+                clamped=decision.outcome == "clamped",
+            )
+        else:
+            logger.warning(
+                "observer.retune_refused",
+                card_id=card_id,
+                performer_stage=stage,
+                symphony=sym_name,
+                knob=decision.knob,
+                requested=decision.requested,
+                outcome=decision.outcome,
+            )
+    if new_overrides != current:
+        stores[sym_name] = new_overrides
+        state["observer_retunes"] = stores
+    state["observer_retune_audit"] = audit[-_RETUNE_AUDIT_CAP:]
 
 async def _phase_observer_kill(
     state: CoordinareState,

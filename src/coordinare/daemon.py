@@ -583,6 +583,11 @@ _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     "last_poll_at",
     "github_retry_queue",
     "github_retry_after",
+    # 428: observer retune overrides + audit are symphony-scoped flat state
+    # written by the monitor's observer phase; without these they would be
+    # discarded by the fanout's global merge before the next dispatch.
+    "observer_retunes",
+    "observer_retune_audit",
     # phase is NOT included here; it is derived explicitly from active_sessions
     # after the merge loop to avoid misreporting the daemon as idle when only
     # the first completed session had phase="idle" while others are still active.

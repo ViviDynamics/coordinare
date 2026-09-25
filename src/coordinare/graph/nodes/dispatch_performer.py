@@ -1455,6 +1455,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     _apply_role_tuning(state, card_context, role)
     _apply_persona_scope_tier(state, ctx["card_id"], role, ctx["card_context"])
     _apply_local_test_gate(state, card_context, role)
+    # 428: LAST in the tuning sequence — a retuned knob is the final word on
+    # its payload key, over both the role tuning and the persona tier.
+    _apply_observer_retune_overrides(state, card_context)
     _extra_volumes, terminal = await _prepare_env_dispatch(
         state, service, ctx["card_id"], ctx["performer_stage"], card_context,
         _release_slot_on_error,
@@ -2172,6 +2175,24 @@ def _apply_role_tuning(state: CoordinareState, card_context: dict[str, Any], rol
             if _orch is not None:
                 card_context["orchestration"] = _orch
             card_context.update(translate_tuning(role_config))
+
+
+def _apply_observer_retune_overrides(state: CoordinareState, card_context: dict[str, Any]) -> None:
+    """428: retuned orchestration knobs override the dispatch tuning.
+
+    The retune store is symphony-scoped transient state written by the
+    monitor's observer phase; a session retirement (or a restart) clears it,
+    so the retuned values survive the session and reset with it. Called LAST
+    in the tuning sequence — after the role tuning and the persona scope
+    tier, which also write these keys — so a retuned knob is the final word
+    on its payload key. Absent store (observer off, nothing retuned) means
+    zero writes and a byte-identical dispatch.
+    """
+    sym_name = state.get("current_symphony")
+    overrides = (state.get("observer_retunes") or {}).get(sym_name or "") if sym_name else None
+    if overrides:
+        for knob, value in overrides.items():
+            card_context[knob] = value
 
 
 def _apply_persona_scope_tier(state: CoordinareState, card_id: str, role: str | None, card_context: dict[str, Any]) -> None:

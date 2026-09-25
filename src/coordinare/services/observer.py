@@ -20,6 +20,8 @@ from typing import Any, Protocol
 
 import structlog
 
+from coordinare.services.retune import retune_prompt_fragment
+
 logger = structlog.get_logger(__name__)
 
 OBSERVER_TRIGGERS = frozenset({
@@ -97,6 +99,10 @@ def record_correction(
 class ObserverVerdict:
     verdict: str
     reason: str
+    # 428: the optional structured retune request, {knob: requested_value}.
+    # Absent (None) unless the verdict carries a usable "retune" block; the
+    # retune phase clamps and bounds-checks it before anything is applied.
+    retune: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -141,7 +147,19 @@ def parse_verdict(answer: Any) -> ObserverVerdict | None:
     # prompt it summarises carries summaries only (never raw event text), so
     # the reason cannot echo telemetry the model was never shown.
     reason = " ".join(reason[:_REASON_CAP].split())
-    return ObserverVerdict(verdict=verdict, reason=reason)
+    # 428: the optional structured retune request. Only scalar values survive
+    # (the retune phase clamps scalars); anything nested is model noise and
+    # is dropped, an all-noise block parses as absent.
+    retune_raw = data.get("retune")
+    retune = None
+    if isinstance(retune_raw, dict):
+        scalars = {
+            key: value
+            for key, value in retune_raw.items()
+            if isinstance(key, str) and isinstance(value, (str, int, float, bool))
+        }
+        retune = scalars or None
+    return ObserverVerdict(verdict=verdict, reason=reason, retune=retune)
 
 
 def observer_enabled(state: Any) -> bool:
@@ -207,12 +225,17 @@ def build_prompt(
     evidence: dict[str, Any],
     triggers: list[str],
     recent_meta: list[str],
+    retune_bounds: dict[str, Any] | None = None,
 ) -> str:
     """Build the judge prompt from bounded summaries. Never raw telemetry.
 
     The recent-activity tail carries type/length metadata, not event text:
     performer events are untrusted telemetry (command output, diffs), and
     none of it belongs in a prompt sent to the observer's endpoint.
+
+    428: when retune bounds are configured the retunable knobs are advertised
+    so a retune verdict can name values inside them. Without bounds the
+    prompt is byte-identical to the pre-428 shape.
     """
     fixed = "\n".join([
         persona(),
@@ -234,6 +257,18 @@ def build_prompt(
         "",
         "Recent activity (type/length): ",
     ])
+    retune_evidence = retune_prompt_fragment(retune_bounds)
+    if retune_evidence:
+        # Insert the retune evidence before the recent-activity tail, after
+        # the answer schema, and extend the schema so the model knows a
+        # retune verdict may carry the structured request.
+        fixed = fixed.replace(
+            "Recent activity (type/length): ",
+            retune_evidence + "\n"
+            'A retune verdict MAY add "retune": {<knob>: <value>} naming a '
+            "retunable knob and its requested value.\n"
+            "Recent activity (type/length): ",
+        )
     # Whatever the fixed body left of the budget is what the recent tail gets.
     recent: list[str] = []
     budget = _PROMPT_BUDGET - len(fixed)
