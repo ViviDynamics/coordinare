@@ -35,8 +35,23 @@ _port_bound() {
     hex_port=$(printf '%04X' "$port")
     grep -qE ":${hex_port} 0+:0000 0A" /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
   fi
-  (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null && { exec 3>&-; exec 3<&-; return 0; }
+  exec 3<>/dev/tcp/127.0.0.1/"$port" 2>/dev/null && { exec 3>&- 3<&- 2>/dev/null; return 0; }
   return 1
+}
+
+_memcached_ready() {
+  # memcached's wire protocol is plain text: `version` answers VERSION... — a
+  # real protocol probe with no client binary required. The fd is opened in THIS
+  # function's shell (not a subshell) so printf/read can use it (review 475).
+  local port="$1" line
+  exec 3<>/dev/tcp/127.0.0.1/"$port" 2>/dev/null || return 1
+  printf 'version\r\n' >&3 2>/dev/null || { exec 3>&- 3<&- 2>/dev/null; return 1; }
+  IFS= read -r -t 2 line <&3 || { exec 3>&- 3<&- 2>/dev/null; return 1; }
+  exec 3>&- 3<&- 2>/dev/null
+  case "$line" in
+    VERSION*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # spec 115: library search path for the coordinare-managed service binaries.
@@ -140,6 +155,15 @@ else
   fi
   _pg_as {{ svc.binary | shq }} -D "$_PGDATA" -p "$_PGPORT" -k "$_PGDATA" -c listen_addresses=127.0.0.1 >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
   echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
+  # Same dead-daemon guard the other managed kinds get (review 475 round 2): a
+  # postgres that exits at start is a START failure with its log tail, not a
+  # misreported 180s readiness timeout.
+  sleep 2
+  if ! kill -0 "$(cat "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}")" 2>/dev/null; then
+    echo "ERROR: env: {{ svc.name }} daemon died at start (exit before readiness); log tail:" >&2
+    tail -n 40 "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" >&2 2>/dev/null || true
+    exit 75
+  fi
   # Bounded readiness wait: postgres binds the port before it can serve, so probe the
   # connection target; a timeout is surfaced as an environment-attributed failure, not a hang.
   # spec 111: 180s (was 60s) — the data dir is ephemeral so initdb runs every container,
@@ -153,8 +177,10 @@ else
   done
   if [ "$_pg_wait" -ge 180 ]; then
     echo "ERROR: env: {{ svc.name }} did not become ready within 180s" >&2
+    tail -n 40 "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" >&2 2>/dev/null || true
     exit 75
   fi
+{% if svc.init %}
 {% for db in svc.init.databases %}
   # create-if-missing. The script runs without `set -e`, so a failed createdb would
   # otherwise be swallowed and the service reported "started" with the database absent —
@@ -167,17 +193,114 @@ else
     fi
   fi
 {% endfor %}
+{% endif %}
   echo "info: started {{ svc.name }} (pid $(cat ${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}))"
 {% else %}
-  # Service-specific bootstrap is delegated to the binary; the templater encodes only the
-  # invocation. Redirect the background service's stdout/stderr so it does not hold the
-  # parent's pipes open — otherwise a caller that does `subprocess.communicate()` on
-  # services-start.sh hangs until the daemon exits.
-  # start_args is an argv list; each element is shell-quoted independently via `shq`.
-  # spec 115: the generic service binary (e.g. redis-server) lives in services-extract; it
-  # inherits the script-level LD_LIBRARY_PATH export above so its libs resolve at runtime.
-  {{ (svc.start_args | map('shq') | join(' ')) if svc.start_args else ((svc.binary | shq) ~ ' --port=' ~ svc.port ~ ' --data-dir=' ~ (svc.data_dir | shq)) }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  # Issue 413: service-specific bootstrap is coordinare-owned per kind. Every launch is
+  # followed by (1) a pid-liveness check after a short grace — a daemon that died at
+  # start (bad flag, refuses root, missing init) is a START failure reported with its
+  # log tail, never a silent "started" — and (2) a bounded, per-kind readiness wait on
+  # a protocol-level probe. stdout/stderr are redirected so a `subprocess.communicate()`
+  # caller does not hang on the daemon's inherited pipes; launched binaries inherit the
+  # script-level LD_LIBRARY_PATH export above (spec 115).
+  {% if svc.kind == "redis" %}
+  {{ svc.binary | shq }} --port="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" --dir="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "mysql" %}
+  _MYSQLDATA="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}"
+  _MYSQLPORT="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"
+  _MYSQLUSER=mysqlrunner
+  id "$_MYSQLUSER" >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin "$_MYSQLUSER" 2>/dev/null || true
+  chown -R "$_MYSQLUSER" "$_MYSQLDATA" 2>/dev/null || true
+  _mysql_as() { runuser -u "$_MYSQLUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" "$@"; }
+  if [ ! -e "$_MYSQLDATA/ibdata1" ] && [ ! -f "$_MYSQLDATA/aria_log_control" ]; then
+    # Single supported init for the mariadb packages we install; a failed init is
+    # attributed loudly (log tail + exit 75) instead of swallowed by `|| true` —
+    # otherwise the launch below runs against an uninitialized dir and readiness
+    # times out with the real cause buried (review 475). The sentinel check makes
+    # an init that left a usable dir (rc!=0 but datadir populated) survivable.
+    if ! _mysql_as mariadb-install-db --datadir="$_MYSQLDATA" --skip-name-resolve >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/install-db.log" 2>&1 && [ ! -f "$_MYSQLDATA/aria_log_control" ]; then
+      tail -n 40 "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/install-db.log" >&2
+      echo "ERROR: env: {{ svc.name }} (mysql) first-run init failed (mariadb-install-db); see install-db.log above" >&2
+      exit 75
+    fi
+  fi
+  _mysql_as {{ svc.binary | shq }} --datadir="$_MYSQLDATA" --port="$_MYSQLPORT" --bind-address=127.0.0.1 --skip-name-resolve >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "mongodb" %}
+  {{ svc.binary | shq }} --dbpath="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" --port="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" --bind_ip 127.0.0.1 >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "rabbitmq" %}
+  # RabbitMQ refuses to run as root: launch through a dedicated unprivileged
+  # user with HOME/Mnesia/pid/log paths owned by it under the data dir
+  # (review 475).
+  _rabbitmquser=rabbitrunner
+  id "$_rabbitmquser" >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin "$_rabbitmquser" 2>/dev/null || true
+  mkdir -p "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/mnesia"
+  chown -R "$_rabbitmquser" "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" 2>/dev/null || true
+  runuser -u "$_rabbitmquser" -- env HOME="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" RABBITMQ_NODE_PORT="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" RABBITMQ_MNESIA_BASE="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/mnesia" RABBITMQ_PID_FILE="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/rabbit.pid" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" {{ svc.binary | shq }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "elasticsearch" %}
+  _ESDATA="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}"
+  id esrunner >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin esrunner 2>/dev/null || true
+  chown -R esrunner "$_ESDATA" 2>/dev/null || true
+  runuser -u esrunner -- env PATH="$PATH" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" ES_JAVA_OPTS="-Xms256m -Xmx512m" {{ svc.binary | shq }} -E http.port="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" -E network.host=127.0.0.1 -E discovery.type=single-node -E xpack.security.enabled=false >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "memcached" %}
+  # -u nobody: the daemon is reachable by the test workload; keep it out of
+  # root (review 475).
+  {{ svc.binary | shq }} -p "${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" -U 0 -m 64 -u nobody >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% elif svc.kind == "minio" %}
+  {{ svc.binary | shq }} server "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" --address "127.0.0.1:${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% else %}
+  {{ (svc.start_args | map('shq') | join(' ')) }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {% endif %}
   echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
+  sleep 2
+  if ! kill -0 "$(cat "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}")" 2>/dev/null; then
+    echo "ERROR: env: {{ svc.name }} daemon died at start (exit before readiness); log tail:" >&2
+    tail -n 40 "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" >&2 2>/dev/null || true
+    exit 75
+  fi
+{% set budget = {"redis":30,"mysql":60,"mongodb":60,"rabbitmq":60,"elasticsearch":90,"memcached":15,"minio":30}.get(svc.kind, 30) %}
+  _svc_wait=0
+{% if svc.kind == "redis" %}
+  # Protocol probe: redis-cli PING (a bound port alone is not readiness).
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if redis-cli -h 127.0.0.1 -p "${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" PING 2>/dev/null | grep -q PONG; then break; fi
+{% elif svc.kind == "mysql" %}
+  # mariadb-admin/mysqladmin ping answers "is alive" whenever the server responds at
+  # all (even on an access-denied handshake), so grep for it.
+  _MYSQLADMIN="$(command -v mariadb-admin || command -v mysqladmin)"
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if "$_MYSQLADMIN" -h 127.0.0.1 -P "$_MYSQLPORT" ping 2>&1 | grep -q "is alive"; then break; fi
+{% elif svc.kind == "mongodb" %}
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if mongosh --quiet --host 127.0.0.1 --port "${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1; then break; fi
+{% elif svc.kind == "rabbitmq" %}
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    # rabbitmq-diagnostics reads the Erlang cookie from HOME: run it as the
+    # service user with the broker's HOME or a healthy broker fails the gate
+    # (review 475 round 2).
+    if runuser -u rabbitrunner -- env HOME="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" rabbitmq-diagnostics -q ping >/dev/null 2>&1; then break; fi
+{% elif svc.kind == "elasticsearch" %}
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if curl -fsS "http://127.0.0.1:${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}/_cluster/health?wait_for_status=yellow&timeout=2s" >/dev/null 2>&1; then break; fi
+{% elif svc.kind == "memcached" %}
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if _memcached_ready "${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"; then break; fi
+{% elif svc.kind == "minio" %}
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if curl -fsS "http://127.0.0.1:${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}/minio/health/live" >/dev/null 2>&1; then break; fi
+{% else %}
+  # Generic: the manifest's OWN health_command is authoritative (the schema REQUIRES
+  # start_args + health_command for an in-container generic service).
+  while [ "$_svc_wait" -lt {{ budget }} ]; do
+    if {{ (svc.health_command | map('shq') | join(' ')) }} >/dev/null 2>&1; then break; fi
+{% endif %}
+    _svc_wait=$((_svc_wait + 1))
+    sleep 1
+  done
+  if [ "$_svc_wait" -ge {{ budget }} ]; then
+    echo "ERROR: env: {{ svc.name }} did not become ready within {{ budget }}s" >&2
+    tail -n 40 "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" >&2 2>/dev/null || true
+    exit 75
+  fi
   echo "info: started {{ svc.name }} (pid $(cat ${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}))"
 {% endif %}
 fi

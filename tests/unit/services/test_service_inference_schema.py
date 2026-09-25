@@ -26,6 +26,11 @@ def _base_entry(**overrides):
         "data_dir": "/tmp/redis",
         "port": 6379,
         "why_needed": "Sidekiq queue backend",
+        # Issue 413: an in-container generic service (the default kind) must
+        # carry its own launch + probe now that the redis-shaped default launch
+        # is removed; managed kinds (kind="redis" etc.) don't need these.
+        "start_args": ["redis-server", "--port", "6379"],
+        "health_command": ["redis-cli", "ping"],
     }
     fields.update(overrides)
     return fields
@@ -116,7 +121,9 @@ def test_start_args_accepts_argv_with_shell_metachars() -> None:
 
 
 def test_start_args_none_is_allowed() -> None:
-    entry = ServiceEntry(**_base_entry(start_args=None))
+    # Issue 413: None start_args is fine for a MANAGED kind (its launch recipe
+    # is coordinare-owned); only an in-container generic service needs it.
+    entry = ServiceEntry(**_base_entry(kind="redis", start_args=None))
     assert entry.start_args is None
 
 
@@ -198,8 +205,9 @@ def test_init_on_non_initializing_kind_raises(bad_kind: str) -> None:
 
 def test_unknown_kind_rejected() -> None:
     # VR-1: kind is a closed set; an unknown value is a load-time error.
+    # (Issue 413 widened the managed set; "mysql" is now a VALID kind.)
     with pytest.raises(ValidationError):
-        ServiceEntry(**_base_entry(kind="mysql"))
+        ServiceEntry(**_base_entry(kind="oracle_db"))
 
 
 def test_init_literal_password_key_rejected() -> None:
@@ -374,7 +382,16 @@ def test_services_requiring_inference_validation_excludes_only_managed_kinds() -
             required_env_vars=["MAILHOG_HOST"],
         ),
     )
-    generic = ServiceEntry(**_base_entry(name="worker", binary="/bin/sh", version=None, kind="generic"))
+    generic = ServiceEntry(
+        **_base_entry(
+            name="worker",
+            binary="/bin/sh",
+            version=None,
+            kind="generic",
+            start_args=["/bin/sh", "-c", "exec /bin/app"],
+            health_command=["/bin/app", "--health"],
+        ),
+    )
 
     # Only coordinare-managed kinds → nothing left to validate.
     managed_only = ServicesManifest(

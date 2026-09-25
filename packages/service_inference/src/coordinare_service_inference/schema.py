@@ -29,14 +29,31 @@ _ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 AGENT_VERSION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
 # Kinds whose server binary the coordinare installs *from this manifest* during
-# env-bootstrap (spec-091 US2/FR-006): the deb is fetched into the cache by the
-# persona-driven install block, so the binary is NOT expected to be present at
-# inference time. Mirrors coordinare's `_SERVICE_KIND_PACKAGES` (env_manifest.py)
-# — the source of truth for which kinds coordinare knows how to install. Used by
-# the agent's PATH-resolution check to skip these kinds (the chicken-and-egg:
-# the inference pass that *describes* the service runs before coordinare has
-# installed it).
-COORDINARE_MANAGED_KINDS = frozenset({"postgres", "redis"})
+# env-bootstrap (spec-091 US2/FR-006, widened by issue 413): the deb is fetched
+# into the cache by the persona-driven install block, so the binary is NOT
+# expected to be present at inference time. Mirrors coordinare's
+# `_SERVICE_KIND_PACKAGES` (env_manifest.py) — the source of truth for which
+# kinds coordinare knows how to install. Used by the agent's PATH-resolution
+# check to skip these kinds (the chicken-and-egg: the inference pass that
+# *describes* the service runs before coordinare has installed it).
+# Only 'generic' is NOT here: a generic service brings its own binary via the
+# project spec files, and an external_required service lives elsewhere entirely.
+COORDINARE_MANAGED_KINDS = frozenset({
+    "postgres",
+    "redis",
+    "mysql",
+    "mongodb",
+    "rabbitmq",
+    "elasticsearch",
+    "memcached",
+    "minio",
+})
+
+# The managed `kind` set: every kind with a coordinare-owned launch template and
+# a protocol-level readiness probe. 'generic' is the escape hatch — it launches
+# the manifest's own start_args and is probed via its health_command, so an
+# in-container generic service MUST carry both (see the model validator below).
+MANAGED_SERVICE_KINDS = tuple(sorted(COORDINARE_MANAGED_KINDS))
 
 
 class ServiceInit(BaseModel):
@@ -153,19 +170,49 @@ class ServiceEntry(BaseModel):
     start_args: list[str] | None = Field(
         default=None,
         description=(
-            "Optional argv-style override for the in-container service launch. "
-            "When None the templater synthesises `<binary> --port=<port> --data-dir=<data_dir>`. "
-            "When set, each element is shell-quoted before being emitted; this is a list "
-            "of arguments, not a shell string — there is no way to inject shell metacharacters."
+            "Argv-style launch for the in-container service. REQUIRED for an "
+            "in-container generic service (issue 413: the redis-shaped "
+            "`<binary> --port=<port> --data-dir=<data_dir>` default is removed "
+            "— every managed kind has its own coordinare-owned launch template, "
+            "and generic must say exactly how to launch it). When set, each "
+            "element is shell-quoted before being emitted; this is a list of "
+            "arguments, not a shell string — there is no way to inject shell "
+            "metacharacters."
         ),
     )
-    kind: Literal["generic", "postgres", "redis"] = Field(
+    health_command: list[str] | None = Field(
+        default=None,
+        description=(
+            "Argv-style readiness probe for the service, exit 0 = ready. "
+            "REQUIRED for an in-container generic service (issue 413): the "
+            "coordinare-owned kinds have protocol-level probes built in "
+            "(pg_isready, redis-cli PING, mariadb-admin ping, mongosh, "
+            "rabbitmq-diagnostics, curl against the health endpoint), so "
+            'generic is the only kind that needs to spell its own. Rendered '
+            "into services-health.sh and polled during start readiness."
+        ),
+    )
+    kind: Literal[
+        "generic",
+        "postgres",
+        "redis",
+        "mysql",
+        "mongodb",
+        "rabbitmq",
+        "elasticsearch",
+        "memcached",
+        "minio",
+    ] = Field(
         default="generic",
         description=(
-            "Selects the coordinare-owned init recipe and readiness probe. "
-            "'generic' = no init (063 behavior, today's default). 'postgres' = "
-            "initdb → create superuser → create databases, with a pg_isready "
-            "readiness probe. 'redis' = no init, liveness/port readiness. NEW in 091."
+            "Selects the coordinare-owned init recipe, launch template and "
+            "protocol-level readiness probe (issue 413 widened the set beyond "
+            "postgres/redis). 'generic' = no coordinare recipe: the launch is "
+            "the manifest's own start_args and readiness is its health_command "
+            "(both REQUIRED in-container). 'postgres' = initdb → create "
+            "superuser → create databases, with a pg_isready probe. "
+            "'mysql' covers mariadb (same protocol). 'elasticsearch' covers "
+            "opensearch."
         ),
     )
     init: ServiceInit | None = Field(
@@ -228,7 +275,7 @@ class ServiceEntry(BaseModel):
                 )
         return value
 
-    @field_validator("start_args")
+    @field_validator("start_args", "health_command")
     @classmethod
     def _start_args_no_nulls(
         cls, value: list[str] | None
@@ -236,26 +283,54 @@ class ServiceEntry(BaseModel):
         if value is None:
             return value
         if not value:
-            raise ValueError("start_args, when set, must be a non-empty argv list")
+            raise ValueError("when set, must be a non-empty argv list")
         for i, arg in enumerate(value):
             if not isinstance(arg, str):
-                raise ValueError(f"start_args[{i}] must be a string")
+                raise ValueError(f"element {i} must be a string")
             if "\x00" in arg:
-                raise ValueError(f"start_args[{i}] contains a NUL byte")
+                raise ValueError(f"element {i} contains a NUL byte")
         return value
 
     @model_validator(mode="after")
     def _init_requires_initializing_kind(self) -> ServiceEntry:
         # VR-2: an `init` block is only meaningful for a kind that initializes.
-        # Declaring `init` on 'generic'/'redis' is an authoring mistake, not a
-        # silent no-op — surface it as a load-time error. (VR-1, the closed set
-        # of kinds, is enforced by the Literal type.)
+        # Declaring `init` on anything but 'postgres' is an authoring mistake,
+        # not a silent no-op — surface it as a load-time error. (VR-1, the
+        # closed set of kinds, is enforced by the Literal type.)
         if self.init is not None and self.kind != "postgres":
             raise ValueError(
                 f"service '{self.name}' declares an init block but kind is "
                 f"'{self.kind}'; init is only valid for an initializing kind "
                 "(currently 'postgres')"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _generic_requires_launch_and_probe(self) -> ServiceEntry:
+        # Issue 413: the redis-shaped default launch
+        # (`<binary> --port=<port> --data-dir=<data_dir>`) is removed. Every
+        # managed kind has a coordinare-owned launch template and protocol-level
+        # probe, so an in-container generic service must declare its own
+        # start_args AND health_command — an external_required service launches
+        # nothing, so the contract does not apply to it.
+        if self.kind == "generic" and not self.external_required:
+            missing = [
+                field
+                for field, value in (
+                    ("start_args", self.start_args),
+                    ("health_command", self.health_command),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"in-container generic service '{self.name}' is missing "
+                    f"{', '.join(missing)}; the templater no longer synthesises "
+                    "a default launch — emit start_args (how to launch the "
+                    "daemon) and health_command (a protocol-level readiness "
+                    "probe, exit 0 = ready), or let coordinare manage it with "
+                    "a managed kind"
+                )
         return self
 
 
@@ -377,6 +452,13 @@ def services_requiring_inference_validation(
     only asserts the declared ``required_env_vars`` are present (it never invokes
     the external binary), so the check is cheap, meaningful (it surfaces missing
     operator config), and cannot hang. Generic in-container services are likewise
-    validated as before.
+    validated as before — and per issue 413 they now REQUIRE ``start_args`` +
+    ``health_command`` at load time (no synthesised default launch), so the
+    validator exercises the launch the templater actually emitted.
+
+    Issue 413 widened the managed set beyond postgres/redis (see
+    :data:`COORDINARE_MANAGED_KINDS`); the exclusion above is kind-driven, so the
+    newly added managed kinds are excluded by the same rule without special
+    casing.
     """
     return [svc for svc in manifest.services if svc.kind not in COORDINARE_MANAGED_KINDS]

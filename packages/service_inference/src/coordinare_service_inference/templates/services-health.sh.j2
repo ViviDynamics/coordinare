@@ -12,20 +12,16 @@
 # some images, dash, ash — will not work). The performer image ships GNU bash
 # with this feature; if you swap the base image, verify `bash -c 'exec 3<>/dev/tcp/127.0.0.1/22; exec 3>&-'`
 # returns 0 (or refuses the connection — both indicate the feature is compiled in).
+#
+# Issue 413: every managed kind is probed at the PROTOCOL level — a bound port
+# alone is not readiness (a server that binds but rejects commands, or a peer
+# that holds the socket in TIME_WAIT, would both pass a bare TCP connect).
+# Only an in-container generic service polls its own declared health_command.
 set -u
 
 _fail() {
   echo "health: FAIL — $*" >&2
   exit 1
-}
-
-_port_open() {
-  local port="$1"
-  if (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null; then
-    exec 3>&-; exec 3<&-
-    return 0
-  fi
-  return 1
 }
 
 {% for svc in services %}
@@ -42,11 +38,73 @@ if pg_isready -h 127.0.0.1 -p {{ svc.port }} >/dev/null 2>&1; then
 else
   _fail "{{ svc.name }} not accepting connections on port {{ svc.port }}"
 fi
-{% else %}
-if _port_open "{{ svc.port }}"; then
-  echo "ok: {{ svc.name }} listening on {{ svc.port }}"
+{% elif svc.kind == "redis" %}
+if redis-cli -h 127.0.0.1 -p {{ svc.port }} PING 2>/dev/null | grep -q PONG; then
+  echo "ok: {{ svc.name }} answering PING on {{ svc.port }}"
 else
-  _fail "{{ svc.name }} not listening on port {{ svc.port }}"
+  _fail "{{ svc.name }} not answering PING on port {{ svc.port }}"
+fi
+{% elif svc.kind == "mysql" %}
+# mariadb-admin/mysqladmin ping answers "is alive" whenever the server responds at
+# all (even on an access-denied handshake).
+_MYSQLADMIN="$(command -v mariadb-admin || command -v mysqladmin)"
+if "$_MYSQLADMIN" -h 127.0.0.1 -P {{ svc.port }} ping 2>&1 | grep -q "is alive"; then
+  echo "ok: {{ svc.name }} alive on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} not alive on port {{ svc.port }}"
+fi
+{% elif svc.kind == "mongodb" %}
+if mongosh --quiet --host 127.0.0.1 --port {{ svc.port }} --eval 'db.runCommand({ ping: 1 })' >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} answering ping on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} not answering ping on port {{ svc.port }}"
+fi
+{% elif svc.kind == "rabbitmq" %}
+# rabbitmq-diagnostics reads the Erlang cookie from HOME: run it as the service
+# user with the broker's HOME or a healthy broker fails the gate (review 475 r2).
+if runuser -u rabbitrunner -- env HOME="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" rabbitmq-diagnostics -q ping >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} node alive on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} node not alive on port {{ svc.port }}"
+fi
+{% elif svc.kind == "elasticsearch" %}
+if curl -fsS "http://127.0.0.1:{{ svc.port }}/_cluster/health?wait_for_status=yellow&timeout=2s" >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} cluster healthy on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} cluster health not OK on port {{ svc.port }}"
+fi
+{% elif svc.kind == "memcached" %}
+# memcached's wire protocol is plain text: `version` answers VERSION... — a real
+# protocol probe with no client binary required.
+_memcached_ready() {
+  local port="$1" line
+  # The fd is opened in THIS function's shell (not a subshell) so printf/read
+  # can use it (review 475).
+  exec 3<>/dev/tcp/127.0.0.1/"$port" 2>/dev/null || return 1
+  printf 'version\r\n' >&3 2>/dev/null || { exec 3>&- 3<&- 2>/dev/null; return 1; }
+  IFS= read -r -t 2 line <&3 || { exec 3>&- 3<&- 2>/dev/null; return 1; }
+  exec 3>&- 3<&- 2>/dev/null
+  case "$line" in
+    VERSION*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if _memcached_ready {{ svc.port }}; then
+  echo "ok: {{ svc.name }} answering VERSION on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} not answering on port {{ svc.port }}"
+fi
+{% elif svc.kind == "minio" %}
+if curl -fsS "http://127.0.0.1:{{ svc.port }}/minio/health/live" >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} liveness endpoint OK on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} liveness endpoint not OK on port {{ svc.port }}"
+fi
+{% else %}
+if {{ (svc.health_command | map('shq') | join(' ')) }} >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} health_command exit 0"
+else
+  _fail "{{ svc.name }} health_command failed (exit non-zero)"
 fi
 {% endif %}
 {% endfor %}

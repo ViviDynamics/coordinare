@@ -65,9 +65,15 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["generic", "postgres", "redis"],
+          "enum": ["generic", "postgres", "redis", "mysql", "mongodb", "rabbitmq", "elasticsearch", "memcached", "minio"],
           "default": "generic",
-          "description": "Selects the coordinare-owned init recipe and readiness probe. 'generic' = no init (063 behavior). NEW in 091."
+          "description": "Selects the coordinare-owned init recipe, launch template and protocol-level readiness probe (issue 413 widened the set beyond postgres/redis). 'generic' = no coordinare recipe: the launch is the manifest's own start_args and readiness is its health_command (both REQUIRED in-container). NEW in 091, widened by 413."
+        },
+        "health_command": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "default": null,
+          "description": "Argv-style readiness probe for the service, exit 0 = ready. REQUIRED for an in-container generic service (issue 413); coordinare-owned kinds have protocol-level probes built in. NEW in 413."
         },
         "init": {
           "anyOf": [{ "$ref": "#/$defs/ServiceInit" }, { "type": "null" }],
@@ -80,6 +86,14 @@
           "$comment": "VR-2: init only valid for an initializing kind.",
           "if": { "properties": { "init": { "type": "object" } }, "required": ["init"] },
           "then": { "properties": { "kind": { "const": "postgres" } } }
+        },
+        {
+          "$comment": "issue 413: an in-container generic service must carry its own launch + probe (no synthesised default).",
+          "if": {
+            "properties": { "kind": { "const": "generic" }, "external_required": { "const": false } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["start_args", "health_command"] }
         }
       ]
     },

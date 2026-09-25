@@ -88,13 +88,18 @@ def _validate(scripts, env, *, timeout_seconds=15.0):
 
 
 def _assert_gate_cleared(scripts, env) -> None:
-    """Assert the start-phase dry-run got *past* the unset-secret gate."""
+    """Assert the start-phase dry-run got *past* the unset-secret gate.
+
+    The gate prints its "unset" diagnostic when it fires, so the diagnostic is
+    the discriminator — NOT the exit code. A fast ``exit 75`` from the
+    dead-daemon guard (a daemon that cannot start on this host) is NOT the
+    gate; review 475 round 2 gave the postgres launch that guard.
+    """
     try:
         result = _validate(scripts, env, timeout_seconds=5.0)
     except subprocess.TimeoutExpired:
         return  # got past the gate into initdb/readiness — gate cleared.
-    assert result.returncode != GATE_EXIT
-    assert "unset" not in result.stderr
+    assert "unset" not in (result.stderr or "")
 
 
 class TestDiscoveredTestEnvFallback:

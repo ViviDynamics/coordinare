@@ -25,6 +25,7 @@ def _manifest(cache_inputs: list[str], agent_version: str = "v1") -> ServicesMan
                     "data_dir": "/tmp/redis",
                     "port": 6379,
                     "why_needed": "test",
+                    "kind": "redis",
                     "sources": cache_inputs[:1] or ["Gemfile"],
                 },
             ],

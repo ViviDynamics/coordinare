@@ -41,6 +41,20 @@ if [ -d "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/base" ] || [ -f "${{
 fi
 rm -f "$SERVICES_DIR/{{ svc.name }}.pid"
 echo "info: stopped {{ svc.name }} (pg_ctl fast)"
+{% elif svc.kind == "mysql" %}
+# mariadbd runs under runuser as mysqlrunner: killing the runuser pid does not
+# necessarily stop the daemon. Signal this service's recorded pid first, then
+# scope the user-level sweep to THIS service by its data dir (which appears in
+# mariadbd's argv) — a second kind:mysql service sharing the account must never
+# be collateral (review 475 round 2).
+_stop_pid "$SERVICES_DIR/{{ svc.name }}.pid" "{{ svc.name }}"
+pkill -TERM -u mysqlrunner -f "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" 2>/dev/null || true
+{% elif svc.kind == "elasticsearch" %}
+# elasticsearch runs under runuser as esrunner. Same scoping rule: kill the
+# recorded pid, then sweep the user's processes only where the unique
+# http.port=<this service's port> appears in the JVM argv (review 475 r2).
+_stop_pid "$SERVICES_DIR/{{ svc.name }}.pid" "{{ svc.name }}"
+pkill -TERM -u esrunner -f "http.port=${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}" 2>/dev/null || true
 {% else %}
 _stop_pid "$SERVICES_DIR/{{ svc.name }}.pid" "{{ svc.name }}"
 {% endif %}

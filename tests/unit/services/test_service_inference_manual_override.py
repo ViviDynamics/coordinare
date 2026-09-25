@@ -32,6 +32,7 @@ def _valid_redis_payload() -> dict:
                 "data_dir": "/tmp/redis-data",
                 "port": 6379,
                 "why_needed": "Manual override for redis",
+                "kind": "redis",
                 "sources": [".coordinare/score.json"],
             },
         ],

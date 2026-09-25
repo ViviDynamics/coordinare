@@ -34,6 +34,7 @@ def _good_manifest(cache_inputs: list[str]) -> dict:
                 "data_dir": "/tmp/pg",
                 "port": 5432,
                 "why_needed": "test",
+                "kind": "postgres",
                 "sources": cache_inputs[:1] or ["Gemfile"],
             },
         ],
