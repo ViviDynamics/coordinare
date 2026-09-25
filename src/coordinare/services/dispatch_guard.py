@@ -292,24 +292,49 @@ async def drain_or_reap(
     """076 (T084, FR-007 / clarification Q5): drain a performer container
     on relay handoff, force-stop if it doesn't drain within budget.
 
-    Total wall-clock budget hard-capped at ``drain_budget + reap_budget``
-    (default 10 s).  Returns ``("drained", elapsed_ms)`` if the
-    job-runner finished its current call cleanly within ``drain_budget``;
-    otherwise issues ``docker stop --time=<reap_budget>`` and returns
-    ``("reaped", elapsed_ms)``.
+    Best-effort by contract: the relay handoff MUST NOT wedge on a sticky
+    container, so the return never signals failure — callers that need an
+    honest teardown signal (e.g. the observer kill path) use
+    :func:`stop_session_turn` instead.
+    """
+    ok, detail, elapsed_ms = await stop_session_turn(
+        session_id,
+        service=service,
+        docker_executor=docker_executor,
+        drain_budget=drain_budget,
+        reap_budget=reap_budget,
+    )
+    return ("drained" if ok and detail == "drained" else "reaped"), elapsed_ms
 
-    Best-effort: if the docker_stop also fails, escalates to docker_kill
-    and STILL returns ``("reaped", elapsed_ms)`` — the relay handoff
-    MUST NOT wedge on a sticky container.  Failures are visible via
-    ``daemon.reap_failed`` from the docker_executor layer.
+
+async def stop_session_turn(
+    session_id: str,
+    *,
+    service: Any = None,
+    docker_executor: Any = None,
+    drain_budget: float = 5.0,
+    reap_budget: float = 5.0,
+) -> tuple[bool, Literal["drained", "reaped", "untracked_session", "stop_failed"], float]:
+    """Stop a performer turn and report whether the teardown actually happened.
+
+    Unlike :func:`drain_or_reap` (best-effort for the relay handoff), this
+    variant is for callers that re-dispatch only if the prior turn is
+    really gone.  Returns ``(True, "drained"|"reaped", elapsed_ms)`` when
+    the session's container was tracked and the teardown step completed
+    without raising, and ``(False, reason, elapsed_ms)`` with
+    ``"untracked_session"`` (no tracked container: nothing was stopped) or
+    ``"stop_failed"`` (the docker stop raised) otherwise.  Total wall-clock
+    budget is hard-capped at ``drain_budget + reap_budget`` (default 10 s).
     """
     from time import perf_counter
 
     started = perf_counter()
     container_id = _container_id_for_session(service, session_id)
+    if container_id is None:
+        return False, "untracked_session", (perf_counter() - started) * 1000.0
 
     # --- Step 1: drain ---
-    if service is not None and container_id is not None:
+    if service is not None:
         drained = await _request_drain(service, session_id, timeout=drain_budget)
         elapsed_ms = (perf_counter() - started) * 1000.0
         if drained:
@@ -319,12 +344,12 @@ async def drain_or_reap(
                 container_id=container_id,
                 elapsed_ms=round(elapsed_ms, 2),
             )
-            return "drained", elapsed_ms
+            return True, "drained", elapsed_ms
 
     # --- Step 2: reap ---
-    if docker_executor is not None and container_id is not None:
+    if docker_executor is not None:
         try:
-            await docker_executor.stop_container(container_id, timeout=reap_budget)
+            stopped_ok = await docker_executor.stop_container(container_id, timeout=reap_budget)
         except Exception as exc:
             logger.warning(
                 "daemon.reap_failed",
@@ -333,14 +358,25 @@ async def drain_or_reap(
                 reason="drain_or_reap_stop_failed",
                 error=str(exc),
             )
-    elapsed_ms = (perf_counter() - started) * 1000.0
+            return False, "stop_failed", (perf_counter() - started) * 1000.0
+        if not stopped_ok:
+            logger.warning(
+                "daemon.reap_failed",
+                container_id=container_id,
+                session_id=session_id,
+                reason="drain_or_reap_stop_failed",
+            )
+            return False, "stop_failed", (perf_counter() - started) * 1000.0
+        elapsed_ms = (perf_counter() - started) * 1000.0
+    else:
+        elapsed_ms = (perf_counter() - started) * 1000.0
     logger.info(
         "dispatch_performer.drain_reaped",
         session_id=session_id,
         container_id=container_id,
         elapsed_ms=round(elapsed_ms, 2),
     )
-    return "reaped", elapsed_ms
+    return True, "reaped", elapsed_ms
 
 
 def _container_id_for_session(service: Any, session_id: str) -> str | None:
@@ -385,4 +421,5 @@ __all__ = [
     "detect_multi_pr_divergence",
     "dispatch_mutex",
     "drain_or_reap",
+    "stop_session_turn",
 ]

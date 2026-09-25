@@ -143,6 +143,30 @@ def record_idle_timeout(
     )
 
 
+def record_observer_kill(
+    state: CoordinareState,
+    card_id: str,
+    performer_stage: str,
+    *,
+    budget: int = 1,
+    window_hours: int = 24,
+) -> RetryDecision:
+    """427: per-(card, stage) observer-kill retry counter.
+
+    A ``kill`` verdict stops the turn and re-dispatches. An observer that
+    keeps killing the same card hits this budget: the default ``1`` means
+    the SECOND kill inside the rolling window escalates to BLOCKED instead
+    of re-dispatching. Namespaced ``:observer_kill`` key so it is
+    independent of the idle-timeout counter.
+    """
+    return _record_retry(
+        state, card_id, performer_stage,
+        key_suffix=":observer_kill",
+        event_name="monitor_performer.observer_kill",
+        budget=budget, window_hours=window_hours,
+    )
+
+
 def record_empty_output(
     state: CoordinareState,
     card_id: str,
@@ -266,6 +290,7 @@ __all__ = [
     "attempts_in_window",
     "record_empty_output",
     "record_idle_timeout",
+    "record_observer_kill",
     "reset_if_window_expired",
     "should_block",
 ]

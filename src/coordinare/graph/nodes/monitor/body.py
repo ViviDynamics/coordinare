@@ -138,6 +138,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+from coordinare.services import dispatch_guard  # noqa: E402
+from coordinare.services.attempt_telemetry import close_attempt  # noqa: E402
 from coordinare.services.convergence import (  # noqa: E402
     MAX_REPRIEVES,
     ConvergenceVerdict,
@@ -148,6 +150,7 @@ from coordinare.services.convergence import (  # noqa: E402
 # aliased: this module already binds `persona` as a loop variable elsewhere, and
 # a shadowed import is a silent wrong-value bug waiting to happen.
 from coordinare.services.convergence import persona as convergence_persona  # noqa: E402
+from coordinare.services.docker_executor import DockerExecutor  # noqa: E402
 from coordinare.services.no_progress import (  # noqa: E402
     MAX_NO_PROGRESS_RELAYS,
     note_no_progress,
@@ -157,6 +160,7 @@ from coordinare.services.no_progress import (  # noqa: E402
 from coordinare.services.observer import (  # noqa: E402
     OBSERVER_TRIGGERS,
     ObserverQuery,
+    ObserverVerdict,
     TriggerSnapshot,
     build_prompt,
     correction_signature,
@@ -170,6 +174,7 @@ from coordinare.services.progress_evidence import (  # noqa: E402
     production_fingerprint,
     read_evidence,
 )
+from coordinare.services.retry_counter import record_observer_kill  # noqa: E402
 
 
 @dataclass
@@ -3608,6 +3613,19 @@ async def _phase_observer(
     )
     if verdict is not None:
         state["observer_verdict"] = verdict.verdict
+        if verdict.verdict == "kill":
+            # A kill only applies to a LIVE turn. Terminal statuses carry
+            # completed or failed work that must advance through its normal
+            # routing — killing here would rerun finished work.
+            if (ctx.status or {}).get("status") != "working":
+                logger.info(
+                    "observer.kill_ignored_turn_not_live",
+                    card_id=card_id,
+                    performer_stage=stage,
+                    turn_status=str((ctx.status or {}).get("status")),
+                )
+                return None
+            return await _phase_observer_kill(state, ctx, verdict, evidence, dd_cfg)
         if verdict.verdict == "correction":
             pending = record_correction(state.get("observer_correction"), verdict.reason, evidence)
             if pending is not None:
@@ -3663,6 +3681,138 @@ async def _phase_observer(
                     _slot_mgr.release(stage, card_id)
                 return exhausted
     return None
+
+async def _phase_observer_kill(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+    verdict: ObserverVerdict,
+    evidence: dict[str, Any],
+    dd_cfg: Any,
+) -> CoordinareState | None:
+    """427: a ``kill`` verdict stops the judged-dead turn and re-dispatches.
+
+    The 076 drain-or-reap path owns the teardown (drain budget, then
+    force-stop); the PR-artefact write-through runs BEFORE it so partial
+    work (branches, PRs) is not forgotten. The kill-and-reprompt counts
+    through the retry counter — an observer that keeps killing the same
+    card hits the same escalation path the idle-timeout uses. The 076
+    per-card mutex applies: a kill is deferred while a dispatch or
+    reconciliation pass holds the card, and a kill that cannot be
+    executed falls back to today's behavior (turn keeps running,
+    failure logged) — never a wedge, never a lost workspace.
+    """
+    card_id = ctx.card_id
+    stage = ctx.stage
+
+    # Module-attribute access (not a from-import): the drain helper is
+    # monkeypatched by the fail-safe tests, so it must resolve at call time.
+    lock = dispatch_guard.acquire_dispatch_lock(card_id, stage)
+    if lock.locked():
+        # A dispatch or reconciliation pass holds the card — the kill is
+        # deferred to the next cycle, exactly as a dispatch would be.
+        logger.info(
+            "observer.kill_deferred_mutex",
+            card_id=card_id,
+            performer_stage=stage,
+        )
+        return None
+
+    await lock.acquire()
+    try:
+        # Artefact write-through precedes teardown: a failed kill still
+        # records any partial work the dead turn already produced.
+        updates = _record_pr_artefacts(state, ctx.status)
+        if updates:
+            state["current_card"] = updates["current_card"]
+
+        session_id = ctx.session_id
+        service = ctx.service
+        try:
+            if isinstance(session_id, str) and session_id and service is not None:
+                # Module-attribute access (not a from-import): the stop
+                # helper is monkeypatched by the fail-safe tests, so it
+                # must resolve at call time. Unlike drain_or_reap (whose
+                # best-effort contract the relay handoff relies on), the
+                # honest signal here drives the fail-safe below.
+                stopped, detail, _elapsed = await dispatch_guard.stop_session_turn(
+                    session_id,
+                    service=service,
+                    docker_executor=DockerExecutor(),
+                    drain_budget=float(getattr(dd_cfg, "drain_budget_seconds", 5.0)),
+                    reap_budget=float(getattr(dd_cfg, "reap_budget_seconds", 5.0)),
+                )
+                if not stopped:
+                    # The teardown did not happen (untracked session or the
+                    # stop command failed): fail-safe — the turn keeps
+                    # running, the operator sees the reason, no wedge and
+                    # no duplicate dispatch.
+                    logger.warning(
+                        "observer.kill_failed",
+                        card_id=card_id,
+                        performer_stage=stage,
+                        reason=detail,
+                    )
+                    return None
+                # Release the service-side session bookkeeping (log-poll
+                # task, job entry, client) through the service's own
+                # teardown hook, so a kill leaves no stale poller behind.
+                release = getattr(service, "_cleanup_ephemeral_job_by_id", None)
+                if callable(release):
+                    with contextlib.suppress(Exception):
+                        await release(session_id)
+        except Exception as exc:
+            # Fail-safe: the kill could not be executed. The card falls
+            # back to today's behavior — the turn keeps running and the
+            # failure is logged, never a wedge.
+            logger.warning(
+                "observer.kill_failed",
+                card_id=card_id,
+                performer_stage=stage,
+                error=repr(exc),
+            )
+            return None
+
+        decision = record_observer_kill(state, card_id, stage)
+
+        # The judged-dead session is stopped either way: release its
+        # dispatch slot and slot-manager hold before routing.
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        slot_mgr = state.get("slot_manager")
+        if slot_mgr is not None and hasattr(slot_mgr, "release"):
+            slot_mgr.release(stage, card_id)
+
+        if decision == "block":
+            close_attempt(state, "timeout", "system", "blocked")
+            state["phase"] = "blocked"
+            state["open_questions"] = [
+                f"Observer killed stage '{stage}' beyond its retry budget "
+                f"in the 24h window for card {card_id} "
+                f"(reason: {verdict.reason}). Operator intervention required.",
+            ]
+            logger.warning(
+                "observer.kill_escalated",
+                card_id=card_id,
+                performer_stage=stage,
+            )
+            return state
+
+        # Fresh run: the correction rides the payload (426 injection), and
+        # the dead run's repetition evidence must not leak into it.
+        pending = record_correction(state.get("observer_correction"), verdict.reason, evidence)
+        if pending is not None:
+            state["observer_correction"] = pending
+        state["observer_repetition_count"] = 0
+        state["phase"] = "dispatching"
+        logger.info(
+            "observer.kill_executed",
+            card_id=card_id,
+            performer_stage=stage,
+            signature=correction_signature(verdict.reason),
+        )
+        return state
+    finally:
+        lock.release()
 
 _PHASES = (
     _phase_board_reconcile,
