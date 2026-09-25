@@ -152,6 +152,7 @@ async def _apply_assessor_decline(
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     state["relay_feedback"] = []
+    state["observer_correction"] = None
     state["pending_reviews"] = []
     state["open_questions"] = []
     state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"

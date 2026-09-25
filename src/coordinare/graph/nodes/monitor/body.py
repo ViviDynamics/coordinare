@@ -159,8 +159,10 @@ from coordinare.services.observer import (  # noqa: E402
     ObserverQuery,
     TriggerSnapshot,
     build_prompt,
+    correction_signature,
     evaluate_triggers,
     observe,
+    record_correction,
 )
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
@@ -2843,6 +2845,7 @@ async def _phase_error_status_s2(
             state["system_error_reason"] = reason
         state["open_questions"] = []
         state["relay_feedback"] = []
+        state["observer_correction"] = None
         state["phase"] = "system_error"
         return state
     return None
@@ -3605,6 +3608,60 @@ async def _phase_observer(
     )
     if verdict is not None:
         state["observer_verdict"] = verdict.verdict
+        if verdict.verdict == "correction":
+            pending = record_correction(state.get("observer_correction"), verdict.reason, evidence)
+            if pending is not None:
+                state["observer_correction"] = pending
+                logger.info(
+                    "observer.correction_pending",
+                    card_id=card_id,
+                    signature=pending["signature"],
+                )
+            else:
+                logger.info(
+                    "observer.correction_collapsed",
+                    card_id=card_id,
+                    signature=correction_signature(verdict.reason),
+                )
+            # A correction consumes the shared feedback-cycle budget exactly
+            # like bounce feedback — including a collapsed repeat, or a
+            # never-converging observer would escape the exhaustion bound.
+            # Capture the live-run identity BEFORE the exhaustion helper
+            # clears agent_dispatch — the cleanup below still needs it.
+            _ad = state.get("agent_dispatch") or {}
+            _session_id = _ad.get("session_id") if isinstance(_ad, dict) else None
+            _svc = (state.get("performer_services") or {}).get(stage)
+            exhausted = _feedback_cycle_exhausted(
+                state, card_id, stage, "observer_correction", [{"body": verdict.reason}],
+            )
+            if exhausted is not None:
+                # Blocking while the performer is still working orphans the
+                # active turn: _phase_terminal_markers never runs for a
+                # working poll, so the slot stays held and the container
+                # lingers. Mirror the stall watchdog's block path — drain or
+                # reap the live session, release the slot — before the early
+                # return.
+                try:
+                    from coordinare.services.dispatch_guard import drain_or_reap
+                    from coordinare.services.docker_executor import DockerExecutor
+                    if isinstance(_session_id, str) and _session_id and _svc is not None:
+                        await drain_or_reap(
+                            _session_id,
+                            service=_svc,
+                            docker_executor=DockerExecutor(),
+                            drain_budget=float(getattr(dd_cfg, "drain_budget_seconds", 5.0)),
+                            reap_budget=float(getattr(dd_cfg, "reap_budget_seconds", 5.0)),
+                        )
+                except Exception as _exc:  # pragma: no cover — kill failure must not block the decision
+                    logger.warning(
+                        "observer.correction_exhaustion_cleanup_failed",
+                        card_id=card_id,
+                        error=repr(_exc),
+                    )
+                _slot_mgr = state.get("slot_manager")
+                if _slot_mgr is not None and hasattr(_slot_mgr, "release"):
+                    _slot_mgr.release(stage, card_id)
+                return exhausted
     return None
 
 _PHASES = (

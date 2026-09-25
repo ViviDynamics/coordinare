@@ -265,6 +265,12 @@ class CardSession(TypedDict, total=False):
     # same flat state.
     observer_repetition_count: int
     observer_verdict: str | None
+    # 426: the pending observer correction rides the per-card fanout merge
+    # like the 425 keys, or the correction pended during a monitor cycle is
+    # lost before the next dispatch in multi-card mode. NOT durably persisted
+    # (absent from state_store): a restart drops it — fail-safe, the observer
+    # re-issues on its next wake.
+    observer_correction: dict[str, Any] | None
     # 354: first cycle this card wanted a performer slot and none was free.
     # Stamped by dispatch_performer's at-capacity branch; cleared on acquire.
     # MUST round-trip through session ↔ state or the queued wait resets every
@@ -387,6 +393,8 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # 425: per-card observer streak and verdict (see CardSession note).
     "observer_repetition_count",
     "observer_verdict",
+    # 426: pending observer correction (see CardSession note).
+    "observer_correction",
 )
 
 # 425: fields that round-trip when present but may be absent from a session
@@ -395,6 +403,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
 _SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "observer_repetition_count",
     "observer_verdict",
+    # 426: absent after hydration means no pending correction — never inherit
+    # a stale one from the flat state a previous card's step left behind.
+    "observer_correction",
 )
 
 

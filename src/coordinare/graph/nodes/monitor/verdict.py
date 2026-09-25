@@ -721,6 +721,17 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
                 if observer_enabled(state)
                 else {}
             ),
+            # 426: a pending correction belongs to the role it was observed
+            # for. The stage advancing here must not deliver it to the next
+            # role unacted-on. NOT gated on observer_enabled: a config reload
+            # can disable the observer after a correction was pended, and the
+            # stale directive must still not reach the next role. Written
+            # only when actually pending so the absent-key contract holds.
+            **(
+                {"observer_correction": None}
+                if state.get("observer_correction") is not None
+                else {}
+            ),
         }
         artefact_updates = _record_pr_artefacts(state, status)
         if "current_card" in artefact_updates:
