@@ -107,6 +107,10 @@ ignore = [
 # 437: check_board decomposition helpers take the context they need; the arg
 # count is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/graph/nodes/check_board.py" = ["PLR0913"]
+# 437: dispatch decomposition passes the env-cache/subprocess context through
+# phase helpers; the arg count is the price of keeping each extracted
+# phase helper <= 100 lines.
+"src/coordinare/graph/nodes/dispatch_performer.py" = ["PLR0913"]
 # 440: eval scenarios drive the harness with fixture tokens (like "t"), never
 # real credentials; the scenario files are standalone CLI entry points whose
 # scenario reports are stdout output. Their git fixture setup passes static,
