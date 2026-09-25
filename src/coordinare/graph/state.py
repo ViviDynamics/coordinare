@@ -261,6 +261,11 @@ class CoordinareState(TypedDict, total=False):
     last_production_at: datetime | None
     last_production_fingerprint: tuple[int, int] | None
     convergence_reprieves: int
+    # 425 — observer core. Written only when a symphony's observer is enabled;
+    # absent (never defaulted) otherwise so disabled monitoring is byte-identical.
+    observer_backend: ConductingBackendProtocol | None
+    observer_repetition_count: int
+    observer_verdict: str | None
     # 048: per-cycle pipeline admission set, computed in daemon and consulted by
     # dispatch_has_pipeline_slot. Underscore keys are written via state[...], so
     # the TypedDict must carry it for strict typing.

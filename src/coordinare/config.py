@@ -25,6 +25,7 @@ from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
     detect_duplicate_endpoints,
 )
+from coordinare.services.observer import OBSERVER_TRIGGERS
 
 # ---------------------------------------------------------------------------
 # 052 — Branch collision strategy
@@ -1826,6 +1827,57 @@ class TestEnvConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 425 — Observer core (per-symphony lightweight judge)
+# ---------------------------------------------------------------------------
+
+
+class ObserverConfig(BaseModel):
+    """Configuration for the observer: a lightweight judge woken when mechanical
+    triggers fire during monitoring.
+
+    Triggers are wake conditions, not judges — they bias toward waking, never
+    against. The verdict vocabulary is fixed (continue | correction | kill |
+    retune | escalate); 425 ships the schema, the call, and the continue path
+    only. ``model_endpoint`` is a name in the global ``model_endpoints`` catalog
+    (080 resolution chain), so the judge runs on a cheap model while the
+    performers keep their own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    model_endpoint: str | None = None  # name in the 080 model_endpoints catalog
+    # None = the full trigger vocabulary. A subset gates which wakes are armed.
+    triggers: list[str] | None = None
+    quiet_window_seconds: float = Field(default=300.0, ge=0.0)  # 0 disables the trigger
+    repetition_signature_threshold: int = Field(default=3, ge=1, le=100)
+    token_burn_min_tokens: int = Field(default=200_000, ge=0)
+    # Bounds for a future retune action (426+); carried in the prompt evidence.
+    retune_bounds: dict[str, Any] | None = None
+
+    @field_validator("triggers")
+    @classmethod
+    def _validate_trigger_vocabulary(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        unknown = set(v) - OBSERVER_TRIGGERS
+        if unknown:
+            msg = (
+                f"unknown observer triggers: {sorted(unknown)}; "
+                f"vocabulary is {sorted(OBSERVER_TRIGGERS)}"
+            )
+            raise ValueError(msg)
+        return v
+
+    @model_validator(mode="after")
+    def _validate_enabled(self) -> ObserverConfig:
+        if self.enabled and not self.model_endpoint:
+            msg = "model_endpoint is required when observer.enabled is true"
+            raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
 # 057 — Symphony Management & Multi-Project Orchestration
 # ---------------------------------------------------------------------------
 
@@ -1850,6 +1902,9 @@ class SymphonyConfig(BaseModel):
 
     # 074 — Persona scope tiering per symphony (opt-in; FR-010 additive default).
     persona_scope: PersonaScopeConfig | None = None
+
+    # 425 — Observer core per symphony (opt-in; None = no observer at all).
+    observer: ObserverConfig | None = None
 
     # 092 — Symphony test-environment injection (opt-in; None = agent-discovery fallback).
     test_env: TestEnvConfig | None = None
@@ -2018,6 +2073,22 @@ class CoordinareConfiguration(BaseModel):
                 msg = (
                     f"Symphony '{symphony.name}' env_bootstrap_performer_id "
                     f"'{symphony.env_bootstrap_performer_id}' not found in performer_endpoints"
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def validate_observer_model_endpoints(self) -> CoordinareConfiguration:
+        """425: an enabled observer must reference a resolvable 080 model_endpoint."""
+        for symphony in self.symphonies:
+            observer = symphony.observer
+            if observer is None or not observer.enabled:
+                continue
+            name = observer.model_endpoint or ""
+            if self.global_config.resolve_model_endpoint(name) is None:
+                msg = (
+                    f"Symphony '{symphony.name}' observer references "
+                    f"unknown model_endpoint '{name}'"
                 )
                 raise ValueError(msg)
         return self

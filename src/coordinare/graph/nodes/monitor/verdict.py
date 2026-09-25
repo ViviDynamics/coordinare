@@ -15,6 +15,7 @@ from coordinare.graph.nodes.monitor.constants import (
     EXPECTED_STAGE_MARKER,
     VERDICT_STAGES,
 )
+from coordinare.services.observer import observer_enabled
 
 logger = structlog.get_logger(__name__)
 
@@ -708,6 +709,18 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
             "last_production_at": None,
             "last_production_fingerprint": None,
             "convergence_reprieves": 0,
+            # 425: the observer's repetition streak and verdict belong to ONE
+            # performer run, exactly like the production clock above them.
+            # Guarded so the default-off path stays byte-identical: an
+            # ordinary stage advance must not write observer keys at all.
+            **(
+                {
+                    "observer_repetition_count": 0,
+                    "observer_verdict": None,
+                }
+                if observer_enabled(state)
+                else {}
+            ),
         }
         artefact_updates = _record_pr_artefacts(state, status)
         if "current_card" in artefact_updates:

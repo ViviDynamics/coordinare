@@ -380,7 +380,13 @@ def test_initial_state_has_active_sessions() -> None:
 def test_session_fields_match_card_session_keys() -> None:
     """All keys in _SESSION_FIELDS should be valid CardSession keys."""
     session = create_session_from_card(_sample_card())
+    # 425: session-optional fields round-trip when present but are not
+    # initialized by create_session_from_card — a fresh session must keep
+    # them absent so the default-off observer path stays byte-identical.
+    session_optional = {"observer_repetition_count", "observer_verdict"}
     for field in _SESSION_FIELDS:
+        if field in session_optional:
+            continue
         assert field in session, f"{field} missing from CardSession"
 
 
@@ -415,6 +421,10 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "ci_gate_advisory_failures",
         "env_blocked",
         "last_rebase_attempt",
+        # 425: written only when a symphony's observer is enabled; absent
+        # otherwise so disabled monitoring is byte-identical.
+        "observer_repetition_count",
+        "observer_verdict",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

@@ -259,6 +259,12 @@ class CardSession(TypedDict, total=False):
     last_attempt_id: str | None
     last_attempt_log_path: str | None
     last_attempt_failure_source: str | None
+    # 425: the observer's repetition streak and last verdict are per-card
+    # (per performer run) state. MUST round-trip through session ↔ state or
+    # one card's streak is inherited by the next card whose step runs on the
+    # same flat state.
+    observer_repetition_count: int
+    observer_verdict: str | None
     # 354: first cycle this card wanted a performer slot and none was free.
     # Stamped by dispatch_performer's at-capacity branch; cleared on acquire.
     # MUST round-trip through session ↔ state or the queued wait resets every
@@ -378,6 +384,17 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # 354: queued-for-slot marker (first cycle wanting a slot, cleared on
     # acquire). Round-trips so the board row's wait elapsed survives restarts.
     "slot_queued_since",
+    # 425: per-card observer streak and verdict (see CardSession note).
+    "observer_repetition_count",
+    "observer_verdict",
+)
+
+# 425: fields that round-trip when present but may be absent from a session
+# (a card whose observer is disabled, or whose run has not woken it yet).
+# On hydration, absent means "clear from the flat state", never "leave stale".
+_SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "observer_repetition_count",
+    "observer_verdict",
 )
 
 
@@ -486,6 +503,12 @@ def session_to_state(session: CardSession, state: CoordinareState) -> None:
     for field in _SESSION_FIELDS:
         if field in session:
             state[field] = session[field]
+    for field in _SESSION_OPTIONAL_FIELDS:
+        if field not in session:
+            # 425: session-optional fields hydrate exactly. A card without
+            # them must not inherit another card's values left behind in the
+            # flat state by a previous card's step (multi-card fanout).
+            state.pop(field, None)  # type: ignore[typeddict-item]
 
 
 def state_to_session(state: CoordinareState) -> CardSession:

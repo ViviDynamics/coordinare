@@ -154,6 +154,14 @@ from coordinare.services.no_progress import (  # noqa: E402
     note_progress,
     should_block,
 )
+from coordinare.services.observer import (  # noqa: E402
+    OBSERVER_TRIGGERS,
+    ObserverQuery,
+    TriggerSnapshot,
+    build_prompt,
+    evaluate_triggers,
+    observe,
+)
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
     production_advanced,
@@ -217,6 +225,7 @@ class _BodyCtx:
     perf_svc: Any = None
     performer_services: Any = None
     policy: Any = None
+    production_advanced: bool = False
     pr_url: Any = None
     prior_session_id: Any = None
     reason: Any = None
@@ -775,9 +784,11 @@ async def _phase_merge_events(
         # does not count: the turn this was filed for emitted 164 progress
         # deltas while changing zero files and running zero commands.
         _fingerprint = production_fingerprint(state["performer_events"])
-        if production_advanced(_fingerprint, state.get("last_production_fingerprint")):
+        _advanced = production_advanced(_fingerprint, state.get("last_production_fingerprint"))
+        if _advanced:
             state["last_production_fingerprint"] = _fingerprint
             state["last_production_at"] = datetime.now(UTC)
+        ctx.production_advanced = _advanced
         # 138 T023: record in the same invocation that observed the batch —
         # the earliest anything can, and what makes SC-004 measurable. Hand
         # over the WHOLE reported list without pre-diffing: backends
@@ -3479,6 +3490,123 @@ async def _phase_in_progress(state: CoordinareState, ctx: _BodyCtx) -> Coordinar
 
     return state
 
+async def _phase_observer(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+) -> CoordinareState | None:
+    """425: the observer core — wake a lightweight judge when triggers fire.
+
+    Runs after the status gate and before the stall watchdog, so the
+    repetition snapshot compares against LAST cycle's fingerprint (the
+    watchdog writes this cycle's). Disabled means zero writes: monitoring is
+    byte-identical. A dead or malformed observer is no action — never a
+    wedge, never a bounce.
+    """
+    sym_name = state.get("current_symphony")
+    sym_cfg = (state.get("symphony_configs") or {}).get(sym_name) if sym_name else None
+    observer_cfg = getattr(sym_cfg, "observer", None) if sym_cfg is not None else None
+    if observer_cfg is None or not getattr(observer_cfg, "enabled", False):
+        return None
+
+    card_id = ctx.card_id
+    stage = ctx.stage
+    now = datetime.now(UTC)
+
+    # Repetition: compare this cycle's event-text fingerprint with LAST
+    # cycle's. The stall watchdog runs later in the phase list and writes the
+    # current fingerprint into the state, so at this point the state still
+    # holds the previous poll's value.
+    current_fp = progress_fingerprint(ctx.new_events)
+    prev_fp = state.get("last_progress_fingerprint")
+    repetition_count = (
+        int(state.get("observer_repetition_count") or 0) + 1
+        if prev_fp is not None and current_fp == prev_fp
+        else 1
+    )
+    state["observer_repetition_count"] = repetition_count
+
+    # Watchdog pending: mirror of the stall-watchdog trip condition, computed
+    # from the same values the watchdog phases will read this cycle.
+    dd_cfg = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+    stall_secs = int(getattr(dd_cfg, "stall_timeout_seconds", 0) or 0)
+    last_progress_at = state.get("last_progress_at")
+    watchdog_pending = (
+        stall_secs > 0
+        and prev_fp is not None
+        and current_fp == prev_fp
+        and isinstance(last_progress_at, datetime)
+        and (now - last_progress_at).total_seconds() > stall_secs
+    )
+
+    # Quiet age: from the last produced-anything instant, falling back to
+    # dispatch. Neither anchor is missing information, not evidence of quiet.
+    prod_at = state.get("last_production_at")
+    if not isinstance(prod_at, datetime):
+        prod_at = state.get("agent_dispatch_at")
+    quiet_age_s = (now - prod_at).total_seconds() if isinstance(prod_at, datetime) else 0.0
+
+    evidence_stream = state.get("performer_events") or []
+    ev = read_evidence(evidence_stream)
+    evidence = {
+        "quiet_age_s": round(quiet_age_s),
+        "tool_uses": ev.tool_uses,
+        "completions": ev.completions,
+        "total_events": ev.total_events,
+        "tokens_delta": int(ctx.tokens_delta or 0),
+        "production_advanced": ctx.production_advanced,
+        "repetition_count": repetition_count,
+    }
+    snapshot = TriggerSnapshot(
+        quiet_age_s=quiet_age_s,
+        quiet_window_s=float(getattr(observer_cfg, "quiet_window_seconds", 0.0) or 0.0),
+        repetition_count=repetition_count,
+        repetition_threshold=int(getattr(observer_cfg, "repetition_signature_threshold", 3) or 3),
+        tokens_delta=evidence["tokens_delta"],
+        token_burn_min_tokens=int(getattr(observer_cfg, "token_burn_min_tokens", 200_000) or 0),
+        production_moved=ctx.production_advanced,
+        watchdog_pending=watchdog_pending,
+    )
+    configured = getattr(observer_cfg, "triggers", None)
+    enabled_triggers = frozenset(configured) if configured is not None else OBSERVER_TRIGGERS
+    triggers = evaluate_triggers(snapshot, enabled_triggers)
+    if not triggers:
+        return None
+
+    # Resolve the backend per wake. It is deliberately NOT cached on state:
+    # symphony configs differ per symphony, so a shared cache would send one
+    # symphony's evidence to another's model. Construction is trivially cheap
+    # next to the observe call itself. A pre-seeded backend (tests, harnesses)
+    # always wins.
+    backend = state.get("observer_backend")
+    if backend is None:
+        from coordinare.services.conducting import build_model_endpoint_backend
+        global_cfg = getattr(state.get("coordinare_config"), "global_config", None)
+        backend = build_model_endpoint_backend(global_cfg, observer_cfg.model_endpoint)
+        if backend is None:
+            return None
+
+    # Metadata only (425 review): the prompt never carries raw event text.
+    # Performer events are untrusted telemetry (command output, diffs); type
+    # and length preserve the shape of the recent tail without the contents.
+    recent_meta = [
+        f"{e.get('type', 'event')}/{len(str(e.get('text', '')))}c"
+        for e in evidence_stream[-5:]
+        if isinstance(e, dict)
+    ]
+    verdict = await observe(
+        backend,
+        ObserverQuery(
+            card_id=card_id,
+            stage=stage,
+            triggers=triggers,
+            evidence=evidence,
+            prompt=build_prompt(evidence, triggers, recent_meta),
+        ),
+    )
+    if verdict is not None:
+        state["observer_verdict"] = verdict.verdict
+    return None
+
 _PHASES = (
     _phase_board_reconcile,
     _phase_stall_expired,
@@ -3494,6 +3622,7 @@ _PHASES = (
     _phase_qa_passed,
     phase_970,
     _phase_status_gate,
+    _phase_observer,
     _phase_stall_watchdog,
     _phase_terminal_markers,
     phase_1206,
