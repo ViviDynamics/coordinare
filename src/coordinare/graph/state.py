@@ -266,6 +266,10 @@ class CoordinareState(TypedDict, total=False):
     observer_backend: ConductingBackendProtocol | None
     observer_repetition_count: int
     observer_verdict: str | None
+    # 429 — recent observer verdicts with evidence summaries, oldest first.
+    # Written by the monitor's observer phase on every verdict; the dashboard
+    # session view renders it. Transient per run, like the other observer keys.
+    observer_verdicts: list[dict[str, Any]]
     # 426 — pending observer correction, {signature, body}. Written by the
     # monitor's observer phase, merged into the NEXT dispatch payload's
     # relay_feedback by dispatch_performer, and cleared on successful dispatch

@@ -271,6 +271,9 @@ class CardSession(TypedDict, total=False):
     # (absent from state_store): a restart drops it — fail-safe, the observer
     # re-issues on its next wake.
     observer_correction: dict[str, Any] | None
+    # 429: the recent observer verdicts ride the same per-card fanout merge;
+    # absent until a verdict lands so disabled monitoring stays byte-identical.
+    observer_verdicts: list[dict[str, Any]]
     # 354: first cycle this card wanted a performer slot and none was free.
     # Stamped by dispatch_performer's at-capacity branch; cleared on acquire.
     # MUST round-trip through session ↔ state or the queued wait resets every
@@ -395,6 +398,8 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "observer_verdict",
     # 426: pending observer correction (see CardSession note).
     "observer_correction",
+    # 429: recent observer verdicts with evidence summaries.
+    "observer_verdicts",
 )
 
 # 425: fields that round-trip when present but may be absent from a session
@@ -406,6 +411,7 @@ _SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
     # 426: absent after hydration means no pending correction — never inherit
     # a stale one from the flat state a previous card's step left behind.
     "observer_correction",
+    "observer_verdicts",
 )
 
 

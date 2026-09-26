@@ -417,5 +417,19 @@ check('rows bounded at AF_MAX_ROWS', feed.childElementCount === AF_MAX_ROWS,
 check('retained entry list bounded too', _afEntries.length === AF_MAX_ROWS,
       String(_afEntries.length));
 
+// ---------------------------------------------------------------------------
+section('429 — observer verdicts render their own chip');
+resetFeed();
+afAppend([entry(600, {
+  activity_type: 'observer_verdict',
+  text: 'kill: burning without results',
+})]);
+const observerRow = feed.rows[0];
+check('the chip carries the observer_verdict class',
+      observerRow.includes('ev-observer_verdict'), observerRow.slice(0, 120));
+check('the chip label is OBSERVER', observerRow.includes('>OBSERVER<'));
+check('the verdict text is on the row',
+      observerRow.includes('kill: burning without results'));
+
 console.log('\nSUMMARY ' + passed + ' ' + failed);
 process.exit(failed ? 1 : 0);

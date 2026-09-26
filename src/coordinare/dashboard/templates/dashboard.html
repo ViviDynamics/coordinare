@@ -130,6 +130,9 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .ev-quiet     { background: var(--color-ev-quiet); color: var(--color-text-muted); }
 .ev-stall     { background: var(--color-ev-stall); color: var(--color-accent-orange); }
 .ev-stuck     { background: var(--color-ev-stuck); color: var(--color-accent-red); }
+/* 429: the observer's verdict entries reuse the stall pairing, so no new
+   contrast pairing is introduced for the feed chip. */
+.ev-observer_verdict { background: var(--color-ev-stall); color: var(--color-accent-orange); }
 /* 138: activity feed */
 .af-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: 12px; }
 .af-controls label { color: var(--color-text-muted); }
@@ -172,6 +175,20 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .perf-log-row:last-child { border-bottom: none; }
 .perf-log-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
 .perf-log-text { word-break: break-word; color: var(--color-text-primary); }
+/* 429: the session view's observer-verdicts panel. The chips reuse the feed's
+   existing .ev-* pairings, so every pairing is already inside the contrast
+   gate — no new colour arithmetic was introduced here. */
+.ov-list { max-height: 160px; overflow-y: auto; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; padding: 8px; }
+.ov-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--color-bg-surface); align-items: start; font-size: 12px; color: var(--color-text-primary); }
+.ov-row:last-child { border-bottom: none; }
+.ov-meta { color: var(--color-text-muted); font-size: 11px; margin-top: 2px; }
+.ov-time { color: var(--color-text-muted); font-size: 11px; margin-left: 6px; }
+.ov-verdict { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px; letter-spacing: .04em; font-weight: bold; text-align: center; }
+.ov-continue   { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ov-correction { background: var(--color-ev-stall); color: var(--color-accent-orange); }
+.ov-retune     { background: var(--color-ev-stall); color: var(--color-accent-orange); }
+.ov-kill       { background: var(--color-ev-stuck); color: var(--color-accent-red); }
+.ov-escalate   { background: var(--color-ev-stuck); color: var(--color-accent-red); }
 .jump-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
 .cfg-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: monospace; }
 .cfg-btn:hover:not(:disabled) { border-color: var(--color-accent-blue); }
@@ -1664,7 +1681,9 @@ var AF_LABELS = {
   // back to the raw uppercased type while every other type had a short label.
   stream_truncated: 'TRUNCATED',
   // 343: step boundaries are the spine of the trail; give them their own chip.
-  workflow_step: 'STEP'
+  workflow_step: 'STEP',
+  // 429: an observer verdict's chip. The verb itself is in the entry text.
+  observer_verdict: 'OBSERVER'
 };
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first

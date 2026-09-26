@@ -18,6 +18,7 @@ from coordinare.dashboard.helpers import (
 )
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.services.activity_log import ActivityLog
+from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -449,6 +450,11 @@ class DashboardStore:
             "performer_events": list(sess.get("performer_events") or [])[
                 -SESSION_EVENT_LIMIT:
             ],
+            # 429: the recent observer verdicts, newest last, for the
+            # session view's "why did the coordinare do that" panel.
+            "observer_verdicts": list(sess.get("observer_verdicts") or [])[
+                -OBSERVER_RECENT_VERDICTS:
+            ],
             "performer_metrics": sess.get("performer_metrics"),
             "session_stats": DashboardStore._serialise_session_stats(sess.get("session_stats")),
             "backend_ui_url": sess.get("backend_ui_url"),
@@ -540,6 +546,11 @@ class DashboardStore:
             "feedback_cycle_count": int(daemon.state.get("feedback_cycle_count") or 0),
             "total_feedback_cycles": int(daemon.state.get("total_feedback_cycles") or 0),
             "triage_blocks": int(daemon.state.get("triage_blocks") or 0),
+            # 429: the solo path synthesizes from flat state, where the
+            # monitor's observer phase wrote the recent verdicts.
+            "observer_verdicts": list(
+                daemon.state.get("observer_verdicts") or [],
+            )[-OBSERVER_RECENT_VERDICTS:],
             "agent_dispatch_at": (
                 _top_dispatch.isoformat()
                 if isinstance(_top_dispatch, datetime)
