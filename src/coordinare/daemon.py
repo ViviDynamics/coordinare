@@ -65,11 +65,17 @@ logger = structlog.get_logger(__name__)
 # daemon launches.  The reconciliation pass uses this on subsequent restarts
 # to distinguish "containers I launched" from "containers from a prior daemon
 # run that should be reaped."
-_DAEMON_STARTED_AT: str = datetime.now(UTC).isoformat()
+# The value must satisfy the K8s label-value rules (≤63 chars of
+# [A-Za-z0-9_.-], starting and ending alphanumeric) because the same labels
+# ride Kubernetes Pod manifests: an ISO8601 isoformat() string carries ':' and
+# '+' and the K8s API rejects such Pods with a 422. Docker accepts both
+# spellings, so one label-safe timestamp keeps the two runtimes identical.
+_DAEMON_STARTED_AT: str = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def get_daemon_started_at() -> str:
-    """Return the daemon's start-time ISO8601 UTC string (spec 076 FR-009)."""
+    """Return the daemon's start time as a K8s-label-safe UTC timestamp
+    (``YYYYMMDDTHHMMSSZ``, spec 076 FR-009)."""
     return _DAEMON_STARTED_AT
 
 

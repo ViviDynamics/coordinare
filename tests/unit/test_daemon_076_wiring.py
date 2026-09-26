@@ -120,6 +120,26 @@ def test_wedge_invariant_falls_back_to_current_card_if_active_unset() -> None:
     assert resolution == WedgeResolution.RELEASED
 
 
+def test_daemon_started_at_is_a_valid_k8s_label_value() -> None:
+    """The daemon_started_at value labels Docker containers AND K8s Pods.
+
+    The cluster-cluster E2E validation (2026-09-26) showed the K8s API
+    rejects label values carrying ':' or '+' with a 422 — an ISO8601
+    `datetime.isoformat()` string is exactly that. The value must satisfy
+    the K8s label-value rules at its single source in daemon.py so both
+    runtimes receive the same correlation value.
+    """
+    import re
+
+    from coordinare.daemon import get_daemon_started_at
+
+    value = get_daemon_started_at()
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", value), (
+        f"daemon_started_at {value!r} is not a valid Kubernetes label value"
+    )
+    assert value[-1].isalnum(), f"daemon_started_at {value!r} must end alphanumeric"
+
+
 def test_board_reconcile_normalizes_status_case() -> None:
     """'In Progress' on the card == IN_PROGRESS column → agreed."""
     state = {

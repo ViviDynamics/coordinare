@@ -245,6 +245,37 @@ class TestPodManifest:
         ]
         assert labels[PERFORMER_ID_LABEL] == "impl-1"
 
+    def test_076_coordinare_labels_are_valid_k8s_label_values(self) -> None:
+        """Cluster E2E regression (2026-09-26): the 076 coordinare.* label set
+        rides both the Docker and K8s runtimes, and the K8s API 422s a Pod
+        whose label value carries ':' or '+' — which the old ISO8601
+        daemon_started_at value did. Every value the dispatch site
+        (http_performer_service.dispatch_card) builds must satisfy the K8s
+        label-value rules once build_pod_manifest merges them into the
+        manifest.
+        """
+        import re
+        from uuid import uuid4
+
+        from coordinare.daemon import get_daemon_started_at
+        from coordinare.services.kubernetes_runtime import build_pod_manifest
+
+        extra_labels = {
+            "coordinare.session_id": str(uuid4()),
+            "coordinare.daemon_started_at": get_daemon_started_at(),
+            "coordinare.spec_version": "076",
+            "coordinare.card_id": "PVTI_lADOB-V2yy4ABc0Wzbae",
+            "coordinare.performer_stage": "implementing",
+        }
+        labels = build_pod_manifest(
+            _config(), pod_name="p-1", performer_id="impl-1", extra_labels=extra_labels,
+        )["metadata"]["labels"]
+        for key, value in labels.items():
+            assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", value), (
+                f"Pod label {key!r} value {value!r} is not a valid Kubernetes label value"
+            )
+            assert value[-1].isalnum(), f"Pod label {key!r} value {value!r} must end alphanumeric"
+
     def test_requests_no_capabilities(self) -> None:
         """FR-014 — egress control is not offered on Kubernetes.
 
