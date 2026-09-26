@@ -1853,6 +1853,12 @@ class ObserverConfig(BaseModel):
     only. ``model_endpoint`` is a name in the global ``model_endpoints`` catalog
     (080 resolution chain), so the judge runs on a cheap model while the
     performers keep their own.
+
+    Enabling this also folds the stall watchdog's expired floor (430) into the
+    observer: a stalled turn is judged once by this observer instead of by the
+    retired standalone convergence ask, and the floor blocks untouched when
+    this is disabled. The ``triggers`` subset gates the trigger-driven wake
+    only — the stall fold is gated by ``enabled`` alone.
     """
 
     model_config = ConfigDict(extra="forbid")

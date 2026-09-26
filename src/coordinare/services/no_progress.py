@@ -17,7 +17,8 @@ which is reasonable once. None of them counted, which made all three unbounded.
 The existing ceilings do not cover this, and it is worth being precise about
 why. The session ceiling (#382) measures from the last thing the performer
 PRODUCED, and these runs produce plenty: files changed, tool calls, a completed
-turn. The convergence judgement (#389) only runs when that floor trips. Both
+turn. The observer's stall fold (430, successor of the #389 convergence ask)
+only runs when that floor trips. Both
 are aimed at a performer that has stopped working. This is the opposite case --
 a performer working hard, finishing cleanly, and getting nowhere, in a loop
 coordinare itself drives.
