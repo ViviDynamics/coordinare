@@ -139,6 +139,389 @@ _PHASE_PRIORITY: dict[str, int] = {
 }
 
 
+def _coerce_counter(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    try:
+        return max(0, int(value))
+    except (ValueError, OverflowError):
+        return 0
+
+
+def _validated_counter_map(raw: Any) -> dict[str, int]:
+    """Validate a per-key int counter map (reject bools/non-finite/overflow)."""
+    counters: dict[str, int] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            # Reject bools (isinstance(True, int) is True) and non-finite
+            # floats so a corrupted snapshot can't crash startup on int().
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            try:
+                counters[str(k)] = int(v)
+            except (ValueError, OverflowError):
+                continue
+    return counters
+
+
+def _validated_nonneg_counter_map(raw: Any) -> dict[str, int]:
+    """Per-key int counter map that additionally requires values >= 0 (390)."""
+    counters: dict[str, int] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            # 390: same defensive read as bounce_counter below — a corrupted
+            # snapshot must not crash startup, and an unreadable entry is
+            # treated as budget unspent (costs one dispatch, not the daemon).
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            try:
+                parsed = int(v)
+            except (ValueError, OverflowError):
+                continue
+            if parsed >= 0:
+                counters[str(k)] = parsed
+    return counters
+
+
+def _persist_repair_audit(raw: Any) -> list[RepairDecisionRecord]:
+    """090-L3: validate each repair-audit entry against RepairDecisionRecord
+    and drop any that fail. A corrupt entry is skipped, never crash-on-load:
+    PersistedSession's own coercion raises on a malformed list item rather
+    than dropping it, which would fail the whole snapshot load.
+    """
+    repair_audit: list[RepairDecisionRecord] = []
+    if isinstance(raw, (list, tuple)):
+        for r in raw:
+            if not isinstance(r, dict):
+                continue
+            try:
+                repair_audit.append(RepairDecisionRecord(**r))
+            except (ValidationError, TypeError):
+                continue
+    return repair_audit
+
+
+def _persist_env_blocked(raw: Any) -> dict[str, Any] | None:
+    """095: per-card ENV_BLOCKED hold/dedup state.  Persist a dict of
+    identifiers and diagnostic strings (head_sha/pattern_id/cause/action) so a
+    still-active block does not re-notify the operator after a restart
+    (FR-006).  The dedup check keys on head_sha + pattern_id, so a dict
+    missing or corrupting EITHER would silently break dedup; degrade the
+    WHOLE thing to None (re-notify once) unless both are non-empty strings.
+    cause/action are best-effort strings; 263 also carries retry history.
+    """
+    env_blocked: dict[str, Any] | None = None
+    if isinstance(raw, dict):
+        hs = raw.get("head_sha")
+        pid = raw.get("pattern_id")
+        if isinstance(hs, str) and hs and isinstance(pid, str) and pid:
+            env_blocked = {"head_sha": hs, "pattern_id": pid}
+            for k in ("cause", "action", "blocked_at"):
+                v = raw.get(k)
+                if isinstance(v, str):
+                    env_blocked[k] = v
+            # 263: retain the outage identity and attempted retries across
+            # restarts; dropping them allows a second retry on the same head.
+            for k in ("check_names", "retried_checks"):
+                values = raw.get(k)
+                if isinstance(values, list):
+                    env_blocked[k] = [v for v in values if isinstance(v, str) and v]
+            jobs = raw.get("retried_jobs")
+            if isinstance(jobs, list):
+                env_blocked["retried_jobs"] = [v for v in jobs if type(v) is int and v > 0]
+    return env_blocked
+
+
+def _persist_last_rebase_attempt(raw: Any) -> dict[str, Any] | None:
+    """096: per-card auto-rebase anti-thrash marker. Persist only when all
+    three keys are non-empty strings; anything malformed degrades to None
+    (re-attempt allowed) so a corrupt marker never wedges a card.
+    """
+    last_rebase_attempt: dict[str, Any] | None = None
+    if isinstance(raw, dict):
+        _m, _h, _o = raw.get("main_sha"), raw.get("head_sha"), raw.get("outcome")
+        if all(isinstance(x, str) and x for x in (_m, _h, _o)):
+            last_rebase_attempt = {"main_sha": _m, "head_sha": _h, "outcome": _o}
+    return last_rebase_attempt
+
+
+def _persist_assessor_questions(raw: Any) -> list[dict]:
+    """123: answered assessor Q&A — normalize to well-formed {"question","answer"}
+    dicts so a malformed entry never fails the whole snapshot load AND never
+    reaches dispatch_performer's prior_clarifications injection missing a key.
+    """
+    assessor_open_questions: list[dict] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, dict) and item.get("question"):
+                assessor_open_questions.append(
+                    {
+                        "question": str(item.get("question", "")),
+                        "answer": str(item.get("answer", "")),
+                    },
+                )
+    return assessor_open_questions
+
+
+def _persist_stage_verdicts(raw: Any) -> dict[str, StageVerdict]:
+    """125: stage-verdict memory — validate each slot via StageVerdict and
+    drop malformed ones here (a bad slot == no slot == dispatch), so a
+    corrupt entry never fails the whole snapshot save/load.
+    """
+    stage_verdicts: dict[str, StageVerdict] = {}
+    if isinstance(raw, dict):
+        for sv_stage, sv_entry in raw.items():
+            if not isinstance(sv_entry, dict):
+                continue
+            try:
+                stage_verdicts[str(sv_stage)] = StageVerdict(**sv_entry)
+            except (ValidationError, TypeError):
+                continue
+    return stage_verdicts
+
+
+def _persist_comment_ids(raw: Any) -> list[int]:
+    """125: per-card issue-comment dedup watermark.  Bound the processed-ID
+    list to the numerically largest 2000 (GitHub comment IDs are
+    monotonic → largest == newest); reject bools/non-ints defensively.
+    """
+    comment_ids: list[int] = []
+    if isinstance(raw, (set, list, tuple)):
+        for cid_val in raw:
+            # GitHub comment IDs are integers. Accept only int (never
+            # bool, never float): int(42.9) would silently coerce to an
+            # unrelated id (42) and corrupt the dedup watermark. Matches
+            # the last_issue_comment_id handling in the scalar fields.
+            if isinstance(cid_val, bool) or not isinstance(cid_val, int):
+                continue
+            comment_ids.append(cid_val)
+    return sorted(set(comment_ids))[-2000:]
+
+
+def _persist_feedback_ledger(raw: Any) -> list[FeedbackItemRecord]:
+    """126: terminal-success-floor state — validate ledger entries via
+    FeedbackItemRecord and drop malformed ones (bad entry == no entry ==
+    the floor has less to enforce, the safe direction).
+    """
+    feedback_ledger: list[FeedbackItemRecord] = []
+    if isinstance(raw, (list, tuple)):
+        for fb_entry in raw:
+            if not isinstance(fb_entry, dict):
+                continue
+            try:
+                feedback_ledger.append(FeedbackItemRecord(**fb_entry))
+            except (ValidationError, TypeError):
+                continue
+    return feedback_ledger
+
+
+def _persist_documenting_side(raw: Any) -> DocumentingSideRun | None:
+    """165: the side-run record is validated here so a corrupt entry drops to
+    None instead of failing the snapshot save."""
+    documenting_side: DocumentingSideRun | None = None
+    if isinstance(raw, DocumentingSideRun):
+        documenting_side = raw
+    elif isinstance(raw, dict) and raw.get("blueprint_hash"):
+        try:
+            documenting_side = DocumentingSideRun(**raw)
+        except (ValidationError, TypeError):
+            documenting_side = None
+    return documenting_side
+
+
+def _persist_lifecycle_fields(sess: dict[str, Any]) -> dict[str, Any]:
+    """Validate the lifecycle-stamp session fields for snapshot persistence."""
+    completed_raw = sess.get("lifecycle_completed_at")
+    completed = completed_raw if isinstance(completed_raw, datetime) else None
+    processed_ids_raw = sess.get("processed_review_ids") or ()
+    processed_ids: list[str]
+    if isinstance(processed_ids_raw, (set, list, tuple)):
+        processed_ids = sorted({str(r) for r in processed_ids_raw})
+    else:
+        processed_ids = []
+    # 128: per-card stale-review dedup marker
+    ssr_raw = sess.get("surfaced_stale_reviews") or {}
+    surfaced_stale = (
+        {str(k): str(v) for k, v in ssr_raw.items()} if isinstance(ssr_raw, dict) else {}
+    )
+    questions_raw = sess.get("open_questions") or ()
+    clarifications_raw = sess.get("card_clarifications") or ()
+    relay_raw = sess.get("relay_feedback") or ()
+    last_notified_raw = sess.get("last_blocked_notified_at")
+    last_notified = last_notified_raw if isinstance(last_notified_raw, datetime) else None
+    last_slack_raw = sess.get("last_blocked_slack_delivered_at")
+    last_slack = last_slack_raw if isinstance(last_slack_raw, datetime) else None
+    head_dispatch_raw = sess.get("head_at_dispatch")
+    head_dispatch = (
+        head_dispatch_raw if isinstance(head_dispatch_raw, str) and head_dispatch_raw else None
+    )
+    head_last_raw = sess.get("head_at_last_turn")
+    head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
+    persona_scope_raw = sess.get("persona_scope")
+    persona_scope = persona_scope_raw if isinstance(persona_scope_raw, dict) else None
+    ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
+    ci_gate_rollup_sig = (
+        ci_gate_rollup_sig_raw
+        if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw
+        else None
+    )
+    return {
+        "completed": completed,
+        "processed_ids": processed_ids,
+        "surfaced_stale": surfaced_stale,
+        "questions_raw": questions_raw,
+        "clarifications_raw": clarifications_raw,
+        "relay_raw": relay_raw,
+        "last_notified": last_notified,
+        "last_slack": last_slack,
+        "head_dispatch": head_dispatch,
+        "head_last": head_last,
+        "persona_scope": persona_scope,
+        "ci_gate_rollup_sig": ci_gate_rollup_sig,
+        # 123: split bounce budget counters — coerce defensively (reject
+        # bools/non-int) so a corrupt snapshot can't crash startup on int().
+        "content_feedback_cycles": _coerce_counter(sess.get("content_feedback_cycles")),
+        "transient_error_cycles": _coerce_counter(sess.get("transient_error_cycles")),
+    }
+
+
+def _persist_review_fields(sess: dict[str, Any]) -> dict[str, Any]:
+    """Validate the review/attempt session fields for snapshot persistence."""
+    origin_raw = sess.get("feedback_origin_sha")
+    feedback_origin_sha = origin_raw if isinstance(origin_raw, str) and origin_raw else None
+    noop_raw = sess.get("noop_success_retries")
+    noop_success_retries = (
+        max(0, int(noop_raw))
+        if isinstance(noop_raw, int) and not isinstance(noop_raw, bool)
+        else 0
+    )
+    # 141: persist in-flight attempt telemetry IDs so close_attempt can
+    # write to the correct JSONL file after a daemon restart (A-008).
+    last_attempt_id_raw = sess.get("last_attempt_id")
+    last_attempt_id_val = (
+        str(last_attempt_id_raw)
+        if isinstance(last_attempt_id_raw, str) and last_attempt_id_raw
+        else None
+    )
+    last_attempt_log_path_raw = sess.get("last_attempt_log_path")
+    last_attempt_log_path_val = (
+        str(last_attempt_log_path_raw)
+        if isinstance(last_attempt_log_path_raw, str) and last_attempt_log_path_raw
+        else None
+    )
+    # 165: the blueprint is a plain dict (validated on the performer side);
+    # the side-run record is validated in _persist_documenting_side.
+    blueprint_raw = sess.get("blueprint")
+    blueprint = dict(blueprint_raw) if isinstance(blueprint_raw, dict) and blueprint_raw else None
+    # 166: the assessment is a plain dict (validated on the performer side);
+    # a corrupt entry drops to None instead of failing the snapshot save.
+    assessment_raw = sess.get("assessment")
+    assessment = (
+        dict(assessment_raw)
+        if isinstance(assessment_raw, dict)
+        and assessment_raw.get("goal")
+        and "ready" in assessment_raw
+        else None
+    )
+    # 169: the review_findings is a plain dict (validated on the performer
+    # side); a corrupt entry drops to None instead of failing the snapshot save.
+    review_findings_raw = sess.get("review_findings")
+    review_findings = (
+        dict(review_findings_raw)
+        if isinstance(review_findings_raw, dict)
+        and isinstance(review_findings_raw.get("changed_files"), list)
+        and isinstance(review_findings_raw.get("verdict"), str)
+        else None
+    )
+    last_comment_raw = sess.get("last_issue_comment_id")
+    last_issue_comment_id: int | None = (
+        int(last_comment_raw)
+        if isinstance(last_comment_raw, int) and not isinstance(last_comment_raw, bool)
+        else None
+    )
+    return {
+        "feedback_origin_sha": feedback_origin_sha,
+        "noop_success_retries": noop_success_retries,
+        "last_attempt_id_val": last_attempt_id_val,
+        "last_attempt_log_path_val": last_attempt_log_path_val,
+        "blueprint": blueprint,
+        "assessment": assessment,
+        "review_findings": review_findings,
+        "last_issue_comment_id": last_issue_comment_id,
+    }
+
+
+def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession:
+    """Build the v2-snapshot-safe PersistedSession for one live session dict."""
+    f = {**_persist_lifecycle_fields(sess), **_persist_review_fields(sess)}
+    return PersistedSession(
+        card_id=card_id,
+        last_progress_at=sess.get("last_progress_at"),
+        last_progress_fingerprint=sess.get("last_progress_fingerprint"),
+        idle_timeout_retries=sess.get("idle_timeout_retries") or {},
+        performer_stage=(sess.get("performer_stage") or None),
+        phase=(sess.get("phase") or None),
+        lifecycle_completed_at=f["completed"],
+        processed_review_ids=f["processed_ids"],
+        surfaced_stale_reviews=f["surfaced_stale"],
+        open_questions=[str(q) for q in f["questions_raw"] if q is not None]
+        if isinstance(f["questions_raw"], (list, tuple, set))
+        else [],
+        card_clarifications=[dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)]
+        if isinstance(f["clarifications_raw"], (list, tuple))
+        else [],
+        relay_feedback=[dict(r) for r in f["relay_raw"] if isinstance(r, dict)]
+        if isinstance(f["relay_raw"], (list, tuple))
+        else [],
+        system_error_count=int(sess.get("system_error_count") or 0),
+        system_error_reason=(sess.get("system_error_reason") or None),
+        system_error_notified=bool(sess.get("system_error_notified")),
+        requirements_changed=bool(sess.get("requirements_changed")),
+        last_blocked_notified_at=f["last_notified"],
+        last_blocked_slack_delivered_at=f["last_slack"],
+        head_at_dispatch=f["head_dispatch"],
+        head_at_last_turn=f["head_last"],
+        persona_scope=f["persona_scope"],
+        bounce_counter=_validated_counter_map(sess.get("bounce_counter")),
+        no_progress_relays=_validated_nonneg_counter_map(sess.get("no_progress_relays")),
+        local_fix_counter=_validated_counter_map(sess.get("local_fix_counter")),
+        inheritance_repair_counter=_validated_counter_map(
+            sess.get("inheritance_repair_counter"),
+        ),
+        repair_audit=_persist_repair_audit(sess.get("repair_audit")),
+        ci_gate_rollup_signature=f["ci_gate_rollup_sig"],
+        env_blocked=_persist_env_blocked(sess.get("env_blocked")),
+        last_rebase_attempt=_persist_last_rebase_attempt(sess.get("last_rebase_attempt")),
+        content_feedback_cycles=f["content_feedback_cycles"],
+        transient_error_cycles=f["transient_error_cycles"],
+        assessor_open_questions=_persist_assessor_questions(sess.get("assessor_open_questions")),
+        stage_verdicts=_persist_stage_verdicts(sess.get("stage_verdicts")),
+        documentation_findings=sess.get("documentation_findings") or {},
+        blueprint=f["blueprint"],
+        blueprint_signature=sess.get("blueprint_signature") or None,
+        documenting_side=_persist_documenting_side(sess.get("documenting_side")),
+        processed_issue_comment_ids=_persist_comment_ids(
+            sess.get("processed_issue_comment_ids") or (),
+        ),
+        last_issue_comment_id=f["last_issue_comment_id"],
+        pipeline_admitted=bool(sess.get("pipeline_admitted", False)),
+        feedback_ledger=_persist_feedback_ledger(sess.get("feedback_ledger")),
+        feedback_origin_sha=f["feedback_origin_sha"],
+        noop_success_retries=f["noop_success_retries"],
+        last_attempt_id=f["last_attempt_id_val"],
+        last_attempt_log_path=f["last_attempt_log_path_val"],
+        last_attempt_failure_source=sess.get("last_attempt_failure_source")
+        if isinstance(sess.get("last_attempt_failure_source"), str)
+        and sess.get("last_attempt_failure_source") in {"human", "qa_role", "grader"}
+        else None,
+        assessment=f["assessment"],
+        review_findings=f["review_findings"],
+        # 354: persist the queued-for-slot stamp so the board row's wait
+        # elapsed survives a daemon restart.
+        slot_queued_since=sess.get("slot_queued_since"),
+    )
+
+
 def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, PersistedSession]:
     """Convert live `active_sessions` into the v2-snapshot-safe shape (065 Fix 7b)."""
     out: dict[str, PersistedSession] = {}
@@ -148,333 +531,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         cid = str(card_id)
         if not cid:
             continue
-        completed_raw = sess.get("lifecycle_completed_at")
-        completed = completed_raw if isinstance(completed_raw, datetime) else None
-        processed_ids_raw = sess.get("processed_review_ids") or ()
-        processed_ids: list[str]
-        if isinstance(processed_ids_raw, (set, list, tuple)):
-            processed_ids = sorted({str(r) for r in processed_ids_raw})
-        else:
-            processed_ids = []
-        # 128: per-card stale-review dedup marker
-        ssr_raw = sess.get("surfaced_stale_reviews") or {}
-        surfaced_stale = (
-            {str(k): str(v) for k, v in ssr_raw.items()} if isinstance(ssr_raw, dict) else {}
-        )
-        questions_raw = sess.get("open_questions") or ()
-        clarifications_raw = sess.get("card_clarifications") or ()
-        relay_raw = sess.get("relay_feedback") or ()
-        last_notified_raw = sess.get("last_blocked_notified_at")
-        last_notified = last_notified_raw if isinstance(last_notified_raw, datetime) else None
-        last_slack_raw = sess.get("last_blocked_slack_delivered_at")
-        last_slack = last_slack_raw if isinstance(last_slack_raw, datetime) else None
-        head_dispatch_raw = sess.get("head_at_dispatch")
-        head_dispatch = (
-            head_dispatch_raw if isinstance(head_dispatch_raw, str) and head_dispatch_raw else None
-        )
-        head_last_raw = sess.get("head_at_last_turn")
-        head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
-        persona_scope_raw = sess.get("persona_scope")
-        persona_scope = persona_scope_raw if isinstance(persona_scope_raw, dict) else None
-        no_progress_raw = sess.get("no_progress_relays")
-        no_progress_relays: dict[str, int] = {}
-        if isinstance(no_progress_raw, dict):
-            for k, v in no_progress_raw.items():
-                # 390: same defensive read as bounce_counter below — a corrupted
-                # snapshot must not crash startup, and an unreadable entry is
-                # treated as budget unspent (costs one dispatch, not the daemon).
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    continue
-                try:
-                    parsed = int(v)
-                except (ValueError, OverflowError):
-                    continue
-                if parsed >= 0:
-                    no_progress_relays[str(k)] = parsed
-        bounce_counter_raw = sess.get("bounce_counter")
-        bounce_counter: dict[str, int] = {}
-        if isinstance(bounce_counter_raw, dict):
-            for k, v in bounce_counter_raw.items():
-                # Reject bools (isinstance(True, int) is True) and non-finite
-                # floats so a corrupted snapshot can't crash startup on int().
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    continue
-                try:
-                    bounce_counter[str(k)] = int(v)
-                except (ValueError, OverflowError):
-                    continue
-        # 089: per-HEAD implementer local-test self-fix counter (mirror
-        # bounce_counter validation — reject bools/non-finite/overflow).
-        local_fix_counter_raw = sess.get("local_fix_counter")
-        local_fix_counter: dict[str, int] = {}
-        if isinstance(local_fix_counter_raw, dict):
-            for k, v in local_fix_counter_raw.items():
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    continue
-                try:
-                    local_fix_counter[str(k)] = int(v)
-                except (ValueError, OverflowError):
-                    continue
-        # 090-L3: per-HEAD INHERITED-failure repair budget (mirror bounce_counter
-        # validation — reject bools/non-finite/overflow) + append-only repair audit
-        # (validate each entry against RepairDecisionRecord here and drop any that
-        # fail — a corrupt entry is skipped, never crash-on-load. We cannot rely on
-        # PersistedSession's own coercion: it raises on a malformed list item rather
-        # than dropping it, which would fail the whole snapshot load).
-        inheritance_repair_counter_raw = sess.get("inheritance_repair_counter")
-        inheritance_repair_counter: dict[str, int] = {}
-        if isinstance(inheritance_repair_counter_raw, dict):
-            for k, v in inheritance_repair_counter_raw.items():
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    continue
-                try:
-                    inheritance_repair_counter[str(k)] = int(v)
-                except (ValueError, OverflowError):
-                    continue
-        repair_audit_raw = sess.get("repair_audit")
-        repair_audit: list[RepairDecisionRecord] = []
-        if isinstance(repair_audit_raw, (list, tuple)):
-            for r in repair_audit_raw:
-                if not isinstance(r, dict):
-                    continue
-                try:
-                    repair_audit.append(RepairDecisionRecord(**r))
-                except (ValidationError, TypeError):
-                    continue
-        ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
-        ci_gate_rollup_sig = (
-            ci_gate_rollup_sig_raw
-            if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw
-            else None
-        )
-        # 095: per-card ENV_BLOCKED hold/dedup state.  Persist a dict of
-        # identifiers and diagnostic strings (head_sha/pattern_id/cause/action) so a
-        # still-active block does not re-notify the operator after a restart
-        # (FR-006).  The dedup check keys on head_sha + pattern_id, so a dict
-        # missing or corrupting EITHER would silently break dedup; degrade the
-        # WHOLE thing to None (re-notify once) unless both are non-empty strings.
-        # cause/action are best-effort strings; 263 also carries retry history.
-        env_blocked_raw = sess.get("env_blocked")
-        env_blocked: dict[str, Any] | None = None
-        if isinstance(env_blocked_raw, dict):
-            hs = env_blocked_raw.get("head_sha")
-            pid = env_blocked_raw.get("pattern_id")
-            if isinstance(hs, str) and hs and isinstance(pid, str) and pid:
-                env_blocked = {"head_sha": hs, "pattern_id": pid}
-                for k in ("cause", "action", "blocked_at"):
-                    v = env_blocked_raw.get(k)
-                    if isinstance(v, str):
-                        env_blocked[k] = v
-                # 263: retain the outage identity and attempted retries across
-                # restarts; dropping them allows a second retry on the same head.
-                for k in ("check_names", "retried_checks"):
-                    values = env_blocked_raw.get(k)
-                    if isinstance(values, list):
-                        env_blocked[k] = [v for v in values if isinstance(v, str) and v]
-                jobs = env_blocked_raw.get("retried_jobs")
-                if isinstance(jobs, list):
-                    env_blocked["retried_jobs"] = [v for v in jobs if type(v) is int and v > 0]
-        # 096: per-card auto-rebase anti-thrash marker. Persist only when all
-        # three keys are non-empty strings; anything malformed degrades to None
-        # (re-attempt allowed) so a corrupt marker never wedges a card.
-        lra_raw = sess.get("last_rebase_attempt")
-        last_rebase_attempt: dict[str, Any] | None = None
-        if isinstance(lra_raw, dict):
-            _m, _h, _o = lra_raw.get("main_sha"), lra_raw.get("head_sha"), lra_raw.get("outcome")
-            if all(isinstance(x, str) and x for x in (_m, _h, _o)):
-                last_rebase_attempt = {"main_sha": _m, "head_sha": _h, "outcome": _o}
-
-        # 123: split bounce budget counters — coerce defensively (reject
-        # bools/non-int) so a corrupt snapshot can't crash startup on int().
-        def _coerce_counter(value: object) -> int:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return 0
-            try:
-                return max(0, int(value))
-            except (ValueError, OverflowError):
-                return 0
-
-        content_feedback_cycles = _coerce_counter(sess.get("content_feedback_cycles"))
-        transient_error_cycles = _coerce_counter(sess.get("transient_error_cycles"))
-        # 123: answered assessor Q&A — normalize to well-formed {"question","answer"}
-        # dicts so a malformed entry never fails the whole snapshot load AND never
-        # reaches dispatch_performer's prior_clarifications injection missing a key.
-        assessor_qa_raw = sess.get("assessor_open_questions")
-        assessor_open_questions: list[dict] = []
-        if isinstance(assessor_qa_raw, (list, tuple)):
-            for item in assessor_qa_raw:
-                if isinstance(item, dict) and item.get("question"):
-                    assessor_open_questions.append(
-                        {
-                            "question": str(item.get("question", "")),
-                            "answer": str(item.get("answer", "")),
-                        },
-                    )
-        # 125: stage-verdict memory — validate each slot via StageVerdict and
-        # drop malformed ones here (a bad slot == no slot == dispatch), so a
-        # corrupt entry never fails the whole snapshot save/load.
-        stage_verdicts_raw = sess.get("stage_verdicts")
-        stage_verdicts: dict[str, StageVerdict] = {}
-        if isinstance(stage_verdicts_raw, dict):
-            for sv_stage, sv_entry in stage_verdicts_raw.items():
-                if not isinstance(sv_entry, dict):
-                    continue
-                try:
-                    stage_verdicts[str(sv_stage)] = StageVerdict(**sv_entry)
-                except (ValidationError, TypeError):
-                    continue
-        # 125: per-card issue-comment dedup watermark.  Bound the processed-ID
-        # list to the numerically largest 2000 (GitHub comment IDs are
-        # monotonic → largest == newest); reject bools/non-ints defensively.
-        comment_ids_raw = sess.get("processed_issue_comment_ids") or ()
-        comment_ids: list[int] = []
-        if isinstance(comment_ids_raw, (set, list, tuple)):
-            for cid_val in comment_ids_raw:
-                # GitHub comment IDs are integers. Accept only int (never
-                # bool, never float): int(42.9) would silently coerce to an
-                # unrelated id (42) and corrupt the dedup watermark. Matches
-                # the last_issue_comment_id handling just below.
-                if isinstance(cid_val, bool) or not isinstance(cid_val, int):
-                    continue
-                comment_ids.append(cid_val)
-        comment_ids = sorted(set(comment_ids))[-2000:]
-        last_comment_raw = sess.get("last_issue_comment_id")
-        last_issue_comment_id: int | None = (
-            int(last_comment_raw)
-            if isinstance(last_comment_raw, int) and not isinstance(last_comment_raw, bool)
-            else None
-        )
-        # 126: terminal-success-floor state — validate ledger entries via
-        # FeedbackItemRecord and drop malformed ones (bad entry == no entry ==
-        # the floor has less to enforce, the safe direction).
-        ledger_raw = sess.get("feedback_ledger")
-        feedback_ledger: list[FeedbackItemRecord] = []
-        if isinstance(ledger_raw, (list, tuple)):
-            for fb_entry in ledger_raw:
-                if not isinstance(fb_entry, dict):
-                    continue
-                try:
-                    feedback_ledger.append(FeedbackItemRecord(**fb_entry))
-                except (ValidationError, TypeError):
-                    continue
-        origin_raw = sess.get("feedback_origin_sha")
-        feedback_origin_sha = origin_raw if isinstance(origin_raw, str) and origin_raw else None
-        noop_raw = sess.get("noop_success_retries")
-        noop_success_retries = (
-            max(0, int(noop_raw))
-            if isinstance(noop_raw, int) and not isinstance(noop_raw, bool)
-            else 0
-        )
-        # 141: persist in-flight attempt telemetry IDs so close_attempt can
-        # write to the correct JSONL file after a daemon restart (A-008).
-        last_attempt_id_raw = sess.get("last_attempt_id")
-        last_attempt_id_val = (
-            str(last_attempt_id_raw)
-            if isinstance(last_attempt_id_raw, str) and last_attempt_id_raw
-            else None
-        )
-        last_attempt_log_path_raw = sess.get("last_attempt_log_path")
-        last_attempt_log_path_val = (
-            str(last_attempt_log_path_raw)
-            if isinstance(last_attempt_log_path_raw, str) and last_attempt_log_path_raw
-            else None
-        )
-        # 165: the blueprint is a plain dict (validated on the performer side);
-        # the side-run record is validated here so a corrupt entry drops to
-        # None instead of failing the snapshot save.
-        blueprint_raw = sess.get("blueprint")
-        blueprint = dict(blueprint_raw) if isinstance(blueprint_raw, dict) and blueprint_raw else None
-        side_raw = sess.get("documenting_side")
-        documenting_side: DocumentingSideRun | None = None
-        if isinstance(side_raw, DocumentingSideRun):
-            documenting_side = side_raw
-        elif isinstance(side_raw, dict) and side_raw.get("blueprint_hash"):
-            try:
-                documenting_side = DocumentingSideRun(**side_raw)
-            except (ValidationError, TypeError):
-                documenting_side = None
-        # 166: the assessment is a plain dict (validated on the performer side);
-        # a corrupt entry drops to None instead of failing the snapshot save.
-        assessment_raw = sess.get("assessment")
-        assessment = (
-            dict(assessment_raw)
-            if isinstance(assessment_raw, dict)
-            and assessment_raw.get("goal")
-            and "ready" in assessment_raw
-            else None
-        )
-        # 169: the review_findings is a plain dict (validated on the performer
-        # side); a corrupt entry drops to None instead of failing the snapshot save.
-        review_findings_raw = sess.get("review_findings")
-        review_findings = (
-            dict(review_findings_raw)
-            if isinstance(review_findings_raw, dict)
-            and isinstance(review_findings_raw.get("changed_files"), list)
-            and isinstance(review_findings_raw.get("verdict"), str)
-            else None
-        )
-        out[cid] = PersistedSession(
-            card_id=cid,
-            last_progress_at=sess.get("last_progress_at"),
-            last_progress_fingerprint=sess.get("last_progress_fingerprint"),
-            idle_timeout_retries=sess.get("idle_timeout_retries") or {},
-            performer_stage=(sess.get("performer_stage") or None),
-            phase=(sess.get("phase") or None),
-            lifecycle_completed_at=completed,
-            processed_review_ids=processed_ids,
-            surfaced_stale_reviews=surfaced_stale,
-            open_questions=[str(q) for q in questions_raw if q is not None]
-            if isinstance(questions_raw, (list, tuple, set))
-            else [],
-            card_clarifications=[dict(c) for c in clarifications_raw if isinstance(c, dict)]
-            if isinstance(clarifications_raw, (list, tuple))
-            else [],
-            relay_feedback=[dict(r) for r in relay_raw if isinstance(r, dict)]
-            if isinstance(relay_raw, (list, tuple))
-            else [],
-            system_error_count=int(sess.get("system_error_count") or 0),
-            system_error_reason=(sess.get("system_error_reason") or None),
-            system_error_notified=bool(sess.get("system_error_notified")),
-            requirements_changed=bool(sess.get("requirements_changed")),
-            last_blocked_notified_at=last_notified,
-            last_blocked_slack_delivered_at=last_slack,
-            head_at_dispatch=head_dispatch,
-            head_at_last_turn=head_last,
-            persona_scope=persona_scope,
-            bounce_counter=bounce_counter,
-            no_progress_relays=no_progress_relays,
-            local_fix_counter=local_fix_counter,
-            inheritance_repair_counter=inheritance_repair_counter,
-            repair_audit=repair_audit,
-            ci_gate_rollup_signature=ci_gate_rollup_sig,
-            env_blocked=env_blocked,
-            last_rebase_attempt=last_rebase_attempt,
-            content_feedback_cycles=content_feedback_cycles,
-            transient_error_cycles=transient_error_cycles,
-            assessor_open_questions=assessor_open_questions,
-            stage_verdicts=stage_verdicts,
-            documentation_findings=sess.get("documentation_findings") or {},
-            blueprint=blueprint,
-            blueprint_signature=sess.get("blueprint_signature") or None,
-            documenting_side=documenting_side,
-            processed_issue_comment_ids=comment_ids,
-            last_issue_comment_id=last_issue_comment_id,
-            pipeline_admitted=bool(sess.get("pipeline_admitted", False)),
-            feedback_ledger=feedback_ledger,
-            feedback_origin_sha=feedback_origin_sha,
-            noop_success_retries=noop_success_retries,
-            last_attempt_id=last_attempt_id_val,
-            last_attempt_log_path=last_attempt_log_path_val,
-            last_attempt_failure_source=sess.get("last_attempt_failure_source")
-            if isinstance(sess.get("last_attempt_failure_source"), str)
-            and sess.get("last_attempt_failure_source") in {"human", "qa_role", "grader"}
-            else None,
-            assessment=assessment,
-            review_findings=review_findings,
-            # 354: persist the queued-for-slot stamp so the board row's wait
-            # elapsed survives a daemon restart.
-            slot_queued_since=sess.get("slot_queued_since"),
-        )
+        out[cid] = _persist_one_session(cid, sess)
     return out
 
 
@@ -522,6 +579,266 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_wiki_init_error=get("last_wiki_init_error"),
         )
     return out
+
+
+def _dict_or_none(value: Any) -> dict[str, Any] | None:
+    """Persisted-session round-trip helper: ``None`` stays ``None``, a
+    mapping is shallow-copied into a plain dict."""
+    return dict(value) if value is not None else None
+
+
+def _restored_session_dict(
+    card_id: str,
+    persisted: PersistedSession,
+    snapshot: WorkflowSnapshot,
+    current_card: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the live session dict for one persisted session (065 Fix 7b).
+
+    The current_card payload in each session is rebuilt from the live board
+    by check_board's re-adopt path; here we only need the durable
+    behaviour-affecting fields (performer_stage, phase, error counters,
+    lifecycle bookkeeping).  The session matching the snapshot's focus card
+    is seeded with the top-level current_card; other sessions get a stub
+    that check_board will replace from the live board.
+    """
+    session_dict: dict[str, Any] = {
+        "performer_stage": persisted.performer_stage,
+        "phase": persisted.phase,
+        "lifecycle_completed_at": persisted.lifecycle_completed_at,
+        "processed_review_ids": set(persisted.processed_review_ids),
+        "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
+        "open_questions": list(persisted.open_questions),
+        "card_clarifications": list(persisted.card_clarifications),
+        "relay_feedback": list(persisted.relay_feedback),
+        "system_error_count": persisted.system_error_count,
+        "system_error_reason": persisted.system_error_reason,
+        "system_error_notified": persisted.system_error_notified,
+        "requirements_changed": persisted.requirements_changed,
+        "last_blocked_notified_at": persisted.last_blocked_notified_at,
+        "last_blocked_slack_delivered_at": persisted.last_blocked_slack_delivered_at,
+        "head_at_dispatch": persisted.head_at_dispatch,
+        "head_at_last_turn": persisted.head_at_last_turn,
+        "persona_scope": persisted.persona_scope,
+        "bounce_counter": dict(persisted.bounce_counter),
+        "local_fix_counter": dict(persisted.local_fix_counter),
+        "inheritance_repair_counter": dict(persisted.inheritance_repair_counter),
+        "repair_audit": [r.model_dump(mode="json") for r in persisted.repair_audit],
+        "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
+        "ci_gate_advisory_failures": [],
+                    # 095: restore per-card ENV_BLOCKED hold/dedup state so a
+                    # still-active block does not re-notify after a restart.
+                    "env_blocked": _dict_or_none(persisted.env_blocked),
+                    # 096: restore the per-card auto-rebase anti-thrash marker so
+                    # a BLOCKED conflict isn't re-attempted right after a restart.
+                    "last_rebase_attempt": _dict_or_none(persisted.last_rebase_attempt),
+        # 123: restore split bounce budget counters + assessor Q&A
+        # carryover so they survive a daemon restart.
+        "content_feedback_cycles": persisted.content_feedback_cycles,
+        "transient_error_cycles": persisted.transient_error_cycles,
+        "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
+        # 125: restore stage-verdict memory (plain dicts at session
+        # level) + the per-card issue-comment dedup watermark so a
+        # restart neither re-runs passed stages nor re-classifies
+        # processed comments.
+        "stage_verdicts": {
+            sv_stage: sv.model_dump(mode="json")
+            for sv_stage, sv in persisted.stage_verdicts.items()
+        },
+        "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
+        "last_issue_comment_id": persisted.last_issue_comment_id,
+        "pipeline_admitted": persisted.pipeline_admitted,
+        # 126: restore the terminal-success-floor state so the
+        # feedback contract and no-op budget survive restarts.
+        "feedback_ledger": [
+            fb.model_dump(mode="json") for fb in persisted.feedback_ledger
+        ],
+        "feedback_origin_sha": persisted.feedback_origin_sha,
+        "noop_success_retries": persisted.noop_success_retries,
+        # 141: restore in-flight attempt IDs so terminal nodes can
+        # call close_attempt after a daemon restart (A-008).
+        "last_attempt_id": persisted.last_attempt_id,
+        "last_attempt_log_path": persisted.last_attempt_log_path,
+        "last_attempt_failure_source": persisted.last_attempt_failure_source,
+        # 165: the blueprint and the documenter side run survive a
+        # restart so the remaining briefs and the side run's
+        # once-per-hash rule still hold.
+        "documentation_findings": dict(persisted.documentation_findings),
+        "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
+        "blueprint_signature": persisted.blueprint_signature,
+        "last_progress_at": persisted.last_progress_at,
+        "last_progress_fingerprint": persisted.last_progress_fingerprint,
+        "idle_timeout_retries": dict(persisted.idle_timeout_retries),
+        "documenting_side": (
+            persisted.documenting_side.model_dump(mode="json")
+            if persisted.documenting_side is not None
+            else None
+        ),
+        # 354: restore the queued-for-slot stamp so a card that was
+        # waiting on a saturated pool keeps its real wait elapsed.
+        "slot_queued_since": persisted.slot_queued_since,
+    }
+    if card_id == snapshot.active_card_id and current_card:
+        session_dict["current_card"] = current_card
+    else:
+        session_dict["current_card"] = {"id": card_id}
+    return session_dict
+
+
+def _reopen_attempt_logs(
+    restored_sessions: dict[str, dict], attempt_log: Any,
+) -> None:
+    """141 A-008: re-register any in-flight attempt with AttemptLog so
+    close_attempt writes the end row to the correct JSONL file even
+    after a midnight rollover + restart.
+    """
+    if attempt_log is None:
+        return
+    from pathlib import Path as _Path
+
+    for _card_id, _sess in restored_sessions.items():
+        _aid = _sess.get("last_attempt_id")
+        _alp = _sess.get("last_attempt_log_path")
+        _card = _sess.get("current_card") or {}
+        _task_id = str(_card.get("id", "") or _card_id)
+        if isinstance(_aid, str) and _aid and isinstance(_alp, str) and _alp:
+            attempt_log.reopen_attempt(_aid, _task_id, _Path(_alp))
+
+
+def _synthesize_v1_session_log(active_card_id: str, phase: str) -> None:
+    logger.info(
+        "state_store.v1_snapshot_rehydrated",
+        active_card_id=active_card_id,
+        phase=phase,
+    )
+
+
+def _synthesize_v1_session(
+    snapshot: WorkflowSnapshot, current_card: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """066 FR-005 / T004: v1-snapshot synthesis.  Pre-Fix-7 snapshots
+    populated active_card_id + per-card top-level fields but had no
+    active_sessions payload.  Synthesize a single-entry session so
+    the unified pickup path sees a v2-shaped state.  check_board's
+    re-adopt path will refresh the session from the live board on
+    the first cycle.
+    """
+    return {
+        "current_card": current_card,
+        "performer_stage": snapshot.performer_stage or "implementing",
+        "phase": snapshot.phase,
+        "lifecycle_completed_at": snapshot.lifecycle_completed_at,
+        "processed_review_ids": set(snapshot.processed_review_ids),
+        "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
+        "open_questions": list(snapshot.open_questions),
+        "card_clarifications": list(snapshot.card_clarifications),
+        "relay_feedback": [],
+        "system_error_count": 0,
+        "system_error_reason": None,
+        "system_error_notified": False,
+        "requirements_changed": False,
+        "last_blocked_notified_at": snapshot.last_blocked_notified_at,
+        "last_blocked_slack_delivered_at": None,
+        "head_at_dispatch": None,
+        "head_at_last_turn": None,
+        "persona_scope": None,
+        # 125 (schema v13): synthesized v1 sessions start with the
+        # same empty verdict/watermark state as a fresh card so the
+        # session shape matches _SESSION_FIELDS (adversarial-review
+        # fix — the v2+ restore path above already sets these).
+        "stage_verdicts": {},
+        "processed_issue_comment_ids": set(),
+        "last_issue_comment_id": None,
+        # 126 (schema v15): same fresh-card defaults as above.
+        "feedback_ledger": [],
+        "feedback_origin_sha": None,
+        "noop_success_retries": 0,
+        # 165: fresh-card defaults.
+        "documentation_findings": {},
+        "blueprint": None,
+        "blueprint_signature": None,
+        "documenting_side": None,
+    }
+
+
+def _rehydrate_env_cache(state: dict[str, Any], snapshot: WorkflowSnapshot) -> None:
+    """073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
+    live EnvCacheState entries that EnvCacheService.initialise() already
+    populated with readme_sha=None.  Without this, every restart re-runs
+    env_bootstrap because check_and_trigger sees the SHA "change".
+    Transient flags (bootstrap_in_flight, pending_sha, runtime_health_failed)
+    are intentionally left at their initialise() defaults so a crash
+    mid-bootstrap does not leave a stuck flag on disk.
+    """
+    if not snapshot.env_cache:
+        return
+    live_env_cache = state.get("env_cache")
+    if not isinstance(live_env_cache, dict):
+        return
+    for sym_name, persisted in snapshot.env_cache.items():
+        live = live_env_cache.get(sym_name)
+        if live is None:
+            # Symphony in snapshot is no longer configured — skip.
+            continue
+        # Live entry is a pydantic EnvCacheState; mutate the
+        # rehydratable fields in place.
+        try:
+            live.readme_sha = persisted.readme_sha
+            live.last_bootstrap_at = persisted.last_bootstrap_at
+            live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
+            live.last_bootstrap_error = persisted.last_bootstrap_error
+            live.cache_dir_ready = persisted.cache_dir_ready
+            # 088 (FR-009): the breaker budget survives restarts.
+            live.bootstrap_attempts = persisted.bootstrap_attempts
+            live.bootstrap_exhausted = persisted.bootstrap_exhausted
+            # 124 (US3): the wiki-init marker + breaker survive
+            # restarts so an initialized symphony is never re-seeded.
+            live.wiki_initialized = getattr(persisted, "wiki_initialized", False)
+            live.wiki_attempts = getattr(persisted, "wiki_attempts", 0)
+            live.wiki_exhausted = getattr(persisted, "wiki_exhausted", False)
+            live.last_wiki_init_at = getattr(persisted, "last_wiki_init_at", None)
+            live.last_wiki_init_succeeded = getattr(
+                persisted, "last_wiki_init_succeeded", None,
+            )
+            live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "state_store.env_cache_rehydrate_failed",
+                symphony=sym_name,
+                error=str(exc),
+            )
+
+
+def _seed_symphony_runtime_state(
+    state: dict[str, Any], snapshot: WorkflowSnapshot,
+) -> dict[str, dict] | None:
+    """Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
+    per-symphony swap in _conduct_single_symphony reads sym_state.active_card
+    and sym_state.previous_phase as the source of truth — if those are not
+    primed from the snapshot, cycle 1 clobbers the just-restored top-level
+    state with None / default and the card is never re-adopted. The
+    snapshot has no project-number field, so we can only safely map when
+    there is exactly one symphony; otherwise leave it to the in-graph
+    re-adopt path (check_board) to pick the card off the live board.
+
+    Returns the legacy sessions that could not be attributed to a symphony
+    (multi-symphony restore), or None when everything was seeded.
+    """
+    sym_states = state.get("symphony_states") or {}
+    if len(sym_states) == 1:
+        (sym_state,) = sym_states.values()
+        sym_state.active_sessions = dict(state.get("active_sessions") or {})
+        current_card = state.get("current_card")
+        if current_card is not None and sym_state.active_card is None:
+            sym_state.active_card = current_card
+        if sym_state.previous_phase is None:
+            sym_state.previous_phase = snapshot.phase
+        return None
+    if sym_states:
+        # Project item IDs are board-specific. Retain legacy sessions until
+        # a successful read proves which board owns each ID.
+        return dict(state.get("active_sessions") or {})
+    return None
 
 
 def _derive_global_phase(active_sessions: dict) -> str:
@@ -759,6 +1076,109 @@ def _bootstrap_progress_lines(log_lines: list[str]) -> list[str]:
     return [ln for ln in log_lines if "/jobs/" not in ln and not ln.lstrip().startswith("INFO:")]
 
 
+@dataclass
+class _BootstrapPollState:
+    """Loop-local state threaded through the bootstrap poll helpers."""
+
+    last_logs_snapshot: list[str] = field(default_factory=list)
+    last_progress: list[str] | None = None
+    last_progress_attempt: int = 0
+    consecutive_failures: int = 0
+
+
+@dataclass
+class _BootstrapBackend:
+    """Resolved performer-backend parameters for one env_bootstrap dispatch."""
+
+    backend: str = "codex"
+    model: str | None = None
+    effort: str | None = None
+    temperature: float | None = None
+    base_url: str | None = None
+    api_key_env: str | None = None
+    auth_token_env: str | None = None
+
+
+async def _docker_logs_lines(container_id: str, tail: int) -> list[str]:
+    """Run ``docker logs --tail <tail>`` and return the decoded lines."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker",
+        "logs",
+        "--tail",
+        str(tail),
+        container_id,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+    return stdout_b.decode(errors="replace").splitlines()
+
+
+async def _snapshot_container_logs(
+    container_id: str | None, last_snapshot: list[str],
+) -> list[str]:
+    """Snapshot container logs for idle detection.  Snapshot *before*
+    check_status, because a terminal status causes HTTPPerformerService to
+    stop and ``--rm``-remove the container, after which ``docker logs``
+    returns nothing.  ``--tail 500`` keeps enough history that the
+    meaningful (non-poll) lines don't scroll out of the idle-detection
+    window under poll-noise.
+    """
+    if not container_id:
+        return last_snapshot
+    try:
+        snap = await _docker_logs_lines(container_id, 500)
+        if snap:
+            return snap[-500:]
+    except Exception:
+        pass
+    return last_snapshot
+
+
+async def _bootstrap_failure_logs(
+    svc: Any,
+    job_id: str,
+    container_id: str | None,
+    last_logs_snapshot: list[str],
+) -> list[str]:
+    """Collect the log tail attached to a terminal bootstrap failure:
+    the pre-poll snapshot, then a direct ``docker logs`` pull, then the
+    service's agent-log buffer as a last resort.
+    """
+    logs_tail: list[str] = list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
+    # Pull logs directly from the bootstrap container by id.
+    # The shared `_log_buffer` is unreliable here because a
+    # single HTTPPerformerService is used for both bootstrap
+    # and implementing dispatches, so the implementing job's
+    # poll task may have overwritten the buffer before we
+    # observed bootstrap's terminal status.
+    bootstrap_cid: str | None = container_id
+    if bootstrap_cid is None:
+        try:
+            active_jobs = getattr(svc, "_active_jobs", {}) or {}
+            job_obj = active_jobs.get(job_id)
+            if job_obj is not None:
+                bootstrap_cid = getattr(job_obj, "container_id", None)
+        except Exception:
+            bootstrap_cid = None
+    if bootstrap_cid and not logs_tail:
+        try:
+            lines = await _docker_logs_lines(bootstrap_cid, 100)
+            logs_tail = list(lines)[-60:]
+        except Exception as exc:
+            logs_tail = [f"<docker logs failed: {exc}>"]
+    if not logs_tail and hasattr(svc, "get_agent_logs"):
+        try:
+            raw_logs = svc.get_agent_logs()
+            if isinstance(raw_logs, list):
+                logs_tail = [str(line) for line in raw_logs[-40:]]
+            elif isinstance(raw_logs, str):
+                logs_tail = raw_logs.splitlines()[-40:]
+        except Exception as exc:
+            logs_tail = [f"<get_agent_logs failed: {exc}>"]
+    return logs_tail
+
+
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
     "agent": "agent",
@@ -848,6 +1268,596 @@ def stuck_dedup_key(card_id: str, phase: str, phase_entered: Any) -> str:
     if card_id:
         return f"stuck:{card_id}:{phase}"
     return f"stuck:(no-card):{phase}:{phase_entered}"
+
+
+async def _preflight_seed_main_sha_cache(
+    state: dict[str, Any], github: Any, active_sessions: dict,
+) -> None:
+    """Pre-seed _main_sha_cache so concurrent sessions share one ls-remote
+    result instead of each making an independent call, then run the
+    main-advance detection + rebase round once for the whole cycle.
+    """
+    _config = state.get("config")
+    if _config is None or not hasattr(github, "_current_token"):
+        return
+    # suppress is scoped only to _current_token() — fetch_main_sha
+    # and rebase failures are logged explicitly so they're visible.
+    _token = ""
+    with contextlib.suppress(Exception):
+        _token = await github._current_token()
+    if not _token:
+        return
+    _repo_url = repo_url_from_config(_config)
+    if not _repo_url:
+        return
+    try:
+        _sha = await fetch_main_sha(_repo_url, _token)
+    except Exception:
+        logger.warning(
+            "multi_session.preflight.sha_fetch_failed", exc_info=True,
+        )
+        _sha = None
+    if _sha:
+        state["_main_sha_cache"] = _sha  # type: ignore[typeddict-unknown-key]
+        # Run main-advance detection once in preflight so
+        # every per-session check_board copy inherits the
+        # updated last_known_main_sha and skips its own
+        # run_rebase_round — preventing N parallel rebase
+        # rounds when main advances with N active sessions.
+        _prev_sha = state.get("last_known_main_sha")
+        if _prev_sha is None:
+            state["last_known_main_sha"] = _sha
+        elif _sha != _prev_sha:
+            logger.info(
+                "multi_session.preflight.main_head_changed",
+                old_sha=_prev_sha[:8],
+                new_sha=_sha[:8],
+            )
+            state["last_known_main_sha"] = _sha
+            try:
+                _rr = await run_rebase_round(
+                    active_sessions,
+                    _sha,
+                    _repo_url,
+                    _token,
+                    notification_service=state.get(
+                        "notification_service",
+                    ),
+                    github=github,
+                    human_reviewers=state.get("human_reviewers"),
+                )
+                state["last_rebase_round"] = _rr.to_dict()
+                # Mirror check_board's conflict-resolution
+                # handoff: route the first BLOCKED job back
+                # to implementing so relay_feedback fires.
+                from coordinare.models.rebase import RebaseOutcome
+                from coordinare.services.rebase import (
+                    prepare_conflict_resolution,
+                )
+
+                for _job in _rr.jobs:
+                    if _job.outcome == RebaseOutcome.BLOCKED:
+                        _sess = active_sessions.get(_job.card_id)
+                        if isinstance(_sess, dict):
+                            prepare_conflict_resolution(
+                                _job,
+                                _sess,
+                                human_reviewers=state.get(
+                                    "human_reviewers",
+                                ),
+                            )
+                        break
+            except Exception:
+                logger.warning(
+                    "multi_session.preflight.rebase_round_failed",
+                    exc_info=True,
+                )
+
+
+def _mirror_board_metadata(state: dict[str, Any], board: dict[str, Any]) -> None:
+    """062 Fix 4: propagate per-card metadata so dashboard swimlane
+    can render titles + GitHub links in multi-session mode.
+    check_board sets these too, but they're not in _GLOBAL_STATE_KEYS
+    so per-session mutations are dropped after the fanout merge.
+    """
+    for _meta_src, _meta_dst in (
+        ("titles", "_board_titles"),
+        ("issue_numbers", "_board_issue_numbers"),
+        ("issue_urls", "_board_issue_urls"),
+        ("pr_urls", "_board_pr_urls"),
+    ):
+        _meta_val = board.get(_meta_src)
+        if isinstance(_meta_val, dict):
+            state[_meta_dst] = _meta_val  # type: ignore[literal-required]
+
+
+async def _preflight_poll_board(
+    state: dict[str, Any], github: Any, active_sessions: dict,
+) -> None:
+    """Pre-flight: poll the board once so all concurrent sessions share the
+    cache and eligibility can be computed before the fanout.  Respects the
+    same github_operation_ready/backoff state used by check_board so
+    multi-session mode doesn't bypass transient-outage handling.
+    """
+    ready, retry_in = github_operation_ready(state, "poll_board")
+    if not ready:
+        logger.info(
+            "multi_session.pre_poll_deferred",
+            retry_in_seconds=round(retry_in, 1),
+        )
+        return
+    try:
+        board = await board_of(state, github).poll_board()
+        state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
+        clear_deferred_github_operation(state, "poll_board")
+        state["last_poll_at"] = datetime.now(UTC)
+        snapshot = board.get("snapshot")
+        if isinstance(snapshot, dict):
+            state["board_snapshot"] = snapshot
+        _mirror_board_metadata(state, board)
+        await _preflight_seed_main_sha_cache(state, github, active_sessions)
+    except Exception as _poll_exc:
+        # Transient upstream GitHub failures (5xx, timeouts, DNS) are
+        # routine — log a single-line warning without the traceback so
+        # operators aren't alarmed by what's effectively a retry signal.
+        if is_transient_github_outage_error(_poll_exc):
+            logger.warning(
+                "multi_session.pre_poll_failed",
+                error_type=type(_poll_exc).__name__,
+                error=str(_poll_exc)[:300],
+                transient=True,
+            )
+            defer_github_operation(state, operation="poll_board", error=_poll_exc)
+        else:
+            logger.warning("multi_session.pre_poll_failed", exc_info=True)
+
+
+def _compute_session_eligibilities(
+    state: dict[str, Any], active_sessions: dict, max_cards: int,
+) -> dict[str, SessionEligibility]:
+    """Build the dependency graph from the pre-fetched board (when cached),
+    compute eligibility for every session, apply pipeline-budget selection,
+    and record skip reasons for ineligible sessions.
+    """
+    # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
+    # so sessions blocked by a now-closed off-board issue may be conservatively skipped
+    # this cycle.  The full resolution runs inside each session's check_board tick and
+    # will correct the dep state by the following cycle.
+    dep_graph: DependencyGraph | None = None
+    cached_board = state.get("_board_cache")  # type: ignore[misc]
+    if cached_board is not None:
+        try:
+            dep_graph = _build_dep_graph(cached_board)
+        except Exception:
+            logger.warning("multi_session.dep_graph_failed", exc_info=True)
+
+    board_snapshot: dict[str, list[str]] = state.get("board_snapshot") or {}  # type: ignore[assignment]
+
+    eligibilities: dict[str, SessionEligibility] = {
+        card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
+        for card_id, session in active_sessions.items()
+    }
+
+    from coordinare.services.pipeline_budget import select_pipelines
+
+    selected = select_pipelines(
+        active_sessions, max_cards,
+        {cid for cid, eligibility in eligibilities.items() if eligibility.eligible},
+    )
+    state["_pipeline_selected"] = selected
+    for cid, eligibility in eligibilities.items():
+        if eligibility.eligible and cid not in selected:
+            eligibilities[cid] = SessionEligibility(
+                card_id=cid, eligible=False, reason="pipeline_capacity",
+            )
+
+    # Record skip reasons for ineligible sessions.
+    skip_reasons: dict[str, dict] = {}
+    for card_id, elig in eligibilities.items():
+        if not elig.eligible:
+            skip_reasons[card_id] = {
+                "reason": elig.reason,
+                "detail": None,
+                "blockers": elig.blockers,
+            }
+            _log_session_skip(card_id, active_sessions[card_id], elig)
+    state["session_skip_reasons"] = skip_reasons
+    return eligibilities
+
+
+async def _all_ineligible_fallback(
+    state: dict[str, Any], graph: Any, active_sessions: dict,
+) -> dict[str, Any]:
+    """Fallback when every session is ineligible this cycle (e.g. all
+    BLOCKED / dependency_blocked): run a single full graph invocation so
+    check_board can still pick up new sessions from open slots or do other
+    per-cycle maintenance.  Without this, check_board never fires and
+    available slots go unfilled until at least one existing session becomes
+    eligible.  Returns the (possibly replaced) state.
+    """
+    # The symphony swap restores the card pointer, not its flat fields.
+    # Without hydration, fallback writes aggregate defaults (assessing,
+    # blueprint=None) over a completed plan when the last worker blocks.
+    focus = state.get("active_card_id")
+    if focus in active_sessions:
+        session_to_state(active_sessions[focus], state)
+        state["active_card_id"] = focus
+        _rederive_current_card(state)
+    state = await graph.ainvoke(state)
+    # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
+    # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
+    # see the same view as the per-session fanout writeback at line 911.  Without
+    # this, a same-cycle readopt+dispatch leaves session.phase="dispatching"
+    # while flat state["phase"]="monitoring_performer"; _derive_global_phase
+    # then clobbers the flat phase back to "dispatching" and slot_manager
+    # releases the slot, orphaning the implementer container.
+    active_card_id = state.get("active_card_id")
+    if active_card_id:
+        active_sessions_after = state.get("active_sessions") or {}
+        if active_card_id in active_sessions_after:
+            active_sessions_after[active_card_id] = state_to_session(state)
+    # If the graph settled into a passive phase (monitoring_pr),
+    # clear active_card_id so route_issue_comments doesn't poll the
+    # card's issue on every cycle.  check_board rescans the full board
+    # each cycle and re-points active_card_id when it needs to handle
+    # or dispatch a card.  066 FR-010: current_card is derived.
+    if state.get("phase") in PASSIVE_PHASES:
+        state["active_card_id"] = None  # type: ignore[typeddict-unknown-key]
+    _rederive_current_card(state)
+    return state
+
+
+@dataclass
+class _FanoutContext:
+    """Stable inputs for one fanout round of per-session graph ticks."""
+
+    state: dict[str, Any]
+    active_sessions: dict
+    eligibilities: dict[str, SessionEligibility]
+    blocked_to_poll: set[str]
+    graph: Any
+    semaphore: asyncio.Semaphore
+
+
+def _prepare_session_state(
+    ctx: _FanoutContext, card_id: str,
+) -> tuple[dict[str, Any], dict[str, dict]]:
+    """Snapshot the stable pre-fanout state for one session's graph tick and
+    deep-copy only the session being invoked.  Returns the per-session state
+    plus the shallow sibling snapshots captured before ainvoke.
+    """
+    session_state: dict[str, Any] = dict(ctx.state)
+    if session_state.get("github_retry_queue") is not None:
+        session_state["github_retry_queue"] = list(
+            session_state["github_retry_queue"],
+        )
+    # Deep-copy only the session being invoked (inside the semaphore
+    # so the concurrency bound also limits peak copy memory).
+    # Siblings are shallow-copied from the stable pre-fanout
+    # active_sessions; nodes only mutate top-level sibling keys so
+    # shallow isolation is sufficient.
+    session_state["active_sessions"] = {
+        cid: (copy.deepcopy(sess) if cid == card_id else dict(sess))
+        for cid, sess in ctx.active_sessions.items()
+    }
+    session_to_state(session_state["active_sessions"][card_id], session_state)
+    # 066 FR-010 / T006: identify the active session so the
+    # per-session graph step can re-derive current_card from
+    # active_sessions[active_card_id].
+    session_state["active_card_id"] = card_id
+    _rederive_current_card(session_state)
+    # Snapshot sibling sessions before ainvoke.  Graph nodes such
+    # as prepare_conflict_resolution can mutate session dicts
+    # in-place; capturing shallow copies here lets us detect
+    # real mutations post-ainvoke by value comparison.
+    pre_fanout_siblings: dict[str, dict] = {
+        k: dict(v)
+        for k, v in session_state["active_sessions"].items()
+        if k != card_id
+    }
+    return session_state, pre_fanout_siblings
+
+
+def _collect_session_updates(
+    ctx: _FanoutContext,
+    card_id: str,
+    session: dict,
+    updated: dict[str, Any],
+    pre_fanout_siblings: dict[str, dict],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Post-ainvoke merge for one session tick: fold in-place session
+    mutations, capture new sibling sessions + cross-session mutations, and
+    select the global state keys.  Returns (updated_session, g_updates).
+    """
+    updated_session = state_to_session(updated)
+    # Merge in any mutations that nodes made directly to
+    # updated["active_sessions"][card_id] without mirroring them
+    # back onto the flat state fields (e.g. prepare_conflict_resolution
+    # routing a BLOCKED card by writing phase/performer_stage directly
+    # into the session dict).  Only apply an in-place value when the
+    # flat field was NOT independently updated — flat mutations take
+    # priority so that nodes using the canonical flat-field path are
+    # not overwritten by a stale pre-fanout deep copy.
+    _in_place_session = (updated.get("active_sessions") or {}).get(card_id)
+    if _in_place_session:
+        for _f in _SESSION_FIELDS:
+            if _f not in _in_place_session:
+                continue
+            _pre_val = session.get(_f)
+            if updated_session.get(_f) == _pre_val:
+                # flat field unchanged — apply in-place mutation if any
+                _ip_val = _in_place_session[_f]
+                if _ip_val != _pre_val:
+                    updated_session[_f] = _ip_val  # type: ignore[literal-required]
+    # Capture new sessions added by check_board so they survive
+    # the fanout merge.  Only keys not present before dispatch
+    # are considered new to avoid overwriting concurrent updates.
+    updated_sessions = updated.get("active_sessions") or {}
+    new_sessions = {
+        k: v for k, v in updated_sessions.items() if k not in ctx.active_sessions
+    }
+    # Capture mutations to other existing sessions (e.g. prepare_conflict_resolution
+    # routing a BLOCKED session back to dispatching).  Only include sessions
+    # that actually changed vs the pre-fanout snapshot so that an unmodified
+    # deep-copy of a sibling can't clobber a real mutation applied by another
+    # concurrent task via last-writer-wins in cross_mutations.update(cm).
+    cross_session = {
+        k: v
+        for k, v in updated_sessions.items()
+        if k != card_id and k in ctx.active_sessions and v != pre_fanout_siblings.get(k)
+    }
+    g_updates: dict[str, Any] = {
+        k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated
+    }
+    if new_sessions:
+        g_updates["_new_sessions"] = new_sessions
+    if cross_session:
+        g_updates["_cross_session_mutations"] = cross_session
+    return updated_session, g_updates
+
+
+async def _invoke_session_tick(
+    ctx: _FanoutContext, card_id: str, session: dict,
+) -> AsyncSessionTickResult:
+    """Run one session's graph tick under the fanout semaphore."""
+    elig = ctx.eligibilities[card_id]
+    # A BLOCKED-column session is ineligible for a dispatch slot, but its
+    # graph must still run each cycle so check_board's un-block
+    # comment-poll executes: otherwise a blocked card can never be
+    # un-blocked by a fresh issue comment while any sibling is eligible
+    # (the all-ineligible fallback that would run the poll never fires).
+    # phase=blocked keeps it exempt from the *dispatch-slot* accounting
+    # in NON_SLOT_PHASES, so it never occupies a performer slot. It does
+    # take a fanout permit and pay a state deep-copy, and review pointed
+    # out that the part which scales is the count, not the latency: every
+    # blocked card is still an active session, so an accumulating blocked
+    # backlog -- the exact board this recovers -- would add an unbounded
+    # number of graph ticks per cycle. _blocked_sessions_to_poll caps and
+    # rotates them instead. Skipped ones stay recorded in
+    # session_skip_reasons for operator visibility.
+    if not elig.eligible and card_id not in ctx.blocked_to_poll:
+        return AsyncSessionTickResult(
+            card_id=card_id, ok=True, session_state=session, skipped=True,
+        )
+    pre_session = dict(session)
+    async with ctx.semaphore:
+        # State prep runs inside the semaphore so the concurrency bound
+        # also limits peak memory from simultaneous deep-copies.
+        # ctx.state is stable throughout the fanout (mutated only after
+        # all results are merged), so sessions that acquire the semaphore
+        # at different times still snapshot the same pre-fanout state.
+        t0 = perf_counter()
+        try:
+            session_state, pre_fanout_siblings = _prepare_session_state(ctx, card_id)
+            updated = await ctx.graph.ainvoke(session_state)
+            updated_session, g_updates = _collect_session_updates(
+                ctx, card_id, session, updated, pre_fanout_siblings,
+            )
+            return AsyncSessionTickResult(
+                card_id=card_id,
+                ok=True,
+                session_state=updated_session,
+                duration_ms=int((perf_counter() - t0) * 1000),
+                global_updates=g_updates,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("session_graph_error", card_id=card_id, exc_info=True)
+            return AsyncSessionTickResult(
+                card_id=card_id,
+                ok=False,
+                error=str(exc),
+                session_state=pre_session,
+                duration_ms=int((perf_counter() - t0) * 1000),
+            )
+
+
+def _merge_retry_queue_entry(
+    merged_retry_queue: list[dict], entry: dict,
+) -> None:
+    """Dedupe one retry-queue entry into the merged queue: keep the highest
+    attempt; on a tie, the later retry_at so two sessions that deferred the
+    same op at the same attempt (but slightly different wall-clock times)
+    don't shorten the backoff.
+    """
+    op = entry.get("operation")
+    existing = next(
+        (
+            e
+            for e in merged_retry_queue
+            if isinstance(e, dict) and e.get("operation") == op
+        ),
+        None,
+    )
+    if existing is None:
+        merged_retry_queue.append(entry)
+        return
+    entry_attempt = int(entry.get("attempt", 0))
+    existing_attempt = int(existing.get("attempt", 0))
+    # Keep the most conservative entry: higher attempt wins;
+    # on a tie, keep the later retry_at so two sessions that
+    # deferred the same op at the same attempt (but slightly
+    # different wall-clock times) don't shorten the backoff.
+    # Compare as datetime objects — retry_at is always a
+    # datetime in-memory; str() comparison is fragile across
+    # tz representations.
+    entry_ra = entry.get("retry_at")
+    existing_ra = existing.get("retry_at")
+    later_retry_at = (
+        isinstance(entry_ra, datetime)
+        and isinstance(existing_ra, datetime)
+        and entry_ra > existing_ra
+    )
+    if entry_attempt > existing_attempt or (
+        entry_attempt == existing_attempt and later_retry_at
+    ):
+        merged_retry_queue[merged_retry_queue.index(existing)] = entry
+
+
+def _merge_fanout_results(
+    state: dict[str, Any],
+    active_sessions: dict,
+    eligibilities: dict[str, SessionEligibility],
+    results: list[AsyncSessionTickResult],
+) -> None:
+    """Merge global state updates from results.  Non-session, non-queue keys
+    come from the first successful result.  github_retry_queue is merged
+    across ALL results (dedupe by operation, keep highest attempt) so that
+    deferred entries from any session are not silently dropped.  New sessions
+    added by check_board are also merged from ALL results so no slot is lost.
+    Ops that were present at fanout start but are absent in any successful
+    result are treated as cleared and removed from the merged queue.
+    """
+    pre_fanout_ops: set[str] = {
+        e["operation"]
+        for e in (state.get("github_retry_queue") or [])  # type: ignore[misc]
+        if isinstance(e, dict) and e.get("operation")
+    }
+    cleared_ops: set[str] = set()
+    first_global_merged = False
+    merged_retry_queue: list[dict] | None = None
+    cross_mutations: dict[str, dict] = {}
+    for result in results:
+        if not result.ok or result.skipped or not result.global_updates:
+            continue
+        if not first_global_merged:
+            for k, v in result.global_updates.items():
+                if k not in (
+                    "_new_sessions",
+                    "_cross_session_mutations",
+                    "github_retry_queue",
+                    "github_retry_after",
+                ):
+                    state[k] = v  # type: ignore[literal-required]
+            first_global_merged = True
+        rq = result.global_updates.get("github_retry_queue")
+        if isinstance(rq, list):
+            session_ops = {
+                e["operation"] for e in rq if isinstance(e, dict) and e.get("operation")
+            }
+            cleared_ops.update(pre_fanout_ops - session_ops)
+            if merged_retry_queue is None:
+                merged_retry_queue = list(rq)
+            else:
+                for entry in rq:
+                    if isinstance(entry, dict):
+                        _merge_retry_queue_entry(merged_retry_queue, entry)
+        cm = result.global_updates.get("_cross_session_mutations") or {}
+        cross_mutations.update(cm)  # last-writer-wins across concurrent results
+        new_sessions = result.global_updates.get("_new_sessions") or {}
+        for cid, sess in new_sessions.items():
+            if cid not in active_sessions:
+                active_sessions[cid] = sess
+                logger.info("new_session_registered", card_id=cid)
+    if merged_retry_queue is not None:
+        if cleared_ops:
+            merged_retry_queue = [
+                e
+                for e in merged_retry_queue
+                if not (isinstance(e, dict) and e.get("operation") in cleared_ops)
+            ]
+        state["github_retry_queue"] = merged_retry_queue  # type: ignore[literal-required]
+        retry_ats = [
+            e["retry_at"]
+            for e in merged_retry_queue
+            if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)
+        ]
+        state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
+
+    # Apply cross-session mutations as a baseline before direct results so
+    # each session's own tick result takes precedence over mutations from a
+    # sibling session's graph run (e.g. prepare_conflict_resolution targeting
+    # a BLOCKED session that was skipped this cycle).
+    for cid, mutated_sess in cross_mutations.items():
+        if cid in active_sessions:
+            active_sessions[cid] = mutated_sess
+
+    _merge_session_results(active_sessions, eligibilities, results)
+
+
+def _merge_session_results(
+    active_sessions: dict,
+    eligibilities: dict[str, SessionEligibility],
+    results: list[AsyncSessionTickResult],
+) -> None:
+    """Merge session results back into active_sessions; collect completions."""
+    completed_ids: list[str] = []
+    for result in results:
+        if result.skipped:
+            # missing_card sessions have no card to resume — remove them so
+            # the slot doesn't linger forever.
+            if eligibilities[result.card_id].reason == MISSING_CARD:
+                logger.warning("session_missing_card_evicted", card_id=result.card_id)
+                completed_ids.append(result.card_id)
+            continue
+        if result.ok:
+            # Only overwrite on success; preserves any cross-session
+            # mutations applied above for sessions whose own tick failed.
+            # A side poll can finish while fanout holds an older copy. Preserve
+            # its terminal record instead of resurrecting the running snapshot.
+            live_side = (active_sessions.get(result.card_id) or {}).get("documenting_side")
+            result_side = result.session_state.get("documenting_side")
+            if (isinstance(live_side, dict) and isinstance(result_side, dict)
+                    and live_side.get("session_id") == result_side.get("session_id")
+                    and live_side.get("status") in {"done", "failed"}
+                    and (result_side.get("status") == "running" or result_side.get("writer_active"))):
+                result.session_state["documenting_side"] = dict(live_side)
+            active_sessions[result.card_id] = result.session_state
+            sess = result.session_state
+            if sess.get("phase", "idle") == "idle" and sess.get("current_card") is None:
+                completed_ids.append(result.card_id)
+
+    for card_id in completed_ids:
+        del active_sessions[card_id]
+        logger.info("session_completed", card_id=card_id)
+
+
+def _finalize_multi_session(
+    state: dict[str, Any], active_sessions: dict,
+) -> None:
+    """End-of-cycle writeback: publish sessions, derive the global phase,
+    keep a stable active_card_id pointer, and re-derive current_card.
+    """
+    state["active_sessions"] = active_sessions
+    # Derive global phase from the highest-priority session phase so the
+    # dashboard never shows a stale or idle value while work is ongoing.
+    state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
+    # 066 FR-010: end-of-cycle re-derive.  Keep the previous active_card_id
+    # pointer when its session is still present so the dashboard top-level
+    # fields don't flicker between siblings on each cycle.  When the prior
+    # pointer is gone (card completed), pick the session with the *earliest*
+    # picked_up_at — a stable key that survives dict-insertion reordering
+    # and won't ping-pong between siblings as sessions advance.  Fall back
+    # to lexicographic card_id when picked_up_at is missing (handled inside
+    # the picker).  The next per-session check_board invocation
+    # re-establishes active_card_id via the unified pickup path regardless.
+    active_id = state.get("active_card_id")
+    if not active_id or active_id not in active_sessions:
+        state["active_card_id"] = (  # type: ignore[typeddict-unknown-key]
+            _pick_stable_active_card_id(active_sessions)
+        )
+    _rederive_current_card(state)
 
 
 class CoordinareDaemon:
@@ -1101,206 +2111,24 @@ class CoordinareDaemon:
         # lifecycle bookkeeping).  v1 snapshots have an empty active_sessions
         # dict, so this loop is a no-op and the existing single-card flat
         # restore (above) drives recovery.
+        current_card = self._state.get("current_card")
         if snapshot.active_sessions:
-            restored_sessions: dict[str, dict] = {}
-            for card_id, persisted in snapshot.active_sessions.items():
-                session_dict: dict[str, Any] = {
-                    "performer_stage": persisted.performer_stage,
-                    "phase": persisted.phase,
-                    "lifecycle_completed_at": persisted.lifecycle_completed_at,
-                    "processed_review_ids": set(persisted.processed_review_ids),
-                    "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
-                    "open_questions": list(persisted.open_questions),
-                    "card_clarifications": list(persisted.card_clarifications),
-                    "relay_feedback": list(persisted.relay_feedback),
-                    "system_error_count": persisted.system_error_count,
-                    "system_error_reason": persisted.system_error_reason,
-                    "system_error_notified": persisted.system_error_notified,
-                    "requirements_changed": persisted.requirements_changed,
-                    "last_blocked_notified_at": persisted.last_blocked_notified_at,
-                    "last_blocked_slack_delivered_at": persisted.last_blocked_slack_delivered_at,
-                    "head_at_dispatch": persisted.head_at_dispatch,
-                    "head_at_last_turn": persisted.head_at_last_turn,
-                    "persona_scope": persisted.persona_scope,
-                    "bounce_counter": dict(persisted.bounce_counter),
-                    "local_fix_counter": dict(persisted.local_fix_counter),
-                    "inheritance_repair_counter": dict(persisted.inheritance_repair_counter),
-                    "repair_audit": [r.model_dump(mode="json") for r in persisted.repair_audit],
-                    "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
-                    "ci_gate_advisory_failures": [],
-                    # 095: restore per-card ENV_BLOCKED hold/dedup state so a
-                    # still-active block does not re-notify after a restart.
-                    "env_blocked": (
-                        dict(persisted.env_blocked) if persisted.env_blocked is not None else None
-                    ),
-                    # 096: restore the per-card auto-rebase anti-thrash marker so
-                    # a BLOCKED conflict isn't re-attempted right after a restart.
-                    "last_rebase_attempt": (
-                        dict(persisted.last_rebase_attempt)
-                        if persisted.last_rebase_attempt is not None
-                        else None
-                    ),
-                    # 123: restore split bounce budget counters + assessor Q&A
-                    # carryover so they survive a daemon restart.
-                    "content_feedback_cycles": persisted.content_feedback_cycles,
-                    "transient_error_cycles": persisted.transient_error_cycles,
-                    "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
-                    # 125: restore stage-verdict memory (plain dicts at session
-                    # level) + the per-card issue-comment dedup watermark so a
-                    # restart neither re-runs passed stages nor re-classifies
-                    # processed comments.
-                    "stage_verdicts": {
-                        sv_stage: sv.model_dump(mode="json")
-                        for sv_stage, sv in persisted.stage_verdicts.items()
-                    },
-                    "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
-                    "last_issue_comment_id": persisted.last_issue_comment_id,
-                    "pipeline_admitted": persisted.pipeline_admitted,
-                    # 126: restore the terminal-success-floor state so the
-                    # feedback contract and no-op budget survive restarts.
-                    "feedback_ledger": [
-                        fb.model_dump(mode="json") for fb in persisted.feedback_ledger
-                    ],
-                    "feedback_origin_sha": persisted.feedback_origin_sha,
-                    "noop_success_retries": persisted.noop_success_retries,
-                    # 141: restore in-flight attempt IDs so terminal nodes can
-                    # call close_attempt after a daemon restart (A-008).
-                    "last_attempt_id": persisted.last_attempt_id,
-                    "last_attempt_log_path": persisted.last_attempt_log_path,
-                    "last_attempt_failure_source": persisted.last_attempt_failure_source,
-                    # 165: the blueprint and the documenter side run survive a
-                    # restart so the remaining briefs and the side run's
-                    # once-per-hash rule still hold.
-                    "documentation_findings": dict(persisted.documentation_findings),
-                    "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
-                    "blueprint_signature": persisted.blueprint_signature,
-                    "last_progress_at": persisted.last_progress_at,
-                    "last_progress_fingerprint": persisted.last_progress_fingerprint,
-                    "idle_timeout_retries": dict(persisted.idle_timeout_retries),
-                    "documenting_side": (
-                        persisted.documenting_side.model_dump(mode="json")
-                        if persisted.documenting_side is not None
-                        else None
-                    ),
-                    # 354: restore the queued-for-slot stamp so a card that was
-                    # waiting on a saturated pool keeps its real wait elapsed.
-                    "slot_queued_since": persisted.slot_queued_since,
-                }
-                # Seed current_card for the matching active_card_id from the
-                # top-level snapshot fields; other sessions get a stub that
-                # check_board will replace from the live board.
-                if card_id == snapshot.active_card_id and self._state.get("current_card"):
-                    session_dict["current_card"] = self._state["current_card"]
-                else:
-                    session_dict["current_card"] = {"id": card_id}
-                restored_sessions[card_id] = session_dict
+            restored_sessions = {
+                card_id: _restored_session_dict(card_id, persisted, snapshot, current_card)
+                for card_id, persisted in snapshot.active_sessions.items()
+            }
             self._state["active_sessions"] = restored_sessions
             # 141 A-008: re-register any in-flight attempt with AttemptLog so
             # close_attempt writes the end row to the correct JSONL file even
             # after a midnight rollover + restart.
-            attempt_log = self._state.get("attempt_log")
-            if attempt_log is not None:
-                from pathlib import Path as _Path
-                for _card_id, _sess in restored_sessions.items():
-                    _aid = _sess.get("last_attempt_id")
-                    _alp = _sess.get("last_attempt_log_path")
-                    _card = _sess.get("current_card") or {}
-                    _task_id = str(_card.get("id", "") or _card_id)
-                    if isinstance(_aid, str) and _aid and isinstance(_alp, str) and _alp:
-                        attempt_log.reopen_attempt(_aid, _task_id, _Path(_alp))
-        elif snapshot.active_card_id and self._state.get("current_card"):
-            # 066 FR-005 / T004: v1-snapshot synthesis.  Pre-Fix-7 snapshots
-            # populated active_card_id + per-card top-level fields but had no
-            # active_sessions payload.  Synthesize a single-entry session so
-            # the unified pickup path sees a v2-shaped state.  check_board's
-            # re-adopt path will refresh the session from the live board on
-            # the first cycle.
+            _reopen_attempt_logs(restored_sessions, self._state.get("attempt_log"))
+        elif snapshot.active_card_id and current_card:
+            _synthesize_v1_session_log(snapshot.active_card_id, snapshot.phase)
             self._state["active_sessions"] = {
-                snapshot.active_card_id: {
-                    "current_card": self._state["current_card"],
-                    "performer_stage": snapshot.performer_stage or "implementing",
-                    "phase": snapshot.phase,
-                    "lifecycle_completed_at": snapshot.lifecycle_completed_at,
-                    "processed_review_ids": set(snapshot.processed_review_ids),
-                    "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
-                    "open_questions": list(snapshot.open_questions),
-                    "card_clarifications": list(snapshot.card_clarifications),
-                    "relay_feedback": [],
-                    "system_error_count": 0,
-                    "system_error_reason": None,
-                    "system_error_notified": False,
-                    "requirements_changed": False,
-                    "last_blocked_notified_at": snapshot.last_blocked_notified_at,
-                    "last_blocked_slack_delivered_at": None,
-                    "head_at_dispatch": None,
-                    "head_at_last_turn": None,
-                    "persona_scope": None,
-                    # 125 (schema v13): synthesized v1 sessions start with the
-                    # same empty verdict/watermark state as a fresh card so the
-                    # session shape matches _SESSION_FIELDS (adversarial-review
-                    # fix — the v2+ restore path above already sets these).
-                    "stage_verdicts": {},
-                    "processed_issue_comment_ids": set(),
-                    "last_issue_comment_id": None,
-                    # 126 (schema v15): same fresh-card defaults as above.
-                    "feedback_ledger": [],
-                    "feedback_origin_sha": None,
-                    "noop_success_retries": 0,
-                    # 165: fresh-card defaults.
-                    "documentation_findings": {},
-                    "blueprint": None,
-                    "blueprint_signature": None,
-                    "documenting_side": None,
-                },
+                snapshot.active_card_id: _synthesize_v1_session(snapshot, current_card),
             }
-            logger.info(
-                "state_store.v1_snapshot_rehydrated",
-                active_card_id=snapshot.active_card_id,
-                phase=snapshot.phase,
-            )
 
-        # 073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
-        # live EnvCacheState entries that EnvCacheService.initialise() already
-        # populated with readme_sha=None.  Without this, every restart re-runs
-        # env_bootstrap because check_and_trigger sees the SHA "change".
-        # Transient flags (bootstrap_in_flight, pending_sha, runtime_health_failed)
-        # are intentionally left at their initialise() defaults so a crash
-        # mid-bootstrap does not leave a stuck flag on disk.
-        if snapshot.env_cache:
-            live_env_cache = self._state.get("env_cache")
-            if isinstance(live_env_cache, dict):
-                for sym_name, persisted in snapshot.env_cache.items():
-                    live = live_env_cache.get(sym_name)
-                    if live is None:
-                        # Symphony in snapshot is no longer configured — skip.
-                        continue
-                    # Live entry is a pydantic EnvCacheState; mutate the
-                    # rehydratable fields in place.
-                    try:
-                        live.readme_sha = persisted.readme_sha
-                        live.last_bootstrap_at = persisted.last_bootstrap_at
-                        live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
-                        live.last_bootstrap_error = persisted.last_bootstrap_error
-                        live.cache_dir_ready = persisted.cache_dir_ready
-                        # 088 (FR-009): the breaker budget survives restarts.
-                        live.bootstrap_attempts = persisted.bootstrap_attempts
-                        live.bootstrap_exhausted = persisted.bootstrap_exhausted
-                        # 124 (US3): the wiki-init marker + breaker survive
-                        # restarts so an initialized symphony is never re-seeded.
-                        live.wiki_initialized = getattr(persisted, "wiki_initialized", False)
-                        live.wiki_attempts = getattr(persisted, "wiki_attempts", 0)
-                        live.wiki_exhausted = getattr(persisted, "wiki_exhausted", False)
-                        live.last_wiki_init_at = getattr(persisted, "last_wiki_init_at", None)
-                        live.last_wiki_init_succeeded = getattr(
-                            persisted, "last_wiki_init_succeeded", None,
-                        )
-                        live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
-                    except Exception as exc:  # pragma: no cover — defensive
-                        logger.warning(
-                            "state_store.env_cache_rehydrate_failed",
-                            symphony=sym_name,
-                            error=str(exc),
-                        )
+        _rehydrate_env_cache(self._state, snapshot)
 
         # 066 FR-010 / T006: set active_card_id and re-derive the mirror so
         # the post-restore state satisfies the I3 invariant.  Subsequent
@@ -1309,27 +2137,9 @@ class CoordinareDaemon:
             self._state["active_card_id"] = snapshot.active_card_id
         _rederive_current_card(self._state)
 
-        # Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
-        # per-symphony swap in _conduct_single_symphony reads sym_state.active_card
-        # and sym_state.previous_phase as the source of truth — if those are not
-        # primed from the snapshot, cycle 1 clobbers the just-restored top-level
-        # state with None / default and the card is never re-adopted. The
-        # snapshot has no project-number field, so we can only safely map when
-        # there is exactly one symphony; otherwise leave it to the in-graph
-        # re-adopt path (check_board) to pick the card off the live board.
-        sym_states = self._state.get("symphony_states") or {}
-        if len(sym_states) == 1:
-            (sym_state,) = sym_states.values()
-            sym_state.active_sessions = dict(self._state.get("active_sessions") or {})
-            current_card = self._state.get("current_card")
-            if current_card is not None and sym_state.active_card is None:
-                sym_state.active_card = current_card
-            if sym_state.previous_phase is None:
-                sym_state.previous_phase = snapshot.phase
-        elif sym_states:
-            # Project item IDs are board-specific. Retain legacy sessions until
-            # a successful read proves which board owns each ID.
-            self._unassigned_restored_sessions = dict(self._state.get("active_sessions") or {})
+        unassigned = _seed_symphony_runtime_state(self._state, snapshot)
+        if unassigned is not None:
+            self._unassigned_restored_sessions = unassigned
 
     @staticmethod
     def _infer_phase_from_board_column(column: str) -> WorkflowPhase:
@@ -1442,6 +2252,25 @@ class CoordinareDaemon:
         containers; this corrects board column/phase.
         """
         sessions = self._state.get("active_sessions") or {}
+        self._reconcile_session_phases(sessions, board_snapshot, snapshot)
+
+        # 094 (FR-010): once every session has been reconciled, re-derive the
+        # top-level focus phase from the corrected session set so it is
+        # consistent immediately — the top-level block above ran BEFORE these
+        # per-session corrections, so its self._state["phase"] can be stale
+        # (e.g. it inferred monitoring_agent for an IN_PROGRESS focus card whose
+        # session is legitimately preserved as monitoring_performer). Guarded on
+        # a non-empty set so the focus-only path (no active_sessions) keeps the
+        # top-level block's result. _derive_global_phase reflects the
+        # highest-priority live session, the same value the first cycle would
+        # compute — this just makes it true at reconcile time, not one cycle late.
+        if sessions:
+            self._state["phase"] = _derive_global_phase(sessions)
+
+    def _reconcile_session_phases(
+        self, sessions: dict[str, dict], board_snapshot: dict, snapshot: WorkflowSnapshot | None,
+    ) -> None:
+        """094: per-card phase reconciliation loop (board is source of truth)."""
         # The board column that is *consistent* with each in-flight phase. If
         # the live column matches, the session is genuinely mid-flight and is
         # preserved; if it differs, the card advanced and is moved forward.
@@ -1508,19 +2337,6 @@ class CoordinareDaemon:
                 corrected_phase=inferred,
                 symphony=symphony,
             )
-
-        # 094 (FR-010): once every session has been reconciled, re-derive the
-        # top-level focus phase from the corrected session set so it is
-        # consistent immediately — the top-level block above ran BEFORE these
-        # per-session corrections, so its self._state["phase"] can be stale
-        # (e.g. it inferred monitoring_agent for an IN_PROGRESS focus card whose
-        # session is legitimately preserved as monitoring_performer). Guarded on
-        # a non-empty set so the focus-only path (no active_sessions) keeps the
-        # top-level block's result. _derive_global_phase reflects the
-        # highest-priority live session, the same value the first cycle would
-        # compute — this just makes it true at reconcile time, not one cycle late.
-        if sessions:
-            self._state["phase"] = _derive_global_phase(sessions)
 
     @staticmethod
     def _find_card_column(
@@ -1695,173 +2511,14 @@ class CoordinareDaemon:
         seed_shared_cycle_markers(self._state)  # type: ignore[arg-type]
 
         # Pre-flight: poll board once so all concurrent sessions share the cache
-        # and eligibility can be computed before the fanout.  Respect the same
-        # github_operation_ready/backoff state used by check_board so multi-session
-        # mode doesn't bypass transient-outage handling.
+        # and eligibility can be computed before the fanout.
         github = self._state.get("github_service")
         if github is not None:
-            ready, retry_in = github_operation_ready(self._state, "poll_board")
-            if not ready:
-                logger.info(
-                    "multi_session.pre_poll_deferred",
-                    retry_in_seconds=round(retry_in, 1),
-                )
-            else:
-                try:
-                    board = await board_of(self._state, github).poll_board()
-                    self._state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
-                    clear_deferred_github_operation(self._state, "poll_board")
-                    self._state["last_poll_at"] = datetime.now(UTC)
-                    snapshot = board.get("snapshot")
-                    if isinstance(snapshot, dict):
-                        self._state["board_snapshot"] = snapshot
-                    # 062 Fix 4: propagate per-card metadata so dashboard swimlane
-                    # can render titles + GitHub links in multi-session mode.
-                    # check_board sets these too, but they're not in _GLOBAL_STATE_KEYS
-                    # so per-session mutations are dropped after the fanout merge.
-                    for _meta_src, _meta_dst in (
-                        ("titles", "_board_titles"),
-                        ("issue_numbers", "_board_issue_numbers"),
-                        ("issue_urls", "_board_issue_urls"),
-                        ("pr_urls", "_board_pr_urls"),
-                    ):
-                        _meta_val = board.get(_meta_src)
-                        if isinstance(_meta_val, dict):
-                            self._state[_meta_dst] = _meta_val  # type: ignore[literal-required]
-                    # Pre-seed _main_sha_cache so concurrent sessions share one
-                    # ls-remote result instead of each making an independent call.
-                    # suppress is scoped only to _current_token() — fetch_main_sha
-                    # and rebase failures are logged explicitly so they're visible.
-                    _config = self._state.get("config")
-                    if _config is not None and hasattr(github, "_current_token"):
-                        _token = ""
-                        with contextlib.suppress(Exception):
-                            _token = await github._current_token()
-                        if _token:
-                            _repo_url = repo_url_from_config(_config)
-                            if _repo_url:
-                                try:
-                                    _sha = await fetch_main_sha(_repo_url, _token)
-                                except Exception:
-                                    logger.warning(
-                                        "multi_session.preflight.sha_fetch_failed", exc_info=True,
-                                    )
-                                    _sha = None
-                                if _sha:
-                                    self._state["_main_sha_cache"] = _sha  # type: ignore[typeddict-unknown-key]
-                                    # Run main-advance detection once in preflight so
-                                    # every per-session check_board copy inherits the
-                                    # updated last_known_main_sha and skips its own
-                                    # run_rebase_round — preventing N parallel rebase
-                                    # rounds when main advances with N active sessions.
-                                    _prev_sha = self._state.get("last_known_main_sha")
-                                    if _prev_sha is None:
-                                        self._state["last_known_main_sha"] = _sha
-                                    elif _sha != _prev_sha:
-                                        logger.info(
-                                            "multi_session.preflight.main_head_changed",
-                                            old_sha=_prev_sha[:8],
-                                            new_sha=_sha[:8],
-                                        )
-                                        self._state["last_known_main_sha"] = _sha
-                                        try:
-                                            _rr = await run_rebase_round(
-                                                active_sessions,
-                                                _sha,
-                                                _repo_url,
-                                                _token,
-                                                notification_service=self._state.get(
-                                                    "notification_service",
-                                                ),
-                                                github=github,
-                                                human_reviewers=self._state.get("human_reviewers"),
-                                            )
-                                            self._state["last_rebase_round"] = _rr.to_dict()
-                                            # Mirror check_board's conflict-resolution
-                                            # handoff: route the first BLOCKED job back
-                                            # to implementing so relay_feedback fires.
-                                            from coordinare.models.rebase import RebaseOutcome
-                                            from coordinare.services.rebase import (
-                                                prepare_conflict_resolution,
-                                            )
+            await _preflight_poll_board(self._state, github, active_sessions)
 
-                                            for _job in _rr.jobs:
-                                                if _job.outcome == RebaseOutcome.BLOCKED:
-                                                    _sess = active_sessions.get(_job.card_id)
-                                                    if isinstance(_sess, dict):
-                                                        prepare_conflict_resolution(
-                                                            _job,
-                                                            _sess,
-                                                            human_reviewers=self._state.get(
-                                                                "human_reviewers",
-                                                            ),
-                                                        )
-                                                    break
-                                        except Exception:
-                                            logger.warning(
-                                                "multi_session.preflight.rebase_round_failed",
-                                                exc_info=True,
-                                            )
-                except Exception as _poll_exc:
-                    # Transient upstream GitHub failures (5xx, timeouts, DNS) are
-                    # routine — log a single-line warning without the traceback so
-                    # operators aren't alarmed by what's effectively a retry signal.
-                    if is_transient_github_outage_error(_poll_exc):
-                        logger.warning(
-                            "multi_session.pre_poll_failed",
-                            error_type=type(_poll_exc).__name__,
-                            error=str(_poll_exc)[:300],
-                            transient=True,
-                        )
-                        defer_github_operation(self._state, operation="poll_board", error=_poll_exc)
-                    else:
-                        logger.warning("multi_session.pre_poll_failed", exc_info=True)
-
-        # Build dependency graph from the pre-fetched board if available.
-        # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
-        # so sessions blocked by a now-closed off-board issue may be conservatively skipped
-        # this cycle.  The full resolution runs inside each session's check_board tick and
-        # will correct the dep state by the following cycle.
-        dep_graph: DependencyGraph | None = None
-        cached_board = self._state.get("_board_cache")  # type: ignore[misc]
-        if cached_board is not None:
-            try:
-                dep_graph = _build_dep_graph(cached_board)
-            except Exception:
-                logger.warning("multi_session.dep_graph_failed", exc_info=True)
-
-        board_snapshot: dict[str, list[str]] = self._state.get("board_snapshot") or {}  # type: ignore[assignment]
-
-        # Compute eligibility for all sessions.
-        eligibilities: dict[str, SessionEligibility] = {
-            card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
-            for card_id, session in active_sessions.items()
-        }
-
-        from coordinare.services.pipeline_budget import select_pipelines
-
-        selected = select_pipelines(
-            active_sessions, self._max_concurrent_cards(),
-            {cid for cid, eligibility in eligibilities.items() if eligibility.eligible},
+        eligibilities = _compute_session_eligibilities(
+            self._state, active_sessions, self._max_concurrent_cards(),
         )
-        self._state["_pipeline_selected"] = selected
-        for cid, eligibility in eligibilities.items():
-            if eligibility.eligible and cid not in selected:
-                eligibilities[cid] = SessionEligibility(
-                    card_id=cid, eligible=False, reason="pipeline_capacity",
-                )
-
-        # Record skip reasons for ineligible sessions.
-        skip_reasons: dict[str, dict] = {}
-        for card_id, elig in eligibilities.items():
-            if not elig.eligible:
-                skip_reasons[card_id] = {
-                    "reason": elig.reason,
-                    "detail": None,
-                    "blockers": elig.blockers,
-                }
-                _log_session_skip(card_id, active_sessions[card_id], elig)
-        self._state["session_skip_reasons"] = skip_reasons
 
         # Fallback: if every session is ineligible this cycle (e.g. all BLOCKED /
         # dependency_blocked), run a single full graph invocation so check_board
@@ -1869,322 +2526,180 @@ class CoordinareDaemon:
         # maintenance.  Without this, check_board never fires and available slots
         # go unfilled until at least one existing session becomes eligible.
         if not any(e.eligible for e in eligibilities.values()):
-            # The symphony swap restores the card pointer, not its flat fields.
-            # Without hydration, fallback writes aggregate defaults (assessing,
-            # blueprint=None) over a completed plan when the last worker blocks.
-            focus = self._state.get("active_card_id")
-            if focus in active_sessions:
-                session_to_state(active_sessions[focus], self._state)
-                self._state["active_card_id"] = focus
-                _rederive_current_card(self._state)
-            self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
-            # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
-            # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
-            # see the same view as the per-session fanout writeback at line 911.  Without
-            # this, a same-cycle readopt+dispatch leaves session.phase="dispatching"
-            # while flat state["phase"]="monitoring_performer"; _derive_global_phase
-            # then clobbers the flat phase back to "dispatching" and slot_manager
-            # releases the slot, orphaning the implementer container.
-            active_card_id = self._state.get("active_card_id")
-            if active_card_id:
-                active_sessions_after = self._state.get("active_sessions") or {}
-                if active_card_id in active_sessions_after:
-                    active_sessions_after[active_card_id] = state_to_session(self._state)
-            # If the graph settled into a passive phase (monitoring_pr),
-            # clear active_card_id so route_issue_comments doesn't poll the
-            # card's issue on every cycle.  check_board rescans the full board
-            # each cycle and re-points active_card_id when it needs to handle
-            # or dispatch a card.  066 FR-010: current_card is derived.
-            if self._state.get("phase") in PASSIVE_PHASES:
-                self._state["active_card_id"] = None  # type: ignore[typeddict-unknown-key]
-            _rederive_current_card(self._state)
+            self._state = await _all_ineligible_fallback(
+                self._state, self._graph, active_sessions,
+            )
             return
 
-        graph = self._graph
-        semaphore = asyncio.Semaphore(self._max_concurrent_cards())
-        blocked_to_poll = self._blocked_sessions_to_poll(eligibilities)
-
-        async def _invoke_one(card_id: str, session: dict) -> AsyncSessionTickResult:
-            elig = eligibilities[card_id]
-            # A BLOCKED-column session is ineligible for a dispatch slot, but its
-            # graph must still run each cycle so check_board's un-block
-            # comment-poll executes: otherwise a blocked card can never be
-            # un-blocked by a fresh issue comment while any sibling is eligible
-            # (the all-ineligible fallback that would run the poll never fires).
-            # phase=blocked keeps it exempt from the *dispatch-slot* accounting
-            # in NON_SLOT_PHASES, so it never occupies a performer slot. It does
-            # take a fanout permit and pay a state deep-copy, and review pointed
-            # out that the part which scales is the count, not the latency: every
-            # blocked card is still an active session, so an accumulating blocked
-            # backlog -- the exact board this recovers -- would add an unbounded
-            # number of graph ticks per cycle. _blocked_sessions_to_poll caps and
-            # rotates them instead. Skipped ones stay recorded in
-            # session_skip_reasons for operator visibility.
-            if not elig.eligible and card_id not in blocked_to_poll:
-                return AsyncSessionTickResult(
-                    card_id=card_id, ok=True, session_state=session, skipped=True,
-                )
-            pre_session = dict(session)
-            async with semaphore:
-                # State prep runs inside the semaphore so the concurrency bound
-                # also limits peak memory from simultaneous deep-copies.
-                # self._state is stable throughout the fanout (mutated only after
-                # all results are merged), so sessions that acquire the semaphore
-                # at different times still snapshot the same pre-fanout state.
-                t0 = perf_counter()
-                try:
-                    session_state: dict[str, Any] = dict(self._state)
-                    if session_state.get("github_retry_queue") is not None:
-                        session_state["github_retry_queue"] = list(
-                            session_state["github_retry_queue"],
-                        )
-                    # Deep-copy only the session being invoked (inside the semaphore
-                    # so the concurrency bound also limits peak copy memory).
-                    # Siblings are shallow-copied from the stable pre-fanout
-                    # active_sessions; nodes only mutate top-level sibling keys so
-                    # shallow isolation is sufficient.
-                    session_state["active_sessions"] = {
-                        cid: (copy.deepcopy(sess) if cid == card_id else dict(sess))
-                        for cid, sess in active_sessions.items()
-                    }
-                    session_to_state(session_state["active_sessions"][card_id], session_state)
-                    # 066 FR-010 / T006: identify the active session so the
-                    # per-session graph step can re-derive current_card from
-                    # active_sessions[active_card_id].
-                    session_state["active_card_id"] = card_id
-                    _rederive_current_card(session_state)
-                    # Snapshot sibling sessions before ainvoke.  Graph nodes such
-                    # as prepare_conflict_resolution can mutate session dicts
-                    # in-place; capturing shallow copies here lets us detect
-                    # real mutations post-ainvoke by value comparison.
-                    pre_fanout_siblings: dict[str, dict] = {
-                        k: dict(v)
-                        for k, v in session_state["active_sessions"].items()
-                        if k != card_id
-                    }
-                    updated = await graph.ainvoke(session_state)
-                    updated_session = state_to_session(updated)
-                    # Merge in any mutations that nodes made directly to
-                    # updated["active_sessions"][card_id] without mirroring them
-                    # back onto the flat state fields (e.g. prepare_conflict_resolution
-                    # routing a BLOCKED card by writing phase/performer_stage directly
-                    # into the session dict).  Only apply an in-place value when the
-                    # flat field was NOT independently updated — flat mutations take
-                    # priority so that nodes using the canonical flat-field path are
-                    # not overwritten by a stale pre-fanout deep copy.
-                    _in_place_session = (updated.get("active_sessions") or {}).get(card_id)
-                    if _in_place_session:
-                        for _f in _SESSION_FIELDS:
-                            if _f not in _in_place_session:
-                                continue
-                            _pre_val = session.get(_f)
-                            if updated_session.get(_f) == _pre_val:
-                                # flat field unchanged — apply in-place mutation if any
-                                _ip_val = _in_place_session[_f]
-                                if _ip_val != _pre_val:
-                                    updated_session[_f] = _ip_val  # type: ignore[literal-required]
-                    # Capture new sessions added by check_board so they survive
-                    # the fanout merge.  Only keys not present before dispatch
-                    # are considered new to avoid overwriting concurrent updates.
-                    updated_sessions = updated.get("active_sessions") or {}
-                    new_sessions = {
-                        k: v for k, v in updated_sessions.items() if k not in active_sessions
-                    }
-                    # Capture mutations to other existing sessions (e.g. prepare_conflict_resolution
-                    # routing a BLOCKED session back to dispatching).  Only include sessions
-                    # that actually changed vs the pre-fanout snapshot so that an unmodified
-                    # deep-copy of a sibling can't clobber a real mutation applied by another
-                    # concurrent task via last-writer-wins in cross_mutations.update(cm).
-                    cross_session = {
-                        k: v
-                        for k, v in updated_sessions.items()
-                        if k != card_id and k in active_sessions and v != pre_fanout_siblings.get(k)
-                    }
-                    g_updates: dict[str, Any] = {
-                        k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated
-                    }
-                    if new_sessions:
-                        g_updates["_new_sessions"] = new_sessions
-                    if cross_session:
-                        g_updates["_cross_session_mutations"] = cross_session
-                    return AsyncSessionTickResult(
-                        card_id=card_id,
-                        ok=True,
-                        session_state=updated_session,
-                        duration_ms=int((perf_counter() - t0) * 1000),
-                        global_updates=g_updates,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error("session_graph_error", card_id=card_id, exc_info=True)
-                    return AsyncSessionTickResult(
-                        card_id=card_id,
-                        ok=False,
-                        error=str(exc),
-                        session_state=pre_session,
-                        duration_ms=int((perf_counter() - t0) * 1000),
-                    )
-
+        ctx = _FanoutContext(
+            state=self._state,
+            active_sessions=active_sessions,
+            eligibilities=eligibilities,
+            blocked_to_poll=self._blocked_sessions_to_poll(eligibilities),
+            graph=self._graph,
+            semaphore=asyncio.Semaphore(self._max_concurrent_cards()),
+        )
         results: list[AsyncSessionTickResult] = list(
             await asyncio.gather(
-                *[_invoke_one(cid, sess) for cid, sess in list(active_sessions.items())],
+                *[
+                    _invoke_session_tick(ctx, cid, sess)
+                    for cid, sess in list(active_sessions.items())
+                ],
             ),
         )
 
-        # Merge global state updates from results.  Non-session, non-queue keys
-        # come from the first successful result.  github_retry_queue is merged
-        # across ALL results (dedupe by operation, keep highest attempt) so that
-        # deferred entries from any session are not silently dropped.  New sessions
-        # added by check_board are also merged from ALL results so no slot is lost.
-        # Ops that were present at fanout start but are absent in any successful
-        # result are treated as cleared and removed from the merged queue.
-        pre_fanout_ops: set[str] = {
-            e["operation"]
-            for e in (self._state.get("github_retry_queue") or [])  # type: ignore[misc]
-            if isinstance(e, dict) and e.get("operation")
-        }
-        cleared_ops: set[str] = set()
-        first_global_merged = False
-        merged_retry_queue: list[dict] | None = None
-        cross_mutations: dict[str, dict] = {}
-        for result in results:
-            if not result.ok or result.skipped or not result.global_updates:
-                continue
-            if not first_global_merged:
-                for k, v in result.global_updates.items():
-                    if k not in (
-                        "_new_sessions",
-                        "_cross_session_mutations",
-                        "github_retry_queue",
-                        "github_retry_after",
-                    ):
-                        self._state[k] = v  # type: ignore[literal-required]
-                first_global_merged = True
-            rq = result.global_updates.get("github_retry_queue")
-            if isinstance(rq, list):
-                session_ops = {
-                    e["operation"] for e in rq if isinstance(e, dict) and e.get("operation")
-                }
-                cleared_ops.update(pre_fanout_ops - session_ops)
-                if merged_retry_queue is None:
-                    merged_retry_queue = list(rq)
-                else:
-                    for entry in rq:
-                        if not isinstance(entry, dict):
-                            continue
-                        op = entry.get("operation")
-                        existing = next(
-                            (
-                                e
-                                for e in merged_retry_queue
-                                if isinstance(e, dict) and e.get("operation") == op
-                            ),
-                            None,
-                        )
-                        if existing is None:
-                            merged_retry_queue.append(entry)
-                        else:
-                            entry_attempt = int(entry.get("attempt", 0))
-                            existing_attempt = int(existing.get("attempt", 0))
-                            # Keep the most conservative entry: higher attempt wins;
-                            # on a tie, keep the later retry_at so two sessions that
-                            # deferred the same op at the same attempt (but slightly
-                            # different wall-clock times) don't shorten the backoff.
-                            # Compare as datetime objects — retry_at is always a
-                            # datetime in-memory; str() comparison is fragile across
-                            # tz representations.
-                            entry_ra = entry.get("retry_at")
-                            existing_ra = existing.get("retry_at")
-                            later_retry_at = (
-                                isinstance(entry_ra, datetime)
-                                and isinstance(existing_ra, datetime)
-                                and entry_ra > existing_ra
-                            )
-                            if entry_attempt > existing_attempt or (
-                                entry_attempt == existing_attempt and later_retry_at
-                            ):
-                                merged_retry_queue[merged_retry_queue.index(existing)] = entry
-            cm = result.global_updates.get("_cross_session_mutations") or {}
-            cross_mutations.update(cm)  # last-writer-wins across concurrent results
-            new_sessions = result.global_updates.get("_new_sessions") or {}
-            for cid, sess in new_sessions.items():
-                if cid not in active_sessions:
-                    active_sessions[cid] = sess
-                    logger.info("new_session_registered", card_id=cid)
-        if merged_retry_queue is not None:
-            if cleared_ops:
-                merged_retry_queue = [
-                    e
-                    for e in merged_retry_queue
-                    if not (isinstance(e, dict) and e.get("operation") in cleared_ops)
-                ]
-            self._state["github_retry_queue"] = merged_retry_queue  # type: ignore[literal-required]
-            retry_ats = [
-                e["retry_at"]
-                for e in merged_retry_queue
-                if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)
-            ]
-            self._state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
+        _merge_fanout_results(self._state, active_sessions, eligibilities, results)
+        _finalize_multi_session(self._state, active_sessions)
 
-        # Apply cross-session mutations as a baseline before direct results so
-        # each session's own tick result takes precedence over mutations from a
-        # sibling session's graph run (e.g. prepare_conflict_resolution targeting
-        # a BLOCKED session that was skipped this cycle).
-        for cid, mutated_sess in cross_mutations.items():
-            if cid in active_sessions:
-                active_sessions[cid] = mutated_sess
-
-        # Merge session results back into active_sessions; collect completions.
-        completed_ids: list[str] = []
-        for result in results:
-            if result.skipped:
-                # missing_card sessions have no card to resume — remove them so
-                # the slot doesn't linger forever.
-                if eligibilities[result.card_id].reason == MISSING_CARD:
-                    logger.warning("session_missing_card_evicted", card_id=result.card_id)
-                    completed_ids.append(result.card_id)
-                continue
-            if result.ok:
-                # Only overwrite on success; preserves any cross-session
-                # mutations applied above for sessions whose own tick failed.
-                # A side poll can finish while fanout holds an older copy. Preserve
-                # its terminal record instead of resurrecting the running snapshot.
-                live_side = (active_sessions.get(result.card_id) or {}).get("documenting_side")
-                result_side = result.session_state.get("documenting_side")
-                if (isinstance(live_side, dict) and isinstance(result_side, dict)
-                        and live_side.get("session_id") == result_side.get("session_id")
-                        and live_side.get("status") in {"done", "failed"}
-                        and (result_side.get("status") == "running" or result_side.get("writer_active"))):
-                    result.session_state["documenting_side"] = dict(live_side)
-                active_sessions[result.card_id] = result.session_state
-                sess = result.session_state
-                if sess.get("phase", "idle") == "idle" and sess.get("current_card") is None:
-                    completed_ids.append(result.card_id)
-
-        for card_id in completed_ids:
-            del active_sessions[card_id]
-            logger.info("session_completed", card_id=card_id)
-
-        self._state["active_sessions"] = active_sessions
-        # Derive global phase from the highest-priority session phase so the
-        # dashboard never shows a stale or idle value while work is ongoing.
-        self._state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
-        # 066 FR-010: end-of-cycle re-derive.  Keep the previous active_card_id
-        # pointer when its session is still present so the dashboard top-level
-        # fields don't flicker between siblings on each cycle.  When the prior
-        # pointer is gone (card completed), pick the session with the *earliest*
-        # picked_up_at — a stable key that survives dict-insertion reordering
-        # and won't ping-pong between siblings as sessions advance.  Fall back
-        # to lexicographic card_id when picked_up_at is missing (handled inside
-        # the picker).  The next per-session check_board invocation
-        # re-establishes active_card_id via the unified pickup path regardless.
-        active_id = self._state.get("active_card_id")
-        if not active_id or active_id not in active_sessions:
-            self._state["active_card_id"] = (  # type: ignore[typeddict-unknown-key]
-                _pick_stable_active_card_id(active_sessions)
+    async def _resolve_symphony_effective_state(
+        self, symphony_name: str, symphony_config: Any, sym_state: Any,
+    ) -> tuple[Any, dict]:
+        """Resolve the per-symphony effective config, route any unassigned
+        restored sessions onto this symphony's board, and emit the
+        at-capacity debug event.  Returns (effective_cfg, sym_sessions)."""
+        _global_cfg = self._state.get("config")
+        _effective_cfg = (
+            symphony_config.effective_config(_global_cfg)
+            if hasattr(symphony_config, "effective_config") and _global_cfg is not None
+            else _global_cfg
+        )
+        _sym_sessions = (
+            (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
+        )
+        pending = getattr(self, "_unassigned_restored_sessions", {})
+        if pending and sym_state is not None:
+            service = (self._state.get("symphony_github_services") or {}).get(symphony_name)
+            if service is None:
+                raise RuntimeError("Cannot route restored sessions without a board service")
+            board = await service.poll_board()
+            snapshot = board.get("snapshot")
+            if not isinstance(snapshot, dict):
+                raise RuntimeError("Cannot route restored sessions from an invalid board read")
+            member_ids = {str(cid) for ids in snapshot.values()
+                          if isinstance(ids, list) for cid in ids}
+            for cid in list(pending):
+                if cid in member_ids:
+                    _sym_sessions[cid] = pending.pop(cid)
+            sym_state.active_sessions = dict(_sym_sessions)
+        _active_sym_count = sum(
+            1 for sess in _sym_sessions.values() if sess.get("phase") not in NON_SLOT_PHASES
+        )
+        if (
+            sym_state is not None
+            and _effective_cfg is not None
+            and hasattr(_effective_cfg, "max_concurrent_cards")
+            and _active_sym_count >= _effective_cfg.max_concurrent_cards
+        ):
+            logger.debug(
+                "symphony.dispatch_skipped.at_capacity",
+                symphony=symphony_name,
+                active=_active_sym_count,
+                limit=_effective_cfg.max_concurrent_cards,
             )
-        _rederive_current_card(self._state)
+            # Do NOT return here — existing sessions still need to be ticked by
+            # the graph. The graph respects active_sessions count and will skip
+            # new dispatch naturally while still monitoring in-flight work.
+        return _effective_cfg, _sym_sessions
+
+    def _swap_symphony_state_in(
+        self,
+        symphony_name: str,
+        sym_state: Any,
+        _sym_sessions: dict,
+        _effective_cfg: Any,
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        """Swap the per-symphony graph keys into the flat state.  Returns the
+        previous values needed by _restore_symphony_swaps: (prev_config,
+        prev_github, prev_workspace_manager, sym_github, sym_workspace_manager)."""
+        # Swap state["config"] to the per-symphony effective config so that
+        # graph nodes and _invoke_multi_session() see the symphony's limits.
+        _prev_config = self._state.get("config")
+        # Swap state["github_service"] to the per-symphony service so that
+        # graph nodes query the correct project board for this symphony.
+        _sym_github_services = self._state.get("symphony_github_services") or {}
+        _prev_github = self._state.get("github_service")
+        _sym_github = _sym_github_services.get(symphony_name)
+        _sym_workspace_managers = self._state.get("symphony_workspace_managers") or {}
+        _prev_workspace_manager = self._state.get("workspace_manager")
+        _sym_workspace_manager = _sym_workspace_managers.get(symphony_name)
+        # Restore per-symphony active_sessions and other graph-scoped keys so
+        # the graph sees this symphony's state, not the previous symphony's.
+        self._state["active_sessions"] = dict(_sym_sessions)
+        if sym_state is not None:
+            _sym_card = sym_state.active_card
+            _sym_card_id = str(_sym_card.get("id", "")) if isinstance(_sym_card, dict) else ""
+            self._state["active_card_id"] = _sym_card_id or None
+            _rederive_current_card(self._state)
+            if sym_state.board_snapshot is not None:
+                self._state["board_snapshot"] = sym_state.board_snapshot
+            if sym_state.session_skip_reasons is not None:
+                self._state["session_skip_reasons"] = sym_state.session_skip_reasons
+            if sym_state.previous_phase is not None:
+                self._state["phase"] = sym_state.previous_phase
+        if _effective_cfg is not None and _effective_cfg is not _prev_config:
+            self._state["config"] = _effective_cfg
+        if _sym_github is not None:
+            self._state["github_service"] = _sym_github
+            # 149: the board follows the symphony's service. Leaving it behind
+            # would have a multi-symphony run reading one board and writing
+            # another — silently, since both are GitHub today.
+            self._state["board_provider"] = GitHubProjectsBoardProvider(_sym_github)
+        if _sym_workspace_manager is not None:
+            self._state["workspace_manager"] = _sym_workspace_manager
+        return (
+            _prev_config,
+            _prev_github,
+            _prev_workspace_manager,
+            _sym_github,
+            _sym_workspace_manager,
+        )
+
+    def _restore_symphony_swaps(
+        self,
+        symphony_name: str,
+        prev_config: Any,
+        prev_github: Any,
+        prev_workspace_manager: Any,
+        sym_github: Any,
+        sym_workspace_manager: Any,
+    ) -> None:
+        """Inner-finally restore of the per-symphony graph-key swaps."""
+        self._state["config"] = prev_config
+        if sym_github is not None:
+            self._state["github_service"] = prev_github
+            self._state["board_provider"] = GitHubProjectsBoardProvider(prev_github)
+        if sym_workspace_manager is not None:
+            self._state["workspace_manager"] = prev_workspace_manager
+
+    def _update_symphony_state(self, symphony_name: str, sym_state: Any) -> None:
+        """Mirror the finished cycle's results back onto the symphony state."""
+        sym_state.cycle_count = getattr(sym_state, "cycle_count", 0) + 1
+        sym_state.last_poll_at = datetime.now(UTC)
+        board_snap = self._state.get("board_snapshot")
+        if board_snap is not None:
+            sym_state.board_snapshot = board_snap
+        sym_state.active_sessions = dict(self._state.get("active_sessions") or {})
+        sym_state.active_card = self._state.get("current_card")
+        skip_reasons = self._state.get("session_skip_reasons")
+        sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
+        # 062: Per-card metadata for the dashboard swimlane.
+        sym_state.board_titles = dict(self._state.get("_board_titles") or {})  # type: ignore[arg-type]
+        sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})  # type: ignore[arg-type]
+        sym_state.board_issue_urls = dict(self._state.get("_board_issue_urls") or {})  # type: ignore[arg-type]
+        sym_state.board_pr_urls = dict(self._state.get("_board_pr_urls") or {})  # type: ignore[arg-type]
+        # Per-symphony phase transition metric (labels each transition with the actual symphony)
+        _prev_sym_phase = sym_state.previous_phase
+        _cur_sym_phase = self._state.get("phase")
+        if _cur_sym_phase != _prev_sym_phase:
+            _sym_transition = _PHASE_TRANSITION_METRIC.get(
+                (str(_prev_sym_phase), str(_cur_sym_phase)),
+            )
+            if _sym_transition is not None:
+                METRICS.card_state_transitions_total.labels(
+                    symphony=symphony_name,
+                    transition_type=_sym_transition,
+                ).inc()
+            sym_state.previous_phase = _cur_sym_phase  # type: ignore[assignment]
 
     async def _conduct_single_symphony(
         self,
@@ -2209,131 +2724,37 @@ class CoordinareDaemon:
             # Check max_concurrent_cards limit per symphony
             symphony_states = self._state.get("symphony_states") or {}
             sym_state = symphony_states.get(symphony_name)
-            _global_cfg = self._state.get("config")
-            _effective_cfg = (
-                symphony_config.effective_config(_global_cfg)
-                if hasattr(symphony_config, "effective_config") and _global_cfg is not None
-                else _global_cfg
+            _effective_cfg, _sym_sessions = await self._resolve_symphony_effective_state(
+                symphony_name, symphony_config, sym_state,
             )
-            _sym_sessions = (
-                (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
-            )
-            pending = getattr(self, "_unassigned_restored_sessions", {})
-            if pending and sym_state is not None:
-                service = (self._state.get("symphony_github_services") or {}).get(symphony_name)
-                if service is None:
-                    raise RuntimeError("Cannot route restored sessions without a board service")
-                board = await service.poll_board()
-                snapshot = board.get("snapshot")
-                if not isinstance(snapshot, dict):
-                    raise RuntimeError("Cannot route restored sessions from an invalid board read")
-                member_ids = {str(cid) for ids in snapshot.values()
-                              if isinstance(ids, list) for cid in ids}
-                for cid in list(pending):
-                    if cid in member_ids:
-                        _sym_sessions[cid] = pending.pop(cid)
-                sym_state.active_sessions = dict(_sym_sessions)
-            _active_sym_count = sum(
-                1 for sess in _sym_sessions.values() if sess.get("phase") not in NON_SLOT_PHASES
-            )
-            if (
-                sym_state is not None
-                and _effective_cfg is not None
-                and hasattr(_effective_cfg, "max_concurrent_cards")
-                and _active_sym_count >= _effective_cfg.max_concurrent_cards
-            ):
-                logger.debug(
-                    "symphony.dispatch_skipped.at_capacity",
-                    symphony=symphony_name,
-                    active=_active_sym_count,
-                    limit=_effective_cfg.max_concurrent_cards,
-                )
-                # Do NOT return here — existing sessions still need to be ticked by
-                # the graph. The graph respects active_sessions count and will skip
-                # new dispatch naturally while still monitoring in-flight work.
 
-            _eff_max = (
-                int(_effective_cfg.max_concurrent_cards)
-                if _effective_cfg is not None and hasattr(_effective_cfg, "max_concurrent_cards")
-                else self._max_concurrent_cards()
+            (
+                _prev_config,
+                _prev_github,
+                _prev_workspace_manager,
+                _sym_github,
+                _sym_workspace_manager,
+            ) = self._swap_symphony_state_in(
+                symphony_name, sym_state, _sym_sessions, _effective_cfg,
             )
-            # Swap state["config"] to the per-symphony effective config so that
-            # graph nodes and _invoke_multi_session() see the symphony's limits.
-            _prev_config = self._state.get("config")
-            # Swap state["github_service"] to the per-symphony service so that
-            # graph nodes query the correct project board for this symphony.
-            _sym_github_services = self._state.get("symphony_github_services") or {}
-            _prev_github = self._state.get("github_service")
-            _sym_github = _sym_github_services.get(symphony_name)
-            _sym_workspace_managers = self._state.get("symphony_workspace_managers") or {}
-            _prev_workspace_manager = self._state.get("workspace_manager")
-            _sym_workspace_manager = _sym_workspace_managers.get(symphony_name)
-            # Restore per-symphony active_sessions and other graph-scoped keys so
-            # the graph sees this symphony's state, not the previous symphony's.
-            self._state["active_sessions"] = dict(_sym_sessions)
-            if sym_state is not None:
-                _sym_card = sym_state.active_card
-                _sym_card_id = str(_sym_card.get("id", "")) if isinstance(_sym_card, dict) else ""
-                self._state["active_card_id"] = _sym_card_id or None
-                _rederive_current_card(self._state)
-                if sym_state.board_snapshot is not None:
-                    self._state["board_snapshot"] = sym_state.board_snapshot
-                if sym_state.session_skip_reasons is not None:
-                    self._state["session_skip_reasons"] = sym_state.session_skip_reasons
-                if sym_state.previous_phase is not None:
-                    self._state["phase"] = sym_state.previous_phase
-            if _effective_cfg is not None and _effective_cfg is not _global_cfg:
-                self._state["config"] = _effective_cfg
-            if _sym_github is not None:
-                self._state["github_service"] = _sym_github
-                # 149: the board follows the symphony's service. Leaving it behind
-                # would have a multi-symphony run reading one board and writing
-                # another — silently, since both are GitHub today.
-                self._state["board_provider"] = GitHubProjectsBoardProvider(_sym_github)
-            if _sym_workspace_manager is not None:
-                self._state["workspace_manager"] = _sym_workspace_manager
             try:
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits
                 # to a single graph cycle inside _invoke_multi_session.
                 await self._invoke_multi_session()
             finally:
-                self._state["config"] = _prev_config
-                if _sym_github is not None:
-                    self._state["github_service"] = _prev_github
-                    self._state["board_provider"] = GitHubProjectsBoardProvider(_prev_github)
-                if _sym_workspace_manager is not None:
-                    self._state["workspace_manager"] = _prev_workspace_manager
+                self._restore_symphony_swaps(
+                    symphony_name,
+                    _prev_config,
+                    _prev_github,
+                    _prev_workspace_manager,
+                    _sym_github,
+                    _sym_workspace_manager,
+                )
 
             # Update symphony state on success
             if sym_state is not None:
-                sym_state.cycle_count = getattr(sym_state, "cycle_count", 0) + 1
-                sym_state.last_poll_at = datetime.now(UTC)
-                board_snap = self._state.get("board_snapshot")
-                if board_snap is not None:
-                    sym_state.board_snapshot = board_snap
-                sym_state.active_sessions = dict(self._state.get("active_sessions") or {})
-                sym_state.active_card = self._state.get("current_card")
-                skip_reasons = self._state.get("session_skip_reasons")
-                sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
-                # 062: Per-card metadata for the dashboard swimlane.
-                sym_state.board_titles = dict(self._state.get("_board_titles") or {})  # type: ignore[arg-type]
-                sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})  # type: ignore[arg-type]
-                sym_state.board_issue_urls = dict(self._state.get("_board_issue_urls") or {})  # type: ignore[arg-type]
-                sym_state.board_pr_urls = dict(self._state.get("_board_pr_urls") or {})  # type: ignore[arg-type]
-                # Per-symphony phase transition metric (labels each transition with the actual symphony)
-                _prev_sym_phase = sym_state.previous_phase
-                _cur_sym_phase = self._state.get("phase")
-                if _cur_sym_phase != _prev_sym_phase:
-                    _sym_transition = _PHASE_TRANSITION_METRIC.get(
-                        (str(_prev_sym_phase), str(_cur_sym_phase)),
-                    )
-                    if _sym_transition is not None:
-                        METRICS.card_state_transitions_total.labels(
-                            symphony=symphony_name,
-                            transition_type=_sym_transition,
-                        ).inc()
-                    sym_state.previous_phase = _cur_sym_phase  # type: ignore[assignment]
+                self._update_symphony_state(symphony_name, sym_state)
         except (asyncio.CancelledError, CircuitOpenError):
             _propagating = True
             # Rebuild aggregate active_sessions from last-known-good symphony states
@@ -2369,6 +2790,110 @@ class CoordinareDaemon:
             self._state["session_skip_reasons"] = _prev_session_skip_reasons
             self._state["phase"] = _prev_phase
 
+    def _preflight_reload_symphony_states(
+        self, added: set[str], removed: set[str],
+    ) -> dict[str, Any] | None:
+        """Preflight: check active sessions BEFORE mutating any daemon state so
+        an aborted reload cannot leave symphony_configs/config/config_version
+        out of sync with the still-running symphony_states.  Returns the
+        updated symphony-state map, or None when the reload must abort."""
+        from coordinare.graph.state import SymphonyRuntimeState
+
+        sym_states = dict(self._state.get("symphony_states") or {})
+        for name in added:
+            sym_states[name] = SymphonyRuntimeState(name=name)
+        for name in removed:
+            sym_state = sym_states.get(name)
+            if sym_state is not None and getattr(sym_state, "active_sessions", None):
+                logger.error(
+                    "config_reload.aborted_active_sessions",
+                    symphony=name,
+                    active_sessions=list(sym_state.active_sessions.keys()),
+                    reason="Reload would orphan in-flight sessions; retry once sessions complete",
+                )
+                return None
+            sym_states.pop(name, None)
+        return sym_states
+
+    async def _rebuild_symphony_github_services(
+        self, new_configs: dict[str, Any], coordinare_cfg: Any,
+    ) -> dict[str, Any] | None:
+        """Rebuild the full per-symphony GitHubService map on every successful
+        reload so that changed project numbers or GitHub settings in existing
+        symphonies are reflected, not just added/removed symphonies.
+        Build new services first; only swap (and close old) once all are ready
+        so a failed initialize() leaves the daemon in a consistent state.
+        Returns the new service map, or None when there is no global service."""
+        import contextlib
+
+        from coordinare.auth import build_auth as _build_auth
+        from coordinare.observability import bind_symphony, clear_symphony
+        from coordinare.services.github import GitHubService as _GHSvc
+
+        _global_gh = self._state.get("github_service")
+        if _global_gh is None:
+            return None
+        _sym_svcs: dict[str, Any] = {}
+        try:
+            for _sym_name, _sym_cfg in new_configs.items():
+                _new_eff = _sym_cfg.effective_config(coordinare_cfg.global_config)
+                _r = _new_eff.resilience.github_retry
+                _new_svc = _GHSvc(
+                    auth=_build_auth(_new_eff),
+                    org=_new_eff.github_org,
+                    project_number=_new_eff.github_project_number,
+                    endpoint=_new_eff.github_graphql_url,
+                    circuit_breaker=_global_gh._circuit_breaker,
+                    retry_kwargs={
+                        "attempts": _r.attempts,
+                        "wait_initial": _r.wait_initial_seconds,
+                        "wait_max": _r.wait_max_seconds,
+                        "wait_jitter": _r.wait_jitter_seconds,
+                        "wait_exp_base": _r.wait_exp_base,
+                    },
+                )
+                _new_svc._project_name = _new_eff.project_name
+                bind_symphony(_sym_name)
+                try:
+                    await _new_svc.initialize()
+                finally:
+                    clear_symphony()
+                _sym_svcs[_sym_name] = _new_svc
+        except Exception:
+            # Initialization failed — close any partially-built services
+            # and re-raise so the outer handler logs and keeps old state.
+            for _partial in _sym_svcs.values():
+                if hasattr(_partial, "aclose"):
+                    with contextlib.suppress(Exception):
+                        await _partial.aclose()
+            raise
+
+        # All new services ready — close old ones then swap atomically.
+        _old_svcs: dict[str, Any] = self._state.get("symphony_github_services") or {}
+        for _old_svc in _old_svcs.values():
+            if hasattr(_old_svc, "aclose"):
+                with contextlib.suppress(Exception):
+                    await _old_svc.aclose()
+        self._state["symphony_github_services"] = _sym_svcs
+        return _sym_svcs
+
+    def _rebuild_symphony_workspace_managers(
+        self, new_configs: dict[str, Any], coordinare_cfg: Any, sym_svcs: dict[str, Any],
+    ) -> None:
+        """Rebuild per-symphony WorkspaceManager instances for the new config."""
+        from coordinare.auth import build_auth as _build_auth
+        from coordinare.workspace import WorkspaceManager as _WorkspaceManager
+
+        _sym_wms: dict[str, Any] = {}
+        for _sym_name2, _sym_cfg2 in new_configs.items():
+            _wm_eff = _sym_cfg2.effective_config(coordinare_cfg.global_config)
+            _sym_wms[_sym_name2] = _WorkspaceManager(
+                _wm_eff,
+                auth=_build_auth(_wm_eff),
+                github_service=sym_svcs.get(_sym_name2),
+            )
+        self._state["symphony_workspace_managers"] = _sym_wms
+
     async def _handle_config_reload(self) -> None:
         """Reload configuration from disk and update symphony state (spec 057)."""
         config_path = self._state.get("config_path")
@@ -2384,7 +2909,6 @@ class CoordinareDaemon:
                 validate_config,
                 wrap_legacy_config,
             )
-            from coordinare.graph.state import SymphonyRuntimeState
 
             validation = validate_config(config_path)
             if not validation.passed:
@@ -2407,92 +2931,16 @@ class CoordinareDaemon:
             added = new_names - old_names
             removed = old_names - new_names
 
-            # Preflight: check active sessions BEFORE mutating any daemon state so
-            # an aborted reload cannot leave symphony_configs/config/config_version
-            # out of sync with the still-running symphony_states.
-            sym_states = dict(self._state.get("symphony_states") or {})
-            for name in added:
-                sym_states[name] = SymphonyRuntimeState(name=name)
-            for name in removed:
-                sym_state = sym_states.get(name)
-                if sym_state is not None and getattr(sym_state, "active_sessions", None):
-                    logger.error(
-                        "config_reload.aborted_active_sessions",
-                        symphony=name,
-                        active_sessions=list(sym_state.active_sessions.keys()),
-                        reason="Reload would orphan in-flight sessions; retry once sessions complete",
-                    )
-                    return
-                sym_states.pop(name, None)
+            sym_states = self._preflight_reload_symphony_states(added, removed)
+            if sym_states is None:
+                return
 
-            # Rebuild the full per-symphony GitHubService map on every successful
-            # reload so that changed project numbers or GitHub settings in existing
-            # symphonies are reflected, not just added/removed symphonies.
-            # Build new services first; only swap (and close old) once all are ready
-            # so a failed initialize() leaves the daemon in a consistent state.
-            _global_gh = self._state.get("github_service")
-            if _global_gh is not None:
-                import contextlib
-
-                from coordinare.auth import build_auth as _build_auth
-                from coordinare.observability import bind_symphony, clear_symphony
-                from coordinare.services.github import GitHubService as _GHSvc
-
-                _sym_svcs: dict[str, Any] = {}
-                try:
-                    for _sym_name, _sym_cfg in new_configs.items():
-                        _new_eff = _sym_cfg.effective_config(coordinare_cfg.global_config)
-                        _r = _new_eff.resilience.github_retry
-                        _new_svc = _GHSvc(
-                            auth=_build_auth(_new_eff),
-                            org=_new_eff.github_org,
-                            project_number=_new_eff.github_project_number,
-                            endpoint=_new_eff.github_graphql_url,
-                            circuit_breaker=_global_gh._circuit_breaker,
-                            retry_kwargs={
-                                "attempts": _r.attempts,
-                                "wait_initial": _r.wait_initial_seconds,
-                                "wait_max": _r.wait_max_seconds,
-                                "wait_jitter": _r.wait_jitter_seconds,
-                                "wait_exp_base": _r.wait_exp_base,
-                            },
-                        )
-                        _new_svc._project_name = _new_eff.project_name
-                        bind_symphony(_sym_name)
-                        try:
-                            await _new_svc.initialize()
-                        finally:
-                            clear_symphony()
-                        _sym_svcs[_sym_name] = _new_svc
-                except Exception:
-                    # Initialization failed — close any partially-built services
-                    # and re-raise so the outer handler logs and keeps old state.
-                    for _partial in _sym_svcs.values():
-                        if hasattr(_partial, "aclose"):
-                            with contextlib.suppress(Exception):
-                                await _partial.aclose()
-                    raise
-
-                # All new services ready — close old ones then swap atomically.
-                _old_svcs: dict[str, Any] = self._state.get("symphony_github_services") or {}
-                for _old_svc in _old_svcs.values():
-                    if hasattr(_old_svc, "aclose"):
-                        with contextlib.suppress(Exception):
-                            await _old_svc.aclose()
-                self._state["symphony_github_services"] = _sym_svcs
-
+            _sym_svcs = await self._rebuild_symphony_github_services(new_configs, coordinare_cfg)
+            if _sym_svcs is not None:
                 # Rebuild per-symphony WorkspaceManager instances for the new config.
-                from coordinare.workspace import WorkspaceManager as _WorkspaceManager
-
-                _sym_wms: dict[str, Any] = {}
-                for _sym_name2, _sym_cfg2 in new_configs.items():
-                    _wm_eff = _sym_cfg2.effective_config(coordinare_cfg.global_config)
-                    _sym_wms[_sym_name2] = _WorkspaceManager(
-                        _wm_eff,
-                        auth=_build_auth(_wm_eff),
-                        github_service=_sym_svcs.get(_sym_name2),
-                    )
-                self._state["symphony_workspace_managers"] = _sym_wms
+                self._rebuild_symphony_workspace_managers(
+                    new_configs, coordinare_cfg, _sym_svcs,
+                )
 
             # Atomic state swap: all config fields updated only after all
             # preflights and service builds have succeeded without raising.
@@ -2602,61 +3050,29 @@ class CoordinareDaemon:
         max_attempts = (_budget_s // 10) if _budget_s > 0 else _BOOTSTRAP_POLL_MAX_ATTEMPTS
         if max_attempts < 1:
             max_attempts = 1
-        last_logs_snapshot: list[str] = []
-        _last_progress: list[str] | None = None
-        _last_progress_attempt = 0
-        _consecutive_poll_failures = 0
+        poll = _BootstrapPollState()
         for _attempt in range(max_attempts):
             await asyncio.sleep(10)
-            # Snapshot container logs *before* check_status, because a terminal
-            # status causes HTTPPerformerService to stop and `--rm`-remove the
-            # container, after which `docker logs` returns nothing.  ``--tail
-            # 500`` keeps enough history that the meaningful (non-poll) lines
-            # don't scroll out of the idle-detection window under poll-noise.
-            if container_id:
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "docker",
-                        "logs",
-                        "--tail",
-                        "500",
-                        container_id,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                    )
-                    stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                    snap = stdout_b.decode(errors="replace").splitlines()
-                    if snap:
-                        last_logs_snapshot = snap[-500:]
-                except Exception:
-                    pass
+            poll.last_logs_snapshot = await _snapshot_container_logs(
+                container_id, poll.last_logs_snapshot,
+            )
             # 076 idle reap: if the bootstrap's meaningful log output hasn't
             # changed for ``bootstrap_idle_timeout_seconds``, it's hung (not just
             # slow) — reap it now rather than waiting out the wall-clock budget.
-            if container_id and _idle_timeout_s > 0:
-                _progress = _bootstrap_progress_lines(last_logs_snapshot)
-                if _progress != _last_progress:
-                    _last_progress = _progress
-                    _last_progress_attempt = _attempt
-                elif (_attempt - _last_progress_attempt) * 10 >= _idle_timeout_s:
-                    logger.warning(
-                        "env_cache.bootstrap_idle_reaped",
-                        symphony=symphony_name,
-                        job_id=job_id,
-                        idle_seconds=(_attempt - _last_progress_attempt) * 10,
-                        idle_timeout_seconds=_idle_timeout_s,
-                    )
-                    await self._reap_bootstrap_container(container_id, symphony_name)
-                    env_cache_svc.on_bootstrap_complete(
-                        symphony_name,
-                        False,
-                        self._state,
-                        error=(
-                            "bootstrap hung — no progress for "
-                            f"{(_attempt - _last_progress_attempt) * 10}s; reaped"
-                        ),
-                    )
-                    return
+            if (
+                container_id
+                and _idle_timeout_s > 0
+                and await self._bootstrap_idle_reap(
+                    poll,
+                    _attempt,
+                    container_id,
+                    symphony_name,
+                    job_id,
+                    env_cache_svc,
+                    _idle_timeout_s,
+                )
+            ):
+                return
             try:
                 status_result = await svc.check_status(job_id)
             except Exception as exc:
@@ -2666,13 +3082,13 @@ class CoordinareDaemon:
                 # _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES consecutive misses;
                 # only then declare the bootstrap failed. The counter resets the
                 # moment any poll succeeds.
-                _consecutive_poll_failures += 1
-                if _consecutive_poll_failures < _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES:
+                poll.consecutive_failures += 1
+                if poll.consecutive_failures < _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES:
                     logger.warning(
                         "env_cache.bootstrap_poll_transient",
                         symphony=symphony_name,
                         error=str(exc),
-                        consecutive_failures=_consecutive_poll_failures,
+                        consecutive_failures=poll.consecutive_failures,
                         max_consecutive_failures=_BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES,
                     )
                     continue
@@ -2680,7 +3096,7 @@ class CoordinareDaemon:
                     "env_cache.bootstrap_poll_failed",
                     symphony=symphony_name,
                     error=str(exc),
-                    consecutive_failures=_consecutive_poll_failures,
+                    consecutive_failures=poll.consecutive_failures,
                 )
                 env_cache_svc.on_bootstrap_complete(
                     symphony_name,
@@ -2690,151 +3106,32 @@ class CoordinareDaemon:
                 )
                 return
             # A successful poll clears the transient-failure streak.
-            _consecutive_poll_failures = 0
+            poll.consecutive_failures = 0
             if status_result.get("status") not in ("working", None):
-                # 060/Option A: performer reports a terminal status when the
-                # bootstrap session ends. "env_bootstrap_complete" is the
-                # success marker emitted by the performer's env_bootstrap
-                # role; "ok" is retained for backwards compat with the
-                # earlier coordinare-driven contract. Anything else is failure.
-                ok = status_result.get("status") in ("env_bootstrap_complete", "ok")
-                if not ok:
-                    logs_tail: list[str] = (
-                        list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
-                    )
-                    # Pull logs directly from the bootstrap container by id.
-                    # The shared `_log_buffer` is unreliable here because a
-                    # single HTTPPerformerService is used for both bootstrap
-                    # and implementing dispatches, so the implementing job's
-                    # poll task may have overwritten the buffer before we
-                    # observed bootstrap's terminal status.
-                    bootstrap_cid: str | None = container_id
-                    if bootstrap_cid is None:
-                        try:
-                            active_jobs = getattr(svc, "_active_jobs", {}) or {}
-                            job_obj = active_jobs.get(job_id)
-                            if job_obj is not None:
-                                bootstrap_cid = getattr(job_obj, "container_id", None)
-                        except Exception:
-                            bootstrap_cid = None
-                    if bootstrap_cid and not logs_tail:
-                        try:
-                            proc = await asyncio.create_subprocess_exec(
-                                "docker",
-                                "logs",
-                                "--tail",
-                                "100",
-                                bootstrap_cid,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.STDOUT,
-                            )
-                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                            logs_tail = list(stdout_b.decode(errors="replace").splitlines())[-60:]
-                        except Exception as exc:
-                            logs_tail = [f"<docker logs failed: {exc}>"]
-                    if not logs_tail and hasattr(svc, "get_agent_logs"):
-                        try:
-                            raw_logs = svc.get_agent_logs()
-                            if isinstance(raw_logs, list):
-                                logs_tail = [str(line) for line in raw_logs[-40:]]
-                            elif isinstance(raw_logs, str):
-                                logs_tail = raw_logs.splitlines()[-40:]
-                        except Exception as exc:
-                            logs_tail = [f"<get_agent_logs failed: {exc}>"]
-                    logger.warning(
-                        "env_cache.bootstrap_terminal_failure",
-                        symphony=symphony_name,
-                        job_id=job_id,
-                        status=status_result.get("status"),
-                        availability=status_result.get("availability"),
-                        error=status_result.get("error")
-                        or status_result.get("message")
-                        or status_result.get("reason"),
-                        status_keys=sorted(status_result.keys())
-                        if isinstance(status_result, dict)
-                        else None,
-                        logs_tail=logs_tail[-10:],
-                        logs_tail_truncated=len(logs_tail) > 10,
-                    )
-                # 063 T026d: stamp the performer-reported service-inference
-                # summary onto the env-cache state before marking the
-                # bootstrap complete, so the dashboard surfaces what the
-                # agent produced (or why it didn't run).
-                try:
-                    env_cache_svc.record_inference_outcome(
-                        symphony_name,
-                        self._state,
-                        skipped_reason=status_result.get("inference_skipped_reason"),
-                        agent_version=status_result.get("inference_agent_version"),
-                        attempts=status_result.get("inference_attempts"),
-                        succeeded=status_result.get("inference_succeeded"),
-                        services=list(status_result.get("inference_services") or []),
-                        test_env_source=status_result.get("inference_test_env_source"),
-                    )
-                except Exception as _exc:
-                    logger.warning(
-                        "env_cache.record_inference_outcome_error",
-                        symphony=symphony_name,
-                        error=str(_exc),
-                    )
-                # 077: authoritative clean-context verify. The performer ran
-                # verify.sh INSIDE its own bootstrap container, where the agent's
-                # ad-hoc online installs can mask a broken consumer-facing
-                # activate.sh (false pass — observed: chromium present in the
-                # bootstrap container via online apt, but the activate.sh debs
-                # path didn't actually yield a working chromium for consumers).
-                # Re-run verify.sh in a CLEAN container (image + cache mounted
-                # read-only = a consumer's exact world); only that result is
-                # authoritative. A non-zero clean verify downgrades success so
-                # on_bootstrap_complete(False) clears readme_sha and retries —
-                # a broken cache is never marked ready.
-                _boot_err: str | None = None
-                if not ok:
-                    _boot_err = (
-                        status_result.get("error")
-                        or status_result.get("message")
-                        or status_result.get("reason")
-                        or "bootstrap performer reported a terminal failure"
-                    )
-                if ok:
-                    _clean_ok, _clean_detail = await self._verify_env_cache_clean(
-                        symphony_name, svc,
-                    )
-                    if _clean_ok is False:
-                        logger.warning(
-                            "env_cache.clean_verify_failed",
-                            symphony=symphony_name,
-                            job_id=job_id,
-                            detail=_clean_detail,
-                        )
-                        ok = False
-                        _boot_err = (
-                            f"env verification failed in a clean consumer context: {_clean_detail}"
-                        )
-                env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state, error=_boot_err)
-                if ok:
-                    from coordinare.services.http_performer_service import HTTPPerformerService
-
-                    _performer_svcs = self._state.get("performer_services") or {}
-                    for _pid, _psvc in _performer_svcs.items():
-                        if isinstance(_psvc, HTTPPerformerService) and _psvc.mode == "persistent":
-                            logger.warning(
-                                "env_cache.persistent_mount_skipped",
-                                symphony=symphony_name,
-                                performer_id=_pid,
-                                detail=(
-                                    "Env cache became ready after persistent performer started; "
-                                    "restart the performer container to pick up the new mount."
-                                ),
-                            )
+                await self._handle_bootstrap_terminal_status(
+                    svc, job_id, symphony_name, env_cache_svc, container_id,
+                    status_result, poll.last_logs_snapshot,
+                )
                 return
-        # 076 (live QA #150): budget exhausted.  Reap the container explicitly —
-        # it was started with ``--rm`` but a hung agent never exits, so without
-        # an explicit stop it would linger and keep holding a backend slot.
+        await self._bootstrap_budget_exhausted(
+            symphony_name, env_cache_svc, container_id, _budget_s, max_attempts,
+        )
+
+    async def _bootstrap_budget_exhausted(
+        self,
+        symphony_name: str,
+        env_cache_svc: Any,
+        container_id: str | None,
+        budget_s: int,
+        max_attempts: int,
+    ) -> None:
+        """076 (live QA #150): budget exhausted.  Reap the container explicitly —
+        it was started with ``--rm`` but a hung agent never exits, so without
+        an explicit stop it would linger and keep holding a backend slot."""
         logger.warning(
             "env_cache.bootstrap_poll_timeout",
             symphony=symphony_name,
-            budget_seconds=_budget_s or (_BOOTSTRAP_POLL_MAX_ATTEMPTS * 10),
+            budget_seconds=budget_s or (_BOOTSTRAP_POLL_MAX_ATTEMPTS * 10),
             attempts=max_attempts,
         )
         if container_id:
@@ -2845,9 +3142,165 @@ class CoordinareDaemon:
             self._state,
             error=(
                 "bootstrap exceeded its time budget "
-                f"({_budget_s or _BOOTSTRAP_POLL_MAX_ATTEMPTS * 10}s) and was reaped"
+                f"({budget_s or _BOOTSTRAP_POLL_MAX_ATTEMPTS * 10}s) and was reaped"
             ),
         )
+
+    async def _verify_bootstrap_in_clean_context(
+        self, symphony_name: str, svc: Any, job_id: str,
+    ) -> tuple[bool, str | None]:
+        """077 authoritative clean-context verify: re-run verify.sh in a clean
+        consumer container; a non-zero result downgrades success.  Returns the
+        (ok, boot_err) pair to record."""
+        _clean_ok, _clean_detail = await self._verify_env_cache_clean(
+            symphony_name, svc,
+        )
+        if _clean_ok is False:
+            logger.warning(
+                "env_cache.clean_verify_failed",
+                symphony=symphony_name,
+                job_id=job_id,
+                detail=_clean_detail,
+            )
+            return False, (
+                f"env verification failed in a clean consumer context: {_clean_detail}"
+            )
+        return True, None
+
+    async def _bootstrap_idle_reap(
+        self,
+        poll: _BootstrapPollState,
+        attempt: int,
+        container_id: str,
+        symphony_name: str,
+        job_id: str,
+        env_cache_svc: Any,
+        idle_timeout_s: int,
+    ) -> bool:
+        """076 idle reap: reap a hung bootstrap (no meaningful log progress for
+        ``bootstrap_idle_timeout_seconds``).  Returns True when reaped."""
+        _progress = _bootstrap_progress_lines(poll.last_logs_snapshot)
+        if _progress != poll.last_progress:
+            poll.last_progress = _progress
+            poll.last_progress_attempt = attempt
+            return False
+        if (attempt - poll.last_progress_attempt) * 10 < idle_timeout_s:
+            return False
+        logger.warning(
+            "env_cache.bootstrap_idle_reaped",
+            symphony=symphony_name,
+            job_id=job_id,
+            idle_seconds=(attempt - poll.last_progress_attempt) * 10,
+            idle_timeout_seconds=idle_timeout_s,
+        )
+        await self._reap_bootstrap_container(container_id, symphony_name)
+        env_cache_svc.on_bootstrap_complete(
+            symphony_name,
+            False,
+            self._state,
+            error=(
+                "bootstrap hung — no progress for "
+                f"{(attempt - poll.last_progress_attempt) * 10}s; reaped"
+            ),
+        )
+        return True
+
+    async def _handle_bootstrap_terminal_status(
+        self,
+        svc: Any,
+        job_id: str,
+        symphony_name: str,
+        env_cache_svc: Any,
+        container_id: str | None,
+        status_result: dict,
+        last_logs_snapshot: list[str],
+    ) -> None:
+        """Handle a terminal bootstrap status (success or failure)."""
+        # 060/Option A: performer reports a terminal status when the
+        # bootstrap session ends. "env_bootstrap_complete" is the
+        # success marker emitted by the performer's env_bootstrap
+        # role; "ok" is retained for backwards compat with the
+        # earlier coordinare-driven contract. Anything else is failure.
+        ok = status_result.get("status") in ("env_bootstrap_complete", "ok")
+        if not ok:
+            logs_tail = await _bootstrap_failure_logs(
+                svc, job_id, container_id, last_logs_snapshot,
+            )
+            logger.warning(
+                "env_cache.bootstrap_terminal_failure",
+                symphony=symphony_name,
+                job_id=job_id,
+                status=status_result.get("status"),
+                availability=status_result.get("availability"),
+                error=status_result.get("error")
+                or status_result.get("message")
+                or status_result.get("reason"),
+                status_keys=sorted(status_result.keys())
+                if isinstance(status_result, dict)
+                else None,
+                logs_tail=logs_tail[-10:],
+                logs_tail_truncated=len(logs_tail) > 10,
+            )
+        # 063 T026d: stamp the performer-reported service-inference
+        # summary onto the env-cache state before marking the
+        # bootstrap complete, so the dashboard surfaces what the
+        # agent produced (or why it didn't run).
+        try:
+            env_cache_svc.record_inference_outcome(
+                symphony_name,
+                self._state,
+                skipped_reason=status_result.get("inference_skipped_reason"),
+                agent_version=status_result.get("inference_agent_version"),
+                attempts=status_result.get("inference_attempts"),
+                succeeded=status_result.get("inference_succeeded"),
+                services=list(status_result.get("inference_services") or []),
+                test_env_source=status_result.get("inference_test_env_source"),
+            )
+        except Exception as _exc:
+            logger.warning(
+                "env_cache.record_inference_outcome_error",
+                symphony=symphony_name,
+                error=str(_exc),
+            )
+        # 077: authoritative clean-context verify. The performer ran
+        # verify.sh INSIDE its own bootstrap container, where the agent's
+        # ad-hoc online installs can mask a broken consumer-facing
+        # activate.sh (false pass — observed: chromium present in the
+        # bootstrap container via online apt, but the activate.sh debs
+        # path didn't actually yield a working chromium for consumers).
+        # Re-run verify.sh in a CLEAN container (image + cache mounted
+        # read-only = a consumer's exact world); only that result is
+        # authoritative. A non-zero clean verify downgrades success so
+        # on_bootstrap_complete(False) clears readme_sha and retries —
+        # a broken cache is never marked ready.
+        _boot_err: str | None = None
+        if not ok:
+            _boot_err = (
+                status_result.get("error")
+                or status_result.get("message")
+                or status_result.get("reason")
+                or "bootstrap performer reported a terminal failure"
+            )
+        if ok:
+            ok, _boot_err = await self._verify_bootstrap_in_clean_context(
+                symphony_name, svc, job_id,
+            )
+        env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state, error=_boot_err)
+        if ok:
+            from coordinare.services.http_performer_service import HTTPPerformerService
+
+            _performer_svcs = self._state.get("performer_services") or {}
+            for _pid, _psvc in _performer_svcs.items():
+                if isinstance(_psvc, HTTPPerformerService) and _psvc.mode == "persistent":
+                    logger.warning(
+                        "env_cache.persistent_mount_skipped",
+                        symphony=symphony_name,
+                        performer_id=_pid,
+                        detail=(
+                            "Env cache became ready after persistent performer started; "
+                            "restart the performer container to pick up the new mount."
+                        ),
+                    )
 
     async def _reap_bootstrap_container(self, container_id: str, symphony_name: str) -> None:
         """076 (live QA #150): force-stop a wedged env_bootstrap container.
@@ -2996,6 +3449,77 @@ class CoordinareDaemon:
         workspace_info = WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
         return ctx, workspace_info
 
+    async def _resolve_cardless_github_token(
+        self, symphony_name: str, event_prefix: str,
+    ) -> str:
+        """GITHUB_TOKEN provisioning for cardless dispatches: they never flow
+        through WorkspaceManager.prepare(), so fetch a fresh credential from
+        the symphony's workspace manager (App installation token or configured
+        PAT) — the same source the env_bootstrap dispatch uses — then fall back
+        to the process env.  Returns "" when neither source has a token."""
+        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony_name)
+        token = ""
+        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
+            try:
+                token = await sym_wm.get_fresh_github_token() or ""
+            except Exception as exc:
+                logger.warning(
+                    f"{event_prefix}.token_fetch_failed", symphony=symphony_name, error=str(exc),
+                )
+        if not token:
+            import os
+
+            token = os.environ.get("GITHUB_TOKEN", "")
+        return token
+
+    def _build_intake_payload(
+        self,
+        role: str,
+        symphony_name: str,
+        cfg: Any,
+        role_cfg: Any,
+        github: Any,
+        org: str,
+        repo: str,
+        token: str,
+    ) -> tuple[dict[str, Any], Any]:
+        """Build the cardless intake card_context + WorkspaceInfo (spec 173)."""
+        from coordinare.services.intake_dispatch import (
+            build_card_context,
+            build_workflow_env,
+        )
+        from coordinare.services.persona_service import get_effective_instructions
+        from coordinare.workspace import WorkspaceInfo
+
+        try:
+            persona = get_effective_instructions(role, cfg.personas)
+        except Exception:
+            persona = ""
+        backend = str(getattr(role_cfg, "backend", "") or "hermes")
+        try:
+            model_block = cfg.resolve_performer_dispatch_model(role)
+        except Exception:
+            model_block = {}
+
+        card_context = build_card_context(
+            role,  # type: ignore[arg-type]
+            symphony_name=symphony_name,
+            org=org,
+            repo=repo,
+            persona=persona,
+            backend=backend,
+            model_block=model_block,
+            project_id=str(getattr(github, "project_id", "") or ""),
+            workflow_env=build_workflow_env(role, role_cfg),  # type: ignore[arg-type]
+        )
+        workspace_info = WorkspaceInfo(
+            path=None,
+            branch=card_context["branch"],
+            repo_url=card_context["repo_url"],
+            github_token=token,
+        )
+        return card_context, workspace_info
+
     async def _maybe_dispatch_intake(self, role: str, symphony_name: str, github: Any) -> None:
         """Start one card-less intake run when the gate allows it (spec 173).
 
@@ -3003,13 +3527,9 @@ class CoordinareDaemon:
         classifies nothing and posts nothing itself.
         """
         from coordinare.services.intake_dispatch import (
-            build_card_context,
-            build_workflow_env,
             register_failure,
             should_run,
         )
-        from coordinare.services.persona_service import get_effective_instructions
-        from coordinare.workspace import WorkspaceInfo
 
         cfg = self._state.get("config")
         if cfg is None:
@@ -3038,47 +3558,13 @@ class CoordinareDaemon:
             logger.warning("intake.repo_unknown", role=role, symphony=symphony_name)
             return
 
-        token = ""
-        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony_name)
-        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
-            try:
-                token = await sym_wm.get_fresh_github_token() or ""
-            except Exception as exc:
-                logger.warning("intake.token_fetch_failed", role=role, error=str(exc))
-        if not token:
-            import os
-
-            token = os.environ.get("GITHUB_TOKEN", "")
+        token = await self._resolve_cardless_github_token(symphony_name, "intake")
         if not token:
             logger.warning("intake.no_github_token", role=role, symphony=symphony_name)
             return
 
-        try:
-            persona = get_effective_instructions(role, cfg.personas)
-        except Exception:
-            persona = ""
-        backend = str(getattr(role_cfg, "backend", "") or "hermes")
-        try:
-            model_block = cfg.resolve_performer_dispatch_model(role)
-        except Exception:
-            model_block = {}
-
-        card_context = build_card_context(
-            role,  # type: ignore[arg-type]
-            symphony_name=symphony_name,
-            org=org,
-            repo=repo,
-            persona=persona,
-            backend=backend,
-            model_block=model_block,
-            project_id=str(getattr(github, "project_id", "") or ""),
-            workflow_env=build_workflow_env(role, role_cfg),  # type: ignore[arg-type]
-        )
-        workspace_info = WorkspaceInfo(
-            path=None,
-            branch=card_context["branch"],
-            repo_url=card_context["repo_url"],
-            github_token=token,
+        card_context, workspace_info = self._build_intake_payload(
+            role, symphony_name, cfg, role_cfg, github, org, repo, token,
         )
 
         # The marker goes up BEFORE the dispatch and comes down on a synchronous
@@ -3128,55 +3614,12 @@ class CoordinareDaemon:
                 break
         handle_run_result(ec, role, status, self._state)  # type: ignore[arg-type]
 
-    async def _execute_wiki_init_dispatch(self, symphony_name: str, github: Any) -> None:
-        """124(US2): dispatch a CARDLESS documenter run in init mode to seed the
-        symphony's ``docs/wiki``, then poll → auto-merge the seed PR via
-        WikiInitService. Triggered manually by the dashboard "Init wiki" button
-        (operator-initiated — no auto-gate, so it never holds other dispatch)."""
+    def _build_wiki_init_card_context(
+        self, symphony_name: str, org: str, repo: str,
+    ) -> dict[str, Any]:
+        """Build the card_context for a wiki-init seed run (spec 124)."""
         from coordinare.services.env_cache import sanitise_symphony_name
         from coordinare.services.persona_service import get_effective_instructions
-        from coordinare.workspace import WorkspaceInfo
-
-        svc = (self._state.get("performer_services") or {}).get("documenting")
-        if svc is None:
-            logger.warning("wiki_init.no_documenting_service", symphony=symphony_name)
-            return
-        ec = (self._state.get("env_cache") or {}).get(symphony_name)
-        if ec is None or getattr(ec, "wiki_in_flight", False):
-            return
-        try:
-            org = getattr(github, "org", None) or getattr(github, "_org", "") or ""
-            repo = getattr(github, "_project_name", "") or ""
-        except Exception as exc:
-            logger.warning("wiki_init.repo_resolve_failed", symphony=symphony_name, error=str(exc))
-            return
-        if not (org and repo):
-            logger.warning("wiki_init.repo_unknown", symphony=symphony_name, org=org, repo=repo)
-            return
-
-        # GITHUB_TOKEN provisioning: a cardless dispatch never flows through
-        # WorkspaceManager.prepare(), and the GitHubService itself exposes no
-        # get_token(). Fetch a fresh credential from the symphony's workspace
-        # manager (App installation token or configured PAT) — the same source
-        # the env_bootstrap dispatch uses — then fall back to the process env.
-        # Fail fast if none is available rather than dispatch a doomed job that
-        # the performer rejects with "permanent performer config error: GITHUB_TOKEN".
-        token = ""
-        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony_name)
-        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
-            try:
-                token = await sym_wm.get_fresh_github_token() or ""
-            except Exception as exc:
-                logger.warning(
-                    "wiki_init.token_fetch_failed", symphony=symphony_name, error=str(exc),
-                )
-        if not token:
-            import os
-
-            token = os.environ.get("GITHUB_TOKEN", "")
-        if not token:
-            logger.warning("wiki_init.no_github_token", symphony=symphony_name)
-            return
 
         cfg = self._state.get("config")
         persona, backend, model_block = "", "hermes", {}
@@ -3195,7 +3638,7 @@ class CoordinareDaemon:
             except Exception:
                 model_block = {}
 
-        card_context: dict[str, Any] = {
+        return {
             "card_id": f"wiki-init-{symphony_name}",
             "role": "documenting",
             "doc_mode": "init",
@@ -3221,6 +3664,39 @@ class CoordinareDaemon:
             "documenting_side_run": False,
             **model_block,
         }
+
+    async def _execute_wiki_init_dispatch(self, symphony_name: str, github: Any) -> None:
+        """124(US2): dispatch a CARDLESS documenter run in init mode to seed the
+        symphony's ``docs/wiki``, then poll → auto-merge the seed PR via
+        WikiInitService. Triggered manually by the dashboard "Init wiki" button
+        (operator-initiated — no auto-gate, so it never holds other dispatch)."""
+        from coordinare.workspace import WorkspaceInfo
+
+        svc = (self._state.get("performer_services") or {}).get("documenting")
+        if svc is None:
+            logger.warning("wiki_init.no_documenting_service", symphony=symphony_name)
+            return
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None or getattr(ec, "wiki_in_flight", False):
+            return
+        try:
+            org = getattr(github, "org", None) or getattr(github, "_org", "") or ""
+            repo = getattr(github, "_project_name", "") or ""
+        except Exception as exc:
+            logger.warning("wiki_init.repo_resolve_failed", symphony=symphony_name, error=str(exc))
+            return
+        if not (org and repo):
+            logger.warning("wiki_init.repo_unknown", symphony=symphony_name, org=org, repo=repo)
+            return
+
+        # Fail fast if none is available rather than dispatch a doomed job that
+        # the performer rejects with "permanent performer config error: GITHUB_TOKEN".
+        token = await self._resolve_cardless_github_token(symphony_name, "wiki_init")
+        if not token:
+            logger.warning("wiki_init.no_github_token", symphony=symphony_name)
+            return
+
+        card_context = self._build_wiki_init_card_context(symphony_name, org, repo)
         # The documenting role gets its GITHUB_TOKEN secret from
         # workspace_info.github_token (env_bootstrap is the only role that reads
         # card_context["_github_token"]). A cardless dispatch never flows through
@@ -3308,26 +3784,14 @@ class CoordinareDaemon:
             ec.wiki_in_flight = False
             logger.warning("wiki_init.handle_result_failed", symphony=symphony_name, error=str(exc))
 
-    async def _execute_bootstrap_dispatch(
-        self,
-        performer_id: str,
-        payload: BootstrapJobPayload,
-        symphony_name: str,
-        performer_svcs: dict[str, Any],
-        env_cache_svc: Any,
-    ) -> None:
-        """Dispatch an env_bootstrap job to a performer and start polling for completion."""
+    def _resolve_bootstrap_volumes(
+        self, performer_id: str, svc: Any, symphony_name: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Resolve the env-cache volume mount for a bootstrap dispatch and emit
+        the volume-debug line.  Returns (ec_result, dispatch_kw)."""
         from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, get_env_volume_for_symphony
         from coordinare.services.http_performer_service import HTTPPerformerService
 
-        svc = performer_svcs.get(performer_id)
-        if svc is None:
-            logger.warning(
-                "env_cache.bootstrap_svc_not_found",
-                performer_id=performer_id,
-                symphony=symphony_name,
-            )
-            return
         devenv_root = DEFAULT_DEVENV_ROOT
         if isinstance(svc, HTTPPerformerService):
             devenv_root = svc.devenv_root
@@ -3359,35 +3823,37 @@ class CoordinareDaemon:
             mount_mode=ec_result[0].mode if ec_result else None,
             extra_volumes_attached=bool(dispatch_kw.get("extra_volumes")),
         )
-        # dispatch_card takes dict[str, Any]; model_dump() is an intentional demotion
-        # because the performer HTTP API is untyped at the wire level.
-        dispatch_dict = payload.model_dump()
-        # Resolve backend for env_bootstrap from the symphony's role config so the
-        # performer matches the same agent backend used for implementing/etc.
-        # Default to "codex" (matches coordinare-performer:full image) when no
-        # role config is available.
-        bootstrap_backend = "codex"
-        bootstrap_model: str | None = None
-        bootstrap_effort: str | None = None
-        bootstrap_temperature: float | None = None
-        bootstrap_base_url: str | None = None
-        bootstrap_api_key_env: str | None = None
-        bootstrap_auth_token_env: str | None = None
+        return ec_result, dispatch_kw
+
+    def _resolve_bootstrap_backend(
+        self, symphony_name: str,
+    ) -> tuple[_BootstrapBackend, Any]:
+        """Resolve backend for env_bootstrap from the symphony's role config so
+        the performer matches the same agent backend used for implementing/etc.
+        Default to "codex" (matches coordinare-performer:full image) when no
+        role config is available.  Also returns the effective config the
+        resolution used (the symphony override when present, else the global
+        config), for the workflow-override block."""
+        from coordinare.config import CoordinareConfiguration, SymphonyConfig
+
+        resolved = _BootstrapBackend()
         cfg = self._state.get("config")
         symphony_cfg = (self._state.get("symphony_configs") or {}).get(symphony_name)
         coordinare_cfg = self._state.get("coordinare_config")
-        if symphony_cfg is not None and coordinare_cfg is not None:
-            from coordinare.config import CoordinareConfiguration, SymphonyConfig
-
-            if isinstance(symphony_cfg, SymphonyConfig) and isinstance(coordinare_cfg, CoordinareConfiguration):
-                cfg = symphony_cfg.effective_config(coordinare_cfg.global_config)
+        if (
+            symphony_cfg is not None
+            and coordinare_cfg is not None
+            and isinstance(symphony_cfg, SymphonyConfig)
+            and isinstance(coordinare_cfg, CoordinareConfiguration)
+        ):
+            cfg = symphony_cfg.effective_config(coordinare_cfg.global_config)
         if cfg is not None and hasattr(cfg, "performers"):
             for _probe_role in ("env_bootstrap", "implementer", "architect", "assessor"):
                 rc = cfg.performers.resolved_role(_probe_role)
                 if rc is not None and getattr(rc, "backend", None):
-                    bootstrap_backend = rc.backend
-                    bootstrap_effort = getattr(rc, "effort", None)
-                    bootstrap_temperature = getattr(rc, "temperature", None)
+                    resolved.backend = rc.backend
+                    resolved.effort = getattr(rc, "effort", None)
+                    resolved.temperature = getattr(rc, "temperature", None)
                     # 080 moved all model selection to the mode → model_endpoint →
                     # endpoint catalogs; inline performer model/base_url/auth fields
                     # are schema-forbidden. The card-dispatch path resolves the model
@@ -3395,18 +3861,108 @@ class CoordinareDaemon:
                     # the SAME, otherwise the dispatch carries model=None and the
                     # self-hosted routing table (keyed on (backend, model)) can't match
                     # → claude_code silently falls back to the LiteLLM shim.
-                    resolved = {}
+                    model_resolution = {}
                     if hasattr(cfg, "resolve_performer_dispatch_model"):
-                        resolved = cfg.resolve_performer_dispatch_model(_probe_role) or {}
-                    bootstrap_model = resolved.get("model") or getattr(rc, "model", None)
-                    bootstrap_base_url = resolved.get("base_url") or getattr(rc, "base_url", None)
-                    bootstrap_api_key_env = resolved.get("api_key_env") or getattr(
+                        model_resolution = cfg.resolve_performer_dispatch_model(_probe_role) or {}
+                    resolved.model = model_resolution.get("model") or getattr(rc, "model", None)
+                    resolved.base_url = model_resolution.get("base_url") or getattr(
+                        rc, "base_url", None,
+                    )
+                    resolved.api_key_env = model_resolution.get("api_key_env") or getattr(
                         rc, "api_key_env", None,
                     )
-                    bootstrap_auth_token_env = resolved.get("auth_token_env") or getattr(
+                    resolved.auth_token_env = model_resolution.get("auth_token_env") or getattr(
                         rc, "auth_token_env", None,
                     )
                     break
+        return resolved, cfg
+
+    async def _finish_bootstrap_dispatch(
+        self,
+        svc: Any,
+        performer_id: str,
+        symphony_name: str,
+        dispatch_dict: dict[str, Any],
+        dispatch_kw: dict[str, Any],
+        env_cache_svc: Any,
+    ) -> None:
+        """Dispatch the bootstrap payload; start the completion poller on
+        success, else surface the rich dispatch status/reason and mark
+        bootstrap complete-with-error."""
+        result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+        job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
+        bootstrap_container_id = (result or {}).get("container_id")
+        if job_id and hasattr(svc, "check_status"):
+            bootstrap_task = asyncio.create_task(
+                self._poll_bootstrap_completion(
+                    svc,
+                    job_id,
+                    symphony_name,
+                    env_cache_svc,
+                    container_id=bootstrap_container_id,
+                ),
+                name=f"bootstrap_poll_{symphony_name}",
+            )
+            self._bootstrap_poll_tasks.add(bootstrap_task)
+            bootstrap_task.add_done_callback(self._bootstrap_poll_tasks.discard)
+        else:
+            # dispatch_card returns a rich {"status","reason"} on every failure
+            # mode (container start failed / readiness timeout / payload error /
+            # transport-auth / 409 busy).  Surface that reason instead of the
+            # generic "no job id" so the dashboard + feedback-injection know
+            # WHICH dispatch layer failed.
+            _status = (result or {}).get("status")
+            _reason = (result or {}).get("reason")
+            _detail = (
+                f"bootstrap dispatch failed ({_status}): {_reason}"
+                if _reason
+                else "bootstrap dispatch produced no job id"
+            )
+            logger.warning(
+                "env_cache.bootstrap_no_job_id",
+                symphony=symphony_name,
+                performer_id=performer_id,
+                status=_status,
+                reason=_reason,
+            )
+            env_cache_svc.on_bootstrap_complete(
+                symphony_name,
+                False,
+                self._state,
+                error=_detail,
+            )
+
+    async def _execute_bootstrap_dispatch(
+        self,
+        performer_id: str,
+        payload: BootstrapJobPayload,
+        symphony_name: str,
+        performer_svcs: dict[str, Any],
+        env_cache_svc: Any,
+    ) -> None:
+        """Dispatch an env_bootstrap job to a performer and start polling for completion."""
+        svc = performer_svcs.get(performer_id)
+        if svc is None:
+            logger.warning(
+                "env_cache.bootstrap_svc_not_found",
+                performer_id=performer_id,
+                symphony=symphony_name,
+            )
+            return
+        _ec_result, dispatch_kw = self._resolve_bootstrap_volumes(
+            performer_id, svc, symphony_name,
+        )
+        # dispatch_card takes dict[str, Any]; model_dump() is an intentional demotion
+        # because the performer HTTP API is untyped at the wire level.
+        dispatch_dict = payload.model_dump()
+        bootstrap, cfg = self._resolve_bootstrap_backend(symphony_name)
+        bootstrap_backend = bootstrap.backend
+        bootstrap_model = bootstrap.model
+        bootstrap_effort = bootstrap.effort
+        bootstrap_temperature = bootstrap.temperature
+        bootstrap_base_url = bootstrap.base_url
+        bootstrap_api_key_env = bootstrap.api_key_env
+        bootstrap_auth_token_env = bootstrap.auth_token_env
         # Bootstrap owns its workflow choice even when its backend falls back.
         bootstrap_role = getattr(getattr(cfg, "performers", None), "env_bootstrap", None)
         workflow = getattr(bootstrap_role, "workflow", None)
@@ -3460,48 +4016,9 @@ class CoordinareDaemon:
                 )
         if gh_token:
             dispatch_dict["_github_token"] = gh_token
-        result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
-        job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
-        bootstrap_container_id = (result or {}).get("container_id")
-        if job_id and hasattr(svc, "check_status"):
-            bootstrap_task = asyncio.create_task(
-                self._poll_bootstrap_completion(
-                    svc,
-                    job_id,
-                    symphony_name,
-                    env_cache_svc,
-                    container_id=bootstrap_container_id,
-                ),
-                name=f"bootstrap_poll_{symphony_name}",
-            )
-            self._bootstrap_poll_tasks.add(bootstrap_task)
-            bootstrap_task.add_done_callback(self._bootstrap_poll_tasks.discard)
-        else:
-            # dispatch_card returns a rich {"status","reason"} on every failure
-            # mode (container start failed / readiness timeout / payload error /
-            # transport-auth / 409 busy).  Surface that reason instead of the
-            # generic "no job id" so the dashboard + feedback-injection know
-            # WHICH dispatch layer failed.
-            _status = (result or {}).get("status")
-            _reason = (result or {}).get("reason")
-            _detail = (
-                f"bootstrap dispatch failed ({_status}): {_reason}"
-                if _reason
-                else "bootstrap dispatch produced no job id"
-            )
-            logger.warning(
-                "env_cache.bootstrap_no_job_id",
-                symphony=symphony_name,
-                performer_id=performer_id,
-                status=_status,
-                reason=_reason,
-            )
-            env_cache_svc.on_bootstrap_complete(
-                symphony_name,
-                False,
-                self._state,
-                error=_detail,
-            )
+        await self._finish_bootstrap_dispatch(
+            svc, performer_id, symphony_name, dispatch_dict, dispatch_kw, env_cache_svc,
+        )
 
     def _announce_paused_symphonies(self) -> None:
         """Emit a one-time startup line for each symphony paused via ``enabled: false``.
@@ -3519,14 +4036,8 @@ class CoordinareDaemon:
                     detail=f"symphony '{name}' is paused (enabled: false)",
                 )
 
-    async def start(self) -> None:
-        self._main_task = asyncio.current_task()
-        self._running = True
-        self._install_signal_handlers()
-        last_heartbeat = monotonic()
-        cycle_count = 0
-
-        # T018: Startup recovery — load persisted state before poll loop
+    async def _startup_load_snapshot(self) -> None:
+        """T018: Startup recovery — load persisted state before poll loop."""
         if self._state_store is not None:
             try:
                 snapshot = await self._state_store.load()
@@ -3561,14 +4072,15 @@ class CoordinareDaemon:
                 )
                 # Fresh start — self._state already initialised by initial_state()
 
-        # 076 (T056, FR-002): startup reconciliation pass.  Runs AFTER
-        # snapshot load and board reconciliation, BEFORE the first poll
-        # cycle.  Walks every in-flight session in the snapshot,
-        # enumerates Docker containers, and decides adopt / reap+replace
-        # / fresh-dispatch / orphan-sweep per card.  On Docker-down, the
-        # report sets docker_unreachable=True and the daemon refuses to
-        # dispatch any ephemeral performer for this process's lifetime
-        # (per FR-012).
+    async def _startup_reconciliation_pass(self) -> None:
+        """076 (T056, FR-002): startup reconciliation pass.  Runs AFTER
+        snapshot load and board reconciliation, BEFORE the first poll
+        cycle.  Walks every in-flight session in the snapshot,
+        enumerates Docker containers, and decides adopt / reap+replace
+        / fresh-dispatch / orphan-sweep per card.  On Docker-down, the
+        report sets docker_unreachable=True and the daemon refuses to
+        dispatch any ephemeral performer for this process's lifetime
+        (per FR-012)."""
         self._reconciliation_blocked_by_docker = False
         try:
             from coordinare.services.docker_executor import DockerExecutor
@@ -3598,23 +4110,8 @@ class CoordinareDaemon:
                 exc_info=True,
             )
 
-        previous_phase = self._state.get("phase")
-        previous_lifecycle_sig = self._lifecycle_signature()
-        self._emit(
-            **build_runtime_event(
-                category="startup",
-                message="daemon startup complete",
-                run_mode=self._run_mode,
-                poll_interval_seconds=self._poll_interval_seconds,
-            ),
-        )
-
-        # 132 (issue #180): announce paused symphonies once at startup so a
-        # disabled symphony is obvious, without the per-cycle log noise the
-        # poll loop used to emit.
-        self._announce_paused_symphonies()
-
-        # T018: Dispatch daemon_restart notification
+    async def _notify_daemon_restart(self) -> None:
+        """T018: Dispatch daemon_restart notification."""
         notification_service = self._state.get("notification_service")
         if notification_service is not None:
             from coordinare.models.notification import (
@@ -3641,454 +4138,701 @@ class CoordinareDaemon:
             except Exception as exc:
                 logger.warning("daemon_restart_notification_failed", error=str(exc))
 
+    async def _run_env_cache_and_cardless_cycle(self, symphony_configs: dict) -> None:
+        """Per-cycle env-cache bootstrap checks plus the card-less dispatches
+        (173 intake, 124 wiki-init) for every configured symphony."""
+        # 060: Env-cache SHA check — run once per cycle before orchestration.
+        _env_cache_svc = self._state.get("env_cache_service")
+        if _env_cache_svc is not None:
+            _sym_gh_svcs = self._state.get("symphony_github_services") or {}
+            # Snapshot performer services once before the loop so the
+            # closure captures a stable mapping even if the state dict
+            # is mutated mid-cycle by a performer reconnect.
+            # env_cache is read live inside the closure because it only
+            # exists after initialise() runs and its entries grow as
+            # cache dirs are created — snapshotting it here would miss
+            # caches that became ready during this cycle.
+            # Bootstrap dispatch looks up by performer *id* (e.g. "codex-ephemeral"),
+            # not by lifecycle stage — so use the id-keyed map populated at startup.
+            _ec_performer_svcs = dict(self._state.get("performer_services_by_id") or {})
+            for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
+                _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
+                if _ec_gh_svc is None:
+                    continue
+
+                async def _bootstrap_dispatch_fn(
+                    performer_id: str,
+                    payload: BootstrapJobPayload,
+                    _sym: str = _ec_sym_name,
+                    _svc_map: dict[str, Any] = _ec_performer_svcs,
+                    _ec_svc: Any = _env_cache_svc,
+                ) -> None:
+                    await self._execute_bootstrap_dispatch(
+                        performer_id, payload, _sym, _svc_map, _ec_svc,
+                    )
+
+                from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
+
+                _bootstrap_devenv_root = DEFAULT_DEVENV_ROOT
+                _bootstrap_svc = _ec_performer_svcs.get(
+                    _ec_sym_cfg.env_bootstrap_performer_id or "",
+                )
+                if _bootstrap_svc is not None:
+                    from coordinare.services.http_performer_service import (
+                        HTTPPerformerService,
+                    )
+
+                    if isinstance(_bootstrap_svc, HTTPPerformerService):
+                        _bootstrap_devenv_root = _bootstrap_svc.devenv_root
+
+                # 088 (US5): restart honor path — hand the service a
+                # clean-room verifier so a persisted success is
+                # re-verified (not re-bootstrapped) on fresh boot.
+                async def _clean_verify_fn(
+                    _sym_name: str,
+                    _svc: Any = _bootstrap_svc,
+                ) -> tuple[bool | None, str]:
+                    return await self._verify_env_cache_clean(_sym_name, _svc)
+
+                await _env_cache_svc.check_and_trigger(
+                    symphony_name=_ec_sym_name,
+                    symphony_config=_ec_sym_cfg,
+                    github_service=_ec_gh_svc,
+                    state=self._state,
+                    dispatch_fn=_bootstrap_dispatch_fn,
+                    container_devenv_root=_bootstrap_devenv_root,
+                    llm_chat=self._get_manifest_llm_chat(),
+                    clean_verify_fn=_clean_verify_fn,
+                )
+
+            # 173: the two card-less intake runs (advocate, curator).
+            # Gated, rate limited and dispatched straight from here:
+            # neither owns a card, so neither can go through the
+            # graph node, which refuses a dispatch without one.
+            for _irole in ("advocate", "curator"):
+                _igh = _sym_gh_svcs.get(_ec_sym_name)
+                if _igh is not None:
+                    await self._maybe_dispatch_intake(_irole, _ec_sym_name, _igh)
+
+            # 124(US2): drain manual wiki-init requests (dashboard
+            # "Init wiki" button). Operator-initiated, so it dispatches
+            # regardless of the default-off auto-gate and holds nothing.
+            # 165: documenter side runs for cards whose blueprint has a
+            # documentation brief and that have moved past architecting.
+            if self._wiki_init_requests:
+                for _wsym in list(self._wiki_init_requests):
+                    self._wiki_init_requests.discard(_wsym)
+                    _wgh = _sym_gh_svcs.get(_wsym)
+                    if _wgh is not None:
+                        await self._execute_wiki_init_dispatch(_wsym, _wgh)
+                    else:
+                        # The symphony was removed/disabled between the
+                        # button click (202) and this drain. Surface the
+                        # drop rather than discarding it silently.
+                        logger.warning(
+                            "wiki_init.request_dropped_no_github_service",
+                            symphony=_wsym,
+                        )
+
+    async def _run_orchestration(self, symphony_configs: dict) -> bool:
+        """057: Multi-symphony orchestration cycle.  Returns True when the
+        multi-symphony path ran (False = legacy single-symphony mode)."""
+        _multi_symphony = bool(symphony_configs)
+        if symphony_configs:
+            await self._run_env_cache_and_cardless_cycle(symphony_configs)
+
+            logger.info(
+                "symphony.loop_entry",
+                symphony_count=len(symphony_configs),
+                symphony_names=list(symphony_configs.keys()),
+                sym_gh_keys=list(
+                    (self._state.get("symphony_github_services") or {}).keys(),
+                ),
+                global_gh_present=self._state.get("github_service") is not None,
+            )
+            for sym_name, sym_cfg in symphony_configs.items():
+                if not self._running or self._stop_event.is_set():
+                    break
+                if not getattr(sym_cfg, "enabled", True):
+                    # Paused symphonies are announced once at startup by
+                    # _announce_paused_symphonies(); skip silently here to
+                    # avoid per-cycle log noise (spec 132 / issue #180).
+                    continue
+                await self._conduct_single_symphony(sym_name, sym_cfg)
+            # Rebuild aggregate active_sessions from all symphony states so
+            # downstream metrics, slot sync, and dashboard see the full picture.
+            _agg_sessions: dict = {}
+            for _ss in (self._state.get("symphony_states") or {}).values():
+                _agg_sessions.update(getattr(_ss, "active_sessions", None) or {})
+            self._state["active_sessions"] = _agg_sessions
+            self._state["phase"] = _derive_global_phase(_agg_sessions)  # type: ignore[literal-required]
+        else:
+            # Legacy single-symphony mode (backward compat).
+            # 066 T019/FR-004: unified entry path — empty-sessions case
+            # short-circuits to a single graph cycle inside the method.
+            await self._invoke_multi_session()
+        return _multi_symphony
+
+    def _record_cycle_success_metrics(self, _cycle_t0: float) -> float:
+        """US1: record cycle metrics + US3: mark external subsystems healthy."""
+        _cycle_elapsed = perf_counter() - _cycle_t0
+        METRICS.cycles_completed_total.inc()
+        METRICS.cycle_duration_seconds.observe(_cycle_elapsed)
+        # 035: Update active session gauge
+        _active = self._state.get("active_sessions") or {}
+        METRICS.active_sessions.set(len(_active))
+        # US3: mark external service subsystems healthy after a successful poll cycle
+        HEALTH.update("github", HealthStatus.healthy)
+        HEALTH.update("agent", HealthStatus.healthy)
+        # config and notifications don't change mid-run; refresh timestamps
+        # so the stale-detection window doesn't expire between cycles.
+        HEALTH.update("config", HealthStatus.healthy)
+        if self._state.get("notification_service") is not None:
+            HEALTH.update("notifications", HealthStatus.healthy)
+        return _cycle_elapsed
+
+    def _post_cycle_invariants(self) -> None:
+        """076 end-of-cycle invariants: wedge detection, then board ↔ local
+        reconciliation (after the wedge invariant so a wedge-released pin
+        doesn't re-trigger there)."""
+        # 076 (T064): reconciliation_decisions_last_startup is
+        # cleared per-card by notify.py on consumption (see
+        # contracts/notification-dedup.md and the
+        # ``recon_decisions.pop(...)`` site in notify.py).  No
+        # cycle-level clear needed.
+
+        # 076 (T092, FR-020): wedge invariant.  Runs at the end
+        # of every successful cycle.  Detects the forbidden
+        # "active_card pinned + no session + idle phase"
+        # combination that produced today's incident.  Default:
+        # release the pin; ≥3 wedges in 24h → promote to BLOCKED.
+        try:
+            from coordinare.services.reconciliation import detect_wedged_state
+
+            _dd_cfg = getattr(self._state.get("coordinare_config"), "dispatcher_dedup", None)
+            _threshold = int(getattr(_dd_cfg, "wedge_block_threshold", 3))
+            _window_hours = int(getattr(_dd_cfg, "wedge_block_window_hours", 24))
+            detect_wedged_state(
+                self._state,
+                wedge_block_threshold=_threshold,
+                wedge_block_window_hours=_window_hours,
+            )
+        except Exception as _exc:  # pragma: no cover — defensive
+            logger.warning(
+                "daemon.wedge_invariant_crashed",
+                error=str(_exc),
+                exc_info=True,
+            )
+
+        # 076 (T121, FR-025): board ↔ local-state reconciliation.
+        # Runs after the wedge invariant so a wedge-released pin
+        # doesn't re-trigger here.  Compares state.active_card
+        # .status with the board's column for the same card;
+        # divergence → release the pin so eligibility re-picks.
+        try:
+            from coordinare.services.reconciliation import reconcile_board_state
+
+            _board = self._state.get("board_snapshot") or {}
+            if isinstance(_board, dict) and _board:
+                reconcile_board_state(self._state, _board)
+        except Exception as _exc:  # pragma: no cover — defensive
+            logger.warning(
+                "daemon.board_reconcile_crashed",
+                error=str(_exc),
+                exc_info=True,
+            )
+
+    def _post_cycle_dashboard(self, cycle_count: int, _cycle_elapsed: float) -> None:
+        """Dashboard: record cycle and broadcast updated snapshot to all open tabs."""
+        if self._dashboard_store is not None:
+            _current_phase = str(self._state.get("phase", "idle"))
+            self._dashboard_store.record_cycle(
+                duration_seconds=_cycle_elapsed,
+                phase=_current_phase,
+                outcome="success",
+            )
+            _snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
+            self._dashboard_store.broadcaster.broadcast(_snapshot)
+        self._emit(
+            **build_runtime_event(
+                category="activity",
+                message="processing cycle completed",
+                cycle=cycle_count,
+                phase=self._state.get("phase", "unknown"),
+            ),
+        )
+    def _emit_phase_transition(
+        self, previous_phase: Any, current_phase: Any, _multi_symphony: bool,
+    ) -> None:
+        """Emit the legacy-mode phase-transition metric (runtime event already
+        emitted by the caller)."""
+        # In legacy mode, emit the phase-transition metric here.
+        # In multi-symphony mode it is emitted per-symphony inside
+        # _conduct_single_symphony() with the actual symphony label.
+        if not _multi_symphony:
+            _transition_label = _PHASE_TRANSITION_METRIC.get(
+                (str(previous_phase), str(current_phase)),
+            )
+            if _transition_label is not None:
+                METRICS.card_state_transitions_total.labels(
+                    symphony="__default__",
+                    transition_type=_transition_label,
+                ).inc()
+
+    async def _check_prolonged_idle(
+        self, last_activity_at: float, notification_service: Any,
+    ) -> float:
+        """T019: Prolonged idle detection.  Returns the (possibly new)
+        last-activity timestamp."""
+        current_phase = self._state.get("phase")
+        if current_phase != "idle":
+            return monotonic()
+        if notification_service is not None:
+            idle_seconds = monotonic() - last_activity_at
+            if idle_seconds >= self._idle_threshold_seconds:
+                from coordinare.models.notification import (
+                    EventType,
+                    NotificationEvent,
+                    NotificationSeverity,
+                )
+
+                try:
+                    await notification_service.dispatch(
+                        NotificationEvent(
+                            event_type=EventType.prolonged_idle,
+                            severity=NotificationSeverity.warning,
+                            source="daemon",
+                            payload={
+                                "event_type": "prolonged_idle",
+                                "severity": "warning",
+                                "source": "daemon",
+                                "idle_seconds": str(int(idle_seconds)),
+                                "summary": f"💤 Coordinare has been idle for {int(idle_seconds // 60)} minutes — no cards to process",
+                            },
+                            dedup_key="prolonged_idle",
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("prolonged_idle_notification_failed", error=str(exc))
+        return last_activity_at
+
+    async def _detect_stuck_card(self, notification_service: Any) -> None:
+        """028: Stuck card detection (with cooldown to avoid alert spam)."""
+        _stuck_phase = self._state.get("phase")
+        _stuck_excluded = {"idle", "system_error"}
+        # 138 T038: the `notification_service is not None` gate that used
+        # to sit here is gone — detection must run so the activity feed
+        # gets its entry with zero channels configured. It was dead in
+        # production anyway (build_notification_service always returns a
+        # service); the removal only matters for tests and non-dashboard
+        # embeddings, which is why the dispatch below now guards itself.
+        if _stuck_phase and _stuck_phase not in _stuck_excluded:
+            _config = self._state.get("config")
+            _phase_entered = self._state.get("phase_entered_at")
+            if (
+                _config is not None
+                and _phase_entered is not None
+                and hasattr(_config, "stuck_alerts")
+            ):
+                _stuck_cfg = _config.stuck_alerts
+                _threshold = _stuck_cfg.per_phase_thresholds.get(
+                    _stuck_phase, _stuck_cfg.threshold_seconds,
+                )
+                _raw_cooldown = getattr(_stuck_cfg, "cooldown_seconds", None)
+                _cooldown = _raw_cooldown if _raw_cooldown is not None else _threshold
+                # 138: this block used to be shielded by the (dead)
+                # notification_service gate. Now that detection always
+                # runs, a non-numeric threshold — a stubbed config in a
+                # test, a hand-edited YAML — must disable it rather than
+                # raise into the cycle. Real configs are pydantic ints.
+                if not isinstance(_threshold, int):
+                    _threshold = 0
+                if not isinstance(_cooldown, int):
+                    _cooldown = _threshold
+                if _threshold > 0:
+                    _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
+                    _last_stuck = getattr(self, "_last_stuck_alert_at", None)
+                    _cooldown_ok = (
+                        _last_stuck is None or (monotonic() - _last_stuck) >= _cooldown
+                    )
+                    if _elapsed > _threshold and _cooldown_ok:
+                        await self._emit_stuck_alert(
+                            _stuck_phase,
+                            _threshold,
+                            _elapsed,
+                            _phase_entered,
+                            notification_service,
+                        )
+
+    async def _emit_stuck_alert(
+        self,
+        _stuck_phase: str,
+        _threshold: int,
+        _elapsed: float,
+        _phase_entered: Any,
+        notification_service: Any,
+    ) -> None:
+        """Emit one stuck-card alert: card_stuck log, activity-feed entry,
+        optional channel dispatch, then advance the cooldown stamp."""
+        from coordinare.models.notification import (
+            EventType,
+            NotificationEvent,
+            NotificationSeverity,
+        )
+
+        _card = resolve_stuck_card(self._state)
+        _card_title = str(_card.get("title", ""))[:50]
+        _card_num = _card.get("issue_number", "")
+        _card_id = str(_card.get("id", ""))
+        _card_ref = f"#{_card_num} " if _card_num else ""
+        _summary = f"⏰ {_card_ref}{_card_title} — stuck in {_stuck_phase} for {round(_elapsed // 60)} min"
+        # 138: the destination that always exists. The bug
+        # this closes was a *delivery* failure — detection
+        # ran, then the decision was handed to a service
+        # with no channel to route it to and dropped.
+        # 139: the surface that survives everything being
+        # switched off. The activity feed below needs the
+        # dashboard to read it, and channels are optional,
+        # so with both off a stall was previously recorded
+        # nowhere an operator could see. The only log line
+        # near here was about the *notification* failing —
+        # and with no channels there is nothing to fail.
+        _stuck_key = stuck_dedup_key(
+            _card_id, _stuck_phase, _phase_entered,
+        )
+        if should_log_stall(
+            self._logged_stalls, _stuck_key, time.monotonic(),
+        ):
+            logger.warning(
+                "card_stuck",
+                card_id=_card_id,
+                card_number=_card_num,
+                card_title=_card_title,
+                stage=_stuck_phase,
+                stuck_minutes=round(_elapsed // 60),
+                detail=(
+                    "no further action is being taken on this card; "
+                    "this line appears regardless of notification "
+                    "channels or the dashboard"
+                ),
+            )
+
+        _alog = self._state.get("activity_log")
+        if _alog is not None:
+            with contextlib.suppress(Exception):
+                _alog.record(
+                    activity_type="stuck",
+                    card_id=str(_card.get("id", "")),
+                    card_number=_card.get("issue_number"),
+                    card_title=str(_card.get("title", "")),
+                    stage=_stuck_phase,
+                    text=f"stuck in {_stuck_phase} for {round(_elapsed // 60)} min",
+                )
+        try:
+            if notification_service is not None:
+                await notification_service.dispatch(
+                    NotificationEvent(
+                        event_type=EventType.card_stuck,
+                        severity=NotificationSeverity.warning,
+                        payload={
+                            "phase": _stuck_phase,
+                            "elapsed_seconds": str(round(_elapsed)),
+                            "threshold_seconds": str(_threshold),
+                            "card_title": str(_card.get("title", "")),
+                            "card_id": str(_card.get("id", "")),
+                            "summary": _summary,
+                        },
+                        source="daemon",
+                        dedup_key=_stuck_key,
+                    ),
+                )
+        except Exception as _exc:
+            logger.warning(
+                "stuck_card_notification_failed", error=str(_exc),
+            )
+        # Outside the try AND outside the dispatch guard:
+        # the cooldown must advance whether or not a
+        # channel exists, or the feed takes a stuck entry
+        # every cycle (FR-013, SC-006).
+        self._last_stuck_alert_at = monotonic()
+
+    async def _handle_circuit_open(self, exc: CircuitOpenError) -> bool:
+        """Handle an open circuit mid-cycle.  Returns True when the daemon
+        must stop (external cancellation during the backoff wait)."""
+        self._cycle_active = False
+        current_sym = self._state.get("current_symphony") or "__default__"
+        self._state["current_symphony"] = None
+        METRICS.service_calls_total.labels(
+            symphony=current_sym,
+            service=exc.service_name,
+            action="call_blocked",
+            outcome="circuit_open",
+        ).inc()
+        logger.warning(
+            "circuit_open.call_skipped",
+            service=exc.service_name,
+        )
+        # Mark the isolated service degraded so /ready reflects the circuit state.
+        # Use the mapping to translate circuit service names to health subsystem names.
+        _health_subsystem = _CIRCUIT_TO_HEALTH_SUBSYSTEM.get(exc.service_name)
+        if _health_subsystem is not None:
+            HEALTH.update(
+                _health_subsystem,
+                HealthStatus.degraded,
+                details=f"circuit open: {exc.service_name}",
+            )
+        # Do NOT set self._running = False — continue the poll loop
+        clear_cycle_id()
+        # Use a dedicated backoff rather than _wait_for_next_cycle():
+        # in poll=0 (webhook-only) mode, _wait_for_next_cycle blocks
+        # until a webhook fires — but if GitHub is down the circuit is
+        # open AND no webhooks arrive, causing an indefinite hang.
+        # This backoff always makes forward progress and respects stop().
+        _backoff = (
+            self._poll_interval_seconds
+            if self._poll_interval_seconds > 0
+            else _CIRCUIT_OPEN_BACKOFF_SECONDS
+        )
+        _sleep_t = asyncio.ensure_future(self._sleep(_backoff))
+        _stop_t = asyncio.ensure_future(self._stop_event.wait())
+        try:
+            _cb_done, _cb_pending = await asyncio.wait(
+                {_sleep_t, _stop_t}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for _t in _cb_pending:
+                _t.cancel()
+        except asyncio.CancelledError:
+            _sleep_t.cancel()
+            _stop_t.cancel()
+            return True  # treat external cancellation as stop signal
+        return False
+
+    async def _handle_cycle_failure(
+        self, exc: Exception, _cycle_t0: float,
+    ) -> tuple[RuntimeExecutionError, Any]:
+        """Generic cycle-failure path: record, transition to recovery, and
+        return the error to raise after shutdown along with the pre-recovery
+        phase (the caller's previous_phase tracking must see it)."""
+        self._cycle_active = False
+        self._state["error_count"] = self._state.get("error_count", 0) + 1
+        self._emit(
+            **build_runtime_event(
+                category="failure",
+                message="runtime processing cycle failed",
+                error=str(exc),
+                failing_step="cycle_execution",
+                error_count=self._state["error_count"],
+            ),
+        )
+        previous_phase = self._state.get("phase", "unknown")
+        self._state["phase"] = "recovery"
+        self._emit(
+            **build_runtime_event(
+                category="state_change",
+                message="state transition detected",
+                previous_phase=previous_phase,
+                current_phase="recovery",
+            ),
+        )
+        failure = RuntimeExecutionError(phase="runtime", step="cycle_execution", cause=exc)
+        # Dashboard: record error cycle and broadcast
+        if self._dashboard_store is not None:
+            _err_phase = str(self._state.get("phase", "recovery"))
+            self._dashboard_store.record_cycle(
+                duration_seconds=perf_counter() - _cycle_t0,
+                phase=_err_phase,
+                outcome="error",
+            )
+            _err_snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
+            self._dashboard_store.broadcaster.broadcast(_err_snapshot)
+        self._running = False
+        clear_cycle_id()
+        return failure, previous_phase
+
+    async def _run_startup_sequence(self) -> tuple[Any, Any]:
+        """Startup: snapshot load, 076 reconciliation pass, startup-complete
+        announcement, paused-symphony line, and the daemon_restart
+        notification.  Returns (previous_phase, previous_lifecycle_sig)."""
+        # T018: Startup recovery — load persisted state before poll loop
+        await self._startup_load_snapshot()
+
+        # 076 (T056, FR-002) comment lives on the helper; runs after snapshot
+        # load and board reconciliation, before the first poll cycle.
+        await self._startup_reconciliation_pass()
+
+        previous_phase = self._state.get("phase")
+        previous_lifecycle_sig = self._lifecycle_signature()
+        self._emit(
+            **build_runtime_event(
+                category="startup",
+                message="daemon startup complete",
+                run_mode=self._run_mode,
+                poll_interval_seconds=self._poll_interval_seconds,
+            ),
+        )
+
+        # 132 (issue #180): announce paused symphonies once at startup so a
+        # disabled symphony is obvious, without the per-cycle log noise the
+        # poll loop used to emit.
+        self._announce_paused_symphonies()
+
+        # T018: Dispatch daemon_restart notification
+        await self._notify_daemon_restart()
+        return previous_phase, previous_lifecycle_sig
+
+    async def _begin_cycle(self) -> float:
+        """Cycle preamble: config-reload check, cycle_id correlation, slot
+        sync, documenting side runs.  Returns the cycle start timestamp."""
+        self._cycle_active = True
+        # 057: Check for config reload at cycle start
+        if self._config_reload_trigger.is_set():
+            self._config_reload_trigger.clear()
+            await self._handle_config_reload()
+
+        # US2: bind a unique cycle_id for log correlation
+        cycle_id = str(uuid4())
+        bind_cycle_id(cycle_id)
+        _cycle_t0 = perf_counter()
+
+        # 035: Multi-card parallelism — when concurrency > 1,
+        # iterate over active sessions independently.
+        self._state["session_skip_reasons"] = {}
+        # Free stale slots on every cycle (not just in multi-card mode).
+        _slot_mgr = self._state.get("slot_manager")
+        if _slot_mgr is not None and hasattr(_slot_mgr, "sync_from_sessions"):
+            _active_sessions = self._state.get("active_sessions") or {}
+            _slot_mgr.sync_from_sessions(_active_sessions)
+
+        # Side writers are independent of env-cache bootstrap availability.
+        await self._dispatch_documenting_side_runs(self._state.get("symphony_github_services") or {})
+        return _cycle_t0
+
+    def _check_phase_transition(self, previous_phase: Any, _multi_symphony: bool) -> Any:
+        """Emit a state-transition event when the phase moved; returns the
+        phase that should become the new previous_phase."""
+        current_phase = self._state.get("phase")
+        if current_phase != previous_phase:
+            self._emit(
+                **build_runtime_event(
+                    category="state_change",
+                    message="state transition detected",
+                    previous_phase=previous_phase,
+                    current_phase=current_phase,
+                ),
+            )
+            self._emit_phase_transition(previous_phase, current_phase, _multi_symphony)
+            # 028: Track when the phase was entered
+            self._state["phase_entered_at"] = datetime.now(UTC)
+            return current_phase
+        return previous_phase
+
+    def _maybe_emit_heartbeat(self, last_heartbeat: float, cycle_count: int) -> float:
+        """Emit the periodic heartbeat runtime event.  Returns the (possibly
+        new) last-heartbeat timestamp."""
+        now = monotonic()
+        if now - last_heartbeat >= self._heartbeat_interval_seconds:
+            self._emit(
+                **build_runtime_event(
+                    category="heartbeat",
+                    message="daemon heartbeat",
+                    cycle=cycle_count,
+                    phase=self._state.get("phase", "unknown"),
+                ),
+            )
+            return now
+        return last_heartbeat
+
+    async def _save_snapshot_if_changed(self, previous_lifecycle_sig: Any) -> Any:
+        """Persist the snapshot when the lifecycle signature changed.
+
+        T021 + 077: Persist the snapshot whenever lifecycle-relevant
+        state changes — NOT only on daemon `phase` transitions. `phase`
+        stays 'monitoring_performer' across an ENTIRE card lifecycle
+        (assess→architect→…→qa), so the old phase-only trigger captured
+        just the first stage and every restart rewound the card to
+        'assessing'. The signature includes `phase`, so this still
+        covers the phase-transition case the old code handled.
+        Returns the signature that is now current."""
+        if self._state_store is None:
+            return previous_lifecycle_sig
+        _lifecycle_sig = self._lifecycle_signature()
+        if _lifecycle_sig != previous_lifecycle_sig:
+            await self._state_store.save(self._build_snapshot())
+            return _lifecycle_sig
+        return previous_lifecycle_sig
+
+    async def _shutdown_flush(self, previous_lifecycle_sig: Any) -> None:
+        """077: Flush final state on shutdown so a clean restart resumes at the
+        current lifecycle stage instead of the last transition snapshot. The
+        per-cycle signature save above already keeps the snapshot current to
+        within one poll, so this is a best-effort belt-and-suspenders flush.
+        Gate it on the lifecycle signature actually having changed since the
+        last save: an idle daemon whose state never moved must NOT write a
+        snapshot (test_no_snapshot_write_when_phase_unchanged), and a redundant
+        rewrite of already-persisted state is pointless."""
+        if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
+            try:
+                await self._state_store.save(self._build_snapshot())
+            except Exception as exc:  # pragma: no cover — best-effort flush
+                logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
+
+    async def start(self) -> None:
+        self._main_task = asyncio.current_task()
+        self._running = True
+        self._install_signal_handlers()
+        last_heartbeat = monotonic()
+        cycle_count = 0
+
+        previous_phase, previous_lifecycle_sig = await self._run_startup_sequence()
+
         if self._poll_interval_seconds == 0:
             logger.info("polling_disabled")
 
         # T019: Track prolonged idle
         last_activity_at = monotonic()
 
+        notification_service = self._state.get("notification_service")
         failure: RuntimeExecutionError | None = None
+        # Bind the cycle timestamp before the loop: _begin_cycle() takes its
+        # reading only after fallible preamble work, so a first-iteration raise
+        # would otherwise leave the failure handler with an UnboundLocalError
+        # masking the real exception.
+        _cycle_t0 = perf_counter()
         while self._running and not self._stop_event.is_set():
             try:
-                self._cycle_active = True
-                # 057: Check for config reload at cycle start
-                if self._config_reload_trigger.is_set():
-                    self._config_reload_trigger.clear()
-                    await self._handle_config_reload()
+                _cycle_t0 = await self._begin_cycle()
 
-                # US2: bind a unique cycle_id for log correlation
-                cycle_id = str(uuid4())
-                bind_cycle_id(cycle_id)
-                _cycle_t0 = perf_counter()
-
-                # 035: Multi-card parallelism — when concurrency > 1,
-                # iterate over active sessions independently.
-                self._state["session_skip_reasons"] = {}
-                # Free stale slots on every cycle (not just in multi-card mode).
-                _slot_mgr = self._state.get("slot_manager")
-                if _slot_mgr is not None and hasattr(_slot_mgr, "sync_from_sessions"):
-                    _active_sessions = self._state.get("active_sessions") or {}
-                    _slot_mgr.sync_from_sessions(_active_sessions)
-
-                # Side writers are independent of env-cache bootstrap availability.
-                await self._dispatch_documenting_side_runs(self._state.get("symphony_github_services") or {})
-
-                # 057: Multi-symphony orchestration
-                symphony_configs = self._state.get("symphony_configs") or {}
-                _multi_symphony = bool(symphony_configs)
-                if symphony_configs:
-                    # 060: Env-cache SHA check — run once per cycle before orchestration.
-                    _env_cache_svc = self._state.get("env_cache_service")
-                    if _env_cache_svc is not None:
-                        _sym_gh_svcs = self._state.get("symphony_github_services") or {}
-                        # Snapshot performer services once before the loop so the
-                        # closure captures a stable mapping even if the state dict
-                        # is mutated mid-cycle by a performer reconnect.
-                        # env_cache is read live inside the closure because it only
-                        # exists after initialise() runs and its entries grow as
-                        # cache dirs are created — snapshotting it here would miss
-                        # caches that became ready during this cycle.
-                        # Bootstrap dispatch looks up by performer *id* (e.g. "codex-ephemeral"),
-                        # not by lifecycle stage — so use the id-keyed map populated at startup.
-                        _ec_performer_svcs = dict(self._state.get("performer_services_by_id") or {})
-                        for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
-                            _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
-                            if _ec_gh_svc is None:
-                                continue
-
-                            async def _bootstrap_dispatch_fn(
-                                performer_id: str,
-                                payload: BootstrapJobPayload,
-                                _sym: str = _ec_sym_name,
-                                _svc_map: dict[str, Any] = _ec_performer_svcs,
-                                _ec_svc: Any = _env_cache_svc,
-                            ) -> None:
-                                await self._execute_bootstrap_dispatch(
-                                    performer_id, payload, _sym, _svc_map, _ec_svc,
-                                )
-
-                            from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
-
-                            _bootstrap_devenv_root = DEFAULT_DEVENV_ROOT
-                            _bootstrap_svc = _ec_performer_svcs.get(
-                                _ec_sym_cfg.env_bootstrap_performer_id or "",
-                            )
-                            if _bootstrap_svc is not None:
-                                from coordinare.services.http_performer_service import (
-                                    HTTPPerformerService,
-                                )
-
-                                if isinstance(_bootstrap_svc, HTTPPerformerService):
-                                    _bootstrap_devenv_root = _bootstrap_svc.devenv_root
-
-                            # 088 (US5): restart honor path — hand the service a
-                            # clean-room verifier so a persisted success is
-                            # re-verified (not re-bootstrapped) on fresh boot.
-                            async def _clean_verify_fn(
-                                _sym_name: str,
-                                _svc: Any = _bootstrap_svc,
-                            ) -> tuple[bool | None, str]:
-                                return await self._verify_env_cache_clean(_sym_name, _svc)
-
-                            await _env_cache_svc.check_and_trigger(
-                                symphony_name=_ec_sym_name,
-                                symphony_config=_ec_sym_cfg,
-                                github_service=_ec_gh_svc,
-                                state=self._state,
-                                dispatch_fn=_bootstrap_dispatch_fn,
-                                container_devenv_root=_bootstrap_devenv_root,
-                                llm_chat=self._get_manifest_llm_chat(),
-                                clean_verify_fn=_clean_verify_fn,
-                            )
-
-                        # 173: the two card-less intake runs (advocate, curator).
-                        # Gated, rate limited and dispatched straight from here:
-                        # neither owns a card, so neither can go through the
-                        # graph node, which refuses a dispatch without one.
-                        for _irole in ("advocate", "curator"):
-                            _igh = _sym_gh_svcs.get(_ec_sym_name)
-                            if _igh is not None:
-                                await self._maybe_dispatch_intake(_irole, _ec_sym_name, _igh)
-
-                        # 124(US2): drain manual wiki-init requests (dashboard
-                        # "Init wiki" button). Operator-initiated, so it dispatches
-                        # regardless of the default-off auto-gate and holds nothing.
-                        # 165: documenter side runs for cards whose blueprint has a
-                        # documentation brief and that have moved past architecting.
-                        if self._wiki_init_requests:
-                            for _wsym in list(self._wiki_init_requests):
-                                self._wiki_init_requests.discard(_wsym)
-                                _wgh = _sym_gh_svcs.get(_wsym)
-                                if _wgh is not None:
-                                    await self._execute_wiki_init_dispatch(_wsym, _wgh)
-                                else:
-                                    # The symphony was removed/disabled between the
-                                    # button click (202) and this drain. Surface the
-                                    # drop rather than discarding it silently.
-                                    logger.warning(
-                                        "wiki_init.request_dropped_no_github_service",
-                                        symphony=_wsym,
-                                    )
-
-                    logger.info(
-                        "symphony.loop_entry",
-                        symphony_count=len(symphony_configs),
-                        symphony_names=list(symphony_configs.keys()),
-                        sym_gh_keys=list(
-                            (self._state.get("symphony_github_services") or {}).keys(),
-                        ),
-                        global_gh_present=self._state.get("github_service") is not None,
-                    )
-                    for sym_name, sym_cfg in symphony_configs.items():
-                        if not self._running or self._stop_event.is_set():
-                            break
-                        if not getattr(sym_cfg, "enabled", True):
-                            # Paused symphonies are announced once at startup by
-                            # _announce_paused_symphonies(); skip silently here to
-                            # avoid per-cycle log noise (spec 132 / issue #180).
-                            continue
-                        await self._conduct_single_symphony(sym_name, sym_cfg)
-                    # Rebuild aggregate active_sessions from all symphony states so
-                    # downstream metrics, slot sync, and dashboard see the full picture.
-                    _agg_sessions: dict = {}
-                    for _ss in (self._state.get("symphony_states") or {}).values():
-                        _agg_sessions.update(getattr(_ss, "active_sessions", None) or {})
-                    self._state["active_sessions"] = _agg_sessions
-                    self._state["phase"] = _derive_global_phase(_agg_sessions)  # type: ignore[literal-required]
-                else:
-                    # Legacy single-symphony mode (backward compat).
-                    # 066 T019/FR-004: unified entry path — empty-sessions case
-                    # short-circuits to a single graph cycle inside the method.
-                    await self._invoke_multi_session()
+                # 057: Multi-symphony orchestration (env-cache checks, card-less
+                # dispatches, per-symphony cycles, aggregate rebuild).
+                _multi_symphony = await self._run_orchestration(
+                    self._state.get("symphony_configs") or {},
+                )
 
                 # US1: record cycle metrics
-                _cycle_elapsed = perf_counter() - _cycle_t0
-                METRICS.cycles_completed_total.inc()
-                METRICS.cycle_duration_seconds.observe(_cycle_elapsed)
-                # 035: Update active session gauge
-                _active = self._state.get("active_sessions") or {}
-                METRICS.active_sessions.set(len(_active))
-                # US3: mark external service subsystems healthy after a successful poll cycle
-                HEALTH.update("github", HealthStatus.healthy)
-                HEALTH.update("agent", HealthStatus.healthy)
-                # config and notifications don't change mid-run; refresh timestamps
-                # so the stale-detection window doesn't expire between cycles.
-                HEALTH.update("config", HealthStatus.healthy)
-                if self._state.get("notification_service") is not None:
-                    HEALTH.update("notifications", HealthStatus.healthy)
+                _cycle_elapsed = self._record_cycle_success_metrics(_cycle_t0)
 
                 self._cycle_active = False
                 cycle_count += 1
                 self._state["error_count"] = 0
 
-                # 076 (T064): reconciliation_decisions_last_startup is
-                # cleared per-card by notify.py on consumption (see
-                # contracts/notification-dedup.md and the
-                # ``recon_decisions.pop(...)`` site in notify.py).  No
-                # cycle-level clear needed.
-
-                # 076 (T092, FR-020): wedge invariant.  Runs at the end
-                # of every successful cycle.  Detects the forbidden
-                # "active_card pinned + no session + idle phase"
-                # combination that produced today's incident.  Default:
-                # release the pin; ≥3 wedges in 24h → promote to BLOCKED.
-                try:
-                    from coordinare.services.reconciliation import detect_wedged_state
-
-                    _dd_cfg = getattr(self._state.get("coordinare_config"), "dispatcher_dedup", None)
-                    _threshold = int(getattr(_dd_cfg, "wedge_block_threshold", 3))
-                    _window_hours = int(getattr(_dd_cfg, "wedge_block_window_hours", 24))
-                    detect_wedged_state(
-                        self._state,
-                        wedge_block_threshold=_threshold,
-                        wedge_block_window_hours=_window_hours,
-                    )
-                except Exception as _exc:  # pragma: no cover — defensive
-                    logger.warning(
-                        "daemon.wedge_invariant_crashed",
-                        error=str(_exc),
-                        exc_info=True,
-                    )
-
-                # 076 (T121, FR-025): board ↔ local-state reconciliation.
-                # Runs after the wedge invariant so a wedge-released pin
-                # doesn't re-trigger here.  Compares state.active_card
-                # .status with the board's column for the same card;
-                # divergence → release the pin so eligibility re-picks.
-                try:
-                    from coordinare.services.reconciliation import reconcile_board_state
-
-                    _board = self._state.get("board_snapshot") or {}
-                    if isinstance(_board, dict) and _board:
-                        reconcile_board_state(self._state, _board)
-                except Exception as _exc:  # pragma: no cover — defensive
-                    logger.warning(
-                        "daemon.board_reconcile_crashed",
-                        error=str(_exc),
-                        exc_info=True,
-                    )
+                self._post_cycle_invariants()
 
                 # Dashboard: record cycle and broadcast updated snapshot to all open tabs
-                if self._dashboard_store is not None:
-                    _current_phase = str(self._state.get("phase", "idle"))
-                    self._dashboard_store.record_cycle(
-                        duration_seconds=_cycle_elapsed,
-                        phase=_current_phase,
-                        outcome="success",
-                    )
-                    _snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
-                    self._dashboard_store.broadcaster.broadcast(_snapshot)
-                self._emit(
-                    **build_runtime_event(
-                        category="activity",
-                        message="processing cycle completed",
-                        cycle=cycle_count,
-                        phase=self._state.get("phase", "unknown"),
-                    ),
+                self._post_cycle_dashboard(cycle_count, _cycle_elapsed)
+                previous_phase = self._check_phase_transition(previous_phase, _multi_symphony)
+                previous_lifecycle_sig = await self._save_snapshot_if_changed(
+                    previous_lifecycle_sig,
                 )
-                current_phase = self._state.get("phase")
-                if current_phase != previous_phase:
-                    self._emit(
-                        **build_runtime_event(
-                            category="state_change",
-                            message="state transition detected",
-                            previous_phase=previous_phase,
-                            current_phase=current_phase,
-                        ),
-                    )
-                    # In legacy mode, emit the phase-transition metric here.
-                    # In multi-symphony mode it is emitted per-symphony inside
-                    # _conduct_single_symphony() with the actual symphony label.
-                    if not _multi_symphony:
-                        _transition_label = _PHASE_TRANSITION_METRIC.get(
-                            (str(previous_phase), str(current_phase)),
-                        )
-                        if _transition_label is not None:
-                            METRICS.card_state_transitions_total.labels(
-                                symphony="__default__",
-                                transition_type=_transition_label,
-                            ).inc()
-                    previous_phase = current_phase
-                    # 028: Track when the phase was entered
-                    self._state["phase_entered_at"] = datetime.now(UTC)
-
-                # T021 + 077: Persist the snapshot whenever lifecycle-relevant
-                # state changes — NOT only on daemon `phase` transitions. `phase`
-                # stays 'monitoring_performer' across an ENTIRE card lifecycle
-                # (assess→architect→…→qa), so the old phase-only trigger captured
-                # just the first stage and every restart rewound the card to
-                # 'assessing'. The signature includes `phase`, so this still
-                # covers the phase-transition case the old code handled.
-                if self._state_store is not None:
-                    _lifecycle_sig = self._lifecycle_signature()
-                    if _lifecycle_sig != previous_lifecycle_sig:
-                        await self._state_store.save(self._build_snapshot())
-                        previous_lifecycle_sig = _lifecycle_sig
 
                 # T019: Prolonged idle detection
-                current_phase = self._state.get("phase")
-                if current_phase != "idle":
-                    last_activity_at = monotonic()
-                elif notification_service is not None:
-                    idle_seconds = monotonic() - last_activity_at
-                    if idle_seconds >= self._idle_threshold_seconds:
-                        from coordinare.models.notification import (
-                            EventType,
-                            NotificationEvent,
-                            NotificationSeverity,
-                        )
-
-                        try:
-                            await notification_service.dispatch(
-                                NotificationEvent(
-                                    event_type=EventType.prolonged_idle,
-                                    severity=NotificationSeverity.warning,
-                                    source="daemon",
-                                    payload={
-                                        "event_type": "prolonged_idle",
-                                        "severity": "warning",
-                                        "source": "daemon",
-                                        "idle_seconds": str(int(idle_seconds)),
-                                        "summary": f"💤 Coordinare has been idle for {int(idle_seconds // 60)} minutes — no cards to process",
-                                    },
-                                    dedup_key="prolonged_idle",
-                                ),
-                            )
-                        except Exception as exc:
-                            logger.warning("prolonged_idle_notification_failed", error=str(exc))
+                last_activity_at = await self._check_prolonged_idle(
+                    last_activity_at, notification_service,
+                )
 
                 # 028: Stuck card detection (with cooldown to avoid alert spam)
-                _stuck_phase = self._state.get("phase")
-                _stuck_excluded = {"idle", "system_error"}
-                # 138 T038: the `notification_service is not None` gate that used
-                # to sit here is gone — detection must run so the activity feed
-                # gets its entry with zero channels configured. It was dead in
-                # production anyway (build_notification_service always returns a
-                # service); the removal only matters for tests and non-dashboard
-                # embeddings, which is why the dispatch below now guards itself.
-                if _stuck_phase and _stuck_phase not in _stuck_excluded:
-                    _config = self._state.get("config")
-                    _phase_entered = self._state.get("phase_entered_at")
-                    if (
-                        _config is not None
-                        and _phase_entered is not None
-                        and hasattr(_config, "stuck_alerts")
-                    ):
-                        _stuck_cfg = _config.stuck_alerts
-                        _threshold = _stuck_cfg.per_phase_thresholds.get(
-                            _stuck_phase, _stuck_cfg.threshold_seconds,
-                        )
-                        _raw_cooldown = getattr(_stuck_cfg, "cooldown_seconds", None)
-                        _cooldown = _raw_cooldown if _raw_cooldown is not None else _threshold
-                        # 138: this block used to be shielded by the (dead)
-                        # notification_service gate. Now that detection always
-                        # runs, a non-numeric threshold — a stubbed config in a
-                        # test, a hand-edited YAML — must disable it rather than
-                        # raise into the cycle. Real configs are pydantic ints.
-                        if not isinstance(_threshold, int):
-                            _threshold = 0
-                        if not isinstance(_cooldown, int):
-                            _cooldown = _threshold
-                        if _threshold > 0:
-                            _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
-                            _last_stuck = getattr(self, "_last_stuck_alert_at", None)
-                            _cooldown_ok = (
-                                _last_stuck is None or (monotonic() - _last_stuck) >= _cooldown
-                            )
-                            if _elapsed > _threshold and _cooldown_ok:
-                                from coordinare.models.notification import (
-                                    EventType,
-                                    NotificationEvent,
-                                    NotificationSeverity,
-                                )
+                await self._detect_stuck_card(notification_service)
 
-                                _card = resolve_stuck_card(self._state)
-                                _card_title = str(_card.get("title", ""))[:50]
-                                _card_num = _card.get("issue_number", "")
-                                _card_id = str(_card.get("id", ""))
-                                _card_ref = f"#{_card_num} " if _card_num else ""
-                                _summary = f"⏰ {_card_ref}{_card_title} — stuck in {_stuck_phase} for {round(_elapsed // 60)} min"
-                                # 138: the destination that always exists. The bug
-                                # this closes was a *delivery* failure — detection
-                                # ran, then the decision was handed to a service
-                                # with no channel to route it to and dropped.
-                                # 139: the surface that survives everything being
-                                # switched off. The activity feed below needs the
-                                # dashboard to read it, and channels are optional,
-                                # so with both off a stall was previously recorded
-                                # nowhere an operator could see. The only log line
-                                # near here was about the *notification* failing —
-                                # and with no channels there is nothing to fail.
-                                _stuck_key = stuck_dedup_key(
-                                    _card_id, _stuck_phase, _phase_entered,
-                                )
-                                if should_log_stall(
-                                    self._logged_stalls, _stuck_key, time.monotonic(),
-                                ):
-                                    logger.warning(
-                                        "card_stuck",
-                                        card_id=_card_id,
-                                        card_number=_card_num,
-                                        card_title=_card_title,
-                                        stage=_stuck_phase,
-                                        stuck_minutes=round(_elapsed // 60),
-                                        detail=(
-                                            "no further action is being taken on this card; "
-                                            "this line appears regardless of notification "
-                                            "channels or the dashboard"
-                                        ),
-                                    )
-
-                                _alog = self._state.get("activity_log")
-                                if _alog is not None:
-                                    with contextlib.suppress(Exception):
-                                        _alog.record(
-                                            activity_type="stuck",
-                                            card_id=str(_card.get("id", "")),
-                                            card_number=_card.get("issue_number"),
-                                            card_title=str(_card.get("title", "")),
-                                            stage=_stuck_phase,
-                                            text=f"stuck in {_stuck_phase} for {round(_elapsed // 60)} min",
-                                        )
-                                try:
-                                    if notification_service is not None:
-                                        await notification_service.dispatch(
-                                            NotificationEvent(
-                                                event_type=EventType.card_stuck,
-                                                severity=NotificationSeverity.warning,
-                                                payload={
-                                                    "phase": _stuck_phase,
-                                                    "elapsed_seconds": str(round(_elapsed)),
-                                                    "threshold_seconds": str(_threshold),
-                                                    "card_title": str(_card.get("title", "")),
-                                                    "card_id": str(_card.get("id", "")),
-                                                    "summary": _summary,
-                                                },
-                                                source="daemon",
-                                                dedup_key=_stuck_key,
-                                            ),
-                                        )
-                                except Exception as _exc:
-                                    logger.warning(
-                                        "stuck_card_notification_failed", error=str(_exc),
-                                    )
-                                # Outside the try AND outside the dispatch guard:
-                                # the cooldown must advance whether or not a
-                                # channel exists, or the feed takes a stuck entry
-                                # every cycle (FR-013, SC-006).
-                                self._last_stuck_alert_at = monotonic()
-
-                now = monotonic()
-                if now - last_heartbeat >= self._heartbeat_interval_seconds:
-                    self._emit(
-                        **build_runtime_event(
-                            category="heartbeat",
-                            message="daemon heartbeat",
-                            cycle=cycle_count,
-                            phase=self._state.get("phase", "unknown"),
-                        ),
-                    )
-                    last_heartbeat = now
+                last_heartbeat = self._maybe_emit_heartbeat(last_heartbeat, cycle_count)
 
                 if self._max_cycles is not None and cycle_count >= self._max_cycles:
                     self.stop()
@@ -4100,104 +4844,15 @@ class CoordinareDaemon:
                 clear_cycle_id()
                 break  # exit loop cleanly so shutdown log can emit
             except CircuitOpenError as exc:
-                self._cycle_active = False
-                current_sym = self._state.get("current_symphony") or "__default__"
-                self._state["current_symphony"] = None
-                METRICS.service_calls_total.labels(
-                    symphony=current_sym,
-                    service=exc.service_name,
-                    action="call_blocked",
-                    outcome="circuit_open",
-                ).inc()
-                logger.warning(
-                    "circuit_open.call_skipped",
-                    service=exc.service_name,
-                )
-                # Mark the isolated service degraded so /ready reflects the circuit state.
-                # Use the mapping to translate circuit service names to health subsystem names.
-                _health_subsystem = _CIRCUIT_TO_HEALTH_SUBSYSTEM.get(exc.service_name)
-                if _health_subsystem is not None:
-                    HEALTH.update(
-                        _health_subsystem,
-                        HealthStatus.degraded,
-                        details=f"circuit open: {exc.service_name}",
-                    )
-                # Do NOT set self._running = False — continue the poll loop
-                clear_cycle_id()
-                # Use a dedicated backoff rather than _wait_for_next_cycle():
-                # in poll=0 (webhook-only) mode, _wait_for_next_cycle blocks
-                # until a webhook fires — but if GitHub is down the circuit is
-                # open AND no webhooks arrive, causing an indefinite hang.
-                # This backoff always makes forward progress and respects stop().
-                _backoff = (
-                    self._poll_interval_seconds
-                    if self._poll_interval_seconds > 0
-                    else _CIRCUIT_OPEN_BACKOFF_SECONDS
-                )
-                _sleep_t = asyncio.ensure_future(self._sleep(_backoff))
-                _stop_t = asyncio.ensure_future(self._stop_event.wait())
-                try:
-                    _cb_done, _cb_pending = await asyncio.wait(
-                        {_sleep_t, _stop_t}, return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for _t in _cb_pending:
-                        _t.cancel()
-                except asyncio.CancelledError:
-                    _sleep_t.cancel()
-                    _stop_t.cancel()
-                    break  # treat external cancellation as stop signal
+                if await self._handle_circuit_open(exc):
+                    break
             except Exception as exc:
-                self._cycle_active = False
-                self._state["error_count"] = self._state.get("error_count", 0) + 1
-                self._emit(
-                    **build_runtime_event(
-                        category="failure",
-                        message="runtime processing cycle failed",
-                        error=str(exc),
-                        failing_step="cycle_execution",
-                        error_count=self._state["error_count"],
-                    ),
-                )
-                previous_phase = self._state.get("phase", "unknown")
-                self._state["phase"] = "recovery"
-                self._emit(
-                    **build_runtime_event(
-                        category="state_change",
-                        message="state transition detected",
-                        previous_phase=previous_phase,
-                        current_phase="recovery",
-                    ),
-                )
-                failure = RuntimeExecutionError(phase="runtime", step="cycle_execution", cause=exc)
-                # Dashboard: record error cycle and broadcast
-                if self._dashboard_store is not None:
-                    _err_phase = str(self._state.get("phase", "recovery"))
-                    self._dashboard_store.record_cycle(
-                        duration_seconds=perf_counter() - _cycle_t0,
-                        phase=_err_phase,
-                        outcome="error",
-                    )
-                    _err_snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
-                    self._dashboard_store.broadcaster.broadcast(_err_snapshot)
-                self._running = False
-                clear_cycle_id()
+                failure, previous_phase = await self._handle_cycle_failure(exc, _cycle_t0)
             else:
                 # Happy-path cycle end — clear cycle_id before inter-cycle sleep
                 clear_cycle_id()
 
-        # 077: Flush final state on shutdown so a clean restart resumes at the
-        # current lifecycle stage instead of the last transition snapshot. The
-        # per-cycle signature save above already keeps the snapshot current to
-        # within one poll, so this is a best-effort belt-and-suspenders flush.
-        # Gate it on the lifecycle signature actually having changed since the
-        # last save: an idle daemon whose state never moved must NOT write a
-        # snapshot (test_no_snapshot_write_when_phase_unchanged), and a redundant
-        # rewrite of already-persisted state is pointless.
-        if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
-            try:
-                await self._state_store.save(self._build_snapshot())
-            except Exception as exc:  # pragma: no cover — best-effort flush
-                logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
+        await self._shutdown_flush(previous_lifecycle_sig)
 
         self._emit(
             **build_runtime_event(
