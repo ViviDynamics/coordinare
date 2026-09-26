@@ -76,10 +76,10 @@ def test_a_model_added_data_wrapper_is_unwrapped():
 
 # --- the trigger vocabulary ---------------------------------------------------
 
-def test_the_trigger_vocabulary_is_exactly_the_five_triggers():
+def test_the_trigger_vocabulary_is_exactly_the_six_triggers():
     assert frozenset({
         "quiet_window", "repetition_signature", "token_burn_anomaly",
-        "turn_boundary", "watchdog_trip",
+        "stalled_turn", "turn_boundary", "watchdog_trip",
     }) == OBSERVER_TRIGGERS
 
 

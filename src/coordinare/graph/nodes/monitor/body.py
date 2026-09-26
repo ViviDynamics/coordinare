@@ -66,7 +66,6 @@ from coordinare.graph.nodes.monitor.errors import (
     _is_workflow_push_permission_error,
 )
 from coordinare.graph.nodes.monitor.events import (
-    _recent_event_text,
     merge_performer_events,
 )
 from coordinare.graph.nodes.monitor.gate_config import (
@@ -124,6 +123,7 @@ from coordinare.graph.state import _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.services.assessor_failure import classify_assessor_failure
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.services.workflow_step import (
@@ -140,16 +140,6 @@ logger = structlog.get_logger(__name__)
 
 from coordinare.services import dispatch_guard  # noqa: E402
 from coordinare.services.attempt_telemetry import close_attempt  # noqa: E402
-from coordinare.services.convergence import (  # noqa: E402
-    MAX_REPRIEVES,
-    ConvergenceVerdict,
-    build_question,
-    parse_verdict,
-)
-
-# aliased: this module already binds `persona` as a loop variable elsewhere, and
-# a shadowed import is a silent wrong-value bug waiting to happen.
-from coordinare.services.convergence import persona as convergence_persona  # noqa: E402
 from coordinare.services.docker_executor import DockerExecutor  # noqa: E402
 from coordinare.services.no_progress import (  # noqa: E402
     MAX_NO_PROGRESS_RELAYS,
@@ -158,6 +148,7 @@ from coordinare.services.no_progress import (  # noqa: E402
     should_block,
 )
 from coordinare.services.observer import (  # noqa: E402
+    MAX_REPRIEVES,
     OBSERVER_TRIGGERS,
     ObserverQuery,
     ObserverVerdict,
@@ -244,6 +235,7 @@ class _BodyCtx:
     stage: Any = None
     status: Any = None
     status_payload: Any = None
+    status_pre_polled: bool = False
     target_role: Any = None
     target_stage: Any = None
     teardown_on_exit: bool = True
@@ -503,46 +495,36 @@ async def _phase_stall_expired(
     if _stall.expired:
         elapsed = _stall.elapsed_s
         _ev = read_evidence(state.get("performer_events"))
-        # 380: the floor decided WHEN to look; it cannot tell a genuinely
-        # stuck turn from one waiting on something slow. Ask, but only ever
-        # to GRANT more time -- never to take it away. When the gateway is
-        # unreachable the floor decides exactly as it did before this, which
-        # matters because a wedged gateway is itself a cause of stalled
-        # performers.
+        # 430: the floor decided WHEN to look, and the observer is the judge
+        # (the standalone #389 convergence ask is retired — one judge, not
+        # two). The #389 "only ever grant time" policy survives for the
+        # grant-time verdicts (continue, correction, retune); a kill verdict
+        # does what #389 deliberately deferred, under the #427 guardrails;
+        # escalate and a dead observer leave the floor in charge, exactly as
+        # it decides when no judge is reachable.
         _reprieves = int(state.get("convergence_reprieves") or 0)
-        _backend = state.get("conducting_backend")
-        if _backend is not None and _reprieves < MAX_REPRIEVES:
-            _verdict = ConvergenceVerdict(converging=False, reason="not asked")
+        observer_cfg = _enabled_observer_cfg(state)
+        _fold: tuple[str, CoordinareState | None] = ("block", None)
+        if observer_cfg is not None and _reprieves < MAX_REPRIEVES:
             try:
-                _answer = await _backend.prompt(
-                    convergence_persona() + "\n\n" + build_question(
-                        stage=stage,
-                        elapsed_s=elapsed,
-                        tool_uses=_ev.tool_uses,
-                        completions=_ev.completions,
-                        total_events=_ev.total_events,
-                        recent_text=_recent_event_text(state.get("performer_events")),
-                    ),
-                    response_format="json",
+                _fold = await _observer_stall_judgement(
+                    state, ctx, observer_cfg, _ev, elapsed, _reprieves,
                 )
-                _verdict = parse_verdict(_answer)
             except Exception as exc:
                 logger.warning(
-                    "monitor_performer.convergence_unavailable",
-                    card_id=card_id, error=type(exc).__name__,
-                )
-            if _verdict.converging:
-                state["convergence_reprieves"] = _reprieves + 1
-                state["last_production_at"] = datetime.now(UTC)
-                logger.info(
-                    "monitor_performer.convergence_reprieve",
+                    "monitor_performer.observer_stall_unavailable",
                     card_id=card_id, performer_stage=stage,
-                    reprieve=_reprieves + 1, of=MAX_REPRIEVES,
-                    elapsed_seconds=round(elapsed), reason=_verdict.reason[:200],
+                    error=type(exc).__name__,
                 )
-                return state
-            if _verdict.reason and _verdict.reason != "not asked":
-                state["convergence_reason"] = _verdict.reason
+                _fold = ("block", None)
+            if _fold[0] != "block":
+                # "short": the fold owns the outcome (reprieve or executed
+                # kill). "continue": the cycle keeps running normally — a
+                # deferred kill retries next cycle, a terminal turn routes
+                # through the poll. Both reuse the fall-through tail.
+                ctx._ev = _ev
+                ctx._sm = _sm
+                return _fold[1]
         logger.warning(
             "monitor_performer.session_timeout",
             performer_stage=stage,
@@ -575,6 +557,173 @@ async def _phase_stall_expired(
     ctx._ev = _ev
     ctx._sm = _sm
     return None
+
+def _enabled_observer_cfg(state: CoordinareState) -> Any:
+    """430: resolve the active symphony's observer config, or None if off.
+
+    One resolver for both wake sites (the trigger-driven core and the stall
+    fold) so a disabled observer is disabled everywhere — and enabling it
+    arms both with the same switch.
+    """
+    sym_name = state.get("current_symphony")
+    sym_cfg = (state.get("symphony_configs") or {}).get(sym_name) if sym_name else None
+    observer_cfg = getattr(sym_cfg, "observer", None) if sym_cfg is not None else None
+    if observer_cfg is None or not getattr(observer_cfg, "enabled", False):
+        return None
+    return observer_cfg
+
+async def _observer_stall_judgement(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+    observer_cfg: Any,
+    ev: Any,
+    elapsed: float,
+    reprieves: int,
+) -> tuple[str, CoordinareState | None]:
+    """430: judge a stalled turn with the observer.
+
+    Returns ``("short", state)`` when the fold owns the outcome (a grant-time
+    verdict, or an executed kill), ``("continue", None)`` when the cycle must
+    keep running normally (a deferred or failed kill retries next cycle; a
+    terminal turn's probed status is preserved for the status gate to route),
+    and ``("block", None)`` when the floor must decide as it always has
+    (observer unreachable, malformed, or unable to tell whether the turn is
+    even live).
+    """
+    card_id = ctx.card_id
+    stage = ctx.stage
+    now = datetime.now(UTC)
+    backend = state.get("observer_backend")
+    if backend is None:
+        global_cfg = getattr(state.get("coordinare_config"), "global_config", None)
+        backend = build_model_endpoint_backend(global_cfg, observer_cfg.model_endpoint)
+        if backend is None:
+            return ("block", None)
+
+    # Metadata only (425 review): the prompt never carries raw event text.
+    evidence = {
+        "stall_elapsed_s": round(elapsed),
+        "tool_uses": ev.tool_uses,
+        "completions": ev.completions,
+        "total_events": ev.total_events,
+    }
+    recent_meta = [
+        f"{e.get('type', 'event')}/{len(str(e.get('text', '')))}c"
+        for e in (state.get("performer_events") or [])[-5:]
+        if isinstance(e, dict)
+    ]
+    verdict = await observe(
+        backend,
+        ObserverQuery(
+            card_id=card_id,
+            stage=stage,
+            triggers=["stalled_turn"],
+            evidence=evidence,
+            prompt=build_prompt(
+                evidence,
+                ["stalled_turn"],
+                recent_meta,
+                retune_bounds=getattr(observer_cfg, "retune_bounds", None),
+            ),
+        ),
+    )
+    if verdict is None:
+        return ("block", None)
+    state["observer_verdict"] = verdict.verdict
+    _record_observer_verdict(
+        state, card_id=card_id, stage=stage, verdict=verdict,
+        triggers=["stalled_turn"], evidence=evidence, now=now,
+    )
+    if verdict.verdict == "kill":
+        return await _observer_stall_kill(state, ctx, verdict, evidence)
+    if verdict.verdict == "escalate":
+        state["convergence_reason"] = verdict.reason
+        return ("block", None)
+    # continue / correction / retune all grant the turn more time; correction
+    # and retune additionally fold their payloads in, and the next poll
+    # dispatches with them (correction rides inject_observer_correction,
+    # retune rides the override store).
+    if verdict.verdict == "correction":
+        pending = record_correction(state.get("observer_correction"), verdict.reason, evidence)
+        if pending is not None:
+            state["observer_correction"] = pending
+            logger.info(
+                "observer.correction_pending",
+                card_id=card_id, signature=pending["signature"],
+            )
+        else:
+            logger.info(
+                "observer.correction_collapsed",
+                card_id=card_id, signature=correction_signature(verdict.reason),
+            )
+    if verdict.retune:
+        # 428's retune-on-continue: a structured retune request may ride ANY
+        # non-kill verdict — the stall fold must behave like the trigger wake.
+        _apply_observer_retune(state, ctx, verdict, observer_cfg)
+    state["convergence_reprieves"] = reprieves + 1
+    state["last_production_at"] = now
+    # The turn keeps running, and the phase loop is about to short-circuit —
+    # past _phase_in_progress, which is what normally latches the workspace
+    # as still-active. Latch it here or the finally tears down a live
+    # workspace (a latent #389 bug this fold inherits and fixes).
+    ctx.teardown_on_exit = False
+    logger.info(
+        "monitor_performer.convergence_reprieve",
+        card_id=card_id, performer_stage=stage,
+        reprieve=reprieves + 1, of=MAX_REPRIEVES,
+        verdict=verdict.verdict, elapsed_seconds=round(elapsed),
+        reason=verdict.reason[:200],
+    )
+    return ("short", state)
+
+async def _observer_stall_kill(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+    verdict: ObserverVerdict,
+    evidence: dict[str, Any],
+) -> tuple[str, CoordinareState | None]:
+    """430: a stall-fold kill. 427 liveness first — this fold runs BEFORE the
+    poll, so the turn's status is unknown and must be polled here. Terminal
+    work advances through its normal routing, not a kill; a kill that cannot
+    be executed keeps monitoring and retries next cycle.
+    """
+    card_id = ctx.card_id
+    stage = ctx.stage
+    session_id = ctx.session_id
+    service = ctx.service
+    if not isinstance(session_id, str) or not session_id or service is None:
+        return ("block", None)
+    try:
+        status = await service.check_status(session_id, payload={})
+    except Exception as exc:
+        logger.warning(
+            "monitor_performer.observer_stall_status_failed",
+            card_id=card_id, performer_stage=stage,
+            error=type(exc).__name__,
+        )
+        return ("block", None)
+    if not isinstance(status, dict) or status.get("status") != "working":
+        logger.info(
+            "observer.kill_ignored_turn_not_live",
+            card_id=card_id, performer_stage=stage,
+            turn_status=str(status.get("status") if isinstance(status, dict) else status),
+        )
+        if isinstance(status, dict) and status.get("status") != "working":
+            # For an ephemeral service this probe already consumed the job:
+            # check_status cleans up the active job on a terminal result, so
+            # poll_service must not re-poll the same session this cycle or
+            # the terminal result would surface as a transport-error miss.
+            ctx.status = status
+            ctx.status_pre_polled = True
+        return ("continue", None)
+    ctx.status = status
+    dd_cfg = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+    kill_result = await _phase_observer_kill(state, ctx, verdict, evidence, dd_cfg)
+    if kill_result is None:
+        # Deferred (mutex held) or failed teardown: keep monitoring and
+        # retry next cycle — the 427 fail-safe. Never block a live turn.
+        return ("continue", None)
+    return ("short", kill_result)
 
 async def phase_458(
     state: CoordinareState,
@@ -633,6 +782,11 @@ async def poll_service(
     ctx: _BodyCtx,
 ) -> CoordinareState | None:
     """Poll the active performer service (verbatim except for handler extraction)."""
+    if ctx.status_pre_polled:
+        # 430: the stall-fold liveness probe already polled (and, for an
+        # ephemeral service, cleaned up) this terminal turn; reuse its result.
+        ctx.status_pre_polled = False
+        return None
     status_payload = ctx.status_payload
     service = ctx.service
     session_id = ctx.session_id
@@ -3542,9 +3696,8 @@ async def _phase_observer(
     wedge, never a bounce.
     """
     sym_name = state.get("current_symphony")
-    sym_cfg = (state.get("symphony_configs") or {}).get(sym_name) if sym_name else None
-    observer_cfg = getattr(sym_cfg, "observer", None) if sym_cfg is not None else None
-    if observer_cfg is None or not getattr(observer_cfg, "enabled", False):
+    observer_cfg = _enabled_observer_cfg(state)
+    if sym_name is None or observer_cfg is None:
         return None
 
     card_id = ctx.card_id
@@ -3618,7 +3771,6 @@ async def _phase_observer(
     # always wins.
     backend = state.get("observer_backend")
     if backend is None:
-        from coordinare.services.conducting import build_model_endpoint_backend
         global_cfg = getattr(state.get("coordinare_config"), "global_config", None)
         backend = build_model_endpoint_backend(global_cfg, observer_cfg.model_endpoint)
         if backend is None:

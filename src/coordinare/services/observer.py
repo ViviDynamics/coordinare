@@ -29,9 +29,16 @@ OBSERVER_TRIGGERS = frozenset({
     "quiet_window",
     "repetition_signature",
     "token_burn_anomaly",
+    "stalled_turn",
     "turn_boundary",
     "watchdog_trip",
 })
+
+#: How many times one performer run may be granted more time. An unbounded
+#: reprieve is no ceiling at all. The budget predates the observer (it guarded
+#: the #389 convergence ask) and now spends the observer's grant-time verdicts
+#: on stalled turns; it still belongs to ONE performer run and dies with it.
+MAX_REPRIEVES = 1
 
 OBSERVER_VERDICTS = frozenset({
     "continue",
