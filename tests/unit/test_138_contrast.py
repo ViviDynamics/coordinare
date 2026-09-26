@@ -31,9 +31,13 @@ def _tokens() -> dict[str, str]:
 
 
 def _ev_pairings() -> dict[str, tuple[str, str]]:
-    """class name -> (background token, foreground token) for every .ev-* rule."""
+    """class name -> (background token, foreground token) for every .ev-*/.ov-* rule.
+
+    429: the session view's observer-verdict chips (.ov-*) join the feed's
+    .ev-* chips in the same gate — a new UI element gets no contrast amnesty.
+    """
     pairs: dict[str, tuple[str, str]] = {}
-    for cls, body in re.findall(r"\.(ev-[\w-]+)\s*\{([^}]*)\}", _DASHBOARD_HTML):
+    for cls, body in re.findall(r"\.((?:ev|ov)-[\w-]+)\s*\{([^}]*)\}", _DASHBOARD_HTML):
         bg = re.search(r"background:\s*var\((--color-[\w-]+)\)", body)
         fg = re.search(r"color:\s*var\((--color-[\w-]+)\)", body)
         if bg and fg:
@@ -62,10 +66,21 @@ def test_contrast_helper_matches_known_values() -> None:
 def test_every_ev_class_is_parsed() -> None:
     """A rule the parser cannot read is a rule this gate silently skips."""
     pairings = _ev_pairings()
-    declared = set(re.findall(r"\.(ev-[\w-]+)\s*\{", _DASHBOARD_HTML))
-    assert declared == set(pairings), f"unparsed .ev-* rules: {declared - set(pairings)}"
+    # Only rules that declare BOTH a background and a colour are in this
+    # gate's scope — single-property rules (.ov-row, .ov-list, ...) have no
+    # pairing to check.
+    declared = {
+        cls
+        for cls, body in re.findall(
+            r"\.((?:ev|ov)-[\w-]+)\s*\{([^}]*)\}", _DASHBOARD_HTML,
+        )
+        if "background:" in body and "color:" in body
+    }
+    assert declared == set(pairings), f"unparsed .ev-*/.ov-* rules: {declared - set(pairings)}"
     # The severity classes 138 adds must be among them.
     assert {"ev-quiet", "ev-stall", "ev-stuck"} <= set(pairings)
+    # 429: the observer chips are in scope of the same gate.
+    assert {"ev-observer_verdict", "ov-continue", "ov-kill"} <= set(pairings)
 
 
 @pytest.mark.parametrize("cls", sorted(_ev_pairings()))

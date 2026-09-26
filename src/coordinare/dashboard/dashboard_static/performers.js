@@ -244,6 +244,22 @@ function renderCardDetailContent(sess, s) {
   var logsHtml = logs.length
     ? logs.map(function(line) { return '<div style="font-family:monospace;font-size:11px;padding:1px 0;white-space:pre-wrap;word-break:break-all">' + esc(line) + '</div>'; }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No log entries yet.</div>';
+  // 429: the recent observer verdicts with their evidence summaries, newest
+  // first. Summaries only — the coordinare never ships raw event text here,
+  // so esc() is the only treatment each field needs.
+  var verdicts = Array.isArray(sess.observer_verdicts) ? sess.observer_verdicts : [];
+  var verdictsHtml = verdicts.length
+    ? verdicts.slice().reverse().map(function(v) {
+        v = v || {};
+        var ev = v.evidence && typeof v.evidence === 'object' ? v.evidence : {};
+        var pairs = Object.keys(ev).sort().map(function(k) { return k + '=' + String(ev[k]); }).join(', ');
+        return '<div class="ov-row">' +
+          '<span><span class="ov-verdict ov-' + esc(String(v.verdict || '')) + '">' + esc(String(v.verdict || '')) + '</span></span>' +
+          '<span><span>' + esc(String(v.reason || '')) + '</span>' +
+          '<div class="ov-meta">' + esc(pairs) + '<span class="ov-time">' + esc(String(v.at || '')) + '</span></div></span>' +
+          '</div>';
+      }).join('')
+    : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No observer verdicts yet.</div>';
   return '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Phase</td><td style="padding:3px 0">' + phaseLabel + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
@@ -251,7 +267,9 @@ function renderCardDetailContent(sess, s) {
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + esc(cost) + '</td></tr>' +
     '</table>' +
     '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' +
-    '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>';
+    '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>' +
+    '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Observer Verdicts (recent)</div>' +
+    '<div class="ov-list">' + verdictsHtml + '</div>';
 }
 
 function showPerformerDetail(cardId) {

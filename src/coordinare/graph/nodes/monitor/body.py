@@ -167,6 +167,7 @@ from coordinare.services.observer import (  # noqa: E402
     evaluate_triggers,
     observe,
     record_correction,
+    record_recent_verdict,
 )
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
@@ -3499,6 +3500,35 @@ async def _phase_in_progress(state: CoordinareState, ctx: _BodyCtx) -> Coordinar
 
     return state
 
+def _record_observer_verdict(
+    state: CoordinareState,
+    *,
+    card_id: str,
+    stage: str,
+    verdict: ObserverVerdict,
+    triggers: list[str],
+    evidence: dict[str, Any],
+    now: datetime,
+) -> None:
+    """429: surface one observer verdict on the feed and the session view.
+
+    The feed entry carries the verdict and its reason — the 138 dedup rules
+    then collapse a repeated verdict instead of scrolling it. The session
+    view's list additionally keeps the summarised evidence, so an operator
+    can see not just what the coordinare did but why. Summaries only: the raw
+    event text, diffs and prompts never reach either surface.
+    """
+    state["observer_verdicts"] = record_recent_verdict(
+        state.get("observer_verdicts"), verdict, triggers, evidence, now.isoformat(),
+    )
+    _record_activity(
+        state,
+        "observer_verdict",
+        f"{verdict.verdict}: {verdict.reason}",
+        card_id=card_id,
+        stage=stage,
+    )
+
 async def _phase_observer(
     state: CoordinareState,
     ctx: _BodyCtx,
@@ -3619,6 +3649,10 @@ async def _phase_observer(
     )
     if verdict is not None:
         state["observer_verdict"] = verdict.verdict
+        _record_observer_verdict(
+            state, card_id=card_id, stage=stage, verdict=verdict,
+            triggers=triggers, evidence=evidence, now=now,
+        )
         if verdict.verdict == "kill":
             # A kill only applies to a LIVE turn. Terminal statuses carry
             # completed or failed work that must advance through its normal

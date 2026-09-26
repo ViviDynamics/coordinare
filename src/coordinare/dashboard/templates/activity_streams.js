@@ -5,7 +5,9 @@ var AF_SUMMARIES = {
   quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
   error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.',
   stream_truncated: 'Output was truncated (stream too long).',
-  workflow_step: 'Workflow step started.'
+  workflow_step: 'Workflow step started.',
+  // 429: the verdict verb and reason are in the entry text itself.
+  observer_verdict: 'Observer reported a verdict.'
 };
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
 // 353: collapsed group lines lead with the newest entry's own text instead of

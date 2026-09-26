@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import structlog
@@ -45,6 +46,34 @@ _PROMPT_TEXT_CAP = 400
 _PROMPT_RECENT_ITEMS = 5
 _PROMPT_BUDGET = 8000
 _CORRECTION_BODY_CAP = 800
+# 429: how many observer verdicts the session view keeps, oldest first.
+OBSERVER_RECENT_VERDICTS = 5
+
+
+def record_recent_verdict(
+    recent: list[dict[str, Any]] | None,
+    verdict: ObserverVerdict,
+    triggers: list[str],
+    evidence: dict[str, Any],
+    now: str | None = None,
+) -> list[dict[str, Any]]:
+    """Append one verdict to the session's recent-verdict list (429).
+
+    Returns a NEW list (the state field is replaced, not mutated). The list is
+    bounded at the last ``OBSERVER_RECENT_VERDICTS`` entries, oldest first —
+    the session view renders them newest first. ``evidence`` is stored as a
+    bounded summary, never raw telemetry: no event text, no diffs, no prompts.
+    """
+    at = datetime.now(UTC).isoformat() if now is None else now
+    kept = list(recent or [])
+    kept.append({
+        "verdict": verdict.verdict,
+        "reason": verdict.reason,
+        "triggers": sorted(triggers),
+        "evidence": _summarise_evidence(evidence),
+        "at": at,
+    })
+    return kept[-OBSERVER_RECENT_VERDICTS:]
 
 
 def correction_signature(text: str) -> str:
@@ -308,7 +337,7 @@ async def observe(
         raise
     except Exception as exc:
         logger.warning(
-            "observer.unavailable",
+            "observer.unreachable",
             card_id=query.card_id,
             performer_stage=query.stage,
             triggers=sorted(query.triggers),
@@ -318,14 +347,14 @@ async def observe(
     verdict = parse_verdict(answer)
     if verdict is None:
         logger.warning(
-            "observer.verdict_unreadable",
+            "observer.malformed",
             card_id=query.card_id,
             performer_stage=query.stage,
             triggers=sorted(query.triggers),
         )
         return None
     logger.info(
-        "observer.verdict",
+        "observer.evaluation",
         card_id=query.card_id,
         performer_stage=query.stage,
         triggers=sorted(query.triggers),
@@ -333,4 +362,14 @@ async def observe(
         reason=verdict.reason,
         evidence=_summarise_evidence(query.evidence),
     )
+    # 429: a grep-able event per action verdict, so an operator can tail one
+    # verb without parsing the evaluation stream.
+    if verdict.verdict != "continue":
+        logger.info(
+            f"observer.verdict_{verdict.verdict}",
+            card_id=query.card_id,
+            performer_stage=query.stage,
+            triggers=sorted(query.triggers),
+            reason=verdict.reason,
+        )
     return verdict
