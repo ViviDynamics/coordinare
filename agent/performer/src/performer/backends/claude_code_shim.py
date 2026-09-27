@@ -237,7 +237,16 @@ class ClaudeCodeShim:
         assert self._session is not None
         method = request.method
         path = request.match_info.get("path", "")
-        url = f"{self._upstream}/{path}"
+        # Ollama-compat (mirrors SelfHostedShim._upstream_url in proxy/shim.py):
+        # when the upstream base URL already ends with ``/v1`` (e.g.
+        # LITELLM_PROXY_BASE_URL=…:4000/v1), strip the leading ``v1/`` from the
+        # CLI's request path so the join below yields a single ``/v1`` — the
+        # verbatim join produced ``…:4000/v1/v1/messages`` → 404 → zero commits
+        # (cluster E2E Round 10, 2026-09-27).
+        upstream_base = self._upstream
+        if upstream_base.endswith("/v1") and path.startswith("v1/"):
+            path = path[3:]
+        url = f"{upstream_base}/{path}"
         if request.query_string:
             url = f"{url}?{request.query_string}"
 

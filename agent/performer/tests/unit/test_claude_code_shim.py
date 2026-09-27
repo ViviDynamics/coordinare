@@ -130,11 +130,14 @@ async def upstream() -> Any:
     Bootstraps ``AppRunner`` directly (no pytest-aiohttp plugin needed).  Each
     test attaches a handler by mutating ``state['handler']``.
     """
-    state: dict[str, Any] = {"handler": None, "received_auth": None, "received_body": None}
+    state: dict[str, Any] = {
+        "handler": None, "received_auth": None, "received_body": None, "received_path": None,
+    }
 
     async def _root(request: web.Request) -> web.StreamResponse:
         state["received_auth"] = request.headers.get("Authorization")
         state["received_body"] = await request.read()
+        state["received_path"] = request.path
         handler = state["handler"]
         assert handler is not None, "test must set state['handler']"
         return await handler(request)
@@ -151,6 +154,50 @@ async def upstream() -> Any:
         yield state
     finally:
         await runner.cleanup()
+
+
+class TestUpstreamV1Join:
+    """Regression (cluster E2E Round 10, 2026-09-27): /v1-suffixed base URLs.
+
+    The 078 ``SelfHostedShim`` already strips the leading ``/v1`` from request
+    paths when ``target.base_url`` ends with ``/v1`` (Ollama-compat).  The 073
+    ``ClaudeCodeShim`` forwards verbatim and produced the live double-prefix
+    failure ``…:4000/v1/v1/messages`` → 404 → zero commits → PR creation 422.
+    """
+
+    @staticmethod
+    async def _post_and_capture_path(upstream: dict[str, Any], path: str) -> None:
+        async def handler(_req: web.Request) -> web.Response:
+            return web.json_response({"content": [{"type": "text", "text": "ok"}]})
+
+        upstream["handler"] = handler
+        shim = ClaudeCodeShim(f"{upstream['url']}/v1", "tok")
+        base = await shim.start()
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(f"{base}{path}", json={}) as resp:
+                    await resp.read()
+        finally:
+            await shim.stop()
+
+    async def test_v1_suffixed_base_messages_not_doubled(
+        self, upstream: dict[str, Any],
+    ) -> None:
+        await self._post_and_capture_path(upstream, "/v1/messages")
+        assert upstream["received_path"] == "/v1/messages"
+
+    async def test_v1_suffixed_base_count_tokens_not_doubled(
+        self, upstream: dict[str, Any],
+    ) -> None:
+        await self._post_and_capture_path(upstream, "/v1/messages/count_tokens")
+        assert upstream["received_path"] == "/v1/messages/count_tokens"
+
+    async def test_v1_suffixed_base_non_v1_path_unchanged(
+        self, upstream: dict[str, Any],
+    ) -> None:
+        """A path without a /v1 prefix keeps the verbatim join semantics."""
+        await self._post_and_capture_path(upstream, "/foo")
+        assert upstream["received_path"] == "/v1/foo"
 
 
 class TestShimE2E:
