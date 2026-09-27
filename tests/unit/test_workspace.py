@@ -350,6 +350,52 @@ async def test_prepare_kubernetes_returns_no_path() -> None:
     assert "ghp_test" not in info.repo_url
 
 
+@pytest.mark.asyncio
+async def test_prepare_kubernetes_injects_auth_protocol_token() -> None:
+    """Kubernetes transport: the performer container handles its own git setup but
+    still makes GitHub API calls, so prepare() must resolve the token via the auth
+    protocol (App mode) instead of dispatching an empty credential."""
+    cfg = _make_config(agent_transport="kubernetes", github_token="static-pat")
+    mgr = WorkspaceManager(cfg)
+    auth = MagicMock()
+    auth.get_token = AsyncMock(return_value="app-token-k8s")
+    mgr._auth = auth
+
+    with patch("coordinare.workspace._run_git") as mock_git:
+        info = await mgr.prepare({"id": "CARD_K8S", "title": "K8s task"})
+
+    auth.get_token.assert_awaited_once()
+    mock_git.assert_not_called()
+    assert info.path is None
+    assert info.github_token == "app-token-k8s"
+
+
+@pytest.mark.asyncio
+async def test_prepare_kubernetes_falls_back_to_static_pat() -> None:
+    """Kubernetes transport with no auth protocol: the static PAT is injected."""
+    cfg = _make_config(agent_transport="kubernetes", github_token="static-pat-fallback")
+    mgr = WorkspaceManager(cfg)  # no auth protocol
+
+    with patch("coordinare.workspace._run_git") as mock_git:
+        info = await mgr.prepare({"id": "CARD_K8S", "title": "K8s task"})
+
+    mock_git.assert_not_called()
+    assert info.path is None
+    assert info.github_token == "static-pat-fallback"
+
+
+@pytest.mark.asyncio
+async def test_prepare_kubernetes_raises_when_no_credential() -> None:
+    """No auth protocol and no static token → fail fast at dispatch instead of
+    the performer pod dying later with `permanent performer config error: GITHUB_TOKEN`."""
+    cfg = _make_config(agent_transport="kubernetes")
+    cfg.github_token = None
+    mgr = WorkspaceManager(cfg)
+
+    with pytest.raises(WorkspaceSetupError, match="No GitHub token available"):
+        await mgr.prepare({"id": "CARD_K8S", "title": "K8s task"})
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 (T017): WorkspaceManager.teardown() unit tests — User Story 3
 # ---------------------------------------------------------------------------

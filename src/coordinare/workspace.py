@@ -276,16 +276,29 @@ class WorkspaceManager:
         """
         return _build_minimal_env(self._config)
 
+    async def _resolve_github_token(self) -> str:
+        """Prefer the auth protocol (supports App mode), fall back to the static PAT.
+
+        Raises:
+            WorkspaceSetupError: when no credential source is configured.
+        """
+        if self._auth is not None:
+            return await self._auth.get_token()
+        if self._github_token is not None:
+            return self._github_token.get_secret_value()
+        raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
+
     async def prepare(self, card: dict[str, Any]) -> WorkspaceInfo:
         """Clone the target repo, create a card-specific branch, configure credentials.
 
         For the Kubernetes transport: returns ``WorkspaceInfo(path=None, ...)``
         without performing any git operations — the performer container handles
-        its own workspace setup via Kubernetes Secrets.
+        its own git setup, but still receives a GitHub credential (injected into
+        the pod secret env) for its own GitHub API calls.
 
         Raises:
-            WorkspaceSetupError: if any git operation fails. Cleans up any
-                partial temp directory before raising.
+            WorkspaceSetupError: if any git operation fails or no GitHub token
+                is available. Cleans up any partial temp directory before raising.
         """
         org = self._github_org
         project = self._project_name
@@ -297,18 +310,16 @@ class WorkspaceManager:
         # before any transport path so the performer always starts from a clean state.
         branch = await self._resolve_branch(branch, card)
 
-        # For Kubernetes transport, the performer container handles its own workspace
-        # setup via K8s Secrets — no local git ops, no token access needed here.
+        # For Kubernetes transport, the performer container handles its own git
+        # setup (no local clone or branch creation here), but it still makes
+        # GitHub API calls (issue reads, PR creation, checks) and cannot run
+        # without a credential — resolve the same token the local-clone path
+        # would use; http_performer_service injects it into the pod secret env.
         if self._agent_transport == "kubernetes":
-            return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token="")
+            token = await self._resolve_github_token()
+            return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
 
-        # Get token: prefer auth protocol (supports App mode), fall back to static PAT
-        if self._auth is not None:
-            token = await self._auth.get_token()
-        elif self._github_token is not None:
-            token = self._github_token.get_secret_value()
-        else:
-            raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
+        token = await self._resolve_github_token()
         # Use plain URL — token is passed via http.extraHeader env var so it never
         # appears in process argv or /proc/*/cmdline. 151: host is configurable
         # (default real GitHub; bench overrides to a loopback git daemon).
