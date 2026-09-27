@@ -23,6 +23,7 @@ shipping none, so egress allowlisting is documented as Docker-only.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from pathlib import Path, PurePosixPath
@@ -310,26 +311,41 @@ class KubernetesRuntime:
                     f"{self._namespace!r}: {exc.status} {exc.reason}",
                 ) from exc
 
-            # The name is taken. Because ``pod_name_for`` is deterministic, that
-            # means this performer's *own* predecessor, and the interesting
-            # question is whether it is on its way out.
-            #
-            # ``stop`` waits for the Pod it deleted, so the ordinary path never
-            # arrives here. Other routes do: coordinare killed between the delete
-            # request and the Pod actually going, an operator deleting a Pod by
-            # hand, an eviction. In every one of those the predecessor is
-            # terminating and the right answer is to wait for it, not to refuse
-            # work the cluster is seconds away from allowing.
-            await self._await_pod_gone(pod_name, timeout_s=config.readiness_timeout_s)
+            # The name is taken. Because ``pod_name_for`` is deterministic, the
+            # Pod holding it is this performer's *own* predecessor by
+            # construction — same performer, same namespace, same name. That
+            # holds however the predecessor is doing: terminating (coordinare
+            # killed between the delete request and the Pod actually going, an
+            # operator deletion, an eviction) or still Running, because a turn
+            # that ended without a stop leaves a live, successfully-completed
+            # Pod behind and this is the next turn of the same performer.
+            # Docker never reaches this state because its ``stop`` frees the
+            # name immediately; the equivalent here is delete-then-recreate,
+            # not only waiting. Deleting is safe precisely because the name is
+            # deterministic and owned.
+            predecessor_phase = await self._predecessor_phase(pod_name)
+            try:
+                await self.stop(pod_name, timeout_s=5, performer_id=config.id)
+            except Exception as exc:
+                # ``stop`` is best-effort for API rejections but lets transport
+                # failures escape, and a dispatch should see a normal start
+                # failure rather than a raw connection error. Absorb it and
+                # keep the one-shot recreate: the create either succeeds (the
+                # delete landed) or 409s into the escalation below.
+                _log.warning(
+                    "kubernetes_runtime.predecessor_cleanup_failed",
+                    pod=pod_name,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
             try:
                 await asyncio.to_thread(
                     self._api.create_namespaced_pod, namespace=self._namespace, body=manifest,
                 )
             except ApiException as retry_exc:
-                # Still there. Either it is not terminating at all — a live
-                # performer this coordinare does not know it owns — or termination
-                # is stuck. Both are situations to report rather than to keep
-                # retrying into.
+                # The name survived a delete-and-wait. Either it is not ours at
+                # all — a second coordinare against this namespace — or
+                # termination is stuck beyond what a delete can resolve. Both
+                # are situations to report rather than to keep retrying into.
                 raise performer_lifecycle.ContainerStartError(
                     f"performer Pod {pod_name!r} already exists in namespace "
                     f"{self._namespace!r} and did not go away: "
@@ -340,7 +356,7 @@ class KubernetesRuntime:
                 "kubernetes_runtime.pod_recreated_after_predecessor",
                 pod=pod_name,
                 performer_id=config.id,
-                detail="the previous Pod for this performer was still terminating",
+                predecessor_phase=predecessor_phase,
             )
 
         _log.info(
@@ -366,6 +382,29 @@ class KubernetesRuntime:
             raise
 
         return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip))
+
+    async def _predecessor_phase(self, pod_name: str) -> str:
+        """Best-effort read of the Pod holding the name, for the log line only.
+
+        Evidence, not control flow: any read failure — an API rejection or a
+        transport error — reports ``unknown`` and the delete-then-recreate
+        proceeds regardless, because the 409 already proved a Pod is sitting
+        on the name.
+        """
+        try:
+            pod = await asyncio.to_thread(
+                self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace,
+            )
+        except Exception as exc:
+            _log.debug(
+                "kubernetes_runtime.predecessor_read_failed",
+                pod=pod_name,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+            return "unknown"
+        phase = str(getattr(pod.status, "phase", None) or "unknown")
+        terminating = getattr(pod.metadata, "deletion_timestamp", None) is not None
+        return f"{phase}/terminating" if terminating else phase
 
     async def _await_pod_ip(self, pod_name: str, *, timeout_s: int) -> str:
         """Wait for the Pod to be Running with an IP, or explain why it will not be.
