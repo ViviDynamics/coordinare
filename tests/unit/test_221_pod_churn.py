@@ -45,6 +45,7 @@ class FakeCluster:
         self._pod_ip = pod_ip
         self._lock = threading.Lock()
         self.create_conflicts = 0  # the collision this whole file exists to prevent
+        self.delete_calls = 0  # the force-rm the 409 handler must issue
 
     # -- API surface used by KubernetesRuntime ---------------------------------
 
@@ -96,6 +97,7 @@ class FakeCluster:
             pod = self._pods.get(name)
             if pod is None:
                 raise ApiException(status=404, reason="NotFound")
+            self.delete_calls += 1
             if pod["deleting_at"] is None:
                 pod["deleting_at"] = _now() + self._termination_seconds
         return
@@ -325,16 +327,41 @@ class TestFailedStartsUnderLoad:
         )
 
 
-class TestATerminatingPredecessor:
-    """Starting a performer whose previous Pod has not finished going away.
+class TestAPredecessorHoldingTheName:
+    """Starting a performer whose previous Pod still holds its name.
 
-    Found by the live churn tests: this failed outright with "already exists".
-    ``stop`` waits for the Pod *it* deleted, so the ordinary path never reaches
-    here — but coordinare killed between the delete request and the Pod actually
-    going, an operator deleting a Pod by hand, and an eviction all land in this
-    window, and refusing work the cluster is seconds away from allowing is the
-    wrong answer in every one of them.
+    Found in the cluster E2E: the assessor's Pod finished its turn successfully
+    and stayed Running/ready, so the implementer's start collided with it, the
+    wait timed out, the single retry 409'd again, and the escalation turned
+    into three system_error retries and phase=blocked. The old handler only
+    knew how to wait for a *terminating* predecessor — but ``pod_name_for`` is
+    deterministic, so the Pod holding the name is this performer's own
+    predecessor whether it is terminating, running, or stuck. Docker's
+    force-rm semantics apply: delete it, wait, recreate.
     """
+
+    def test_a_running_predecessor_is_deleted_and_recreated(self) -> None:
+        """The cluster failure: a live, successfully-completed predecessor.
+
+        A turn that ended without a stop leaves a Running Pod behind, and the
+        next turn of the same performer collides with it. Waiting can never
+        succeed — the Pod is not going anywhere — so the handler must issue the
+        delete itself.
+        """
+        cluster = FakeCluster(termination_seconds=0.3)
+        runtime = KubernetesRuntime(core_v1=cluster)
+
+        name = pod_name_for("impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        assert cluster.delete_calls == 0
+
+        started = asyncio.run(runtime.start_ephemeral(_config("impl")))
+
+        assert started.handle == name
+        assert cluster.delete_calls == 1, (
+            "a Running predecessor must be deleted, not merely waited on: it is "
+            "not terminating, so waiting for it can never succeed"
+        )
 
     def test_a_terminating_predecessor_is_waited_for_rather_than_refused(self) -> None:
         cluster = FakeCluster(termination_seconds=0.5)
@@ -348,24 +375,106 @@ class TestATerminatingPredecessor:
 
         started = asyncio.run(runtime.start_ephemeral(_config("impl")))
         assert started.handle == name
+        assert cluster.delete_calls == 2, (
+            "the handler must issue the delete even though the predecessor is "
+            "already terminating: the API treats a second delete as a no-op, "
+            "and the handler cannot tell a terminating predecessor from a "
+            "running one without asking"
+        )
 
-    def test_a_predecessor_that_never_goes_is_reported_clearly(self) -> None:
-        """Not every collision is a terminating Pod, and the difference matters.
+    def test_a_predecessor_read_failure_does_not_abort_the_recreate(self) -> None:
+        """The phase read is evidence, never control flow.
 
-        A Pod that is simply *running* under this name means something else owns
-        it — most likely a second coordinare against the same namespace. Retrying
-        into that forever would turn a configuration mistake into a hang, so it
-        fails, and the message names the likely cause rather than restating the
-        status code.
+        A transport error while reading the sitting Pod must not abort the
+        start before the delete runs — the 409 already proved a Pod is on the
+        name, so delete-then-recreate proceeds regardless.
         """
-        cluster = FakeCluster(termination_seconds=0.2)
+
+        class Unreadable(FakeCluster):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.reads = 0
+
+            def read_namespaced_pod(self, *, name, namespace):
+                self.reads += 1
+                if self.reads == 1:  # the predecessor phase read
+                    raise ConnectionError("transport down")
+                return super().read_namespaced_pod(name=name, namespace=namespace)
+
+        cluster = Unreadable()
+        runtime = KubernetesRuntime(core_v1=cluster)
+
+        name = pod_name_for("impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+
+        started = asyncio.run(runtime.start_ephemeral(_config("impl")))
+
+        assert started.handle == name
+        assert cluster.delete_calls == 1
+
+    def test_a_predecessor_delete_failure_does_not_abort_the_recreate(self) -> None:
+        """The force-rm is best-effort; a transport blip must not skip the recreate.
+
+        Kubernetes transport failures during the delete leave the recreate still
+        owing: the create either succeeds (the delete landed anyway) or 409s
+        into the escalation. A dispatch must never see a raw connection error
+        where a normal start failure belongs.
+        """
+
+        class FlakyDelete(FakeCluster):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.deletes = 0
+
+            def delete_namespaced_pod(self, *, name, namespace, **kwargs):
+                self.deletes += 1
+                if self.deletes == 1:  # the handler's force-rm
+                    raise ConnectionError("transport down")
+                return super().delete_namespaced_pod(name=name, namespace=namespace)
+
+        cluster = FlakyDelete()
         runtime = KubernetesRuntime(core_v1=cluster)
 
         name = pod_name_for("impl")
         cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
 
         with pytest.raises(performer_lifecycle.ContainerStartError) as excinfo:
-            asyncio.run(runtime.start_ephemeral(_config("impl", readiness_timeout_s=1)))
+            asyncio.run(runtime.start_ephemeral(_config("impl")))
+
+        assert not isinstance(excinfo.value, ConnectionError), (
+            "a transport failure on the delete must be absorbed, not surfaced raw"
+        )
+        assert cluster.create_conflicts == 2, (
+            "the recreate must still have been attempted after the cleanup failure: "
+            "one conflict from the first create, one from the recreate"
+        )
+
+    def test_a_name_a_delete_cannot_free_is_reported_clearly(self) -> None:
+        """The recreate can still 409 — the escalation is kept, not lost.
+
+        A delete-and-wait that frees nothing means the name is held by
+        something the delete cannot touch, most likely a second coordinare
+        against the same namespace. Retrying into that forever would turn a
+        configuration mistake into a hang, so it fails, and the message names
+        the likely cause rather than restating the status code.
+        """
+
+        class Undeletable(FakeCluster):
+            def delete_namespaced_pod(self, *, name, namespace, **kwargs):
+                return  # the request is swallowed; the Pod persists
+
+        class NoWait(KubernetesRuntime):
+            async def _await_pod_gone(self, pod_name: str, *, timeout_s: int) -> None:
+                return  # the wait is not what is under test here
+
+        cluster = Undeletable()
+        runtime = NoWait(core_v1=cluster)
+
+        name = pod_name_for("impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+
+        with pytest.raises(performer_lifecycle.ContainerStartError) as excinfo:
+            asyncio.run(runtime.start_ephemeral(_config("impl")))
 
         message = str(excinfo.value)
         assert "already exists" in message
