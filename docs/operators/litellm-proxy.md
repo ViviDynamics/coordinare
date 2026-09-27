@@ -41,7 +41,11 @@ in-process reverse proxy (`claude_code_shim.py`) when
    only inside the shim.
 2. It forwards `POST /v1/messages` (streaming and non-streaming) to the
    upstream LiteLLM URL, attaching the bearer from
-   `LITELLM_PROXY_AUTH_TOKEN`.
+   `LITELLM_PROXY_AUTH_TOKEN`. A base URL that already ends in `/v1`
+   (e.g. `http://litellm:4000/v1`) is tolerated: the shim joins the CLI's
+   request path to a single `/v1` instead of doubling it (`/v1/v1/...`
+   404s at the upstream). The bare origin (`http://litellm:4000`) remains
+   the documented form.
 3. It strips `thinking` content blocks from JSON responses and SSE
    event streams, renumbering remaining block indices.
 4. Non-`/v1/messages` paths pass through unmodified.
