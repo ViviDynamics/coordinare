@@ -462,6 +462,23 @@ jobs:
           cp repo.env.example repo.env
           .agents/skills/ci-safety/scripts/check-wiring
 
+  quality-guard:
+    name: Quality guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Pull the latest code
+        uses: actions/checkout@v6
+      - name: Block weakened quality gates unless the PR justifies them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/merge-pr/scripts/quality-guard --pr ${{ github.event.pull_request.number }}
+
   build-success:
     name: Build Success
     # always() prevents skipped upstream jobs (e.g. benchmark on non-performer PRs)

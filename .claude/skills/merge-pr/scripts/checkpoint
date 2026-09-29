@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Resumable record of a ship-issue run, stored under "checkpoint" in .agents/state/<issue>.json.
+# usage: checkpoint write <issue> <stage> [--pr N] [--plan PATH] [--decision TEXT]... [--unresolved TEXT]...
+#        checkpoint read <issue>     exit 0 printed (with fresh and stale_reason), 1 none recorded
+#        checkpoint active           JSON array of runs whose stage is not done or stopped
+# Budgets (retries, rebases, review_rounds) and the preflight record are read from the
+# state file, so a restarted run inherits what an earlier one spent.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+coordinare_load_env
+STAGES="plan implement pr-open ci review merge closure done stopped"
+cmd=${1:-}; shift || true
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+case "$cmd" in
+  write)
+    issue=${1:-}; stage=${2:-}
+    [ -n "$issue" ] && [ -n "$stage" ] || coordinare_die 2 "usage: checkpoint write <issue> <stage> [options]"
+    case " $STAGES " in *" $stage "*) ;; *) coordinare_die 2 "unknown stage $stage (want one of: $STAGES)";; esac
+    shift 2
+    pr=""; plan=""; decisions='[]'; unresolved='[]'
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --pr) pr=$2; shift 2;;
+        --plan) plan=$2; shift 2;;
+        --decision) decisions=$(printf '%s' "$decisions" | jq -c --arg s "$stage" --arg t "$2" '. + [{stage:$s, text:$t}]'); shift 2;;
+        --unresolved) unresolved=$(printf '%s' "$unresolved" | jq -c --arg t "$2" '. + [$t]'); shift 2;;
+        *) coordinare_die 2 "unknown option $1";;
+      esac
+    done
+    st=$("$here/state" get "$issue")
+    new=$(printf '%s' "$st" | jq -c \
+      --argjson issue "$issue" --arg stage "$stage" --arg head "$(git rev-parse HEAD)" \
+      --arg branch "$(git branch --show-current)" --arg wt "$(git rev-parse --show-toplevel)" \
+      --arg pr "$pr" --arg plan "$plan" --argjson d "$decisions" --argjson u "$unresolved" --arg t "$(now)" '
+      (.checkpoint // {}) as $old |
+      {schema:"CHECKPOINT", issue:$issue, stage:$stage, head_sha:$head, branch:$branch, worktree:$wt,
+       budgets:{retries:(.retries // 0), rebases:(.rebases // 0), review_rounds:(.review_rounds // 0)},
+       decisions:(($old.decisions // []) + $d), unresolved:((($old.unresolved // []) + $u) | unique),
+       updated_at:$t}
+      + (if $pr != "" then {pr:($pr|tonumber)} elif $old.pr then {pr:$old.pr} else {} end)
+      + (if $plan != "" then {plan:$plan} elif $old.plan then {plan:$old.plan} else {} end)
+      + (if .preflight then {preflight:.preflight} else {} end)')
+    "$here/state" set "$issue" checkpoint "$new" >/dev/null
+    printf '%s\n' "$new" ;;
+  read)
+    issue=${1:-}; [ -n "$issue" ] || coordinare_die 2 "usage: checkpoint read <issue>"
+    cp=$("$here/state" get "$issue" checkpoint)
+    [ -n "$cp" ] || { jq -nc '{error:"no checkpoint recorded"}'; exit 1; }
+    branch=$(printf '%s' "$cp" | jq -r .branch)
+    recorded=$(printf '%s' "$cp" | jq -r .head_sha)
+    current=$(git rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)
+    if [ "$current" = "$recorded" ]; then
+      printf '%s' "$cp" | jq -c '. + {fresh:true}'
+    else
+      printf '%s' "$cp" | jq -c --arg r "branch $branch is at ${current:-nothing}, the checkpoint recorded $recorded: re-verify preflight and CI before trusting them" '. + {fresh:false, stale_reason:$r}'
+    fi ;;
+  active)
+    dir="$COORDINARE_ROOT/.agents/state"
+    out='[]'
+    for f in "$dir"/*.json; do
+      [ -e "$f" ] || continue
+      cp=$(jq -c '.checkpoint // empty' "$f" 2>/dev/null || true)
+      [ -n "$cp" ] || continue
+      out=$(printf '%s' "$out" | jq -c --argjson c "$cp" 'if ($c.stage == "done" or $c.stage == "stopped") then . else . + [{issue:$c.issue, stage:$c.stage, branch:$c.branch, pr:$c.pr, updated_at:$c.updated_at}] end')
+    done
+    printf '%s\n' "$out" ;;
+  *) coordinare_die 2 "usage: checkpoint <write|read|active> ..." ;;
+esac

@@ -11,7 +11,9 @@
     "issue_closure",
     "board",
     "assigned",
-    "budget"
+    "budget",
+    "preflight_runs",
+    "quality_guard"
   ],
   "properties": {
     "schema": {
@@ -117,6 +119,55 @@
         "skipped",
         "failed"
       ]
+    },
+    "preflight_runs": {
+      "type": "integer"
+    },
+    "ci_failures_preflight_would_catch": {
+      "type": "integer"
+    },
+    "quality_guard": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "justified",
+        "blocked"
+      ]
+    },
+    "resumed_from": {
+      "type": "string",
+      "enum": [
+        "plan",
+        "implement",
+        "pr-open",
+        "ci",
+        "review",
+        "merge",
+        "closure"
+      ]
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "evidence"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "flake_retry",
+              "real_failure",
+              "repo_fact"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

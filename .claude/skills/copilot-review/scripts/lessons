@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Evidence-backed learning from ship-issue runs. Off unless COORDINARE_LESSONS=on in repo.env.
+# usage: lessons observe <issue> flake_retry  --log-file F --log-line TEXT --evidence URL
+#        lessons observe <issue> real_failure --area A [--preflight-row-missing] --evidence URL [--text T]
+#        lessons observe <issue> repo_fact    --text T --evidence URL
+#        lessons propose [--write]
+# propose reads every .agents/state/*.json and prints candidates:
+#   flake_signatures: verified-retry log lines not already in the flake file;
+#   test_command_rows: areas with 2+ real failures that no preflight row covered;
+#   lessons: repo facts not already in the lessons file.
+# --write appends flake lines and lessons for a reviewed PR. Test-command rows need a
+# command only a human or the agent can choose, so they are only ever proposed.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+coordinare_load_env
+cmd=${1:-}; shift || true
+if [ "${COORDINARE_LESSONS:-off}" != "on" ]; then
+  case "$cmd" in observe|propose) jq -nc '{enabled:false, reason:"COORDINARE_LESSONS is not on in repo.env"}'; exit 0;; esac
+fi
+flake_file="$COORDINARE_ROOT/${COORDINARE_FLAKE_SIGNATURES_FILE:-.agents/flake-signatures.txt}"
+lessons_file="$COORDINARE_ROOT/${COORDINARE_LESSONS_FILE:-.agents/lessons.md}"
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+case "$cmd" in
+  observe)
+    issue=${1:-}; type=${2:-}
+    [ -n "$issue" ] && [ -n "$type" ] || coordinare_die 2 "usage: lessons observe <issue> <flake_retry|real_failure|repo_fact> ..."
+    shift 2
+    log_file=""; log_line=""; evidence=""; area=""; text=""; missing=false
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --log-file) log_file=$2; shift 2;;
+        --log-line) log_line=$2; shift 2;;
+        --evidence) evidence=$2; shift 2;;
+        --area) area=$2; shift 2;;
+        --text) text=$2; shift 2;;
+        --preflight-row-missing) missing=true; shift;;
+        *) coordinare_die 2 "unknown option $1";;
+      esac
+    done
+    [ -n "$evidence" ] || coordinare_die 2 "--evidence <url> is required: an observation without evidence is a guess"
+    case "$type" in
+      flake_retry)
+        [ -n "$log_file" ] && [ -n "$log_line" ] || coordinare_die 2 "flake_retry needs --log-file and --log-line"
+        [ -f "$log_file" ] || coordinare_die 2 "log file not found: $log_file"
+        if ! grep -qF -- "$log_line" "$log_file"; then
+          jq -nc --arg l "$log_line" '{recorded:false, reason:"log line does not appear verbatim in the log file: \($l)"}'; exit 1
+        fi ;;
+      real_failure) [ -n "$area" ] || coordinare_die 2 "real_failure needs --area" ;;
+      repo_fact) [ -n "$text" ] || coordinare_die 2 "repo_fact needs --text" ;;
+      *) coordinare_die 2 "unknown observation type $type (want flake_retry, real_failure, repo_fact)" ;;
+    esac
+    obs=$(jq -nc --arg ty "$type" --arg e "$evidence" --arg l "$log_line" --arg a "$area" --arg t "$text" \
+      --argjson m "$missing" --arg at "$(now)" '
+      {type:$ty, evidence:$e, at:$at}
+      + (if $l != "" then {log_line:$l} else {} end)
+      + (if $a != "" then {area:$a, preflight_row_missing:$m} else {} end)
+      + (if $t != "" then {text:$t} else {} end)')
+    "$here/state" append "$issue" observations "$obs" >/dev/null
+    jq -nc --argjson o "$obs" '{recorded:true, observation:$o}' ;;
+  propose)
+    write=false; [ "${1:-}" = "--write" ] && write=true
+    all='[]'
+    for f in "$COORDINARE_ROOT"/.agents/state/*.json; do
+      [ -e "$f" ] || continue
+      all=$(jq -c --argjson acc "$all" '$acc + (.observations // [])' "$f" 2>/dev/null || printf '%s' "$all")
+    done
+    known_flakes=$( [ -f "$flake_file" ] && jq -Rsc 'split("\n") | map(select(length > 0))' "$flake_file" || echo '[]')
+    known_lessons=$( [ -f "$lessons_file" ] && jq -Rs . "$lessons_file" || echo '""')
+    out=$(printf '%s' "$all" | jq -c --argjson kf "$known_flakes" --argjson kl "$known_lessons" '
+      {
+        flake_signatures: ([.[] | select(.type == "flake_retry")] | group_by(.log_line)
+          | map({line: .[0].log_line, evidence: [.[].evidence]})
+          | map(select(.line as $l | ($kf | index($l)) == null))),
+        test_command_rows: ([.[] | select(.type == "real_failure" and .preflight_row_missing)] | group_by(.area)
+          | map(select(length >= 2) | {area: .[0].area, evidence: [.[].evidence], notes: [.[] | .text // empty]})),
+        lessons: ([.[] | select(.type == "repo_fact")] | group_by(.text)
+          | map({text: .[0].text, evidence: [.[].evidence]})
+          | map(select(.text as $t | ($kl | contains($t)) | not)))
+      }')
+    if $write; then
+      mkdir -p "$(dirname "$flake_file")" "$(dirname "$lessons_file")"
+      printf '%s' "$out" | jq -r '.flake_signatures[].line' >> "$flake_file"
+      if [ "$(printf '%s' "$out" | jq '.lessons | length')" -gt 0 ]; then
+        [ -f "$lessons_file" ] || printf '# Lessons\n\nRepo facts learned from ship-issue runs, each with its evidence.\n\n' > "$lessons_file"
+        printf '%s' "$out" | jq -r '.lessons[] | "- \(.text) (\(.evidence | join(", ")))"' >> "$lessons_file"
+      fi
+    fi
+    printf '%s\n' "$out" ;;
+  *) coordinare_die 2 "usage: lessons <observe|propose> ..." ;;
+esac

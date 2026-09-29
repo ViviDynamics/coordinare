@@ -47,9 +47,10 @@ rebase: merge it (merge-pr). Rebase only for `CONFLICTING`, or when ci-safety §
    If a resolution is ambiguous or risky, `git rebase --abort` and stop with the
    conflicted file list. An unattended caller treats that as a stop condition.
 
-5. **Re-verify.** A clean rebase is not a passing build. Run the commands from
-   `COORDINARE_TEST_COMMANDS_FILE` for every area the branch touches and every area the
-   rebased-over commits touched. Fix any break in a normal follow-up commit.
+5. **Re-verify.** A clean rebase is not a passing build. Run `$S/preflight <issue>`
+   and require `$S/preflight --check <issue>` to pass. If the rebased-over commits
+   touched areas your diff does not, also run those rows by hand. Fix any break in a
+   normal follow-up commit.
 
 6. **Push.** `git push --force-with-lease`. This is the only sanctioned force-push:
    your own unmerged branch, after a rebase, with lease. Never `--force`, never on

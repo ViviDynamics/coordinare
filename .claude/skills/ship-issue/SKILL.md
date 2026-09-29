@@ -43,9 +43,78 @@ script as `$S/<script>` and every one-off `gh` call as `$S/vgh`. Let
 | Review fix rounds | 2 | proceed; unresolved items listed in SHIP_RESULT |
 | Watch wall-clock per CI cycle | 60 min | report timeout state |
 
+## Preflight before every push
+
+CI is not the first test run. Before every push (the first one, review fixes, CI
+fixes, rebases), commit, then run `$S/preflight <issue>`. It runs the
+`COORDINARE_TEST_COMMANDS_FILE` rows whose paths the diff touches, cheapest first, and
+records the result against `HEAD`. Push only when `$S/preflight --check <issue>`
+exits 0. A failure is fixed locally with TDD and preflighted again; it never goes to CI
+to find out. Count each run in `preflight_runs`.
+
+## Quality guard before every push
+
+The fastest way to turn CI green is to weaken what CI checks, and that is never the
+fix. Before every push, run `$S/quality-guard --body-file <draft PR body>` (or
+`--pr <pr>` once the PR exists). It flags any change to lint, type, test, coverage or
+CI configuration and any added suppression marker (`rubocop:disable`, `noqa`,
+`@ts-ignore`, `xit`, `.skip(`, `continue-on-error: true`, and so on).
+
+- `clean`: push.
+- A hit you introduced to get past a failure: revert it and fix the code instead.
+- A hit the issue genuinely asks for: name the file and the reason under
+  `### Quality gate changes` in the PR body, which makes it `justified`.
+- Anything else: stop with `unresolved: quality gate weakened`.
+
+Record the final state in `quality_guard`. merge-pr checks it again before merging.
+
+When CI later fails for a real reason, ask whether a preflight row should have caught
+it. If yes, count it in `ci_failures_preflight_would_catch` and name the missing row in
+`unresolved`, so the test commands table improves from evidence.
+
+## Lessons (when `COORDINARE_LESSONS=on`)
+
+Each run learns something the next run should not have to rediscover. With lessons on:
+
+- **Stage 1 reads** `COORDINARE_LESSONS_FILE` (default `.agents/lessons.md`) alongside the
+  house rules.
+- **Record as it happens**, always with a link to the evidence:
+  - a verified retry that turned a job green:
+    `$S/lessons observe <issue> flake_retry --log-file <saved job log> --log-line "<exact line>" --evidence <run url>`
+    (refused unless the line appears verbatim in the log);
+  - a real CI failure: `$S/lessons observe <issue> real_failure --area <area> [--preflight-row-missing] --evidence <run url> --text "<root cause>"`;
+  - a repo fact that cost more than one cycle to find:
+    `$S/lessons observe <issue> repo_fact --text "<one line>" --evidence <url>`.
+- **Propose, never apply silently.** After Stage 6, run `$S/lessons propose`. When it
+  has candidates, open one small separate PR: `$S/lessons propose --write` appends the
+  flake lines and lessons; add any proposed test-command rows by hand with the right
+  command. List every line with its evidence in the PR body. The flake file is a
+  protected path, so the PR needs a `### Quality gate changes` section; that review is
+  the point.
+
+Copy the run's observations into SHIP_RESULT `observations`.
+
+## Checkpoints: resume, never redo
+
+A run can outlive its context window or its session. The checkpoint is its memory.
+
+- **Write one at the end of every stage** and after every push:
+  `$S/checkpoint write <issue> <stage> [--pr N] [--plan PATH] [--decision "what and why"] [--unresolved "..."]`.
+  Stages: `plan implement pr-open ci review merge closure done stopped`. Record a
+  `--decision` for every call a later reader would otherwise have to re-derive (plan
+  skipped because S-sized, a finding rejected and why, a retry and its evidence).
+- **Read it first** in Stage 0: `$S/checkpoint read <issue>`. Resume at the recorded
+  stage; keep the plan, decisions and unresolved items. When `fresh` is false the
+  branch moved since the checkpoint: re-run preflight and re-read CI before trusting
+  the recorded results. Budgets always carry over; a restart never resets them.
+- **After compaction**, read the checkpoint before doing anything else, even when the
+  summary seems complete.
+- Report `resumed_from: <stage>` in SHIP_RESULT when a run picked up a checkpoint.
+
 ## Stage 0: Resume detection (idempotent)
 
-Detect if work already exists. Reads do not change state.
+Read the checkpoint first (above). Then detect what exists on GitHub; reads do not
+change state.
 
 ```bash
 $S/vgh issue view <issue> --repo "$R" \
@@ -73,7 +142,7 @@ Strict test-driven development. For M+ scope, write a plan first. The repo's hou
 rules (`COORDINARE_HOUSE_RULES_FILE`, for example AGENTS.md or CLAUDE.md) bind at every
 stage; read them before writing anything.
 
-1. Read the issue and any referenced docs. Read the "Already delivered / Remaining
+1. Read the issue, any referenced docs, and the lessons file when lessons are on. Read the "Already delivered / Remaining
    scope" block if it exists; implement only the remaining scope.
 
 2. Worktree: `git worktree add` from a fresh `COORDINARE_DEFAULT_BRANCH`, on a branch
@@ -111,7 +180,7 @@ stage; read them before writing anything.
    implementation code before its failing test.
 
 5. House rules sweep before pushing: re-read `COORDINARE_HOUSE_RULES_FILE` against the diff,
-   and run every suite in `COORDINARE_TEST_COMMANDS_FILE` locally.
+   then preflight (see "Preflight before every push").
 
 6. Push and open the PR:
    - Body: `Closes #<issue>`, plus a description of what shipped and test counts.
@@ -132,7 +201,7 @@ On any stop, report Stage 5 with `merge_state: no-pr` and the unresolved item.
 Use the watch-ci skill. Watch the PR's CI for the current head SHA. On failure:
 
 - Infra or runner failure: verified retry within budget.
-- Real failure: fix on the branch with TDD, push, re-enter Stage 2.
+- Real failure: fix on the branch with TDD, preflight, push, re-enter Stage 2.
 - Before any retry, check base freshness: if `COORDINARE_DEFAULT_BRANCH` moved and touches
   the failing area, rebase first (Stage 2b).
 
@@ -218,6 +287,11 @@ Write the result as JSON to `.agents/state/<issue>-ship.json`, validate it with
   "assigned": { "issue": "<login or empty>", "pr": "<login or empty>" },
   "budget": { "retries_verified": 0, "retries_limit": 2, "rebases": 0, "rebases_limit": 2,
               "review_rounds": 0, "review_rounds_limit": 2 },
+  "resumed_from": "<stage, only when resumed>",
+  "observations": [{ "type": "real_failure", "area": "<area>", "evidence": "<run url>" }],
+  "preflight_runs": 0,
+  "quality_guard": "clean | justified | blocked",
+  "ci_failures_preflight_would_catch": 0,
   "unresolved": "what a human must decide, with the evidence",
   "deferred": "issues filed instead of fixed, each with why"
 }
