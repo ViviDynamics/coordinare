@@ -25,6 +25,8 @@ import aiohttp
 import structlog
 from aiohttp import web
 
+from performer.proxy.model_rewrite import rewrite_request_model
+
 log = structlog.get_logger(__name__)
 
 _MESSAGES_PATH = "/v1/messages"
@@ -265,6 +267,13 @@ class ClaudeCodeShim:
                 f"{capture_prefix}.req.headers.json",
                 _redacted_headers_json(headers),
             )
+        # 496: the CLI has a background call path that requests its hardcoded
+        # small model (claude-haiku-*) without consulting ANTHROPIC_SMALL_FAST_MODEL.
+        # Rewrite that family to the configured model before it reaches the
+        # upstream; applied AFTER capture so the diagnostic file shows what the
+        # CLI actually emitted. Fail-open: unparseable bodies forward verbatim.
+        if normalize:
+            body = rewrite_request_model(body, os.environ)
 
         try:
             upstream = await self._session.request(
