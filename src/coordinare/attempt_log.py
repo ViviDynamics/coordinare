@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import (
@@ -63,6 +64,40 @@ def map_verdict(raw: str) -> Verdict:
     masquerade as task difficulty.
     """
     return _VERDICT_MAP.get(raw.strip().lower(), "error")
+
+
+def _dir_is_writable(path: Path) -> bool:
+    """Probe real write access by creating and removing a temporary file.
+
+    os.access is not sufficient here: it only checks permission bits, which a
+    root process in a container satisfies even on a read-only filesystem.
+    Creating a file surfaces the actual errno — EROFS on a read-only ConfigMap
+    mount (issue 493), EACCES on a permission-bounded directory.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".coordinare-attempt-probe", dir=path):
+            return True
+    except OSError:
+        return False
+
+
+def resolve_writable_log_dir(candidate: Path, fallback: Path) -> Path:
+    """Return candidate when it is writable, else fall back to fallback (issue 493).
+
+    AttemptLog must land on a writable filesystem or every append fails and
+    attempt history is lost. The candidate is probed with a real file create;
+    any OSError selects the fallback. Callers keep the existing anchor when it
+    works, so bare-metal deployments are unaffected.
+    """
+    if _dir_is_writable(candidate):
+        return candidate
+    logger.warning(
+        "attempt_log.dir_unwritable",
+        candidate=str(candidate),
+        fallback=str(fallback),
+    )
+    return fallback
 
 
 @dataclass(frozen=True)
