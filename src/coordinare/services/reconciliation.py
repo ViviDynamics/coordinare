@@ -486,6 +486,84 @@ def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, A
     return in_flight
 
 
+def collect_active_session_ids(state: CoordinareState) -> set[str]:
+    """Issue #489: the keep-set for the kubernetes orphan sweep — every
+    session id the daemon still owns. Mirrors the FR-005 Docker sweep's
+    keep-set exactly: in-flight sessions (dispatching / monitoring phases
+    with a non-empty ``agent_dispatch.session_id``) plus live documenting
+    sides."""
+    active: set[str] = set()
+    for sess in _collect_in_flight_sessions(state).values():
+        dispatch = sess.get("agent_dispatch") or {}
+        if isinstance(dispatch, dict) and dispatch.get("session_id"):
+            active.add(str(dispatch["session_id"]))
+    sessions = state.get("active_sessions") or {}
+    if isinstance(sessions, dict):
+        for sess in sessions.values():
+            if not isinstance(sess, dict):
+                continue
+            side = sess.get("documenting_side")
+            if (
+                isinstance(side, dict)
+                and side.get("session_id")
+                and (side.get("status") == "running" or side.get("writer_active"))
+            ):
+                active.add(str(side["session_id"]))
+    return active
+
+
+def find_kubernetes_sweep_runtime(state: CoordinareState) -> Any:
+    """Return the performer-pool runtime that can sweep kubernetes pods, or
+    None when no service in the pool carries one (docker / subprocess
+    deployments) — the duck-typed transport gate. Scans the ID-keyed HTTP
+    registry first: in mixed pools the stage default may be a legacy
+    subprocess service while the kubernetes services are keyed by
+    performer id."""
+    by_id = state.get("performer_services_by_id") or {}
+    if isinstance(by_id, dict):
+        for service in by_id.values():
+            runtime = getattr(service, "_runtime", None)
+            if runtime is None:
+                continue
+            if callable(getattr(runtime, "sweep_orphaned_sessions", None)):
+                return runtime
+    services = state.get("performer_services") or {}
+    if not isinstance(services, dict):
+        return None
+    for service in services.values():
+        runtime = getattr(service, "_runtime", None)
+        if runtime is None:
+            continue
+        if callable(getattr(runtime, "sweep_orphaned_sessions", None)):
+            return runtime
+    return None
+
+
+async def run_kubernetes_orphan_sweep(state: CoordinareState) -> list[str]:
+    """Issue #489: delete managed pods whose ``coordinare.session_id`` is not
+    among the daemon's active sessions. Kubernetes counterpart of the FR-005
+    Docker orphan sweep, driven through the same startup-reconciliation
+    seam. Returns the swept pod names; raises propagate to the caller's
+    crash-blocker."""
+    runtime = find_kubernetes_sweep_runtime(state)
+    if runtime is None:
+        return []
+    active_ids = collect_active_session_ids(state)
+    # SC-002 fast path, same rationale as the Docker sweep: with no
+    # authoritative in-flight set we cannot tell a true orphan from
+    # legitimate work, so sweep nothing.
+    if not active_ids:
+        return []
+    swept = await runtime.sweep_orphaned_sessions(active_ids)
+    if swept:
+        logger.info(
+            "daemon.kubernetes_orphan_sweep_complete",
+            swept_count=len(swept),
+            swept_pods=list(swept),
+        )
+    return list(swept)
+
+
 async def _restore_documenting_side(state, card_id, sess, by_session, docker_executor) -> None:
     """Adopt an early writer, or confirm it stopped before releasing its lock."""
     from coordinare.services.documenting_side import record_result

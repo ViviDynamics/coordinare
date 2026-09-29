@@ -1721,7 +1721,65 @@ def _merge_retry_queue_entry(
         merged_retry_queue[merged_retry_queue.index(existing)] = entry
 
 
-def _merge_fanout_results(
+async def _release_session_resources(
+    state: dict[str, Any],
+    sess: dict[str, Any],
+) -> None:
+    """Issue #489: best-effort release-time teardown for a session the
+    daemon is about to drop.
+
+    A session is removed on completion OR missing-card eviction, but the
+    076 service-side cleanup only fires when the job reports terminal — a
+    job wedged mid-run leaves its container alive with no session behind
+    it. Before removal, ask the session's performer service (keyed by
+    ``performer_stage``) to stop the pod still tracked for the session's
+    ``agent_dispatch.session_id``. Best-effort: a teardown failure is
+    logged and swallowed; it must never keep the session alive.
+    """
+    if not isinstance(sess, dict):
+        return
+    dispatch = sess.get("agent_dispatch")
+    session_id = (
+        dispatch.get("session_id") if isinstance(dispatch, dict) else None
+    )
+    if not session_id:
+        return
+    stage = sess.get("performer_stage")
+    # Resolve the service that dispatched the session: the ID-keyed registry
+    # is authoritative (SlotManager may have picked any service in a stage
+    # pool, and performer_services[stage] is only the stage default), with
+    # the stage lookup as a legacy fallback for dispatches that recorded no
+    # performer_id.
+    dispatch_result = dispatch if isinstance(dispatch, dict) else {}
+    performer_id = dispatch_result.get("performer_id")
+    by_id = state.get("performer_services_by_id") or {}
+    service = (
+        by_id.get(performer_id)
+        if performer_id and isinstance(by_id, dict) else None
+    )
+    if service is None:
+        services = state.get("performer_services") or {}
+        service = services.get(stage) if isinstance(services, dict) else None
+    release = getattr(service, "release_session", None)
+    if not callable(release):
+        return
+    try:
+        await release(session_id)
+        logger.info(
+            "session_release_teardown",
+            session_id=str(session_id),
+            performer_stage=stage,
+        )
+    except Exception as exc:
+        logger.warning(
+            "session_release_teardown_failed",
+            session_id=str(session_id),
+            performer_stage=stage,
+            error=str(exc),
+        )
+
+
+async def _merge_fanout_results(
     state: dict[str, Any],
     active_sessions: dict,
     eligibilities: dict[str, SessionEligibility],
@@ -1799,10 +1857,11 @@ def _merge_fanout_results(
         if cid in active_sessions:
             active_sessions[cid] = mutated_sess
 
-    _merge_session_results(active_sessions, eligibilities, results)
+    await _merge_session_results(state, active_sessions, eligibilities, results)
 
 
-def _merge_session_results(
+async def _merge_session_results(
+    state: dict[str, Any],
     active_sessions: dict,
     eligibilities: dict[str, SessionEligibility],
     results: list[AsyncSessionTickResult],
@@ -1835,6 +1894,8 @@ def _merge_session_results(
                 completed_ids.append(result.card_id)
 
     for card_id in completed_ids:
+        sess = active_sessions.get(card_id) or {}
+        await _release_session_resources(state, sess)
         del active_sessions[card_id]
         logger.info("session_completed", card_id=card_id)
 
@@ -2554,7 +2615,7 @@ class CoordinareDaemon:
             ),
         )
 
-        _merge_fanout_results(self._state, active_sessions, eligibilities, results)
+        await _merge_fanout_results(self._state, active_sessions, eligibilities, results)
         _finalize_multi_session(self._state, active_sessions)
 
     async def _resolve_symphony_effective_state(
@@ -4090,7 +4151,10 @@ class CoordinareDaemon:
         self._reconciliation_blocked_by_docker = False
         try:
             from coordinare.services.docker_executor import DockerExecutor
-            from coordinare.services.reconciliation import run_startup_reconciliation
+            from coordinare.services.reconciliation import (
+                run_kubernetes_orphan_sweep,
+                run_startup_reconciliation,
+            )
 
             cfg = self._state.get("coordinare_config")
             recon_budget = 30.0
@@ -4105,6 +4169,17 @@ class CoordinareDaemon:
             )
             if report.docker_unreachable:
                 self._reconciliation_blocked_by_docker = True
+            # Issue #489: kubernetes counterpart of the FR-005 orphan sweep.
+            # Resolves the runtime duck-typed through performer_services, so
+            # docker/subprocess deployments no-op. An empty keep-set mirrors
+            # the Docker SC-002 fast path. Crashing must not prevent boot.
+            try:
+                await run_kubernetes_orphan_sweep(self._state)
+            except Exception:  # pragma: no cover — defensive crash-blocker
+                logger.warning(
+                    "daemon.kubernetes_orphan_sweep_crashed",
+                    exc_info=True,
+                )
         except Exception as exc:  # pragma: no cover — defensive crash-blocker
             # Reconciliation MUST NOT prevent the daemon from booting on a
             # bug or unexpected failure — fall through to the normal cycle

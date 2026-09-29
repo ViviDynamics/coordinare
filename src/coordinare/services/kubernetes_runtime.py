@@ -52,6 +52,12 @@ PERFORMER_ID_LABEL = "coordinare.vividynamics.com/performer-id"
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY_VALUE = "coordinare"
 
+#: Label tying a Pod back to the coordinare-allocated session (the daemon's
+#: ``_active_jobs`` key). Existence-matched by the session-aware orphan sweep
+#: (issue #489) so pods belonging to other coordinare deployments (the
+#: controller itself) are excluded by construction.
+SESSION_ID_LABEL = "coordinare.session_id"
+
 #: RFC 1123 label: lowercase alphanumerics and hyphens, start and end
 #: alphanumeric, at most 63 characters.
 _MAX_NAME = 63
@@ -632,3 +638,51 @@ class KubernetesRuntime:
         if stopped:
             _log.info("kubernetes_runtime.swept", count=stopped, selector=selector)
         return stopped
+
+    async def sweep_orphaned_sessions(
+        self, active_session_ids: set[str],
+    ) -> list[str]:
+        """Issue #489: delete managed Pods whose ``coordinare.session_id`` is
+        not among the daemon's active sessions.
+
+        Kubernetes counterpart of the Docker FR-005 orphan sweep. The
+        selector requires BOTH ``managed-by=coordinare`` and the existence of
+        a session-id label — the same controller-safety lesson
+        ``cleanup_orphaned`` learned — and pods whose session id is in
+        ``active_session_ids`` (in-flight sessions plus live documenting
+        sides) are kept. Returns the swept Pod names; a failing list call
+        yields an empty sweep rather than a crash.
+        """
+        # NOTE: `asyncio` is imported at module top; the kubernetes client
+        # stays lazily imported like every other method here, but this sweep
+        # is best-effort by contract, so a failing list call of ANY kind
+        # yields an empty sweep rather than a crash.
+        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{SESSION_ID_LABEL}"
+        try:
+            pods = await asyncio.to_thread(
+                self._api.list_namespaced_pod,
+                namespace=self._namespace,
+                label_selector=selector,
+            )
+        except Exception as exc:
+            _log.warning(
+                "kubernetes_runtime.session_sweep_list_failed", error=str(exc),
+            )
+            return []
+
+        active = set(active_session_ids)
+        swept: list[str] = []
+        for pod in pods.items:
+            labels = getattr(pod.metadata, "labels", None) or {}
+            session_id = labels.get(SESSION_ID_LABEL)
+            if session_id and session_id in active:
+                continue
+            await self.stop(pod.metadata.name)
+            swept.append(pod.metadata.name)
+        if swept:
+            _log.info(
+                "kubernetes_runtime.session_swept",
+                count=len(swept),
+                pods=swept,
+            )
+        return swept

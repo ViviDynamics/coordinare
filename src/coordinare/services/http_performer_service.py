@@ -772,6 +772,21 @@ class HTTPPerformerService:
         except Exception:  # pragma: no cover
             pass
 
+    async def release_session(self, session_id: str) -> None:
+        """Issue #489: release-time teardown for a coordinare session.
+
+        The daemon calls this when it drops a session (card completed or
+        evicted), whether or not the job ever reported terminal — the 076
+        ``check_status`` cleanup only fires on a terminal poll, so a job
+        wedged mid-run would otherwise leave its container alive with no
+        session behind it. Keyed on the coordinare-allocated ``session_id``
+        (the ``_active_jobs`` key / ``coordinare.session_id`` label).
+        Best-effort and idempotent, mirroring the terminal-poll cleanup.
+        """
+        if not session_id:
+            return
+        await self._cleanup_ephemeral_job_by_id(session_id)
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
