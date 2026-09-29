@@ -58,9 +58,9 @@ then run every `gh` call as `$S/vgh`. Let `R=$($S/repo-config COORDINARE_REPO)`.
    then resolve its thread with the GraphQL `resolveReviewThread` mutation, finding the
    thread id from `pullRequest.reviewThreads`.
 
-5. **Push fixes.** Run the relevant commands from `COORDINARE_TEST_COMMANDS_FILE`, stage only
-   the files you changed (never `git add -A`), commit "Address Copilot review (round N)",
-   push. Never amend or force-push. Then go back to step 1 for the new head.
+5. **Push fixes.** Stage only the files you changed (never `git add -A`), commit
+   "Address Copilot review (round N)", run `$S/preflight <issue>`, and push only when
+   `$S/preflight --check <issue>` passes. Never amend or force-push. Then go back to step 1 for the new head.
    Only dismissals this round: stop.
 
 ## Report

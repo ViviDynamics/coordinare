@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Run the local test commands the diff touches, before a push, and record the result.
+# usage: preflight <issue>           run and record; exit 0 pass|nothing, 1 fail, 4 dirty tree
+#        preflight --check <issue>   exit 0 when the recorded run passed for HEAD, else 1
+# Rows come from COORDINARE_TEST_COMMANDS_FILE, a markdown table of
+#   | Area | Paths | Command |   (Paths: comma-separated globs, or "always")
+#   | Area | Command |         (two columns: always runs)
+# in table order, stopping at the first failure. {files} in a command expands to the
+# changed files that matched the row. In a glob, * also matches across directories.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+coordinare_load_env; coordinare_require COORDINARE_DEFAULT_BRANCH
+
+check=false
+if [ "${1:-}" = "--check" ]; then check=true; shift; fi
+issue=${1:-}; [ -n "$issue" ] || coordinare_die 2 "usage: preflight [--check] <issue>"
+cd "$COORDINARE_ROOT"
+head_sha=$(git rev-parse HEAD)
+
+if $check; then
+  rec=$("$here/state" get "$issue" preflight)
+  [ -n "$rec" ] || { jq -nc '{ok:false, reason:"no preflight recorded"}'; exit 1; }
+  rec_head=$(printf '%s' "$rec" | jq -r '.head_sha // ""')
+  rec_state=$(printf '%s' "$rec" | jq -r '.state // ""')
+  if [ "$rec_head" != "$head_sha" ]; then
+    jq -nc --arg r "$rec_head" --arg h "$head_sha" '{ok:false, reason:"stale: preflight ran for \($r), HEAD is \($h)"}'; exit 1
+  fi
+  case "$rec_state" in
+    pass|nothing) jq -nc --arg s "$rec_state" '{ok:true, state:$s}'; exit 0 ;;
+    *) jq -nc --arg s "$rec_state" '{ok:false, reason:"preflight state is \($s)"}'; exit 1 ;;
+  esac
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  jq -nc '{schema:"PREFLIGHT_RESULT", state:"refused", reason:"uncommitted changes: commit first so the result describes HEAD"}'; exit 4
+fi
+table="$COORDINARE_ROOT/${COORDINARE_TEST_COMMANDS_FILE:-.agents/test-commands.md}"
+[ -f "$table" ] || coordinare_die 2 "test commands file not found: $table (see ADOPTING.md)"
+base_ref="origin/$COORDINARE_DEFAULT_BRANCH"
+git rev-parse -q --verify "$base_ref^{commit}" >/dev/null || coordinare_die 2 "$base_ref not found: git fetch origin $COORDINARE_DEFAULT_BRANCH first"
+base_sha=$(git merge-base HEAD "$base_ref")
+changed=$(git diff --name-only "$base_sha" HEAD)
+
+trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
+is_separator() { case "$1" in *[!\|\ :-]*) return 1;; *) return 0;; esac; }
+
+rows=$(mktemp)
+trap 'rm -f "$rows"' EXIT
+# A table line is held until the next line decides it: a separator makes it a header.
+prev=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    \|*)
+      if is_separator "$line"; then prev=""; continue; fi
+      [ -n "$prev" ] && printf '%s\n' "$prev" >> "$rows"
+      prev=$line ;;
+    *) [ -n "$prev" ] && printf '%s\n' "$prev" >> "$rows"; prev="" ;;
+  esac
+done < "$table"
+[ -n "$prev" ] && printf '%s\n' "$prev" >> "$rows"
+
+# Commands run with no stdin and without the COORDINARE_* settings this script loaded, so a
+# repo's own tests see the environment they would see in CI.
+clean_env() {
+  local v unset_args=()
+  for v in $(compgen -e); do case "$v" in COORDINARE_*) unset_args+=(-u "$v");; esac; done
+  env ${unset_args[@]+"${unset_args[@]}"} "$@"
+}
+
+results='[]'; state=nothing; failed='null'; started=$(date +%s)
+while IFS= read -r line; do
+  body=${line#|}; body=${body%|}
+  ncols=$(printf '%s' "$body" | awk -F'|' '{print NF}')
+  area=$(trim "$(printf '%s' "$body" | cut -d'|' -f1)")
+  if [ "$ncols" -ge 3 ]; then
+    paths=$(trim "$(printf '%s' "$body" | cut -d'|' -f2)")
+    cmd=$(trim "$(printf '%s' "$body" | cut -d'|' -f3-)")
+  else
+    paths=always
+    cmd=$(trim "$(printf '%s' "$body" | cut -d'|' -f2-)")
+  fi
+  cmd=${cmd#\`}; cmd=${cmd%\`}
+  [ -n "$cmd" ] || continue
+  matched=""
+  if [ "$paths" = "always" ]; then
+    matched=$changed
+  else
+    old_ifs=$IFS; IFS=,; set -f
+    for glob in $paths; do
+      glob=$(trim "$glob")
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        # shellcheck disable=SC2254
+        case "$f" in $glob) case $'\n'"$matched"$'\n' in *$'\n'"$f"$'\n'*) ;; *) matched=${matched:+$matched$'\n'}$f;; esac;; esac
+      done <<< "$changed"
+    done
+    set +f; IFS=$old_ifs
+    [ -n "$matched" ] || continue
+  fi
+  files=""
+  while IFS= read -r f; do [ -n "$f" ] && files="$files $(printf '%q' "$f")"; done <<< "$matched"
+  run=${cmd//\{files\}/${files# }}
+  t0=$(date +%s); code=0
+  out=$(clean_env bash -c "$run" 2>&1 </dev/null) || code=$?
+  dur=$(( $(date +%s) - t0 ))
+  results=$(printf '%s' "$results" | jq -c --arg a "$area" --arg c "$run" --argjson e "$code" --argjson d "$dur" '. + [{area:$a, command:$c, exit:$e, duration_sec:$d}]')
+  if [ "$code" -ne 0 ]; then
+    state=fail
+    failed=$(jq -nc --arg a "$area" --arg c "$run" --arg t "$(printf '%s' "$out" | tail -n 40)" '{area:$a, command:$c, log_tail:$t}')
+    break
+  fi
+  state=pass
+done < "$rows"
+
+result=$(jq -nc --argjson issue "$issue" --arg h "$head_sha" --arg b "$base_sha" --arg s "$state" \
+  --argjson n "$(printf '%s' "$changed" | grep -c . || true)" --argjson cmds "$results" --argjson f "$failed" \
+  --argjson d "$(( $(date +%s) - started ))" \
+  '{schema:"PREFLIGHT_RESULT", issue:$issue, head_sha:$h, base_sha:$b, state:$s, changed_files:$n, commands:$cmds, duration_sec:$d} + (if $f then {failed:$f} else {} end)')
+"$here/state" set "$issue" preflight "$result" >/dev/null
+printf '%s\n' "$result"
+[ "$state" = fail ] && exit 1
+exit 0

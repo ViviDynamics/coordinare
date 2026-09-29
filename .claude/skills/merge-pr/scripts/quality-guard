@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Block diffs that weaken a quality gate unless the PR body justifies each one.
+# usage: quality-guard [--body-file <file>]   local diff: merge-base(origin/<default>)..HEAD
+#        quality-guard --pr <pr>              the PR's diff and body from GitHub
+# exit: 0 clean or justified, 1 blocked
+# A hit is a changed protected path (lint, type, test, coverage, CI config) or an added
+# line carrying a suppression marker. Each hit's file must be named in the body's
+# "### Quality gate changes" section. Markdown files are never scanned for markers.
+# COORDINARE_PROTECTED_PATHS (comma-separated globs) and COORDINARE_SUPPRESSION_PATTERNS (an ERE)
+# extend the defaults. A glob with a / matches the whole path, otherwise the file name.
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env; coordinare_require COORDINARE_DEFAULT_BRANCH
+
+DEFAULT_PROTECTED='.rubocop*.yml,.standard.yml,.eslintrc*,eslint.config.*,.prettierrc*,prettier.config.*,biome.json,biome.jsonc,ruff.toml,.ruff.toml,pyproject.toml,setup.cfg,.flake8,mypy.ini,.pylintrc,.golangci.yml,.golangci.yaml,tsconfig*.json,.stylelintrc*,.rspec,.simplecov,.coveragerc,codecov.yml,.codecov.yml,jest.config.*,vitest.config.*,.github/workflows/*,.agents/flake-signatures.txt,.agents/skills/*,.claude/skills/*,repo.env.example'
+DEFAULT_MARKERS='rubocop:disable|rubocop:todo|standard:disable|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|#[[:space:]]*noqa|type:[[:space:]]*ignore|pylint:[[:space:]]*disable|pragma:[[:space:]]*no cover|//[[:space:]]*nolint|istanbul ignore|c8 ignore|:nocov:|(^|[^[:alnum:]_])(xit|xdescribe|xcontext|xspecify|fit|fdescribe)[[:space:](]|\.(skip|only)\(|(^|[^[:alnum:]_])skip[[:space:](]["'"'"']|pytest\.mark\.(skip|xfail)|@(Disabled|Ignore)([^[:alnum:]]|$)|t\.Skip(Now|f)?\(|^[[:space:]]*pending([[:space:](]|$)|continue-on-error:[[:space:]]*true'
+
+pr=""; body_file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pr) pr=$2; shift 2;;
+    --body-file) body_file=$2; shift 2;;
+    *) coordinare_die 2 "unknown option $1";;
+  esac
+done
+cd "$COORDINARE_ROOT"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+if [ -n "$pr" ]; then
+  coordinare_require COORDINARE_REPO
+  coordinare_gh pr diff "$pr" --repo "$COORDINARE_REPO" > "$tmp/diff" || exit $?
+  coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json body --jq .body > "$tmp/body" || exit $?
+else
+  base_ref="origin/$COORDINARE_DEFAULT_BRANCH"
+  git rev-parse -q --verify "$base_ref^{commit}" >/dev/null || coordinare_die 2 "$base_ref not found: git fetch origin $COORDINARE_DEFAULT_BRANCH first"
+  git diff "$(git merge-base HEAD "$base_ref")" HEAD > "$tmp/diff"
+  if [ -n "$body_file" ]; then cp "$body_file" "$tmp/body"; else : > "$tmp/body"; fi
+fi
+
+awk '
+  /^#+[[:space:]]*Quality gate changes[[:space:]]*$/ { on=1; next }
+  /^#/ { on=0 }
+  on { print }
+' "$tmp/body" > "$tmp/section"
+
+# One record per changed file ("F<TAB>path") and per added line ("A<TAB>path<TAB>line<TAB>text").
+awk '
+  /^diff --git / { file=$NF; sub(/^b\//, "", file); print "F\t" file; next }
+  /^\+\+\+ / { next }
+  /^--- / { next }
+  /^@@ / { split($3, h, ","); line=substr(h[1], 2) + 0; next }
+  /^\+/ { print "A\t" file "\t" line "\t" substr($0, 2); line++; next }
+  /^-/ { next }
+  /^ / { line++; next }
+' "$tmp/diff" > "$tmp/records"
+
+protected="$DEFAULT_PROTECTED${COORDINARE_PROTECTED_PATHS:+,$COORDINARE_PROTECTED_PATHS}"
+markers="$DEFAULT_MARKERS${COORDINARE_SUPPRESSION_PATTERNS:+|$COORDINARE_SUPPRESSION_PATTERNS}"
+
+is_protected() {
+  local f=$1 name=${1##*/} glob old_ifs=$IFS
+  IFS=,; set -f
+  for glob in $protected; do
+    case "$glob" in
+      */*) case "$f" in $glob) set +f; IFS=$old_ifs; return 0;; esac ;;
+      *) case "$name" in $glob) set +f; IFS=$old_ifs; return 0;; esac ;;
+    esac
+  done
+  set +f; IFS=$old_ifs
+  return 1
+}
+justified() { [ -s "$tmp/section" ] && grep -qF -- "$1" "$tmp/section"; }
+
+hits='[]'
+add_hit() {  # file kind line text
+  local j=false
+  justified "$1" && j=true
+  hits=$(printf '%s' "$hits" | jq -c --arg f "$1" --arg k "$2" --arg l "$3" --arg t "$4" --argjson j "$j" \
+    '. + [{file:$f, kind:$k, justified:$j} + (if $l != "" then {line:($l|tonumber), text:$t} else {} end)]')
+}
+
+while IFS=$'\t' read -r kind file line text; do
+  case "$kind" in
+    F) is_protected "$file" && add_hit "$file" protected_path "" "" ;;
+    A)
+      case "$file" in *.md|*.markdown) continue;; esac
+      is_protected "$file" && continue
+      printf '%s\n' "$text" | grep -qE -- "$markers" && add_hit "$file" suppression "$line" "$text"
+      ;;
+  esac
+done < "$tmp/records"
+
+state=$(printf '%s' "$hits" | jq -r 'if length == 0 then "clean" elif all(.justified) then "justified" else "blocked" end')
+jq -nc --arg s "$state" --argjson h "$hits" '{schema:"QUALITY_GUARD_RESULT", state:$s, hits:$h}'
+[ "$state" = blocked ] && exit 1
+exit 0

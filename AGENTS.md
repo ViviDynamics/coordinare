@@ -71,7 +71,7 @@ without the env. (`make run` / `make start` do this for you.)
 
 ## Workflow Skills
 
-Workflow skills come from ViviDynamics/skills at tag 2026.09.11. They are installed in both `.agents/skills/` and `.claude/skills/` (which OpenCode reads via `.opencode/skill`). Never edit the installed copies. To update: fix upstream, bump the tag in repo-specific configuration, and re-install. Repo-specific settings (merge flags, test commands, known flakes) live in `repo.env.example`.
+Workflow skills come from ViviDynamics/skills at tag 2026.09.15. They are installed in both `.agents/skills/` and `.claude/skills/` (which OpenCode reads via `.opencode/skill`). Never edit the installed copies. To update: fix upstream, bump the tag in repo-specific configuration, and re-install. Repo-specific settings (merge flags, test commands, known flakes) live in `repo.env.example`.
 
 ## Ship-Issue Standing Rules
 

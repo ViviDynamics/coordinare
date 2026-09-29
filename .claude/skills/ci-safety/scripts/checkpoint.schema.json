@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CHECKPOINT",
+  "type": "object",
+  "required": ["schema", "issue", "stage", "head_sha", "branch", "budgets", "decisions", "unresolved", "updated_at"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["CHECKPOINT"] },
+    "issue": { "type": "integer" },
+    "stage": { "type": "string", "enum": ["plan", "implement", "pr-open", "ci", "review", "merge", "closure", "done", "stopped"] },
+    "head_sha": { "type": "string" },
+    "branch": { "type": "string" },
+    "worktree": { "type": "string" },
+    "pr": { "type": "integer" },
+    "plan": { "type": "string" },
+    "preflight": { "type": "object" },
+    "budgets": {
+      "type": "object",
+      "required": ["retries", "rebases", "review_rounds"],
+      "properties": {
+        "retries": { "type": "integer" },
+        "rebases": { "type": "integer" },
+        "review_rounds": { "type": "integer" }
+      }
+    },
+    "decisions": { "type": "array", "items": { "type": "object", "required": ["stage", "text"] } },
+    "unresolved": { "type": "array" },
+    "updated_at": { "type": "string" }
+  }
+}
