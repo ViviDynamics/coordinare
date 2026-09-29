@@ -43,7 +43,24 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         return state
     if not mergeability.get("mergeable", False):
         state["phase"] = "blocked"
-        state["open_questions"] = ["PR has merge conflicts requiring human intervention."]
+        # 495: check_mergeability collapses conflicts and the review gate into
+        # one boolean. Distinguish them so the operator sees the real cause.
+        mergeable_raw = str(mergeability.get("mergeable_raw", "")).upper()
+        review_decision = str(mergeability.get("review_decision", ""))
+        if mergeable_raw != "MERGEABLE":
+            state["open_questions"] = ["PR has merge conflicts requiring human intervention."]
+        elif review_decision:
+            state["open_questions"] = [
+                f"PR is mergeable but GitHub's review decision is {review_decision}, "
+                "not APPROVED — the review gate is blocking the merge.",
+            ]
+        else:
+            state["open_questions"] = [
+                "PR is mergeable but GitHub reports no review decision (reviewDecision "
+                "is null). A null reviewDecision with an APPROVED review on the head "
+                "usually means branch protection requires 0 approving reviews, so the "
+                "approval cannot be counted.",
+            ]
         return state
 
     try:
