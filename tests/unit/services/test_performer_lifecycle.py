@@ -184,6 +184,137 @@ async def test_start_ephemeral_with_auth_token_env(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_ephemeral_injects_the_resolved_backend_env(monkeypatch) -> None:
+    """Issue #486 — the image's entrypoint installs the backend CLI at container
+    start from ``BACKEND``. The Docker path shares that entrypoint, so the
+    resolved backend rides ``docker run -e BACKEND=...`` here too, unless the
+    operator already set BACKEND in ``performer_endpoints[].env``.
+    """
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-back\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(_ephemeral_config(), backend="claude_code")
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=claude_code" in run_args, (
+        "without BACKEND the container starts without a CLI and the performer "
+        "dies with FileNotFoundError spawning the agent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_never_overrides_an_operator_set_backend(
+    monkeypatch,
+) -> None:
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-op\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(
+        _ephemeral_config(env={"BACKEND": "opencode"}), backend="claude_code",
+    )
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=opencode" in run_args
+    assert "BACKEND=claude_code" not in run_args, (
+        "performer_endpoints[].env is the operator's explicit choice; the "
+        "derivation must only fill the gap"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_carries_the_canonical_backend_spelling(
+    monkeypatch,
+) -> None:
+    """Copilot review round 1: config validation and get_backend both normalize
+    kebab-case, but entrypoint.sh matches only the underscored canonical names."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-kebab\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(_ephemeral_config(), backend="claude-code")
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=claude_code" in run_args
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_unresolved_placeholder_is_not_an_operator_backend(
+    monkeypatch,
+) -> None:
+    """Copilot review round 1: an unresolved ${VAR} placeholder in the operator
+    env must not block the derivation — the placeholder is dropped by the env
+    loop, so the container would otherwise get neither value."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-placeholder\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(
+        _ephemeral_config(env={"BACKEND": "${BACKEND}"}), backend="claude_code",
+    )
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=claude_code" in run_args
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_empty_operator_backend_does_not_block_derivation(
+    monkeypatch,
+) -> None:
+    """Copilot review round 2: the entrypoint's case "${BACKEND:-}" treats an
+    empty value exactly like unset, so it must not suppress the derivation."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-empty\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(_ephemeral_config(env={"BACKEND": ""}), backend="claude_code")
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=claude_code" in run_args
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_propagates_config_env(monkeypatch) -> None:
     """env entries (e.g. RTK_ENABLED) flow through to ``docker run -e KEY=VAL``."""
     args_seen: list[tuple[str, ...]] = []

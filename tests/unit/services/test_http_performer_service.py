@@ -14,6 +14,7 @@ from coordinare.services import http_performer_service as hps_mod
 from coordinare.services import performer_lifecycle as lifecycle
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.performer_lifecycle import StartedContainer
+from coordinare.services.performer_runtime import StartedPerformer
 from coordinare.transport.http_transport import (
     PerformerHTTPClient,
 )
@@ -210,6 +211,148 @@ async def test_dispatch_ephemeral_starts_container_and_dispatches(monkeypatch) -
     assert started_calls == ["perf-e1"]
     # stop NOT yet called — only on terminal state.
     assert stop_calls == []
+
+
+class _StubRuntime:
+    """Captures how the service starts ephemeral performers (issue #486)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def start_ephemeral(self, config, **kwargs):
+        self.calls.append(kwargs)
+        return StartedPerformer(handle="pod-1", endpoint="http://127.0.0.1:55555")
+
+    async def stop(self, handle, **_):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ephemeral_passes_the_resolved_backend_to_the_runtime(
+    monkeypatch,
+) -> None:
+    """Issue #486 — the backend resolved for the dispatch must reach the runtime.
+
+    The container's entrypoint installs the backend CLI from the ``BACKEND`` env
+    var at container start, so the runtime needs the resolved backend at
+    start time — the job payload alone carries it too late.
+    """
+    runtime = _StubRuntime()
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={
+                "accepted": True,
+                "job_id": "job-eph-backend",
+                "started_at": "2026-04-28T00:00:00Z",
+            },
+        )
+
+    svc = HTTPPerformerService(_ephemeral_config(), runtime=runtime, client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
+    result = await svc.dispatch_card(_card(), _workspace())
+
+    assert result["status"] == "ok"
+    assert runtime.calls, "the ephemeral runtime was never started"
+    assert runtime.calls[0].get("backend") == "claude_code", (
+        "the resolved backend (performers.<role>.backend / performers.default) must "
+        "ride the start call so the runtime can put BACKEND in the container env"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ephemeral_tolerates_a_runtime_predating_the_backend_kwarg(
+    monkeypatch,
+) -> None:
+    """Copilot review round 2: @runtime_checkable verifies method presence only,
+    so an injected runtime implementing the pre-#486 signature must keep working
+    (the service probes the signature instead of passing backend= blindly)."""
+
+    captured: list[dict] = []
+
+    class _LegacyRuntime:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def start_ephemeral(self, config, *, extra_labels=None):
+            captured.append({"extra_labels": extra_labels})
+            return StartedPerformer(handle="pod-legacy", endpoint="http://127.0.0.1:55556")
+
+        async def stop(self, handle, **_):
+            return None
+
+    runtime = _LegacyRuntime()
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={
+                "accepted": True,
+                "job_id": "job-legacy-runtime",
+                "started_at": "2026-04-28T00:00:00Z",
+            },
+        )
+
+    svc = HTTPPerformerService(_ephemeral_config(), runtime=runtime, client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
+    result = await svc.dispatch_card(_card(), _workspace())
+
+    assert result["status"] == "ok"
+    assert captured, "the legacy runtime was never started"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ephemeral_without_a_backend_passes_none(monkeypatch) -> None:
+    """No resolved backend means no derivation: the runtime derives nothing."""
+    runtime = _StubRuntime()
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={
+                "accepted": True,
+                "job_id": "job-eph-no-backend",
+                "started_at": "2026-04-28T00:00:00Z",
+            },
+        )
+
+    svc = HTTPPerformerService(_ephemeral_config(), runtime=runtime, client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
+    card = _card()
+    card.pop("backend")
+    result = await svc.dispatch_card(card, _workspace())
+
+    assert result["status"] == "ok"
+    assert runtime.calls, "the ephemeral runtime was never started"
+    assert runtime.calls[0].get("backend") is None
 
 
 @pytest.mark.asyncio
@@ -1524,6 +1667,7 @@ async def test_call_reset_no_op_for_ephemeral() -> None:
 
     async def _fake_start(*args, **kwargs):
         from coordinare.services.performer_lifecycle import StartedContainer
+
         return StartedContainer(container_id="c1", endpoint="http://127.0.0.1:9999")
 
     async def _fake_wait(*args, **kwargs):

@@ -82,7 +82,7 @@ async def test_dispatch_card_emits_all_six_required_labels(monkeypatch) -> None:
     """
     captured_labels: dict[str, str] = {}
 
-    async def fake_start(config, *, extra_labels=None):
+    async def fake_start(config, *, extra_labels=None, **_kwargs):
         from coordinare.services.performer_lifecycle import StartedContainer
         if extra_labels:
             captured_labels.update(extra_labels)
@@ -167,7 +167,7 @@ async def test_dispatch_card_omits_empty_card_labels_for_bootstrap(monkeypatch) 
     """
     captured_labels: dict[str, str] = {}
 
-    async def fake_start(config, *, extra_labels=None):
+    async def fake_start(config, *, extra_labels=None, **_kwargs):
         from coordinare.services.performer_lifecycle import (
             StartedContainer,
             _validate_extra_label,

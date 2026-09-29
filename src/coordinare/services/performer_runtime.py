@@ -62,6 +62,7 @@ class PerformerRuntime(Protocol):
         config: PerformerEndpointConfig,
         *,
         extra_labels: dict[str, str] | None = None,
+        backend: str | None = None,
     ) -> StartedPerformer:
         """Start a fresh performer and return its handle and endpoint.
 
@@ -69,6 +70,14 @@ class PerformerRuntime(Protocol):
         the caller then polls readiness over HTTP. Under Docker that means the
         container is running and its port is published; under Kubernetes, that
         the Pod is running and has an IP.
+
+        *backend* is the performer backend resolved for the dispatch being
+        started (``performers.default.backend`` / role-specific). The image's
+        entrypoint installs the backend CLI at container start from the
+        ``BACKEND`` env var, so the container env must carry it at start time —
+        the job payload reaches the performer only after the container exists.
+        Runtimes derive ``BACKEND`` from it unless the operator already set
+        ``BACKEND`` in ``performer_endpoints[].env``.
 
         Raises a runtime-specific error deriving from
         ``performer_lifecycle.LifecycleError`` when the performer cannot be
