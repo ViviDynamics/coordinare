@@ -679,3 +679,103 @@ async def test_reposts_when_session_watermark_older_than_window() -> None:
     # stale "monitoring_performer" left over from the dispatching path.
     assert result["active_sessions"]["ITEM_1"]["phase"] == "blocked"
     assert result["phase"] == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# 494 — consumed stale questions must not be re-asserted after the
+# loop-broken detector re-queues dispatch
+# ---------------------------------------------------------------------------
+
+_CLARIFICATIONS_494 = [
+    {
+        "source": "issue",
+        "author": "vivi-coordinare[bot]",
+        "classification": "clarification",
+        "body": "**🔍 Assessor** — Needs input:\n- How should it work?",
+        "created_at": "2026-09-26T10:00:00Z",
+    },
+    {
+        "source": "issue",
+        "author": "Jason733i",
+        "classification": "clarification",
+        "body": "Like this: answer.",
+        "created_at": "2026-09-26T10:30:00Z",
+    },
+    {
+        "source": "issue",
+        "author": "vivi-coordinare[bot]",
+        "classification": "clarification",
+        "body": "**🔍 Assessor** — Needs input:\n- How should it work?",
+        "created_at": "2026-09-26T11:00:00Z",
+    },
+]
+
+
+def _state_494(questions: list[str], consumed: list[str] | None = None) -> dict:
+    github = _GitHubRequeue()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Sample"}
+    state["open_questions"] = list(questions)
+    state["card_clarifications"] = _CLARIFICATIONS_494
+    if consumed is not None:
+        state["consumed_loop_questions"] = list(consumed)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_consumed_question_not_requeued_again_after_loop_broken() -> None:
+    """494: once the loop-broken detector has consumed a question and
+    re-queued dispatch, a later blocked transition that re-asserts the SAME
+    question must not re-queue again. Re-queueing forever is the observed
+    blocked → dispatching → blocked flap (cluster E2E, release 2026.9.126,
+    answered_rounds=9): the stale question stayed effectively live because
+    the consumption marker never persisted across the re-queue."""
+    questions = ["PR has merge conflicts requiring human intervention."]
+
+    first = await handle_blocked(_state_494(questions))
+    assert first["phase"] == "idle"  # first firing: re-queue once
+    assert first["open_questions"] == []
+    consumed = first.get("consumed_loop_questions")
+    assert consumed, "first firing must record the consumed questions"
+    assert len(consumed) == 1
+
+    # Next blocked transition: the block source re-asserts the same question
+    # with the consumed marker persisted across the re-queue.
+    second = await handle_blocked(_state_494(questions, consumed))
+    assert second["phase"] == "blocked"
+    github = second["github_service"]
+    assert "TODO" not in github.moved_to, "re-asserted question must not re-queue again"
+    assert "BLOCKED" in github.moved_to
+
+
+@pytest.mark.asyncio
+async def test_loop_broken_event_logs_consumed_questions() -> None:
+    """494: the loop-broken event must carry the consumed questions so the
+    operator can diagnose which stale question was consumed."""
+    import structlog.testing
+
+    questions = ["PR has merge conflicts requiring human intervention."]
+    with structlog.testing.capture_logs() as cap_logs:
+        await handle_blocked(_state_494(questions))
+    broken = [e for e in cap_logs if e.get("event") == "handle_blocked_clarification_loop_broken"]
+    assert broken, "loop-broken event must be logged"
+    assert broken[0].get("consumed_questions"), (
+        "the consumed questions must be logged in the loop-broken event"
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_unconsumed_question_requeues_again() -> None:
+    """494: the consumption marker only suppresses the exact questions that
+    were consumed. A genuinely new question on a later blocked transition
+    still gets the one re-queue the loop-broken detector exists for."""
+    first_questions = ["PR has merge conflicts requiring human intervention."]
+    first = await handle_blocked(_state_494(first_questions))
+    assert first["phase"] == "idle"
+
+    new_questions = ["Which routes should the new endpoint expose?"]
+    second = await handle_blocked(_state_494(new_questions, first["consumed_loop_questions"]))
+    assert second["phase"] == "idle"
+    assert second["open_questions"] == []
+    assert "TODO" in second["github_service"].moved_to

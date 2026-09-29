@@ -72,6 +72,13 @@ class CardSession(TypedDict, total=False):
     card_cost_estimate: float
     card_budget_alert_sent: bool
     open_questions: list[str]
+    # 494: sha256 fingerprints of open_questions consumed by the loop-broken
+    # detector's re-queue. Written by handle_blocked when it re-queues and
+    # read on the NEXT blocked transition: a re-asserted question whose
+    # fingerprint is present must not re-queue again (that is the flap).
+    # Must round-trip through _SESSION_FIELDS and PersistedSession or the
+    # marker is lost across the re-queue / daemon restart.
+    consumed_loop_questions: list[str]
     card_clarifications: list[dict]
     relay_feedback: list[dict[str, Any]]
     pending_reviews: list[dict[str, Any]]
@@ -297,6 +304,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "card_cost_estimate",
     "card_budget_alert_sent",
     "open_questions",
+    "consumed_loop_questions",
     "card_clarifications",
     "relay_feedback",
     "pending_reviews",
@@ -430,6 +438,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         card_cost_estimate=0.0,
         card_budget_alert_sent=False,
         open_questions=[],
+        consumed_loop_questions=[],
         card_clarifications=[],
         relay_feedback=[],
         pending_reviews=[],

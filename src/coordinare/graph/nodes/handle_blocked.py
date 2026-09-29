@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,35 @@ def _parse_clarification_ts(raw: object) -> datetime | None:
 
 def _is_bot_author(author: str) -> bool:
     return author.endswith("[bot]") or author == "vivi-coordinare"
+
+
+# 494: consumed-question fingerprints are bounded so a pathological block
+# source generating endless distinct questions cannot grow the session
+# without limit.
+_CONSUMED_QUESTIONS_CAP = 32
+
+
+def _question_fingerprint(question: str) -> str:
+    """Stable fingerprint of a clarification question (494).
+
+    Hashing rather than storing the raw text keeps the consumed marker out
+    of the snapshot's human-readable fields and makes the marker
+    whitespace/quote-stable across restarts.
+    """
+    return hashlib.sha256(question.encode("utf-8")).hexdigest()
+
+
+def _record_consumed_questions(
+    questions: list[str], consumed: list[str],
+) -> list[str]:
+    """Extend the consumed list with the current questions' fingerprints.
+
+    Deduped and capped at ``_CONSUMED_QUESTIONS_CAP`` entries; the oldest
+    fingerprints drop off first so a genuinely recurring question cycle
+    re-queues again eventually instead of being suppressed forever.
+    """
+    merged = list(dict.fromkeys([*consumed, *(_question_fingerprint(q) for q in questions)]))
+    return merged[-_CONSUMED_QUESTIONS_CAP:]
 
 
 def _reask_loop_detected(clarifications: list) -> bool:
@@ -122,21 +152,43 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     # for dispatch. Re-blocking again would loop indefinitely on questions
     # that have effectively been answered. See _reask_loop_detected.
     if not system_block and questions and _reask_loop_detected(clarifications):
-        logger.info(
-            "handle_blocked_clarification_loop_broken",
-            card_id=card_id,
-            open_questions=len(questions),
-            answered_rounds=len(answered_rounds),
-            msg="Assessor re-asking already-answered questions — re-queuing for dispatch",
-        )
-        try:
-            await move_card_or_warn(board_provider, card_id, "TODO")
-        except Exception as exc:
-            logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
-        state["open_questions"] = []
-        state["phase"] = "idle"
-        state["last_blocked_notified_at"] = None
-        return state
+        fingerprints = [_question_fingerprint(q) for q in questions]
+        consumed_set = set(state.get("consumed_loop_questions") or [])
+        already_consumed = bool(fingerprints) and all(f in consumed_set for f in fingerprints)
+        if already_consumed:
+            # 494: this exact question set was consumed on a previous
+            # loop-broken re-queue and the block source re-asserted it.
+            # Re-queueing again would flap forever (the observed
+            # blocked → dispatching → blocked cycle); fall through to the
+            # normal blocked handling so the card stays stably blocked and
+            # the reminder comment asks the human instead.
+            logger.info(
+                "handle_blocked_clarification_loop_reasserted",
+                card_id=card_id,
+                open_questions=len(questions),
+                msg="Re-asserted questions already consumed by a prior loop-broken "
+                    "re-queue — keeping the card blocked",
+            )
+        else:
+            logger.info(
+                "handle_blocked_clarification_loop_broken",
+                card_id=card_id,
+                open_questions=len(questions),
+                answered_rounds=len(answered_rounds),
+                consumed_questions=list(questions),
+                msg="Assessor re-asking already-answered questions — re-queuing for dispatch",
+            )
+            state["consumed_loop_questions"] = _record_consumed_questions(
+                questions, list(state.get("consumed_loop_questions") or []),
+            )
+            try:
+                await move_card_or_warn(board_provider, card_id, "TODO")
+            except Exception as exc:
+                logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
+            state["open_questions"] = []
+            state["phase"] = "idle"
+            state["last_blocked_notified_at"] = None
+            return state
 
     if not questions:
         logger.info("handle_blocked_no_open_questions", card_id=card_id,

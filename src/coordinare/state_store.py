@@ -251,6 +251,10 @@ class PersistedSession(BaseModel):
     # head has advanced past the recorded oid. Backward-compatible default.
     surfaced_stale_reviews: dict[str, str] = Field(default_factory=dict)
     open_questions: list[str] = Field(default_factory=list)
+    # 494: fingerprints of questions consumed by the loop-broken detector.
+    # Additive / default ``[]`` keeps older snapshots loading unchanged; see
+    # ``CardSession.consumed_loop_questions`` for semantics.
+    consumed_loop_questions: list[str] = Field(default_factory=list)
     card_clarifications: list[dict[str, Any]] = Field(default_factory=list)
     relay_feedback: list[dict[str, Any]] = Field(default_factory=list)
     system_error_count: int = 0
