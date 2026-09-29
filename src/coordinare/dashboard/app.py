@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import FastAPI, Request
 
+from coordinare.dashboard.routers.oidc import register_oidc_routes
 from coordinare.localhost_guard import (
     PermittedOrigins,
     build_permitted,
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
     from coordinare.daemon import CoordinareDaemon
     from coordinare.dashboard.store import DashboardStore
+    from coordinare.dashboard_oidc import OidcFlow
     from coordinare.metrics import CoordinareMetrics
     from coordinare.observability import HealthRegistry
 
@@ -45,6 +47,7 @@ def create_dashboard_app(
     guard_exempt_paths: frozenset[str] | None = None,
     auth_token: SecretStr | None = None,
     signed_webhook_paths: frozenset[str] = frozenset(),
+    oidc: OidcFlow | None = None,
 ) -> FastAPI:
     """Create the dashboard FastAPI application.
 
@@ -61,12 +64,14 @@ def create_dashboard_app(
     operator's bind address, port, and any trusted proxy hostname are honoured.
     """
     app = FastAPI(title="coordinare-dashboard")
-    if auth_token is not None:
+    if auth_token is not None or oidc is not None:
         from coordinare.dashboard_auth import DashboardAuthentication
         app.add_middleware(
-            DashboardAuthentication, token=auth_token,
+            DashboardAuthentication, token=auth_token, oidc=oidc,
             signed_webhook_paths=signed_webhook_paths,
         )
+        if oidc is not None:
+            register_oidc_routes(app, oidc)
 
     # Spec 144 (#198). Installed BEFORE the request logger deliberately.
     # FastAPI middleware is outermost-last, so the logger added below wraps this

@@ -146,9 +146,25 @@ unreliable, and a filter that works most of the time mainly moves the risk somew
 The dashboard is unauthenticated by default on loopback (`127.0.0.1`). Local
 callers have full operator control: rewriting configuration, cancelling work and
 deleting symphonies. Spec 143 adds optional shared-token authentication and refuses
-non-loopback dashboard binds without a token. When enabled, authentication covers
+non-loopback dashboard binds without a token. Spec 497 adds an alternative
+boundary of equal strength: OIDC Authorization Code login against an external
+provider (Authentik, Okta, Entra ID, ...), which is what makes a non-loopback
+bind safe without a shared token. When either boundary is enabled, it covers
 reads, mutations and SSE. See [dashboard authentication](dashboard-auth.md) for
 browser/API access, TLS, token rotation and reverse-proxy SSO.
+
+With OIDC enabled, the login round trip is protected by a single-use `state`
+pair (cookie and query parameter compared server-side, five-minute lifetime),
+an ID-token `nonce`, signature and issuer verification against the provider's
+JWKS, and a redirect host validated at boot against `dashboard_host` and
+`trusted_dashboard_hosts`. Sessions are held in daemon memory only: a restart
+ends every session, and the session cookie is HttpOnly, SameSite=Lax and Secure
+on TLS hops. The localhost guard applies unchanged across the OIDC routes, so
+`POST /oidc/logout` keeps its same-origin check. Authorization is all-or-
+nothing: every OIDC principal is a full operator, exactly like a token holder;
+there are no per-user roles. The token endpoint exchange is a confidential-
+client exchange (no PKCE); that is standard for this flow and noted here as an
+accepted residual.
 
 **What defends it today** (spec 144, this document's own work): a localhost guard rejects any
 request whose `Host` is not local, and any state-changing request whose `Origin` is not local.
@@ -168,10 +184,13 @@ absence means the caller is not a browser, and forgery requires a browser. Scrip
 working; the `Host` check still applies to them.
 
 **Residual risk**: without auth, processes on the local machine retain full
-operator access. With auth, every token holder has that authority; this is not a
-multi-user authorization system. The Host/Origin guard remains active alongside
-authentication. Remote deployments must use TLS and protect the proxy-to-backend
-hop. A token does not isolate Coordinare from other processes sharing its host.
+operator access. With auth, every token holder or OIDC principal has that
+authority; this is not a multi-user authorization system. The Host/Origin guard
+remains active alongside authentication. Remote deployments must use TLS and
+protect the proxy-to-backend hop. A token does not isolate Coordinare from other
+processes sharing its host. The OIDC client secret lives in the environment and
+is never rendered through the config API; a `dashboard_oidc` block is a nested
+model, which the config API's global section never serializes.
 
 ## Health endpoints
 
@@ -255,7 +274,9 @@ someone noticing.
 
 ## What this document does not cover
 
-- **Per-user dashboard roles.** Spec 143 supplies shared operator authentication; a user store and per-user permissions remain outside its scope.
+- **Per-user dashboard roles.** Spec 143 supplies shared operator authentication and spec 497
+  adds OIDC as a second way to hold the same single authority; a user store and per-user
+  permissions remain outside their scope.
 - **Sandboxing performers more strongly**, or removing the `docker.sock` mount. Both are
   substantially larger pieces of work than this document's hardening.
 - **Rate limiting or audit logging** for the dashboard.

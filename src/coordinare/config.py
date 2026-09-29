@@ -63,6 +63,71 @@ class WebhookConfig(BaseModel):
         return path_str
 
 # ---------------------------------------------------------------------------
+# 497 — Dashboard OIDC login config model
+# ---------------------------------------------------------------------------
+
+
+class DashboardOidcConfig(BaseModel):
+    """Spec 497. Presence on ``ProjectConfiguration`` enables dashboard OIDC.
+
+    All validation errors here surface through ``coordinare config validate``
+    and daemon boot; none of them ever echo ``client_secret`` (SecretStr masks
+    its repr, and the validators below raise fixed messages).
+    """
+
+    discovery_url: str
+    client_id: str
+    client_secret: SecretStr
+    redirect_url: str
+    session_hours: int = Field(default=12, ge=1, le=168)
+
+    @field_validator("discovery_url", mode="before")
+    @classmethod
+    def _https_discovery(cls, v: Any) -> str:
+        url = str(v).strip()
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            msg = "dashboard_oidc.discovery_url must be an https URL"
+            raise ValueError(msg)
+        return url
+
+    @field_validator("client_id", "client_secret", mode="after")
+    @classmethod
+    def _non_empty(cls, v: Any) -> Any:
+        value = v.get_secret_value() if isinstance(v, SecretStr) else str(v)
+        if not value.strip():
+            msg = "dashboard_oidc.client_id and client_secret must not be empty"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("redirect_url", mode="before")
+    @classmethod
+    def _absolute_redirect(cls, v: Any) -> str:
+        url = str(v).strip()
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        loopback = hostname in ("localhost", "127.0.0.1", "::1")
+        if parsed.scheme not in ("http", "https") or not hostname:
+            msg = "dashboard_oidc.redirect_url must be an absolute http(s) URL"
+            raise ValueError(msg)
+        if parsed.scheme != "https" and not loopback:
+            msg = (
+                "dashboard_oidc.redirect_url must use https for a remote host; "
+                "http is only accepted for loopback"
+            )
+            raise ValueError(msg)
+        if parsed.fragment or (parsed.path or "/") != "/oidc/callback":
+            msg = "dashboard_oidc.redirect_url must target /oidc/callback without a fragment"
+            raise ValueError(msg)
+        return url
+
+    @field_validator("client_id", "discovery_url", "redirect_url", mode="after")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return v.strip()
+
+
+# ---------------------------------------------------------------------------
 # 006 — Notification & Alerting config models
 # ---------------------------------------------------------------------------
 
@@ -1003,6 +1068,12 @@ class ProjectConfiguration(BaseSettings):
     # which is a moment to think about it. X-Forwarded-Host is deliberately NOT
     # honoured (attacker-controlled). See spec 144 research D3.
     trusted_dashboard_hosts: list[str] = Field(default_factory=list)
+    # Spec 497: OIDC Authorization Code login for remote operators. Presence
+    # enables the login flow; a configured token keeps working alongside it.
+    # Nested model, so the config API's global section never serializes it
+    # (_is_scalar_field skips nested models) and the client secret cannot leak
+    # through /api/config responses.
+    dashboard_oidc: DashboardOidcConfig | None = None
     # Spec 155 (#202): the config assistant. Off by default and off even when on
     # if no conducting backend exists, because the flag alone would only let an
     # operator enable the feature into a failure. Every existing deployment has a

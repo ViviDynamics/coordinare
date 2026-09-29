@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
+from coordinare.dashboard_oidc import validate_dashboard_oidc
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -363,6 +365,29 @@ SUPPORTED_PERFORMER_BACKENDS: frozenset[str] = frozenset(
 )
 
 
+def _validate_dashboard_oidc(config_obj: Any) -> list[ConfigFieldError]:
+    """Run the boot-time OIDC redirect check during preflight (497)."""
+    oidc = getattr(config_obj, "dashboard_oidc", None)
+    if oidc is None:
+        return []
+    try:
+        validate_dashboard_oidc(
+            oidc,
+            dashboard_host=config_obj.dashboard_host,
+            trusted_hosts=getattr(config_obj, "trusted_dashboard_hosts", None),
+        )
+    except ValueError as exc:
+        return [
+            ConfigFieldError(
+                field_path="dashboard_oidc.redirect_url",
+                error_type=ErrorType.invalid_value,
+                fix_hint=str(exc),
+                source="file",
+            ),
+        ]
+    return []
+
+
 def _validate_performer_backends(raw: dict[str, Any]) -> list[ConfigFieldError]:
     """077 FR-007: reject an unknown ``performers.<role>.backend`` value before
     dispatch (it is the authoritative ``get_backend`` argument via score.backend).
@@ -599,7 +624,11 @@ def validate_config(
     # 077 FR-007: reject unknown performer-backend names pre-dispatch.
     backend_errors = _validate_performer_backends(raw)
 
-    all_errors = pre_errors + pydantic_errors + backend_errors
+    oidc_errors = (
+        _validate_dashboard_oidc(config_obj) if config_obj is not None else []
+    )
+
+    all_errors = pre_errors + pydantic_errors + backend_errors + oidc_errors
     return ConfigValidationResult(
         errors=all_errors,
         warnings=pre_warnings,

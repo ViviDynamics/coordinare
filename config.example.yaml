@@ -817,6 +817,19 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   path: "/webhook/github"             # endpoint path on the health server
 #   secret: "${GITHUB_WEBHOOK_SECRET}"  # HMAC secret configured in GitHub
 
+# --- Dashboard OIDC login (optional, 497) ---
+# Authorization Code login for remote operators against any standards-compliant
+# provider (Authentik, Okta, Entra ID, ...). Adding the block enables it; a
+# configured dashboard_auth_token keeps working alongside it, and with OIDC the
+# token becomes optional even for a non-loopback bind. Redirect host must be
+# dashboard_host or a trusted_dashboard_hosts entry.
+# dashboard_oidc:
+#   discovery_url: "https://sso.example/.well-known/openid-configuration"
+#   client_id: "coordinare-dashboard"
+#   client_secret: "${COORDINARE_OIDC_CLIENT_SECRET}"  # keep the value in the environment
+#   redirect_url: "https://coordinare.example/oidc/callback"
+#   session_hours: 12                        # 1-168; sessions end on daemon restart
+
 # --- Cost Tracking ---
 # cost_tracking:
 #   cost_per_million_tokens: 3.0        # dollars per million tokens; used for estimates
