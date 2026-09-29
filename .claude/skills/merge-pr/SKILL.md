@@ -1,100 +1,98 @@
 ---
 name: merge-pr
-description: Use when a coordinare PR looks ready to merge, when mergeStateStatus shows BLOCKED despite green checks, or when deciding whether a stacked child PR can merge ahead of its parent.
-user-invocable: true
-argument-hint: [pr-number]
-allowed-tools: Bash(gh *) Bash(git *) Read Grep Glob
-effort: medium
+description: Use when a pull request looks ready to merge, when mergeStateStatus shows BLOCKED or BEHIND with green checks, or when deciding whether a stacked child PR can merge ahead of its parent.
+license: Proprietary
+compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Scripts are bash 3.2 compatible.
+metadata:
+  version: "1.0.0"
+  owner: Vivi Dynamics
+  requires: ci-safety
 ---
 
-# Merge PR, merge discipline for ViviDynamics/coordinare
+# Merge PR
 
-**REQUIRED BACKGROUND:** read `.claude/skills/ci-safety/SKILL.md` first. Token resolution
-(section 1), head-SHA truth (section 2), conclusion semantics (section 3) and the
-required-vs-advisory split (section 4) all apply here.
+Merge on the first genuinely green state. Waiting buys nothing: CI does not get greener.
+Rules: ci-safety §1 and §2.
 
-Core principle: **merge on the first genuinely-green state.** Waiting has a cost and buys
-nothing, because CI will not get greener.
+**Where the scripts are.** `S` is this skill's `scripts/` directory, next to this
+SKILL.md. Set it once per session, for example `S=.agents/skills/merge-pr/scripts`
+(or `.claude/skills/merge-pr/scripts` where that is the installed copy), then run every
+script as `$S/<script>`.
 
 ## Inputs
 
-- `$ARGUMENTS`, optional PR number. If omitted, detect from the current branch.
+- PR number. If not given: `$S/vgh pr view --json number --jq .number`.
 
-## Preconditions, verify each and report any that fails
+## Preconditions (check all three, report any that fails)
 
-1. **PR is open.** `gh pr view <N> --json state,mergedAt`. If already `MERGED`, report it
-   and exit success. A second invocation is not an error.
-2. **The three required checks are green for the PR's current head**, judged by the
-   Actions API per ci-safety section 2: `Lint`, `Test`, `Build Success`. Cancelled or
-   superseded runs for older SHAs are noise, not blockers. Advisory jobs (Chart, Coverage,
-   E2E Browser Tests, Docker Images, and the rest) do not gate the merge, but read a red
-   one once before dismissing it.
-3. **Zero checks is not green.** A bot version-bump can strand the head with no checks at
-   all. Push a real commit after `git pull --ff-only` and wait for a real run.
-4. **The review gate is satisfied or its substitution is recorded in the PR body.** If
-   neither, stop. Do not merge silently past a missing gate.
+1. Open: `$S/vgh pr view <pr> --json state --jq .state` is `OPEN`. If `MERGED`, run
+   `$S/merge-verified <pr>` anyway; it is idempotent and prints the result.
+2. Green for the current head: `$S/ci-runs <pr>` prints `state: green`.
+   `pending` means wait (use the watch-ci skill). `failed` means stop; do not merge.
+   If `state` is `failed`, read `failed_jobs[].conclusion`. If `all_cancelled` is true
+   it is a cancellation cascade (ci-safety §2), not a failure: wait for the run for the
+   current head with the watch-ci skill instead of stopping.
+   `none` means no CI ran for this head; stop and report unless the consumer's
+   `repo.env` documents that the repo has no CI.
+3. Review gate satisfied, checked by either of:
 
-## Reading `mergeStateStatus`
+       $S/vgh pr view <pr> --json reviewDecision --jq .reviewDecision   # APPROVED satisfies the gate
+       $S/vgh pr view <pr> --json body --jq .body | grep -c '^### Code review gate'   # 1 or more satisfies the gate
 
-coordinare's `main` requires exactly three status checks and **no approving review**, so a
-solo-authored PR reaches `MERGEABLE` on its own. This is the opposite of the in-house scheme, where a
-`require_last_push_approval` ruleset makes `BLOCKED` permanent and `--admin` mandatory.
+   If neither holds, stop and report `preconditions_failed: review gate missing`;
+   never merge silently past a missing gate.
 
-If coordinare shows `BLOCKED`, that is a signal to investigate, not to reach for `--admin`.
-Read the actual run conclusions first (ci-safety section 3). The usual causes are a
-stranded head with zero checks, or a required check still queued.
+## BLOCKED and BEHIND are not red
 
-```bash
-TOKEN_FILE="$HOME/.gh_token"; [ -f "$TOKEN_FILE" ] || TOKEN_FILE="$HOME/Workspaces/ViviDynamics/.gh_token"
-GH_TOKEN=$(cat "$TOKEN_FILE") gh pr merge <N> --squash --delete-branch
-```
+`mergeStateStatus: BLOCKED` with green checks means a ruleset the author cannot satisfy
+alone (for example, last-push approval on a solo PR). The consumer's `COORDINARE_MERGE_FLAGS`
+already carry whatever bypass that repo needs. Judge CI by `ci-runs`, never by
+`mergeStateStatus`.
 
-Squash is the repo convention. Reach for `--admin` only when you can state which specific
-rule is blocking and why bypassing it is correct, and say so in the output block.
+`mergeStateStatus: BEHIND` with green checks and `mergeable: MERGEABLE` means the branch
+needs updates but the code is green: merge now, do not wait for a fresh run or rebase.
+Check the actual `mergeable` field:
 
-## Stacked PRs, merge the green child
+    $S/vgh pr view <pr> --json mergeable --jq .mergeable
 
-If this PR is stacked on another PR's branch or contains its commits:
+- `MERGEABLE`: use COORDINARE_MERGE_FLAGS to merge now.
+- `CONFLICTING`: rebase, push, and re-run CI instead.
+- `UNKNOWN`: re-read (transient API state).
 
-```bash
-git fetch origin main
-git log --oneline origin/main..HEAD
-```
+## Stacked PRs
 
-If the child is green and that log shows it contains the parent's commits, the child is
-self-sufficient, so merge it now. Do not wait for the parent, whose red check may be an
-unrelated advisory flake. After the child squash-merges, the parent usually needs
-`git rebase --onto origin/main <old-child-head>` or becomes empty. Handle or report that.
+`$S/repo-config COORDINARE_DEFAULT_BRANCH` prints the consumer's default branch as a bare
+string, so it drops straight into these commands.
 
-## Postconditions, verify before claiming
+    git fetch origin "$($S/repo-config COORDINARE_DEFAULT_BRANCH)"
+    git fetch origin "pull/<pr>/head"
+    git log --oneline "origin/$($S/repo-config COORDINARE_DEFAULT_BRANCH)..FETCH_HEAD"
 
-```bash
-GH_TOKEN=$(cat "$TOKEN_FILE") gh pr view <N> --json state,mergedAt,mergeCommit
-GH_TOKEN=$(cat "$TOKEN_FILE") gh run list --branch main --limit 5
-```
+This never changes your checkout. If the log shows this PR contains another open PR's
+commits and this PR is green, merge this one now. The parent then needs
+`git rebase --onto origin/$($S/repo-config COORDINARE_DEFAULT_BRANCH) <old-child-head>` or
+becomes empty; report that, but never wait on the parent.
 
-Only `state == MERGED` earns the word merged. A command's own log line claiming success is
-not evidence.
+## Merge
 
-`Main Branch Build` never runs on PRs, so it first executes after the merge. Check it. A
-green PR followed by a red main build is the arch-roulette signature (ci-safety section 8).
+    $S/merge-verified <pr>
 
-## Output contract
+- exit 0: merged. The JSON has `merge_commit`.
+- exit 1: not merged. The JSON `reason` carries the merge command's output. Report it
+  verbatim. Do not retry with different flags; flags are the consumer's decision.
+- exit 4: preconditions failed. The JSON `reason` says why (for example the PR is
+  CLOSED). Report it; do not merge.
 
-```
-MERGE_RESULT
-pr: <url>
-state: merged | blocked:<reason> | preconditions-failed:<which>
-merge_commit: <sha or none>
-main_build: <green | red:<job> | pending | not-checked>
-stacked_parent_action: <none | parent #N needs rebase --onto | parent #N now empty>
-```
+## Report
 
-## Red flags, stop and re-read this skill
+Print the `MERGE_RESULT` JSON and validate it: `$S/validate merge_result <file>`.
+Say `merged` only when the block says `merged`. A merge command's own success line is
+not evidence; the read-back is.
 
-- "BLOCKED, so CI must be failing." Check run conclusions for the current head.
-- "I will merge with --admin to get past it." coordinare needs no review, so BLOCKED means
-  something else is wrong. Find it.
-- "All checks green" when the head has zero checks. Zero is not green.
-- "The merge command ran, so it merged." Verify `state == MERGED` or say it did not.
-- "PR merged, done." Check `Main Branch Build`.
+## Red flags
+
+- "BLOCKED, so CI must be failing": run `ci-runs`.
+- "BEHIND, so I'll wait for the run to be fresh": mergeable MERGEABLE with green CI means merge now, do not wait.
+- "I'll wait for the parent PR first": if this PR is green and contains the parent's
+  commits, that wait is pure loss.
+- "The merge command printed success": the block says `merged` or it did not merge.

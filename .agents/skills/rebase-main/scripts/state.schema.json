@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vivi skill state",
+  "type": "object",
+  "properties": {
+    "phase": { "type": "string", "enum": ["implementing", "watching", "rebasing", "reviewing", "merging", "done", "stopped"] },
+    "head_sha": { "type": "string" },
+    "retries": { "type": "integer" },
+    "rebases": { "type": "integer" },
+    "review_rounds": { "type": "integer" },
+    "failures": { "type": "array" },
+    "updated_at": { "type": "string" }
+  },
+  "required": ["updated_at"]
+}

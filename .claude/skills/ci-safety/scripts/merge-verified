@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Merge a PR with the consumer's configured flags and verify state == MERGED.
+# usage: merge-verified <pr>      exit: 0 merged, 1 not merged
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env; coordinare_require COORDINARE_REPO COORDINARE_MERGE_FLAGS
+pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: merge-verified <pr>"
+view() { coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json state,mergedAt,mergeCommit; }
+emit() { jq -nc --argjson pr "$pr" --arg state "$1" --arg mc "$2" --arg reason "$3" '{schema:"MERGE_RESULT", pr:$pr, state:$state} + (if $mc!="" then {merge_commit:$mc} else {} end) + (if $reason!="" then {reason:$reason} else {} end)'; }
+tmp_err=$(mktemp)
+trap 'rm -f "$tmp_err"' EXIT
+
+before=$(view 2>"$tmp_err") || {
+  code=$?
+  [ "$code" -eq 3 ] && exit 3
+  emit preconditions_failed "" "pr view failed: $(head -n1 "$tmp_err")"; exit 4
+}
+before_state=$(printf '%s' "$before" | jq -r .state)
+if [ "$before_state" = "MERGED" ]; then
+  emit merged "$(printf '%s' "$before" | jq -r '.mergeCommit.oid // ""')" "already merged"; exit 0
+fi
+if [ "$before_state" != "OPEN" ]; then
+  emit preconditions_failed "" "PR is $before_state, not OPEN"; exit 4
+fi
+# The consumer's flags are word-split on purpose; set -f keeps the shell from
+# glob-expanding any of them against the working directory.
+# shellcheck disable=SC2086
+set -f
+merge_out=$(coordinare_gh pr merge "$pr" --repo "$COORDINARE_REPO" $COORDINARE_MERGE_FLAGS 2>&1) || true
+set +f
+after=$(view 2>"$tmp_err") || {
+  code=$?
+  [ "$code" -eq 3 ] && exit 3
+  emit blocked "" "read-back failed; the merge may have succeeded, verify manually: $(head -n1 "$tmp_err")"; exit 1
+}
+if [ "$(printf '%s' "$after" | jq -r .state)" = "MERGED" ]; then
+  emit merged "$(printf '%s' "$after" | jq -r '.mergeCommit.oid // ""')" ""; exit 0
+fi
+emit blocked "" "$(printf '%s' "$merge_out" | tail -n 5)"; exit 1

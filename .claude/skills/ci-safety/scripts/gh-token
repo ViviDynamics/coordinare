@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Print the GitHub token file path to use for this consumer repo.
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env
+coordinare_token_file

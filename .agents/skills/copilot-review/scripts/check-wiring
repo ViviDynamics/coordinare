@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Verify a consumer repo is wired for the Vivi skills. Run from inside the consumer.
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+problems='[]'
+add() { problems=$(printf '%s' "$problems" | jq -c --arg p "$1" '. + [$p]'); }
+finish() { if [ "$problems" = "[]" ]; then echo '{"ok":true}'; exit 0; fi; printf '{"ok":false,"problems":%s}\n' "$problems"; exit 2; }
+root=$(git rev-parse --show-toplevel 2>/dev/null) || { add "not inside a git repository"; finish; }
+[ -f "$root/repo.env.example" ] || add "repo.env.example missing at $root/repo.env.example (commit one so CI and other clones can recreate repo.env)"
+[ -f "$root/repo.env" ] || { add "repo.env missing at $root/repo.env"; finish; }
+coordinare_load_env
+for k in COORDINARE_REPO COORDINARE_DEFAULT_BRANCH COORDINARE_MERGE_FLAGS; do eval "[ -n \"\${$k:-}\" ]" || add "required key unset: $k"; done
+for k in COORDINARE_FLAKE_SIGNATURES_FILE COORDINARE_TEST_COMMANDS_FILE; do
+  v=$(eval "printf '%s' \"\${$k:-}\"")
+  [ -n "$v" ] || continue
+  case "$v" in /*) p=$v;; *) p="$root/$v";; esac
+  [ -f "$p" ] || add "$k points at a missing file: $v"
+done
+# On CI runners (or wherever GH_TOKEN/GITHUB_TOKEN is already set) a missing
+# COORDINARE_GH_TOKEN_FILE is fine: coordinare_gh falls back to the environment token.
+if [ -z "${CI:-}" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+  v=${COORDINARE_GH_TOKEN_FILE:-}
+  if [ -n "$v" ]; then
+    case "$v" in /*) p=$v;; *) p="$root/$v";; esac
+    [ -f "$p" ] || add "COORDINARE_GH_TOKEN_FILE points at a missing file: $v"
+  fi
+fi
+gi="$root/.gitignore"
+grep -qxF '.agents/state/' "$gi" 2>/dev/null || add ".gitignore must contain .agents/state/"
+grep -qxF 'repo.env' "$gi" 2>/dev/null || add ".gitignore must contain repo.env"
+command -v gh >/dev/null || add "gh not on PATH"
+command -v jq >/dev/null || add "jq not on PATH"
+finish

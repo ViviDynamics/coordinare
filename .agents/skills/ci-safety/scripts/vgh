@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Token-resolving gh wrapper for the one-off reads a skill still makes directly.
+# Output is whatever gh prints on stdout; exit codes are coordinare_gh's.
+# usage: vgh <gh args...>     exit: gh's code, or 3 after transient retries
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env
+code=0
+coordinare_gh "$@" || code=$?
+exit "$code"

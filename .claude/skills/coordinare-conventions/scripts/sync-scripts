@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Copy bin/ into every skills/*/scripts/ so each skill is self-contained.
+# usage: sync-scripts [--check]     --check: exit 1 listing drift, change nothing
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+check=false; [ "${1:-}" = "--check" ] && check=true
+drift=()
+# install-personal and check-machine are personal-machine tools, not part of
+# any skill's runtime; they stay out of skills/*/scripts/.
+is_excluded() { case "$1" in install-personal|check-machine) return 0;; *) return 1;; esac; }
+for skill in "$root"/skills/*/; do
+  skill="${skill%/}"
+  [ -f "$skill/SKILL.md" ] || continue
+  dest="$skill/scripts"
+  if $check; then
+    for f in "$root"/bin/* "$root"/schemas/validate "$root"/schemas/*.schema.json; do
+      n=$(basename "$f")
+      is_excluded "$n" && continue
+      cmp -s "$f" "$dest/$n" || drift+=("${dest#$root/}/$n")
+    done
+    if [ -d "$dest" ]; then
+      for f in "$dest"/*; do
+        [ -e "$f" ] || continue
+        n=$(basename "$f")
+        if is_excluded "$n" || { [ ! -e "$root/bin/$n" ] && [ ! -e "$root/schemas/$n" ]; }; then
+          drift+=("${f#$root/} (stale)")
+        fi
+      done
+    fi
+  else
+    mkdir -p "$dest"
+    if [ -d "$dest" ]; then
+      for f in "$dest"/*; do
+        [ -e "$f" ] || continue
+        n=$(basename "$f")
+        if is_excluded "$n" || { [ ! -e "$root/bin/$n" ] && [ ! -e "$root/schemas/$n" ]; }; then
+          rm -f "$f"
+        fi
+      done
+    fi
+    for src in "$root"/bin/* "$root"/schemas/validate "$root"/schemas/*.schema.json; do
+      n=$(basename "$src")
+      is_excluded "$n" && continue
+      cp "$src" "$dest/$n"
+      # Mirror the source's executable bit: _lib.sh and the schemas stay 644.
+      if [ -x "$src" ]; then chmod +x "$dest/$n"; else chmod -x "$dest/$n"; fi
+    done
+  fi
+done
+if $check; then
+  if [ ${#drift[@]} -gt 0 ]; then printf '%s\n' ${drift[@]+"${drift[@]}"}; echo "script copies differ from bin/; run bin/sync-scripts" >&2; exit 1; fi
+  echo "script copies in sync"
+fi

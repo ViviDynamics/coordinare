@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Read one COORDINARE_* key from the consumer's repo.env.
+# Output is a bare string on stdout, not JSON, so it can be interpolated
+# straight into a command.
+# usage: repo-config <KEY>     exit: 0 printed, 2 unknown or unset key
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env
+key=${1:-}; [ -n "$key" ] || coordinare_die 2 "usage: repo-config <KEY>"
+case "$key" in COORDINARE_*) ;; *) coordinare_die 2 "not a COORDINARE_* key: $key";; esac
+value=$(eval "printf '%s' \"\${$key:-}\"")
+[ -n "$value" ] || coordinare_die 2 "repo.env has no value for $key"
+printf '%s\n' "$value"
