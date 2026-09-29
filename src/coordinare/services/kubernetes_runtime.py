@@ -278,6 +278,7 @@ class KubernetesRuntime:
         config: PerformerEndpointConfig,
         *,
         extra_labels: dict[str, str] | None = None,
+        backend: str | None = None,
     ) -> StartedPerformer:
         """Create the Pod and return once it is *addressable*.
 
@@ -290,6 +291,23 @@ class KubernetesRuntime:
         from kubernetes.client.rest import ApiException
 
         pod_name = pod_name_for(config.id)
+        # Issue #486: the image's entrypoint.sh installs the backend CLI at
+        # container start from $BACKEND, and the pod env comes exclusively from
+        # performer_endpoints[].env — the resolved backend reached the performer
+        # only in the job payload, after the container already existed. Derive
+        # BACKEND from the dispatch's resolved backend unless the operator
+        # already set it. An unresolved ${VAR} placeholder in the operator env
+        # does not count as set (the docker path drops those literals, and the
+        # entrypoint would treat the literal as an unknown backend either way).
+        pod_env = dict(config.env or {})
+        if backend and not performer_lifecycle.env_carries_set_value(pod_env, "BACKEND"):
+            pod_env["BACKEND"] = performer_lifecycle.normalize_backend_name(backend)
+            _log.info(
+                "kubernetes_runtime.backend_env_derived",
+                pod=pod_name,
+                performer_id=config.id,
+                backend=backend,
+            )
         manifest = build_pod_manifest(
             config,
             pod_name=pod_name,
@@ -297,7 +315,7 @@ class KubernetesRuntime:
             extra_labels=extra_labels,
             cache_claim=self._cache_claim,
             image_pull_secrets=self._image_pull_secrets,
-            env=dict(config.env or {}),
+            env=pod_env,
         )
 
         try:

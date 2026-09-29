@@ -108,10 +108,37 @@ def _validate_extra_label(key: str, value: str) -> None:
         raise ContainerStartError(msg)
 
 
+def normalize_backend_name(backend: str) -> str:
+    """Canonicalize a performer-backend name for the ``BACKEND`` env var.
+
+    Mirrors the normalization used by ``config_validation`` and the performer
+    factory's ``get_backend``: ``claude-code`` and ``Claude_Code`` both become
+    the canonical ``claude_code``. The image's entrypoint.sh matches the
+    underscored spelling, so the env var must carry the canonical form.
+    """
+    return str(backend).replace("-", "_").lower()
+
+
+def env_carries_set_value(env: dict[str, str], key: str) -> bool:
+    """True when *env* carries a meaningful operator value for *key*.
+
+    An empty value does not count as set (the entrypoint's ``case
+    "${BACKEND:-}"`` treats empty exactly like unset), nor does an unresolved
+    ``${VAR}`` placeholder (``os.path.expandvars`` leaves those literal in
+    config.yaml): the env-forward loop drops such values, so the container
+    would otherwise receive neither the configured value nor the derived one.
+    """
+    value = env.get(key)
+    if not value:
+        return False
+    return not (isinstance(value, str) and value.startswith("${") and value.endswith("}"))
+
+
 async def start_ephemeral(
     config: PerformerEndpointConfig,
     *,
     extra_labels: dict[str, str] | None = None,
+    backend: str | None = None,
 ) -> StartedContainer:
     """Run a fresh container for *config* and return its id + endpoint URL.
 
@@ -124,6 +151,11 @@ async def start_ephemeral(
     ``--label key=value`` args BEFORE the image argument.  Keys MUST match
     ``^coordinare\\.[a-z0-9._-]+$``; values MUST be non-empty strings
     ≤256 chars.  Validation failures raise :class:`ContainerStartError`.
+
+    Issue #486: *backend* is the dispatch's resolved performer backend. The
+    image's entrypoint installs the backend CLI at container start from
+    ``BACKEND``, so it is injected as an env var here unless the operator
+    already set ``BACKEND`` in ``performer_endpoints[].env``.
     """
     if config.image is None:
         raise ContainerStartError(f"performer {config.id} has no image configured")
@@ -199,6 +231,14 @@ async def start_ephemeral(
             )
             continue
         args += ["-e", f"{key}={val}"]
+
+    if backend and not env_carries_set_value(config.env, "BACKEND"):
+        args += ["-e", f"BACKEND={normalize_backend_name(backend)}"]
+        logger.info(
+            "performer_lifecycle.backend_env_derived",
+            performer_id=config.id,
+            backend=backend,
+        )
 
     args += [config.image]
 

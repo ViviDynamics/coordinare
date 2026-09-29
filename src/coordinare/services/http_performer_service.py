@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import uuid
 from dataclasses import dataclass
@@ -83,6 +84,23 @@ def _inject_claude_code_secrets(
             secrets["ANTHROPIC_API_KEY"] = anthropic_key
     if role_base_url:
         secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+
+
+def _runtime_accepts_backend(runtime: Any) -> bool:
+    """True when *runtime*'s ``start_ephemeral`` accepts the ``backend`` kwarg.
+
+    ``PerformerRuntime`` is ``@runtime_checkable``, which verifies method
+    presence only — an injected implementation predating the ``backend`` kwarg
+    (issue #486) still satisfies the protocol and would fail at the call site
+    with TypeError if the kwarg were passed unconditionally.
+    """
+    try:
+        params = inspect.signature(runtime.start_ephemeral).parameters
+    except (TypeError, ValueError):
+        return False
+    if "backend" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _str_dict(value: Any) -> dict[str, str]:
@@ -327,8 +345,19 @@ class HTTPPerformerService:
                 extra_labels["coordinare.performer_stage"] = stage_label
 
             try:
+                # Issue #486: the backend resolved for this dispatch rides the
+                # start call, so the runtime can put BACKEND in the container
+                # env — the image's entrypoint installs the backend CLI from it
+                # at container start, before any job payload can arrive.
+                # @runtime_checkable only verifies method presence, so probe
+                # the signature: an injected runtime predating the backend
+                # kwarg would otherwise fail here with TypeError.
+                backend = str(card_context.get("backend") or "") or None
+                start_kwargs: dict[str, Any] = {"extra_labels": extra_labels}
+                if _runtime_accepts_backend(self._runtime):
+                    start_kwargs["backend"] = backend
                 started = await self._runtime.start_ephemeral(
-                    effective_config, extra_labels=extra_labels,
+                    effective_config, **start_kwargs,
                 )
             except performer_lifecycle.LifecycleError as exc:
                 logger.warning(

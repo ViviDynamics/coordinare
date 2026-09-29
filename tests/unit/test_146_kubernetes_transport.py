@@ -649,6 +649,106 @@ class TestRuntimeBehaviour:
         assert asyncio.run(runtime.tail_logs("p")) == ["one", "two", "three"]
 
 
+class TestThePodEnvCarriesTheBackend:
+    """Issue #486 — the pod env must carry BACKEND for the image's entrypoint.
+
+    ``agent/performer/entrypoint.sh`` installs the backend CLI at container start
+    only when the pod env carries ``BACKEND``. The pod env comes exclusively from
+    ``performer_endpoints[].env``, and the daemon sends the resolved backend
+    (``performers.default.backend`` / role-specific) only in the job payload — so
+    every first deployment on this transport started without a CLI, and the
+    performer died with FileNotFoundError spawning it. The runtime derives
+    ``BACKEND`` from the backend resolved for the dispatch it is starting, unless
+    the operator already set it in ``performer_endpoints[].env``.
+    """
+
+    @staticmethod
+    def _pod_env(**start_kwargs):
+        import asyncio
+        from types import SimpleNamespace
+
+        from coordinare.services.kubernetes_runtime import KubernetesRuntime
+
+        captured = {}
+
+        class FakeApi:
+            def create_namespaced_pod(self, *, namespace, body):
+                captured["body"] = body
+                return body
+
+            def read_namespaced_pod(self, *, name, namespace):
+                # Running with an IP on the first poll: a successful start.
+                return SimpleNamespace(
+                    status=SimpleNamespace(
+                        phase="Running", pod_ip="10.244.0.5", reason="",
+                        container_statuses=[],
+                    ),
+                )
+
+        config = SimpleNamespace(
+            id="impl",
+            image="performer:full",
+            env=start_kwargs.pop("env", {}),
+            volumes=[],
+            container_devenv_root="/devenv",
+            readiness_timeout_s=1,
+        )
+        asyncio.run(
+            KubernetesRuntime(core_v1=FakeApi()).start_ephemeral(config, **start_kwargs),
+        )
+        container = captured["body"]["spec"]["containers"][0]
+        return {e["name"]: e["value"] for e in container.get("env", [])}
+
+    def test_the_pod_env_gains_the_resolved_dispatch_backend(self) -> None:
+        env = self._pod_env(env={}, backend="claude_code")
+        assert env.get("BACKEND") == "claude_code", (
+            "the entrypoint installs the CLI at container start from BACKEND; a "
+            "pod without it starts no CLI and every dispatch fails with a "
+            "FileNotFoundError spawning the agent"
+        )
+
+    def test_the_pod_env_carries_the_canonical_backend_spelling(self) -> None:
+        # Copilot review round 1: config validation and get_backend both
+        # normalize kebab-case, but entrypoint.sh matches only the underscored
+        # canonical names, so BACKEND must not carry "claude-code".
+        env = self._pod_env(env={}, backend="claude-code")
+        assert env.get("BACKEND") == "claude_code", (
+            "entrypoint.sh's case statement matches only underscored names; a "
+            "kebab-case spelling would take the unknown-backend branch and "
+            "start no CLI despite passing config validation"
+        )
+
+    def test_an_unresolved_placeholder_is_not_an_operator_backend(self) -> None:
+        # Copilot review round 1: os.path.expandvars leaves unset ${...} in
+        # config.yaml literal; that must not count as the operator's choice.
+        env = self._pod_env(env={"BACKEND": "${BACKEND}"}, backend="claude_code")
+        assert env.get("BACKEND") == "claude_code", (
+            "a literal ${BACKEND} placeholder reaches the entrypoint as an "
+            "unknown backend and starts no CLI; it must not block derivation"
+        )
+
+    def test_an_empty_operator_backend_does_not_block_derivation(self) -> None:
+        # Copilot review round 2: the entrypoint's case "${BACKEND:-}" treats
+        # empty exactly like unset, so an empty operator value must not
+        # suppress the derivation.
+        env = self._pod_env(env={"BACKEND": ""}, backend="claude_code")
+        assert env.get("BACKEND") == "claude_code"
+
+    def test_the_operator_env_wins_over_the_derivation(self) -> None:
+        env = self._pod_env(env={"BACKEND": "opencode"}, backend="claude_code")
+        assert env.get("BACKEND") == "opencode", (
+            "performer_endpoints[].env is the operator's explicit choice; the "
+            "derivation must only fill the gap"
+        )
+
+    def test_no_resolved_backend_sets_no_backend_var(self) -> None:
+        env = self._pod_env(env={}, backend=None)
+        assert "BACKEND" not in env, (
+            "with nothing resolved there is nothing to derive; the container must "
+            "look exactly as it does today"
+        )
+
+
 class TestPerformerHasNoClusterCredential:
     """A performer runs AI-generated code and must not hold an API token."""
 

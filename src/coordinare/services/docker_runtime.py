@@ -35,8 +35,11 @@ class DockerRuntime:
         config: PerformerEndpointConfig,
         *,
         extra_labels: dict[str, str] | None = None,
+        backend: str | None = None,
     ) -> StartedPerformer:
-        started = await performer_lifecycle.start_ephemeral(config, extra_labels=extra_labels)
+        started = await performer_lifecycle.start_ephemeral(
+            config, extra_labels=extra_labels, backend=backend,
+        )
         return StartedPerformer(handle=started.container_id, endpoint=started.endpoint)
 
     async def stop(
