@@ -170,6 +170,12 @@ class NotificationService:
             c.name: DeduplicationWindow(c.dedup_window_seconds)
             for c in config.channels
         }
+        # 492: the unrouted path (no channel routed for the event type) reaches
+        # no per-channel dedup window, so recurring events carrying a dedup_key
+        # would re-emit every cycle. This service-level window bounds them.
+        self._unrouted_dedup_window = DeduplicationWindow(
+            float(config.unrouted_dedup_window_seconds),
+        )
         self._history = NotificationHistory(config.history_max_age_hours)
         self._card_blocked_reminder_cooldown_seconds = (
             config.card_blocked_reminder_cooldown_seconds
@@ -192,16 +198,21 @@ class NotificationService:
     async def dispatch(self, event: NotificationEvent) -> None:
         channel_names = self._routing.get(event.event_type, [])
         if not channel_names:
-            attempt = NotificationAttempt(
-                attempt_id=str(uuid.uuid4()),
-                event_type=event.event_type,
-                channel_name="(none)",
-                status=NotificationStatus.unrouted,
-                timestamp=datetime.now(UTC),
-                elapsed_ms=0.0,
-                dedup_key=event.dedup_key,
-            )
-            self._history.append(attempt)
+            if event.dedup_key and self._unrouted_dedup_window.is_duplicate(event.dedup_key):
+                self._record_unrouted(event, NotificationStatus.deduplicated)
+                self._metrics.notifications_deduplicated_total.labels(channel_name="(none)").inc()
+                # DEBUG, not INFO: suppressed attempts recur every poll cycle,
+                # and per-cycle INFO lines are the log-volume symptom issue 492
+                # reports. The metric and history entry still record it.
+                logger.debug(
+                    "notification_unrouted_deduplicated",
+                    event_type=event.event_type.value,
+                    dedup_key=event.dedup_key,
+                )
+                return
+            if event.dedup_key:
+                self._unrouted_dedup_window.record(event.dedup_key)
+            self._record_unrouted(event, NotificationStatus.unrouted)
             logger.info("notification_unrouted", event_type=event.event_type.value, source=event.source)
             return
 
@@ -266,6 +277,18 @@ class NotificationService:
             retries=cfg.retry_count,
             error=last_error,
         )
+
+    def _record_unrouted(self, event: NotificationEvent, status: NotificationStatus) -> None:
+        attempt = NotificationAttempt(
+            attempt_id=str(uuid.uuid4()),
+            event_type=event.event_type,
+            channel_name="(none)",
+            status=status,
+            timestamp=datetime.now(UTC),
+            elapsed_ms=0.0,
+            dedup_key=event.dedup_key,
+        )
+        self._history.append(attempt)
 
     def _record(
         self,

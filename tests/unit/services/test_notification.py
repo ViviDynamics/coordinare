@@ -351,3 +351,65 @@ async def test_no_subject_template_passes_none() -> None:
     await svc.dispatch(_make_event())
 
     assert sender.subjects[0] is None
+
+
+# ---------------------------------------------------------------------------
+# 492: the unrouted path bypassed deduplication entirely
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unrouted_recurring_event_is_deduplicated_within_window() -> None:
+    """Issue 492: a recurring event with no routed channel must not fire per cycle.
+
+    The unrouted attempt was recorded before deduplication could run, so
+    prolonged_idle (dedup_key="prolonged_idle") re-emitted on every poll cycle
+    — 1913 unrouted lines in 24h in the deployed daemon.
+    """
+    import structlog
+
+    config = NotificationsConfig(channels=[], routing=[])
+    svc = _build_service(config, [])
+
+    event = _make_event(event_type=EventType.prolonged_idle, dedup_key="prolonged_idle")
+    with structlog.testing.capture_logs() as logs:
+        await svc.dispatch(event)
+        await svc.dispatch(event)
+
+    # The duplicate poll must not add per-cycle INFO lines — that is the
+    # reported log-volume symptom. Under the default INFO config the
+    # deduplicated branch logs at DEBUG, so it never reaches the capture.
+    dedup_logs = [e for e in logs if e.get("event") == "notification_unrouted_deduplicated"]
+    assert not dedup_logs
+    unrouted_logs = [e for e in logs if e.get("event") == "notification_unrouted"]
+    assert len(unrouted_logs) == 1
+    assert unrouted_logs[0]["log_level"] == "info"
+
+    unrouted = svc.history.query(status=NotificationStatus.unrouted)
+    assert len(unrouted) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 1
+    assert deduplicated[0].dedup_key == "prolonged_idle"
+
+
+@pytest.mark.asyncio
+async def test_unrouted_dedup_re_emits_after_window_expires() -> None:
+    """The suppression is a window, not a latch: once it expires the event emits again.
+
+    Uses a non-default window wired through NotificationsConfig so the test
+    fails if NotificationService ignores unrouted_dedup_window_seconds.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    config = NotificationsConfig(channels=[], routing=[], unrouted_dedup_window_seconds=30)
+    svc = _build_service(config, [])
+
+    event = _make_event(event_type=EventType.prolonged_idle, dedup_key="prolonged_idle")
+    await svc.dispatch(event)
+    # Backdate the sighting just past the configured (non-default, 30 s) window.
+    svc._unrouted_dedup_window._seen["prolonged_idle"] = datetime.now(UTC) - timedelta(seconds=31)
+
+    await svc.dispatch(event)
+
+    unrouted = svc.history.query(status=NotificationStatus.unrouted)
+    assert len(unrouted) == 2
