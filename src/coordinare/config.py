@@ -134,6 +134,10 @@ class NotificationsConfig(BaseModel):
     routing: list[RoutingEntry] = Field(default_factory=list)
     history_max_age_hours: int = Field(default=24, ge=1)
     prolonged_idle_threshold_seconds: int = Field(default=1800, ge=60)
+    # 492: dedup window for events with no routed channel. The per-channel
+    # dedup windows below never ran on that path, so recurring events with a
+    # dedup_key re-fired every poll cycle.
+    unrouted_dedup_window_seconds: int = Field(default=600, ge=0)
     # 069 FR-004: minimum wall-clock interval between `card_blocked`
     # re-emissions for the same card.  Gates `notify()` against the per-session
     # `last_blocked_slack_delivered_at` watermark so cycle-rate dispatch loops
