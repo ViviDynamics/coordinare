@@ -87,6 +87,27 @@ def test_valid_config_passes(tmp_path: Path) -> None:
     assert result.config_file_path == config_file.resolve()
 
 
+def test_dashboard_oidc_redirect_to_untrusted_host_fails_preflight(
+    tmp_path: Path,
+) -> None:
+    """A redirect target outside dashboard_host/trusted hosts is a preflight error."""
+    config_file = _write_valid_config(tmp_path, extra="\n".join([
+        'dashboard_host: "127.0.0.1"',
+        'dashboard_port: 8090',
+        "dashboard_oidc:",
+        '  discovery_url: "https://provider.test/.well-known/openid-configuration"',
+        '  client_id: "coordinare-dashboard"',
+        '  client_secret: "secret-0123456789012345678901"',
+        '  redirect_url: "https://evil.example/oidc/callback"',
+    ]))
+    result = validate_config(config_file)
+    assert not result.passed
+    redirect_errors = [
+        e for e in result.errors if e.field_path == "dashboard_oidc.redirect_url"
+    ]
+    assert redirect_errors, f"Expected OIDC redirect error, got: {result.errors}"
+
+
 def test_unknown_field_raises_error(tmp_path: Path) -> None:
     """Config with unrecognised field → ConfigFieldError with error_type==unknown_field."""
     config_file = _write_valid_config(tmp_path, extra="zzzcompletely_bogus_field: 123")

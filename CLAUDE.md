@@ -100,6 +100,8 @@ See AGENTS.md for all development guidelines.
 - none; no coordinare state change. (172-closer-workflow)
 - Python 3.14 (project minimum 3.12; production on 3.14.5 via uv) + existing only. pydantic 2.x (state and record models), the spec-164 workflow layer (`WorkflowAdapter`, `Toolkit`, `budget._STEP_BUDGETS`, `schema_guard.validate_with_reprompt`), httpx (the performer's GitHub calls), structlog, langgraph (a node is removed, none added). No new external dependency. (173-advocate-curator-performers)
 - The existing single-host JSON snapshot via `state_store.py`. `EnvCacheState` / `EnvCacheStateSnapshot` gain per-role fields, exactly as the wiki-init gate did at schema v13. `CURRENT_SCHEMA_VERSION` bumps 19 to 20; v1 to v19 snapshots load with defaults and no migration step. (173-advocate-curator-performers)
+- Python 3.12 (FastAPI/Starlette ASGI middleware, pydantic v2 config). + existing `httpx` (discovery + token exchange), `PyJWT[crypto]` (497-dashboard-oidc-login)
+- none new. Sessions are an in-memory dict on the daemon process; a restart ends (497-dashboard-oidc-login)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

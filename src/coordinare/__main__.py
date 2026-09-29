@@ -30,6 +30,7 @@ from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
 from coordinare.auth import build_auth, validate_auth_config
 from coordinare.config import (
     CoordinareConfiguration,
+    DashboardOidcConfig,
     ProjectConfiguration,
     ServiceCircuitConfig,
     ServiceRetryConfig,
@@ -44,6 +45,7 @@ from coordinare.config_validation import (
 )
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
+from coordinare.dashboard_oidc import OidcFlow, validate_dashboard_oidc
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
@@ -1067,6 +1069,10 @@ async def _bootstrap_services(
     return service_state
 
 
+def _build_dashboard_oidc_flow(config: DashboardOidcConfig) -> OidcFlow:
+    return OidcFlow(config)
+
+
 async def _run(
     config: ProjectConfiguration,
     config_path: Path | None = None,
@@ -1074,7 +1080,14 @@ async def _run(
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
     from coordinare.dashboard_auth import validate_dashboard_bind
-    validate_dashboard_bind(config.dashboard_host, config.dashboard_auth_token)
+
+    _dashboard_oidc = getattr(config, "dashboard_oidc", None)
+    validate_dashboard_bind(config.dashboard_host, config.dashboard_auth_token, oidc=_dashboard_oidc)
+    if _dashboard_oidc is not None:
+        validate_dashboard_oidc(
+            _dashboard_oidc, dashboard_host=config.dashboard_host,
+            trusted_hosts=getattr(config, "trusted_dashboard_hosts", []),
+        )
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -1249,6 +1262,10 @@ async def _run(
             if config.webhooks.enabled and config.webhooks.secret else frozenset()
         ),
         auth_token=config.dashboard_auth_token,
+        oidc=(
+            _build_dashboard_oidc_flow(config.dashboard_oidc)
+            if config.dashboard_oidc is not None else None
+        ),
     )
 
     if config.webhooks.enabled and config.webhooks.secret:
@@ -1261,8 +1278,9 @@ async def _run(
             trigger=daemon._webhook_trigger,
         )
 
-    # Spec 144 (#198), FR-020/FR-021. Only fires for a non-loopback bind.
-    if config.dashboard_auth_token is None:
+    # Spec 144 (#198), FR-020/FR-021. Only fires for a non-loopback bind with no
+    # authentication at all — a token or a configured OIDC flow is the boundary.
+    if config.dashboard_auth_token is None and config.dashboard_oidc is None:
         warn_if_dashboard_exposed(config.dashboard_host, config.dashboard_port, log=logger)
 
     dashboard_server = uvicorn.Server(
