@@ -107,6 +107,87 @@ async def test_merge_pr_blocks_when_not_mergeable() -> None:
     assert any("merge conflicts" in q for q in result["open_questions"])
 
 
+class _GitHubRawConflicting:
+    """495: the real check_mergeability shape — raw GitHub says CONFLICTING,
+    so the conflicts message is still the correct one."""
+
+    async def check_mergeability(self, pr_id: str):
+        return {
+            "mergeable": False,
+            "mergeable_raw": "CONFLICTING",
+            "merge_state_status": "DIRTY",
+            "review_decision": "APPROVED",
+        }
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_conflicts_message_when_raw_conflicting() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubRawConflicting()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    assert any("merge conflicts" in q for q in result["open_questions"])
+
+
+class _GitHubReviewPending:
+    """495: PR is mergeable but the review gate has not approved it — the
+    blocked question must name the review state, not claim conflicts."""
+
+    async def check_mergeability(self, pr_id: str):
+        return {
+            "mergeable": False,
+            "mergeable_raw": "MERGEABLE",
+            "merge_state_status": "CLEAN",
+            "review_decision": "REVIEW_REQUIRED",
+        }
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_names_review_gate_when_decision_pending() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubReviewPending()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    questions = " ".join(result["open_questions"])
+    assert "REVIEW_REQUIRED" in questions
+    assert "merge conflicts" not in questions
+
+
+class _GitHubNullReviewDecision:
+    """495: GitHub returns reviewDecision null when branch protection
+    requires 0 approving reviews, even with an APPROVED review on the head.
+    The operator must see the review-gate explanation, not "conflicts"."""
+
+    async def check_mergeability(self, pr_id: str):
+        return {
+            "mergeable": False,
+            "mergeable_raw": "MERGEABLE",
+            "merge_state_status": "CLEAN",
+            "review_decision": "",
+        }
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_null_review_decision_gets_branch_protection_hint() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubNullReviewDecision()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    questions = " ".join(result["open_questions"]).lower()
+    assert "reviewdecision" in questions
+    assert "0 approving reviews" in questions
+    assert "merge conflicts" not in questions
+
+
 # ---------------------------------------------------------------------------
 # 042 — PermanentGitHubError must NOT loop; surface to operator via blocked
 # ---------------------------------------------------------------------------
