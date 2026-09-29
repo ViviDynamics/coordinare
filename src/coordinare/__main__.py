@@ -26,6 +26,7 @@ import structlog
 import uvicorn
 
 from coordinare import configure_logging
+from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
 from coordinare.auth import build_auth, validate_auth_config
 from coordinare.config import (
     CoordinareConfiguration,
@@ -833,6 +834,28 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
+def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
+    """Resolve the attempt log dir (141), anchored to the config directory or the
+    state location when services are bootstrapped without an on-disk config.
+    """
+    _state_base = config.state_file_path.resolve().parent
+    _attempt_base = (
+        config_path.resolve().parent if config_path is not None
+        else _state_base
+    )
+    _performer_logs = getattr(config, "performer_log_dir", None)
+    _attempt_log_dir = (
+        Path(_performer_logs) / "attempts" if _performer_logs is not None
+        else _attempt_base / "logs" / "attempts"
+    )
+    if not _attempt_log_dir.is_absolute():
+        _attempt_log_dir = _attempt_base / _attempt_log_dir
+    # 493: in containerized deployments config.yaml sits on a read-only
+    # ConfigMap mount; anchor to the writable state dir when the chosen
+    # directory cannot be written.
+    return resolve_writable_log_dir(_attempt_log_dir, _state_base / "logs" / "attempts")
+
+
 async def _bootstrap_services(
     config: ProjectConfiguration,
     circuit_breakers: dict[str, CircuitBreaker],
@@ -992,21 +1015,8 @@ async def _bootstrap_services(
             stage = _ROLE_TO_STAGE[role]
             role_timeouts[stage] = role_config.timeout_seconds
 
-    # 141: anchor relative paths to the config directory, or the state location
-    # when services are bootstrapped without an on-disk config.
-    from coordinare.attempt_log import AttemptLog
-    _attempt_base = (
-        config_path.resolve().parent if config_path is not None
-        else config.state_file_path.resolve().parent
-    )
-    _performer_logs = getattr(config, "performer_log_dir", None)
-    _attempt_log_dir = (
-        Path(_performer_logs) / "attempts" if _performer_logs is not None
-        else _attempt_base / "logs" / "attempts"
-    )
-    if not _attempt_log_dir.is_absolute():
-        _attempt_log_dir = _attempt_base / _attempt_log_dir
-    attempt_log = AttemptLog(log_dir=_attempt_log_dir)
+    # 141: attempt telemetry singleton, resolved at the module seam above
+    attempt_log = AttemptLog(log_dir=_resolve_attempt_log_dir(config, config_path))
 
     service_state: CoordinareState = {
         "config": config,
