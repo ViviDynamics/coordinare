@@ -284,3 +284,6 @@ logs/attempts/
 
 # Local token/repo config for coordinare-conventions scripts (never commit)
 repo.env
+
+# Workflow skills state
+.agents/state/

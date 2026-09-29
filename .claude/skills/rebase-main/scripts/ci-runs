@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Runs and jobs for a PR's CURRENT head SHA, from the Actions API.
+# usage: ci-runs <pr>
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env; coordinare_require COORDINARE_REPO
+pr=${1:-}; [ -n "$pr" ] || coordinare_die 2 "usage: ci-runs <pr>"
+head=$(coordinare_gh pr view "$pr" --repo "$COORDINARE_REPO" --json headRefOid --jq .headRefOid) || exit $?
+runs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs?head_sha=$head&per_page=100") || exit $?
+wf=${COORDINARE_CI_WORKFLOW:-}
+selected=$(printf '%s' "$runs" | jq -c --arg head "$head" --arg wf "$wf" '
+  [.workflow_runs[] | select(.head_sha==$head) | select($wf=="" or (.path|endswith("/"+$wf)) or (.path==$wf))
+   | {id, name, path, status, conclusion, run_attempt, head_sha}]')
+out='[]'
+for id in $(printf '%s' "$selected" | jq -r '.[].id'); do
+  jobs=$(coordinare_gh api "repos/$COORDINARE_REPO/actions/runs/$id/jobs?per_page=100&filter=latest") || exit $?
+  run=$(printf '%s' "$selected" | jq -c --argjson id "$id" '.[] | select(.id==$id)')
+  run=$(printf '%s' "$run" | jq -c --argjson j "$(printf '%s' "$jobs" | jq -c '[.jobs[] | {id, name, status, conclusion, started_at, completed_at}]')" '.jobs=$j')
+  out=$(printf '%s' "$out" | jq -c --argjson r "$run" '. + [$r]')
+done
+printf '%s' "$out" | jq -c --argjson pr "$pr" --arg head "$head" '
+  def bad: ["failure","cancelled","timed_out","action_required","startup_failure"];
+  . as $runs |
+  ($runs | map(select(.status!="completed")) | length > 0) as $pending |
+  [ $runs[] | .id as $rid | .jobs[] | select(.conclusion as $c | bad | index($c)) | {run_id:$rid, job_id:.id, job:.name, conclusion} ] as $failed |
+  { pr:$pr, head_sha:$head,
+    state: (if ($runs|length)==0 then "none" elif $pending then "pending" elif ($failed|length)>0 then "failed" else "green" end),
+    all_cancelled: (($failed|length)>0 and ([$failed[] | select(.conclusion=="cancelled")] | length) == ($failed|length)),
+    runs:$runs, failed_jobs:$failed }'

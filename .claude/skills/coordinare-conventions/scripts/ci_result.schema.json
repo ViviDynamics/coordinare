@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CI_RESULT",
+  "type": "object",
+  "required": ["schema", "pr", "head_sha", "state", "failures", "retries_verified", "retries_unverified"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["CI_RESULT"] },
+    "pr": { "type": "integer" },
+    "head_sha": { "type": "string" },
+    "run_ids": { "type": "array" },
+    "attempt": { "type": "integer" },
+    "state": { "type": "string", "enum": ["green", "failed", "pending", "timed_out", "none"] },
+    "failures": {
+      "type": "array",
+      "items": {
+        "required": ["run_id", "job_id", "job", "conclusion", "bucket_hint"],
+        "properties": {
+          "bucket_hint": { "enum": ["infra", "known_flake", "unknown"] },
+          "conclusion": { "enum": ["failure", "cancelled", "timed_out", "action_required", "startup_failure"] },
+          "log_error": { "type": "boolean" }
+        }
+      }
+    },
+    "retries_verified": { "type": "integer" },
+    "retries_unverified": {
+      "type": "integer",
+      "enum": [0],
+      "description": "Always 0 by contract: a retry that was not verified did not happen, so it is not counted."
+    },
+    "elapsed_sec": { "type": "integer" },
+    "head_changed": { "type": "boolean" }
+  }
+}

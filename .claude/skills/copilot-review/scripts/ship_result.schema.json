@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SHIP_RESULT",
+  "type": "object",
+  "required": [
+    "schema",
+    "issue",
+    "merge_state",
+    "ci",
+    "review_gate",
+    "issue_closure",
+    "board",
+    "assigned",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": [
+        "SHIP_RESULT"
+      ]
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "merge_state": {
+      "type": "string",
+      "enum": [
+        "merged",
+        "open",
+        "blocked",
+        "no-pr"
+      ]
+    },
+    "ci": {
+      "type": "string"
+    },
+    "review_gate": {
+      "type": "string",
+      "enum": [
+        "harness",
+        "copilot",
+        "self",
+        "unsatisfied"
+      ]
+    },
+    "assigned": {
+      "type": "object",
+      "required": [
+        "issue",
+        "pr"
+      ],
+      "properties": {
+        "issue": {
+          "type": "string"
+        },
+        "pr": {
+          "type": "string"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "required": [
+        "retries_verified",
+        "retries_limit",
+        "rebases",
+        "rebases_limit",
+        "review_rounds",
+        "review_rounds_limit"
+      ],
+      "properties": {
+        "retries_verified": {
+          "type": "integer"
+        },
+        "retries_limit": {
+          "type": "integer"
+        },
+        "rebases": {
+          "type": "integer"
+        },
+        "rebases_limit": {
+          "type": "integer"
+        },
+        "review_rounds": {
+          "type": "integer"
+        },
+        "review_rounds_limit": {
+          "type": "integer"
+        }
+      }
+    },
+    "unresolved": {
+      "type": "string"
+    },
+    "deferred": {
+      "type": "string"
+    },
+    "issue_closure": {
+      "type": "string",
+      "enum": [
+        "closed",
+        "reopened-and-closed",
+        "open",
+        "not-applicable"
+      ]
+    },
+    "board": {
+      "type": "string",
+      "enum": [
+        "done",
+        "moved",
+        "added",
+        "skipped",
+        "failed"
+      ]
+    }
+  }
+}

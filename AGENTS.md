@@ -69,6 +69,17 @@ without the env. (`make run` / `make start` do this for you.)
 - Run `/speckit.analyze` before `/speckit.implement`.
 - PR target is `main`; squash merge.
 
+## Workflow Skills
+
+Workflow skills come from ViviDynamics/skills at tag 2026.09.11. They are installed in both `.agents/skills/` and `.claude/skills/` (which OpenCode reads via `.opencode/skill`). Never edit the installed copies. To update: fix upstream, bump the tag in repo-specific configuration, and re-install. Repo-specific settings (merge flags, test commands, known flakes) live in `repo.env.example`.
+
+## Ship-Issue Standing Rules
+
+- **Implement stage lanes**: Bug-shaped issues use direct TDD fix branches (established pattern). Feature-shaped issues use `Skill("work-issue-speckit")` and require `speckit.analyze` before implementation.
+- **Review gate**: Adversarial review over the full diff is a standing rule. Run it before merge and re-verify every claim by executing it. Also available: code-review skill (if available) and copilot-review (Copilot does deliver reviews here, unlike the in-house scheme).
+- **Required checks**: Lint, Test, Build Success gate the merge. All other jobs (Chart, Daemon Image, Coverage, E2E, Performer, Docker, Benchmark) are advisory and do not block.
+- **Main branch merge**: Coordinare's main requires no approving review and no --admin. BLOCKED here signals something else is wrong; check run conclusions before reaching for bypasses.
+
 <!-- MANUAL ADDITIONS START -->
 
 ## Running a deployment

@@ -450,6 +450,18 @@ jobs:
           path: benchmarks/results/
           if-no-files-found: ignore
 
+  skills-wiring:
+    name: Skills Wiring
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify workflow skills are wired
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/ci-safety/scripts/check-wiring
+
   build-success:
     name: Build Success
     # always() prevents skipped upstream jobs (e.g. benchmark on non-performer PRs)

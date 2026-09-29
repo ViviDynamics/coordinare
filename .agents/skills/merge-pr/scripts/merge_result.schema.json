@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MERGE_RESULT",
+  "type": "object",
+  "required": ["schema", "pr", "state"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["MERGE_RESULT"] },
+    "pr": { "type": "integer" },
+    "state": { "type": "string", "enum": ["merged", "blocked", "preconditions_failed"] },
+    "merge_commit": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

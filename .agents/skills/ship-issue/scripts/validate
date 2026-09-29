@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Subset JSON Schema validator (required, type, enum, array items required/enum).
+# usage: validate <schema-name> [file]   (reads stdin when file omitted)
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+name=${1:-}; [ -n "$name" ] || { echo '{"error":"usage: validate <schema> [file]"}'; exit 2; }
+schema="$here/$name.schema.json"
+[ -f "$schema" ] || { printf '{"error":"unknown schema %s"}\n' "$name"; exit 2; }
+input=${2:-/dev/stdin}
+data=$(cat "$input") || data=""
+if [ -z "$data" ] || ! printf '%s' "$data" | jq -e 'type=="object"' >/dev/null 2>&1; then
+  echo '{"valid":false,"errors":["input is empty, not valid JSON, or not a JSON object"]}'
+  exit 1
+fi
+errors=$(printf '%s' "$data" | jq -c --slurpfile s "$schema" '
+  def typeok($t): if $t=="integer" then (type=="number" and (.==floor)) else type==$t end;
+  . as $d | $s[0] as $sc |
+  [ ($sc.required // [])[] | select($d[.]==null) | "missing required: \(.)" ]
+  + [ ($sc.properties // {}) | to_entries[] | . as $p | select($d[$p.key]!=null) |
+      ( if $p.value.type and (($d[$p.key] | typeok($p.value.type)) | not) then "wrong type: \($p.key) should be \($p.value.type)" else empty end ),
+      ( if $p.value.enum and (($p.value.enum | index($d[$p.key])) == null) then "invalid value for \($p.key): \($d[$p.key]|tostring)" else empty end ),
+      ( if $p.value.items and ($d[$p.key]|type)=="array" then
+          $d[$p.key] | to_entries[] | . as $e |
+          ( ($p.value.items.required // [])[] | select($e.value[.]==null) | "\($p.key)[\($e.key)] missing required: \(.)" ),
+          ( ($p.value.items.properties // {}) | to_entries[] | . as $ip | select($e.value[$ip.key]!=null and $ip.value.enum and (($ip.value.enum | index($e.value[$ip.key]))==null)) | "\($p.key)[\($e.key)] invalid value for \($ip.key): \($e.value[$ip.key]|tostring)" )
+        else empty end )
+    ]')
+if [ "$errors" = "[]" ]; then echo '{"valid":true}'; exit 0; fi
+printf '{"valid":false,"errors":%s}\n' "$errors"; exit 1

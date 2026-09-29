@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Per-issue JSON state for resumable skill chains.
+# usage: state get <issue> [key] | set <issue> <key> <value> | incr <issue> <key> | append <issue> <key> <value> | clear <issue>
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+coordinare_load_env
+cmd=${1:-}; issue=${2:-}
+[ -n "$issue" ] || coordinare_die 2 "usage: state <get|set|incr|append|clear> <issue> ..."
+dir="$COORDINARE_ROOT/.agents/state"; file="$dir/$issue.json"
+mkdir -p "$dir"
+# Prints the current state on stdout, or returns non-zero if the file exists
+# but is not valid JSON. Never emits anything on failure so callers can rely
+# on the exit code rather than parsing the output.
+current() {
+  if [ -f "$file" ]; then
+    jq -e . "$file" >/dev/null 2>&1 || return 1
+    cat "$file"
+  else
+    echo '{}'
+  fi
+}
+write() { printf '%s\n' "$1" > "$file.tmp" && mv "$file.tmp" "$file"; printf '%s\n' "$1"; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+case "$cmd" in
+  get)
+    cur=$(current) || coordinare_die 1 "state file $file is not valid JSON"
+    if [ -n "${3:-}" ]; then
+      printf '%s' "$cur" | jq -rc --arg k "$3" 'if has($k) then .[$k] else empty end'
+    else
+      printf '%s' "$cur" | jq -c .
+    fi ;;
+  set)
+    [ -n "${3:-}" ] && [ -n "${4+x}" ] || coordinare_die 2 "usage: state set <issue> <key> <value>"
+    if v=$(printf '%s' "$4" | jq -c . 2>/dev/null); then :; else v=$(printf '%s' "$4" | jq -Rs .); fi
+    cur=$(current) || coordinare_die 1 "state file $file is not valid JSON"
+    new=$(printf '%s' "$cur" | jq -c --arg k "$3" --argjson v "$v" --arg t "$(now)" '.[$k]=$v | .updated_at=$t') || coordinare_die 1 "state update failed for $file"
+    write "$new" ;;
+  incr)
+    [ -n "${3:-}" ] || coordinare_die 2 "usage: state incr <issue> <key>"
+    cur=$(current) || coordinare_die 1 "state file $file is not valid JSON"
+    new=$(printf '%s' "$cur" | jq -c --arg k "$3" --arg t "$(now)" '.[$k]=((.[$k] // 0) + 1) | .updated_at=$t') || coordinare_die 1 "state update failed for $file (is $3 numeric?)"
+    write "$new" ;;
+  append)
+    [ -n "${3:-}" ] && [ -n "${4+x}" ] || coordinare_die 2 "usage: state append <issue> <key> <value>"
+    if v=$(printf '%s' "$4" | jq -c . 2>/dev/null); then :; else v=$(printf '%s' "$4" | jq -Rs .); fi
+    cur=$(current) || coordinare_die 1 "state file $file is not valid JSON"
+    new=$(printf '%s' "$cur" | jq -c --arg k "$3" --argjson v "$v" --arg t "$(now)" '
+      .[$k]=(if (has($k) and (.[$k] | type == "array")) then .[$k] else [] end)
+      | .[$k]=(if (.[$k] | index($v)) != null then .[$k] else .[$k] + [$v] end)
+      | .updated_at=$t') || coordinare_die 1 "state update failed for $file"
+    write "$new" ;;
+  clear) rm -f "$file" ;;
+  *) coordinare_die 2 "unknown command: $cmd (want get|set|incr|append|clear)" ;;
+esac
