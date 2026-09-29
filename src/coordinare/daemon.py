@@ -473,6 +473,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         open_questions=[str(q) for q in f["questions_raw"] if q is not None]
         if isinstance(f["questions_raw"], (list, tuple, set))
         else [],
+        consumed_loop_questions=[
+            str(qf) for qf in (sess.get("consumed_loop_questions") or ()) if qf is not None
+        ],
         card_clarifications=[dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)]
         if isinstance(f["clarifications_raw"], (list, tuple))
         else [],
@@ -615,6 +618,7 @@ def _restored_session_dict(
         "processed_review_ids": set(persisted.processed_review_ids),
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
         "open_questions": list(persisted.open_questions),
+        "consumed_loop_questions": list(persisted.consumed_loop_questions),
         "card_clarifications": list(persisted.card_clarifications),
         "relay_feedback": list(persisted.relay_feedback),
         "system_error_count": persisted.system_error_count,

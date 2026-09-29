@@ -147,3 +147,49 @@ def test_fresh_session_initialises_076_fields_to_safe_defaults() -> None:
     assert session["multi_pr_divergence"] is None
     assert session["wedge_count_window"] == {}
     assert session["reconciliation_decisions_last_startup"] == {}
+
+
+def test_consumed_loop_questions_round_trips() -> None:
+    """494: the loop-broken detector's consumed-question fingerprints MUST
+    round-trip through session ↔ state. The marker is written when the
+    detector re-queues dispatch and is read on the NEXT blocked transition —
+    if it does not survive the re-queue, the stale question re-asserts and
+    the blocked → dispatching → blocked flap repeats forever."""
+    fingerprints = ["a" * 64, "b" * 64]
+
+    session = create_session_from_card(_sample_card())
+    session["consumed_loop_questions"] = fingerprints
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["consumed_loop_questions"] == fingerprints
+
+    recovered = state_to_session(state)
+    assert recovered["consumed_loop_questions"] == fingerprints
+
+
+def test_consumed_loop_questions_survives_snapshot_round_trip() -> None:
+    """494: PersistedSession carries the consumed fingerprints across a
+    daemon restart: _persist_one_session reads them off the live session
+    dict and _restored_session_dict puts them back."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _persist_one_session, _restored_session_dict
+    from coordinare.state_store import WorkflowSnapshot
+
+    fingerprints = ["a" * 64]
+    session = create_session_from_card(_sample_card())
+    session["consumed_loop_questions"] = fingerprints
+
+    persisted = _persist_one_session("PVTI_X", session)
+    assert persisted.consumed_loop_questions == fingerprints
+
+    snapshot = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="blocked",
+        active_card_id="PVTI_X",
+    )
+    restored = _restored_session_dict(
+        "PVTI_X", persisted, snapshot, {"id": "PVTI_X"},
+    )
+    assert restored["consumed_loop_questions"] == fingerprints

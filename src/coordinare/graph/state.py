@@ -190,6 +190,9 @@ class CoordinareState(TypedDict, total=False):
     blocked_reminder_hours: int
 
     open_questions: list[str]
+    # 494: sha256 fingerprints of open_questions consumed by the loop-broken
+    # detector's re-queue (see handle_blocked / CardSession).
+    consumed_loop_questions: list[str]
     card_clarifications: list[dict[str, Any]]  # [{"questions": [...], "answer": str}]
     agent_dispatch: dict[str, Any]
     system_error_count: int
@@ -470,6 +473,9 @@ def initial_state() -> CoordinareState:
         "github_field_cache": {},
         "surfaced_stale_reviews": {},
         "open_questions": [],
+        # 494: fingerprints of questions consumed by the loop-broken
+        # detector's re-queue (see handle_blocked / CardSession).
+        "consumed_loop_questions": [],
         "system_error_count": 0,
         "system_error_notified": False,
         "card_clarifications": [],
