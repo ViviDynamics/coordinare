@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Claim an issue before any work starts, so two agents never implement it at once.
+# The claimant is COORDINARE_ASSIGNEE (environment, then repo.env), else the token's login.
+# An issue is held by someone else when another login is assigned, or when an open
+# PR by another login is linked as closing it (GitHub's own closing references). Two claims racing: the earliest assignment wins
+# and the loser unassigns itself.
+# usage: claim <issue>            claim the issue
+#        claim <issue> --pr <pr>  assign the PR to the same login, read back
+# exit: 0 claimed|already-mine|assigned, 1 held|lost-race|closed|not-assigned (stop),
+#       2 usage or config, 3 transient gh failure
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+env_assignee=${COORDINARE_ASSIGNEE:-}
+coordinare_load_env; coordinare_require COORDINARE_REPO
+issue=${1:-}; pr=""
+case "$issue" in ''|*[!0-9]*) coordinare_die 2 "usage: claim <issue> [--pr <pr>]";; esac
+shift
+if [ $# -gt 0 ]; then
+  [ "$1" = "--pr" ] || coordinare_die 2 "unknown argument: $1"
+  pr=${2:-}
+  case "$pr" in ''|*[!0-9]*) coordinare_die 2 "usage: claim <issue> --pr <pr>";; esac
+fi
+R=$COORDINARE_REPO
+
+# A failed read stops the claim; a transient one keeps coordinare_gh's exit 3.
+fail() { [ "$1" -eq 3 ] && exit 3; coordinare_die 2 "$2"; }
+# A write is judged by the read-back that follows it, so only a transient failure stops here.
+write() { local code=0; coordinare_gh "$@" >/dev/null || code=$?; [ "$code" -eq 3 ] && exit 3; return 0; }
+
+if [ -n "$env_assignee" ]; then login=$env_assignee; source_=environment
+elif [ -n "${COORDINARE_ASSIGNEE:-}" ]; then login=$COORDINARE_ASSIGNEE; source_=repo.env
+else
+  login=$(coordinare_gh api user --jq .login) || fail $? "COORDINARE_ASSIGNEE is unset and the token's login could not be read"
+  source_=token
+fi
+[ -n "$login" ] || coordinare_die 2 "no login to claim with"
+
+emit() {  # status holders_json evidence_json
+  jq -nc --argjson issue "$issue" --arg login "$login" --arg src "$source_" --arg status "$1" \
+    --argjson holders "$2" --argjson evidence "$3" --arg pr "$pr" \
+    '{schema:"CLAIM_RESULT", issue:$issue, login:$login, login_source:$src, status:$status, holders:$holders, evidence:$evidence}
+     + (if $pr != "" then {pr:($pr|tonumber)} else {} end)'
+}
+
+if [ -n "$pr" ]; then
+  write pr edit "$pr" --repo "$R" --add-assignee "$login"
+  got=$(coordinare_gh pr view "$pr" --repo "$R" --json assignees) || fail $? "pr view $pr failed"
+  if printf '%s' "$got" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
+    emit assigned '[]' '[]'; exit 0
+  fi
+  emit not-assigned '[]' "$(jq -nc --arg e "pr #$pr assignees read back without $login" '[$e]')"; exit 1
+fi
+
+view() { coordinare_gh issue view "$issue" --repo "$R" --json state,assignees; }
+before=$(view) || fail $? "issue view $issue failed"
+if [ "$(printf '%s' "$before" | jq -r .state)" != "OPEN" ]; then
+  emit closed '[]' '["issue is not open"]'; exit 1
+fi
+
+evidence=$(printf '%s' "$before" | jq -c --arg l "$login" '[.assignees[].login | select(. != $l) | "assignee:" + .]')
+q='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){closedByPullRequestsReferences(first:100,includeClosedPrs:false){nodes{number state author{login} assignees(first:20){nodes{login}}}}}}}'
+prs=$(coordinare_gh api graphql -F owner="${R%%/*}" -F name="${R#*/}" -F number="$issue" -f query="$q") || fail $? "closing pull requests read failed"
+pr_evidence=$(printf '%s' "$prs" | jq -c --arg l "$login" '
+  [.data.repository.issue.closedByPullRequestsReferences.nodes[] | select(.state == "OPEN")
+   | (.author.login // "ghost") as $by | select($by != $l and (any(.assignees.nodes[]; .login == $l) | not))
+   | "pr:#\(.number) by \($by)"]')
+evidence=$(jq -nc --argjson a "$evidence" --argjson b "$pr_evidence" '$a + $b')
+if [ "$evidence" != "[]" ]; then
+  holders=$(printf '%s' "$evidence" | jq -c '[.[] | sub("^assignee:"; "") | sub("^pr:#[0-9]+ by "; "")] | unique')
+  emit held "$holders" "$evidence"; exit 1
+fi
+
+if printf '%s' "$before" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
+  emit already-mine '[]' '[]'; exit 0
+fi
+
+write issue edit "$issue" --repo "$R" --add-assignee "$login"
+after=$(view) || fail $? "issue view $issue failed after assigning"
+assignees=$(printf '%s' "$after" | jq -c '[.assignees[].login]')
+if ! printf '%s' "$assignees" | jq -e --arg l "$login" 'index($l) != null' >/dev/null; then
+  emit not-assigned '[]' "$(jq -nc --arg e "issue assignees read back without $login" '[$e]')"; exit 1
+fi
+if [ "$(printf '%s' "$assignees" | jq 'length')" -gt 1 ]; then
+  # Someone claimed in the same window. Each current assignee's latest
+  # "assigned" event dates their claim; the earliest of those wins.
+  events=$(coordinare_gh api "repos/$R/issues/$issue/events" --paginate --jq '.[] | select(.event=="assigned") | [.id, .assignee.login] | @tsv') \
+    || fail $? "issue events read failed; $issue is assigned to $(printf '%s' "$assignees" | jq -r 'join(",")')"
+  winner=$(printf '%s\n' "$events" | jq -Rrn --argjson cur "$assignees" '
+    [inputs | select(length > 0) | split("\t") | {id: (.[0]|tonumber), login: .[1]} | select(.login as $x | $cur | index($x))]
+    | group_by(.login) | map(max_by(.id)) | min_by(.id) | .login // ""')
+  if [ "$winner" != "$login" ]; then
+    write issue edit "$issue" --repo "$R" --remove-assignee "$login"
+    others=$(printf '%s' "$assignees" | jq -c --arg l "$login" 'map(select(. != $l))')
+    evidence=$(printf '%s' "$others" | jq -c 'map("assignee:" + .)')
+    note=""
+    if ! left=$(view 2>/dev/null); then note="unassign not verified: the issue could not be read back"
+    elif printf '%s' "$left" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
+      note="unassign failed: issue is still assigned to $login"
+    fi
+    [ -z "$note" ] || evidence=$(printf '%s' "$evidence" | jq -c --arg n "$note" '. + [$n]')
+    emit lost-race "$others" "$evidence"; exit 1
+  fi
+fi
+emit claimed '[]' '[]'

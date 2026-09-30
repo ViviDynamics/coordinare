@@ -48,6 +48,13 @@ as `$S/<script>`.
    only with a lease. Never push to the default branch.
 5. Never disable, skip or delete a test to make CI green.
 6. Prose we publish (PR bodies, comments, docs) uses no em dashes.
+7. Claim an issue before working it, and leave it alone when it is someone else's.
+   An issue assigned to another person, or with their open PR, is theirs. ship-issue
+   claims through `$S/claim`, which assigns `COORDINARE_ASSIGNEE`: set it to your own GitHub
+   login in your uncommitted `repo.env`, or, for Claude Code, in
+   `.claude/settings.local.json` under `env`. Never in `repo.env.example` or a committed
+   `.claude/settings.json`, where one login would claim everyone's work. Unset, the
+   token's own login is used.
 
 ## Model tiers (guidance for whoever routes work)
 
