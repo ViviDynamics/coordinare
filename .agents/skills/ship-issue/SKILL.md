@@ -13,7 +13,7 @@ metadata:
 
 Issue number in, merged PR out.
 
-Unattended chain: resume detection (idempotent) → plan (M+ scope) → implement with TDD
+Unattended chain: resume detection (idempotent) → claim the issue → plan (M+ scope) → implement with TDD
 in a worktree → open PR with `Closes #N` → CI via watch-ci → review gate → merge via
 merge-pr → closure and project board updates → final SHIP_RESULT. This skill never waits
 for a human; a question you would ask becomes a stop condition in the final summary.
@@ -129,9 +129,29 @@ Branch pattern from `COORDINARE_BRANCH_PATTERN` in `repo.env`. Substitute `{issu
 `git ls-remote --heads origin '<pattern with {slug} as *>'`. Then:
 
 - Merged PR exists: run Stage 5 (closure and board, idempotent), then Stage 6.
-- Issue is OPEN, open PR exists: verify its worktree is in sync, enter Stage 2 (CI).
-- Branch exists, no PR yet: verify the worktree, push, open PR, enter Stage 2.
-- Nothing exists: Stage 1 (implement).
+- Otherwise claim the issue first (below), then:
+  - Issue is OPEN, open PR exists: verify its worktree is in sync, enter Stage 2 (CI).
+  - Branch exists, no PR yet: verify the worktree, push, open PR, enter Stage 2.
+  - Nothing exists: Stage 1 (implement).
+
+### Claim before any work
+
+An unassigned issue looks free on the board, so it is claimed before the first file
+write, not when the PR opens. Another agent may be minutes into the same issue.
+
+    $S/claim <issue>
+
+It assigns the issue to `COORDINARE_ASSIGNEE` (see ADOPTING.md), or to the token's own login
+when that is unset, and reads the assignment back.
+
+- Exit 0, `claimed` or `already-mine`: continue. Record
+  `--decision "claimed as <login>"` in the checkpoint.
+- Exit 1, `held`: someone else is assigned, or has an open PR that closes the issue.
+  `lost-race`: another claim landed first, and the script already removed yours.
+  `closed` or `not-assigned`: nothing to claim, or the assignment did not stick.
+  Stop with `merge_state: no-pr` (or `open` for a PR that is not yours) and
+  `unresolved: claimed by <holders>: <evidence>`. Never unassign someone else, and
+  never adopt their branch or PR.
 
 Before any file write, verify location: `git branch --show-current` and
 `git rev-parse --show-toplevel` must match the expected worktree path.
@@ -184,11 +204,12 @@ stage; read them before writing anything.
 
 6. Push and open the PR:
    - Body: `Closes #<issue>`, plus a description of what shipped and test counts.
-   - Assign both issue and PR to `COORDINARE_ASSIGNEE` (skip if unset). Read both back via
-     `gh pr view --json assignees` and `gh issue view --json assignees`. An empty
-     array means assignment did not happen.
+   - Assign the PR to the login that claimed the issue: `$S/claim <issue> --pr <pr>`.
+     It reads the assignment back; `not-assigned` goes in `unresolved`. The issue was
+     assigned at the claim; `assigned` in SHIP_RESULT reports both read-backs.
 
 Stop conditions at this stage:
+- The issue is held by someone else (the claim exited 1).
 - Issue premise is contradicted (closed, already shipped).
 - Scope requires a decision only a human can make (pricing, legal, secrets, external
   accounts).

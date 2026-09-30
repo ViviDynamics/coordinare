@@ -7,6 +7,9 @@ add() { problems=$(printf '%s' "$problems" | jq -c --arg p "$1" '. + [$p]'); }
 finish() { if [ "$problems" = "[]" ]; then echo '{"ok":true}'; exit 0; fi; printf '{"ok":false,"problems":%s}\n' "$problems"; exit 2; }
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { add "not inside a git repository"; finish; }
 [ -f "$root/repo.env.example" ] || add "repo.env.example missing at $root/repo.env.example (commit one so CI and other clones can recreate repo.env)"
+if grep -qE '^COORDINARE_ASSIGNEE="?[A-Za-z0-9]' "$root/repo.env.example" 2>/dev/null; then
+  add "repo.env.example sets COORDINARE_ASSIGNEE; leave it empty so each contributor sets their own login (see ADOPTING.md)"
+fi
 [ -f "$root/repo.env" ] || { add "repo.env missing at $root/repo.env"; finish; }
 coordinare_load_env
 for k in COORDINARE_REPO COORDINARE_DEFAULT_BRANCH COORDINARE_MERGE_FLAGS; do eval "[ -n \"\${$k:-}\" ]" || add "required key unset: $k"; done

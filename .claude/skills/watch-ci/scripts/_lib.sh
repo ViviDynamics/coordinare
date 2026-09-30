@@ -7,8 +7,10 @@ coordinare_root() {
   git rev-parse --show-toplevel 2>/dev/null || coordinare_die 2 "not inside a git repository"
 }
 
+# COORDINARE_ASSIGNEE is per person, so a value already in the environment (for
+# example from an uncommitted .claude/settings.local.json) beats repo.env.
 coordinare_load_env() {
-  local root file line key val
+  local root file line key val env_assignee=${COORDINARE_ASSIGNEE:-}
   root=$(coordinare_root) || exit 2
   file="$root/repo.env"
   [ -f "$file" ] || coordinare_die 2 "repo.env not found at $file (see ADOPTING.md)"
@@ -22,6 +24,7 @@ coordinare_load_env() {
     val=${val//\$HOME/$HOME}
     export "$key=$val"
   done < "$file"
+  if [ -n "$env_assignee" ]; then export COORDINARE_ASSIGNEE="$env_assignee"; fi
   export COORDINARE_ROOT="$root"
 }
 
