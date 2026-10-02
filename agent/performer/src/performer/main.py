@@ -1768,6 +1768,9 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
             pr_node_id=perf.pr_node_id,
             head_before=perf.head_at_start,
             head_after=head_after,
+            # 511: the coordinare's artefact write-through needs the branch
+            # name; it is always known here and never derived from git state.
+            pushed_branch=perf.stand.branch,
             # 126: the implementer's per-item feedback dispositions ride the
             # terminal success so the coordinare floor can adjudicate them.
             feedback_dispositions=_read_feedback_dispositions(perf.stand.path),

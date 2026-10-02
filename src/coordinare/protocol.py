@@ -125,6 +125,10 @@ class ProtocolResponse(BaseModel):
     # route them back to dispatching rather than honoring a "blocked" verdict.
     head_before: str | None = None
     head_after: str | None = None
+    # 511: the working branch the performer pushed, set on pr_opened so the
+    # 076 artefact write-through records pushed_branch. Must be kept in sync
+    # with performer.protocol.PerformerResponse.
+    pushed_branch: str | None = None
     # 070: continuation hint emitted with status="partial_progress".
     next_focus: str | None = None
     # 072: number of new PR comments authored by the bot user during this

@@ -302,6 +302,18 @@
       "default": null,
       "title": "Head After"
     },
+    "pushed_branch": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pushed Branch"
+    },
     "next_focus": {
       "anyOf": [
         {

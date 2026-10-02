@@ -43,7 +43,17 @@ def _record_pr_artefacts(
     pr_url = status.get("pr_url")
     pr_node_id = status.get("pr_node_id")
     pr_number = status.get("pr_number")
-    head_sha = status.get("head_sha")
+    # 511: the performer wire carries the SHA as ``head_after`` (070); accept
+    # it when the legacy ``head_sha`` key is absent so the write-through
+    # records a real SHA instead of None.
+    head_sha = status.get("head_sha") or status.get("head_after")
+    # 511: the performer never sends pr_number on the wire; derive it from
+    # the PR URL so restart recovery and divergence detection get the full
+    # artefact set.
+    if pr_number is None and pr_url:
+        parts = _pr_url_parts(pr_url)
+        if parts is not None:
+            pr_number = parts[2]
     pushed_branch = status.get("pushed_branch")
     plan_path = status.get("plan_path")
 

@@ -1166,6 +1166,16 @@ class TestCheckPolling:
         assert resp.status == "error"
         assert perf.state == "error"
 
+    async def test_green_checks_pr_opened_carries_pushed_branch(self) -> None:
+        """pr_opened must carry pushed_branch so the coordinare's 076 artefact
+        write-through records the working branch alongside pr_url (issue 511)."""
+        perf = _make_perf_waiting()
+        passing = {"name": "ci", "status": "completed", "conclusion": "success", "output": {}}
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[passing])):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "pr_opened"
+        assert resp.pushed_branch == "feat/x"
+
     async def test_blocked_state_stable_on_repeated_poll(self) -> None:
         """Repeated status polls after max-attempts blocked must NOT re-run push/PR-open.
 

@@ -145,6 +145,30 @@ async def test_proc_cleared_after_terminal_status() -> None:
     assert mock_asyncio.create_subprocess_exec.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_pushed_branch_survives_subprocess_round_trip() -> None:
+    """511: the coordinare-side ProtocolResponse must carry pushed_branch
+    (kept in sync with performer.protocol.PerformerResponse) so subprocess
+    deployments record the working branch instead of pushed_branch=None."""
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    wire = (
+        b'{"status":"pr_opened","session_id":"s1",'
+        b'"pr_url":"https://github.com/org/repo/pull/9",'
+        b'"pr_node_id":"PR_9",'
+        b'"head_after":"abc123",'
+        b'"pushed_branch":"coordinare/PVTI_X/feat"}\n'
+    )
+    proc = _make_persistent_proc(wire)
+    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
+        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+        mock_asyncio.create_task = _mock_create_task
+        mock_asyncio.subprocess = asyncio.subprocess
+        mock_asyncio.wait_for = _await_coro
+        resp = await transport.send(_make_msg("status"))
+    assert resp.pushed_branch == "coordinare/PVTI_X/feat"
+    assert resp.head_after == "abc123"
+
+
 @pytest.mark.parametrize("status", ["nothing_to_review", "nothing_to_scan", "not_applicable", "blocked", "session_expired"])
 @pytest.mark.asyncio
 async def test_proc_cleared_after_advance_with_note_status(status) -> None:

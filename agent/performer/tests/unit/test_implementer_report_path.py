@@ -58,6 +58,7 @@ async def test_green_ci_reports_pr_opened_and_skips_the_prose_path():
     perf, resp, mocks = await _handle(_run("pr_opened", pr_url="https://github.com/acme/repo/pull/12", reason="all checks green"))
     assert resp.status == "pr_opened" and resp.pr_url == "https://github.com/acme/repo/pull/12"
     assert resp.report["implementer_run"]["status"] == "pr_opened" and resp.head_after == "abc123"
+    assert resp.pushed_branch == "feat/test"
     assert perf.state == "pr_opened" and perf.pr_url == "https://github.com/acme/repo/pull/12"
     for name, m in mocks.items():
         assert not m.called, f"prose path {name} must not run under the workflow"
