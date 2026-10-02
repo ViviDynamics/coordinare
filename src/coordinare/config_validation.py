@@ -361,7 +361,7 @@ def pre_validate_raw(
 # this pre-dispatch turns a late in-container failure into an actionable config
 # error. (Add ``pi`` here when the Pi backend lands — 077 T015.)
 SUPPORTED_PERFORMER_BACKENDS: frozenset[str] = frozenset(
-    {"opencode", "opencode_compat", "junie", "claude_code", "codex", "hermes", "pi", "openclaw"},
+    {"opencode", "opencode_compat", "junie", "claude_code", "codex", "hermes", "pi", "openclaw", "prime_agent"},
 )
 
 

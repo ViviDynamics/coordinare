@@ -118,6 +118,31 @@ case "${BACKEND:-}" in
     npm install -g openclaw --no-fund --no-audit 2>&1 \
       || echo "WARNING: openclaw install/upgrade failed, continuing with installed version" >&2
     ;;
+  prime_agent)
+    # Prime Agent (github.com/PrimeIntellect-ai/prime-agent, MIT). Not baked
+    # into the base image, so this is a fresh install on first start (and an
+    # upgrade thereafter). Custom OpenAI-compatible provider routing → LiteLLM
+    # is configured per-job by PrimeAgentBackend (writes
+    # ~/.prime/agent/models.json). The installer places the binary in
+    # ~/.local/bin, which IS on the Dockerfile.full PATH.
+    #
+    # NOTE: the egress firewall above is applied BEFORE this install runs, so
+    # `app.primeintellect.ai` must be in PERFORMER_EGRESS_ALLOWLIST when that
+    # allowlist is set, or the download below is blocked and the container
+    # starts without `prime-agent` on PATH.
+    # Download and run as two steps, not a pipe: a pipeline reports the exit
+    # status of `sh`, and this script has no `set -o pipefail`, so a failed
+    # download would exit 0 (sh succeeds on empty stdin), the warning would
+    # never fire, and the first card would die on a bare ENOENT instead.
+    if curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh \
+         -o /tmp/prime-agent-install.sh; then
+      sh /tmp/prime-agent-install.sh 2>&1 \
+        || echo "WARNING: prime-agent install/upgrade failed, continuing with installed version" >&2
+      rm -f /tmp/prime-agent-install.sh
+    else
+      echo "WARNING: prime-agent installer download failed (host unreachable?), continuing with installed version" >&2
+    fi
+    ;;
   claude|claude_code)
     curl -fsSL https://claude.ai/install.sh | bash 2>&1 \
       || echo "WARNING: claude-code upgrade failed, continuing with installed version" >&2

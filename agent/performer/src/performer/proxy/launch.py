@@ -51,6 +51,7 @@ PROVIDER_BASE_URL_ENV: dict[str, str] = {
     "opencode_compat": "OPENCODE_PROVIDER_BASE_URL",
     "junie": "JUNIE_PROVIDER_BASE_URL",
     "pi": "PI_PROVIDER_BASE_URL",
+    "prime_agent": "PRIME_AGENT_PROVIDER_BASE_URL",
     "openclaw": "OPENCLAW_PROVIDER_BASE_URL",
     "hermes": "HERMES_BASE_URL",
     # claude_code is pointed via ANTHROPIC_BASE_URL; its own LiteLLM shim is

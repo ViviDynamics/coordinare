@@ -32,6 +32,25 @@ def test_only_present_backends_advertised(mock_paths: dict[str, bool]) -> None:
     assert set(caps.backends) == {"claude_code", "codex"}
 
 
+def test_prime_agent_binary_is_advertised(mock_paths: dict[str, bool]) -> None:
+    """Without this probe entry the backend is registered in the factory and
+    config but never advertised, so PerformerPool rejects the endpoint."""
+    mock_paths["prime-agent"] = True
+    caps = capabilities.probe_capabilities()
+    assert caps.backends == ["prime_agent"]
+
+
+def test_every_probed_backend_is_a_known_backend_name(
+    mock_paths: dict[str, bool],
+) -> None:
+    """Probe keys are backend identifiers, not binary names — a typo here would
+    advertise a harness the factory cannot resolve."""
+    from performer.backends import get_backend
+
+    for name in capabilities._BACKEND_BINARIES:
+        assert get_backend(name) is not None
+
+
 def test_universal_tool_flag_advertised_when_binary_present(
     mock_paths: dict[str, bool],
 ) -> None:

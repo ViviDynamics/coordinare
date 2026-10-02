@@ -64,6 +64,7 @@ def test_supported_backends_contains_the_known_harnesses() -> None:
         "codex",
         "hermes",
         "pi",
+        "prime_agent",
         "openclaw",
     }
 
