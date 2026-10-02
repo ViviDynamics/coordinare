@@ -24,6 +24,7 @@ flowchart TB
   subgraph L4["④ AGENT HARNESSES (backends, in containers)"]
     H1["claude_code"]; H2["codex"]; H3["opencode"]
     H4["junie"]; H5["pi"]; H6["hermes"]; H7["openclaw"]
+    H8["prime_agent"]
   end
 
   subgraph L5["⑤ MODELS"]

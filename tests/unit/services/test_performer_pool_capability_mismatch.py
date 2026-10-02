@@ -206,3 +206,34 @@ async def test_capability_match_no_flags_required() -> None:
 
     assert selected is not None
     assert selected.id == "test-performer-6"
+
+
+@pytest.mark.asyncio
+async def test_prime_agent_endpoint_is_selectable_when_advertised() -> None:
+    """A Prime Agent endpoint must be able to receive work.
+
+    ``select_for()`` matches the requested backend against the performer's
+    advertised ``backends``, which come from the container's capability probe.
+    The probe only lists a backend whose binary it knows about, so a missing
+    probe entry makes a correctly configured prime_agent endpoint permanently
+    unselectable.
+    """
+    pool = PerformerPool()
+    pool.register(
+        PerformerEndpointConfig(
+            id="prime-performer",
+            mode="ephemeral",
+            roles=["dev"],
+            image="test:latest",
+        ),
+        service=None,
+    )
+    state = pool.get_state("prime-performer")
+    assert state is not None
+    state.capabilities = PerformerCapabilities(
+        backends=["prime_agent"],
+        tool_flags=["git", "python"],
+    )
+    state.availability = "idle"
+
+    assert pool.select_for(role="dev", backend="prime_agent", required_flags=set()) is state

@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_ignore_empty=True, extra="ignore")
 
     AGENT_BACKEND: str = "opencode"
-    # Supported values: "opencode" | "junie" | "claude_code" | "codex" | "hermes" | "pi" | "openclaw"
+    # Supported values: "opencode" | "junie" | "claude_code" | "codex" | "hermes"
+    #                 | "pi" | "prime_agent" | "openclaw"
     AGENT_TIMEOUT: int = 7200  # seconds — 120 minutes
 
     # Hard ceiling on a single _run_service_inference() invocation (env_bootstrap

@@ -541,6 +541,7 @@ _MAX_DISPATCH_CHANGED_PATHS = 512
 _DIFF_NOISE_PATH_MARKERS: tuple[str, ...] = (
     # agent tool-config/state dirs (spec 131)
     ".codex/", ".claude/", ".hermes/", ".junie/", ".opencode/", ".openclaw/", ".pi/",
+    ".prime/",
     # build / vcs noise
     ".tmp/", "node_modules/", "vendor/bundle/", ".venv/", "__pycache__/", ".git/",
 )

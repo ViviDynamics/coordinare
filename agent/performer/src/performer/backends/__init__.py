@@ -34,6 +34,7 @@ SUPPORTED_BACKENDS: dict[str, tuple[str, str]] = {
     "hermes": ("performer.backends.hermes", "HermesBackend"),
     "pi": ("performer.backends.pi", "PiBackend"),
     "openclaw": ("performer.backends.openclaw", "OpenClawBackend"),
+    "prime_agent": ("performer.backends.prime_agent", "PrimeAgentBackend"),
 }
 
 
@@ -45,7 +46,6 @@ def get_backend(name: str) -> "BackendAdapter":
     # Import only the requested backend class on demand so optional
     # backend dependencies do not break unrelated configurations/tests.
     supported_backends = SUPPORTED_BACKENDS
-
     target = supported_backends.get(name)
     if target is None:
         supported = ", ".join(sorted(supported_backends))

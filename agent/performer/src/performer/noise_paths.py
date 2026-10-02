@@ -30,6 +30,7 @@ AGENT_CONFIG_DIRS: tuple[str, ...] = (
     ".opencode",   # opencode / opencode_compat
     ".openclaw",   # openclaw
     ".pi",         # pi
+    ".prime",      # prime_agent
 )
 
 # Build / VCS detritus that is also never a real change. Kept here so the one

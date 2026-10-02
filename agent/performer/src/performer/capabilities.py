@@ -19,6 +19,12 @@ _BACKEND_BINARIES: dict[str, str] = {
     "codex": "codex",
     "junie": "junie",
     "opencode": "opencode",
+    # The prime-agent CLI is installed by entrypoint.sh rather than baked into
+    # the image, so it is only on PATH when AGENT_BACKEND selected it. Probing
+    # for the binary is what makes a Prime Agent endpoint eligible in a
+    # capability-selected pool: PerformerPool._find_candidate() rejects any
+    # endpoint whose advertised backends omit the requested harness.
+    "prime_agent": "prime-agent",
 }
 
 _TOOL_BINARIES: dict[str, str] = {
