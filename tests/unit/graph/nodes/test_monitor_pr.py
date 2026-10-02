@@ -707,6 +707,154 @@ async def test_monitor_pr_fix8_forwards_to_reviews_when_checks_pass() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 510 — Closer merge hold while GitHub reports CHANGES_REQUESTED.
+#
+# Wiring contract: the 064 checks gate consulted checks alone, so on a repo
+# whose branch protection ignores review state the closer would merge despite
+# an open change request (observed 2026-10-02: 50 minutes of FORWARD polls
+# against PR #5 of coordinare-e2e-sample). The hold sits in monitor_pr at the
+# merge transition — AFTER fresh actionable feedback has been relayed, so the
+# implementer receives the requested changes (127) — and blocks only the
+# merge itself, keyed on GitHub's aggregate reviewDecision
+# (``get_pr_review_context``). An empty decision (legacy service without the
+# method) fails open; transient fetch failures are deferred above, so the
+# transition is only reachable with review state successfully fetched.
+# ---------------------------------------------------------------------------
+
+
+class _ReviewContextGitHub(_FixGitHub):
+    """Fix8 double plus ``get_pr_review_context`` (monitor_pr prefers it)."""
+
+    def __init__(
+        self,
+        payload: dict,
+        *,
+        reviews: list[dict] | None = None,
+        review_context: dict | None = None,
+    ) -> None:
+        super().__init__(payload, reviews=reviews)
+        self._review_context = review_context
+
+    async def get_pr_review_context(self, pr_id: str) -> dict:
+        assert self._review_context is not None
+        return self._review_context
+
+
+def _green_checks_payload() -> dict:
+    return _fix8_rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+
+
+def _510_changes_requested_hold() -> tuple[_ReviewContextGitHub, dict]:
+    gh = _ReviewContextGitHub(
+        _green_checks_payload(),
+        reviews=[{"author_login": "alice", "state": "APPROVED"}],
+        review_context={
+            "reviews": [{"author_login": "alice", "state": "APPROVED"}],
+            "review_threads": [],
+            "head_oid": "deadbeef",
+            "review_decision": "CHANGES_REQUESTED",
+        },
+    )
+    return gh, _fix8_state_with_gate(gh)
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_510_holds_merge_while_changes_requested() -> None:
+    """A human approval plus an aggregate CHANGES_REQUESTED decision must not
+    reach ``merging`` — the closer stays in monitoring_pr without moving the
+    card. (The approval rides the review list; the aggregate decision wins,
+    matching GitHub's own merge gating.)"""
+    gh, state = _510_changes_requested_hold()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert gh.move_calls == []
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_510_hold_surfaces_stale_reviews(monkeypatch) -> None:
+    """The hold must not park the card silently: the 128 stale-review
+    surfacing (re-request an addressed stale review / notify) runs before the
+    return, exactly like the no-approval branch."""
+    surfaced: list[object] = []
+
+    async def _record(*args: object) -> None:
+        surfaced.append(args)
+
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.monitor_pr._surface_stale_change_request", _record,
+    )
+    _gh, state = _510_changes_requested_hold()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert len(surfaced) == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_510_still_relays_fresh_changes_requested() -> None:
+    """Fresh actionable feedback routes to the implementer BEFORE the hold —
+    the hold must never starve the relay path."""
+    gh = _ReviewContextGitHub(
+        _green_checks_payload(),
+        reviews=[{"author_login": "alice", "state": "CHANGES_REQUESTED"}],
+        review_context={
+            "reviews": [
+                {
+                    "author_login": "alice",
+                    "state": "CHANGES_REQUESTED",
+                    "submitted_at": "2026-10-02T12:15:00Z",
+                },
+            ],
+            "review_threads": [],
+            "head_oid": "deadbeef",
+            "review_decision": "CHANGES_REQUESTED",
+        },
+    )
+    state = _fix8_state_with_gate(gh)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "relay_feedback"
+    fresh_reviews = result.get("pending_reviews") or []
+    assert fresh_reviews and fresh_reviews[0]["author_login"] == "alice"
+    assert fresh_reviews[0]["state"] == "CHANGES_REQUESTED"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_510_merges_when_review_decision_approves() -> None:
+    """APPROVED aggregate decision keeps the normal merge path."""
+    gh = _ReviewContextGitHub(
+        _green_checks_payload(),
+        reviews=[{"author_login": "alice", "state": "APPROVED"}],
+        review_context={
+            "reviews": [{"author_login": "alice", "state": "APPROVED"}],
+            "review_threads": [],
+            "head_oid": "deadbeef",
+            "review_decision": "APPROVED",
+        },
+    )
+    state = _fix8_state_with_gate(gh)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "merging"
+
+
+
+# ---------------------------------------------------------------------------
 # 090 L1 — Base-precondition prevention gate (US1).
 #
 # Wiring contract: between the `approved == True` merge precondition and the
