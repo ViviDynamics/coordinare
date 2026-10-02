@@ -548,6 +548,46 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             for key, value in base_updates.items():
                 state[key] = value  # type: ignore[literal-required]
             return state
+        # 510 — refuse to advance to merge while GitHub's aggregate
+        # reviewDecision still says CHANGES_REQUESTED. The 064 checks gate
+        # consulted checks alone, so on a repo whose branch protection
+        # ignores review state the closer would merge despite an open
+        # change request (observed in the 2026-10-02 e2e run: 50 minutes of
+        # FORWARD polls against an unmergeable PR). This hold sits *after*
+        # fresh actionable feedback has been relayed (the relay branch
+        # above returns first), so the implementer does receive the
+        # requested changes; it blocks only the merge itself and
+        # self-clears when the reviewer re-reviews or dismisses. An empty
+        # decision (legacy service without get_pr_review_context) fails
+        # open; transient fetch failures never reach this point (deferred
+        # above), so the merge transition is only reachable with review
+        # state successfully fetched this cycle.
+        if _review_decision == "CHANGES_REQUESTED":
+            logger.warning(
+                "monitor_pr.merge_held_changes_requested",
+                card_id=str(card.get("id", "")),
+                pr_url=pr_url,
+                review_decision=_review_decision,
+            )
+            state["phase"] = "monitoring_pr"
+            # 510 (round 2): surface the stale-review state the same way the
+            # no-approval branch does before parking, so an addressed stale
+            # review is re-requested rather than silently blocking forever.
+            try:
+                await _surface_stale_change_request(
+                    state,
+                    github,
+                    card,
+                    card_id,
+                    reviews,
+                    _review_threads,
+                    _pr_head_oid,
+                    _review_decision,
+                    human_reviewers if isinstance(human_reviewers, list) else [],
+                )
+            except Exception as exc:
+                logger.warning("stale_review.handler_failed", error=str(exc))
+            return state
         state["phase"] = "merging"
     else:
         # 128: no fresh-actionable feedback and no approval. If GitHub still
