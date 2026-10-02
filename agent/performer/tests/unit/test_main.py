@@ -26,7 +26,7 @@ from performer.main import (
     handle_status,
     run_loop,
 )
-from performer.models import Performance, Score, Stand
+from performer.models import BackendEvent, BackendEventType, Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerResponse
 
 
@@ -209,6 +209,44 @@ class TestHandleStatus:
         assert resp.status == "error"
         assert "boom" in (resp.reason or "")
         assert resp.metrics is None
+
+    async def test_error_carries_buffered_events(self) -> None:
+        """509: a fast terminal error (rc=0, zero events) must still deliver
+        events buffered before the failure -- e.g. the relay-feedback
+        delivery event emitted at start() before _launch. Run-loop cleanup
+        discards the buffer right after the terminal response, so only the
+        response itself can carry them to the session record."""
+        perf = _make_perf(session_id="sid")
+        perf.backend.get_status.return_value = BackendStatus(
+            state="error", error_reason="claude exited with code 0 without producing any events"
+        )
+        perf.backend.drain_events.return_value = [
+            BackendEvent(
+                type=BackendEventType.progress,
+                text="relay feedback in prompt: 1 review(s), 2 inline comment(s)",
+            )
+        ]
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "error"
+        assert any("relay feedback" in e["text"] for e in resp.events)
+
+    async def test_blocked_carries_buffered_events(self) -> None:
+        """509: blocked is terminal too (the transport exits the loop); any
+        buffered events must ride the blocked response, not die in cleanup."""
+        perf = _make_perf(session_id="sid")
+        perf.backend.get_status.return_value = BackendStatus(
+            state="blocked", questions=["Which CI?"]
+        )
+        perf.backend.drain_events.return_value = [
+            BackendEvent(
+                type=BackendEventType.progress,
+                text="relay feedback in prompt: 1 review(s), 2 inline comment(s)",
+            )
+        ]
+        with patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "blocked"
+        assert any("relay feedback" in e["text"] for e in resp.events)
 
     async def test_done_pushes_and_transitions_to_waiting_for_checks(self) -> None:
         perf = _make_perf(session_id="sid")

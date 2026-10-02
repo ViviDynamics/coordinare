@@ -2310,6 +2310,14 @@ async def _non_done_response(
     backend_status: BackendStatus,
 ) -> PerformerResponse:
     """Blocked / error / working tails for a backend that has not finished."""
+    # 509: terminal responses must carry whatever is still buffered (e.g. the
+    # relay-feedback delivery event emitted at start() before _launch) --
+    # run-loop cleanup discards the buffer right after the terminal response,
+    # so a fast failure would strand it and the session record would show
+    # zero events again.
+    terminal_events: list[dict] | None = None
+    if backend_status.state != "working":
+        terminal_events = [e.model_dump() for e in perf.backend.drain_events()]
     if backend_status.state == "blocked":
         perf.state = "blocked"
         perf.open_questions = backend_status.questions
@@ -2326,6 +2334,7 @@ async def _non_done_response(
             head_before=perf.head_at_start,
             head_after=head_after_blocked,
             bot_pr_comment_delta=bot_comment_delta,
+            events=terminal_events,
         )
 
     if backend_status.state == "error":
@@ -2336,11 +2345,13 @@ async def _non_done_response(
                 status="token_limit",
                 session_id=perf.session_id,
                 reason=backend_status.error_reason,
+                events=terminal_events,
             )
         return PerformerResponse(
             status="error",
             session_id=perf.session_id,
             reason=backend_status.error_reason,
+            events=terminal_events,
         )
 
     # working — attach metrics and drain buffered events
