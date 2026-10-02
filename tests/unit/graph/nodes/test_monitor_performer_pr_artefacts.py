@@ -116,3 +116,37 @@ def test_each_field_independently_triggers_write_through(field, value) -> None:
     state = _base_state()
     updates = _record_pr_artefacts(state, {field: value})
     assert "current_card" in updates
+
+
+def test_head_after_fills_head_sha() -> None:
+    """The performer wire carries ``head_after`` (070); the write-through
+    MUST record it when the legacy ``head_sha`` key is absent. Production
+    observed head_sha=None with a live pr_opened response otherwise."""
+    state = _base_state()
+    updates = _record_pr_artefacts(
+        state,
+        {"pr_url": "https://github.com/x/y/pull/148", "head_after": "abc12345"},
+    )
+    assert updates["current_card"]["head_after"] == "abc12345"
+
+
+def test_head_sha_key_still_wins_when_present() -> None:
+    """If a payload carries both keys, the explicit head_sha stays authoritative."""
+    state = _base_state()
+    updates = _record_pr_artefacts(
+        state,
+        {"head_sha": "explicit0", "head_after": "fallback1"},
+    )
+    assert updates["current_card"]["head_after"] == "explicit0"
+
+
+def test_pr_number_derived_from_pr_url() -> None:
+    """The performer wire never carries pr_number; the write-through MUST
+    derive it from pr_url so restart recovery and divergence detection get
+    the full artefact set."""
+    state = _base_state()
+    updates = _record_pr_artefacts(
+        state,
+        {"pr_url": "https://github.com/x/y/pull/148", "pr_node_id": "PR_148"},
+    )
+    assert updates["current_card"]["pr_number"] == 148

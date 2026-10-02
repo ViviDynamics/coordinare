@@ -174,6 +174,10 @@ class PerformerResponse(BaseModel):
     # rather than honoring a no-progress "blocked" verdict.
     head_before: str | None = None
     head_after: str | None = None
+    # 511: the working branch this performer pushed. Set on pr_opened so the
+    # coordinare's 076 artefact write-through records pushed_branch alongside
+    # pr_url; optional because an older performer image never sends it.
+    pushed_branch: str | None = None
     # 070: continuation hint emitted alongside status="partial_progress" so
     # the coordinare relays a focused next-chunk prompt to the next turn.
     next_focus: str | None = None

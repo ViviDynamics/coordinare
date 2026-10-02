@@ -1516,6 +1516,10 @@ async def implementing_path(
             return PerformerResponse(
                 status="pr_opened", session_id=perf.session_id, pr_url=perf.pr_url,
                 pr_node_id=perf.pr_node_id, report=_ir, head_before=perf.head_at_start, head_after=_head,
+                # 511: the artefact write-through needs the branch on both
+                # pr_opened paths (this workflow path and the legacy
+                # waiting_for_checks path in main.py).
+                pushed_branch=perf.stand.branch,
                 progress="implementer workflow: CI green",
             )
         if _status == "partial_progress":
