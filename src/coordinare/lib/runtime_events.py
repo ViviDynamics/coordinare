@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-RuntimeCategory = Literal["startup", "heartbeat", "activity", "state_change", "failure", "shutdown"]
+RuntimeCategory = Literal["startup", "heartbeat", "activity", "state_change", "failure", "shutdown", "warning"]
 
 
 def build_runtime_event(

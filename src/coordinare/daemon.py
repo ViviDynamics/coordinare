@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic, perf_counter
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -23,6 +23,7 @@ from coordinare.graph.nodes.github_retry import (
 )
 from coordinare.graph.state import (
     CoordinareState,
+    DaemonPhase,
     _rederive_current_card,
     _retire_active_session,
     _set_current_card,
@@ -39,7 +40,7 @@ from coordinare.services.board_provider import (
 )
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
-from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
+from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
     EnvCacheStateSnapshot,
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
     from coordinare.models.env_cache import BootstrapJobPayload
+    from coordinare.services.intake_dispatch import IntakeRole
     from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
@@ -84,18 +86,18 @@ def get_daemon_started_at() -> str:
 #: fanout and in _compute_eligibility are two spellings that must agree, with
 #: nothing to catch a typo -- the branch would simply never match, and the
 #: blocked-card recovery this exists for would silently stop happening.
-ELIGIBLE = "eligible"
-BLOCKED_COLUMN = "blocked_column"
-DEPENDENCY_BLOCKED = "dependency_blocked"
-MISSING_CARD = "missing_card"
-KICKED_BACK = "kicked_back"
-
 #: Typed, so a new verdict has to be added here rather than appearing as a
 #: string nothing matches. The comment this replaces listed four and the code
 #: already had five.
 EligibilityReason = Literal[
     "eligible", "blocked_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity",
 ]
+
+ELIGIBLE: EligibilityReason = "eligible"
+BLOCKED_COLUMN: EligibilityReason = "blocked_column"
+DEPENDENCY_BLOCKED: EligibilityReason = "dependency_blocked"
+MISSING_CARD: EligibilityReason = "missing_card"
+KICKED_BACK: EligibilityReason = "kicked_back"
 
 #: How many BLOCKED sessions may run their graph in one cycle. Each one is a
 #: full graph tick with a state deep-copy and a fanout permit, and the whole
@@ -124,7 +126,7 @@ class AsyncSessionTickResult:
 
     card_id: str
     ok: bool
-    session_state: dict
+    session_state: dict[str, Any]
     skipped: bool = False
     error: str | None = None
     duration_ms: int = 0
@@ -251,12 +253,12 @@ def _persist_last_rebase_attempt(raw: Any) -> dict[str, Any] | None:
     return last_rebase_attempt
 
 
-def _persist_assessor_questions(raw: Any) -> list[dict]:
+def _persist_assessor_questions(raw: Any) -> list[dict[str, Any]]:
     """123: answered assessor Q&A — normalize to well-formed {"question","answer"}
     dicts so a malformed entry never fails the whole snapshot load AND never
     reaches dispatch_performer's prior_clarifications injection missing a key.
     """
-    assessor_open_questions: list[dict] = []
+    assessor_open_questions: list[dict[str, Any]] = []
     if isinstance(raw, (list, tuple)):
         for item in raw:
             if isinstance(item, dict) and item.get("question"):
@@ -696,7 +698,7 @@ def _restored_session_dict(
 
 
 def _reopen_attempt_logs(
-    restored_sessions: dict[str, dict], attempt_log: Any,
+    restored_sessions: dict[str, dict[str, Any]], attempt_log: Any,
 ) -> None:
     """141 A-008: re-register any in-flight attempt with AttemptLog so
     close_attempt writes the end row to the correct JSONL file even
@@ -771,7 +773,7 @@ def _synthesize_v1_session(
     }
 
 
-def _rehydrate_env_cache(state: dict[str, Any], snapshot: WorkflowSnapshot) -> None:
+def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> None:
     """073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
     live EnvCacheState entries that EnvCacheService.initialise() already
     populated with readme_sha=None.  Without this, every restart re-runs
@@ -820,8 +822,8 @@ def _rehydrate_env_cache(state: dict[str, Any], snapshot: WorkflowSnapshot) -> N
 
 
 def _seed_symphony_runtime_state(
-    state: dict[str, Any], snapshot: WorkflowSnapshot,
-) -> dict[str, dict] | None:
+    state: CoordinareState, snapshot: WorkflowSnapshot,
+) -> dict[str, dict[str, Any]] | None:
     """Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
     per-symphony swap in _conduct_single_symphony reads sym_state.active_card
     and sym_state.previous_phase as the source of truth — if those are not
@@ -851,7 +853,7 @@ def _seed_symphony_runtime_state(
     return None
 
 
-def _derive_global_phase(active_sessions: dict) -> str:
+def _derive_global_phase(active_sessions: dict[str, Any]) -> DaemonPhase:
     """Derive the global daemon phase from the highest-priority session phase."""
     if not active_sessions:
         return "idle"
@@ -863,7 +865,7 @@ def _derive_global_phase(active_sessions: dict) -> str:
         if pri > best_pri:
             best = p
             best_pri = pri
-    return best
+    return cast("DaemonPhase", best)
 
 
 # Global state keys mutated by graph nodes (e.g. check_board) that are shared
@@ -891,7 +893,7 @@ SHARED_CYCLE_MARKER_KEYS: tuple[str, ...] = (
 )
 
 
-def seed_shared_cycle_markers(state: dict[str, Any]) -> None:
+def seed_shared_cycle_markers(state: CoordinareState) -> None:
     """Ensure every shared per-cycle marker map exists BEFORE the fanout.
 
     Idempotent, and deliberately non-destructive: an existing dict is left in place (it
@@ -901,7 +903,7 @@ def seed_shared_cycle_markers(state: dict[str, Any]) -> None:
     """
     for key in SHARED_CYCLE_MARKER_KEYS:
         if not isinstance(state.get(key), dict):
-            state[key] = {}
+            state[key] = {}  # type: ignore[literal-required]
 
 
 _GLOBAL_STATE_KEYS: tuple[str, ...] = (
@@ -965,7 +967,7 @@ def _pick_stable_active_card_id(active_sessions: dict[str, Any]) -> str | None:
 
 def _compute_eligibility(
     card_id: str,
-    session: dict,
+    session: dict[str, Any],
     board_snapshot: dict[str, list[str]],
     dep_graph: DependencyGraph | None,
 ) -> SessionEligibility:
@@ -1017,7 +1019,7 @@ def _compute_eligibility(
 
 def _log_session_skip(
     card_id: str,
-    session: dict,
+    session: dict[str, Any],
     elig: SessionEligibility,
 ) -> None:
     """Emit the per-cycle skip log for an ineligible session.
@@ -1281,7 +1283,7 @@ def stuck_dedup_key(card_id: str, phase: str, phase_entered: Any) -> str:
 
 
 async def _preflight_seed_main_sha_cache(
-    state: dict[str, Any], github: Any, active_sessions: dict,
+    state: CoordinareState, github: Any, active_sessions: dict[str, Any],
 ) -> None:
     """Pre-seed _main_sha_cache so concurrent sessions share one ls-remote
     result instead of each making an independent call, then run the
@@ -1364,7 +1366,7 @@ async def _preflight_seed_main_sha_cache(
                 )
 
 
-def _mirror_board_metadata(state: dict[str, Any], board: dict[str, Any]) -> None:
+def _mirror_board_metadata(state: CoordinareState, board: dict[str, Any]) -> None:
     """062 Fix 4: propagate per-card metadata so dashboard swimlane
     can render titles + GitHub links in multi-session mode.
     check_board sets these too, but they're not in _GLOBAL_STATE_KEYS
@@ -1382,7 +1384,7 @@ def _mirror_board_metadata(state: dict[str, Any], board: dict[str, Any]) -> None
 
 
 async def _preflight_poll_board(
-    state: dict[str, Any], github: Any, active_sessions: dict,
+    state: CoordinareState, github: Any, active_sessions: dict[str, Any],
 ) -> None:
     """Pre-flight: poll the board once so all concurrent sessions share the
     cache and eligibility can be computed before the fanout.  Respects the
@@ -1397,7 +1399,11 @@ async def _preflight_poll_board(
         )
         return
     try:
-        board = await board_of(state, github).poll_board()
+        provider = board_of(state, github)
+        if provider is None:
+            logger.info("multi_session.pre_poll_no_board")
+            return
+        board = await provider.poll_board()
         state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
         clear_deferred_github_operation(state, "poll_board")
         state["last_poll_at"] = datetime.now(UTC)
@@ -1423,7 +1429,7 @@ async def _preflight_poll_board(
 
 
 def _compute_session_eligibilities(
-    state: dict[str, Any], active_sessions: dict, max_cards: int,
+    state: CoordinareState, active_sessions: dict[str, Any], max_cards: int,
 ) -> dict[str, SessionEligibility]:
     """Build the dependency graph from the pre-fetched board (when cached),
     compute eligibility for every session, apply pipeline-budget selection,
@@ -1434,14 +1440,14 @@ def _compute_session_eligibilities(
     # this cycle.  The full resolution runs inside each session's check_board tick and
     # will correct the dep state by the following cycle.
     dep_graph: DependencyGraph | None = None
-    cached_board = state.get("_board_cache")  # type: ignore[misc]
+    cached_board = state.get("_board_cache")
     if cached_board is not None:
         try:
-            dep_graph = _build_dep_graph(cached_board)
+            dep_graph = _build_dep_graph(cast("dict[str, Any]", cached_board))
         except Exception:
             logger.warning("multi_session.dep_graph_failed", exc_info=True)
 
-    board_snapshot: dict[str, list[str]] = state.get("board_snapshot") or {}  # type: ignore[assignment]
+    board_snapshot: dict[str, list[str]] = state.get("board_snapshot") or {}
 
     eligibilities: dict[str, SessionEligibility] = {
         card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
@@ -1462,7 +1468,7 @@ def _compute_session_eligibilities(
             )
 
     # Record skip reasons for ineligible sessions.
-    skip_reasons: dict[str, dict] = {}
+    skip_reasons: dict[str, dict[str, Any]] = {}
     for card_id, elig in eligibilities.items():
         if not elig.eligible:
             skip_reasons[card_id] = {
@@ -1476,8 +1482,8 @@ def _compute_session_eligibilities(
 
 
 async def _all_ineligible_fallback(
-    state: dict[str, Any], graph: Any, active_sessions: dict,
-) -> dict[str, Any]:
+    state: CoordinareState, graph: Any, active_sessions: dict[str, Any],
+) -> CoordinareState:
     """Fallback when every session is ineligible this cycle (e.g. all
     BLOCKED / dependency_blocked): run a single full graph invocation so
     check_board can still pick up new sessions from open slots or do other
@@ -1512,7 +1518,7 @@ async def _all_ineligible_fallback(
     # each cycle and re-points active_card_id when it needs to handle
     # or dispatch a card.  066 FR-010: current_card is derived.
     if state.get("phase") in PASSIVE_PHASES:
-        state["active_card_id"] = None  # type: ignore[typeddict-unknown-key]
+        state["active_card_id"] = None
     _rederive_current_card(state)
     return state
 
@@ -1521,8 +1527,8 @@ async def _all_ineligible_fallback(
 class _FanoutContext:
     """Stable inputs for one fanout round of per-session graph ticks."""
 
-    state: dict[str, Any]
-    active_sessions: dict
+    state: CoordinareState
+    active_sessions: dict[str, Any]
     eligibilities: dict[str, SessionEligibility]
     blocked_to_poll: set[str]
     graph: Any
@@ -1531,12 +1537,12 @@ class _FanoutContext:
 
 def _prepare_session_state(
     ctx: _FanoutContext, card_id: str,
-) -> tuple[dict[str, Any], dict[str, dict]]:
+) -> tuple[CoordinareState, dict[str, dict[str, Any]]]:
     """Snapshot the stable pre-fanout state for one session's graph tick and
     deep-copy only the session being invoked.  Returns the per-session state
     plus the shallow sibling snapshots captured before ainvoke.
     """
-    session_state: dict[str, Any] = dict(ctx.state)
+    session_state = cast("CoordinareState", dict(ctx.state))
     if session_state.get("github_retry_queue") is not None:
         session_state["github_retry_queue"] = list(
             session_state["github_retry_queue"],
@@ -1560,7 +1566,7 @@ def _prepare_session_state(
     # as prepare_conflict_resolution can mutate session dicts
     # in-place; capturing shallow copies here lets us detect
     # real mutations post-ainvoke by value comparison.
-    pre_fanout_siblings: dict[str, dict] = {
+    pre_fanout_siblings: dict[str, dict[str, Any]] = {
         k: dict(v)
         for k, v in session_state["active_sessions"].items()
         if k != card_id
@@ -1571,10 +1577,10 @@ def _prepare_session_state(
 def _collect_session_updates(
     ctx: _FanoutContext,
     card_id: str,
-    session: dict,
-    updated: dict[str, Any],
-    pre_fanout_siblings: dict[str, dict],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    session: dict[str, Any],
+    updated: CoordinareState,
+    pre_fanout_siblings: dict[str, dict[str, Any]],
+) -> tuple[CardSession, dict[str, Any]]:
     """Post-ainvoke merge for one session tick: fold in-place session
     mutations, capture new sibling sessions + cross-session mutations, and
     select the global state keys.  Returns (updated_session, g_updates).
@@ -1617,7 +1623,7 @@ def _collect_session_updates(
         if k != card_id and k in ctx.active_sessions and v != pre_fanout_siblings.get(k)
     }
     g_updates: dict[str, Any] = {
-        k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated
+        k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated  # type: ignore[literal-required]
     }
     if new_sessions:
         g_updates["_new_sessions"] = new_sessions
@@ -1627,7 +1633,7 @@ def _collect_session_updates(
 
 
 async def _invoke_session_tick(
-    ctx: _FanoutContext, card_id: str, session: dict,
+    ctx: _FanoutContext, card_id: str, session: dict[str, Any],
 ) -> AsyncSessionTickResult:
     """Run one session's graph tick under the fanout semaphore."""
     elig = ctx.eligibilities[card_id]
@@ -1666,7 +1672,7 @@ async def _invoke_session_tick(
             return AsyncSessionTickResult(
                 card_id=card_id,
                 ok=True,
-                session_state=updated_session,
+                session_state=cast("dict[str, Any]", updated_session),
                 duration_ms=int((perf_counter() - t0) * 1000),
                 global_updates=g_updates,
             )
@@ -1684,7 +1690,7 @@ async def _invoke_session_tick(
 
 
 def _merge_retry_queue_entry(
-    merged_retry_queue: list[dict], entry: dict,
+    merged_retry_queue: list[dict[str, Any]], entry: dict[str, Any],
 ) -> None:
     """Dedupe one retry-queue entry into the merged queue: keep the highest
     attempt; on a tie, the later retry_at so two sessions that deferred the
@@ -1726,7 +1732,7 @@ def _merge_retry_queue_entry(
 
 
 async def _release_session_resources(
-    state: dict[str, Any],
+    state: CoordinareState,
     sess: dict[str, Any],
 ) -> None:
     """Issue #489: best-effort release-time teardown for a session the
@@ -1763,7 +1769,10 @@ async def _release_session_resources(
     )
     if service is None:
         services = state.get("performer_services") or {}
-        service = services.get(stage) if isinstance(services, dict) else None
+        service = (
+            services.get(stage)
+            if isinstance(services, dict) and isinstance(stage, str) else None
+        )
     release = getattr(service, "release_session", None)
     if not callable(release):
         return
@@ -1784,8 +1793,8 @@ async def _release_session_resources(
 
 
 async def _merge_fanout_results(
-    state: dict[str, Any],
-    active_sessions: dict,
+    state: CoordinareState,
+    active_sessions: dict[str, Any],
     eligibilities: dict[str, SessionEligibility],
     results: list[AsyncSessionTickResult],
 ) -> None:
@@ -1799,13 +1808,13 @@ async def _merge_fanout_results(
     """
     pre_fanout_ops: set[str] = {
         e["operation"]
-        for e in (state.get("github_retry_queue") or [])  # type: ignore[misc]
+        for e in (state.get("github_retry_queue") or [])
         if isinstance(e, dict) and e.get("operation")
     }
     cleared_ops: set[str] = set()
     first_global_merged = False
-    merged_retry_queue: list[dict] | None = None
-    cross_mutations: dict[str, dict] = {}
+    merged_retry_queue: list[dict[str, Any]] | None = None
+    cross_mutations: dict[str, dict[str, Any]] = {}
     for result in results:
         if not result.ok or result.skipped or not result.global_updates:
             continue
@@ -1845,13 +1854,13 @@ async def _merge_fanout_results(
                 for e in merged_retry_queue
                 if not (isinstance(e, dict) and e.get("operation") in cleared_ops)
             ]
-        state["github_retry_queue"] = merged_retry_queue  # type: ignore[literal-required]
+        state["github_retry_queue"] = merged_retry_queue
         retry_ats = [
             e["retry_at"]
             for e in merged_retry_queue
             if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)
         ]
-        state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
+        state["github_retry_after"] = min(retry_ats) if retry_ats else None
 
     # Apply cross-session mutations as a baseline before direct results so
     # each session's own tick result takes precedence over mutations from a
@@ -1865,8 +1874,8 @@ async def _merge_fanout_results(
 
 
 async def _merge_session_results(
-    state: dict[str, Any],
-    active_sessions: dict,
+    state: CoordinareState,
+    active_sessions: dict[str, Any],
     eligibilities: dict[str, SessionEligibility],
     results: list[AsyncSessionTickResult],
 ) -> None:
@@ -1905,7 +1914,7 @@ async def _merge_session_results(
 
 
 def _finalize_multi_session(
-    state: dict[str, Any], active_sessions: dict,
+    state: CoordinareState, active_sessions: dict[str, Any],
 ) -> None:
     """End-of-cycle writeback: publish sessions, derive the global phase,
     keep a stable active_card_id pointer, and re-derive current_card.
@@ -1913,7 +1922,7 @@ def _finalize_multi_session(
     state["active_sessions"] = active_sessions
     # Derive global phase from the highest-priority session phase so the
     # dashboard never shows a stale or idle value while work is ongoing.
-    state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
+    state["phase"] = _derive_global_phase(active_sessions)
     # 066 FR-010: end-of-cycle re-derive.  Keep the previous active_card_id
     # pointer when its session is still present so the dashboard top-level
     # fields don't flicker between siblings on each cycle.  When the prior
@@ -1925,7 +1934,7 @@ def _finalize_multi_session(
     # re-establishes active_card_id via the unified pickup path regardless.
     active_id = state.get("active_card_id")
     if not active_id or active_id not in active_sessions:
-        state["active_card_id"] = (  # type: ignore[typeddict-unknown-key]
+        state["active_card_id"] = (
             _pick_stable_active_card_id(active_sessions)
         )
     _rederive_current_card(state)
@@ -2002,7 +2011,7 @@ class CoordinareDaemon:
     def state_store(self) -> StateStore | None:
         return self._state_store
 
-    def _lifecycle_signature(self) -> tuple:
+    def _lifecycle_signature(self) -> tuple[Any, ...]:
         """Lightweight fingerprint of lifecycle-relevant state.
 
         Changes whenever a card's stage advances, so it can trigger snapshot
@@ -2016,7 +2025,7 @@ class CoordinareDaemon:
         card_id = card.get("id") if isinstance(card, dict) else None
         sessions = self._state.get("active_sessions")
         if isinstance(sessions, dict):
-            session_stages: tuple = tuple(
+            session_stages: tuple[Any, ...] = tuple(
                 sorted(
                     (
                         str(cid), str((s or {}).get("performer_stage") or ""),
@@ -2242,7 +2251,11 @@ class CoordinareDaemon:
             if github is None:
                 return
         try:
-            board = await board_of(self._state, github).poll_board()
+            provider = board_of(self._state, github)
+            if provider is None:
+                logger.warning("restart_reconcile.no_board_provider")
+                return
+            board = await provider.poll_board()
             board_snapshot = board.get("snapshot", {})
             if not snapshot.active_card_id:
                 self._reconcile_sessions_with_board(board_snapshot, snapshot)
@@ -2299,7 +2312,7 @@ class CoordinareDaemon:
                 runtime.previous_phase = self._state.get("phase", "idle")
 
     def _reconcile_sessions_with_board(
-        self, board_snapshot: dict, snapshot: WorkflowSnapshot | None = None,
+        self, board_snapshot: dict[str, list[str]], snapshot: WorkflowSnapshot | None = None,
     ) -> None:
         """094: reconcile each restored per-card session's phase against the
         live board (board is source of truth).
@@ -2339,7 +2352,7 @@ class CoordinareDaemon:
             self._state["phase"] = _derive_global_phase(sessions)
 
     def _reconcile_session_phases(
-        self, sessions: dict[str, dict], board_snapshot: dict, snapshot: WorkflowSnapshot | None,
+        self, sessions: dict[str, Any], board_snapshot: dict[str, list[str]], snapshot: WorkflowSnapshot | None,
     ) -> None:
         """094: per-card phase reconciliation loop (board is source of truth)."""
         # The board column that is *consistent* with each in-flight phase. If
@@ -2411,7 +2424,7 @@ class CoordinareDaemon:
 
     @staticmethod
     def _find_card_column(
-        board_snapshot: dict, card_id: str, session: dict | None = None,
+        board_snapshot: dict[str, list[str]], card_id: str, session: dict[str, Any] | None = None,
     ) -> str | None:
         """Return the live board column for a card, or None if absent.
 
@@ -2545,7 +2558,7 @@ class CoordinareDaemon:
         sessions don't each trigger a GitHub API call.  The main-SHA cache is
         also pre-seeded so rebase detection fires at most once per cycle.
         """
-        active_sessions: dict = self._state.get("active_sessions") or {}
+        active_sessions: dict[str, Any] = self._state.get("active_sessions") or {}
         self._state.pop("_pipeline_selected", None)
 
         # 048: Sync SlotManager with current sessions to free stale slots
@@ -2579,7 +2592,7 @@ class CoordinareDaemon:
         # 173: this used to sit after the advocate scan, which reassigned
         # self._state; that scan is gone, so the only requirement left is that
         # the seeding happens before the fanout.
-        seed_shared_cycle_markers(self._state)  # type: ignore[arg-type]
+        seed_shared_cycle_markers(self._state)
 
         # Pre-flight: poll board once so all concurrent sessions share the cache
         # and eligibility can be computed before the fanout.
@@ -2624,7 +2637,7 @@ class CoordinareDaemon:
 
     async def _resolve_symphony_effective_state(
         self, symphony_name: str, symphony_config: Any, sym_state: Any,
-    ) -> tuple[Any, dict]:
+    ) -> tuple[Any, dict[str, Any]]:
         """Resolve the per-symphony effective config, route any unassigned
         restored sessions onto this symphony's board, and emit the
         at-capacity debug event.  Returns (effective_cfg, sym_sessions)."""
@@ -2676,7 +2689,7 @@ class CoordinareDaemon:
         self,
         symphony_name: str,
         sym_state: Any,
-        _sym_sessions: dict,
+        _sym_sessions: dict[str, Any],
         _effective_cfg: Any,
     ) -> tuple[Any, Any, Any, Any, Any]:
         """Swap the per-symphony graph keys into the flat state.  Returns the
@@ -2754,10 +2767,10 @@ class CoordinareDaemon:
         skip_reasons = self._state.get("session_skip_reasons")
         sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
         # 062: Per-card metadata for the dashboard swimlane.
-        sym_state.board_titles = dict(self._state.get("_board_titles") or {})  # type: ignore[arg-type]
-        sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})  # type: ignore[arg-type]
-        sym_state.board_issue_urls = dict(self._state.get("_board_issue_urls") or {})  # type: ignore[arg-type]
-        sym_state.board_pr_urls = dict(self._state.get("_board_pr_urls") or {})  # type: ignore[arg-type]
+        sym_state.board_titles = dict(self._state.get("_board_titles") or {})
+        sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})
+        sym_state.board_issue_urls = dict(self._state.get("_board_issue_urls") or {})
+        sym_state.board_pr_urls = dict(self._state.get("_board_pr_urls") or {})
         # Per-symphony phase transition metric (labels each transition with the actual symphony)
         _prev_sym_phase = sym_state.previous_phase
         _cur_sym_phase = self._state.get("phase")
@@ -2770,7 +2783,7 @@ class CoordinareDaemon:
                     symphony=symphony_name,
                     transition_type=_sym_transition,
                 ).inc()
-            sym_state.previous_phase = _cur_sym_phase  # type: ignore[assignment]
+            sym_state.previous_phase = _cur_sym_phase
 
     async def _conduct_single_symphony(
         self,
@@ -2830,7 +2843,7 @@ class CoordinareDaemon:
             _propagating = True
             # Rebuild aggregate active_sessions from last-known-good symphony states
             # so state is not left in a per-symphony scoped view on abnormal exit.
-            _agg: dict = {}
+            _agg: dict[str, dict[str, Any]] = {}
             for _ss in (self._state.get("symphony_states") or {}).values():
                 _agg.update(getattr(_ss, "active_sessions", None) or {})
             self._state["active_sessions"] = _agg
@@ -2857,9 +2870,9 @@ class CoordinareDaemon:
                 self._state["active_sessions"] = _prev_active_sessions
             self._state["active_card_id"] = _prev_active_card_id
             _rederive_current_card(self._state)
-            self._state["board_snapshot"] = _prev_board_snapshot
-            self._state["session_skip_reasons"] = _prev_session_skip_reasons
-            self._state["phase"] = _prev_phase
+            self._state["board_snapshot"] = _prev_board_snapshot  # type: ignore[typeddict-item]
+            self._state["session_skip_reasons"] = _prev_session_skip_reasons  # type: ignore[typeddict-item]
+            self._state["phase"] = _prev_phase  # type: ignore[typeddict-item]
 
     def _preflight_reload_symphony_states(
         self, added: set[str], removed: set[str],
@@ -2914,7 +2927,7 @@ class CoordinareDaemon:
                     org=_new_eff.github_org,
                     project_number=_new_eff.github_project_number,
                     endpoint=_new_eff.github_graphql_url,
-                    circuit_breaker=_global_gh._circuit_breaker,
+                    circuit_breaker=cast("Any", _global_gh)._circuit_breaker,
                     retry_kwargs={
                         "attempts": _r.attempts,
                         "wait_initial": _r.wait_initial_seconds,
@@ -3015,15 +3028,15 @@ class CoordinareDaemon:
 
             # Atomic state swap: all config fields updated only after all
             # preflights and service builds have succeeded without raising.
-            self._state["symphony_configs"] = new_configs  # type: ignore
-            self._state["coordinare_config"] = coordinare_cfg  # type: ignore
-            self._state["config"] = coordinare_cfg.global_config  # type: ignore
-            self._state["orchestra_config"] = coordinare_cfg.orchestra  # type: ignore
-            self._state["symphony_states"] = sym_states  # type: ignore
+            self._state["symphony_configs"] = new_configs
+            self._state["coordinare_config"] = coordinare_cfg
+            self._state["config"] = coordinare_cfg.global_config
+            self._state["orchestra_config"] = coordinare_cfg.orchestra
+            self._state["symphony_states"] = sym_states
             self._state["config_mode"] = (
                 "multi_symphony" if is_multi_symphony_config(raw) else "legacy"
             )
-            self._state["config_version"] = (self._state.get("config_version") or 0) + 1  # type: ignore
+            self._state["config_version"] = (self._state.get("config_version") or 0) + 1
 
             logger.info("config_reloaded", added=list(added), removed=list(removed))
         except Exception as exc:
@@ -3283,7 +3296,7 @@ class CoordinareDaemon:
         symphony_name: str,
         env_cache_svc: Any,
         container_id: str | None,
-        status_result: dict,
+        status_result: dict[str, Any],
         last_logs_snapshot: list[str],
     ) -> None:
         """Handle a terminal bootstrap status (success or failure)."""
@@ -3435,7 +3448,7 @@ class CoordinareDaemon:
 
         try:
             if not hasattr(self, "_documenting_side_polling"):
-                self._documenting_side_polling = set()
+                self._documenting_side_polling: set[str] = set()
             await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn,
                                 get_session=lambda cid: current_sessions().get(cid),
                                 polling=self._documenting_side_polling)
@@ -3591,7 +3604,7 @@ class CoordinareDaemon:
         )
         return card_context, workspace_info
 
-    async def _maybe_dispatch_intake(self, role: str, symphony_name: str, github: Any) -> None:
+    async def _maybe_dispatch_intake(self, role: IntakeRole, symphony_name: str, github: Any) -> None:
         """Start one card-less intake run when the gate allows it (spec 173).
 
         Coordinare's whole job for these two roles: decide, dispatch, record. It
@@ -3646,14 +3659,14 @@ class CoordinareDaemon:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
         except Exception as exc:
             setattr(ec, f"{role}_in_flight", False)
-            register_failure(ec, role, f"dispatch failed: {exc}", max_attempts=3)  # type: ignore[arg-type]
+            register_failure(ec, role, f"dispatch failed: {exc}", max_attempts=3)
             logger.warning("intake.dispatch_failed", role=role, error=str(exc))
             return
 
         session_id = (result or {}).get("session_id") or (result or {}).get("job_id")
         if not session_id:
             setattr(ec, f"{role}_in_flight", False)
-            register_failure(ec, role, "dispatch returned no session id", max_attempts=3)  # type: ignore[arg-type]
+            register_failure(ec, role, "dispatch returned no session id", max_attempts=3)
             return
 
         logger.info("intake.dispatched", role=role, symphony=symphony_name, session_id=session_id)
@@ -3673,7 +3686,7 @@ class CoordinareDaemon:
         if ec is None:
             return
         terminal = {TERMINAL_BY_ROLE[role], "env_blocked", "error", "failed", "blocked", "cancelled"}
-        status: dict = {}
+        status: dict[str, Any] = {}
         for _ in range(60):  # 10 min at 10s; a read-only run has no reason to exceed it
             await asyncio.sleep(10)
             try:
@@ -3822,7 +3835,7 @@ class CoordinareDaemon:
         cfg = self._state.get("config")
         trusted = list(getattr(cfg, "trusted_bot_reviewers", []) or []) if cfg else []
         notif = self._state.get("notification_service")
-        status: dict = {}
+        status: dict[str, Any] = {}
         for _ in range(180):  # 30 min at 10s — a full-wiki build on a slow model
             await asyncio.sleep(10)
             try:
@@ -4037,7 +4050,7 @@ class CoordinareDaemon:
         # Bootstrap owns its workflow choice even when its backend falls back.
         bootstrap_role = getattr(getattr(cfg, "performers", None), "env_bootstrap", None)
         workflow = getattr(bootstrap_role, "workflow", None)
-        if isinstance(workflow, str) and workflow:
+        if bootstrap_role is not None and isinstance(workflow, str) and workflow:
             dispatch_dict["workflow"] = workflow
             workflow_env = dict(bootstrap_role.workflow_env)
             budget = int(getattr(self._state.get("coordinare_config"), "bootstrap_max_seconds", 0) or 0)
@@ -4223,7 +4236,7 @@ class CoordinareDaemon:
             except Exception as exc:
                 logger.warning("daemon_restart_notification_failed", error=str(exc))
 
-    async def _run_env_cache_and_cardless_cycle(self, symphony_configs: dict) -> None:
+    async def _run_env_cache_and_cardless_cycle(self, symphony_configs: dict[str, Any]) -> None:
         """Per-cycle env-cache bootstrap checks plus the card-less dispatches
         (173 intake, 124 wiki-init) for every configured symphony."""
         # 060: Env-cache SHA check — run once per cycle before orchestration.
@@ -4319,7 +4332,7 @@ class CoordinareDaemon:
                             symphony=_wsym,
                         )
 
-    async def _run_orchestration(self, symphony_configs: dict) -> bool:
+    async def _run_orchestration(self, symphony_configs: dict[str, Any]) -> bool:
         """057: Multi-symphony orchestration cycle.  Returns True when the
         multi-symphony path ran (False = legacy single-symphony mode)."""
         _multi_symphony = bool(symphony_configs)
@@ -4346,11 +4359,11 @@ class CoordinareDaemon:
                 await self._conduct_single_symphony(sym_name, sym_cfg)
             # Rebuild aggregate active_sessions from all symphony states so
             # downstream metrics, slot sync, and dashboard see the full picture.
-            _agg_sessions: dict = {}
+            _agg_sessions: dict[str, Any] = {}
             for _ss in (self._state.get("symphony_states") or {}).values():
                 _agg_sessions.update(getattr(_ss, "active_sessions", None) or {})
             self._state["active_sessions"] = _agg_sessions
-            self._state["phase"] = _derive_global_phase(_agg_sessions)  # type: ignore[literal-required]
+            self._state["phase"] = _derive_global_phase(_agg_sessions)
         else:
             # Legacy single-symphony mode (backward compat).
             # 066 T019/FR-004: unified entry path — empty-sessions case
