@@ -121,6 +121,11 @@ class ClaudeCodeBackend:
         # _API_RETRY_MAX the backend surfaces an error rather than waiting on
         # the CLI to give up.
         self._api_retry_count: int = 0
+        # 509: progress events (init/assistant/tool/result) parsed from the
+        # CLI since the last _launch. A run whose process exits 0 with this
+        # still at 0 never ran the agent — surfaced as an error by
+        # get_status so the coordinare bounces instead of reading success.
+        self._events_seen: int = 0
         # Additional directories to add to Claude Code's working-dir allowlist
         # via --add-dir. Populated from ``score.env_cache_path`` in start() so
         # env_bootstrap roles can write to ``/devenv/<symphony>-<hash>`` (which
@@ -194,6 +199,17 @@ class ClaudeCodeBackend:
             parent = str(Path(env_cache_path).parent)
             self._extra_dirs = [parent, env_cache_path]
         prompt = _build_task_prompt(score, stand_path=Path(stand.path))
+        # 509: record the delivery of relayed review feedback as an event so
+        # the session record shows whether the comments reached the prompt —
+        # the incident left no trace of this and could not be diagnosed.
+        if score.relay_feedback:
+            reviews = [r for r in score.relay_feedback if isinstance(r, dict)]
+            inline = sum(len(r.get("comments") or []) for r in reviews)
+            self._emit(
+                BackendEventType.progress,
+                f"relay feedback in prompt: {len(reviews)} review(s), "
+                f"{inline} inline comment(s)",
+            )
         await self._launch(prompt)
 
     def get_status(self) -> BackendStatus:
@@ -211,7 +227,33 @@ class ClaudeCodeBackend:
         ):
             rc = self._proc.returncode
             if rc == 0:
-                self._status = BackendStatus(state="done")
+                # 509: rc=0 is only a healthy completion when the CLI actually
+                # produced stream-json events (init at minimum). A silent rc=0
+                # exit means the agent never ran; reporting done here masked
+                # that as a success (the #509 re-dispatch incident).
+                if self._events_seen == 0:
+                    reader = self._reader_task
+                    if reader is not None and not reader.done():
+                        # 509 round 2: the process has exited but the reader
+                        # task may still be consuming buffered stdout — a
+                        # healthy run must not be declared dead while it is
+                        # active. The reader's own idle timeout bounds a
+                        # wedged pipe, and its finally applies this same
+                        # verdict once it finishes.
+                        return self._status
+                    # "subprocess_exit" is the coordinare's transient marker
+                    # (monitor/errors.py): the session bounces for a fresh
+                    # dispatch instead of parking the card in Blocked.
+                    tail = self._stderr_tail_text()
+                    reason = (
+                        "subprocess_exit: claude exited with code 0 "
+                        "without producing any events"
+                    )
+                    if tail:
+                        reason = f"{reason}: {tail}"
+                    self._status = BackendStatus(state="error", error_reason=reason)
+                else:
+                    self._status = BackendStatus(state="done")
             else:
                 tail = self._stderr_tail_text()
                 reason = f"claude exited with code {rc} without terminal event"
@@ -295,6 +337,7 @@ class ClaudeCodeBackend:
         resume_session_id: str | None = None,
     ) -> None:
         """Start a claude subprocess with the given prompt."""
+        self._events_seen = 0
         args = [
             "claude",
             "--print",
@@ -547,6 +590,7 @@ class ClaudeCodeBackend:
                     continue
                 if self._handle_event(event):
                     self._last_event_at = time.monotonic()
+                    self._events_seen += 1
                 if self._status.state in ("done", "error"):
                     break
         except asyncio.TimeoutError:
@@ -583,7 +627,22 @@ class ClaudeCodeBackend:
                         await self._proc.wait()
                     rc = self._proc.returncode
                     if rc == 0:
-                        self._status = BackendStatus(state="done")
+                        # 509: rc=0 with zero parsed events means the CLI never
+                        # ran the agent (silent exit). Report done only when
+                        # the run actually produced stream-json events.
+                        if self._events_seen == 0:
+                            tail = self._stderr_tail_text()
+                            reason = (
+                                "subprocess_exit: claude exited with code 0 "
+                                "without producing any events"
+                            )
+                            if tail:
+                                reason = f"{reason}: {tail}"
+                            self._status = BackendStatus(
+                                state="error", error_reason=reason,
+                            )
+                        else:
+                            self._status = BackendStatus(state="done")
                     else:
                         # Wait briefly for stderr drain to flush remaining
                         # lines, then surface the redacted tail so the failure

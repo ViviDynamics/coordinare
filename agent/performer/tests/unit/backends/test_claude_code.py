@@ -413,13 +413,48 @@ class TestClaudeCodeBackendGetStatus:
         assert adapter.get_status().state == "working"
 
     def test_get_status_liveness_proc_exited_clean_forces_done(self) -> None:
-        # Subprocess exited cleanly but the reader_task never emitted a
-        # terminal stream-json event — liveness fallback must transition.
+        # Subprocess exited cleanly, the reader_task saw progress events but
+        # never a terminal stream-json event — liveness fallback must
+        # transition to done. 509: zero-event runs stay error (see below).
+        adapter = ClaudeCodeBackend()
+        adapter._proc = MagicMock()
+        adapter._proc.returncode = 0
+        adapter._events_seen = 1
+        status = adapter.get_status()
+        assert status.state == "done"
+
+    def test_get_status_liveness_proc_exited_clean_zero_events_is_error(self) -> None:
+        # 509: rc=0 with zero events means the CLI never ran the agent — the
+        # liveness fallback must report an error, not a silent success. With
+        # no reader task at all there is nothing still consuming stdout, so
+        # the error fires immediately and carries the subprocess_exit marker
+        # the coordinare's transient classifier matches on (bounce, not block).
         adapter = ClaudeCodeBackend()
         adapter._proc = MagicMock()
         adapter._proc.returncode = 0
         status = adapter.get_status()
-        assert status.state == "done"
+        assert status.state == "error"
+        assert "subprocess_exit" in (status.error_reason or "")
+        assert "without producing any events" in (status.error_reason or "")
+
+    async def test_get_status_liveness_zero_events_active_reader_stays_working(
+        self,
+    ) -> None:
+        """509 round 2: the liveness check can run after the process exits but
+        before the reader task has consumed buffered stdout — a healthy run
+        must not be declared dead while the reader is still active. The
+        reader's idle timeout bounds a wedged pipe, and its finally applies
+        the same zero-event verdict when it finishes."""
+        adapter = ClaudeCodeBackend()
+        adapter._proc = MagicMock()
+        adapter._proc.returncode = 0
+        reader = asyncio.ensure_future(asyncio.Event().wait())
+        try:
+            adapter._reader_task = reader
+            assert adapter.get_status().state == "working"
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
 
     def test_get_status_liveness_proc_exited_nonzero_forces_error(self) -> None:
         adapter = ClaudeCodeBackend()
@@ -932,7 +967,24 @@ class TestEventReaderLoop:
         assert adapter.get_status().state == "error"
 
     async def test_reader_finalizes_done_on_zero_exit(self) -> None:
-        """When process exits cleanly without result event, status → done."""
+        """When process exits cleanly after emitting events, status → done."""
+        proc = _proc_with_lines([], returncode=None)
+
+        async def _set_returncode():
+            proc.returncode = 0
+
+        proc.wait = AsyncMock(side_effect=_set_returncode)
+
+        adapter = ClaudeCodeBackend()
+        adapter._proc = proc
+        adapter._events_seen = 1
+        await adapter._event_reader_loop()
+
+        assert adapter.get_status().state == "done"
+
+    async def test_reader_finalizes_error_on_zero_exit_zero_events(self) -> None:
+        """509: rc=0 with zero parsed events means the CLI never ran the
+        agent — the reader's finalizer must surface an error, not done."""
         proc = _proc_with_lines([], returncode=None)
 
         async def _set_returncode():
@@ -944,7 +996,11 @@ class TestEventReaderLoop:
         adapter._proc = proc
         await adapter._event_reader_loop()
 
-        assert adapter.get_status().state == "done"
+        assert adapter.get_status().state == "error"
+        assert "subprocess_exit" in (adapter.get_status().error_reason or "")
+        assert "without producing any events" in (
+            adapter.get_status().error_reason or ""
+        )
 
     async def test_reader_finalizes_error_on_nonzero_exit(self) -> None:
         proc = _proc_with_lines([], returncode=None)
@@ -1421,6 +1477,7 @@ class TestEventReaderLoopCancellation:
 
         proc.wait = AsyncMock(side_effect=_set_returncode)
         adapter._proc = proc
+        adapter._events_seen = 1
 
         await adapter._event_reader_loop()
 
@@ -1548,3 +1605,93 @@ class TestBuildTaskPrompt:
     def test_card_docs_section_omitted_when_folder_missing(self, tmp_path: Path) -> None:
         prompt = _build_task_prompt(_score(issue_number=70), stand_path=tmp_path)
         assert "## Card Documentation" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# 509: silent-success hole + relay-feedback delivery observability
+# ---------------------------------------------------------------------------
+
+
+class TestZeroEventExitIsError:
+    async def test_rc0_with_zero_events_is_error(self, tmp_path: Path) -> None:
+        """509: a claude CLI that exits 0 having emitted no stream-json events
+        never ran the agent. That must surface as an error, not a success —
+        the incident was a 4-minute pod that re-registered PR artefacts while
+        the CLI produced nothing, and the coordinare read it as success."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        proc.returncode = 0
+        if adapter._reader_task is not None:
+            await adapter._reader_task
+        status = adapter.get_status()
+        assert status.state == "error"
+        assert "subprocess_exit" in (status.error_reason or "")
+        assert "without producing any events" in (status.error_reason or "")
+
+    async def test_rc0_with_events_still_done(self, tmp_path: Path) -> None:
+        """A healthy run that exits 0 after emitting progress events keeps the
+        done semantics — the zero-event guard must not fire."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        adapter._events_seen = 3
+        proc.returncode = 0
+        if adapter._reader_task is not None:
+            await adapter._reader_task
+        status = adapter.get_status()
+        assert status.state == "done"
+
+
+class TestRelayFeedbackDeliveryEvent:
+    async def test_relay_feedback_emits_delivery_event(self, tmp_path: Path) -> None:
+        """509: the session record must show whether the review comments
+        reached the agent's prompt. start() emits a synthetic progress event
+        carrying the review + inline-comment counts."""
+        review = {
+            "id": "PRR_1",
+            "body": "Two things to fix.",
+            "comments": [
+                {"body": "Clamp is off by one", "path": "src/x.py", "line": 42},
+                {"body": "Missing tests", "path": "tests/test_x.py"},
+            ],
+        }
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score(relay_feedback=[review]))
+
+        events = adapter.drain_events()
+        delivery = [e for e in events if "relay feedback" in e.text.lower()]
+        assert delivery, "no relay-feedback delivery event emitted"
+        assert "1 review" in delivery[0].text
+        assert "2 inline comment" in delivery[0].text
+
+    async def test_no_relay_feedback_no_delivery_event(self, tmp_path: Path) -> None:
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        events = adapter.drain_events()
+        assert not [e for e in events if "relay feedback" in e.text.lower()]
