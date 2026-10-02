@@ -149,6 +149,9 @@ class SymphonyRuntimeState:
     board_pr_urls: dict[str, str] = dc_field(default_factory=dict)
 
 
+DaemonPhase = Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
+
+
 class CoordinareState(TypedDict, total=False):
     # 066 (FR-010): current_card is a *derived mirror* of
     # active_sessions[active_card_id]["current_card"].  The only sanctioned
@@ -157,7 +160,7 @@ class CoordinareState(TypedDict, total=False):
     # specs/066-unify-card-pickup/contracts/current_card-derivation.md.
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
-    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
+    phase: DaemonPhase
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None
     error_count: int

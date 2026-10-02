@@ -1959,23 +1959,23 @@ def test_the_eligibility_reasons_are_named_not_spelled() -> None:
     tree = ast.parse(source)
 
     # The constants' own definitions are the only place these strings belong.
+    # Both plain and annotated definitions count (X = "..." and X: T = "...").
+    definition_nodes = [
+        node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign))
+    ]
     definitions = {
         node.value.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and isinstance(node.value, ast.Constant)
-        and node.value.value in reasons
-        for target in node.targets
+        for node in definition_nodes
+        if isinstance(node.value, ast.Constant) and node.value.value in reasons
+        for target in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)
         if isinstance(target, ast.Name)
     }
     assert definitions == reasons, f"a reason has no constant: {sorted(reasons - definitions)}"
 
     definition_lines = {
         node.value.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and isinstance(node.value, ast.Constant)
-        and node.value.value in reasons
+        for node in definition_nodes
+        if isinstance(node.value, ast.Constant) and node.value.value in reasons
     }
     # The Literal type spells them out too, by construction.
     literal_lines = {

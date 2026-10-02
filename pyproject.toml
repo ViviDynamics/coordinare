@@ -185,7 +185,6 @@ ignore_errors = true
 # 433 ratchet: per-module strict-mypy allowlist. Covers exactly the files that
 module = [
     "coordinare.auth",
-    "coordinare.daemon",
     "coordinare.eval.implementer_scenarios",
     "coordinare.eval.qa_scenarios",
     "coordinare.graph.nodes.assess_card",
