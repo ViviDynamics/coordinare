@@ -17,13 +17,15 @@ is a thin wrapper around them.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
 
-from performer.proxy.assembler import assemble_json, assemble_sse
+from performer.proxy.assembler import SseStreamWriter, assemble_json, assemble_sse
 from performer.proxy.classifier import ModelClassifier
 from performer.proxy.llm_turn import LLMRequest
 from performer.proxy.strategies import (
@@ -132,11 +134,48 @@ async def run_completion(
 async def run_completion_sse(
     body: dict[str, Any], wire_format: str, strategy: OrchestrationStrategy, expose_plan_as: str,
 ) -> list[str]:
-    """Orchestration glue (SSE): think runs internally; the assembled result is
-    synthesized into an ordered list of SSE event blocks (plan events first)."""
+    """Orchestration glue (SSE, buffered): think runs internally; the assembled
+    result is synthesized into an ordered list of SSE event blocks (plan events
+    first). Retained as the reference rendering — the streaming path
+    (``run_completion_sse_stream``) emits the same block sequence incrementally."""
+
     request = _parse_request(body, wire_format)
     response, _record = await strategy.run(request)
     return assemble_sse(response, expose_plan_as=expose_plan_as, wire_format=wire_format)
+
+
+async def run_completion_sse_stream(
+    body: dict[str, Any], wire_format: str, strategy: OrchestrationStrategy, expose_plan_as: str,
+) -> AsyncIterator[str]:
+    """Orchestration glue (SSE, true streaming — FR-014).
+
+    Runs the strategy with a front-door :class:`SseStreamWriter` as the act sink
+    and yields wire-correct SSE blocks as the act upstream produces them — the
+    first block is yielded while the upstream is still generating. The terminal
+    blocks render from the accumulated ``LLMResponse`` at finish. A strategy
+    failure before the first block propagates to the caller (clean 502); after
+    the first block it propagates mid-stream (the connection is already
+    committed).
+    """
+    request = _parse_request(body, wire_format)
+    queue: asyncio.Queue = asyncio.Queue()
+    writer = SseStreamWriter(expose_plan_as=expose_plan_as, wire_format=wire_format, emit=queue.put_nowait)
+
+    async def _run() -> None:
+        try:
+            response, _record = await strategy.run(request, act_sink=writer)
+            writer.finish(response)
+        finally:
+            queue.put_nowait(None)
+
+    task = asyncio.get_running_loop().create_task(_run())
+    try:
+        while (block := await queue.get()) is not None:
+            yield block
+        await task  # propagate a strategy failure after the last block
+    except BaseException:
+        task.cancel()
+        raise
 
 
 @dataclass
@@ -180,16 +219,30 @@ class DualModelProxy:
             try:
                 body = await request.json()
                 if bool(body.get("stream")):
-                    events = await run_completion_sse(body, wire, self._strategy, self.expose_plan_as)
                     status = 200
+                    stream = run_completion_sse_stream(body, wire, self._strategy, self.expose_plan_as)
+                    try:
+                        first = await anext(stream)
+                    except StopAsyncIteration:
+                        first = None
+                    except Exception:
+                        status = 502
+                        return web.json_response(
+                            {"error": {"message": "proxy orchestration failed"}}, status=502,
+                        )
                     resp = web.StreamResponse(
                         status=200,
                         headers={"content-type": "text/event-stream", "cache-control": "no-cache"},
                     )
                     await resp.prepare(request)
-                    for ev in events:
-                        await resp.write(ev.encode())
-                    await resp.write_eof()
+                    if first is not None:
+                        await resp.write(first.encode())
+                    try:
+                        async for ev in stream:
+                            await resp.write(ev.encode())
+                        await resp.write_eof()
+                    except Exception:
+                        log.info("dual_model_proxy.stream_broken", path=request.path)
                     return resp
                 out = await run_completion(body, wire, self._strategy, self.expose_plan_as)
                 status = 200

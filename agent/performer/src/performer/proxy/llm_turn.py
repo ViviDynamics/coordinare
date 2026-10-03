@@ -108,3 +108,28 @@ class LLMResponse:
     @property
     def has_tool_calls(self) -> bool:
         return bool(self.tool_calls)
+
+
+@dataclass(frozen=True)
+class StreamDelta:
+    """One canonical incremental fragment of an act-phase completion (FR-014).
+
+    ``Upstream.complete_stream`` produces these; the front-door SSE writers
+    consume them. Optional fields are only meaningful for some kinds:
+
+    - ``text``/``reasoning`` carry ``text``
+    - ``tool`` carries ``tool_index`` plus ``tool_id``/``tool_name`` on the
+      first fragment of a call and ``args_fragment`` on argument fragments
+    - ``finish`` carries ``finish_reason``
+    - ``envelope`` rides the upstream's own chunk metadata (id/created/model)
+      when its wire carries one, so front-door writers can echo it
+    """
+
+    kind: str  # "text" | "reasoning" | "tool" | "finish"
+    text: str = ""
+    tool_index: int | None = None
+    tool_id: str | None = None
+    tool_name: str | None = None
+    args_fragment: str = ""
+    finish_reason: str | None = None
+    envelope: dict[str, Any] | None = None

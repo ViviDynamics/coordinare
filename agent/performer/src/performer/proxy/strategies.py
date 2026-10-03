@@ -20,7 +20,7 @@ from typing import Protocol
 
 from performer.proxy.classifier import DifficultyClassifier
 from performer.proxy.llm_turn import LLMRequest, LLMResponse
-from performer.proxy.upstreams import Upstream, UpstreamError
+from performer.proxy.upstreams import ActDeltaSink, Upstream, UpstreamError
 
 # Default error-marker regex (mirrors coordinare's DEFAULT_THINK_ONCE_ERROR_PATTERN).
 DEFAULT_ERROR_PATTERN = r"(?i)\b(error|exception|traceback|fatal|exit code [1-9])\b"
@@ -55,10 +55,26 @@ async def think(thinking: Upstream, request: LLMRequest, rec: OrchestrationRecor
     return (resp.reasoning or resp.content or "").strip()
 
 
-async def act(tool: Upstream, request: LLMRequest, plan: str | None, rec: OrchestrationRecord) -> LLMResponse:
-    """Executor phase: inject the plan as a system message, call the tool upstream."""
+async def act(
+    tool: Upstream, request: LLMRequest, plan: str | None, rec: OrchestrationRecord,
+    sink: ActDeltaSink | None = None,
+) -> LLMResponse:
+    """Executor phase: inject the plan as a system message, call the tool upstream.
+
+    With ``sink`` (FR-014), the act phase streams: ``sink.start(plan)`` first,
+    then one canonical delta per upstream fragment via ``sink.delta(...)``. An
+    upstream without ``complete_stream`` degrades to buffered ``complete`` —
+    the writer still emits a complete, wire-correct stream at finish."""
     req = request.with_system_prepended(_PLAN_PREFIX + plan) if plan else request
-    resp = await tool.complete(req, tools_enabled=True)
+    if sink is not None:
+        sink.start(plan)
+        stream = getattr(tool, "complete_stream", None)
+        if stream is not None:
+            resp = await stream(req, sink, tools_enabled=True)
+        else:
+            resp = await tool.complete(req, tools_enabled=True)
+    else:
+        resp = await tool.complete(req, tools_enabled=True)
     rec.record_call("act", ok=True)
     # carry the plan as reasoning so the assembler can surface it per expose_plan_as
     return LLMResponse(
@@ -75,7 +91,9 @@ async def act(tool: Upstream, request: LLMRequest, plan: str | None, rec: Orches
 class OrchestrationStrategy(Protocol):
     name: str
 
-    async def run(self, request: LLMRequest) -> tuple[LLMResponse, OrchestrationRecord]:
+    async def run(
+        self, request: LLMRequest, act_sink: ActDeltaSink | None = None,
+    ) -> tuple[LLMResponse, OrchestrationRecord]:
         ...
 
 
@@ -87,9 +105,19 @@ class SingleStrategy:
     tool: Upstream
     name: str = "single"
 
-    async def run(self, request: LLMRequest) -> tuple[LLMResponse, OrchestrationRecord]:
+    async def run(
+        self, request: LLMRequest, act_sink: ActDeltaSink | None = None,
+    ) -> tuple[LLMResponse, OrchestrationRecord]:
         rec = OrchestrationRecord(strategy="single", decision="passthrough")
-        resp = await self.tool.complete(request, tools_enabled=True)
+        if act_sink is not None:
+            act_sink.start(None)
+            stream = getattr(self.tool, "complete_stream", None)
+            if stream is not None:
+                resp = await stream(request, act_sink, tools_enabled=True)
+            else:
+                resp = await self.tool.complete(request, tools_enabled=True)
+        else:
+            resp = await self.tool.complete(request, tools_enabled=True)
         rec.record_call("act", ok=True)
         return resp, rec
 
@@ -103,10 +131,12 @@ class AlwaysThinkThenAct:
     on_think_error: str = "fall_back_to_act"  # | "fail"
     name: str = "always"
 
-    async def run(self, request: LLMRequest) -> tuple[LLMResponse, OrchestrationRecord]:
+    async def run(
+        self, request: LLMRequest, act_sink: ActDeltaSink | None = None,
+    ) -> tuple[LLMResponse, OrchestrationRecord]:
         rec = OrchestrationRecord(strategy="always", decision="think_then_act")
         plan = await _safe_think(self.thinking, request, rec, self.on_think_error)
-        resp = await act(self.tool, request, plan, rec)
+        resp = await act(self.tool, request, plan, rec, sink=act_sink)
         rec.plan = plan
         return resp, rec
 
@@ -124,18 +154,20 @@ class ConditionalEscalation:
     on_think_error: str = "fall_back_to_act"
     name: str = "conditional"
 
-    async def run(self, request: LLMRequest) -> tuple[LLMResponse, OrchestrationRecord]:
+    async def run(
+        self, request: LLMRequest, act_sink: ActDeltaSink | None = None,
+    ) -> tuple[LLMResponse, OrchestrationRecord]:
         rec = OrchestrationRecord(strategy="conditional")
         score = await self.classifier.score(request)  # never raises; failure → 1.0
         rec.classifier_score = score
         if score >= self.threshold:
             rec.decision = "escalated"
             plan = await _safe_think(self.thinking, request, rec, self.on_think_error)
-            resp = await act(self.tool, request, plan, rec)
+            resp = await act(self.tool, request, plan, rec, sink=act_sink)
             rec.plan = plan
             return resp, rec
         rec.decision = "act_only"
-        resp = await act(self.tool, request, None, rec)
+        resp = await act(self.tool, request, None, rec, sink=act_sink)
         return resp, rec
 
 
@@ -169,7 +201,9 @@ class ThinkOnceActMany:
     on_think_error: str = "fall_back_to_act"
     name: str = "think_once"
 
-    async def run(self, request: LLMRequest) -> tuple[LLMResponse, OrchestrationRecord]:
+    async def run(
+        self, request: LLMRequest, act_sink: ActDeltaSink | None = None,
+    ) -> tuple[LLMResponse, OrchestrationRecord]:
         rec = OrchestrationRecord(strategy="think_once")
         if self.state.needs_replan(request):
             plan = await _safe_think(self.thinking, request, rec, self.on_think_error)
@@ -180,7 +214,7 @@ class ThinkOnceActMany:
             rec.decision = "cached_plan"
         self.state.turns_since_plan += 1
         plan = self.state.cached_plan
-        resp = await act(self.tool, request, plan, rec)
+        resp = await act(self.tool, request, plan, rec, sink=act_sink)
         rec.plan = plan
         return resp, rec
 
