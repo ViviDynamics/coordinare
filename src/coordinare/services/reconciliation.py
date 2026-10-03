@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.state import _retire_active_session
 from coordinare.services.dispatcher_dedup_models import (
     ReconciliationDecision,
     ReconciliationReport,
@@ -803,14 +804,19 @@ def reconcile_board_state(
     the FR-020 default per clarification Q1) so the next eligibility
     pass can re-pick the card from the correct queue.
 
-    Returns ``{"action": "agreed" | "pin_released" | "no_active_card",
-    "card_id": str | None, "local": str, "board": str}``.
+    Issue #516: a card the board places in DONE is terminal regardless
+    of divergence — the matching session is retired (not just the pin)
+    so a zombie session cannot hold the pickup slot across restarts.
+
+    Returns ``{"action": "agreed" | "pin_released" | "done_session_retired" |
+    "no_active_card" | "deferred", "card_id": str | None, "local": str,
+    "board": str}``; for ``done_session_retired`` the result additionally
+    carries ``retired_session`` (the removed session record, or None when
+    no record existed) so the caller can release its performer resources.
     """
     active_card = state.get("active_card") or state.get("current_card")
-    if not isinstance(active_card, dict):
-        return {"action": "no_active_card", "card_id": None, "local": "", "board": ""}
-    card_id = str(active_card.get("id", ""))
-    if not card_id:
+    card_id = str(active_card.get("id", "")) if isinstance(active_card, dict) else ""
+    if not isinstance(active_card, dict) or not card_id:
         return {"action": "no_active_card", "card_id": None, "local": "", "board": ""}
 
     local_status = str(active_card.get("status") or "")
@@ -824,83 +830,107 @@ def reconcile_board_state(
                 board_status = column
                 break
 
-    if not board_status:
-        # Card is no longer on any tracked column — operator may have
-        # deleted or archived it.  Release the pin.
-        logger.warning(
-            "daemon.board_state_reconciled",
-            card_id=card_id,
-            local_status=local_status,
-            board_status="missing",
-            action="pin_released",
-        )
-        state["active_card"] = None
-        state["current_card"] = None
-        state["active_card_id"] = None
-        return {
-            "action": "pin_released",
-            "card_id": card_id,
-            "local": local_status,
-            "board": "missing",
-        }
-
     # Normalise both sides before comparing — the board column names are
     # UPPER_SNAKE ("IN_PROGRESS") but ``card.status`` from various code
     # paths may be human-readable ("In Progress") or display-form.
     def _norm(s: str) -> str:
         return s.strip().upper().replace(" ", "_").replace("-", "_")
 
-    if _norm(board_status) == _norm(local_status):
-        return {
-            "action": "agreed",
-            "card_id": card_id,
-            "local": local_status,
-            "board": board_status,
-        }
+    # Issue #516: a card in DONE is terminal — its work is finished on the
+    # board no matter what the local pin or phase thinks.  The monitor's own
+    # Done path only runs for phases in PHASE_TO_EXPECTED_COLUMN (no "idle"),
+    # and this check must also precede the agreed-status short-circuit so a
+    # restart between "status write" and "session teardown" (local=DONE +
+    # board=DONE + live session) cannot re-wedge.  Retire whatever session
+    # still pins the card and free the pickup slot within this cycle.
 
-    # Today's incident pattern (FR-025 narrow scope): the board has the
-    # card BACK in TODO / BACKLOG but local state still pins it as
-    # IN_PROGRESS / IN_REVIEW / BLOCKED.  Release the pin so eligibility
-    # can re-pick.
-    #
-    # Other forms of divergence (e.g., local=IN_PROGRESS, board=IN_REVIEW
-    # meaning the card legitimately advanced during downtime) are handled
-    # by the EXISTING ``daemon._reconcile_with_board`` at startup.  We
-    # do NOT interfere with that path — only the wedge-shape divergence.
-    _backwards_board = _norm(board_status) in ("TODO", "BACKLOG")
-    _pinned_forward = _norm(local_status) in ("IN_PROGRESS", "IN_REVIEW", "BLOCKED")
-    if _backwards_board and _pinned_forward:
+    action = ""
+    board_label = board_status
+    retired_session: dict[str, Any] | None = None
+    if not board_status:
+        # Card is no longer on any tracked column — operator may have
+        # deleted or archived it.  Release the pin.
+        board_label = "missing"
+        action = "pin_released"
+        logger.warning(
+            "daemon.board_state_reconciled",
+            card_id=card_id,
+            local_status=local_status,
+            board_status=board_label,
+            action=action,
+        )
+        state["active_card"] = None
+        state["current_card"] = None
+        state["active_card_id"] = None
+    elif _norm(board_status) == "DONE":
+        action = "done_session_retired"
         logger.warning(
             "daemon.board_state_reconciled",
             card_id=card_id,
             local_status=local_status,
             board_status=board_status,
-            action="pin_released",
+            action=action,
+        )
+        sessions = state.get("active_sessions") or {}
+        retired_session = sessions.get(card_id) if isinstance(sessions, dict) else None
+        if not state.get("active_card_id"):
+            # The retirement is keyed off active_card_id (_retire_active_session
+            # removes the entry it points at); keep it in step with the pin we
+            # are acting on.
+            state["active_card_id"] = card_id
+        state["phase"] = "idle"
+        _retire_active_session(state, trigger="board_card_done_reconciled")
+        state["active_card"] = None
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+    elif _norm(board_status) == _norm(local_status):
+        action = "agreed"
+    elif _norm(board_status) in ("TODO", "BACKLOG") and _norm(local_status) in (
+        "IN_PROGRESS",
+        "IN_REVIEW",
+        "BLOCKED",
+    ):
+        # Today's incident pattern (FR-025 narrow scope): the board has the
+        # card BACK in TODO / BACKLOG but local state still pins it as
+        # IN_PROGRESS / IN_REVIEW / BLOCKED.  Release the pin so eligibility
+        # can re-pick.
+        #
+        # Other forms of divergence (e.g., local=IN_PROGRESS, board=IN_REVIEW
+        # meaning the card legitimately advanced during downtime) are handled
+        # by the EXISTING ``daemon._reconcile_with_board`` at startup.  We
+        # do NOT interfere with that path — only the wedge-shape divergence.
+        action = "pin_released"
+        logger.warning(
+            "daemon.board_state_reconciled",
+            card_id=card_id,
+            local_status=local_status,
+            board_status=board_status,
+            action=action,
         )
         state["active_card"] = None
         state["current_card"] = None
         state["active_card_id"] = None
-        return {
-            "action": "pin_released",
-            "card_id": card_id,
-            "local": local_status,
-            "board": board_status,
-        }
-
-    # Other divergences are deferred to the existing startup-time
-    # reconciliation (or to a future spec); log for audit and proceed.
-    logger.info(
-        "daemon.board_state_diverged_deferred",
-        card_id=card_id,
-        local_status=local_status,
-        board_status=board_status,
-    )
-    return {
-        "action": "deferred",
+    else:
+        # Other divergences are deferred to the existing startup-time
+        # reconciliation (or to a future spec); log for audit and proceed.
+        action = "deferred"
+        logger.info(
+            "daemon.board_state_diverged_deferred",
+            card_id=card_id,
+            local_status=local_status,
+            board_status=board_status,
+        )
+    result = {
+        "action": action,
         "card_id": card_id,
         "local": local_status,
-        "board": board_status,
+        "board": board_label,
     }
+    if action == "done_session_retired":
+        # Hand the retiring session back so the caller can best-effort
+        # release its performer resources before the record is dropped.
+        result["retired_session"] = retired_session
+    return result
 
 
 __all__ = [
