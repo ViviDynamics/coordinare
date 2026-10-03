@@ -22,7 +22,12 @@ image:
   # the running version, which is not something you want to discover from
   # behaviour. Defaults to the chart's appVersion.
   tag: ""
-  pullPolicy: IfNotPresent
+  # Always, not IfNotPresent: the release tag is mutable (Main Branch Build
+  # re-pushes the same tag when it re-releases that HEAD), and IfNotPresent
+  # then resolves against the node cache, so a pod restart can silently serve
+  # the pre-push digest. The release flow depends on every start re-resolving
+  # the tag. See issue #518.
+  pullPolicy: Always
 
 imagePullSecrets: []
 

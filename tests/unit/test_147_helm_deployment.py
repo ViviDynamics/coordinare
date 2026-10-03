@@ -473,6 +473,16 @@ class TestImagePinning:
         tag = image.rsplit(":", 1)[-1]
         assert tag and tag != "latest", f"image tag must be pinned, got {tag!r}"
 
+    def test_daemon_re_resolves_the_tag_at_every_start(self) -> None:
+        """#518 — the release tag is mutable: Main Branch Build re-pushes the
+        same tag when it re-releases that HEAD, and imagePullPolicy IfNotPresent
+        then resolves against the node cache, so a pod restart can silently
+        serve the pre-push digest. The daemon container must re-resolve the
+        tag on every start; the release flow depends on it.
+        """
+        objects = _render()
+        assert _container(objects)["imagePullPolicy"] == "Always"
+
     def test_image_pull_secrets_reach_performers(self) -> None:
         config = _rendered_config(_render(**{"performers.imagePullSecrets": ["regcred"]}))
         assert config["kubernetes_image_pull_secrets"] == ["regcred"]
