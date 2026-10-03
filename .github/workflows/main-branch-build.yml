@@ -491,6 +491,19 @@ jobs:
           docker push "${REGISTRY}:${VERSION}"
           echo "Pushed ${REGISTRY}:${VERSION}"
 
+          # Resolve the pushed tag to its content digest and publish it, so an
+          # operator can pin the deployment with image.digest and get a
+          # bit-identical image for the deployment's lifetime regardless of
+          # what the mutable tag later points at. See issue #524.
+          DIGEST=$(docker buildx imagetools inspect "${REGISTRY}:${VERSION}" --format '{{.Manifest.Digest}}')
+          {
+            echo "Daemon image \`${REGISTRY}:${VERSION}\` resolved to digest:"
+            echo "\`${DIGEST}\`"
+            echo ""
+            echo "Pin it with \`image.digest\` in the chart values to make pod starts digest-stable."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Resolved ${REGISTRY}:${VERSION} to ${DIGEST}"
+
   publish-chart:
     name: Publish Chart
     # Consumes the version derive-version minted; derives nothing itself. The in-house scheme's
