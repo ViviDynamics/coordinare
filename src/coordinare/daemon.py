@@ -2837,7 +2837,13 @@ class CoordinareDaemon:
                 )
 
             # Update symphony state on success
+            # Issue #516: reconcile BEFORE the mirror — a card the board
+            # moved to DONE must have its session retired here, inside the
+            # symphony cycle, or _update_symphony_state mirrors the zombie
+            # back onto sym_state and the next cycle re-seeds it (still
+            # holding the pickup slot).
             if sym_state is not None:
+                await self._reconcile_board_state_with_release()
                 self._update_symphony_state(symphony_name, sym_state)
         except (asyncio.CancelledError, CircuitOpenError):
             _propagating = True
@@ -4389,7 +4395,34 @@ class CoordinareDaemon:
             HEALTH.update("notifications", HealthStatus.healthy)
         return _cycle_elapsed
 
-    def _post_cycle_invariants(self) -> None:
+    async def _reconcile_board_state_with_release(self) -> None:
+        """Issue #516: board ↔ local-state reconciliation, then best-effort
+        release of a retired session's performer resources.
+
+        Runs reconcile_board_state against the current board snapshot and,
+        when a session was retired for a DONE card, hands it to the
+        existing release-time teardown so a still-running performer does
+        not outlive the session that dropped it (the monitor never polls
+        a card that left the active columns).  Best-effort: a release
+        failure is logged and swallowed by _release_session_resources.
+        """
+        try:
+            from coordinare.services.reconciliation import reconcile_board_state
+
+            _board = self._state.get("board_snapshot") or {}
+            if isinstance(_board, dict) and _board:
+                result = reconcile_board_state(self._state, _board)
+                retired = result.get("retired_session")
+                if isinstance(retired, dict):
+                    await _release_session_resources(self._state, retired)
+        except Exception as _exc:
+            logger.warning(
+                "daemon.board_reconcile_crashed",
+                error=str(_exc),
+                exc_info=True,
+            )
+
+    async def _post_cycle_invariants(self) -> None:
         """076 end-of-cycle invariants: wedge detection, then board ↔ local
         reconciliation (after the wedge invariant so a wedge-released pin
         doesn't re-trigger there)."""
@@ -4427,18 +4460,9 @@ class CoordinareDaemon:
         # doesn't re-trigger here.  Compares state.active_card
         # .status with the board's column for the same card;
         # divergence → release the pin so eligibility re-picks.
-        try:
-            from coordinare.services.reconciliation import reconcile_board_state
-
-            _board = self._state.get("board_snapshot") or {}
-            if isinstance(_board, dict) and _board:
-                reconcile_board_state(self._state, _board)
-        except Exception as _exc:  # pragma: no cover — defensive
-            logger.warning(
-                "daemon.board_reconcile_crashed",
-                error=str(_exc),
-                exc_info=True,
-            )
+        # Issue #516: the shared helper also best-effort releases the
+        # retired session's performer resources.
+        await self._reconcile_board_state_with_release()
 
     def _post_cycle_dashboard(self, cycle_count: int, _cycle_elapsed: float) -> None:
         """Dashboard: record cycle and broadcast updated snapshot to all open tabs."""
@@ -4913,7 +4937,7 @@ class CoordinareDaemon:
                 cycle_count += 1
                 self._state["error_count"] = 0
 
-                self._post_cycle_invariants()
+                await self._post_cycle_invariants()
 
                 # Dashboard: record cycle and broadcast updated snapshot to all open tabs
                 self._post_cycle_dashboard(cycle_count, _cycle_elapsed)
