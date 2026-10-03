@@ -483,6 +483,44 @@ class TestImagePinning:
         objects = _render()
         assert _container(objects)["imagePullPolicy"] == "Always"
 
+    def test_an_empty_digest_changes_nothing(self) -> None:
+        """#524 — digest pinning is opt-in: the default render keeps the
+        tag form the release flow has always published."""
+        image = _container(_render())["image"]
+        assert "@sha256:" not in image, f"default image {image!r} must stay tag-form"
+
+    def _repository(self) -> str:
+        image = _container(_render())["image"]
+        return image.rsplit(":", 1)[0]
+
+    def test_a_digest_value_pins_the_image(self) -> None:
+        """#524 — when image.digest is set the rendered image is
+        repository@digest, so every pod of the deployment runs a
+        bit-identical image regardless of what the tag later points at."""
+        digest = "sha256:" + "a" * 64
+        image = _container(_render(image={"digest": digest}))["image"]
+        assert image == f"{self._repository()}@{digest}"
+
+    def test_a_digest_value_ignores_the_tag(self) -> None:
+        """#524 — the tag must not survive alongside the digest: a combined
+        repository:tag@digest form is not a valid image reference."""
+        digest = "sha256:" + "b" * 64
+        image = _container(_render(image={"tag": "2026.10.6", "digest": digest}))["image"]
+        assert image == f"{self._repository()}@{digest}", f"digest must win outright, got {image!r}"
+
+    def test_the_workflow_prints_the_published_digest(self) -> None:
+        """#524 — the release flow resolves the tag it just pushed to its
+        digest and prints it, so an operator can copy it into image.digest.
+        Without this the digest value has no producer."""
+        workflow = yaml.safe_load(Path(WORKFLOW).read_text())
+        steps = "\n".join(
+            step.get("run", "") for step in workflow["jobs"]["build-daemon"]["steps"] if "run" in step
+        )
+        assert "imagetools inspect" in steps, "daemon image job must resolve the digest"
+        assert "GITHUB_STEP_SUMMARY" in steps, (
+            "the resolved digest must be printed to the job summary"
+        )
+
     def test_image_pull_secrets_reach_performers(self) -> None:
         config = _rendered_config(_render(**{"performers.imagePullSecrets": ["regcred"]}))
         assert config["kubernetes_image_pull_secrets"] == ["regcred"]
@@ -530,7 +568,9 @@ class TestDaemonImageBuild:
         """FR-018 — a chart pointing at an image nobody publishes is not shippable."""
         jobs = self._workflow()["jobs"]
         assert "build-daemon" in jobs
-        body = yaml.safe_dump(jobs["build-daemon"])
+        # width: safe_dump's default 80 wraps the long run block mid-phrase,
+        # splitting "docker push" across a continuation; 4096 keeps it whole.
+        body = yaml.safe_dump(jobs["build-daemon"], width=4096)
         assert "Dockerfile.daemon" in body
         assert "docker push" in body
 

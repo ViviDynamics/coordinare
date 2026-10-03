@@ -28,6 +28,13 @@ image:
   # the pre-push digest. The release flow depends on every start re-resolving
   # the tag. See issue #518.
   pullPolicy: Always
+  # Optional content pin: when set, the rendered image is repository@digest
+  # and the tag is ignored, so every pod of this deployment runs a
+  # bit-identical image for its lifetime. Main Branch Build prints the digest
+  # of the daemon image it pushes to the job summary of its build-daemon job.
+  # Leave empty for the tag+Always default above.
+  # Example: digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  digest: ""
 
 imagePullSecrets: []
 
@@ -103,6 +110,15 @@ performers:
 
   # Registry credentials for the performer image, if your registry needs them.
   imagePullSecrets: []
+
+  # Known residual risk, accepted for now (issue #524): the performer image
+  # (coordinare-performer:extra|full, set per symphony in config.yaml) resolves
+  # from the node cache with IfNotPresent, deliberately — a 4 GB pull per
+  # dispatch would make performers cold for minutes (FR-013). A re-pushed
+  # performer tag can therefore be picked up only on a node that lacks the
+  # cached image, and stale digests persist until the node re-images. The
+  # digest pinning above covers the daemon only; pinning the performer image
+  # at dispatch time is a follow-up.
 
   # Restrict what performer Pods can reach. OFF by default, deliberately.
   #
