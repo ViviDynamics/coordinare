@@ -78,3 +78,6 @@ select = ["E4", "E7", "E9", "F", "T201", "S105", "S607"]
 # extracted phase helpers legitimately need 6 args and >6 return paths.
 "src/performer/main.py" = ["PLC0415", "PLR0911", "PLR0913"]
 "src/performer/status_paths.py" = ["PLC0415", "PLR0911", "PLR0913"]
+# 521: BackendAdapter.start's keyword tuning knobs (model/effort/temperature/
+# max_tokens) are the protocol's shape (base.py) — every adapter counts them.
+"src/performer/backends/driver.py" = ["PLR0913"]

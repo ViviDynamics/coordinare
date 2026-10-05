@@ -133,6 +133,34 @@ class _EphemeralJob:
     job_id: str | None = None
 
 
+def _inject_driver_secrets(
+    secrets: dict[str, str],
+    role_auth_token_env: Any,
+    role_api_key_env: Any,
+) -> None:
+    """Inject provider secrets for the driver backend (521/C2).
+
+    argv is world-readable, so driver takes provider config by flags and API
+    keys by env only (ANTHROPIC_API_KEY / OPENAI_API_KEY) — inject whichever
+    keys the daemon has, exactly like the opencode/junie dual-provider family;
+    nothing else. 080 catalog resolution: a self-hosted mode resolves to
+    auth_token_env (proxy bearer) and a native mode to api_key_env; either
+    rides OPENAI_API_KEY — driver speaks Chat Completions with provider openai
+    (§3.5).
+    """
+    import os
+
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        val = os.environ.get(key, "")
+        if val:
+            secrets[key] = val
+    endpoint_key_env = role_auth_token_env or role_api_key_env
+    if endpoint_key_env:
+        token = os.environ.get(str(endpoint_key_env), "")
+        if token:
+            secrets["OPENAI_API_KEY"] = token
+
+
 class HTTPPerformerService:
     """AgentService-compatible adapter for ephemeral / persistent performers."""
 
@@ -931,6 +959,12 @@ class HTTPPerformerService:
             _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
             if _proxy_bearer:
                 secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
+        elif backend == "driver":
+            # 521/C2: argv is world-readable, so driver takes provider config by
+            # flags and API keys by env only. See _inject_driver_secrets.
+            _inject_driver_secrets(
+                secrets, role_auth_token_env, role_api_key_env,
+            )
 
         # Stash card_context as metadata so the performer has full access to
         # role/persona/relay_feedback/etc. without us forking the schema here.

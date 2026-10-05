@@ -66,6 +66,8 @@ def test_supported_backends_contains_the_known_harnesses() -> None:
         "pi",
         "prime_agent",
         "openclaw",
+        # 521: the driver adapter (coordinare-driver integration contract).
+        "driver",
     }
 
 

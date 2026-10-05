@@ -57,6 +57,8 @@ PROVIDER_BASE_URL_ENV: dict[str, str] = {
     # claude_code is pointed via ANTHROPIC_BASE_URL; its own LiteLLM shim is
     # suppressed (see below) so it does not double-proxy.
     "claude_code": "ANTHROPIC_BASE_URL",
+    # #521: the name is fixed by the coordinare↔driver integration contract §3.5.
+    "driver": "DRIVER_BASE_URL",
 }
 
 # Backends with no provider-base-URL override cannot be proxied (080 constraint).

@@ -35,6 +35,7 @@ SUPPORTED_BACKENDS: dict[str, tuple[str, str]] = {
     "pi": ("performer.backends.pi", "PiBackend"),
     "openclaw": ("performer.backends.openclaw", "OpenClawBackend"),
     "prime_agent": ("performer.backends.prime_agent", "PrimeAgentBackend"),
+    "driver": ("performer.backends.driver", "DriverBackend"),
 }
 
 
