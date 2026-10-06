@@ -996,6 +996,26 @@ class EnvCacheConfig(BaseModel):
     coordinare_manages_services: bool = False
 
 
+class PerformerDigestPinConfig(BaseModel):
+    """Performer image digest pinning at dispatch time (#526).
+
+    When enabled, the daemon resolves the performer image tag to its current
+    registry digest before each dispatch and pins the container/Pod to
+    ``name@sha256:...`` so all performers of one deployment run a bit-identical
+    image, even when the tag is re-pushed mid-release. Resolution failure fails
+    loud at dispatch — never a silent fallback to the mutable tag. Node-cache
+    behavior is unchanged (FR-013): a digest ref is pulled once by digest, not
+    per dispatch.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    # How often a tag's digest is re-resolved after a successful lookup (the
+    # "slow clock"). Within the window, dispatches reuse the cached digest.
+    refresh_seconds: int = Field(default=300, ge=1, le=86400)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1088,6 +1108,11 @@ class ProjectConfiguration(BaseSettings):
     # describes most minikube and microk8s installs.
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
+    # #526 — performer image digest pinning (opt-in; default-off keeps dispatch
+    # behavior byte-identical to a pre-#526 build).
+    performer_digest_pin: PerformerDigestPinConfig = Field(
+        default_factory=PerformerDigestPinConfig,
+    )
     output_mode: str = Field(default="human", pattern="^(human|structured)$")
     log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)

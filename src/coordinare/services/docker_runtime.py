@@ -16,7 +16,7 @@ Two reasons it wraps rather than absorbs:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
@@ -28,7 +28,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 class DockerRuntime:
-    """Runs performers as local Docker containers."""
+    """Runs performers as local Docker containers.
+
+    *image_resolver* (optional, #526) pins the configured image tag to its
+    registry digest before the container starts. ``None`` (tests, bench) pins
+    nothing and the image is used verbatim.
+    """
+
+    def __init__(self, image_resolver: Any = None) -> None:
+        self._image_resolver = image_resolver
 
     async def start_ephemeral(
         self,
@@ -38,9 +46,21 @@ class DockerRuntime:
         backend: str | None = None,
     ) -> StartedPerformer:
         started = await performer_lifecycle.start_ephemeral(
-            config, extra_labels=extra_labels, backend=backend,
+            await self._pinned(config),
+            extra_labels=extra_labels,
+            backend=backend,
         )
         return StartedPerformer(handle=started.container_id, endpoint=started.endpoint)
+
+    async def _pinned(
+        self, config: PerformerEndpointConfig,
+    ) -> PerformerEndpointConfig:
+        if self._image_resolver is None or config.image is None:
+            return config
+        image = await self._image_resolver.pin(config.image)
+        if image == config.image:
+            return config
+        return config.model_copy(update={"image": image})
 
     async def stop(
         self,

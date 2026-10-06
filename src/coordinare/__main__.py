@@ -58,6 +58,7 @@ from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryCo
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.github import GitHubService
+from coordinare.services.image_digest import PerformerImageResolver
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
     SkippedChannel,
@@ -493,6 +494,14 @@ def _build_performer_runtime(config: ProjectConfiguration):  # type: ignore[no-u
     """
     from coordinare.services.docker_runtime import DockerRuntime
 
+    pin = config.performer_digest_pin
+    resolver = (
+        PerformerImageResolver(
+            enabled=pin.enabled, refresh_seconds=pin.refresh_seconds,
+        )
+        if pin.enabled
+        else None
+    )
     if config.agent_transport == "kubernetes":
         from coordinare.services.kubernetes_runtime import KubernetesRuntime
 
@@ -500,8 +509,9 @@ def _build_performer_runtime(config: ProjectConfiguration):  # type: ignore[no-u
             namespace=config.kubernetes_namespace,
             cache_claim=config.kubernetes_cache_claim,
             image_pull_secrets=list(config.kubernetes_image_pull_secrets),
+            image_resolver=resolver,
         )
-    return DockerRuntime()
+    return DockerRuntime(image_resolver=resolver)
 
 
 def _build_performer_services(
