@@ -443,6 +443,7 @@ def _http_config(
         performers = SimpleNamespace(resolved_role=_resolved_role)
     return SimpleNamespace(
         performer_endpoints=endpoints, performers=performers, agent_transport="docker",
+        performer_digest_pin=SimpleNamespace(enabled=False, refresh_seconds=300),
     )
 
 

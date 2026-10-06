@@ -266,16 +266,30 @@ class KubernetesRuntime:
         cache_claim: str | None = None,
         image_pull_secrets: list[str] | None = None,
         core_v1: Any = None,
+        image_resolver: Any = None,
     ) -> None:
         self._namespace = namespace
         self._cache_claim = cache_claim
         self._image_pull_secrets = image_pull_secrets or []
+        self._image_resolver = image_resolver  # #526 digest pinning (optional)
         if core_v1 is None:
             from kubernetes import client as k8s_client
 
             _load_kube_config()
             core_v1 = k8s_client.CoreV1Api()
         self._api = core_v1
+
+    async def _pin_image(self, config: PerformerEndpointConfig) -> PerformerEndpointConfig:
+        """Resolve the configured image tag to its registry digest (#526).
+
+        No-op when no resolver is wired (tests, bench) or the image is unset.
+        """
+        if self._image_resolver is None or config.image is None:
+            return config
+        image = await self._image_resolver.pin(config.image)
+        if image == config.image:
+            return config
+        return config.model_copy(update={"image": image})
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -314,6 +328,7 @@ class KubernetesRuntime:
                 performer_id=config.id,
                 backend=backend,
             )
+        config = await self._pin_image(config)
         manifest = build_pod_manifest(
             config,
             pod_name=pod_name,

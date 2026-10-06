@@ -1053,6 +1053,18 @@ dispatcher_dedup:
   wedge_block_window_hours: 24
   multi_pr_check_triggers: [dispatch, restart, webhook]
 
+# #526 — pin performer images by registry digest at dispatch time. When
+# enabled, the daemon resolves each performer image tag (e.g.
+# coordinare-performer:full) to its current digest and dispatches
+# name@sha256:... instead, so a re-pushed tag cannot make two symphony
+# workers run different images. Resolution failure fails loud at dispatch
+# (no silent fallback to the mutable tag). Node cache is unchanged: the
+# digest is pulled once, not per dispatch. Requires docker buildx on the
+# daemon host. Default off.
+# performer_digest_pin:
+#   enabled: true
+#   refresh_seconds: 300   # how often a tag's digest is re-resolved
+
 orchestra:
   mode: shared_pool
 
