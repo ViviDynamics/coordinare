@@ -4531,7 +4531,11 @@ class CoordinareDaemon:
                                 "idle_seconds": str(int(idle_seconds)),
                                 "summary": f"💤 Coordinare has been idle for {int(idle_seconds // 60)} minutes — no cards to process",
                             },
-                            dedup_key="prolonged_idle",
+                            # 530: last_activity_at is the idle episode's start
+                            # while the coordinare stays idle, and it resets the
+                            # moment the phase leaves idle.
+                            dedup_key=f"prolonged_idle@{last_activity_at:.6f}",
+                            episode_scoped=True,
                         ),
                     )
                 except Exception as exc:
