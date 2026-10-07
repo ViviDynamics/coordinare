@@ -413,3 +413,92 @@ async def test_unrouted_dedup_re_emits_after_window_expires() -> None:
 
     unrouted = svc.history.query(status=NotificationStatus.unrouted)
     assert len(unrouted) == 2
+
+
+# ---------------------------------------------------------------------------
+# 530: prolonged_idle notifies once per idle episode, not once per window
+# ---------------------------------------------------------------------------
+
+
+def _make_episode_event(dedup_key: str) -> NotificationEvent:
+    event = _make_event(event_type=EventType.prolonged_idle, dedup_key=dedup_key)
+    event.episode_scoped = True
+    return event
+
+
+@pytest.mark.asyncio
+async def test_episode_scoped_repeat_suppressed_entirely() -> None:
+    """Issue 530: an episode-scoped key is latched, not windowed.
+
+    Same-episode repeats stay suppressed no matter how many dedup windows
+    elapse: backdating the key's window sighting must not resurrect it.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    config = NotificationsConfig(channels=[], routing=[], unrouted_dedup_window_seconds=30)
+    svc = _build_service(config, [])
+
+    event = _make_episode_event("prolonged_idle@1000.0")
+    await svc.dispatch(event)
+    await svc.dispatch(event)
+    # Simulate dedup windows elapsing for the key.
+    svc._unrouted_dedup_window._seen["prolonged_idle@1000.0"] = (
+        datetime.now(UTC) - timedelta(seconds=31)
+    )
+    await svc.dispatch(event)
+
+    unrouted = svc.history.query(status=NotificationStatus.unrouted)
+    assert len(unrouted) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 2
+    assert deduplicated[0].dedup_key == "prolonged_idle@1000.0"
+
+
+@pytest.mark.asyncio
+async def test_episode_boundary_resets_suppression() -> None:
+    """Issue 530: a new idle episode is a new key, so it may notify again."""
+    config = NotificationsConfig(channels=[], routing=[], unrouted_dedup_window_seconds=600)
+    svc = _build_service(config, [])
+
+    await svc.dispatch(_make_episode_event("prolonged_idle@1000.0"))
+    await svc.dispatch(_make_episode_event("prolonged_idle@2000.0"))
+
+    unrouted = svc.history.query(status=NotificationStatus.unrouted)
+    assert {r.dedup_key for r in unrouted} == {
+        "prolonged_idle@1000.0",
+        "prolonged_idle@2000.0",
+    }
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 0
+
+
+@pytest.mark.asyncio
+async def test_window_key_re_emits_while_episode_key_stays_latched() -> None:
+    """Issue 530: window and episode suppression stay coherent.
+
+    A plain key keeps the #492 window semantics (re-emit after expiry) while
+    an episode key is latched for its whole episode, and the episode key
+    never enters the window at all.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    config = NotificationsConfig(channels=[], routing=[], unrouted_dedup_window_seconds=30)
+    svc = _build_service(config, [])
+
+    plain = _make_event(event_type=EventType.prolonged_idle, dedup_key="prolonged_idle")
+    episode = _make_episode_event("prolonged_idle@1000.0")
+    await svc.dispatch(plain)
+    await svc.dispatch(episode)
+    await svc.dispatch(plain)
+    await svc.dispatch(episode)
+    # Expire the plain key's window sighting only.
+    svc._unrouted_dedup_window._seen["prolonged_idle"] = datetime.now(UTC) - timedelta(seconds=31)
+    await svc.dispatch(plain)
+    await svc.dispatch(episode)
+
+    unrouted = svc.history.query(status=NotificationStatus.unrouted)
+    plain_keys = [r.dedup_key for r in unrouted if r.dedup_key == "prolonged_idle"]
+    episode_keys = [r.dedup_key for r in unrouted if r.dedup_key == "prolonged_idle@1000.0"]
+    assert len(plain_keys) == 2
+    assert len(episode_keys) == 1
+    assert "prolonged_idle@1000.0" not in svc._unrouted_dedup_window._seen

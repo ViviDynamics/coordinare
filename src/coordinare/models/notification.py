@@ -59,6 +59,9 @@ class NotificationEvent:
     payload: dict[str, str]
     source: str
     dedup_key: str | None = None
+    # 530: when set, the unrouted path latches the dedup key for the whole
+    # episode instead of applying the dedup window.
+    episode_scoped: bool = False
 
 
 @dataclass

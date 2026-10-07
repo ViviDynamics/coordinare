@@ -33,6 +33,10 @@ from coordinare.models.notification import (
 
 logger = structlog.get_logger(__name__)
 
+# 530: an episode key is suppressed for its whole idle episode, however many
+# dedup windows elapse; the latch holds at most this many keys.
+_UNROUTED_EPISODE_LATCH_MAX = 128
+
 
 # ---------------------------------------------------------------------------
 # Channel Sender Protocol + Implementations (T009)
@@ -176,6 +180,10 @@ class NotificationService:
         self._unrouted_dedup_window = DeduplicationWindow(
             float(config.unrouted_dedup_window_seconds),
         )
+        # 530: episode-scoped events (e.g. prolonged_idle carrying an
+        # idle-episode identity in the dedup key) latch instead: one emission
+        # per key, reset only by the key changing at the episode boundary.
+        self._unrouted_episode_latch: dict[str, None] = {}
         self._history = NotificationHistory(config.history_max_age_hours)
         self._card_blocked_reminder_cooldown_seconds = (
             config.card_blocked_reminder_cooldown_seconds
@@ -198,7 +206,7 @@ class NotificationService:
     async def dispatch(self, event: NotificationEvent) -> None:
         channel_names = self._routing.get(event.event_type, [])
         if not channel_names:
-            if event.dedup_key and self._unrouted_dedup_window.is_duplicate(event.dedup_key):
+            if self._unrouted_is_duplicate(event):
                 self._record_unrouted(event, NotificationStatus.deduplicated)
                 self._metrics.notifications_deduplicated_total.labels(channel_name="(none)").inc()
                 # DEBUG, not INFO: suppressed attempts recur every poll cycle,
@@ -210,8 +218,7 @@ class NotificationService:
                     dedup_key=event.dedup_key,
                 )
                 return
-            if event.dedup_key:
-                self._unrouted_dedup_window.record(event.dedup_key)
+            self._unrouted_record_dedup_key(event)
             self._record_unrouted(event, NotificationStatus.unrouted)
             logger.info("notification_unrouted", event_type=event.event_type.value, source=event.source)
             return
@@ -220,6 +227,23 @@ class NotificationService:
             *[self._dispatch_to_channel(event, name) for name in channel_names],
             return_exceptions=True,
         )
+
+    def _unrouted_is_duplicate(self, event: NotificationEvent) -> bool:
+        if not event.dedup_key:
+            return False
+        if event.episode_scoped:
+            return event.dedup_key in self._unrouted_episode_latch
+        return self._unrouted_dedup_window.is_duplicate(event.dedup_key)
+
+    def _unrouted_record_dedup_key(self, event: NotificationEvent) -> None:
+        if not event.dedup_key:
+            return
+        if event.episode_scoped:
+            self._unrouted_episode_latch[event.dedup_key] = None
+            while len(self._unrouted_episode_latch) > _UNROUTED_EPISODE_LATCH_MAX:
+                self._unrouted_episode_latch.pop(next(iter(self._unrouted_episode_latch)))
+        else:
+            self._unrouted_dedup_window.record(event.dedup_key)
 
     async def _dispatch_to_channel(self, event: NotificationEvent, channel_name: str) -> None:
         cfg = self._channel_configs.get(channel_name)

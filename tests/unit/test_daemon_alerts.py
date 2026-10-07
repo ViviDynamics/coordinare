@@ -38,6 +38,17 @@ class _ActiveGraph:
         return state
 
 
+class _IdleActiveIdleGraph:
+    """Graph that keeps idle, wakes for one cycle, then returns to idle."""
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    async def ainvoke(self, state):
+        self._call_count += 1
+        state["phase"] = "monitoring_agent" if self._call_count == 2 else "idle"
+        return state
+
+
 @pytest.mark.asyncio
 async def test_daemon_restart_notification_dispatched() -> None:
     """Daemon start() dispatches daemon_restart event."""
@@ -74,17 +85,18 @@ async def test_prolonged_idle_dispatched_after_threshold() -> None:
 
     idle_events = [e for e in fake.dispatched if e.event_type == EventType.prolonged_idle]
     assert len(idle_events) >= 1
-    assert idle_events[0].dedup_key == "prolonged_idle"
+    assert idle_events[0].dedup_key.startswith("prolonged_idle@")
+    assert idle_events[0].episode_scoped
     assert idle_events[0].source == "daemon"
 
 
 @pytest.mark.asyncio
 async def test_prolonged_idle_has_dedup_key() -> None:
-    """The prolonged_idle event uses dedup_key to prevent repeats."""
+    """The prolonged_idle event uses an episode-scoped dedup_key to prevent repeats."""
     fake = FakeNotificationService()
     daemon = CoordinareDaemon(
         _IdleGraph(),
-        max_cycles=1,
+        max_cycles=2,
         sleep_func=AsyncMock(),
         idle_threshold_seconds=0,
     )
@@ -93,7 +105,35 @@ async def test_prolonged_idle_has_dedup_key() -> None:
     await daemon.start()
 
     idle_events = [e for e in fake.dispatched if e.event_type == EventType.prolonged_idle]
-    assert all(e.dedup_key == "prolonged_idle" for e in idle_events)
+    assert all(e.dedup_key.startswith("prolonged_idle@") for e in idle_events)
+    assert all(e.episode_scoped for e in idle_events)
+    # Issue 530: one idle episode, so every cycle stamps the same episode key.
+    assert len({e.dedup_key for e in idle_events}) == 1
+
+
+@pytest.mark.asyncio
+async def test_prolonged_idle_episode_key_changes_after_activity() -> None:
+    """Issue 530: leaving idle and re-entering idle starts a new idle episode.
+
+    The episode key must change across the activity boundary so the new
+    episode's first notification is not suppressed by the previous episode.
+    """
+    fake = FakeNotificationService()
+    daemon = CoordinareDaemon(
+        _IdleActiveIdleGraph(),
+        max_cycles=3,
+        sleep_func=AsyncMock(),
+        idle_threshold_seconds=0,
+    )
+    daemon.state["notification_service"] = fake
+
+    await daemon.start()
+
+    idle_events = [e for e in fake.dispatched if e.event_type == EventType.prolonged_idle]
+    assert len(idle_events) == 2
+    keys = [e.dedup_key for e in idle_events]
+    assert all(k.startswith("prolonged_idle@") for k in keys)
+    assert keys[0] != keys[1]
 
 
 @pytest.mark.asyncio
