@@ -46,6 +46,22 @@ class FakeChannelSender:
         self.subjects.append(subject)
 
 
+class YieldingSender:
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self.sent: list[str] = []
+
+    @property
+    def channel_name(self) -> str:
+        return self._name
+
+    async def send(self, message: str, *, subject: str | None = None) -> None:
+        import asyncio
+
+        await asyncio.sleep(0)
+        self.sent.append(message)
+
+
 def _make_event(
     event_type: EventType = EventType.card_transition,
     dedup_key: str | None = None,
@@ -502,3 +518,199 @@ async def test_window_key_re_emits_while_episode_key_stays_latched() -> None:
     assert len(plain_keys) == 2
     assert len(episode_keys) == 1
     assert "prolonged_idle@1000.0" not in svc._unrouted_dedup_window._seen
+
+
+# ---------------------------------------------------------------------------
+# 532: routed channels honor episode-scoped keys, latched per channel
+# ---------------------------------------------------------------------------
+
+
+def _routed_config(
+    *,
+    channel_name: str = "slack-ops",
+    dedup_window_seconds: int = 600,
+    retry_count: int = 3,
+) -> NotificationsConfig:
+    return _make_config(
+        channel_name=channel_name,
+        dedup_window_seconds=dedup_window_seconds,
+        retry_count=retry_count,
+        routing=[(EventType.prolonged_idle, [channel_name])],
+    )
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_first_emit_delivered_repeat_suppressed() -> None:
+    """Issue 532: first prolonged_idle per episode per channel delivers.
+
+    Same-episode repeats stay suppressed even after the channel's dedup
+    window elapses: the episode latch is not a window.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    config = _routed_config()
+    sender = FakeChannelSender("slack-ops")
+    svc = _build_service(config, [sender])
+
+    event = _make_episode_event("prolonged_idle@1000.0")
+    await svc.dispatch(event)
+    await svc.dispatch(event)
+    # Simulate the channel's dedup windows elapsing for the key.
+    svc._dedup_windows["slack-ops"]._seen["prolonged_idle@1000.0"] = (
+        datetime.now(UTC) - timedelta(seconds=601)
+    )
+    await svc.dispatch(event)
+
+    assert len(sender.sent) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 2
+    assert all(r.channel_name == "slack-ops" for r in deduplicated)
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_suppression_is_per_channel() -> None:
+    """Issue 532: suppression is keyed per channel, one delivery each."""
+    channels = [
+        ChannelConfig(
+            name="slack-ops",
+            type="slack",
+            webhook_url="https://hooks.slack.com/services/T/B/C",
+            message_template="{event_type}: {summary}",
+        ),
+        ChannelConfig(
+            name="slack-alerts",
+            type="slack",
+            webhook_url="https://hooks.slack.com/services/T/B/D",
+            message_template="{event_type}: {summary}",
+        ),
+    ]
+    config = NotificationsConfig(
+        channels=channels,
+        routing=[
+            RoutingEntry(
+                event_type=EventType.prolonged_idle,
+                channels=["slack-ops", "slack-alerts"],
+            ),
+        ],
+    )
+    sender1 = FakeChannelSender("slack-ops")
+    sender2 = FakeChannelSender("slack-alerts")
+    svc = _build_service(config, [sender1, sender2])
+
+    event = _make_episode_event("prolonged_idle@1000.0")
+    for _ in range(3):
+        await svc.dispatch(event)
+
+    assert len(sender1.sent) == 1
+    assert len(sender2.sent) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 4
+    assert {r.channel_name for r in deduplicated} == {"slack-ops", "slack-alerts"}
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_failed_delivery_retried_on_next_emit() -> None:
+    """Issue 532: record-on-success, a failed delivery is not lost for the episode."""
+    config = _routed_config(retry_count=1)
+    sender = FakeChannelSender("slack-ops", fail_first_n=1)
+    svc = _build_service(config, [sender])
+
+    event = _make_episode_event("prolonged_idle@1000.0")
+    await svc.dispatch(event)
+    failed = svc.history.query(status=NotificationStatus.failed)
+    assert len(failed) == 1
+
+    await svc.dispatch(event)
+    assert len(sender.sent) == 1
+
+    await svc.dispatch(event)
+    assert len(sender.sent) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 1
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_boundary_resets_suppression() -> None:
+    """Issue 532: a new idle episode is a new key, so each channel may notify again."""
+    config = _routed_config()
+    sender = FakeChannelSender("slack-ops")
+    svc = _build_service(config, [sender])
+
+    await svc.dispatch(_make_episode_event("prolonged_idle@1000.0"))
+    await svc.dispatch(_make_episode_event("prolonged_idle@2000.0"))
+
+    assert len(sender.sent) == 2
+    assert svc.history.query(status=NotificationStatus.deduplicated) == []
+
+
+@pytest.mark.asyncio
+async def test_routed_plain_key_keeps_window_semantics() -> None:
+    """Issue 532: plain keys on routed channels keep the per-channel window."""
+    from datetime import UTC, datetime, timedelta
+
+    config = _routed_config()
+    sender = FakeChannelSender("slack-ops")
+    svc = _build_service(config, [sender])
+
+    plain = _make_event(event_type=EventType.prolonged_idle, dedup_key="prolonged_idle")
+    await svc.dispatch(plain)
+    await svc.dispatch(plain)
+    assert len(sender.sent) == 1
+    # Expire the plain key's channel-window sighting: it re-delivers.
+    svc._dedup_windows["slack-ops"]._seen["prolonged_idle"] = (
+        datetime.now(UTC) - timedelta(seconds=601)
+    )
+    await svc.dispatch(plain)
+
+    assert len(sender.sent) == 2
+    assert ("slack-ops", "prolonged_idle") not in svc._routed_episode_latch
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_concurrent_duplicate_dispatch_sends_once() -> None:
+    """Issue 532: an in-flight episode key suppresses a concurrent duplicate.
+
+    The latch is reserved before the first await, so a second dispatch of the
+    same key while the first send is in flight is deduplicated, not delivered.
+    """
+    import asyncio
+
+    config = _routed_config()
+    sender = YieldingSender("slack-ops")
+    svc = _build_service(config, [sender])
+
+    event = _make_episode_event("prolonged_idle@1000.0")
+    await asyncio.gather(svc.dispatch(event), svc.dispatch(event))
+
+    assert len(sender.sent) == 1
+    deduplicated = svc.history.query(status=NotificationStatus.deduplicated)
+    assert len(deduplicated) == 1
+
+
+@pytest.mark.asyncio
+async def test_routed_episode_template_failure_does_not_latch() -> None:
+    """Issue 532: a template-render failure must not latch the episode key."""
+    config = NotificationsConfig(
+        channels=[
+            ChannelConfig(
+                name="slack-ops",
+                type="slack",
+                webhook_url="https://hooks.slack.com/services/T/B/C",
+                message_template="{event_type}: {detail}",
+            ),
+        ],
+        routing=[RoutingEntry(event_type=EventType.prolonged_idle, channels=["slack-ops"])],
+    )
+    sender = FakeChannelSender("slack-ops")
+    svc = _build_service(config, [sender])
+
+    broken = _make_event(event_type=EventType.prolonged_idle, dedup_key="prolonged_idle@1000.0")
+    broken.episode_scoped = True
+    await svc.dispatch(broken)
+
+    good = _make_episode_event("prolonged_idle@1000.0")
+    good.payload["detail"] = "recovered"
+    await svc.dispatch(good)
+
+    assert len(sender.sent) == 1
+    assert svc.history.query(status=NotificationStatus.deduplicated) == []
