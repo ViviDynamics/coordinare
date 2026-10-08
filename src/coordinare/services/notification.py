@@ -37,6 +37,10 @@ logger = structlog.get_logger(__name__)
 # dedup windows elapse; the latch holds at most this many keys.
 _UNROUTED_EPISODE_LATCH_MAX = 128
 
+# 532: the routed path latches episode keys per channel, after a successful
+# delivery, under the same bound.
+_ROUTED_EPISODE_LATCH_MAX = 128
+
 
 # ---------------------------------------------------------------------------
 # Channel Sender Protocol + Implementations (T009)
@@ -184,6 +188,7 @@ class NotificationService:
         # idle-episode identity in the dedup key) latch instead: one emission
         # per key, reset only by the key changing at the episode boundary.
         self._unrouted_episode_latch: dict[str, None] = {}
+        self._routed_episode_latch: dict[tuple[str, str], None] = {}
         self._history = NotificationHistory(config.history_max_age_hours)
         self._card_blocked_reminder_cooldown_seconds = (
             config.card_blocked_reminder_cooldown_seconds
@@ -245,6 +250,23 @@ class NotificationService:
         else:
             self._unrouted_dedup_window.record(event.dedup_key)
 
+    def _routed_is_duplicate(self, event: NotificationEvent, channel_name: str) -> bool:
+        if not event.dedup_key:
+            return False
+        if event.episode_scoped:
+            return (channel_name, event.dedup_key) in self._routed_episode_latch
+        return self._dedup_windows[channel_name].is_duplicate(event.dedup_key)
+
+    def _routed_record_dedup_key(self, event: NotificationEvent, channel_name: str) -> None:
+        if not event.dedup_key:
+            return
+        if event.episode_scoped:
+            self._routed_episode_latch[(channel_name, event.dedup_key)] = None
+            while len(self._routed_episode_latch) > _ROUTED_EPISODE_LATCH_MAX:
+                self._routed_episode_latch.pop(next(iter(self._routed_episode_latch)))
+        else:
+            self._dedup_windows[channel_name].record(event.dedup_key)
+
     async def _dispatch_to_channel(self, event: NotificationEvent, channel_name: str) -> None:
         cfg = self._channel_configs.get(channel_name)
         sender = self._senders.get(channel_name)
@@ -255,7 +277,7 @@ class NotificationService:
         start = monotonic()
 
         # Deduplication check
-        if event.dedup_key and self._dedup_windows[channel_name].is_duplicate(event.dedup_key):
+        if event.dedup_key and self._routed_is_duplicate(event, channel_name):
             self._record(event, channel_name, NotificationStatus.deduplicated, start)
             self._metrics.notifications_deduplicated_total.labels(channel_name=channel_name).inc()
             return
@@ -266,9 +288,18 @@ class NotificationService:
             self._metrics.notifications_rate_limited_total.labels(channel_name=channel_name).inc()
             return
 
-        # Retry loop
+        # Render before reserving: a template failure must not leave the
+        # episode key latched without a delivery.
         message = cfg.message_template.format_map(event.payload)
         subject = cfg.subject_template.format_map(event.payload) if cfg.subject_template else None
+
+        # Reserve the episode key before the first await so a concurrent
+        # duplicate dispatch is suppressed while this one is in flight. A final
+        # failure releases the reservation; only a success latches it.
+        if event.dedup_key and event.episode_scoped:
+            self._routed_episode_latch[(channel_name, event.dedup_key)] = None
+
+        # Retry loop
         last_error: str | None = None
         for attempt_num in range(cfg.retry_count):
             try:
@@ -278,7 +309,7 @@ class NotificationService:
                     retries_attempted=attempt_num,
                 )
                 if event.dedup_key:
-                    self._dedup_windows[channel_name].record(event.dedup_key)
+                    self._routed_record_dedup_key(event, channel_name)
                 self._metrics.notifications_dispatched_total.labels(
                     event_type=event.event_type.value, channel_name=channel_name,
                 ).inc()
@@ -293,6 +324,8 @@ class NotificationService:
             retries_attempted=cfg.retry_count,
             error_message=last_error,
         )
+        if event.dedup_key and event.episode_scoped:
+            self._routed_episode_latch.pop((channel_name, event.dedup_key), None)
         self._metrics.notifications_failed_total.labels(channel_name=channel_name).inc()
         logger.error(
             "notification_delivery_failed",
