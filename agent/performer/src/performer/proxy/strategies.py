@@ -76,11 +76,13 @@ async def act(
     else:
         resp = await tool.complete(req, tools_enabled=True)
     rec.record_call("act", ok=True)
-    # carry the plan as reasoning so the assembler can surface it per expose_plan_as
+    # Only the planner's output is exposed by dual-model orchestration. The SSE
+    # writer drops executor reasoning, so an empty/absent plan must stay empty
+    # in the buffered response too.
     return LLMResponse(
         content=resp.content,
         tool_calls=resp.tool_calls,
-        reasoning=plan or resp.reasoning,
+        reasoning=plan,
         raw=resp.raw,
     )
 
