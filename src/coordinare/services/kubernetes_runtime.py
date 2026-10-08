@@ -27,7 +27,7 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 import structlog
 
@@ -57,6 +57,8 @@ MANAGED_BY_VALUE = "coordinare"
 #: (issue #489) so pods belonging to other coordinare deployments (the
 #: controller itself) are excluded by construction.
 SESSION_ID_LABEL = "coordinare.session_id"
+OWNER_LABEL = "coordinare.vividynamics.com/owner"
+_UNOWNED_PREDECESSOR = "cannot replace performer pod without proof of deployment ownership"
 
 #: RFC 1123 label: lowercase alphanumerics and hyphens, start and end
 #: alphanumeric, at most 63 characters.
@@ -256,6 +258,10 @@ def _load_kube_config() -> None:
         k8s_config.load_kube_config()
 
 
+class _OwnershipOptions(TypedDict, total=False):
+    owner: str | None
+
+
 class KubernetesRuntime:
     """Runs performers as Pods in a single namespace."""
 
@@ -267,8 +273,12 @@ class KubernetesRuntime:
         image_pull_secrets: list[str] | None = None,
         core_v1: Any = None,
         image_resolver: Any = None,
+        **ownership: Unpack[_OwnershipOptions],
     ) -> None:
+        if set(ownership) - {"owner"}:
+            raise TypeError("unexpected KubernetesRuntime ownership option")
         self._namespace = namespace
+        self._owner = ownership.get("owner")
         self._cache_claim = cache_claim
         self._image_pull_secrets = image_pull_secrets or []
         self._image_resolver = image_resolver  # #526 digest pinning (optional)
@@ -310,7 +320,7 @@ class KubernetesRuntime:
 
         from kubernetes.client.rest import ApiException
 
-        pod_name = pod_name_for(config.id)
+        pod_name = pod_name_for(f"{self._owner}/{config.id}" if self._owner else config.id)
         # Issue #486: the image's entrypoint.sh installs the backend CLI at
         # container start from $BACKEND, and the pod env comes exclusively from
         # performer_endpoints[].env — the resolved backend reached the performer
@@ -333,7 +343,10 @@ class KubernetesRuntime:
             config,
             pod_name=pod_name,
             performer_id=config.id,
-            extra_labels=extra_labels,
+            extra_labels={
+                **(extra_labels or {}),
+                **({OWNER_LABEL: self._owner} if self._owner else {}),
+            },
             cache_claim=self._cache_claim,
             image_pull_secrets=self._image_pull_secrets,
             env=pod_env,
@@ -350,9 +363,12 @@ class KubernetesRuntime:
                     f"{self._namespace!r}: {exc.status} {exc.reason}",
                 ) from exc
 
+            if not self._owner or not await self._predecessor_is_owned(pod_name):
+                raise performer_lifecycle.ContainerStartError(_UNOWNED_PREDECESSOR) from exc
+
             # The name is taken. Because ``pod_name_for`` is deterministic, the
             # Pod holding it is this performer's *own* predecessor by
-            # construction — same performer, same namespace, same name. That
+            # construction — same deployment, performer, namespace and name. That
             # holds however the predecessor is doing: terminating (coordinare
             # killed between the delete request and the Pod actually going, an
             # operator deletion, an eviction) or still Running, because a turn
@@ -421,6 +437,15 @@ class KubernetesRuntime:
             raise
 
         return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip))
+
+    async def _predecessor_is_owned(self, pod_name: str) -> bool:
+        try:
+            pod = await asyncio.to_thread(
+                self._api.read_namespaced_pod, name=pod_name, namespace=self._namespace,
+            )
+        except Exception:
+            return False
+        return (getattr(pod.metadata, "labels", None) or {}).get(OWNER_LABEL) == self._owner
 
     async def _predecessor_phase(self, pod_name: str) -> str:
         """Best-effort read of the Pod holding the name, for the log line only.
@@ -616,13 +641,16 @@ class KubernetesRuntime:
     async def cleanup_orphaned(self, performer_id: str | None = None) -> int:
         """Delete Pods left by a previous coordinare.
 
-        Scoped by label so a sweep never touches anything else in the namespace,
-        and narrowable to one performer so it cannot reap another coordinare's
-        running work when two share a namespace.
+        Scoped by stable deployment owner and optionally performer ID. Foreign
+        and legacy unlabelled pods are preserved; without an owner, sweep nothing.
         """
         import asyncio
 
         from kubernetes.client.rest import ApiException
+
+        if not self._owner:
+            _log.warning("kubernetes_runtime.cleanup_skipped_no_owner")
+            return 0
 
         # Both labels, and the second is what makes this safe rather than tidy.
         # Every performer Pod carries a performer-id; nothing else coordinare
@@ -635,6 +663,7 @@ class KubernetesRuntime:
         if performer_id:
             # Narrow the existence check to one id.
             selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{PERFORMER_ID_LABEL}={performer_id}"
+        selector += f",{OWNER_LABEL}={self._owner}"
 
         try:
             pods = await asyncio.to_thread(
@@ -648,6 +677,8 @@ class KubernetesRuntime:
 
         stopped = 0
         for pod in pods.items:
+            if (getattr(pod.metadata, "labels", None) or {}).get(OWNER_LABEL) != self._owner:
+                continue
             await self.stop(pod.metadata.name)
             stopped += 1
         if stopped:
@@ -658,7 +689,7 @@ class KubernetesRuntime:
         self, active_session_ids: set[str],
     ) -> list[str]:
         """Issue #489: delete managed Pods whose ``coordinare.session_id`` is
-        not among the daemon's active sessions.
+        not among the daemon's active sessions and owned by this deployment.
 
         Kubernetes counterpart of the Docker FR-005 orphan sweep. The
         selector requires BOTH ``managed-by=coordinare`` and the existence of
@@ -672,7 +703,10 @@ class KubernetesRuntime:
         # stays lazily imported like every other method here, but this sweep
         # is best-effort by contract, so a failing list call of ANY kind
         # yields an empty sweep rather than a crash.
-        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{SESSION_ID_LABEL}"
+        if not self._owner:
+            _log.warning("kubernetes_runtime.session_sweep_skipped_no_owner")
+            return []
+        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{SESSION_ID_LABEL},{OWNER_LABEL}={self._owner}"
         try:
             pods = await asyncio.to_thread(
                 self._api.list_namespaced_pod,
@@ -689,6 +723,8 @@ class KubernetesRuntime:
         swept: list[str] = []
         for pod in pods.items:
             labels = getattr(pod.metadata, "labels", None) or {}
+            if labels.get(OWNER_LABEL) != self._owner:
+                continue
             session_id = labels.get(SESSION_ID_LABEL)
             if session_id and session_id in active:
                 continue

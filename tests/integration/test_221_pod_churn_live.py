@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -63,7 +64,7 @@ def _config(performer_id: str, **overrides):
 def runtime():
     from coordinare.services.kubernetes_runtime import KubernetesRuntime
 
-    return KubernetesRuntime(namespace=NAMESPACE)
+    return KubernetesRuntime(namespace=NAMESPACE, owner=f"churn-e2e-{uuid.uuid4().hex[:8]}")
 
 
 def _pods_for(prefix: str) -> list[str]:

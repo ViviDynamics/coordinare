@@ -49,6 +49,9 @@ data:
 
     {{/* Spec 146: performers as Pods, never a Docker socket. */}}
     {{- $_ := set $cfg "agent_transport" "kubernetes" }}
+    {{- if not (hasKey $cfg "kubernetes_owner") }}
+    {{- $_ := set $cfg "kubernetes_owner" (printf "helm-%s" (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 40)) }}
+    {{- end }}
     {{- $_ := set $cfg "kubernetes_namespace" (.Values.performers.namespace | default .Release.Namespace) }}
     {{- if .Values.performers.cacheClaim }}
     {{- $_ := set $cfg "kubernetes_cache_claim" .Values.performers.cacheClaim }}

@@ -157,7 +157,7 @@ def _port_forward(pod_name: str, remote_port: int):
 def runtime():
     from coordinare.services.kubernetes_runtime import KubernetesRuntime
 
-    return KubernetesRuntime(namespace=NAMESPACE)
+    return KubernetesRuntime(namespace=NAMESPACE, owner=f"e2e-owner-{uuid.uuid4().hex[:8]}")
 
 
 @pytest.fixture
@@ -221,10 +221,24 @@ def test_performer_pod_starts_serves_and_stops(runtime, config, tmp_path) -> Non
     assert not remaining.items, "the Pod must not outlive the performer (FR-008)"
 
 
-def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config) -> None:
+@pytest.mark.parametrize("bystander_owner", ["unmanaged", "legacy", "other-coordinare"])
+def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config, bystander_owner) -> None:
     """A sweep in a shared namespace must not reap somebody else's workload."""
     from kubernetes import client
 
+    from coordinare.services.kubernetes_runtime import (
+        MANAGED_BY_LABEL,
+        MANAGED_BY_VALUE,
+        OWNER_LABEL,
+        PERFORMER_ID_LABEL,
+    )
+
+    labels = {} if bystander_owner == "unmanaged" else {
+        MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+        PERFORMER_ID_LABEL: config.id,
+    }
+    if bystander_owner not in {"unmanaged", "legacy"}:
+        labels[OWNER_LABEL] = bystander_owner
     core = client.CoreV1Api()
     bystander = f"bystander-{uuid.uuid4().hex[:8]}"
     core.create_namespaced_pod(
@@ -232,7 +246,7 @@ def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config) -> None
         body={
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": bystander},
+            "metadata": {"name": bystander, "labels": labels},
             "spec": {
                 "restartPolicy": "Never",
                 "containers": [
@@ -258,7 +272,10 @@ def test_orphan_sweep_only_touches_coordinares_own_pods(runtime, config) -> None
             "the sweep deleted a Pod coordinare does not own; it must select on its "
             "own labels, or two coordinares sharing a namespace will reap each other"
         )
-        assert started.handle
+        remaining = core.list_namespaced_pod(
+            namespace=NAMESPACE, field_selector=f"metadata.name={started.handle}",
+        )
+        assert not remaining.items, "the owned Pod must be swept"
     finally:
         with contextlib.suppress(Exception):
             core.delete_namespaced_pod(name=bystander, namespace=NAMESPACE, grace_period_seconds=0)

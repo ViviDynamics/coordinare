@@ -1103,6 +1103,12 @@ class ProjectConfiguration(BaseSettings):
     # Spec 146 (#200): Kubernetes transport. Namespace-scoped by design — the
     # daemon never needs cluster-wide permissions.
     kubernetes_namespace: str = "default"
+    # Stable deployment identity for destructive orphan sweeps. Without one,
+    # shared-namespace ownership cannot be established and cleanup is skipped.
+    kubernetes_owner: str | None = Field(
+        default=None, min_length=1, max_length=63,
+        pattern=r"^[a-zA-Z0-9]([a-zA-Z0-9_.-]*[a-zA-Z0-9])?$",
+    )
     # Optional on purpose: a cluster with no default StorageClass must still run
     # performers, with a cold cache, rather than failing to schedule them. That
     # describes most minikube and microk8s installs.

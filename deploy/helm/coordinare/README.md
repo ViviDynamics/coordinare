@@ -185,3 +185,17 @@ name; never put the token into `config` or a committed values file. Connect thro
 port-forwarding, then use username `operator` and the token as the browser password.
 The Service stays ClusterIP. For ingress/SSO and TLS, follow
 [dashboard authentication](../../../docs/security/dashboard-auth.md).
+
+### Performer cleanup ownership
+
+The chart sets `kubernetes_owner` to a stable hash of the Helm release namespace
+and name unless explicitly configured. Keep this stable across restarts and unique among deployments sharing
+one performer namespace. For daemons launched outside Helm, set
+`kubernetes_owner` in `config.yaml` to a unique Kubernetes label value.
+
+Startup cleanup and session sweeps delete only pods carrying the deployment's
+owner label. Without an owner, these sweeps skip deletion. Existing pods without
+an owner label are preserved on upgrade; inspect them before removing them
+manually. Newly dispatched performers receive the owner label automatically and use owner-specific
+pod names. A conflicting pod is replaced only when its owner label can be verified. Without an owner, name collisions fail without
+deleting the existing pod.

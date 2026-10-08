@@ -91,7 +91,7 @@ class _FakeCoreV1:
 
 
 def _pod(name: str, labels: dict[str, str]) -> Any:
-    return SimpleNamespace(metadata=SimpleNamespace(name=name, labels=labels))
+    return SimpleNamespace(metadata=SimpleNamespace(name=name, labels={"coordinare.vividynamics.com/owner": "test-deployment", **labels}))
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ async def test_runtime_sweep_deletes_only_orphan_pods() -> None:
         _pod("pod-keep", {"coordinare.session_id": "sess-1"}),
         _pod("pod-orphan", {"coordinare.session_id": "sess-9"}),
     ])
-    runtime = KubernetesRuntime(core_v1=core)
+    runtime = KubernetesRuntime(core_v1=core, owner="test-deployment")
 
     swept = await runtime.sweep_orphaned_sessions({"sess-1"})
 
@@ -303,7 +303,7 @@ async def test_runtime_sweep_selector_requires_managed_and_session_labels() -> N
     of a coordinare.session_id label — the same controller-safety lesson
     cleanup_orphaned already learned."""
     core = _FakeCoreV1([])
-    runtime = KubernetesRuntime(core_v1=core)
+    runtime = KubernetesRuntime(core_v1=core, owner="test-deployment")
 
     await runtime.sweep_orphaned_sessions(set())
 
@@ -321,7 +321,7 @@ async def test_runtime_sweep_survives_api_errors() -> None:
         def list_namespaced_pod(self, **_kw: Any) -> Any:
             raise ApiException(status=500, reason="Internal Server Error")
 
-    runtime = KubernetesRuntime(core_v1=_BrokenApi())
+    runtime = KubernetesRuntime(core_v1=_BrokenApi(), owner="test-deployment")
 
     swept = await runtime.sweep_orphaned_sessions({"sess-1"})
 
