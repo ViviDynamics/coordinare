@@ -1109,6 +1109,7 @@ class _BootstrapBackend:
     base_url: str | None = None
     api_key_env: str | None = None
     auth_token_env: str | None = None
+    orchestration: dict[str, Any] | None = None
 
 
 async def _docker_logs_lines(container_id: str, tail: int) -> list[str]:
@@ -3964,6 +3965,10 @@ class CoordinareDaemon:
                     resolved.auth_token_env = model_resolution.get("auth_token_env") or getattr(
                         rc, "auth_token_env", None,
                     )
+                    if hasattr(cfg, "resolve_performer_orchestration"):
+                        orchestration = cfg.resolve_performer_orchestration(_probe_role)
+                        if isinstance(orchestration, dict):
+                            resolved.orchestration = orchestration
                     break
         return resolved, cfg
 
@@ -4081,6 +4086,8 @@ class CoordinareDaemon:
             dispatch_dict["api_key_env"] = bootstrap_api_key_env
         if bootstrap_auth_token_env:
             dispatch_dict["auth_token_env"] = bootstrap_auth_token_env
+        if bootstrap.orchestration:
+            dispatch_dict["orchestration"] = bootstrap.orchestration
         logger.info(
             "env_cache.bootstrap_backend_resolved",
             symphony=symphony_name,
