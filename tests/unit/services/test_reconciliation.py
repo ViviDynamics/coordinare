@@ -7,6 +7,8 @@ DockerExecutor and a stub performer service.  No live Docker daemon.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -36,6 +38,15 @@ def _make_container(*, session_id: str, container_id: str = "ctr-1", card_id: st
             "coordinare.daemon_started_at": "2026-05-28T21:14:17Z",
             "coordinare.spec_version": "076",
         },
+    )
+
+
+@pytest.fixture(autouse=True)
+def runner_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the healthy runner's read-only identity API without network calls."""
+    monkeypatch.setattr(
+        "coordinare.transport.http_transport.PerformerHTTPClient.get_status",
+        AsyncMock(return_value=SimpleNamespace(current_job_id="runner-job")),
     )
 
 
@@ -628,3 +639,32 @@ async def test_175_restart_requires_confirmed_writer_stop(stopped):
     await run_startup_reconciliation({"active_sessions": {"c1": sess}, "performer_services": {"documenting": service}}, docker_executor=docker)
     assert sess["documenting_side"]["status"] == "failed"
     assert sess["documenting_side"]["writer_active"] is (not stopped)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", ["terminal", "unknown", "mismatch"])
+async def test_545_side_writer_identity_preserves_foreground_and_uncertain_lock(identity, monkeypatch):
+    from coordinare.config import PerformerEndpointConfig
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    current_job = "different-job" if identity == "mismatch" else None
+    monkeypatch.setattr(
+        "coordinare.transport.http_transport.PerformerHTTPClient.get_status",
+        AsyncMock(return_value=SimpleNamespace(current_job_id=current_job)),
+    )
+    service = HTTPPerformerService(PerformerEndpointConfig(
+        id="doc", roles=["documenting"], mode="ephemeral", image="example:latest",
+    ))
+    foreground = {"job_id": "foreground-job"}
+    side = {"status": "running", "writer_active": True, "session_id": "side-session",
+            "job_id": None if identity == "unknown" else "runner-job"}
+    sess = {"phase": "blocked", "agent_dispatch": foreground, "documenting_side": side.copy()}
+    docker = _MockDockerExecutor(containers=[_make_container(session_id="side-session")])
+    await run_startup_reconciliation({"active_sessions": {"c1": sess}, "performer_services": {"documenting": service}}, docker)
+    assert sess["documenting_side"] == side
+    assert sess["agent_dispatch"] == foreground
+    assert not docker.stopped
+    assert service.has_live_session("side-session") is (identity == "terminal")
+    if identity == "terminal":
+        assert service._active_jobs["side-session"].job_id == "runner-job"
+        await service._active_jobs["side-session"].client.aclose()

@@ -211,6 +211,7 @@ class CardSession(TypedDict, total=False):
     multi_pr_divergence: dict[str, Any] | None
     wedge_count_window: dict[str, list[datetime]]
     reconciliation_decisions_last_startup: dict[str, str]
+    reconciled_dispatch_pending: bool
     # 095: per-card ENV_BLOCKED hold + notification-dedup state (head_sha,
     # pattern_id, cause, action) — None when not infra-blocked.  Carries only
     # check/infra identifiers, never secret values.
@@ -360,6 +361,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "multi_pr_divergence",
     "wedge_count_window",
     "reconciliation_decisions_last_startup",
+    "reconciled_dispatch_pending",
     # 095: per-card ENV_BLOCKED hold/dedup state (head_sha, pattern_id, cause,
     # action). Round-trips per-card so multi-card holds don't collide and the
     # operator-notification dedup survives a daemon restart.
@@ -492,6 +494,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         multi_pr_divergence=None,
         wedge_count_window={},
         reconciliation_decisions_last_startup={},
+        reconciled_dispatch_pending=False,
         # 095: no infra block on a freshly-picked-up card
         env_blocked=None,
         # 096: no rebase attempted yet for a freshly-picked-up card
@@ -529,6 +532,10 @@ def session_to_state(session: CardSession, state: CoordinareState) -> None:
     for field in _SESSION_FIELDS:
         if field in session:
             state[field] = session[field]
+    # Older partial sessions must not inherit another card's performer or intent.
+    if "agent_dispatch" not in session:
+        state["agent_dispatch"] = {}
+    state["reconciled_dispatch_pending"] = bool(session.get("reconciled_dispatch_pending"))
     for field in _SESSION_OPTIONAL_FIELDS:
         if field not in session:
             # 425: session-optional fields hydrate exactly. A card without

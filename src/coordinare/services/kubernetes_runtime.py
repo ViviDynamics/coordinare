@@ -58,6 +58,9 @@ MANAGED_BY_VALUE = "coordinare"
 #: controller itself) are excluded by construction.
 SESSION_ID_LABEL = "coordinare.session_id"
 OWNER_LABEL = "coordinare.vividynamics.com/owner"
+_UNOWNED_SESSION = "cannot reconcile Kubernetes session without deployment ownership"
+_AMBIGUOUS_SESSION = "multiple owned pods match restored performer session"
+_UNREADY_SESSION = "restored performer pod is not ready for adoption"
 _UNOWNED_PREDECESSOR = "cannot replace performer pod without proof of deployment ownership"
 
 #: RFC 1123 label: lowercase alphanumerics and hyphens, start and end
@@ -509,6 +512,31 @@ class KubernetesRuntime:
         raise performer_lifecycle.ReadinessTimeoutError(
             f"performer Pod {pod_name!r} did not reach Running with an IP within {timeout_s}s",
         )
+
+    async def find_session(self, session_id: str) -> StartedPerformer | None:
+        """Resolve a restored session only within this deployment's ownership."""
+        if not self._owner:
+            raise RuntimeError(_UNOWNED_SESSION)
+        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{SESSION_ID_LABEL}={session_id},{OWNER_LABEL}={self._owner}"
+        pods = await asyncio.to_thread(
+            self._api.list_namespaced_pod, namespace=self._namespace, label_selector=selector,
+        )
+        matches = [pod for pod in pods.items if (
+            (getattr(pod.metadata, "labels", None) or {}).get(OWNER_LABEL) == self._owner
+            and (getattr(pod.metadata, "labels", None) or {}).get(SESSION_ID_LABEL) == session_id
+        )]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise RuntimeError(_AMBIGUOUS_SESSION)
+        pod = matches[0]
+        phase = str(getattr(pod.status, "phase", None) or "")
+        if phase in {"Failed", "Succeeded"}:
+            return StartedPerformer(handle=str(pod.metadata.name), endpoint="")
+        pod_ip = getattr(pod.status, "pod_ip", None)
+        if phase != "Running" or not pod_ip:
+            raise RuntimeError(_UNREADY_SESSION)
+        return StartedPerformer(handle=str(pod.metadata.name), endpoint=endpoint_for(str(pod_ip)))
 
     async def stop(
         self,

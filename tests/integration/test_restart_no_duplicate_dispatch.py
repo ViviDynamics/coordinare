@@ -13,6 +13,8 @@ NEVER two containers, NEVER zero (or some other invalid combination).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -25,6 +27,15 @@ from coordinare.services.reconciliation import (
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def runner_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The surviving healthy runner exposes its distinct job identity."""
+    monkeypatch.setattr(
+        "coordinare.transport.http_transport.PerformerHTTPClient.get_status",
+        AsyncMock(return_value=SimpleNamespace(current_job_id="runner-prior-job")),
+    )
 
 
 class _DockerWithOneRunningContainer:
@@ -153,6 +164,7 @@ async def test_fr014_adopted_client_points_at_real_host_port() -> None:
     # Adopted entry exists
     assert "uuid-from-prior-daemon" in svc._active_jobs
     job = svc._active_jobs["uuid-from-prior-daemon"]
+    assert job.job_id == "runner-prior-job"
     # Endpoint resolves to the real host port returned by
     # _DockerWithOneRunningContainer.port_of (55555 when healthy)
     assert ":0" not in job.endpoint, f"adopted client points at placeholder port: {job.endpoint}"
@@ -180,9 +192,10 @@ async def test_fr014_one_container_after_restart_when_prior_container_healthy() 
     # _active_jobs MUST contain the adopted session — exactly one entry
     assert "uuid-from-prior-daemon" in svc._active_jobs
     assert len(svc._active_jobs) == 1
-    # agent_dispatch preserved — no re-dispatch will happen
+    # Session identity is preserved and discovered runner identity is retained.
     assert state["active_sessions"]["PVTI_TODAY"]["agent_dispatch"] == {
         "session_id": "uuid-from-prior-daemon",
+        "job_id": "runner-prior-job",
     }
 
 

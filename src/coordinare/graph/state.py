@@ -302,6 +302,12 @@ class CoordinareState(TypedDict, total=False):
     multi_pr_divergence: dict[str, Any] | None
     wedge_count_window: dict[str, list[datetime]]
     reconciliation_decisions_last_startup: dict[str, str]
+    # #545: replacement-dispatch intent survives capacity/rebase deferrals
+    # and restarts. Card-scoped; consumed only after successful dispatch.
+    reconciled_dispatch_pending: bool
+    # Per-tick reconciliation uncertainty ends the graph before polling or
+    # replacing an unverified performer. Reset at the next board check.
+    stale_session_reconciliation_deferred: bool
     # 045: Number of times reviewer/security/qa has returned a non-terminal
     # "changes_requested" / "_failed" marker for this card, routing back to
     # an earlier stage (usually implementer).  Bounded by
@@ -571,6 +577,8 @@ def initial_state() -> CoordinareState:
         "multi_pr_divergence": None,
         "wedge_count_window": {},
         "reconciliation_decisions_last_startup": {},
+        "reconciled_dispatch_pending": False,
+        "stale_session_reconciliation_deferred": False,
         # 141: attempt telemetry singleton — wired in by _bootstrap_services
         "attempt_log": None,
     }
@@ -636,6 +644,7 @@ def _retire_active_session(state: CoordinareState, *, trigger: str = "session_re
             )
         del sessions[active_id]
     state["active_card_id"] = None
+    state["reconciled_dispatch_pending"] = False
     _rederive_current_card(state)
     # 428: retuned knobs belong to the session being retired — survive the
     # session, reset with it. Only the RETIRING symphony's entries go; a

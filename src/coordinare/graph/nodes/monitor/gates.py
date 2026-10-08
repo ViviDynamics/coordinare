@@ -390,6 +390,9 @@ def _implementer_session_gone(state: CoordinareState) -> bool:
         return True
     services = state.get("performer_services") or {}
     svc = services.get("implementing") if isinstance(services, dict) else None
+    performer_id = (state.get("agent_dispatch") or {}).get("performer_id")
+    if performer_id:
+        svc = (state.get("performer_services_by_id") or {}).get(performer_id)
     check = getattr(svc, "has_live_session", None) if svc is not None else None
     if check is None:
         return False

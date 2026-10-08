@@ -2669,6 +2669,7 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
 
     # Clear relay_feedback so it isn't re-sent to subsequent roles.
     state["relay_feedback"] = []
+    state["reconciled_dispatch_pending"] = False
     # 426: the correction was just delivered — consume it. A failed dispatch
     # never reaches this point, so the correction stays pending for the retry.
     # Written only when actually pending so the absent-key contract holds.

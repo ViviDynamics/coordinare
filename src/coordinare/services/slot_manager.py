@@ -249,7 +249,12 @@ class SlotManager:
         for stage, card_id in active_performer_cards:
             slot_pool = self.pools.get(stage)
             if slot_pool is not None and card_id not in slot_pool.active_slots:
-                idx = slot_pool.free_service_index()
+                dispatch = active_sessions[card_id].get("agent_dispatch") or {}
+                performer_id = dispatch.get("performer_id")
+                idx = next((
+                    i for i, service in enumerate(slot_pool.services)
+                    if performer_id and getattr(getattr(service, "_config", None), "id", None) == performer_id
+                ), None) if performer_id else slot_pool.free_service_index()
                 if idx is not None:
                     slot_pool.active_slots[card_id] = PerformerSlot(
                         role=stage,

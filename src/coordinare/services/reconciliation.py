@@ -29,12 +29,20 @@ from coordinare.services.docker_executor import (
     DockerExecutor,
     DockerUnreachableError,
 )
+from coordinare.services.docker_runtime import DockerRuntime
+from coordinare.services.documenting_side import record_result
+from coordinare.services.http_performer_service import _EphemeralJob
+from coordinare.services.kubernetes_runtime import KubernetesRuntime
+from coordinare.transport.base import TransportTimeoutError
+from coordinare.transport.http_transport import PerformerAuthError, PerformerHTTPClient
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
 
+
+_UNKNOWN_RUNNER_JOB = "runner job identity is unknown or inconsistent"
 
 _COORDINARE_LABEL_FILTER = {"coordinare.spec_version": "076"}
 
@@ -105,10 +113,14 @@ async def run_startup_reconciliation(
     # If Docker is down, fail closed (per FR-012) by recording the flag
     # and skipping per-card decisions; the daemon will refuse to dispatch.
     containers: list[ContainerInfo] = []
+    needs_docker = any(_requires_docker(state, sess) for sess in in_flight_sessions.values())
+    needs_docker = needs_docker or any(
+        _requires_docker(state, {"performer_stage": "documenting"}) for _ in side_sessions
+    )
     try:
         containers = await docker_executor.list_containers_by_label(
             _COORDINARE_LABEL_FILTER, timeout=min(budget_seconds, 10.0),
-        )
+        ) if needs_docker else []
     except DockerUnreachableError as exc:
         logger.error(
             "daemon.reconciliation_pass_aborted_docker_unreachable",
@@ -258,6 +270,14 @@ async def handle_potentially_stale_session(
     if target is None:
         target = state  # type: ignore[assignment]
 
+    dispatch = target.get("agent_dispatch") or {}
+    selected_service = _resolve_service(state, str(target.get("performer_stage") or ""), dispatch.get("performer_id"))
+    if not _is_ephemeral_container_service(selected_service):
+        return (ReconciliationDecision.SKIPPED_PERSISTENT
+                if _is_persistent_mode(selected_service) else ReconciliationDecision.DEFERRED)
+    service = _kubernetes_service(state, target)
+    if service is not None:
+        return await _reconcile_kubernetes_session(target, card_id, service)
     if docker_executor is None:
         docker_executor = DockerExecutor()
 
@@ -567,13 +587,9 @@ async def run_kubernetes_orphan_sweep(state: CoordinareState) -> list[str]:
 
 async def _restore_documenting_side(state, card_id, sess, by_session, docker_executor) -> None:
     """Adopt an early writer, or confirm it stopped before releasing its lock."""
-    from coordinare.services.documenting_side import record_result
-
     service = _resolve_service(state, "documenting")
     if service is None or _is_persistent_mode(service):
         return
-    from coordinare.services.docker_runtime import DockerRuntime
-
     if not isinstance(getattr(service, "_runtime", None), DockerRuntime):
         # Docker enumeration cannot establish absence of a Kubernetes writer.
         return
@@ -583,14 +599,50 @@ async def _restore_documenting_side(state, card_id, sess, by_session, docker_exe
         record_result(sess, status="failed", head_sha=None, reason="side writer absent at restart")
         return
     job_id = sess["documenting_side"].get("job_id")
-    if (job_id and await _probe_job_runner_health(container, docker_executor)
-            and await _adopt(state, card_id, container, session_id, service, docker_executor)):
-        service._active_jobs[session_id].job_id = str(job_id)
-        return
+    if await _probe_job_runner_health(container, docker_executor):
+        adopted = await _adopt(
+            state, card_id, container, session_id, service, docker_executor, dispatch={"job_id": job_id},
+        )
+        if adopted:
+            sess["documenting_side"]["job_id"] = service._active_jobs[session_id].job_id
+        if adopted is None or adopted:
+            return
     stopped = await docker_executor.stop_container(container.container_id, timeout=5.0)
     record_result(sess, status="failed", head_sha=None,
                   reason="side writer stopped at restart" if stopped else "side writer stop unconfirmed at restart",
                   writer_active=not stopped)
+
+
+async def recover_documenting_side_session(card_id: str, sess: dict[str, Any], service: Any) -> bool:
+    """Recover an existing writer before polling; uncertainty keeps its lock."""
+    side = sess.get("documenting_side") or {}
+    session_id = str(side.get("session_id") or "")
+    live = getattr(service, "has_live_session", None)
+    if not _is_ephemeral_container_service(service) or (callable(live) and live(session_id)):
+        return True
+    runtime = getattr(service, "_runtime", None)
+    try:
+        if isinstance(runtime, KubernetesRuntime):
+            temporary = {"agent_dispatch": {"session_id": session_id, "job_id": side.get("job_id")}}
+            decision = await _reconcile_kubernetes_session(temporary, card_id, service)
+            if decision == ReconciliationDecision.ADOPTED:
+                side["job_id"] = temporary["agent_dispatch"]["job_id"]
+            elif decision != ReconciliationDecision.DEFERRED:
+                record_result(sess, status="failed", head_sha=None, reason="side writer absent after recovery")
+        else:
+            if not isinstance(runtime, DockerRuntime):
+                return False
+            executor = DockerExecutor()
+            containers = await executor.list_containers_by_label({"coordinare.session_id": session_id}, timeout=5.0)
+            if len(containers) > 1:
+                return False
+            await _restore_documenting_side(
+                {"performer_services": {"documenting": service}}, card_id, sess,
+                {session_id: containers[0]} if containers else {}, executor,
+            )
+    except Exception as exc:
+        logger.warning("daemon.side_reconciliation_deferred", card_id=card_id, error_type=type(exc).__name__)
+    return bool(callable(live) and live(session_id))
 
 
 async def _classify_and_act(
@@ -606,9 +658,14 @@ async def _classify_and_act(
     performer_stage = sess.get("performer_stage")
 
     # FR-011: persistent-mode services have no per-job container.
-    service = _resolve_service(state, performer_stage) if performer_stage else None
-    if service is not None and _is_persistent_mode(service):
-        return ReconciliationDecision.SKIPPED_PERSISTENT
+    service = _resolve_service(state, performer_stage, agent_dispatch.get("performer_id")) if performer_stage else None
+    if not _is_ephemeral_container_service(service):
+        return (ReconciliationDecision.SKIPPED_PERSISTENT
+                if _is_persistent_mode(service) else ReconciliationDecision.DEFERRED)
+
+    kubernetes_service = _kubernetes_service(state, sess)
+    if kubernetes_service is not None:
+        return await _reconcile_kubernetes_session(sess, card_id, kubernetes_service)
 
     container = by_session.get(session_id) if isinstance(session_id, str) else None
     if container is None:
@@ -623,21 +680,109 @@ async def _classify_and_act(
     # before deciding adopt vs reap-and-replace.
     is_healthy = await _probe_job_runner_health(container, docker_executor)
     if is_healthy:
-        adopted = await _adopt(state, card_id, container, session_id, service, docker_executor)
+        adopted = await _adopt(
+            state, card_id, container, session_id, service, docker_executor, dispatch=agent_dispatch,
+        )
+        if adopted is None:
+            return ReconciliationDecision.DEFERRED
         if adopted:
             return ReconciliationDecision.ADOPTED
         # Adoption failed (port unresolvable etc.) → fall through to
         # reap-and-replace rather than leaving a dead client in
         # _active_jobs.
-        await _reap_and_replace(container, sess, card_id, docker_executor)
-        return ReconciliationDecision.REAPED_AND_REPLACED
 
     # Container exists but unreachable → reap+replace
     await _reap_and_replace(container, sess, card_id, docker_executor)
     return ReconciliationDecision.REAPED_AND_REPLACED
 
 
-def _resolve_service(state: CoordinareState, performer_stage: str) -> Any:
+def _requires_docker(state: CoordinareState, sess: dict[str, Any]) -> bool:
+    dispatch = sess.get("agent_dispatch") or {}
+    service = _resolve_service(state, str(sess.get("performer_stage") or ""), dispatch.get("performer_id"))
+    return _is_ephemeral_container_service(service) and _kubernetes_service(state, sess) is None
+
+
+def _is_ephemeral_container_service(service: Any) -> bool:
+    """Only configured ephemeral HTTP performers have recoverable containers."""
+    return getattr(getattr(service, "_config", None), "mode", None) == "ephemeral"
+
+
+def _kubernetes_service(state: CoordinareState, sess: dict[str, Any]) -> Any:
+    dispatch = sess.get("agent_dispatch") or {}
+    service = _resolve_service(state, str(sess.get("performer_stage") or ""), dispatch.get("performer_id"))
+    return service if isinstance(getattr(service, "_runtime", None), KubernetesRuntime) else None
+
+
+async def _reconcile_kubernetes_session(
+    sess: dict[str, Any], card_id: str, service: Any,
+) -> ReconciliationDecision:
+    """Adopt or reap a known owned pod; unreadable state never authorizes replacement."""
+    dispatch = sess.get("agent_dispatch") or {}
+    session_id = str(dispatch.get("session_id") or "")
+    if not session_id:
+        return _clear_agent_dispatch_and_return(sess, ReconciliationDecision.FRESH_DISPATCHED, card_id)
+    runtime = service._runtime
+    client = None
+    try:
+        started = await runtime.find_session(session_id)
+        if started is None:
+            return _clear_agent_dispatch_and_return(sess, ReconciliationDecision.FRESH_DISPATCHED, card_id)
+        healthy = False
+        runner_status: Any = None
+        if started.endpoint:
+            token_fn = getattr(service, "_auth_token", None)
+            client = PerformerHTTPClient(
+                started.endpoint, auth_token=token_fn() if callable(token_fn) else None, timeout_seconds=5.0,
+            )
+            try:
+                runner_status = await client.get_status()
+                healthy = True
+            except (PerformerAuthError, TransportTimeoutError):
+                raise  # authentication or timing uncertainty must not destroy live work
+            except Exception:
+                healthy = False
+        if healthy:
+            job_id = _require_runner_job_id(dispatch, runner_status)
+            service._active_jobs[session_id] = _EphemeralJob(
+                container_id=started.handle, endpoint=started.endpoint, client=client, job_id=job_id,
+            )
+            dispatch["job_id"] = job_id
+            client = None  # adopted service owns the client now
+            sess["phase"] = "monitoring_performer"
+            return ReconciliationDecision.ADOPTED
+        await runtime.stop(started.handle)
+        if await runtime.find_session(session_id) is not None:
+            return ReconciliationDecision.DEFERRED
+        return _clear_agent_dispatch_and_return(sess, ReconciliationDecision.REAPED_AND_REPLACED, card_id)
+    except Exception as exc:
+        logger.warning("daemon.kubernetes_reconciliation_deferred", card_id=card_id, error_type=type(exc).__name__)
+        return ReconciliationDecision.DEFERRED
+    finally:
+        if client is not None:
+            await client.aclose()
+
+
+def _require_runner_job_id(dispatch: dict[str, Any], status: Any) -> str:
+    job_id = _runner_job_id(dispatch, status)
+    if not job_id:
+        raise RuntimeError(_UNKNOWN_RUNNER_JOB)
+    return job_id
+
+
+def _runner_job_id(dispatch: dict[str, Any], status: Any) -> str | None:
+    saved = dispatch.get("job_id")
+    current = getattr(status, "current_job_id", None)
+    saved = saved.strip() if isinstance(saved, str) else None
+    current = current.strip() if isinstance(current, str) else None
+    if saved and current and saved != current:
+        return None
+    return saved or current or None
+
+
+def _resolve_service(state: CoordinareState, performer_stage: str, performer_id: str | None = None) -> Any:
+    by_id = state.get("performer_services_by_id") or {}
+    if performer_id and isinstance(by_id, dict) and performer_id in by_id:
+        return by_id[performer_id]
     perf_services = state.get("performer_services") or {}
     if isinstance(perf_services, dict):
         return perf_services.get(performer_stage)
@@ -659,6 +804,7 @@ def _clear_agent_dispatch_and_return(
     sess["agent_dispatch"] = {}
     sess["agent_dispatch_at"] = None
     sess["phase"] = "dispatching"
+    sess["reconciled_dispatch_pending"] = True
     return decision
 
 
@@ -669,7 +815,9 @@ async def _adopt(
     session_id: str,
     service: Any,
     docker_executor: DockerExecutor,
-) -> bool:
+    *,
+    dispatch: dict[str, Any] | None = None,
+) -> bool | None:
     """FR-003: register an existing container into the new process's
     ``_active_jobs`` so the orchestrator resumes monitoring instead of
     spawning a duplicate.
@@ -679,6 +827,7 @@ async def _adopt(
     construct a fresh ``_EphemeralJob`` and ``PerformerHTTPClient``
     pointed at the actual endpoint.
 
+    Returns None when runner identity is unreadable; preserve the session.
     Returns True on successful adoption.  Returns False if the host
     port cannot be resolved (in which case the caller falls through
     to reap-and-replace — better than leaving a dead client in
@@ -705,16 +854,23 @@ async def _adopt(
     auth_token = getattr(service, "_auth_token", None)
     token = auth_token() if callable(auth_token) else None
     client = PerformerHTTPClient(endpoint, auth_token=token)
-    ephemeral_job = _EphemeralJob(
-        container_id=container.container_id,
-        endpoint=endpoint,
-        client=client,
-        # The job-runner's job_id is not yet known to the new daemon;
-        # the next status poll will discover it via GET /jobs.  For
-        # adoption, what matters is that the session_id key exists.
-        job_id=None,
-    )
-    service._active_jobs[session_id] = ephemeral_job
+    dispatch = dispatch if dispatch is not None else {}
+    adopted = False
+    try:
+        job_id = _runner_job_id(dispatch, await client.get_status())
+        if not job_id:
+            return None
+        service._active_jobs[session_id] = _EphemeralJob(
+            container_id=container.container_id, endpoint=endpoint, client=client, job_id=job_id,
+        )
+        dispatch["job_id"] = job_id
+        adopted = True
+    except Exception as exc:
+        logger.warning("daemon.adopt_job_identity_deferred", card_id=card_id, error_type=type(exc).__name__)
+        return None
+    finally:
+        if not adopted:
+            await client.aclose()
     logger.info(
         "daemon.session_adopted",
         card_id=card_id,
@@ -751,6 +907,7 @@ async def _reap_and_replace(
     sess["agent_dispatch"] = {}
     sess["agent_dispatch_at"] = None
     sess["phase"] = "dispatching"
+    sess["reconciled_dispatch_pending"] = True
 
 
 async def _sweep_orphan(

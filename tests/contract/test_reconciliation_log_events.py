@@ -9,11 +9,22 @@ across refactors.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from coordinare.services import reconciliation as recon_mod
 from coordinare.services.docker_executor import ContainerInfo, DockerUnreachableError
+
+
+@pytest.fixture(autouse=True)
+def runner_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the healthy runner's read-only identity API without network calls."""
+    monkeypatch.setattr(
+        "coordinare.transport.http_transport.PerformerHTTPClient.get_status",
+        AsyncMock(return_value=SimpleNamespace(current_job_id="restored-runner-job")),
+    )
 
 
 class _Capture:
