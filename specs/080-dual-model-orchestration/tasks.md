@@ -99,7 +99,7 @@
 - [X] T034 [P] Restore ≥90% coverage; run `bin/build --all` green (lint, unit, coverage, performer, e2e, docker)
 - [X] T035 [P] Update `AGENTS.md` + docs with the catalog model and the hermes `single`-only constraint
 - [X] T036 Validate `quickstart.md` end-to-end: each documented validation error actually fires; smoke a `single` and an `always` mode
-- [ ] T037 Live-round validation: run one card stage on an `always` mode; capture per-backend findings (mirrors 077 Phase-9 format)
+- [X] T037 Live-round validation: run one card stage on an `always` mode; capture per-backend findings (mirrors 077 Phase-9 format)
 
 ---
 

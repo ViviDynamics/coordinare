@@ -1,0 +1,223 @@
+{
+  "cli_partials": {
+    "message_start": 12,
+    "content_block_start": 40,
+    "content_block_delta": 298,
+    "content_block_stop": 40,
+    "message_delta": 12,
+    "message_stop": 12
+  },
+  "tool_calls": [
+    {
+      "tool": "Bash",
+      "categories": []
+    },
+    {
+      "tool": "Bash",
+      "categories": []
+    },
+    {
+      "tool": "Read",
+      "categories": []
+    },
+    {
+      "tool": "Read",
+      "categories": []
+    },
+    {
+      "tool": "Read",
+      "categories": []
+    },
+    {
+      "tool": "Edit",
+      "categories": []
+    },
+    {
+      "tool": "Edit",
+      "categories": []
+    },
+    {
+      "tool": "Edit",
+      "categories": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "pytest"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "ruff"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": []
+    },
+    {
+      "tool": "Edit",
+      "categories": []
+    },
+    {
+      "tool": "Bash",
+      "categories": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "pytest"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "ruff"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "git status",
+        "git diff",
+        "git add"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "git commit"
+      ]
+    }
+  ],
+  "tool_results": [
+    {
+      "tool": "Bash",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Read",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Read",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Read",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Edit",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Edit",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Edit",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "pytest"
+      ],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "ruff"
+      ],
+      "is_error": true,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Edit",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "pytest"
+      ],
+      "is_error": false,
+      "checks": [
+        "23 passed"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "ruff"
+      ],
+      "is_error": false,
+      "checks": [
+        "All checks passed!"
+      ]
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "git status",
+        "git diff",
+        "git add"
+      ],
+      "is_error": false,
+      "checks": []
+    },
+    {
+      "tool": "Bash",
+      "categories": [
+        "git commit"
+      ],
+      "is_error": false,
+      "checks": []
+    }
+  ],
+  "cli_terminal": [
+    {
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 18
+    }
+  ]
+}
