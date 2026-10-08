@@ -183,6 +183,8 @@ def render_anthropic(request: LLMRequest, model: str, *, tools_enabled: bool) ->
 
 def _generation_parameters(body: dict[str, Any]) -> dict[str, Any]:
     out = {key: body[key] for key in ("temperature", "top_p", "stop", "seed", "response_format") if key in body}
+    if "stop_sequences" in body:
+        out["stop"] = body["stop_sequences"]
     for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
         if key in body:
             out["max_tokens"] = body[key]
@@ -460,7 +462,16 @@ class HttpUpstream:
         else:
             body = render_openai(request, self.model, tools_enabled=tools_enabled)
         if self.preserve_generation:
-            body.update(request.generation)
+            if self.wire_format == "anthropic":
+                body.update({
+                    key: value for key, value in request.generation.items()
+                    if key in {"max_tokens", "temperature", "top_p"}
+                })
+                stop = request.generation.get("stop")
+                if stop is not None:
+                    body["stop_sequences"] = [stop] if isinstance(stop, str) else stop
+            else:
+                body.update(request.generation)
         if self.reasoning_policy is not None:
             if self.reasoning_policy != "disable_thinking" or self.wire_format != "openai":
                 raise UpstreamError("reasoning policy requires OpenAI-compatible self-hosted requests")

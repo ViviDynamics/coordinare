@@ -82,7 +82,7 @@ def build_upstream(ref: dict[str, Any], *, client=None) -> HttpUpstream:
         client=client,
         reasoning_policy=ref.get("reasoning_policy"),
         normalizers=tuple(ref.get("normalizers") or ()),
-        preserve_generation=bool(ref.get("preserve_generation")),
+        preserve_generation=bool(ref.get("preserve_generation", True)),
     )
 
 
