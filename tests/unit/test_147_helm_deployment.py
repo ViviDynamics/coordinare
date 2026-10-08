@@ -1003,3 +1003,13 @@ class TestTheChartJobRunsEveryHelmDependentAssertion:
             "test_146's chart-rendering assertion needs helm; without it in the Chart "
             "job it skips in Test and runs nowhere"
         )
+
+
+def test_performer_owner_is_stable_and_distinct_between_releases():
+    def owner(release, namespace=NAMESPACE):
+        config_map = _one(_render(release=release, namespace=namespace), "ConfigMap")
+        return yaml.safe_load(config_map["data"]["config.yaml"])["kubernetes_owner"]
+
+    assert owner("first") == owner("first")
+    assert owner("first") != owner("second")
+    assert owner("first", "one") != owner("first", "two")

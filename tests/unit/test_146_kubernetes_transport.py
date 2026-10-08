@@ -812,7 +812,7 @@ class TestTheSweepCannotDeleteTheController:
                 captured["selector"] = label_selector
                 return SimpleNamespace(items=[])
 
-        asyncio.run(KubernetesRuntime(core_v1=FakeApi()).cleanup_orphaned(performer_id))
+        asyncio.run(KubernetesRuntime(core_v1=FakeApi(), owner="test-deployment").cleanup_orphaned(performer_id))
         return captured["selector"]
 
     def test_the_sweep_requires_a_performer_id_label(self) -> None:

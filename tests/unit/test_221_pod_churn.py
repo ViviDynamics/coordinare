@@ -75,7 +75,7 @@ class FakeCluster:
             else:
                 phase = "Running"
         return SimpleNamespace(
-            metadata=SimpleNamespace(name=name),
+            metadata=SimpleNamespace(name=name, labels=pod["labels"]),
             status=SimpleNamespace(
                 phase=phase, pod_ip=self._pod_ip, reason="", container_statuses=[],
             ),
@@ -151,7 +151,7 @@ class TestRapidRestartOfTheSamePerformer:
         that merely finished its work becomes one that cannot be started again.
         """
         cluster = FakeCluster(termination_seconds=0.4)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         async def churn():
             for _ in range(6):
@@ -169,7 +169,7 @@ class TestRapidRestartOfTheSamePerformer:
     def test_the_pod_is_actually_gone_when_stop_returns(self) -> None:
         """Stated directly rather than inferred from the absence of a collision."""
         cluster = FakeCluster(termination_seconds=0.3)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         async def scenario():
             started = await runtime.start_ephemeral(_config("impl"))
@@ -200,7 +200,7 @@ class TestThisSuiteHasTeeth:
                 return
 
         cluster = FakeCluster(termination_seconds=1.5)
-        runtime = StopThatDoesNotWait(core_v1=cluster)
+        runtime = StopThatDoesNotWait(core_v1=cluster, owner="test-deployment")
 
         async def churn():
             for _ in range(6):
@@ -225,7 +225,7 @@ class TestConcurrentDistinctPerformers:
 
     def test_many_performers_start_and_stop_concurrently(self) -> None:
         cluster = FakeCluster(termination_seconds=0.2)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         async def scenario():
             ids = [f"perf-{i}" for i in range(12)]
@@ -244,7 +244,7 @@ class TestConcurrentDistinctPerformers:
     def test_one_performer_restarting_does_not_disturb_its_neighbours(self) -> None:
         """A stop must not reach past the performer it was called for."""
         cluster = FakeCluster(termination_seconds=0.2)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         async def scenario():
             long_lived = await asyncio.gather(
@@ -273,7 +273,7 @@ class TestFailedStartsUnderLoad:
                 return pod
 
         cluster = NeverReady(termination_seconds=0.1)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         async def scenario():
             results = await asyncio.gather(
@@ -300,7 +300,7 @@ class TestFailedStartsUnderLoad:
         the performer permanently unstartable.
         """
         cluster = FakeCluster(termination_seconds=0.1)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
         original = cluster.read_namespaced_pod
         pending = {"on": True}
 
@@ -320,7 +320,7 @@ class TestFailedStartsUnderLoad:
             return await runtime.start_ephemeral(_config("impl"))
 
         started = asyncio.run(scenario())
-        assert started.handle == pod_name_for("impl")
+        assert started.handle == pod_name_for("test-deployment/impl")
         assert cluster.create_conflicts == 0, (
             "the retry collided with the failed start's Pod, so an unpullable image "
             "would have made this performer permanently unstartable"
@@ -349,10 +349,10 @@ class TestAPredecessorHoldingTheName:
         delete itself.
         """
         cluster = FakeCluster(termination_seconds=0.3)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
-        name = pod_name_for("impl")
-        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        name = pod_name_for("test-deployment/impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name, "labels": {"coordinare.vividynamics.com/owner": "test-deployment"}}})
         assert cluster.delete_calls == 0
 
         started = asyncio.run(runtime.start_ephemeral(_config("impl")))
@@ -365,12 +365,12 @@ class TestAPredecessorHoldingTheName:
 
     def test_a_terminating_predecessor_is_waited_for_rather_than_refused(self) -> None:
         cluster = FakeCluster(termination_seconds=0.5)
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
         # A predecessor exists and is on its way out, exactly as it would be if
         # coordinare had died between requesting deletion and the Pod going.
-        name = pod_name_for("impl")
-        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        name = pod_name_for("test-deployment/impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name, "labels": {"coordinare.vividynamics.com/owner": "test-deployment"}}})
         cluster.delete_namespaced_pod(name=name, namespace="default")
 
         started = asyncio.run(runtime.start_ephemeral(_config("impl")))
@@ -385,9 +385,9 @@ class TestAPredecessorHoldingTheName:
     def test_a_predecessor_read_failure_does_not_abort_the_recreate(self) -> None:
         """The phase read is evidence, never control flow.
 
-        A transport error while reading the sitting Pod must not abort the
-        start before the delete runs — the 409 already proved a Pod is on the
-        name, so delete-then-recreate proceeds regardless.
+        Once ownership is verified, a transport error in the separate phase
+        read must not abort recreation. An unreadable ownership check, by
+        contrast, must preserve the predecessor (covered by issue 535).
         """
 
         class Unreadable(FakeCluster):
@@ -397,15 +397,15 @@ class TestAPredecessorHoldingTheName:
 
             def read_namespaced_pod(self, *, name, namespace):
                 self.reads += 1
-                if self.reads == 1:  # the predecessor phase read
+                if self.reads == 2:  # phase read, after ownership was verified
                     raise ConnectionError("transport down")
                 return super().read_namespaced_pod(name=name, namespace=namespace)
 
         cluster = Unreadable()
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
-        name = pod_name_for("impl")
-        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        name = pod_name_for("test-deployment/impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name, "labels": {"coordinare.vividynamics.com/owner": "test-deployment"}}})
 
         started = asyncio.run(runtime.start_ephemeral(_config("impl")))
 
@@ -433,10 +433,10 @@ class TestAPredecessorHoldingTheName:
                 return super().delete_namespaced_pod(name=name, namespace=namespace)
 
         cluster = FlakyDelete()
-        runtime = KubernetesRuntime(core_v1=cluster)
+        runtime = KubernetesRuntime(core_v1=cluster, owner="test-deployment")
 
-        name = pod_name_for("impl")
-        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        name = pod_name_for("test-deployment/impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name, "labels": {"coordinare.vividynamics.com/owner": "test-deployment"}}})
 
         with pytest.raises(performer_lifecycle.ContainerStartError) as excinfo:
             asyncio.run(runtime.start_ephemeral(_config("impl")))
@@ -468,10 +468,10 @@ class TestAPredecessorHoldingTheName:
                 return  # the wait is not what is under test here
 
         cluster = Undeletable()
-        runtime = NoWait(core_v1=cluster)
+        runtime = NoWait(core_v1=cluster, owner="test-deployment")
 
-        name = pod_name_for("impl")
-        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name}})
+        name = pod_name_for("test-deployment/impl")
+        cluster.create_namespaced_pod(namespace="default", body={"metadata": {"name": name, "labels": {"coordinare.vividynamics.com/owner": "test-deployment"}}})
 
         with pytest.raises(performer_lifecycle.ContainerStartError) as excinfo:
             asyncio.run(runtime.start_ephemeral(_config("impl")))
@@ -494,7 +494,7 @@ class TestAPredecessorHoldingTheName:
             def create_namespaced_pod(self, *, namespace, body):
                 raise ApiException(status=403, reason="Forbidden")
 
-        runtime = KubernetesRuntime(core_v1=Forbidden())
+        runtime = KubernetesRuntime(core_v1=Forbidden(), owner="test-deployment")
 
         with pytest.raises(performer_lifecycle.ContainerStartError) as excinfo:
             asyncio.run(runtime.start_ephemeral(_config("impl", readiness_timeout_s=30)))

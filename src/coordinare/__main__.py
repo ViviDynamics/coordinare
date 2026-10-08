@@ -507,6 +507,7 @@ def _build_performer_runtime(config: ProjectConfiguration):  # type: ignore[no-u
 
         return KubernetesRuntime(
             namespace=config.kubernetes_namespace,
+            owner=config.kubernetes_owner,
             cache_claim=config.kubernetes_cache_claim,
             image_pull_secrets=list(config.kubernetes_image_pull_secrets),
             image_resolver=resolver,
