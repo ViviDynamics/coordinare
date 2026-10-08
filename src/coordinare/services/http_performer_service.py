@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -101,6 +102,21 @@ def _runtime_accepts_backend(runtime: Any) -> bool:
     if "backend" in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _inject_orchestration_secrets(secrets: dict[str, str], orchestration: Any) -> None:
+    """Forward resolved upstream credentials under the names the proxy reads."""
+    if not isinstance(orchestration, dict):
+        return
+    for leg in ("tool", "thinking", "classifier"):
+        ref = orchestration.get(leg)
+        if not isinstance(ref, dict):
+            continue
+        auth_env = ref.get("auth_env")
+        if isinstance(auth_env, str) and auth_env:
+            token = os.environ.get(auth_env, "")
+            if token:
+                secrets[auth_env] = token
 
 
 def _str_dict(value: Any) -> dict[str, str]:
@@ -966,6 +982,8 @@ class HTTPPerformerService:
                 secrets, role_auth_token_env, role_api_key_env,
             )
 
+        _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
+
         # Stash card_context as metadata so the performer has full access to
         # role/persona/relay_feedback/etc. without us forking the schema here.
         # 092: test_env_vars are secret-like — they ride the redacted `secrets`
@@ -1137,6 +1155,8 @@ class HTTPPerformerService:
                 val = os.environ.get(key, "")
                 if val:
                     secrets[key] = val
+
+        _inject_orchestration_secrets(secrets, card_context.get("orchestration"))
 
         spec_block = "\n\n".join(
             f"=== {path} ===\n{content}" for path, content in env_spec_contents.items()
