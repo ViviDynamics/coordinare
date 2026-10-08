@@ -367,13 +367,13 @@ class SseStreamWriter:
             self._envelope = d.envelope
         self._ensure_started()
         if d.kind == "text":
-            self._text_streamed = True
             if self.wire_format == "anthropic":
                 self._anthropic_text_delta(d.text)
             elif self.wire_format == "responses":
                 self._responses_text_delta(d.text)
             else:
                 self._append(self._chunk_body({"content": d.text}))
+            self._text_streamed = True
         # "reasoning" upstream fragments are dropped (the plan is the surfaced
         # reasoning, buffered parity); "finish" terminals render at finish();
         # tool calls render at finish() from the accumulated LLMResponse, so
