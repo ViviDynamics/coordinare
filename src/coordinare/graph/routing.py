@@ -4,8 +4,18 @@ from typing import Any
 
 
 def route_from_board_check(state: dict[str, Any]) -> str:
+    if state.get("stale_session_reconciliation_deferred"):
+        return "idle"  # retain session state; retry reconciliation next tick
     phase = state.get("phase", "idle")
     if phase == "dispatching":
+        # Feedback or an override already selected a performer stage. Re-assessing a card
+        # with an open PR would send it back to monitoring before the selected
+        # performer can address the review (#545).
+        if (
+            state.get("relay_feedback") or state.get("pending_override")
+            or state.get("reconciled_dispatch_pending")
+        ):
+            return "dispatch"
         # When the lifecycle includes "assessing", the assessor runs as a
         # proper performer via dispatch_performer → monitor_performer.  Skip
         # the legacy assess_card node and go straight to dispatch.

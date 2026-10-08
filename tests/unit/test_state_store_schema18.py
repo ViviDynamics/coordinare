@@ -31,7 +31,7 @@ _ASSESSMENT = {
 
 
 def test_schema_version_is_24() -> None:
-    assert CURRENT_SCHEMA_VERSION == 25  # 354: + slot_queued_since queued-wait stamp
+    assert CURRENT_SCHEMA_VERSION == 26  # 545: + replacement-dispatch intent
 
 
 def test_new_assessment_field_defaults_to_none() -> None:

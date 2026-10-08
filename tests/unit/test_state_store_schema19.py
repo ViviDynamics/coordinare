@@ -9,8 +9,8 @@ class TestReviewFindingsSchemaV19:
     """Tests for spec 169 review_findings field on PersistedSession."""
 
     def test_schema_version_is_24(self):
-        """354 advances the snapshot schema to 25; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 25  # 354: + slot_queued_since queued-wait stamp
+        """545 advances the snapshot schema to 26; review findings remain supported."""
+        assert CURRENT_SCHEMA_VERSION == 26  # 545: + replacement-dispatch intent
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

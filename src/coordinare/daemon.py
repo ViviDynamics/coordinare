@@ -40,6 +40,7 @@ from coordinare.services.board_provider import (
 )
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
+from coordinare.services.reconciliation import recover_documenting_side_session
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -49,16 +50,18 @@ from coordinare.state_store import (
     RepairDecisionRecord,
     StageVerdict,
     StateLoadError,
+    StateStore,
     WorkflowPhase,
     WorkflowSnapshot,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
     from coordinare.models.env_cache import BootstrapJobPayload
     from coordinare.services.intake_dispatch import IntakeRole
-    from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
 
@@ -462,6 +465,11 @@ def _persist_review_fields(sess: dict[str, Any]) -> dict[str, Any]:
 def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession:
     """Build the v2-snapshot-safe PersistedSession for one live session dict."""
     f = {**_persist_lifecycle_fields(sess), **_persist_review_fields(sess)}
+    dispatch = sess.get("agent_dispatch")
+    identity = dispatch if isinstance(dispatch, dict) else {}
+    session_id = identity.get("session_id")
+    performer_id = identity.get("performer_id")
+    job_id = identity.get("job_id")
     return PersistedSession(
         card_id=card_id,
         last_progress_at=sess.get("last_progress_at"),
@@ -469,6 +477,10 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
         phase=(sess.get("phase") or None),
+        reconciled_dispatch_pending=bool(sess.get("reconciled_dispatch_pending")),
+        agent_session_id=session_id if isinstance(session_id, str) and session_id else None,
+        agent_performer_id=performer_id if isinstance(performer_id, str) and performer_id else None,
+        agent_job_id=job_id if isinstance(job_id, str) and job_id else None,
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
@@ -613,9 +625,20 @@ def _restored_session_dict(
     is seeded with the top-level current_card; other sessions get a stub
     that check_board will replace from the live board.
     """
+    session_id = persisted.agent_session_id
+    if not session_id and card_id == snapshot.active_card_id:
+        session_id = snapshot.agent_session_id
+    dispatch = {"session_id": session_id} if session_id else {}
+    if session_id and persisted.agent_performer_id:
+        dispatch["performer_id"] = persisted.agent_performer_id
+    if session_id and persisted.agent_job_id:
+        dispatch["job_id"] = persisted.agent_job_id
+    missing_identity = not session_id and persisted.phase in {"monitoring_performer", "monitoring_agent"}
     session_dict: dict[str, Any] = {
+        "agent_dispatch": dispatch,
         "performer_stage": persisted.performer_stage,
-        "phase": persisted.phase,
+        "phase": "dispatching" if missing_identity else persisted.phase,
+        "reconciled_dispatch_pending": persisted.reconciled_dispatch_pending or missing_identity,
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
@@ -717,6 +740,20 @@ def _reopen_attempt_logs(
             attempt_log.reopen_attempt(_aid, _task_id, _Path(_alp))
 
 
+def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Fingerprint durable reconciliation changes without runner payloads."""
+    dispatch = session.get("agent_dispatch")
+    dispatch = dispatch if isinstance(dispatch, dict) else {}
+    side = session.get("documenting_side")
+    side = side if isinstance(side, dict) else {}
+    return (
+        str(session.get("phase") or ""), bool(session.get("reconciled_dispatch_pending")),
+        *(str(dispatch.get(key) or "") for key in ("session_id", "performer_id", "job_id")),
+        *(str(side.get(key) or "") for key in ("session_id", "job_id", "status")),
+        bool(side.get("writer_active")),
+    )
+
+
 def _synthesize_v1_session_log(active_card_id: str, phase: str) -> None:
     logger.info(
         "state_store.v1_snapshot_rehydrated",
@@ -735,10 +772,13 @@ def _synthesize_v1_session(
     re-adopt path will refresh the session from the live board on
     the first cycle.
     """
+    missing_identity = not snapshot.agent_session_id and snapshot.phase in {"monitoring_performer", "monitoring_agent"}
     return {
         "current_card": current_card,
+        "agent_dispatch": {"session_id": snapshot.agent_session_id} if snapshot.agent_session_id else {},
+        "reconciled_dispatch_pending": missing_identity,
         "performer_stage": snapshot.performer_stage or "implementing",
-        "phase": snapshot.phase,
+        "phase": "dispatching" if missing_identity else snapshot.phase,
         "lifecycle_completed_at": snapshot.lifecycle_completed_at,
         "processed_review_ids": set(snapshot.processed_review_ids),
         "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
@@ -965,6 +1005,20 @@ def _pick_stable_active_card_id(active_sessions: dict[str, Any]) -> str | None:
     return min(active_sessions.items(), key=_key)[0]
 
 
+def _has_in_review_work(session: dict[str, Any], column: str) -> bool:
+    """Whether a review card retains performer work despite its board column."""
+    if column.strip().lower() not in {"in review", "in_review"}:
+        return False
+    phase = session.get("phase")
+    if phase in {"monitoring_performer", "monitoring_agent"}:
+        dispatch = session.get("agent_dispatch")
+        return isinstance(dispatch, dict) and bool(dispatch.get("session_id"))
+    return phase == "dispatching" and bool(
+        session.get("relay_feedback") or session.get("pending_override")
+        or session.get("reconciled_dispatch_pending"),
+    )
+
+
 def _compute_eligibility(
     card_id: str,
     session: dict[str, Any],
@@ -1005,7 +1059,9 @@ def _compute_eligibility(
     # log so the operator can see the strand.
     if session.get("phase") == "monitoring_performer" and board_snapshot:
         in_progress = board_snapshot.get("IN_PROGRESS", [])
-        if card_item_id not in in_progress:
+        # A refused review-feedback board move can leave a live performer
+        # in IN_REVIEW; it still needs its graph tick for monitoring/recovery.
+        if card_item_id not in in_progress and card_item_id not in board_snapshot.get("IN_REVIEW", []):
             in_other_column = any(
                 card_item_id in cards
                 for col, cards in board_snapshot.items()
@@ -2032,6 +2088,7 @@ class CoordinareDaemon:
                         str(cid), str((s or {}).get("performer_stage") or ""),
                         str((s or {}).get("last_attempt_id") or ""),
                         str((s or {}).get("last_attempt_failure_source") or ""),
+                        _recovery_signature(s or {}),
                     )
                     for cid, s in sessions.items()
                     if isinstance(s, dict) or s is None
@@ -2044,6 +2101,7 @@ class CoordinareDaemon:
             str(card_id or ""),
             str(self._state.get("performer_stage") or ""),
             session_stages,
+            _recovery_signature(self._state) if not sessions else (),
         )
 
     async def _flush_snapshot(self) -> None:
@@ -2276,7 +2334,12 @@ class CoordinareDaemon:
                 self._state["phase"] = "idle"
                 _retire_active_session(self._state)
             else:
-                inferred = self._infer_phase_from_board_column(found_column)
+                focus_session = (self._state.get("active_sessions") or {}).get(snapshot.active_card_id)
+                intent = focus_session if isinstance(focus_session, dict) else self._state
+                inferred = (
+                    snapshot.phase if _has_in_review_work(cast("dict[str, Any]", intent), found_column)
+                    else self._infer_phase_from_board_column(found_column)
+                )
                 if inferred != snapshot.phase:
                     logger.info(
                         "board_reconciliation_advanced",
@@ -2350,6 +2413,9 @@ class CoordinareDaemon:
         # highest-priority live session, the same value the first cycle would
         # compute — this just makes it true at reconcile time, not one cycle late.
         if sessions:
+            focus = sessions.get(self._state.get("active_card_id") or "")
+            if isinstance(focus, dict):
+                session_to_state(cast("CardSession", focus), self._state)
             self._state["phase"] = _derive_global_phase(sessions)
 
     def _reconcile_session_phases(
@@ -2398,6 +2464,10 @@ class CoordinareDaemon:
                 continue
 
             normalized = column.strip().lower()
+            # Review feedback can be working even while a refused board move
+            # leaves the card in review. Preserve its durable routing intent.
+            if _has_in_review_work(session, column):
+                continue
             # Preserve a still-valid in-flight session (FR-004).
             if (
                 prior_phase in inflight_consistent
@@ -3448,6 +3518,9 @@ class CoordinareDaemon:
         async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
             return await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
 
+        async def _recover(card_id: str, session: dict[str, Any]) -> bool:
+            return await recover_documenting_side_session(card_id, session, svc)
+
         def _spawn(coro: Any) -> None:
             task = asyncio.create_task(coro)
             self._documenting_side_tasks.add(task)
@@ -3458,7 +3531,7 @@ class CoordinareDaemon:
                 self._documenting_side_polling: set[str] = set()
             await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn,
                                 get_session=lambda cid: current_sessions().get(cid),
-                                polling=self._documenting_side_polling)
+                                polling=self._documenting_side_polling, recover=_recover)
         except Exception as exc:
             logger.warning("documenting_side.cycle_failed", error=str(exc)[:200])
 
@@ -4788,13 +4861,17 @@ class CoordinareDaemon:
         notification.  Returns (previous_phase, previous_lifecycle_sig)."""
         # T018: Startup recovery — load persisted state before poll loop
         await self._startup_load_snapshot()
+        previous_lifecycle_sig = self._lifecycle_signature()
 
         # 076 (T056, FR-002) comment lives on the helper; runs after snapshot
         # load and board reconciliation, before the first poll cycle.
         await self._startup_reconciliation_pass()
 
         previous_phase = self._state.get("phase")
-        previous_lifecycle_sig = self._lifecycle_signature()
+        try:
+            previous_lifecycle_sig = await self._save_snapshot_if_changed(previous_lifecycle_sig)
+        except Exception as exc:
+            logger.warning("daemon.startup_snapshot_save_failed", error=str(exc))
         self._emit(
             **build_runtime_event(
                 category="startup",
@@ -4890,7 +4967,10 @@ class CoordinareDaemon:
             return previous_lifecycle_sig
         _lifecycle_sig = self._lifecycle_signature()
         if _lifecycle_sig != previous_lifecycle_sig:
-            await self._state_store.save(self._build_snapshot())
+            snapshot = self._build_snapshot()
+            await self._state_store.save(snapshot)
+            if isinstance(self._state_store, StateStore) and self._state_store.last_snapshot is not snapshot:
+                return previous_lifecycle_sig
             return _lifecycle_sig
         return previous_lifecycle_sig
 

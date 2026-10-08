@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,6 +20,15 @@ from coordinare.services.docker_executor import ContainerInfo, DockerUnreachable
 from coordinare.services.reconciliation import run_startup_reconciliation
 
 pytestmark = pytest.mark.benchmark
+
+
+@pytest.fixture(autouse=True)
+def runner_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the healthy runner's read-only identity API without network calls."""
+    monkeypatch.setattr(
+        "coordinare.transport.http_transport.PerformerHTTPClient.get_status",
+        AsyncMock(return_value=SimpleNamespace(current_job_id="restored-runner-job")),
+    )
 
 
 class _LatencyMockDocker:

@@ -2424,7 +2424,9 @@ class _GitHubInProgress:
 
 
 class _StalePerformerService:
-    """Performer service that reports no live session — simulates restart."""
+    """Ephemeral HTTP performer that reports no live session after restart."""
+
+    _config = SimpleNamespace(mode="ephemeral")
 
     def has_live_session(self, session_id: str) -> bool:
         return False
@@ -2436,11 +2438,15 @@ class _LivePerformerService:
 
 
 @pytest.mark.asyncio
-async def test_check_board_redispatches_stale_monitoring_session() -> None:
+async def test_check_board_redispatches_stale_monitoring_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """When phase=monitoring_performer but the performer service has no live
     session (post-restart), check_board rewrites phase to dispatching and
     clears agent_dispatch so dispatch_performer can launch a fresh container.
     """
+    monkeypatch.setattr(
+        "coordinare.services.docker_executor.DockerExecutor.list_containers_by_label",
+        AsyncMock(return_value=[]),
+    )
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
     state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
@@ -2478,10 +2484,14 @@ async def test_check_board_preserves_live_monitoring_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_board_redispatches_stale_active_session_entry() -> None:
+async def test_check_board_redispatches_stale_active_session_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stale entries in active_sessions are rewritten too, so other sessions
     don't trip the transport error when their per-session turn comes.
     """
+    monkeypatch.setattr(
+        "coordinare.services.docker_executor.DockerExecutor.list_containers_by_label",
+        AsyncMock(return_value=[]),
+    )
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
     state["performer_services"] = {"developer": _StalePerformerService()}

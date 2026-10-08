@@ -12,6 +12,8 @@ tests for the new 076 wiring.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from coordinare.services.dispatcher_dedup_models import WedgeResolution
@@ -85,7 +87,7 @@ async def test_reconciliation_with_full_config_object() -> None:
                 "agent_dispatch": {"session_id": "u"},
             },
         },
-        "performer_services": {},
+        "performer_services": {"implementing": SimpleNamespace(_config=SimpleNamespace(mode="ephemeral"))},
     }
     report = await run_startup_reconciliation(state, _DownExec(), budget_seconds=15.0)
     assert report.docker_unreachable is True

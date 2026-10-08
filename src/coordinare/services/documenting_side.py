@@ -196,6 +196,7 @@ async def run_cycle(
     spawn: Callable[[Awaitable[str]], Any],
     get_session: Callable[[str], dict[str, Any] | None] | None = None,
     polling: set[str] | None = None,
+    recover: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
 ) -> int:
     """One daemon cycle: dispatch every side run that should run; return the count.
 
@@ -234,6 +235,8 @@ async def run_cycle(
     for card_id, session in list(sessions.items()):
         side = session.get("documenting_side") or {}
         if isinstance(side, dict) and (side.get("status") == "running" or side.get("writer_active")) and side.get("session_id"):
+            if recover is not None and str(side["session_id"]) not in polling and not await recover(card_id, session):
+                continue
             start_poll(card_id, session, str(side["session_id"]))
             continue
         ok, _reason = should_dispatch(session)

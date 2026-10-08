@@ -228,7 +228,8 @@ def test_restore_from_snapshot_sets_agent_dispatch_when_session_id_present() -> 
     assert daemon._state["agent_dispatch"]["session_id"] == "sess-xyz"
 
 
-def test_restore_from_snapshot_v1_synthesizes_active_sessions() -> None:
+@pytest.mark.parametrize("session_id", [None, "legacy-session"])
+def test_restore_from_snapshot_v1_synthesizes_active_sessions(session_id: str | None) -> None:
     """066 T007 / FR-005: pre-Fix-7 (v1) snapshot — active_sessions empty,
     active_card_id + top-level card fields present — must synthesize a
     single-entry session keyed by active_card_id with the same shape a
@@ -236,6 +237,8 @@ def test_restore_from_snapshot_v1_synthesizes_active_sessions() -> None:
     """
     daemon = _make_daemon()
     snap = WorkflowSnapshot(
+        schema_version=1,
+        agent_session_id=session_id,
         snapshot_at=datetime.now(UTC),
         phase="monitoring_performer",
         active_card_id="card-v1",
@@ -252,7 +255,9 @@ def test_restore_from_snapshot_v1_synthesizes_active_sessions() -> None:
     session = sessions["card-v1"]
     assert session["current_card"] is daemon._state["current_card"]
     assert session["performer_stage"] == "implementing"
-    assert session["phase"] == "monitoring_performer"
+    assert session["phase"] == ("monitoring_performer" if session_id else "dispatching")
+    assert session["reconciled_dispatch_pending"] is (session_id is None)
+    assert session["agent_dispatch"] == ({"session_id": session_id} if session_id else {})
     # I3 invariant: top-level current_card mirrors the session entry.
     assert daemon._state["active_card_id"] == "card-v1"
     assert daemon._state["current_card"]["id"] == "card-v1"

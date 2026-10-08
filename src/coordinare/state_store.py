@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 25  # 354: slot_queued_since on PersistedSession
+CURRENT_SCHEMA_VERSION: int = 26  # 545: durable replacement-dispatch intent
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -118,6 +118,9 @@ CURRENT_SCHEMA_VERSION: int = 25  # 354: slot_queued_since on PersistedSession
 # dispatch_performer's at-capacity branch and cleared on acquire. v1-v24
 # snapshots load with None — the wait is unknown until the next queued cycle
 # re-stamps it. One datetime only; never secret values.
+# v26 (545) adds replacement intent and minimal performer routing identity
+# on PersistedSession. Older snapshots default false/None; older binaries
+# reject v26 instead of silently dropping pending work when downgraded.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -235,8 +238,8 @@ class PersistedSession(BaseModel):
     change behaviour (most importantly `performer_stage`, which decides whether
     a re-adopted IN_PROGRESS card resumes at the implementer or closer).
     Transient fields (performer_events, performer_metrics, workspace_path,
-    agent_dispatch) are intentionally omitted — they are re-derived from the
-    live performer container or rebuilt from scratch.
+    full agent_dispatch payload) are omitted. Only session/performer/job routing
+    identity survives so startup can adopt the correct live performer.
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -244,6 +247,12 @@ class PersistedSession(BaseModel):
     card_id: str
     performer_stage: str | None = None
     phase: str | None = None
+    # 545: replacement intent survives deferral/restart; older schemas
+    # load with false so their existing routing remains unchanged.
+    reconciled_dispatch_pending: bool = False
+    agent_session_id: str | None = None
+    agent_performer_id: str | None = None
+    agent_job_id: str | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)
     # 128: dedup marker for stale-review surfacing — {gating_review_id: head_oid}

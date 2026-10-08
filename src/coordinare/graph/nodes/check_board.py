@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from coordinare.services.blocked_recovery import RecoveryDecision
     from coordinare.services.board_provider import BoardProvider
     from coordinare.services.pr_checks_service import CheckRollup
+    from coordinare.session import CardSession
 
 logger = structlog.get_logger(__name__)
 
@@ -1019,7 +1020,11 @@ async def _reconcile_stale_checkboard_sessions(
             _sid = _dispatch.get("session_id")
             if not _sid:
                 return False
-            _svc = _performer_services.get(_stage)
+            by_id = state.get("performer_services_by_id") or {}
+            performer_id = _dispatch.get("performer_id")
+            _svc = by_id.get(performer_id) if isinstance(by_id, dict) and performer_id else None
+            if _svc is None:
+                _svc = _performer_services.get(_stage)
             _check = getattr(_svc, "has_live_session", None) if _svc is not None else None
             if _check is None:
                 return False
@@ -1038,8 +1043,21 @@ async def _reconcile_stale_checkboard_sessions(
             _card = state.get("current_card") or {}
             _top_card_id = str(_card.get("id", "")) if isinstance(_card, dict) else ""
             if _top_card_id:
-                from coordinare.services.reconciliation import handle_potentially_stale_session
-                await handle_potentially_stale_session(state, _top_card_id)
+                from coordinare.services.reconciliation import (
+                    ReconciliationDecision,
+                    handle_potentially_stale_session,
+                )
+                decision = await handle_potentially_stale_session(state, _top_card_id)
+                if decision == ReconciliationDecision.DEFERRED:
+                    state["stale_session_reconciliation_deferred"] = True
+                # Reconciliation writes the canonical session in multi-card
+                # mode. Mirror its result before this tick decides whether to
+                # monitor the old session or dispatch its replacement.
+                _canonical = (state.get("active_sessions") or {}).get(_top_card_id)
+                if isinstance(_canonical, dict):
+                    session_to_state(cast("CardSession", _canonical), state)
+                if state.get("phase") == "dispatching":
+                    state["reconciled_dispatch_pending"] = True
             else:
                 # No card id → fall back to the pre-076 clearing path so
                 # we don't wedge on a malformed session.
@@ -1047,8 +1065,14 @@ async def _reconcile_stale_checkboard_sessions(
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None
 
-        # Also rewrite stale entries in active_sessions so other sessions
-        # don't trip the same transport error when their turn comes.
+        # Per-session graph ticks reconcile only their own card. Clearing a
+        # sibling's dispatch here would consume its stale-session evidence
+        # before its tick can preserve the replacement-dispatch route.
+        if state.get("active_card_id"):
+            return
+
+        # Legacy callers without an active-card selection still reconcile
+        # their session collection here.
         _sessions = state.get("active_sessions") or {}
         if isinstance(_sessions, dict):
             for _cid, _sess in _sessions.items():
@@ -1232,6 +1256,23 @@ async def _handle_in_review_cards(
             str(current.get("id", "")) if isinstance(current, dict) else ""
         )
         if current_id and current_id in in_review:
+            # A refused IN_PROGRESS move must not erase queued review work,
+            # even with spare capacity. Scope this to the current review card
+            # so a stale global phase still permits unrelated TODO pickup.
+            if state.get("phase") == "dispatching" and (
+                state.get("relay_feedback") or state.get("pending_override")
+                or state.get("reconciled_dispatch_pending")
+            ):
+                return state
+            # Dispatch consumes the feedback. If its board move was also
+            # refused, keep polling that performer rather than abandoning it.
+            dispatch = state.get("agent_dispatch")
+            if (
+                state.get("phase") in ("monitoring_performer", "monitoring_agent")
+                and isinstance(dispatch, dict)
+                and dispatch.get("session_id")
+            ):
+                return state
             state["phase"] = "monitoring_pr"
             return state
         # Fall through to TODO pickup; passive sessions don't block new work.
@@ -1967,8 +2008,8 @@ async def _handle_todo_cards(
     return None
 
 
-
 async def _check_board_impl(state: CoordinareState) -> CoordinareState:
+    state["stale_session_reconciliation_deferred"] = False
     github = state.get("github_service")
     board_provider = board_of(state)
     logger.info(
