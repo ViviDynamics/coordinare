@@ -29,6 +29,8 @@ class _Remote:
                 return 0, ""
             if sub == "diff":
                 return 0, "\n".join(changed_paths)
+            if sub == "merge-base":
+                return (0 if local_commits[:len(remote.commits)] == remote.commits else 1), ""
             if sub == "rebase":
                 # our commits now sit on top of whatever the remote has
                 local_commits[:] = remote.commits + [c for c in local_commits if c not in remote.commits]

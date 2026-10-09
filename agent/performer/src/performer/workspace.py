@@ -1247,7 +1247,7 @@ async def push_branch(stand: Stand, score: Score) -> None:
     Sequence:
 
     1. Ask the remote whether the branch exists (``git ls-remote --exit-code``).
-    2. If it exists: fetch it, rebase our commits onto it, then push WITHOUT
+    2. If it exists: fetch it, rebase only if its head is not our ancestor, then push WITHOUT
        ``--force``. A rebase conflict aborts the rebase and raises
        ``WorkspaceSetupError`` naming ``rebase_conflict``; nothing is pushed.
     3. If it does not exist yet (first push): plain push, and only then the
@@ -1287,7 +1287,7 @@ async def push_branch(stand: Stand, score: Score) -> None:
     )
 
 
-async def _uncommitted_paths(git_out) -> list[str]:
+async def _uncommitted_paths(git_out, *, tracked_only: bool = False) -> list[str]:
     """Paths git considers dirty, or ``[]`` when the tree is clean or unreadable.
 
     306: git refuses to rebase while the working tree has unstaged changes
@@ -1302,7 +1302,10 @@ async def _uncommitted_paths(git_out) -> list[str]:
     """
     rc, out = None, None
     try:
-        rc, out = await git_out(["status", "--porcelain"], "status")
+        args = ["status", "--porcelain"]
+        if tracked_only:
+            args.append("--untracked-files=no")
+        rc, out = await git_out(args, "status")
     except WorkspaceSetupError:
         # The helper's own failure (OSError, the read timeout) must not replace
         # the diagnosis the caller is building — that is the "best effort" half
@@ -1311,6 +1314,31 @@ async def _uncommitted_paths(git_out) -> list[str]:
     if rc != 0:
         return []
     return [line[3:].strip() for line in out.splitlines() if line.strip()]
+
+
+async def _push_if_remote_ancestor(git_run, git_out, remote: str, branch: str) -> bool:
+    """Preserve resolved merges when a normal fast-forward push is sufficient."""
+    ancestor_rc, _ = await git_run(
+        ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"], "ancestry check",
+    )
+    if ancestor_rc == 1:
+        return False
+    if ancestor_rc != 0:
+        message = "git ancestry check failed; nothing was pushed"
+        raise WorkspaceSetupError(message)
+    # Rebasing an already resolved merge would flatten it and lose the resolution.
+    dirty = await _uncommitted_paths(git_out, tracked_only=True)
+    if dirty:
+        message = (
+            "push_branch.uncommitted_changes: nothing was pushed; "
+            f"unfinished workspace paths: {', '.join(dirty[:10])}"
+        )
+        raise WorkspaceSetupError(message)
+    push_rc, push_err = await git_run(["push", remote, f"HEAD:{branch}"], "push")
+    if push_rc != 0:
+        message = f"git push failed: {_summarise_git_push_error(push_err)}"
+        raise WorkspaceSetupError(message)
+    return True
 
 
 async def _push_head_without_clobbering(
@@ -1343,6 +1371,8 @@ async def _push_head_without_clobbering(
             )
         if tree is not None:
             await _enforce_documenter_tree(git_out, "FETCH_HEAD", tree, branch)
+        if await _push_if_remote_ancestor(git_run, git_out, remote, branch):
+            return
         rebase_rc, rebase_err = await git_run(["rebase", "FETCH_HEAD"], "rebase")
         if rebase_rc != 0:
             await git_run(["rebase", "--abort"], "rebase --abort")

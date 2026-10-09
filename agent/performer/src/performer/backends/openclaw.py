@@ -32,6 +32,8 @@ which calls ``stop()`` on expiry (FR-010a); no OpenClaw-specific timer.
 """
 from __future__ import annotations
 
+from performer.backends._clarifications import clarification_comment_lines
+
 import asyncio
 import json
 import os
@@ -367,6 +369,7 @@ class OpenClawBackend:
             if score.clarifications:
                 parts += ["## Clarification Q&A", ""]
                 for entry in score.clarifications:
+                    parts += clarification_comment_lines(entry)
                     for q in entry.get("questions") or []:
                         parts.append(f"- Q: {q}")
                     answer = str(entry.get("answer", "")).strip()

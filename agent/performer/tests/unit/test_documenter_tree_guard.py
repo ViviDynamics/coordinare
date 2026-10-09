@@ -22,7 +22,7 @@ def _score(role="documenting", brief=None, env=None) -> Score:
 
 class _Git:
     def __init__(self, answers):
-        self.answers, self.calls = answers, []
+        self.answers, self.calls = {"merge-base": (1, ""), **answers}, []
 
     async def __call__(self, args, cwd, env, timeout=120.0):
         self.calls.append(list(args))
@@ -53,7 +53,7 @@ async def test_documenter_commits_inside_the_tree_are_pushed(tmp_path, monkeypat
     monkeypatch.setattr(workspace, "_run_git", git)
     monkeypatch.setattr(workspace, "_run_git_stdout", git)
     await push_branch(Stand(path=tmp_path, branch="feat/x"), _score())
-    assert git.subs() == ["ls-remote", "ls-files", "fetch", "diff", "rebase", "push"]
+    assert git.subs() == ["ls-remote", "ls-files", "fetch", "diff", "merge-base", "rebase", "push"]
 
 
 @pytest.mark.asyncio

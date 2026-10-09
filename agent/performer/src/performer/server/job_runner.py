@@ -230,7 +230,6 @@ class JobRunner:
             self._signal_update()
             raise
         except Exception as exc:  # noqa: BLE001 — surface arbitrary executor failure
-            log.exception("job_executor_failed", job_id=payload.job_id)
             self._status = self._status.model_copy(
                 update={
                     "state": "failed",
@@ -241,6 +240,12 @@ class JobRunner:
                         error_code="executor_error",
                     ),
                 },
+            )
+            # Publish failure before logging. Rendering traceback locals can
+            # traverse the entire payload/workspace and stall a terminal update.
+            self._signal_update()
+            log.exception(
+                "job_executor_failed", job_id=payload.job_id, error_type=type(exc).__name__, exc_info=False,
             )
         finally:
             self._signal_update()

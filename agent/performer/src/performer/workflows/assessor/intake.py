@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from performer.backends._clarifications import clarification_comment_lines
 from performer.workflows._text import normalize_tokens
 
 
@@ -19,6 +20,7 @@ class Intake:
     criteria: list[str] = field(default_factory=list)
     clarifications: list[dict] = field(default_factory=list)
     answered_rounds: int = 0
+    human_comments: list[dict] = field(default_factory=list)
 
     def as_text(self) -> str:
         """Render intake as text for the model prompt."""
@@ -33,6 +35,7 @@ class Intake:
             )
             if qa:
                 parts.append("## Clarifications\n" + qa)
+        parts.extend("\n".join(clarification_comment_lines(comment)) for comment in self.human_comments)
         return "\n\n".join(parts)
 
 
@@ -59,10 +62,13 @@ def build_intake(score) -> Intake:
 
     seen_questions = {}
     merged = []
+    human_comments = []
 
     for c in list(clarifications) + list(prior_clarifications):
         if not isinstance(c, dict):
             continue
+        if clarification_comment_lines(c):
+            human_comments.append(dict(c))
 
         # Handle plural questions entry: expand into separate rounds
         questions_list = c.get("questions")
@@ -103,4 +109,5 @@ def build_intake(score) -> Intake:
         criteria=criteria,
         clarifications=merged,
         answered_rounds=answered_rounds,
+        human_comments=human_comments,
     )
