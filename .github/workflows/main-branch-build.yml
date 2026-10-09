@@ -10,8 +10,6 @@ concurrency:
   group: main-branch-build
   cancel-in-progress: false
 
-# General Linux builds use the ephemeral cluster pool; the persistent WSL2
-# runner also matches linux/x64 but has repeatedly stalled Docker operations.
 jobs:
   derive-version:
     name: Derive Version
@@ -411,8 +409,8 @@ jobs:
             "${REGISTRY}-full:${VERSION}-arm64"
           echo "Published ${REGISTRY}-full:${VERSION} (amd64 + arm64)"
 
-  # The daemon is deployed to the amd64 cluster cluster and nowhere else, so it
-  # is pinned rather than split: a manifest with an arm64 half nothing runs
+  # The daemon image is pinned to amd64 rather than split by architecture: no
+  # arm64 consumer runs it today, so a manifest with an arm64 half nothing runs
   # would be cost without a consumer. If coordinare is ever deployed on arm64,
   # split this the way the performer images above are split.
   build-daemon:
