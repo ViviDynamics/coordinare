@@ -197,7 +197,11 @@ async def cancel_active_card(
     # Emit notification
     notification_service = state.get("notification_service")
     if notification_service is not None:
-        from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
+        from coordinare.models.notification import (
+            EventType,
+            NotificationEvent,
+            NotificationSeverity,
+        )
 
         try:
             await notification_service.dispatch(

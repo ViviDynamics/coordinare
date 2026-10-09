@@ -119,9 +119,9 @@ class TestSecretsNeverReachTheModel:
         import sys
 
         sys.path.insert(0, "tests/unit")
+        from conftest import REPRESENTATIVE_CONFIG
         from coordinare.config import CoordinareConfiguration
         from coordinare.config_validation import coerce_multi_symphony_raw
-        from conftest import REPRESENTATIVE_CONFIG
 
         raw = {**REPRESENTATIVE_CONFIG, "github_token": SECRET_VALUE}
         return CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
@@ -627,9 +627,9 @@ class TestAFreshInstallIsToldWhatToDoFirst:
         import sys
 
         sys.path.insert(0, "tests/unit")
+        from conftest import REPRESENTATIVE_CONFIG
         from coordinare.config import CoordinareConfiguration
         from coordinare.config_validation import coerce_multi_symphony_raw
-        from conftest import REPRESENTATIVE_CONFIG
 
         raw = {**REPRESENTATIVE_CONFIG, "github_token": "ghp_fixturetoken", **overrides}
         return CoordinareConfiguration(**coerce_multi_symphony_raw(raw))

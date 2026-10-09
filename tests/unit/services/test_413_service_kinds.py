@@ -14,13 +14,13 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 from coordinare_service_inference.schema import (
     COORDINARE_MANAGED_KINDS,
     ServiceEntry,
     ServicesManifest,
 )
 from coordinare_service_inference.templater import render
+from pydantic import ValidationError
 
 from coordinare.services.env_manifest import EnvManifest
 

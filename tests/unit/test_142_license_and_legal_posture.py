@@ -744,8 +744,11 @@ def test_existing_workflows_are_untouched() -> None:
     spec 142 cannot quietly change a required check.
     """
     expected = {
-        ".github/workflows/main-branch-build.yml": ({"push", "workflow_dispatch"}, "self-hosted"),
-        ".github/workflows/pr-ci.yml": ({"pull_request"}, "self-hosted"),
+        ".github/workflows/main-branch-build.yml": (
+            {"push", "workflow_dispatch"},
+            "ubuntu-latest",
+        ),
+        ".github/workflows/pr-ci.yml": ({"pull_request"}, "ubuntu-latest"),
     }
     # sync-version-to-prs.yml was DELETED by spec 146 (issue #215). It existed
     # solely to re-bump a committed version file across open PRs after each

@@ -810,7 +810,10 @@ async def test_restored_runner_identity_reaches_real_status_poll(
     from coordinare.services.docker_executor import ContainerInfo
     from coordinare.services.http_performer_service import HTTPPerformerService
     from coordinare.services.kubernetes_runtime import KubernetesRuntime
-    from coordinare.services.reconciliation import ReconciliationDecision, run_startup_reconciliation
+    from coordinare.services.reconciliation import (
+        ReconciliationDecision,
+        run_startup_reconciliation,
+    )
     from coordinare.state_store import WorkflowSnapshot
     from coordinare.transport.http_transport import PerformerHTTPClient
 
