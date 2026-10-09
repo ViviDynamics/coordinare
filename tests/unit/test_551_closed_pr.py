@@ -107,11 +107,17 @@ async def test_closed_pr_ignores_generic_clarification_resume(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("same_pr", [True, False])
-async def test_nonfocused_restart_only_resumes_same_reopened_pr(monkeypatch, same_pr):
+async def test_legacy_nonfocused_restart_only_resumes_same_reopened_pr(monkeypatch, same_pr):
     state, github = make_state()
     monkeypatch.setattr("coordinare.graph.nodes.monitor_performer._evaluate_pr_checks_gate", AsyncMock(return_value=({}, False)))
     await monitor_pr(state)
     persisted = _persist_active_sessions(state["active_sessions"])["card"]
+    # Schema30 did not store per-card PR artefacts; retain that recovery coverage.
+    from coordinare.state_store import PersistedSession
+
+    persisted = PersistedSession.model_validate({
+        key: value for key, value in persisted.model_dump().items() if key != "pr_artefacts"
+    })
     restored = _restored_session_dict("card", persisted, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="idle"), None)
     state["active_sessions"] = {"card": restored}
     github.find_pr_for_issue.return_value = {
@@ -209,13 +215,19 @@ async def test_edge_rebase_reads_live_pr_state_before_conflict_dispatch(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("same_node", [True, False])
-async def test_node_only_closed_reason_resumes_same_pr_after_nonfocus_restart(monkeypatch, same_node):
+async def test_legacy_node_only_closed_reason_resumes_same_pr_after_nonfocus_restart(monkeypatch, same_node):
     state, github = make_state()
     state["current_card"].pop("pr_url")
     monkeypatch.setattr("coordinare.graph.nodes.monitor_performer._evaluate_pr_checks_gate", AsyncMock(return_value=({}, False)))
     await monitor_pr(state)
     assert state["system_error_reason"].startswith("PR closed without merging: PR1. ")
     persisted = _persist_active_sessions(state["active_sessions"])["card"]
+    # Schema30 did not store per-card PR artefacts; retain that recovery coverage.
+    from coordinare.state_store import PersistedSession
+
+    persisted = PersistedSession.model_validate({
+        key: value for key, value in persisted.model_dump().items() if key != "pr_artefacts"
+    })
     restored = _restored_session_dict("card", persisted, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="idle"), None)
     state["active_sessions"] = {"card": restored}
     github.find_pr_for_issue.return_value = {

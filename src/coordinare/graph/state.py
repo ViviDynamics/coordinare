@@ -229,6 +229,7 @@ class CoordinareState(TypedDict, total=False):
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
     dispatched_feedback: dict[str, Any]  # feedback awaiting successful stage completion
     pr_comment_tracking: dict[str, Any]  # 550: accepted comment versions scoped to this PR
+    pending_pr_handoff: dict[str, Any] | None  # completed worker waiting on final PR checks
     _pr_comment_poll_incomplete: bool  # Transient unread-comment merge hold
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
     role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
@@ -504,6 +505,7 @@ def initial_state() -> CoordinareState:
         "performer_services": {},
         "lifecycle_sequence": ["implementing"],
         "pr_comment_tracking": {},
+        "pending_pr_handoff": None,
         "_pr_comment_poll_incomplete": False,
         "relay_feedback": [],
         "dispatched_feedback": {},
@@ -659,6 +661,7 @@ def _retire_active_session(state: CoordinareState, *, trigger: str = "session_re
     state["dispatched_feedback"] = {}
     state["reconciled_dispatch_pending"] = False
     state["pr_comment_tracking"] = {}
+    state["pending_pr_handoff"] = None
     _rederive_current_card(state)
     # 428: retuned knobs belong to the session being retired — survive the
     # session, reset with it. Only the RETIRING symphony's entries go; a

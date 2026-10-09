@@ -18,12 +18,12 @@ from coordinare.services.pipeline_budget import select_pipelines
 from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, WorkflowSnapshot
 
 
-def test_schema30_contract_covers_all_new_fields_and_six_versions():
+def test_current_schema_contract_retains_all_six_followup_fields():
     contract = json.loads(Path('specs/003-state-persistence/contracts/workflow-snapshot.schema.json').read_text())
     properties = contract['properties']['active_sessions']['additionalProperties']['properties']
     assert {'dispatched_feedback', 'pending_override', 'board_paused', 'board_pause_column', 'board_pause_resume_phase', 'pr_comment_tracking'} <= set(properties)
-    assert contract['properties']['schema_version']['enum'] == list(range(1, 31))
-    assert CURRENT_SCHEMA_VERSION == 30
+    assert contract['properties']['schema_version']['enum'] == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+    assert CURRENT_SCHEMA_VERSION == 31
 
 
 def test_combined_feedback_pause_override_tracking_survive_snapshot_without_aliases():

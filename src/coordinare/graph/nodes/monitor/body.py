@@ -2155,10 +2155,28 @@ async def _phase_terminal_success_s4_s1(
     for key, value in gate_updates.items():
         state[key] = value  # type: ignore[literal-required]
     if gate_stop:
+        if gate_updates.get("phase") == "monitoring_performer":
+            # The worker already succeeded. Its gone runtime is not a stale
+            # execution to replace; retain the computed handoff until CI settles.
+            state["current_card"] = {
+                **updated_card, "status": updated_card.get("previous_status", "IN_PROGRESS"),
+            }
+            completed_at = ctx.updates.get("lifecycle_completed_at")
+            state["pending_pr_handoff"] = {
+                **(state.get("pending_pr_handoff") or {}),
+                "stage": ctx.stage,
+                "completed_at": completed_at.isoformat() if isinstance(completed_at, datetime) else completed_at,
+            }
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            state["reconciled_dispatch_pending"] = False
+        else:
+            state["pending_pr_handoff"] = None
         # HOLD or BOUNCE — skip the move_card / reviewer / notification
         # side-effects.
         return state
     state["dispatched_feedback"] = {}
+    state["pending_pr_handoff"] = None
     ctx.key = key
     ctx.pr_url = pr_url
     ctx.value = value
@@ -4159,6 +4177,42 @@ _PHASES = (
 
 
 
+async def _phase_pending_pr_handoff(state: CoordinareState) -> CoordinareState | None:
+    """Resume a completed turn without polling a worker or cached verdict."""
+    handoff = state.get("pending_pr_handoff")
+    card = state.get("current_card")
+    github = state.get("github_service")
+    if handoff and state.get("phase") == "monitoring_performer" and not state.get("board_paused"):
+        ctx = _build_monitor_ctx(state)
+        if not ctx.bail and handoff.get("stage") == ctx.stage:
+            get_context = getattr(github, "get_pr_review_context", None)
+            if callable(get_context) and isinstance(card, dict) and card.get("pr_node_id"):
+                try:
+                    context = await get_context(str(card["pr_node_id"]))
+                except Exception as exc:
+                    logger.warning("monitor_performer.handoff_lifecycle_unreadable", error_type=type(exc).__name__)
+                    return state
+                if isinstance(context, dict) and context.get("state") in {"CLOSED", "MERGED"}:
+                    from coordinare.graph.nodes.monitor_pr import monitor_pr
+
+                    state["pending_pr_handoff"] = None
+                    state["phase"] = "monitoring_pr"
+                    return await monitor_pr(state)
+            ctx.updates = _advance_stage(state, None, acknowledge_final_feedback=False)
+            if ctx.updates.get("phase") == "monitoring_pr" and handoff.get("completed_at"):
+                ctx.updates["lifecycle_completed_at"] = datetime.fromisoformat(str(handoff["completed_at"]))
+            elif ctx.updates.get("phase") != "monitoring_pr":
+                state["pending_pr_handoff"] = None
+            # Re-use the normal final-check and board/reviewer handoff, without
+            # polling a finished worker or applying cached stage overrides.
+            stopped = await _phase_terminal_success_s4(state, ctx)
+            if stopped is not None:
+                return stopped
+            return await _phase_terminal_success_s5(state, ctx) or state
+
+    return None
+
+
 async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
     """Poll the active performer and route based on status.
 
@@ -4178,19 +4232,22 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
 
     override_state = await _phase_override(state, card, github, board_provider)
     if override_state is not None:
+        if override_state.get("phase") != "monitoring_performer":
+            override_state["pending_pr_handoff"] = None
         return override_state
+
+    handoff_state = await _phase_pending_pr_handoff(state)
+    if handoff_state is not None:
+        return handoff_state
 
     ctx = _build_monitor_ctx(state)
     if ctx.bail:
         return state
 
-    gate_result = await _phase_ephemeral_gate(state, ctx)
-    if gate_result is not None:
-        return gate_result
-
-    slot_result = await _phase_slot_setup(state, ctx)
-    if slot_result is not None:
-        return slot_result
+    for prepare in (_phase_ephemeral_gate, _phase_slot_setup):
+        prepared = await prepare(state, ctx)
+        if prepared is not None:
+            return prepared
 
     try:
         for _phase in _PHASES:

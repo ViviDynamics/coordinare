@@ -82,6 +82,7 @@ class CardSession(TypedDict, total=False):
     card_clarifications: list[dict]
     dispatched_feedback: dict[str, Any]  # feedback awaiting successful stage completion
     pr_comment_tracking: dict[str, Any]
+    pending_pr_handoff: dict[str, Any] | None
     relay_feedback: list[dict[str, Any]]
     pending_reviews: list[dict[str, Any]]
     system_error_count: int
@@ -313,6 +314,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "consumed_loop_questions",
     "card_clarifications",
     "pr_comment_tracking",
+    "pending_pr_handoff",
     "relay_feedback",
     "dispatched_feedback",
     "pending_reviews",
@@ -453,6 +455,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         consumed_loop_questions=[],
         card_clarifications=[],
         pr_comment_tracking={},
+        pending_pr_handoff=None,
         relay_feedback=[],
         dispatched_feedback={},
         pending_reviews=[],
@@ -556,6 +559,7 @@ def session_to_state(session: CardSession, state: CoordinareState) -> None:
     state["board_pause_column"] = str(session.get("board_pause_column") or "")
     state["board_pause_resume_phase"] = str(session.get("board_pause_resume_phase") or "")
     state["pr_comment_tracking"] = dict(session.get("pr_comment_tracking") or {})
+    state["pending_pr_handoff"] = session.get("pending_pr_handoff")
     state["reconciled_dispatch_pending"] = bool(session.get("reconciled_dispatch_pending"))
     for field in _SESSION_OPTIONAL_FIELDS:
         if field not in session:

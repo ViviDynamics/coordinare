@@ -477,6 +477,12 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
     session_id = identity.get("session_id")
     performer_id = identity.get("performer_id")
     job_id = identity.get("job_id")
+    card = sess.get("current_card") or {}
+    artefacts = {
+        key: card[key] for key in (
+            "pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path",
+        ) if isinstance(card, dict) and card.get(key) is not None
+    }
     return PersistedSession(
         card_id=card_id,
         last_progress_at=sess.get("last_progress_at"),
@@ -506,6 +512,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         dispatched_feedback=dict(sess.get("dispatched_feedback") or {}),
         pending_override=_dict_or_none(sess.get("pending_override")),
         pr_comment_tracking=dict(sess.get("pr_comment_tracking") or {}),
+        pending_pr_handoff=_dict_or_none(sess.get("pending_pr_handoff")),
+        pr_artefacts=artefacts,
+        pr_artefacts_recorded_at=sess.get("pr_artefacts_recorded_at"),
         relay_feedback=[dict(r) for r in f["relay_raw"] if isinstance(r, dict)]
         if isinstance(f["relay_raw"], (list, tuple))
         else [],
@@ -646,7 +655,10 @@ def _restored_session_dict(
         dispatch["performer_id"] = persisted.agent_performer_id
     if session_id and persisted.agent_job_id:
         dispatch["job_id"] = persisted.agent_job_id
-    missing_identity = not session_id and persisted.phase in {"monitoring_performer", "monitoring_agent"}
+    missing_identity = (
+        not session_id and persisted.phase in {"monitoring_performer", "monitoring_agent"}
+        and not persisted.pending_pr_handoff
+    )
     session_dict: dict[str, Any] = {
         "board_paused": persisted.board_paused,
         "board_pause_column": persisted.board_pause_column,
@@ -663,6 +675,8 @@ def _restored_session_dict(
         "card_clarifications": list(persisted.card_clarifications),
         "pending_override": _dict_or_none(persisted.pending_override),
         "pr_comment_tracking": dict(persisted.pr_comment_tracking),
+        "pending_pr_handoff": _dict_or_none(persisted.pending_pr_handoff),
+        "pr_artefacts_recorded_at": persisted.pr_artefacts_recorded_at,
         "relay_feedback": list(persisted.relay_feedback),
         "dispatched_feedback": dict(persisted.dispatched_feedback),
         "system_error_count": persisted.system_error_count,
@@ -736,6 +750,9 @@ def _restored_session_dict(
         session_dict["current_card"] = current_card
     else:
         session_dict["current_card"] = {"id": card_id}
+    session_dict["current_card"] = {
+        **session_dict["current_card"], **persisted.pr_artefacts,
+    }
     return session_dict
 
 
@@ -778,6 +795,8 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
     side = side if isinstance(side, dict) else {}
     override = session.get("pending_override")
     override = override if isinstance(override, dict) else {}
+    card = session.get("current_card") or {}
+    handoff = session.get("pending_pr_handoff") or {}
     return (
         str(session.get("phase") or ""), bool(session.get("reconciled_dispatch_pending")),
         bool(session.get("board_paused")), str(session.get("board_pause_column") or ""),
@@ -787,6 +806,9 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
         bool(side.get("writer_active")),
         (str(override.get("action") or ""), str(override.get("target_stage") or ""), bool(override.get("applied"))),
         _pr_comment_tracking_signature(session),
+        tuple(str(card.get(key) or "") for key in ("pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path")),
+        (str(handoff.get("stage") or ""), str(handoff.get("completed_at") or ""),
+         str(handoff.get("resumed_board_column") or "")),
     )
 
 
@@ -1092,7 +1114,7 @@ def _compute_eligibility(
     # a card not yet visible to the board fetch, doesn't trip a false
     # orphan). The skip-loop converts this into a dispatcher.performer_orphaned
     # log so the operator can see the strand.
-    if session.get("phase") == "monitoring_performer" and board_snapshot:
+    if session.get("phase") == "monitoring_performer" and board_snapshot and not session.get("pending_pr_handoff"):
         in_progress = board_snapshot.get("IN_PROGRESS", [])
         # A refused review-feedback board move can leave a live performer
         # in IN_REVIEW; it still needs its graph tick for monitoring/recovery.
@@ -1866,12 +1888,26 @@ def _record_unconfirmed_board_pause(session: dict[str, Any]) -> None:
         session["system_error_reason"] = "Board paused; worker termination is unconfirmed"
 
 
+def _observe_handoff_board_column(session: dict[str, Any], column: str) -> None:
+    """Expire a resume receipt once a fresh board read leaves that column."""
+    handoff = session.get("pending_pr_handoff") or {}
+    resumed = handoff.get("resumed_board_column")
+    if resumed and column in {"TODO", "BACKLOG", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE"} and column != resumed:
+        handoff.pop("resumed_board_column", None)
+
+
+def _handoff_needs_board_pause(session: dict[str, Any], column: str) -> bool:
+    """A completed turn can pause without any remaining worker identity."""
+    handoff = session.get("pending_pr_handoff") or {}
+    return bool(handoff) and column in {"TODO", "BACKLOG"} and column != handoff.get("resumed_board_column")
+
+
 def _capture_board_pause_resume_phase(session: dict[str, Any]) -> None:
     """Remember foreground intent before cancellation changes ownership/phase."""
     if session.get("board_paused"):
         return
     phase = str(session.get("phase") or "idle")
-    if phase == "monitoring_performer":
+    if phase == "monitoring_performer" and not session.get("pending_pr_handoff"):
         phase = "dispatching"
     session["board_pause_resume_phase"] = phase
 
@@ -2620,9 +2656,11 @@ class CoordinareDaemon:
 
             if session.get("board_paused"):
                 continue
+            _observe_handoff_board_column(session, column.strip().upper())
             dispatch = session.get("agent_dispatch") or {}
             if column.strip().upper() in {"TODO", "BACKLOG"} and (
                 dispatch.get("session_id") or has_live_side_writer(session)
+                or _handoff_needs_board_pause(session, column.strip().upper())
             ):
                 _capture_board_pause_resume_phase(session)
                 session["board_paused"] = True
@@ -2631,6 +2669,8 @@ class CoordinareDaemon:
                 # idle here would orphan it before runtime reconciliation.
                 session["phase"] = "monitoring_performer"
             if session.get("board_paused"):
+                continue
+            if session.get("pending_pr_handoff") and column.strip().upper() in {"TODO", "IN_PROGRESS", "IN_REVIEW"}:
                 continue
             normalized = column.strip().lower()
             # Review feedback can be working even while a refused board move
@@ -4673,12 +4713,16 @@ class CoordinareDaemon:
             card = sess.get("current_card") or {}
             item_id = str(card.get("content_id") or card.get("id") or card_id)
             column = next((col for col, ids in board.items() if item_id in ids or card_id in ids), "")
+            _observe_handoff_board_column(sess, column)
             dispatch = sess.get("agent_dispatch") or {}
             side = sess.get("documenting_side") or {}
             writers = [(sess.get("performer_stage"), dispatch, False)]
             if side.get("status") == "running" or side.get("writer_active"):
                 writers.append(("documenting", side, True))
-            newly_paused = column in {"TODO", "BACKLOG"} and any(identity.get("session_id") for _, identity, _ in writers)
+            newly_paused = column in {"TODO", "BACKLOG"} and (
+                any(identity.get("session_id") for _, identity, _ in writers)
+                or _handoff_needs_board_pause(sess, column)
+            )
             if not sess.get("board_paused") and not newly_paused:
                 continue
             was_paused = bool(sess.get("board_paused"))
@@ -4705,6 +4749,8 @@ class CoordinareDaemon:
             if was_paused and column != pause_column and column in {"TODO", "IN_PROGRESS", "IN_REVIEW"}:
                 sess["board_paused"] = False
                 sess["board_pause_column"] = ""
+                if sess.get("pending_pr_handoff"):
+                    sess["pending_pr_handoff"]["resumed_board_column"] = column
                 _resume_board_paused_session(sess)
             logger.info("daemon.board_pause_reconciled", card_id=card_id, board_status=column, stopped=stopped)
 
