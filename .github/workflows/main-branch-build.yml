@@ -15,11 +15,7 @@ concurrency:
 jobs:
   derive-version:
     name: Derive Version
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -85,11 +81,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -113,11 +105,7 @@ jobs:
 
   test:
     name: Test
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,11 +129,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,11 +158,7 @@ jobs:
       - lint
       - test
       - coverage
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
@@ -223,22 +203,17 @@ jobs:
             });
             console.log(`Created release ${version}`);
 
-  # 173a: image jobs are pinned to an architecture. They used to ask only for
-  # [self-hosted, linux], which matches BOTH the amd64 cluster pods and the
-  # arm64 spark boxes, so which architecture an image was built for came down
-  # to which runner happened to pick the job up. When the base landed on spark
-  # and the full image on cluster, `FROM` an arm64 base on an amd64 host failed
-  # with "exec /bin/sh: exec format error" and every publish job downstream was
-  # skipped. Each arch is now built on the fleet that IS that arch, and the two
-  # are joined into one manifest, so the published image serves both.
+  # 173a: image jobs are pinned to an architecture. Each arch is built on a
+  # runner that IS that architecture — amd64 images on ubuntu-latest and arm64
+  # images on ubuntu-24.04-arm — so a cross-arch `FROM` never happens. When the
+  # base landed on a host of the wrong arch, `FROM` an arm64 base on an amd64
+  # host failed with "exec /bin/sh: exec format error" and every publish job
+  # downstream was skipped. The two images are joined into one manifest, so the
+  # published image serves both.
   build-base-amd64:
     name: Build and Push Base Image (amd64)
     needs: create-tag
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -270,9 +245,7 @@ jobs:
   build-base-arm64:
     name: Build and Push Base Image (arm64)
     needs: create-tag
-    runs-on:
-      - self-hosted
-      - macos
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -305,11 +278,7 @@ jobs:
       - create-tag
       - build-base-amd64
       - build-base-arm64
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -341,11 +310,7 @@ jobs:
     needs:
       - create-tag
       - build-base-amd64
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -383,9 +348,7 @@ jobs:
     needs:
       - create-tag
       - build-base-arm64
-    runs-on:
-      - self-hosted
-      - macos
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -421,11 +384,7 @@ jobs:
       - create-tag
       - build-full-amd64
       - build-full-arm64
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -459,11 +418,7 @@ jobs:
   build-daemon:
     name: Build and Push Daemon Image
     needs: create-tag
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -515,11 +470,7 @@ jobs:
       - derive-version
       - create-tag
       - build-daemon
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -570,11 +521,7 @@ jobs:
       - manifest-base
       - manifest-full
       - build-daemon
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write

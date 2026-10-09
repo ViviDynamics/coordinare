@@ -21,12 +21,9 @@
 # github-script from `context.payload` and is NEVER interpolated through
 # `${{ }}`, which would be a shell/script injection vector independent of the
 # checkout issue.
-#
-# Runner: GitHub-hosted on purpose. Every other workflow here targets
-# self-hosted runners, which is the wrong choice for an externally triggered job
-# that should not interact with our runner hosts at all. If GitHub-hosted
-# minutes ever become unavailable, this job is API-only and would remain safe on
-# a self-hosted runner, but only for as long as that stays true.
+# Runner: GitHub-hosted on purpose. This workflow is triggered by outsiders
+# and should not interact with internal infrastructure at all. It is API-only,
+# so it stays safe even if the host environment changes.
 
 name: External Contributions
 
