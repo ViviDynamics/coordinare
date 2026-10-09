@@ -9,13 +9,13 @@ bytes, and agent_version must match a tame charset.
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 from coordinare_service_inference.schema import (
     ServiceEntry,
     ServiceInit,
     ServicesManifest,
     manifest_json_schema,
 )
+from pydantic import ValidationError
 
 
 def _base_entry(**overrides):
