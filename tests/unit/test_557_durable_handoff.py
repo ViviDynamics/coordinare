@@ -165,12 +165,15 @@ async def test_pending_handoff_closed_pr_parks_before_ci_or_worker(monkeypatch):
     assert state["phase"] == "blocked"
     gate.assert_not_awaited()
     assert state["pending_pr_handoff"] is None
+    assert state["active_sessions"]["card"]["pending_pr_handoff"] is None
 
 
 @pytest.mark.asyncio
-async def test_actual_board_cycle_restores_closed_pr_and_reopens_same_pr_without_dispatch(monkeypatch):
+@pytest.mark.parametrize("pending_handoff", [False, True])
+async def test_actual_board_cycle_restores_closed_pr_and_reopens_same_pr_without_dispatch(monkeypatch, pending_handoff):
     session = create_session_from_card({**CARD, **PR})
-    session.update(phase="monitoring_pr", pipeline_admitted=True)
+    session.update(phase="monitoring_pr", pipeline_admitted=True,
+                   pending_pr_handoff={"stage": "implementing"} if pending_handoff else None)
     snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="idle",
                                 active_sessions={"card": _persist_one_session("card", session)})
     snapshot = WorkflowSnapshot.model_validate_json(snapshot.model_dump_json())
@@ -207,6 +210,8 @@ async def test_actual_board_cycle_restores_closed_pr_and_reopens_same_pr_without
     gate.assert_not_awaited()
     context["state"] = "OPEN"
     live_board["snapshot"] = {"TODO": ["card"]}
+    daemon._state["board_snapshot"] = live_board["snapshot"]
+    await daemon._reconcile_board_pauses()
     await daemon._invoke_multi_session()
     assert dispatched == []
     resumed = daemon._state["active_sessions"]["card"]

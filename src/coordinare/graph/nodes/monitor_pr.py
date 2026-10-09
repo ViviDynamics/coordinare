@@ -283,7 +283,7 @@ def _mirror_closed_pr_ownership(state: CoordinareState, card_id: str) -> None:
     if isinstance(session, dict):
         for key in ("phase", "pipeline_admitted", "system_error_reason", "open_questions",
                     "board_paused", "board_pause_column", "board_pause_resume_phase",
-                    "agent_dispatch", "agent_dispatch_at", "documenting_side"):
+                    "agent_dispatch", "agent_dispatch_at", "documenting_side", "pending_pr_handoff"):
             session[key] = state.get(key)
 
 
@@ -301,6 +301,9 @@ async def _park_closed_pr(state: CoordinareState, card: dict[str, object]) -> Co
     state["pipeline_admitted"] = owned
     state["system_error_reason"] = reason
     state["open_questions"] = []
+    # Closed-PR recovery owns the next transition; a completed CI handoff
+    # must not turn the operator's Todo resume into another board pause.
+    state["pending_pr_handoff"] = None
     # Freeze side polling/dispatch before awaiting cancellation. An uncertain
     # owner remains durable and keeps capacity until a later confirmed stop.
     state["board_paused"] = True
