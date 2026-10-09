@@ -1955,7 +1955,7 @@ async def test_override_skip_last_role_transitions_to_monitoring_pr() -> None:
 
 @pytest.mark.asyncio
 async def test_override_restart_sets_target_stage() -> None:
-    """pending_override restart → sets performer_stage to target."""
+    """Restart sets its target and retains a receipt until dispatch accepts it."""
     from coordinare.graph.nodes.monitor_performer import _apply_pending_override
 
     state = initial_state()
@@ -1968,7 +1968,10 @@ async def test_override_restart_sets_target_stage() -> None:
     assert result is not None
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
-    assert result["pending_override"] is None
+    assert result["pending_override"] == {"action": "restart", "target_stage": "implementing", "applied": True}
+    result["agent_dispatch"] = {"session_id": "owned"}
+    assert _apply_pending_override(result) is None
+    assert result["agent_dispatch"] == {"session_id": "owned"}
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,7 @@ import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
+from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
@@ -57,6 +58,17 @@ logger = structlog.get_logger(__name__)
 
 
 _TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
+
+
+def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
+    """The performer's job-not-found response proves absence; generic 404 does not."""
+    if exc.response.status_code != httpx.codes.NOT_FOUND:
+        return False
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("detail") == "job not found"
 
 
 def _inject_claude_code_secrets(
@@ -130,6 +142,20 @@ def _str_dict(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(k): str(v) for k, v in value.items()}
+
+
+async def _stop_docker_session_confirmed(runtime: Any, session_id: str) -> bool:
+    """A best-effort stop authorizes cleanup only after Docker proves absence."""
+    if not isinstance(runtime, DockerRuntime):
+        return False
+    executor = DockerExecutor()
+    labels = {"coordinare.session_id": session_id}
+    containers = await executor.list_containers_by_label(labels, timeout=5.0)
+    if len(containers) > 1:
+        return False
+    if containers:
+        await runtime.stop(containers[0].container_id)
+    return not await executor.list_containers_by_label(labels, timeout=5.0)
 
 
 @dataclass
@@ -815,6 +841,40 @@ class HTTPPerformerService:
                 self._log_buffer = lines
         except Exception:  # pragma: no cover
             pass
+
+    async def stop_session_confirmed(self, session_id: str) -> bool:
+        """Stop an owned writer; retain clients and identity until absence is proved."""
+        if self._config.mode != "ephemeral":
+            client = self._ensure_client()
+            try:
+                await client.cancel_job(session_id)
+                status = await client.get_job(session_id)
+            except httpx.HTTPStatusError as exc:
+                if _known_missing_job(exc):
+                    return True
+                raise
+            return status.state in _TERMINAL_JOB_STATES
+        job = self._active_jobs.get(session_id)
+        find = getattr(self._runtime, "find_session", None)
+        handle = job.container_id if job is not None else None
+        if callable(find):
+            if handle is None:
+                started = await find(session_id)
+                if started is None:
+                    return True
+                handle = started.handle
+            await self._runtime.stop(handle)
+            if await find(session_id) is not None:
+                return False
+        elif not await _stop_docker_session_confirmed(self._runtime, session_id):
+            return False
+        task = self._log_poll_tasks.pop(session_id, None)
+        if task is not None:
+            task.cancel()
+        self._active_jobs.pop(session_id, None)
+        if job is not None and self._injected_client is None:
+            await job.client.aclose()
+        return True
 
     async def release_session(self, session_id: str) -> None:
         """Issue #489: release-time teardown for a coordinare session.

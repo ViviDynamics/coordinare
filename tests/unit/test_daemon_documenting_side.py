@@ -117,11 +117,11 @@ async def test_cycle_dispatches_and_tracks_the_poll(monkeypatch):
         "symphony_workspace_managers": {"website": _WM()},
         "config": _Cfg(),
     })
-    await d._dispatch_documenting_side_runs({"website": _GitHub()})
+    await d._dispatch_documenting_side_runs({"website": _GitHub()}, dispatchable_card_ids={"c1"})
     assert len(svc.dispatched) == 1 and sessions["c1"]["documenting_side"]["status"] == "running"
     await asyncio.gather(*d._documenting_side_tasks)
     assert sessions["c1"]["documenting_side"]["status"] == "done"
-    await d._dispatch_documenting_side_runs({"website": _GitHub()})
+    await d._dispatch_documenting_side_runs({"website": _GitHub()}, dispatchable_card_ids={"c1"})
     assert len(svc.dispatched) == 1, "once per blueprint hash"
 
 

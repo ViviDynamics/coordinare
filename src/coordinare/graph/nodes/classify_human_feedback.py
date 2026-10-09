@@ -20,6 +20,7 @@ import structlog
 
 from coordinare.graph.state import _set_current_card
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.pr_conversation_feedback import acknowledge_pr_conversation_feedback
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -290,6 +291,13 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
             else:
                 logger.info("classify_human_feedback.override_command", command=command)
                 state["pending_override"] = command
+                # Consume only the review that supplied the accepted command.
+                # Other feedback remains eligible after the override completes.
+                command_review = next(r for r in pending_reviews if _COMMAND_RE.search(str(r.get("body", ""))))
+                review_id = str(command_review.get("id") or "")
+                if review_id:
+                    state["processed_review_ids"] = (state.get("processed_review_ids") or set()) | {review_id}
+                acknowledge_pr_conversation_feedback(state, [command_review])
                 state["pending_reviews"] = []
                 state["phase"] = "dispatching"
                 return state
@@ -360,6 +368,7 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     if state.get("last_attempt_id"):
         state["last_attempt_failure_source"] = "human"
     state["relay_feedback"] = pending_reviews
+    acknowledge_pr_conversation_feedback(state, pending_reviews)
     state["pending_reviews"] = []
     state["performer_stage"] = target_stage
     state["phase"] = "dispatching"

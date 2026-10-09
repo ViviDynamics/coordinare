@@ -227,6 +227,9 @@ class CoordinareState(TypedDict, total=False):
     performer_stage: str  # Active role in the lifecycle (e.g. "implementing", "reviewing")
     performer_services: dict[str, Any]  # stage name (e.g. "implementing", "reviewing") → AgentService instance
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
+    dispatched_feedback: dict[str, Any]  # feedback awaiting successful stage completion
+    pr_comment_tracking: dict[str, Any]  # 550: accepted comment versions scoped to this PR
+    _pr_comment_poll_incomplete: bool  # Transient unread-comment merge hold
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
     role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
     # 354: first cycle the card wanted a performer slot and none was free.
@@ -304,6 +307,9 @@ class CoordinareState(TypedDict, total=False):
     reconciliation_decisions_last_startup: dict[str, str]
     # #545: replacement-dispatch intent survives capacity/rebase deferrals
     # and restarts. Card-scoped; consumed only after successful dispatch.
+    board_paused: bool
+    board_pause_column: str
+    board_pause_resume_phase: str
     reconciled_dispatch_pending: bool
     # Per-tick reconciliation uncertainty ends the graph before polling or
     # replacing an unverified performer. Reset at the next board check.
@@ -497,7 +503,10 @@ def initial_state() -> CoordinareState:
         "performer_stage": "implementing",
         "performer_services": {},
         "lifecycle_sequence": ["implementing"],
+        "pr_comment_tracking": {},
+        "_pr_comment_poll_incomplete": False,
         "relay_feedback": [],
+        "dispatched_feedback": {},
         "role_timeouts": {},
         "pending_override": None,
         "card_tokens_total": 0,
@@ -577,6 +586,9 @@ def initial_state() -> CoordinareState:
         "multi_pr_divergence": None,
         "wedge_count_window": {},
         "reconciliation_decisions_last_startup": {},
+        "board_paused": False,
+        "board_pause_column": "",
+        "board_pause_resume_phase": "",
         "reconciled_dispatch_pending": False,
         "stale_session_reconciliation_deferred": False,
         # 141: attempt telemetry singleton — wired in by _bootstrap_services
@@ -644,7 +656,9 @@ def _retire_active_session(state: CoordinareState, *, trigger: str = "session_re
             )
         del sessions[active_id]
     state["active_card_id"] = None
+    state["dispatched_feedback"] = {}
     state["reconciled_dispatch_pending"] = False
+    state["pr_comment_tracking"] = {}
     _rederive_current_card(state)
     # 428: retuned knobs belong to the session being retired — survive the
     # session, reset with it. Only the RETIRING symphony's entries go; a

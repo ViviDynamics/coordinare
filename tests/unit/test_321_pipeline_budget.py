@@ -44,6 +44,20 @@ def test_live_over_budget_drains_without_new_dispatch():
     assert not work['2']['pipeline_admitted']
 
 
+@pytest.mark.parametrize('side', [
+    {'status': 'running', 'session_id': 'side'},
+    {'status': 'failed', 'writer_active': True, 'session_id': 'side'},
+    {'status': 'waiting', 'writer_active': False, 'session_id': 'side'},
+    {'status': 'running', 'writer_active': True},
+])
+def test_only_owned_active_side_writer_retains_paused_issue_reservation(side):
+    work = sessions(2)
+    work['0'].update(phase='idle', board_paused=True, documenting_side=side)
+    work['0']['current_card']['status'] = 'BACKLOG'
+    active = bool(side.get('session_id')) and (side.get('status') == 'running' or side.get('writer_active'))
+    assert select_pipelines(work, 1, {'1'}) == ({'0'} if active else {'1'})
+
+
 def test_dependency_and_human_blocks_release_slots_without_losing_sessions():
     work = sessions()
     assert select_pipelines(work, 1, {'2', '3'}) == {'2'}

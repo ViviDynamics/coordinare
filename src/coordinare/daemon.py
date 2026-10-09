@@ -14,7 +14,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
-from coordinare.graph.nodes.check_board import NON_SLOT_PHASES, PASSIVE_PHASES
+from coordinare.graph.nodes.check_board import NON_SLOT_PHASES, PASSIVE_PHASES, check_board
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -38,9 +38,15 @@ from coordinare.services.board_provider import (
     GitHubProjectsBoardProvider,
     board_of,
 )
+from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
+from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
-from coordinare.services.reconciliation import recover_documenting_side_session
+from coordinare.services.reconciliation import (
+    reconcile_board_state,
+    recover_documenting_side_session,
+)
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -93,11 +99,12 @@ def get_daemon_started_at() -> str:
 #: string nothing matches. The comment this replaces listed four and the code
 #: already had five.
 EligibilityReason = Literal[
-    "eligible", "blocked_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity",
+    "eligible", "blocked_column", "backlog_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity",
 ]
 
 ELIGIBLE: EligibilityReason = "eligible"
 BLOCKED_COLUMN: EligibilityReason = "blocked_column"
+BACKLOG_COLUMN: EligibilityReason = "backlog_column"
 DEPENDENCY_BLOCKED: EligibilityReason = "dependency_blocked"
 MISSING_CARD: EligibilityReason = "missing_card"
 KICKED_BACK: EligibilityReason = "kicked_back"
@@ -477,6 +484,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
         phase=(sess.get("phase") or None),
+        board_paused=bool(sess.get("board_paused")),
+        board_pause_column=str(sess.get("board_pause_column") or ""),
+        board_pause_resume_phase=str(sess.get("board_pause_resume_phase") or ""),
         reconciled_dispatch_pending=bool(sess.get("reconciled_dispatch_pending")),
         agent_session_id=session_id if isinstance(session_id, str) and session_id else None,
         agent_performer_id=performer_id if isinstance(performer_id, str) and performer_id else None,
@@ -493,6 +503,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         card_clarifications=[dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)]
         if isinstance(f["clarifications_raw"], (list, tuple))
         else [],
+        dispatched_feedback=dict(sess.get("dispatched_feedback") or {}),
+        pending_override=_dict_or_none(sess.get("pending_override")),
+        pr_comment_tracking=dict(sess.get("pr_comment_tracking") or {}),
         relay_feedback=[dict(r) for r in f["relay_raw"] if isinstance(r, dict)]
         if isinstance(f["relay_raw"], (list, tuple))
         else [],
@@ -635,6 +648,9 @@ def _restored_session_dict(
         dispatch["job_id"] = persisted.agent_job_id
     missing_identity = not session_id and persisted.phase in {"monitoring_performer", "monitoring_agent"}
     session_dict: dict[str, Any] = {
+        "board_paused": persisted.board_paused,
+        "board_pause_column": persisted.board_pause_column,
+        "board_pause_resume_phase": persisted.board_pause_resume_phase,
         "agent_dispatch": dispatch,
         "performer_stage": persisted.performer_stage,
         "phase": "dispatching" if missing_identity else persisted.phase,
@@ -645,7 +661,10 @@ def _restored_session_dict(
         "open_questions": list(persisted.open_questions),
         "consumed_loop_questions": list(persisted.consumed_loop_questions),
         "card_clarifications": list(persisted.card_clarifications),
+        "pending_override": _dict_or_none(persisted.pending_override),
+        "pr_comment_tracking": dict(persisted.pr_comment_tracking),
         "relay_feedback": list(persisted.relay_feedback),
+        "dispatched_feedback": dict(persisted.dispatched_feedback),
         "system_error_count": persisted.system_error_count,
         "system_error_reason": persisted.system_error_reason,
         "system_error_notified": persisted.system_error_notified,
@@ -740,17 +759,34 @@ def _reopen_attempt_logs(
             attempt_log.reopen_attempt(_aid, _task_id, _Path(_alp))
 
 
+def _pr_comment_tracking_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
+    tracking = session.get("pr_comment_tracking")
+    tracking = tracking if isinstance(tracking, dict) else {}
+    versions = tracking.get("versions")
+    versions = versions if isinstance(versions, dict) else {}
+    return (
+        str(tracking.get("pr_node_id") or ""), str(tracking.get("updated_since") or ""),
+        tuple(sorted((str(k), str(v)) for k, v in versions.items())),
+    )
+
+
 def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
     """Fingerprint durable reconciliation changes without runner payloads."""
     dispatch = session.get("agent_dispatch")
     dispatch = dispatch if isinstance(dispatch, dict) else {}
     side = session.get("documenting_side")
     side = side if isinstance(side, dict) else {}
+    override = session.get("pending_override")
+    override = override if isinstance(override, dict) else {}
     return (
         str(session.get("phase") or ""), bool(session.get("reconciled_dispatch_pending")),
+        bool(session.get("board_paused")), str(session.get("board_pause_column") or ""),
+        str(session.get("board_pause_resume_phase") or ""),
         *(str(dispatch.get(key) or "") for key in ("session_id", "performer_id", "job_id")),
         *(str(side.get(key) or "") for key in ("session_id", "job_id", "status")),
         bool(side.get("writer_active")),
+        (str(override.get("action") or ""), str(override.get("target_stage") or ""), bool(override.get("applied"))),
+        _pr_comment_tracking_signature(session),
     )
 
 
@@ -1027,11 +1063,10 @@ def _compute_eligibility(
 ) -> SessionEligibility:
     """Derive per-cycle eligibility for a session from board state."""
     card = session.get("current_card") or {}
-    if not card:
-        return SessionEligibility(card_id=card_id, eligible=False, reason=MISSING_CARD)
     card_item_id = str(card.get("content_id") or card.get("id") or "")
-    if not card_item_id:
-        return SessionEligibility(card_id=card_id, eligible=False, reason=MISSING_CARD)
+    if session.get("board_paused") or not card_item_id:
+        reason = KICKED_BACK if session.get("board_paused") else MISSING_CARD
+        return SessionEligibility(card_id=card_id, eligible=False, reason=reason)
 
     blocked_cards = board_snapshot.get("BLOCKED", [])
     if card_item_id in blocked_cards:
@@ -1069,6 +1104,10 @@ def _compute_eligibility(
             )
             if in_other_column:
                 return SessionEligibility(card_id=card_id, eligible=False, reason=KICKED_BACK)
+
+    # The board is authoritative even when the cached card still says IN_REVIEW.
+    if card_item_id in board_snapshot.get("BACKLOG", []):
+        return SessionEligibility(card_id=card_id, eligible=False, reason=BACKLOG_COLUMN)
 
     return SessionEligibility(card_id=card_id, eligible=True, reason=ELIGIBLE)
 
@@ -1394,6 +1433,7 @@ async def _preflight_seed_main_sha_cache(
                     ),
                     github=github,
                     human_reviewers=state.get("human_reviewers"),
+                    board_snapshot=state.get("board_snapshot"),
                 )
                 state["last_rebase_round"] = _rr.to_dict()
                 # Mirror check_board's conflict-resolution
@@ -1438,6 +1478,22 @@ def _mirror_board_metadata(state: CoordinareState, board: dict[str, Any]) -> Non
         _meta_val = board.get(_meta_src)
         if isinstance(_meta_val, dict):
             state[_meta_dst] = _meta_val  # type: ignore[literal-required]
+
+
+def _has_fresh_board_snapshot(state: CoordinareState) -> bool:
+    """Only this cycle's successful, well-formed poll can change pause intent."""
+    board = state.get("_board_cache")
+    snapshot = board.get("snapshot") if isinstance(board, dict) else None
+    return _valid_board_snapshot(snapshot) and snapshot == state.get("board_snapshot")
+
+
+def _valid_board_snapshot(snapshot: Any) -> bool:
+    """An empty successful snapshot proves absence; malformed data does not."""
+    return isinstance(snapshot, dict) and all(
+        isinstance(column, str) and isinstance(ids, list)
+        and all(isinstance(item_id, str) for item_id in ids)
+        for column, ids in snapshot.items()
+    )
 
 
 async def _preflight_poll_board(
@@ -1551,6 +1607,22 @@ async def _all_ineligible_fallback(
     # The symphony swap restores the card pointer, not its flat fields.
     # Without hydration, fallback writes aggregate defaults (assessing,
     # blueprint=None) over a completed plan when the last worker blocks.
+    if any(sess.get("board_paused") for sess in active_sessions.values()):
+        # Admission and board maintenance must continue, but the worker graph
+        # cannot run on a paused focus. A neutral flat view keeps check_board
+        # from retiring the paused card through focus-specific cleanup.
+        maintenance = dict(state)
+        for field in _SESSION_FIELDS:
+            maintenance.pop(field, None)
+        maintenance.update(current_card=None, active_card_id=None, phase="idle", agent_dispatch={})
+        updated = await check_board(cast("CoordinareState", maintenance))
+        # check_board changes the shared session map directly. Copy only
+        # global maintenance fields back; preserve the authoritative focus.
+        for key, value in updated.items():
+            if key not in _SESSION_FIELDS and key != "active_card_id":
+                cast("dict[str, Any]", state)[key] = value
+        _finalize_multi_session(state, state.get("active_sessions") or active_sessions)
+        return state
     focus = state.get("active_card_id")
     if focus in active_sessions:
         session_to_state(active_sessions[focus], state)
@@ -1788,6 +1860,41 @@ def _merge_retry_queue_entry(
         merged_retry_queue[merged_retry_queue.index(existing)] = entry
 
 
+def _record_unconfirmed_board_pause(session: dict[str, Any]) -> None:
+    """Retain a closed-PR guard while warning about an uncertain stop."""
+    if not is_closed_pr_block(session.get("system_error_reason")):
+        session["system_error_reason"] = "Board paused; worker termination is unconfirmed"
+
+
+def _capture_board_pause_resume_phase(session: dict[str, Any]) -> None:
+    """Remember foreground intent before cancellation changes ownership/phase."""
+    if session.get("board_paused"):
+        return
+    phase = str(session.get("phase") or "idle")
+    if phase == "monitoring_performer":
+        phase = "dispatching"
+    session["board_pause_resume_phase"] = phase
+
+
+def _resume_board_paused_session(session: dict[str, Any]) -> None:
+    """Resume foreground intent, retaining the closed-PR reopen check."""
+    phase = str(session.get("board_pause_resume_phase") or "dispatching")
+    session["board_pause_resume_phase"] = ""
+    if is_closed_pr_block(session.get("system_error_reason")):
+        return
+    session.update(phase=phase, reconciled_dispatch_pending=phase == "dispatching", system_error_reason=None)
+
+
+def _preserve_paused_terminal_ownership(session: dict[str, Any], column: str | None) -> bool:
+    """Keep terminal writers visible to startup recovery and owned cleanup."""
+    if not session.get("board_paused") or (column is not None and column.strip().upper() != "DONE"):
+        return False
+    if not has_owned_writers(session):
+        return False
+    session["phase"] = "monitoring_performer"
+    return True
+
+
 async def _release_session_resources(
     state: CoordinareState,
     sess: dict[str, Any],
@@ -1847,6 +1954,40 @@ async def _release_session_resources(
             performer_stage=stage,
             error=str(exc),
         )
+
+
+async def _release_done_session_resources(state: CoordinareState, session: dict[str, Any]) -> None:
+    """Hand all retained paused writers to ownership-aware terminal cleanup."""
+    await _release_session_resources(state, session)
+    if session.get("board_paused") and has_live_side_writer(session):
+        await _release_session_resources(state, {
+            "performer_stage": "documenting", "agent_dispatch": session["documenting_side"],
+        })
+
+
+async def _retire_nonfocused_paused_terminal(state: CoordinareState, board: dict[str, Any]) -> None:
+    """Retire terminal paused siblings without replacing the current focus."""
+    sessions = state.get("active_sessions") or {}
+    for card_id, session in list(sessions.items()):
+        if card_id == state.get("active_card_id") or not session.get("board_paused"):
+            continue
+        column = CoordinareDaemon._find_card_column(board, card_id, session)
+        if column != "DONE" and (column is not None or not _has_fresh_board_snapshot(state)):
+            continue
+        # Share only the authoritative session map. Retirement's focus and
+        # feedback resets belong to this card, not the live sibling's mirrors.
+        retirement_state = state.copy()
+        card = {**(session.get("current_card") or {}), "id": card_id}
+        retirement_state["active_card_id"] = card_id
+        cast("dict[str, Any]", retirement_state)["active_card"] = card
+        retirement_state["current_card"] = card
+        result = reconcile_board_state(
+            retirement_state, {"DONE": [card_id]} if column == "DONE" else {},
+            allow_paused_missing=column is None,
+        )
+        retired = result.get("retired_session")
+        if isinstance(retired, dict):
+            await _release_done_session_resources(state, retired)
 
 
 async def _merge_fanout_results(
@@ -2315,7 +2456,11 @@ class CoordinareDaemon:
                 logger.warning("restart_reconcile.no_board_provider")
                 return
             board = await provider.poll_board()
-            board_snapshot = board.get("snapshot", {})
+            board_snapshot = board.get("snapshot")
+            if not _valid_board_snapshot(board_snapshot):
+                logger.warning("restart_reconcile.invalid_board_snapshot")
+                return
+            board_snapshot = cast("dict[str, list[str]]", board_snapshot)
             if not snapshot.active_card_id:
                 self._reconcile_sessions_with_board(board_snapshot, snapshot)
                 return
@@ -2325,7 +2470,10 @@ class CoordinareDaemon:
                     found_column = column
                     break
 
-            if found_column is None or found_column.upper() == "DONE":
+            focus_session = (self._state.get("active_sessions") or {}).get(snapshot.active_card_id) or {}
+            if _preserve_paused_terminal_ownership(focus_session, found_column):
+                self._state["phase"] = "monitoring_performer"
+            elif found_column is None or found_column.upper() == "DONE":
                 logger.warning(
                     "board_contradicts_snapshot",
                     active_card_id=snapshot.active_card_id,
@@ -2418,6 +2566,23 @@ class CoordinareDaemon:
                 session_to_state(cast("CardSession", focus), self._state)
             self._state["phase"] = _derive_global_phase(sessions)
 
+    def _reconcile_terminal_startup_session(
+        self, sessions: dict[str, Any], card_id: str, session: dict[str, Any], column: str | None,
+    ) -> bool:
+        if column is not None and column.strip().upper() != "DONE":
+            return False
+        if _preserve_paused_terminal_ownership(session, column):
+            return True
+        logger.info(
+            "restart_reconcile.session_retired", card_id=card_id,
+            prior_phase=session.get("phase"), board_column=column,
+            symphony=self._state.get("current_symphony"),
+        )
+        del sessions[card_id]
+        if self._state.get("active_card_id") == card_id:
+            _retire_active_session(self._state)
+        return True
+
     def _reconcile_session_phases(
         self, sessions: dict[str, Any], board_snapshot: dict[str, list[str]], snapshot: WorkflowSnapshot | None,
     ) -> None:
@@ -2449,20 +2614,24 @@ class CoordinareDaemon:
             else:
                 prior_column = None
 
-            # Card gone or DONE on a successful read → retire the session.
-            if column is None or column.strip().upper() == "DONE":
-                logger.info(
-                    "restart_reconcile.session_retired",
-                    card_id=card_id,
-                    prior_phase=prior_phase,
-                    board_column=column,
-                    symphony=symphony,
-                )
-                del sessions[card_id]
-                if self._state.get("active_card_id") == card_id:
-                    _retire_active_session(self._state)
+            if self._reconcile_terminal_startup_session(sessions, card_id, session, column):
                 continue
+            column = cast("str", column)
 
+            if session.get("board_paused"):
+                continue
+            dispatch = session.get("agent_dispatch") or {}
+            if column.strip().upper() in {"TODO", "BACKLOG"} and (
+                dispatch.get("session_id") or has_live_side_writer(session)
+            ):
+                _capture_board_pause_resume_phase(session)
+                session["board_paused"] = True
+                session["board_pause_column"] = column.strip().upper()
+                # Keep the worker in the startup adoption/stop set. Inferring
+                # idle here would orphan it before runtime reconciliation.
+                session["phase"] = "monitoring_performer"
+            if session.get("board_paused"):
+                continue
             normalized = column.strip().lower()
             # Review feedback can be working even while a refused board move
             # leaves the card in review. Preserve its durable routing intent.
@@ -2670,6 +2839,19 @@ class CoordinareDaemon:
         github = self._state.get("github_service")
         if github is not None:
             await _preflight_poll_board(self._state, github, active_sessions)
+
+        await self._reconcile_board_pauses(board_is_fresh=_has_fresh_board_snapshot(self._state))
+
+        dispatchable = {
+            cid for cid, session in active_sessions.items()
+            if _has_fresh_board_snapshot(self._state)
+            and self._find_card_column(self._state.get("board_snapshot") or {}, cid, session) in {"IN_PROGRESS", "IN_REVIEW"}
+            and not is_closed_pr_block(session.get("system_error_reason"))
+        }
+        await self._dispatch_documenting_side_runs(
+            self._state.get("symphony_github_services") or {},
+            sessions=active_sessions, dispatchable_card_ids=dispatchable,
+        )
 
         eligibilities = _compute_session_eligibilities(
             self._state, active_sessions, self._max_concurrent_cards(),
@@ -3494,13 +3676,19 @@ class CoordinareDaemon:
                 error=str(exc),
             )
 
-    async def _dispatch_documenting_side_runs(self, sym_gh_svcs: dict[str, Any] | None) -> None:
+    async def _dispatch_documenting_side_runs(
+        self, sym_gh_svcs: dict[str, Any] | None, *,
+        sessions: dict[str, Any] | None = None, dispatchable_card_ids: set[str] | None = None,
+    ) -> None:
         """165 (FR-014/FR-015): run the documenter beside the lifecycle.
 
         One dispatch per blueprint hash, only for sessions past architecting
         whose blueprint carries documentation topics; polled to a recorded
         outcome on the session (persisted as ``documenting_side``). Never
         blocks or advances the main lifecycle.
+
+        Existing runs are always eligible for polling. New dispatches require
+        the card allowlist derived from this board's fresh preflight read.
         """
         from coordinare.services import documenting_side as _ds
 
@@ -3511,11 +3699,13 @@ class CoordinareDaemon:
                 current.update(getattr(runtime, "active_sessions", None) or {})
             return current
 
-        sessions = current_sessions()
+        sessions = current_sessions() if sessions is None else sessions
         if svc is None or not sessions:
             return
 
         async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
+            if card_id not in (dispatchable_card_ids or set()):
+                return None
             return await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
 
         async def _recover(card_id: str, session: dict[str, Any]) -> bool:
@@ -4475,6 +4665,49 @@ class CoordinareDaemon:
             HEALTH.update("notifications", HealthStatus.healthy)
         return _cycle_elapsed
 
+    async def _reconcile_board_pauses(self, *, board_is_fresh: bool = True) -> None:
+        """Retry owned stops during outages; change pause intent on fresh reads."""
+        board = (self._state.get("board_snapshot") or {}) if board_is_fresh else {}
+        sessions = self._state.get("active_sessions") or {}
+        for card_id, sess in sessions.items():
+            card = sess.get("current_card") or {}
+            item_id = str(card.get("content_id") or card.get("id") or card_id)
+            column = next((col for col, ids in board.items() if item_id in ids or card_id in ids), "")
+            dispatch = sess.get("agent_dispatch") or {}
+            side = sess.get("documenting_side") or {}
+            writers = [(sess.get("performer_stage"), dispatch, False)]
+            if side.get("status") == "running" or side.get("writer_active"):
+                writers.append(("documenting", side, True))
+            newly_paused = column in {"TODO", "BACKLOG"} and any(identity.get("session_id") for _, identity, _ in writers)
+            if not sess.get("board_paused") and not newly_paused:
+                continue
+            was_paused = bool(sess.get("board_paused"))
+            _capture_board_pause_resume_phase(sess)
+            sess["board_paused"] = True
+            if not was_paused or column == "BACKLOG":
+                sess["board_pause_column"] = column
+            pause_column = str(sess.get("board_pause_column") or column)
+            stopped = await stop_owned_writers(self._state, card_id, sess, reason="board paused")
+            if not stopped:
+                # Keep the live phase: it continues to reserve worker capacity.
+                sess["phase"] = "monitoring_performer"
+                _record_unconfirmed_board_pause(sess)
+                activity = self._state.get("activity_log")
+                if activity is not None:
+                    activity.record(
+                        activity_type="blocked", card_id=card_id,
+                        card_title=str(card.get("title") or ""),
+                        stage=str(sess.get("performer_stage") or ""),
+                        text="Board paused; worker may still be running. Ownership retained; resume waits for confirmed stop.",
+                    )
+                continue
+            sess["phase"] = "blocked"
+            if was_paused and column != pause_column and column in {"TODO", "IN_PROGRESS", "IN_REVIEW"}:
+                sess["board_paused"] = False
+                sess["board_pause_column"] = ""
+                _resume_board_paused_session(sess)
+            logger.info("daemon.board_pause_reconciled", card_id=card_id, board_status=column, stopped=stopped)
+
     async def _reconcile_board_state_with_release(self) -> None:
         """Issue #516: board ↔ local-state reconciliation, then best-effort
         release of a retired session's performer resources.
@@ -4487,14 +4720,17 @@ class CoordinareDaemon:
         failure is logged and swallowed by _release_session_resources.
         """
         try:
-            from coordinare.services.reconciliation import reconcile_board_state
-
-            _board = self._state.get("board_snapshot") or {}
-            if isinstance(_board, dict) and _board:
-                result = reconcile_board_state(self._state, _board)
+            _board = self._state.get("board_snapshot")
+            if isinstance(_board, dict) and (_board or _has_fresh_board_snapshot(self._state)):
+                # Graph board moves can make this pre-cycle snapshot stale.
+                # Cancel paused writers only after the fresh pre-fanout poll.
+                await _retire_nonfocused_paused_terminal(self._state, _board)
+                result = reconcile_board_state(
+                    self._state, _board, allow_paused_missing=_has_fresh_board_snapshot(self._state),
+                )
                 retired = result.get("retired_session")
                 if isinstance(retired, dict):
-                    await _release_session_resources(self._state, retired)
+                    await _release_done_session_resources(self._state, retired)
         except Exception as _exc:
             logger.warning(
                 "daemon.board_reconcile_crashed",
@@ -4913,7 +5149,8 @@ class CoordinareDaemon:
             _active_sessions = self._state.get("active_sessions") or {}
             _slot_mgr.sync_from_sessions(_active_sessions)
 
-        # Side writers are independent of env-cache bootstrap availability.
+        # Resume existing side polls here. New writers require the scoped
+        # preflight board read and pause reconciliation in _invoke_multi_session.
         await self._dispatch_documenting_side_runs(self._state.get("symphony_github_services") or {})
         return _cycle_t0
 

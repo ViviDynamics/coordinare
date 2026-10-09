@@ -33,6 +33,7 @@ from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.documenting_side import record_result
 from coordinare.services.http_performer_service import _EphemeralJob
 from coordinare.services.kubernetes_runtime import KubernetesRuntime
+from coordinare.services.owned_writers import has_owned_writers
 from coordinare.transport.base import TransportTimeoutError
 from coordinare.transport.http_transport import PerformerAuthError, PerformerHTTPClient
 
@@ -587,6 +588,9 @@ async def run_kubernetes_orphan_sweep(state: CoordinareState) -> list[str]:
 
 async def _restore_documenting_side(state, card_id, sess, by_session, docker_executor) -> None:
     """Adopt an early writer, or confirm it stopped before releasing its lock."""
+    if sess.get("board_paused"):
+        # The confirmed owning-service stop path controls paused identities.
+        return
     service = _resolve_service(state, "documenting")
     if service is None or _is_persistent_mode(service):
         return
@@ -653,6 +657,19 @@ async def _classify_and_act(
     docker_executor: DockerExecutor,
 ) -> ReconciliationDecision:
     """Classify a single in-flight card and apply the matching decision."""
+    if sess.get("board_paused"):
+        # Legacy reap-and-replace clears IDs even if the runtime stop fails.
+        # A paused owner must remain visible until stop_owned_writers confirms
+        # absence; neither adoption nor replacement is requested here.
+        return ReconciliationDecision.DEFERRED
+    return await _classify_active_session(state, card_id, sess, by_session, docker_executor)
+
+
+async def _classify_active_session(
+    state: CoordinareState, card_id: str, sess: dict[str, Any],
+    by_session: dict[str, ContainerInfo], docker_executor: DockerExecutor,
+) -> ReconciliationDecision:
+    """Apply the existing adoption/replacement policy only to active owners."""
     agent_dispatch = sess.get("agent_dispatch") or {}
     session_id = agent_dispatch.get("session_id") if isinstance(agent_dispatch, dict) else None
     performer_stage = sess.get("performer_stage")
@@ -950,9 +967,23 @@ async def _probe_job_runner_health(
     return await docker_executor.probe_healthz(container.container_id, timeout=timeout)
 
 
+def _retire_terminal_board_session(state: CoordinareState, card_id: str, board_status: str) -> dict[str, Any] | None:
+    """Clear only the terminal card's mirrors after its ownership guard passed."""
+    retired = (state.get("active_sessions") or {}).get(card_id)
+    if not state.get("active_card_id"):
+        state["active_card_id"] = card_id
+    state["phase"] = "idle"
+    _retire_active_session(state, trigger="board_card_done_reconciled" if board_status else "board_card_missing_reconciled")
+    state["active_card"] = None
+    state["agent_dispatch"] = {}
+    state["agent_dispatch_at"] = None
+    return retired
+
+
 def reconcile_board_state(
     state: CoordinareState,
     board_snapshot: dict[str, Any],
+    *, allow_paused_missing: bool = False,
 ) -> dict[str, Any]:
     """076 (T120, FR-025): per-cycle board ↔ local-state reconciliation.
 
@@ -965,7 +996,10 @@ def reconcile_board_state(
     of divergence — the matching session is retired (not just the pin)
     so a zombie session cannot hold the pickup slot across restarts.
 
-    Returns ``{"action": "agreed" | "pin_released" | "done_session_retired" |
+    Paused missing sessions retire only when ``allow_paused_missing`` confirms
+    a fresh, successful board read and all owned writers have stopped.
+
+    Returns ``{"action": "agreed" | "pin_released" | "done_session_retired" | "missing_session_retired" |
     "no_active_card" | "deferred", "card_id": str | None, "local": str,
     "board": str}``; for ``done_session_retired`` the result additionally
     carries ``retired_session`` (the removed session record, or None when
@@ -987,6 +1021,16 @@ def reconcile_board_state(
                 board_status = column
                 break
 
+    # Paused owners must reach confirmed absence before DONE or missing can retire
+    # them. Normal, nonpaused DONE retains its existing best-effort cleanup.
+    sessions = state.get("active_sessions") or {}
+    paused = bool((sessions.get(card_id) or {}).get("board_paused"))
+    if paused and (
+        board_status not in {"DONE", ""} or has_owned_writers(sessions.get(card_id) or {})
+        or (not board_status and not allow_paused_missing)
+    ):
+        return {"action": "deferred", "card_id": card_id, "local": "", "board": "paused"}
+
     # Normalise both sides before comparing — the board column names are
     # UPPER_SNAKE ("IN_PROGRESS") but ``card.status`` from various code
     # paths may be human-readable ("In Progress") or display-form.
@@ -1004,7 +1048,15 @@ def reconcile_board_state(
     action = ""
     board_label = board_status
     retired_session: dict[str, Any] | None = None
-    if not board_status:
+    if board_status == "DONE" or (paused and not board_status):
+        action = "done_session_retired" if board_status else "missing_session_retired"
+        board_label = board_status or "missing"
+        logger.warning(
+            "daemon.board_state_reconciled", card_id=card_id,
+            local_status=local_status, board_status=board_label, action=action,
+        )
+        retired_session = _retire_terminal_board_session(state, card_id, board_status)
+    elif not board_status:
         # Card is no longer on any tracked column — operator may have
         # deleted or archived it.  Release the pin.
         board_label = "missing"
@@ -1019,27 +1071,6 @@ def reconcile_board_state(
         state["active_card"] = None
         state["current_card"] = None
         state["active_card_id"] = None
-    elif _norm(board_status) == "DONE":
-        action = "done_session_retired"
-        logger.warning(
-            "daemon.board_state_reconciled",
-            card_id=card_id,
-            local_status=local_status,
-            board_status=board_status,
-            action=action,
-        )
-        sessions = state.get("active_sessions") or {}
-        retired_session = sessions.get(card_id) if isinstance(sessions, dict) else None
-        if not state.get("active_card_id"):
-            # The retirement is keyed off active_card_id (_retire_active_session
-            # removes the entry it points at); keep it in step with the pin we
-            # are acting on.
-            state["active_card_id"] = card_id
-        state["phase"] = "idle"
-        _retire_active_session(state, trigger="board_card_done_reconciled")
-        state["active_card"] = None
-        state["agent_dispatch"] = {}
-        state["agent_dispatch_at"] = None
     elif _norm(board_status) == _norm(local_status):
         action = "agreed"
     elif _norm(board_status) in ("TODO", "BACKLOG") and _norm(local_status) in (
@@ -1083,7 +1114,7 @@ def reconcile_board_state(
         "local": local_status,
         "board": board_label,
     }
-    if action == "done_session_retired":
+    if action in {"done_session_retired", "missing_session_retired"}:
         # Hand the retiring session back so the caller can best-effort
         # release its performer resources before the record is dropped.
         result["retired_session"] = retired_session

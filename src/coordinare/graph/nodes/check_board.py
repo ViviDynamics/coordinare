@@ -45,6 +45,7 @@ from coordinare.services.card_ownership import (
     ownership_policy,
     owns_card,
 )
+from coordinare.services.closed_pr import is_closed_pr_block, matches_closed_pr_identity
 from coordinare.services.dependency import (
     build_graph,
     resolve_off_board_dependencies,
@@ -645,6 +646,8 @@ async def _attempt_blocked_card_recovery(
             # recovered when the symphony's env-cache is healthy again.
             sess = (state.get("active_sessions") or {}).get(cid)
             sess = sess if isinstance(sess, dict) else {}
+            if is_closed_pr_block(sess.get("system_error_reason")):
+                continue  # Only explicit reopening + Todo resumes a closed PR.
             _gather_env_blocked_reason(state, active_reasons, sig, cid, sess)
 
             # --- STALE_REVIEW gatherer (spec-128; PR-based) ---
@@ -775,7 +778,10 @@ async def _poll_board_once(
 async def _maybe_rebase_on_main_change(
     state: CoordinareState, github: GitHubServiceProtocol, config: ProjectConfiguration | None, max_cards: int,
 ) -> None:
-    active_sessions = state.get("active_sessions") or {}
+    from coordinare.services.rebase import _board_pauses_rebase
+
+    active_sessions = {cid: sess for cid, sess in (state.get("active_sessions") or {}).items()
+                       if not _board_pauses_rebase(cid, sess, state.get("board_snapshot"))}
     if active_sessions and config is not None:
         # Derive repo URL from config (not WorkspaceManager internals)
         repo_url = repo_url_from_config(config)
@@ -852,7 +858,7 @@ async def _run_edge_rebase_round(
                 outcome=_job.outcome.value,
             )
             _sess = active_sessions.get(_job.card_id)
-            if not isinstance(_sess, dict):
+            if not isinstance(_sess, dict) or _job.outcome == RebaseOutcome.DEFERRED:
                 continue
             # 096 FR-007: record the anti-thrash marker for EVERY
             # edge-rebased card (not just BLOCKED) so the next
@@ -928,6 +934,8 @@ async def _proactive_rebase_stale_branches(
             )
             state["last_rebase_round"] = _rr.to_dict()
             for _job in _rr.jobs:
+                if _job.outcome == RebaseOutcome.DEFERRED:
+                    continue  # No rebase attempt occurred; retry the lifecycle read.
                 # _head is guaranteed non-empty here (deferred
                 # above otherwise), so the marker head matches what
                 # the guard reads next cycle — no asymmetry.
@@ -1076,7 +1084,7 @@ async def _reconcile_stale_checkboard_sessions(
         _sessions = state.get("active_sessions") or {}
         if isinstance(_sessions, dict):
             for _cid, _sess in _sessions.items():
-                if not isinstance(_sess, dict):
+                if not isinstance(_sess, dict) or _sess.get("board_paused"):
                     continue
                 if _is_stale(
                     str(_sess.get("phase") or ""),
@@ -1439,6 +1447,12 @@ async def _handle_in_progress_cards(
 async def _collect_blocked_clarification(
     state: CoordinareState, board_provider: BoardProvider, board: dict[str, Any], item: str, content_node_ids: dict[str, Any],
 ) -> CoordinareState | None:
+    session = (state.get("active_sessions") or {}).get(item) or {}
+    reason = session.get("system_error_reason")
+    if not session and str((state.get("current_card") or {}).get("id") or "") == item:
+        reason = state.get("system_error_reason")
+    if is_closed_pr_block(reason):
+        return None  # Comments are not authorization to replace a closed PR.
     # 069 follow-up: prefer the per-card session watermark over the
     # top-level mirror.  The top-level value is reset to None when the
     # daemon restores from snapshot (or when handle_blocked's no-questions
@@ -1859,6 +1873,44 @@ async def _apply_todo_dependencies(
     return eligible_todo
 
 
+async def _resume_closed_pr(
+    state: CoordinareState, board: dict[str, Any], card_id: str, session: dict[str, Any],
+) -> None:
+    """Resume the same reopened PR after the operator moves its card to Todo."""
+    card = session.get("current_card") or {}
+    github = state.get("github_service")
+    card = {**_build_card_dict(card_id, board, "BLOCKED"), **card}
+    session["current_card"] = card
+    try:
+        if not card.get("pr_node_id") and github is not None:
+            recovered = await github.find_pr_for_issue(str(card.get("issue_id") or ""))
+            reason = str(session.get("system_error_reason") or "")
+            if isinstance(recovered, dict) and matches_closed_pr_identity(reason, recovered):
+                card.update(recovered)
+        context = {}
+        if github is not None and card.get("pr_node_id") and matches_closed_pr_identity(
+            str(session.get("system_error_reason") or ""), card,
+        ):
+            context = await github.get_pr_review_context(str(card["pr_node_id"]))
+        reopened = isinstance(context, dict) and context.get("state") == "OPEN"
+    except Exception:
+        reopened = False
+    target = "IN_REVIEW" if reopened else "BLOCKED"
+    with contextlib.suppress(Exception):
+        await move_card_or_warn(board_of(state), card_id, target)
+    card["status"] = target
+    session["phase"] = "monitoring_pr" if reopened else "blocked"
+    if reopened:
+        session["system_error_reason"] = None
+        session["open_questions"] = []
+        session["last_blocked_notified_at"] = None
+    if state.get("active_card_id") == card_id:
+        state["phase"] = session["phase"]
+        state["system_error_reason"] = session.get("system_error_reason")
+        state["open_questions"] = session.get("open_questions") or []
+        _rederive_current_card(state)
+
+
 async def _reset_and_rehydrate(
     state: CoordinareState, board: dict[str, Any], eligible_todo: list[str], max_cards: int, active_sessions: dict[str, Any],
 ) -> None:
@@ -1872,9 +1924,12 @@ async def _reset_and_rehydrate(
     _eligible_set = set(eligible_todo)
     _unblocked_ids: set[str] = set()
     for _cid, _sess in active_sessions.items():
-        if _cid not in _eligible_set:
+        if _cid not in _eligible_set or _sess.get("board_paused"):
             continue
         _sess_card = _sess.get("current_card") or {}
+        if is_closed_pr_block(_sess.get("system_error_reason")):
+            await _resume_closed_pr(state, board, _cid, _sess)
+            continue
         if str(_sess_card.get("status", "")) != "BLOCKED":
             continue
         _prior_count = int(_sess.get("feedback_cycle_count") or 0)
@@ -1919,7 +1974,7 @@ async def _reset_and_rehydrate(
     # already active. The pipeline admission guard controls dispatch.
     for item in eligible_todo:
         sess = active_sessions.get(item)
-        if sess is None or sess.get("phase") != "idle":
+        if sess is None or sess.get("board_paused") or sess.get("phase") != "idle":
             continue
         sess["current_card"] = {
             **(sess.get("current_card") or {}),
@@ -2068,6 +2123,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     if await _active_card_disappeared(state, in_progress, in_review, all_blocked, todo):
         return state
 
+    paused_ids = {cid for cid, sess in (state.get("active_sessions") or {}).items()
+                  if sess.get("board_paused")}
+    in_review = [cid for cid in in_review if cid not in paused_ids]
+    in_progress = [cid for cid in in_progress if cid not in paused_ids]
+    blocked = [cid for cid in blocked if cid not in paused_ids]
+    todo = [cid for cid in todo if cid not in paused_ids]
     result = await _handle_in_review_cards(state, board, in_review, _ownership, _assignees, max_cards)
     if result is not None:
         return result

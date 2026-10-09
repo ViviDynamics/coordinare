@@ -380,13 +380,17 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     """Check for and apply a pending human override (031-human-override-controls).
 
     Returns the updated state if an override was applied, or None if no
-    override was pending.  The override is always cleared from state (FR-008).
+    override was pending. Skip/veto commands are consumed immediately (FR-008).
+    A valid restart retains an applied receipt until its target dispatch is
+    accepted, so a deferred dispatch survives restart without replaying effects.
     """
     override = state.get("pending_override")
     if override is None:
         return None
 
     action = override.get("action")
+    if action == "restart" and override.get("applied"):
+        return None
     state["pending_override"] = None  # FR-008: clear immediately
 
     if action == "skip":
@@ -409,6 +413,7 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
             # this one-shot flag vetoes the verdict-cache skip for the target
             # stage and is consumed (cleared) by the cache check.
             state["override_forced_dispatch"] = target
+            state["pending_override"] = {**override, "applied": True}
         else:
             logger.warning("override.restart_invalid_role", target_stage=target)
         return state
@@ -668,7 +673,21 @@ def _ci_lint_gate(
     return None
 
 
-def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
+def _carry_dispatched_feedback(state: CoordinareState, updates: dict[str, Any]) -> None:
+    """Retarget unfinished requests with a gate bounce's new repair feedback."""
+    batch = state.get("dispatched_feedback") or {}
+    items: list[dict[str, Any]] = []
+    for item in [*(batch.get("items") or []), *(state.get("relay_feedback") or []),
+                 *(updates.get("relay_feedback") or [])]:
+        if item not in items:
+            items.append(item)
+    updates["relay_feedback"] = items
+
+
+def _advance_stage(
+    state: CoordinareState, status: dict[str, Any] | None = None,
+    *, acknowledge_final_feedback: bool = True,
+) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
     If more roles remain in ``lifecycle_sequence``, returns a dict that sets
@@ -688,6 +707,8 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         idx = len(sequence)
 
     if idx + 1 < len(sequence):
+        if status is not None:
+            state["dispatched_feedback"] = {}
         # More roles remain — advance to the next stage.
         # Persist PR identifiers from the current role's status so they're
         # available to subsequent roles (e.g. reviewer needs the PR URL).
@@ -753,8 +774,13 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
     # else fall through to the monitoring_pr transition.
     lint_updates = _ci_lint_gate(state, card)
     if lint_updates is not None:
+        # A final reviewer can bounce to implementation. Carry the original
+        # request across that stage change until the replacement accepts it.
+        _carry_dispatched_feedback(state, lint_updates)
         return lint_updates
 
+    if status is not None and acknowledge_final_feedback:
+        state["dispatched_feedback"] = {}
     card["previous_status"] = card.get("status", "IN_PROGRESS")
     card["status"] = "IN_REVIEW"
 

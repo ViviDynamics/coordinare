@@ -13,7 +13,7 @@ import contextlib
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -110,6 +110,7 @@ from coordinare.graph.nodes.monitor.verdict import (
     _advance_stage,
     _apply_feedback_dispositions,  # noqa: F401 -- re-export
     _apply_pending_override,
+    _carry_dispatched_feedback,
     _evaluate_success_floor,
     _feedback_cycle_budget,  # noqa: F401 -- re-export
     _feedback_cycle_exhausted,
@@ -324,6 +325,19 @@ def _build_monitor_ctx(state: CoordinareState) -> _BodyCtx:
         teardown_on_exit=True,
     )
 
+async def _finish_ephemeral_advance(state: CoordinareState, ctx: _BodyCtx) -> CoordinareState:
+    updates = _advance_stage(state, None)
+    if updates.get("phase") == "monitoring_pr":
+        ctx.updates = updates
+        stopped = await _phase_terminal_success_s4_s1(state, ctx)
+        if stopped is not None:
+            return stopped
+    elif updates.get("phase") == "dispatching" and updates.get("performer_stage") != ctx.stage:
+        state["dispatched_feedback"] = {}
+    cast("dict[str, Any]", state).update(updates)
+    return state
+
+
 async def _phase_ephemeral_gate(
     state: CoordinareState,
     ctx: _BodyCtx,
@@ -367,10 +381,8 @@ async def _phase_ephemeral_gate(
                 state["env_blocked"] = None
             if ci_stop:
                 return state
-            advance_updates = _advance_stage(state, None)
-            for _k, _v in advance_updates.items():
-                state[_k] = _v  # type: ignore[literal-required]
-            return state
+            # The worker succeeded, but final PR checks still own acknowledgement.
+            return await _finish_ephemeral_advance(state, ctx)
         # Gone ephemeral implementer with nothing to gate on (no PR yet, or the
         # gate is disabled): the one-shot container is already torn down, so
         # polling it would lookup-miss into a false transport-error block. Re-
@@ -2094,7 +2106,7 @@ async def _phase_terminal_success_s3(
     # accepted.
     if stage in VERDICT_STAGES and marker in EXPECTED_STAGE_MARKER.get(stage, frozenset()):
         _resolve_dispute_round(state, stage, passed=True)
-    updates = _advance_stage(state, status)
+    updates = _advance_stage(state, status, acknowledge_final_feedback=False)
     ctx.updates = updates
     return None
 
@@ -2138,12 +2150,15 @@ async def _phase_terminal_success_s4_s1(
     gate_updates, gate_stop = await _evaluate_pr_checks_gate(
         state, card_id, pr_url,
     )
+    if gate_stop and gate_updates.get("phase") == "dispatching":
+        _carry_dispatched_feedback(state, gate_updates)
     for key, value in gate_updates.items():
         state[key] = value  # type: ignore[literal-required]
     if gate_stop:
         # HOLD or BOUNCE — skip the move_card / reviewer / notification
         # side-effects.
         return state
+    state["dispatched_feedback"] = {}
     ctx.key = key
     ctx.pr_url = pr_url
     ctx.value = value

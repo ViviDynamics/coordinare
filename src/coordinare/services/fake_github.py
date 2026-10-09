@@ -406,6 +406,7 @@ class FakeGitHubService(CardIdentityMap):
             "review_threads": [],
             "head_oid": head_oid,
             "review_decision": self._review_decision(pr),
+            "state": "MERGED" if pr["merged"] else "OPEN",
         }
 
     async def request_reviews(self, pr_id: str, reviewer_logins: list[str]) -> dict[str, Any]:

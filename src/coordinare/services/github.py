@@ -18,6 +18,9 @@ from gql.transport.exceptions import TransportQueryError, TransportServerError
 from coordinare.services.card_identity import CardIdentityMap
 
 logger = structlog.get_logger(__name__)
+_PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
+_PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
+_PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T008)
@@ -217,6 +220,7 @@ GET_PR_REVIEWS_QUERY = """
 query GetPRReviews($prId: ID!) {
   node(id: $prId) {
     ... on PullRequest {
+      state
       reviews(last: 50) {
         nodes {
           id
@@ -1161,6 +1165,47 @@ class GitHubService(CardIdentityMap):
             logger.warning("get_issue_comments.request_failed", issue_number=issue_number, error=str(exc))
             return []
 
+    async def get_pr_conversation_comments(
+        self, pr_number: int, *, since: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return every updated ordinary PR comment, or raise on incomplete fetch.
+
+        PR conversation uses the issue-comments endpoint with the PR number,
+        independently of comments on its linked issue. ``since`` filters edits.
+        The caller owns the overall fetch/classification time budget.
+        """
+        if not self._project_name:
+            raise GitHubError(_PR_CONVERSATION_REPOSITORY_MISSING)
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/issues/{pr_number}/comments"
+        params: dict[str, str | int] = {'per_page': 100}
+        if since:
+            params['since'] = since
+        headers = {'Authorization': f'Bearer {await self._current_token()}', 'Accept': 'application/vnd.github+json'}
+        comments: list[dict[str, Any]] = []
+        visited: set[str] = set()
+        next_url: str | None = url
+        async with httpx.AsyncClient(timeout=10) as client:
+            while next_url:
+                if next_url in visited or not next_url.startswith(f'{self._rest_api_base()}/'):
+                    raise GitHubError(_PR_CONVERSATION_PAGINATION_INVALID)
+                visited.add(next_url)
+                response = await client.get(next_url, headers=headers, params=params)
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list) or any(not isinstance(c, dict) or not c.get('id') or not c.get('updated_at') for c in page):
+                    raise GitHubError(_PR_CONVERSATION_PAGE_INCOMPLETE)
+                for comment in page:
+                    user = comment.get('user') or {}
+                    comments.append({
+                        'id': comment['id'], 'author': str(user.get('login') or ''),
+                        'body': str(comment.get('body') or ''),
+                        'updated_at': str(comment['updated_at']),
+                        'html_url': str(comment.get('html_url') or ''),
+                    })
+                next_url = response.links.get('next', {}).get('url')
+                params = {}
+        return comments
+
     def _rest_api_base(self) -> str:
         """Derive the REST API base URL from the configured GraphQL endpoint.
 
@@ -1849,6 +1894,7 @@ class GitHubService(CardIdentityMap):
             "review_threads": threads,
             "head_oid": str(node.get("headRefOid") or ""),
             "review_decision": str(node.get("reviewDecision") or ""),
+            "state": str(node.get("state") or ""),
         }
 
     async def request_reviews(
