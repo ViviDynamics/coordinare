@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 30  # 550: durable PR conversation revisions
+CURRENT_SCHEMA_VERSION: int = 31  # 557/559: completed handoff and per-card PR identity
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -273,6 +273,8 @@ class PersistedSession(BaseModel):
     dispatched_feedback: dict[str, Any] = Field(default_factory=dict)
     pending_override: dict[str, Any] | None = None
     pr_comment_tracking: dict[str, Any] = Field(default_factory=dict)
+    pending_pr_handoff: dict[str, Any] | None = None
+    pr_artefacts: dict[str, Any] = Field(default_factory=dict)
     relay_feedback: list[dict[str, Any]] = Field(default_factory=list)
     system_error_count: int = 0
     system_error_reason: str | None = None

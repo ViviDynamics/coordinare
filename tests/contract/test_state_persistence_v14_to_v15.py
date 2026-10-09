@@ -39,7 +39,7 @@ _ITEM = {
 
 def test_current_schema_version_is_24() -> None:
     """354 adds the per-session queued-for-slot wait stamp; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 30  # 550: + PR conversation revisions
+    assert CURRENT_SCHEMA_VERSION == 31  # 557/559: durable handoff and per-card PR identity
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

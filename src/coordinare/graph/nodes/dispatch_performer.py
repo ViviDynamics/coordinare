@@ -2696,6 +2696,7 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
     state["dispatched_feedback"] = {"stage": performer_stage, "items": items} if items else {}
     state["relay_feedback"] = []
     state["reconciled_dispatch_pending"] = False
+    state["pending_pr_handoff"] = None
     override = state.get("pending_override") or {}
     if override.get("action") == "restart" and override.get("applied") and override.get("target_stage") == performer_stage:
         state["pending_override"] = None
