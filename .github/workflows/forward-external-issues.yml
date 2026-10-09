@@ -4,10 +4,9 @@
 # closed public pull requests by design. This is what makes that promise real:
 # somebody sees a stranger's report without watching the repository by hand.
 #
-# Runs on a GitHub-hosted runner on purpose. Every other workflow here is
-# self-hosted, and a workflow an outsider can trigger should not touch that host.
-# It also never checks out the repository: nothing from the submission is
-# fetched, written, or executed.
+# Runs on a GitHub-hosted runner on purpose: a workflow an outsider can
+# trigger should never touch internal infrastructure. It also never checks out
+# the repository: nothing from the submission is fetched, written, or executed.
 #
 # Secrets are available here because `issues` events run in the base-repository
 # context. That is the contrast with spec 142's external-PR automation, which

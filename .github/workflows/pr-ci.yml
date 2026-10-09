@@ -20,11 +20,7 @@ jobs:
   lint:
     name: Lint
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,11 +45,7 @@ jobs:
   test:
     name: Test
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -78,11 +70,7 @@ jobs:
   chart:
     name: Chart
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -123,11 +111,7 @@ jobs:
   daemon-image:
     name: Daemon Image
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -155,11 +139,7 @@ jobs:
   chart-install:
     name: Chart Install (kind)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -173,7 +153,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       # kind and helm are not used by any other workflow, so their presence on a
-      # self-hosted runner cannot be assumed. Both are single binaries.
+      # stock GitHub-hosted runner cannot be assumed. Both are single binaries.
       - name: Install helm
         uses: azure/setup-helm@v4
         with:
@@ -255,11 +235,7 @@ jobs:
   coverage:
     name: Coverage
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -284,13 +260,9 @@ jobs:
   e2e:
     name: E2E Browser Tests
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     # Browser OS libraries live in the official image, so this lane does not
-    # require passwordless sudo on whichever self-hosted runner receives it.
+    # require passwordless sudo on the GitHub-hosted runner that receives it.
     # Keep the image version aligned with the Playwright package in uv.lock.
     container:
       image: mcr.microsoft.com/playwright/python:v1.58.0-noble
@@ -320,11 +292,7 @@ jobs:
   performer:
     name: Performer Tests
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -344,11 +312,7 @@ jobs:
   docker:
     name: Docker Images
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -417,11 +381,7 @@ jobs:
     name: Performance Benchmarks
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     continue-on-error: true
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -489,11 +449,7 @@ jobs:
       (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - cluster
+    runs-on: ubuntu-latest
     needs:
       - lint
       - test
