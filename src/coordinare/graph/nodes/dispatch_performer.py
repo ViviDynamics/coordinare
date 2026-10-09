@@ -2057,9 +2057,11 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
         prior_qa = state.get("assessor_open_questions") or []
         if prior_qa:
             card_context["prior_clarifications"] = [dict(q) for q in prior_qa]
-        card_clarifications = state.get("card_clarifications") or []
-        if card_clarifications:
-            card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
+    # Human comments may arrive after the original card snapshot. Every stage
+    # needs the current history, while prior assessor Q&A stays assessor-only.
+    card_clarifications = state.get("card_clarifications") or []
+    if card_clarifications:
+        card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
     return card_context, role
 
 

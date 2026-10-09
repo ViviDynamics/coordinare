@@ -33,7 +33,7 @@ class _Git:
     """Fake _run_git: answers by the git subcommand, records the sequence."""
 
     def __init__(self, answers: dict[str, tuple[int, str]]) -> None:
-        self.answers = answers
+        self.answers = {"merge-base": (1, ""), **answers}
         self.calls: list[list[str]] = []
 
     async def __call__(self, args, cwd, env, timeout=120.0):
@@ -86,7 +86,7 @@ async def test_existing_remote_branch_is_fetched_and_rebased_then_pushed_without
 
     await push_branch(stand, _score())
 
-    assert git.subcommands() == ["ls-remote", "fetch", "rebase", "push"]
+    assert git.subcommands() == ["ls-remote", "fetch", "merge-base", "rebase", "push"]
     assert not any("--force" in c for c in git.calls)
     rebase = next(c for c in git.calls if "rebase" in c)
     assert "FETCH_HEAD" in rebase

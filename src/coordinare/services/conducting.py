@@ -74,6 +74,13 @@ def _build_assess_prompt(card: dict[str, Any]) -> str:
     if clarifications:
         history_lines = []
         for entry in clarifications:
+            comment = entry.get("body")
+            if isinstance(comment, str) and comment.strip():
+                identity = ", ".join(
+                    f"{key}: {entry[key]}"
+                    for key in ("source", "comment_id", "author") if entry.get(key)
+                )
+                history_lines.append(f"Human clarification ({identity}):\n{comment}")
             qs = entry.get("questions") or []
             ans = str(entry.get("answer", "")).strip()
             if qs:

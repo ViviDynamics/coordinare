@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from performer.backends._clarifications import clarification_comment_lines
+
 _MAX_DOC_CHARS = 6000
 _AGENT_FILES = ("AGENTS.md", "CLAUDE.md")
 
@@ -34,6 +36,9 @@ class Intake:
         if self.criteria:
             parts.append("## Acceptance criteria\n" + "\n".join(f"- {c}" for c in self.criteria))
         if self.clarifications:
+            for clarification in self.clarifications:
+                if isinstance(clarification, dict):
+                    parts.extend(clarification_comment_lines(clarification))
             qa = "\n".join(
                 f"- Q: {c.get('question', '')}\n  A: {c.get('answer', '')}"
                 for c in self.clarifications

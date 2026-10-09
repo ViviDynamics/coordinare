@@ -278,10 +278,17 @@ class TestPushBranch:
         proc_ok = MagicMock()
         proc_ok.returncode = 0
         proc_ok.communicate = AsyncMock(return_value=(b"", b""))
-        # 131 guard (ls-files) → ls-remote (0 = exists) → fetch → rebase → push
+        proc_diverged = MagicMock()
+        proc_diverged.returncode = 1
+        proc_diverged.communicate = AsyncMock(return_value=(b"", b""))
+
+        async def process(*args, **kwargs):
+            return proc_diverged if "merge-base" in args else proc_ok
+
+        # The remote head is not an ancestor: fetch, then rebase before push.
         with patch(
             "performer.workspace.asyncio.create_subprocess_exec",
-            return_value=proc_ok,
+            side_effect=process,
         ) as mock_exec:
             await push_branch(stand, _score())
         issued = [" ".join(str(a) for a in c[0]) for c in mock_exec.call_args_list]

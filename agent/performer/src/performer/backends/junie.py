@@ -32,6 +32,8 @@ See https://junie.jetbrains.com/docs/custom-llm-models.html.
 """
 from __future__ import annotations
 
+from performer.backends._clarifications import clarification_comment_lines
+
 import asyncio
 import json
 import os
@@ -443,6 +445,7 @@ def _build_task_prompt(
     if score.clarifications:
         parts += ["", "## Clarification Q&A", ""]
         for entry in score.clarifications:
+            parts += clarification_comment_lines(entry)
             questions = entry.get("questions") or []
             answer = str(entry.get("answer", "")).strip()
             if questions:
