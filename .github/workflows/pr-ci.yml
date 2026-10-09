@@ -14,8 +14,6 @@ concurrency:
   group: pr-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# General Linux builds use the ephemeral cluster pool; the persistent WSL2
-# runner also matches linux/x64 but has repeatedly stalled Docker operations.
 jobs:
   lint:
     name: Lint
@@ -195,14 +193,14 @@ jobs:
       # reachable, and a skip in CI is indistinguishable from a pass. Its own
       # docstring names that as the failure mode it exists to avoid.
       - name: Verify performers run as Pods
-        # The runner is itself a Pod in the cluster cluster (ARC), so
-        # load_incluster_config() SUCCEEDS here and wins over the kind kubeconfig
-        # -- the runtime under test would talk to cluster with the runner's own
-        # service account. It surfaced as sixteen 403s from
+        # On a GitHub-hosted runner there is no in-cluster configuration to
+        # shadow the kind kubeconfig, but these two are blanked anyway so the
+        # in-cluster detection fails deterministically and the client falls
+        # back to the kubeconfig kind-action wrote -- the cluster this job
+        # built. (On the ARC runners this job used, load_incluster_config()
+        # SUCCEEDS and wins -- it surfaced as sixteen 403s from
         # system:serviceaccount:github-actions:... rather than anything about
-        # coordinare. Blanking these two makes in-cluster detection fail, so the
-        # client falls back to the kubeconfig kind-action wrote, which is the
-        # cluster this job built.
+        # coordinare.)
         #
         # Worth knowing beyond CI: coordinare's k8s runtime prefers in-cluster
         # credentials by design (that is its supported deployment), so anything

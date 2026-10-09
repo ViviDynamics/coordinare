@@ -3,7 +3,7 @@ name: Mutation Testing
 # 439: opt-in mutation-testing pilot. Deliberately NOT a PR job: a fresh mutmut
 # run over even the six pilot modules costs the stats phase (a full unit-suite
 # run) plus one test batch per mutant, so every-PR execution would spend hours
-# of cluster-runner time per push. Run it manually from the Actions tab
+# of hosted-runner minutes per push. Run it manually from the Actions tab
 # (workflow_dispatch), or locally per docs/qa/2026-09-25-mutation-testing-pilot.md. Not
 # required to merge; the score is a tracked baseline, not a gate.
 on:
