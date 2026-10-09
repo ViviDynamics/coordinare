@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 26  # 545: durable replacement-dispatch intent
+CURRENT_SCHEMA_VERSION: int = 30  # 550: durable PR conversation revisions
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -121,6 +121,8 @@ CURRENT_SCHEMA_VERSION: int = 26  # 545: durable replacement-dispatch intent
 # v26 (545) adds replacement intent and minimal performer routing identity
 # on PersistedSession. Older snapshots default false/None; older binaries
 # reject v26 instead of silently dropping pending work when downgraded.
+# v29 (552) retains board-pause intent until owned writers are confirmed stopped.
+# Versions 27-28 are reserved for concurrently integrated feedback fixes.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -249,6 +251,9 @@ class PersistedSession(BaseModel):
     phase: str | None = None
     # 545: replacement intent survives deferral/restart; older schemas
     # load with false so their existing routing remains unchanged.
+    board_paused: bool = False
+    board_pause_column: str = ""
+    board_pause_resume_phase: str = ""
     reconciled_dispatch_pending: bool = False
     agent_session_id: str | None = None
     agent_performer_id: str | None = None
@@ -265,6 +270,9 @@ class PersistedSession(BaseModel):
     # ``CardSession.consumed_loop_questions`` for semantics.
     consumed_loop_questions: list[str] = Field(default_factory=list)
     card_clarifications: list[dict[str, Any]] = Field(default_factory=list)
+    dispatched_feedback: dict[str, Any] = Field(default_factory=dict)
+    pending_override: dict[str, Any] | None = None
+    pr_comment_tracking: dict[str, Any] = Field(default_factory=dict)
     relay_feedback: list[dict[str, Any]] = Field(default_factory=list)
     system_error_count: int = 0
     system_error_reason: str | None = None

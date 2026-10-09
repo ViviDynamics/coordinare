@@ -47,8 +47,9 @@ def should_dispatch(session: dict[str, Any]) -> tuple[bool, str]:
     if not documenter_side_run_wanted(blueprint):
         return False, "no documentation brief"
     phase = str(session.get("phase") or "")
-    if phase in _INACTIVE_PHASES:
-        return False, f"card is {phase}"
+    if session.get("board_paused") or phase in _INACTIVE_PHASES:
+        reason = "board paused" if session.get("board_paused") else f"card is {phase}"
+        return False, reason
     stage = str(session.get("performer_stage") or "")
     if stage in _EXCLUDED_STAGES:
         return False, f"card still at {stage}"
@@ -150,6 +151,8 @@ async def poll_to_completion(
             if current is None or (current.get("documenting_side") or {}).get("session_id") != session_id:
                 return "superseded"
             session = current
+        if session.get("board_paused"):
+            return "paused"
         try:
             status = await asyncio.wait_for(check_status(session_id), timeout=30.0)
         except Exception as exc:
@@ -233,6 +236,8 @@ async def run_cycle(
         spawn(finish())
 
     for card_id, session in list(sessions.items()):
+        if session.get("board_paused"):
+            continue
         side = session.get("documenting_side") or {}
         if isinstance(side, dict) and (side.get("status") == "running" or side.get("writer_active")) and side.get("session_id"):
             if recover is not None and str(side["session_id"]) not in polling and not await recover(card_id, session):

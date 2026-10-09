@@ -352,6 +352,16 @@ def stamp_blueprint_signature(state: Any) -> str:
     return signature
 
 
+def _restart_requires_dispatch(state: Any, performer_stage: str | None) -> bool:
+    """Keep accepted restart effects active until the target handoff succeeds."""
+    override = state.get("pending_override") or {}
+    return bool(performer_stage and (
+        state.get("override_forced_dispatch") == performer_stage
+        or (override.get("action") == "restart" and override.get("applied")
+            and override.get("target_stage") == performer_stage)
+    ))
+
+
 def blueprint_reuse_allowed(state: Any, performer_stage: str | None) -> bool:
     """True when a persisted blueprint still answers the current requirements.
 
@@ -363,7 +373,7 @@ def blueprint_reuse_allowed(state: Any, performer_stage: str | None) -> bool:
     blueprint = state.get("blueprint")
     if not isinstance(blueprint, dict) or not blueprint:
         return False
-    if state.get("requirements_changed") or state.get("relay_feedback"):
+    if state.get("requirements_changed") or _feedback_for_dispatch(state, performer_stage) or _restart_requires_dispatch(state, performer_stage):
         return False
     recorded = str(state.get("blueprint_signature") or "").strip()
     if not recorded:
@@ -818,7 +828,7 @@ async def _verdict_cache_check(
         return False, None
     card_id = str(card.get("id", ""))
     # V1: an operator-forced restart always dispatches; the flag is one-shot.
-    if state.get("override_forced_dispatch") == stage:
+    if _restart_requires_dispatch(state, stage):
         state["override_forced_dispatch"] = None
         logger.info(
             "dispatch_performer.verdict_cache_bypassed",
@@ -828,7 +838,7 @@ async def _verdict_cache_check(
         )
         return False, None
     # V2: queued feedback is explicit work for the stage.
-    if state.get("relay_feedback"):
+    if _feedback_for_dispatch(state, stage):
         return False, None
     # V2b (126 D6): a pending dispute for this stage must be adjudicated by a
     # real run — a cached verdict never silently swallows a dispute.
@@ -978,16 +988,14 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
 
 
 def _rebase_guard_gate(state: CoordinareState) -> tuple[dict[str, Any] | None, str | None, Any, Any] | None:
-    """Sync gate: relay feedback + prerequisites; None = fail-open."""
+    """Sync gate: stage-owned unfinished feedback + prerequisites."""
     # A feedback-driven dispatch (review feedback, or 047 conflict-resolution
     # feedback) carries explicit work for the performer — let it through so the
     # guard never starves the conflict-resolution path it set up on a prior cycle.
-    # This is BOUNDED, not an unbounded dispatch-onto-conflict: relay_feedback is
-    # consumed (cleared) by _dispatch_performer_body once delivered, and a
-    # resolution attempt that fails to move the branch head trips the anti-thrash
-    # marker (blocked_thrash) on a later cycle. So a conflict resolves in at most
-    # one performer attempt per head before the card is held for an operator.
-    if state.get("relay_feedback"):
+    # A delivered batch remains pending until confirmed completion, including
+    # replacement after restart. Once acknowledged, the anti-thrash marker
+    # applies again; a different stage's batch never bypasses this guard.
+    if _feedback_for_dispatch(state, str(state.get("performer_stage") or "implementing")):
         return None
 
     card = state.get("current_card") or {}
@@ -1115,6 +1123,9 @@ async def _rebase_guard_run(state: CoordinareState, card: dict[str, Any] | None,
     prev_main = current_main
     proceed = True
     for job in rr.jobs:
+        if job.outcome == RebaseOutcome.DEFERRED:
+            proceed = False
+            continue  # No rebase was attempted; preserve retry eligibility.
         # Marker head: after a clean rebase the branch head is the new
         # post-rebase commit (what the next cycle's check_mergeability will
         # report); on a non-pushing outcome (BLOCKED/FAILED) it is the head we
@@ -1564,7 +1575,7 @@ async def _documenting_gate_skip(state: CoordinareState, ctx: dict[str, Any]) ->
     # ``pr_data`` is the shared single fetch (125 US3): the gate's fallback and
     # the review-role diff injection below both consume it.
     pr_data: tuple[str | None, list[str] | None, str] | None = None
-    if performer_stage == "documenting" and not state.get("relay_feedback"):
+    if performer_stage == "documenting" and not _feedback_for_dispatch(state, performer_stage) and not _restart_requires_dispatch(state, performer_stage):
         sha_gate = await _documenting_sha_gate(state, card, live_head)
         skip_doc = False
         skip_reason = ""
@@ -1980,6 +1991,18 @@ async def _validate_workspace_fields(state: CoordinareState, card_id: str, perfo
     return None
 
 
+def _feedback_for_dispatch(state: CoordinareState, performer_stage: str) -> list[dict[str, Any]]:
+    """Replay the unfinished batch only to its owning stage, then add queued feedback."""
+    from copy import deepcopy
+
+    batch = state.get("dispatched_feedback") or {}
+    items = list(batch.get("items") or []) if batch.get("stage") == performer_stage else []
+    for item in state.get("relay_feedback") or []:
+        if item not in items:
+            items.append(item)
+    return deepcopy(items)
+
+
 def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str) -> tuple[dict[str, Any], str | None]:
     """Builds card context with persona instructions and prior-QA ride."""
     personas = load_personas_hot(state.get("config_path"), state.get("config"))
@@ -1995,7 +2018,7 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
         )
 
     # Include relay feedback when present (reviewer / QA feedback loops).
-    relay_feedback: list[dict[str, Any]] | None = state.get("relay_feedback")
+    relay_feedback = _feedback_for_dispatch(state, performer_stage)
     if relay_feedback:
         card_context["relay_feedback"] = relay_feedback
     # 426: the observer's pending correction rides the payload's feedback list
@@ -2667,9 +2690,16 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
         from coordinare.services.attempt_telemetry import start_attempt
         start_attempt(state, card, card_context.get("model"))
 
-    # Clear relay_feedback so it isn't re-sent to subsequent roles.
+    # Dispatch acceptance is not completion. Retain the batch for replacement
+    # workers of this stage while keeping the next role's queue separate.
+    items = _feedback_for_dispatch(state, performer_stage)
+    state["dispatched_feedback"] = {"stage": performer_stage, "items": items} if items else {}
     state["relay_feedback"] = []
     state["reconciled_dispatch_pending"] = False
+    override = state.get("pending_override") or {}
+    if override.get("action") == "restart" and override.get("applied") and override.get("target_stage") == performer_stage:
+        state["pending_override"] = None
+        state["override_forced_dispatch"] = None
     # 426: the correction was just delivered — consume it. A failed dispatch
     # never reaches this point, so the correction stays pending for the retry.
     # Written only when actually pending so the absent-key contract holds.

@@ -80,6 +80,8 @@ class CardSession(TypedDict, total=False):
     # marker is lost across the re-queue / daemon restart.
     consumed_loop_questions: list[str]
     card_clarifications: list[dict]
+    dispatched_feedback: dict[str, Any]  # feedback awaiting successful stage completion
+    pr_comment_tracking: dict[str, Any]
     relay_feedback: list[dict[str, Any]]
     pending_reviews: list[dict[str, Any]]
     system_error_count: int
@@ -211,6 +213,9 @@ class CardSession(TypedDict, total=False):
     multi_pr_divergence: dict[str, Any] | None
     wedge_count_window: dict[str, list[datetime]]
     reconciliation_decisions_last_startup: dict[str, str]
+    board_paused: bool
+    board_pause_column: str
+    board_pause_resume_phase: str
     reconciled_dispatch_pending: bool
     # 095: per-card ENV_BLOCKED hold + notification-dedup state (head_sha,
     # pattern_id, cause, action) — None when not infra-blocked.  Carries only
@@ -307,7 +312,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "open_questions",
     "consumed_loop_questions",
     "card_clarifications",
+    "pr_comment_tracking",
     "relay_feedback",
+    "dispatched_feedback",
     "pending_reviews",
     "system_error_count",
     "system_error_last_at",
@@ -361,6 +368,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "multi_pr_divergence",
     "wedge_count_window",
     "reconciliation_decisions_last_startup",
+    "board_paused",
+    "board_pause_column",
+    "board_pause_resume_phase",
     "reconciled_dispatch_pending",
     # 095: per-card ENV_BLOCKED hold/dedup state (head_sha, pattern_id, cause,
     # action). Round-trips per-card so multi-card holds don't collide and the
@@ -442,7 +452,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         open_questions=[],
         consumed_loop_questions=[],
         card_clarifications=[],
+        pr_comment_tracking={},
         relay_feedback=[],
+        dispatched_feedback={},
         pending_reviews=[],
         system_error_count=0,
         system_error_last_at=None,
@@ -494,6 +506,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         multi_pr_divergence=None,
         wedge_count_window={},
         reconciliation_decisions_last_startup={},
+        board_paused=False,
+        board_pause_column="",
+        board_pause_resume_phase="",
         reconciled_dispatch_pending=False,
         # 095: no infra block on a freshly-picked-up card
         env_blocked=None,
@@ -535,6 +550,12 @@ def session_to_state(session: CardSession, state: CoordinareState) -> None:
     # Older partial sessions must not inherit another card's performer or intent.
     if "agent_dispatch" not in session:
         state["agent_dispatch"] = {}
+    state["dispatched_feedback"] = dict(session.get("dispatched_feedback") or {})
+    state["pending_override"] = session.get("pending_override")
+    state["board_paused"] = bool(session.get("board_paused"))
+    state["board_pause_column"] = str(session.get("board_pause_column") or "")
+    state["board_pause_resume_phase"] = str(session.get("board_pause_resume_phase") or "")
+    state["pr_comment_tracking"] = dict(session.get("pr_comment_tracking") or {})
     state["reconciled_dispatch_pending"] = bool(session.get("reconciled_dispatch_pending"))
     for field in _SESSION_OPTIONAL_FIELDS:
         if field not in session:

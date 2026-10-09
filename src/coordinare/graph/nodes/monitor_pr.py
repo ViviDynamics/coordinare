@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -29,6 +29,12 @@ from coordinare.models.review import (
     classify_reviewer,
 )
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
+from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
+from coordinare.services.pr_conversation_feedback import (
+    conversation_pr_number,
+    poll_pr_conversation_feedback,
+)
 from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
@@ -272,6 +278,69 @@ async def _notify_stale_review(
         logger.warning("stale_review.notify_failed", card_id=card_id, error=str(exc))
 
 
+def _mirror_closed_pr_ownership(state: CoordinareState, card_id: str) -> None:
+    session = (state.get("active_sessions") or {}).get(card_id)
+    if isinstance(session, dict):
+        for key in ("phase", "pipeline_admitted", "system_error_reason", "open_questions",
+                    "board_paused", "board_pause_column", "board_pause_resume_phase",
+                    "agent_dispatch", "agent_dispatch_at", "documenting_side"):
+            session[key] = state.get(key)
+
+
+async def _park_closed_pr(state: CoordinareState, card: dict[str, object]) -> CoordinareState:
+    """Honor a human's close without completing or replacing the unmerged PR."""
+    card_id = str(card.get("id") or "")
+    reason = (
+        f"{CLOSED_PR_REASON_PREFIX} {card.get('pr_url') or card.get('pr_node_id')}. "
+        "Reopen this PR and move the card to Todo to resume review."
+    )
+    card["status"] = "BLOCKED"
+    _set_current_card(state, card)
+    owned = has_owned_writers(cast("dict[str, Any]", state))
+    state["phase"] = "monitoring_performer" if owned else "blocked"
+    state["pipeline_admitted"] = owned
+    state["system_error_reason"] = reason
+    state["open_questions"] = []
+    # Freeze side polling/dispatch before awaiting cancellation. An uncertain
+    # owner remains durable and keeps capacity until a later confirmed stop.
+    state["board_paused"] = True
+    state["board_pause_column"] = "BLOCKED"
+    state["board_pause_resume_phase"] = "monitoring_pr"
+    _mirror_closed_pr_ownership(state, card_id)
+    stopped = await stop_owned_writers(state, card_id, cast("dict[str, Any]", state), reason="PR closed without merging")
+    if stopped:
+        state["phase"] = "blocked"
+        state["pipeline_admitted"] = False
+        state["board_paused"] = False
+        state["board_pause_column"] = ""
+        state["board_pause_resume_phase"] = ""
+    else:
+        reason += " Worker termination is unconfirmed; ownership retained."
+        state["system_error_reason"] = reason
+    _mirror_closed_pr_ownership(state, card_id)
+    selected = state.get("_pipeline_selected")
+    if isinstance(selected, set):
+        if stopped:
+            selected.discard(card_id)
+        else:
+            selected.add(card_id)
+    with contextlib.suppress(Exception):
+        await move_card_or_warn(board_of(state), card_id, "BLOCKED")
+    activity = state.get("activity_log")
+    if activity is not None:
+        with contextlib.suppress(Exception):
+            activity.record(activity_type="blocked", card_id=card_id, stage="reviewing", text=reason)
+    logger.warning("monitor_pr.externally_closed", card_id=card_id, reason=reason)
+    return state
+
+
+def _closed_pr_resume_pending(state: CoordinareState, card: dict[str, Any], live_state: str) -> bool:
+    """Only the same-PR explicit Todo path may clear an unmerged closure block."""
+    session = (state.get("active_sessions") or {}).get(str(card.get("id") or ""))
+    reason = session.get("system_error_reason") if isinstance(session, dict) else state.get("system_error_reason")
+    return live_state != "MERGED" and isinstance(reason, str) and matches_closed_pr_identity(reason, card)
+
+
 async def monitor_pr(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
     board_provider = board_of(state)
@@ -351,44 +420,8 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             state["phase"] = "idle"
             return state
 
-    # 065 Fix 8 — Re-gate PR checks while the card sits in IN_REVIEW so a new
-    # HEAD push that turns CI red does not silently page a human reviewer.
-    # On BOUNCE we move the card back to IN_PROGRESS and the gate's update
-    # already sets phase=dispatching + performer_stage=implementing with a
-    # relay_feedback payload naming the failed check(s), which the implementer
-    # picks up on its next dispatch.  HOLD keeps us in monitoring_pr (the gate
-    # natively returns monitoring_performer; we override that here).
-    pr_url = str(card.get("pr_url") or "")
-    card_id = str(card.get("id") or "")
-    if pr_url and card_id:
-        from coordinare.graph.nodes.monitor_performer import _evaluate_pr_checks_gate
-
-        gate_updates, gate_stop = await _evaluate_pr_checks_gate(
-            state, card_id, pr_url,
-        )
-        if gate_stop:
-            is_bounce = gate_updates.get("phase") == "dispatching"
-            for key, value in gate_updates.items():
-                state[key] = value  # type: ignore[literal-required]
-            if is_bounce:
-                logger.warning(
-                    "monitor_pr.checks_gate_bounce",
-                    card_id=card_id,
-                    pr_url=pr_url,
-                )
-                with contextlib.suppress(Exception):
-                    await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
-                card["status"] = "IN_PROGRESS"
-                _set_current_card(state, card)
-            else:
-                # HOLD — gate returned monitoring_performer; we are in the PR
-                # phase, so stay there and poll again next tick.
-                state["phase"] = "monitoring_pr"
-            return state
-        # FORWARD or gate disabled — apply any cache updates and continue.
-        for key, value in gate_updates.items():
-            state[key] = value  # type: ignore[literal-required]
-
+    # Read lifecycle state before CI can bounce a closed PR into implementation.
+    live_pr_state = ""
     try:
         ready, retry_in = github_operation_ready(state, "monitor_pr")
         if not ready:
@@ -409,6 +442,10 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             _review_threads = _ctx.get("review_threads", []) or []
             _pr_head_oid = str(_ctx.get("head_oid", "") or "")
             _review_decision = str(_ctx.get("review_decision", "") or "")
+            live_pr_state = str(_ctx.get("state") or "").upper()
+            if live_pr_state == "CLOSED":
+                clear_deferred_github_operation(state, "monitor_pr")
+                return await _park_closed_pr(state, card)
         else:
             reviews = await github.get_pr_reviews(pr_node_id)
             _review_threads, _pr_head_oid, _review_decision = [], "", ""
@@ -433,12 +470,50 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         logger.warning("monitor_pr.get_reviews_failed", error=str(exc))
         state["phase"] = "monitoring_pr"  # stay in current phase, retry next cycle
         return state
+    if _closed_pr_resume_pending(state, card, live_pr_state):
+        return await _park_closed_pr(state, card)
+    # 065 Fix 8 — Re-gate PR checks while the card sits in IN_REVIEW so a new
+    # HEAD push that turns CI red does not silently page a human reviewer.
+    # On BOUNCE we move the card back to IN_PROGRESS and the gate's update
+    # already sets phase=dispatching + performer_stage=implementing with a
+    # relay_feedback payload naming the failed check(s), which the implementer
+    # picks up on its next dispatch.  HOLD keeps us in monitoring_pr (the gate
+    # natively returns monitoring_performer; we override that here).
+    pr_url = str(card.get("pr_url") or "")
+    card_id = str(card.get("id") or "")
+    if pr_url and card_id:
+        from coordinare.graph.nodes.monitor_performer import _evaluate_pr_checks_gate
+
+        gate_updates, gate_stop = await _evaluate_pr_checks_gate(
+            state, card_id, pr_url,
+        )
+        if gate_stop:
+            is_bounce = gate_updates.get("phase") == "dispatching"
+            state.update(cast("CoordinareState", gate_updates))
+            if is_bounce:
+                logger.warning(
+                    "monitor_pr.checks_gate_bounce",
+                    card_id=card_id,
+                    pr_url=pr_url,
+                )
+                with contextlib.suppress(Exception):
+                    await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
+                card["status"] = "IN_PROGRESS"
+                _set_current_card(state, card)
+            else:
+                # HOLD — gate returned monitoring_performer; we are in the PR
+                # phase, so stay there and poll again next tick.
+                state["phase"] = "monitoring_pr"
+            return state
+        # FORWARD or gate disabled — apply any cache updates and continue.
+        state.update(cast("CoordinareState", gate_updates))
+
     human_reviewers = state.get("human_reviewers", [])
     trusted_bot_reviewers = state.get("trusted_bot_reviewers", [])
 
-    # Filter reviews using two mechanisms:
-    # 1. lifecycle_completed_at timestamp — reviews before this are from a prior cycle
-    # 2. processed_review_ids — reviews already dispatched (survives cutoff clears)
+    # Accepted feedback is deduplicated by review ID. A completion timestamp
+    # cannot acknowledge reviews that arrived while the performer was working.
+    # Keep the timestamp only as an approval freshness boundary below.
     lifecycle_completed_at = state.get("lifecycle_completed_at")
     cutoff: datetime | None = None
     if isinstance(lifecycle_completed_at, datetime):
@@ -446,6 +521,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     elif isinstance(lifecycle_completed_at, str) and lifecycle_completed_at:
         with contextlib.suppress(ValueError, TypeError):
             cutoff = datetime.fromisoformat(lifecycle_completed_at)
+
+    if cutoff is not None and cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=UTC)
 
     processed_ids: set[str] = state.get("processed_review_ids") or set()
 
@@ -468,23 +546,18 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         if review_id and review_id in processed_ids:
             continue
 
-        # Filter out reviews submitted before the lifecycle completed.
-        if cutoff is not None:
-            submitted_raw = review.get("submitted_at", "")
-            if isinstance(submitted_raw, str) and submitted_raw:
-                try:
-                    submitted_at = datetime.fromisoformat(submitted_raw)
-                    if submitted_at <= cutoff:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
         filtered.append(review)
 
     # 127 (FR-004): within the batch, each reviewer's latest review governs —
     # a reviewer's own later APPROVED supersedes their earlier change request
     # and vice versa. Cross-reviewer states never supersede each other.
     effective = _latest_reviews_per_author(filtered)
+
+    # Conversation requests are independent items: a later submitted approval
+    # or another same-author comment must never supersede them.
+    effective.extend(await poll_pr_conversation_feedback(
+        state, github, pr_node_id=pr_node_id, pr_number=conversation_pr_number(card),
+    ))
 
     actionable = [
         r
@@ -501,6 +574,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
+        and (cutoff is None or (submitted := _parse_submitted_at(r)) is None or submitted > cutoff)
     ]
     approval_review = (
         max(
@@ -532,7 +606,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             cutoff=cutoff.isoformat() if cutoff else None,
         )
         state["phase"] = "relay_feedback"
-    elif approval_review is not None:
+    elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
         # the PR's *base* branch is red.  Default-off and fail-open, so when the
         # gate is disabled / indeterminate this is byte-identical to going

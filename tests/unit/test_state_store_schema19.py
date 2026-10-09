@@ -10,7 +10,7 @@ class TestReviewFindingsSchemaV19:
 
     def test_schema_version_is_24(self):
         """545 advances the snapshot schema to 26; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 26  # 545: + replacement-dispatch intent
+        assert CURRENT_SCHEMA_VERSION == 30  # 550: + PR conversation revisions
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

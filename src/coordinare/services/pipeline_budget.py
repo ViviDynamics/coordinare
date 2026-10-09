@@ -7,12 +7,20 @@ if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 
+def has_live_side_writer(session: dict[str, Any]) -> bool:
+    """An owned side writer holds capacity until its termination is confirmed."""
+    side = session.get('documenting_side') or {}
+    return bool(side.get('session_id')) and bool(
+        side.get('status') == 'running' or side.get('writer_active'),
+    )
+
+
 def select_pipelines(
     sessions: dict[str, Any], limit: int, eligible: set[str] | None = None,
 ) -> set[str]:
     """Keep running jobs safe, then retained reservations, then queued issues.
 
-    Dictionary order provides FIFO admission. Blocked/done issues release their
+    Dictionary order provides FIFO admission. Paused/idle and blocked/done issues release their
     reservation; waiting for a performer or PR review does not. If running work
     already exceeds a reduced budget, it drains without admitting another issue.
     """
@@ -20,14 +28,14 @@ def select_pipelines(
     running = []
     for cid, session in sessions.items():
         card = session.get('current_card') or {}
-        live = session.get('phase') == 'monitoring_performer' and bool(
+        foreground_live = session.get('phase') == 'monitoring_performer' and bool(
             (session.get('agent_dispatch') or {}).get('session_id'),
         )
-        if live:
+        if foreground_live or has_live_side_writer(session):
             running.append(cid)
         if (eligible is None or cid in eligible) and card.get('status') not in (
-            'BLOCKED', 'DONE', 'CLOSED', 'CANCELED',
-        ) and session.get('phase') not in ('blocked', 'env_blocked', 'done'):
+            'BACKLOG', 'BLOCKED', 'DONE', 'CLOSED', 'CANCELED',
+        ) and session.get('phase') not in ('idle', 'blocked', 'env_blocked', 'done'):
             candidates.append(cid)
     selected = set(running)
     retained = [cid for cid in candidates if sessions[cid].get('pipeline_admitted')]

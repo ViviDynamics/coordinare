@@ -17,6 +17,7 @@ class RebaseOutcome(StrEnum):
     PERFORMER_RESOLVED = "performer_resolved"  # Conflicts resolved by performer; force-pushed
     BLOCKED = "blocked"                    # Conflicts unresolvable; card blocked
     SKIPPED = "skipped"                    # Branch up-to-date or performer active
+    DEFERRED = "deferred"                  # Lifecycle unavailable or PR closed; retry later
     FAILED = "failed"                      # Unexpected error (git failure, push rejected)
 
 
@@ -87,6 +88,8 @@ class RebaseRound:
             parts.append(f"{counts['blocked']} blocked on conflict")
         if counts.get("skipped"):
             parts.append(f"{counts['skipped']} skipped")
+        if counts.get("deferred"):
+            parts.append(f"{counts['deferred']} deferred")
         if counts.get("failed"):
             parts.append(f"{counts['failed']} failed")
         return ", ".join(parts) if parts else "no branches to rebase"

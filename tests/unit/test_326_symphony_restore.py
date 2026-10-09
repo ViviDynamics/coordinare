@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.daemon import CoordinareDaemon, _persist_active_sessions
+from coordinare.graph.nodes.check_board import _reset_and_rehydrate
 from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.services.pipeline_budget import select_pipelines
 from coordinare.state_store import WorkflowSnapshot
@@ -37,12 +38,19 @@ async def test_unfocused_sessions_survive_first_symphony_cycle(monkeypatch):
     async def first_tick(*args, **kwargs):
         sessions = daemon._state['active_sessions']
         assert len(sessions) == 6
+        # Restored idle history owns no pipeline until the live board makes
+        # it actionable. Rehydrate TODO cards through the production seam;
+        # retained BACKLOG history must stay idle and unadmitted.
+        assert select_pipelines(sessions, 1, {'0', '1'}) == set()
+        board = {'snapshot': {'TODO': ['0', '1'], 'BACKLOG': ['2', '3', '4', '5']}}
+        await _reset_and_rehydrate(daemon._state, board, ['0', '1'], 1, sessions)
         for cid, session in sessions.items():
             assert session['performer_stage'] == 'implementing'
             assert session['last_issue_comment_id'] == 100 + int(cid)
             assert session['processed_issue_comment_ids'] == {100 + int(cid)}
             assert session['blueprint_signature'] == 'requirements'
             assert session['blueprint'] is not None
+            assert session['phase'] == ('dispatching' if cid in {'0', '1'} else 'idle')
         observed.append(select_pipelines(sessions, 1, {'0', '1'}))
 
     monkeypatch.setattr(daemon, '_invoke_multi_session', first_tick)

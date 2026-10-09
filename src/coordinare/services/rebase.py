@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
+from coordinare.services.closed_pr import is_closed_pr_block
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -160,9 +161,23 @@ async def fetch_main_sha(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _board_pauses_rebase(
+    card_id: str, session: dict[str, Any], board_snapshot: Mapping[str, Any] | None,
+) -> bool:
+    """Durable pause and valid fresh board stop columns forbid branch writes."""
+    card = session.get("current_card") or {}
+    identifiers = {card_id, str(card.get("id") or ""), str(card.get("content_id") or "")}
+    board = board_snapshot or {}
+    return bool(session.get("board_paused")) or any(
+        isinstance(board.get(column), list) and identifier in board[column]
+        for column in ("BACKLOG", "TODO", "DONE", "BLOCKED") for identifier in identifiers if identifier
+    )
+
+
 def detect_stale_branches(
     active_sessions: dict[str, Any],
     main_sha: str,
+    *, board_snapshot: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Identify active sessions whose branches may need rebasing.
 
@@ -171,7 +186,9 @@ def detect_stale_branches(
     """
     stale: list[dict[str, Any]] = []
     for card_id, session in active_sessions.items():
-        if not isinstance(session, dict):
+        if not isinstance(session, dict) or _board_pauses_rebase(card_id, session, board_snapshot):
+            continue
+        if is_closed_pr_block(session.get("system_error_reason")):
             continue
         branch = session.get("workspace_branch") or ""
         if not branch.startswith(_COORDINARE_BRANCH_PREFIX):
@@ -539,6 +556,35 @@ def build_conflict_block_comment(
     )
 
 
+async def _live_pr_allows_rebase(session: dict[str, Any], github: Any, card_id: str) -> bool:
+    """Confirm PR lifecycle before branch mutation; an unreadable state defers."""
+    card = session.get("current_card") or {}
+    pr_id = str(card.get("pr_node_id") or "")
+    live_state = ""
+    try:
+        if pr_id and github is not None:
+            context = await github.get_pr_review_context(pr_id)
+            if isinstance(context, dict):
+                live_state = str(context.get("state") or "").upper()
+    except Exception as exc:
+        logger.warning("rebase.pr_state_unreadable", card_id=card_id, error_type=type(exc).__name__)
+    allowed = live_state in {"OPEN", "MERGED"}
+    if not allowed:
+        logger.info("rebase.pr_state_deferred", card_id=card_id, pr_state=live_state or "UNKNOWN")
+    return allowed
+
+
+async def _rebase_skip_or_defer(
+    entry: dict[str, Any], session: dict[str, Any], github: Any, card_id: str,
+) -> RebaseOutcome | None:
+    """Keep active-worker skips distinct from lifecycle deferrals."""
+    if entry.get("skipped"):
+        return RebaseOutcome.SKIPPED
+    if not await _live_pr_allows_rebase(session, github, card_id):
+        return RebaseOutcome.DEFERRED
+    return None
+
+
 async def run_rebase_round(
     active_sessions: dict[str, Any],
     main_sha: str,
@@ -546,6 +592,7 @@ async def run_rebase_round(
     token: str,
     *,
     trigger_pr_number: int = 0,
+    board_snapshot: Mapping[str, Any] | None = None,
     notification_service: Any = None,
     github: Any = None,
     human_reviewers: list[str] | None = None,
@@ -559,7 +606,7 @@ async def run_rebase_round(
         trigger_sha=main_sha,
     )
 
-    stale = detect_stale_branches(active_sessions, main_sha)
+    stale = detect_stale_branches(active_sessions, main_sha, board_snapshot=board_snapshot)
     if not stale:
         logger.info("rebase.no_stale_branches")
         return rr
@@ -575,13 +622,14 @@ async def run_rebase_round(
         branch = entry["branch"]
         pr_number = entry.get("pr_number", 0)
 
-        # FR-006: active-performer branches are pre-marked as skipped
-        if entry.get("skipped"):
-            job = RebaseJob(
+        # Skip running workers without probing GitHub; otherwise confirm the
+        # live PR before an edge rebase can write to a newly closed branch.
+        non_mutating = await _rebase_skip_or_defer(entry, active_sessions.get(card_id) or {}, github, card_id)
+        if non_mutating is not None:
+            rr.jobs.append(RebaseJob(
                 card_id=card_id, branch=branch, pr_number=pr_number,
-                target_main_sha=main_sha, outcome=RebaseOutcome.SKIPPED,
-            )
-            rr.jobs.append(job)
+                target_main_sha=main_sha, outcome=non_mutating,
+            ))
             continue
 
         job = await rebase_branch(repo_url, branch, main_sha, token)
@@ -636,7 +684,7 @@ async def run_rebase_round(
 
     # Post Slack summary
     if notification_service is not None and any(
-        j.outcome != RebaseOutcome.SKIPPED for j in rr.jobs
+        j.outcome not in {RebaseOutcome.SKIPPED, RebaseOutcome.DEFERRED} for j in rr.jobs
     ):
         try:
             from coordinare.models.notification import (

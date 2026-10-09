@@ -27,6 +27,12 @@ from coordinare.services.rebase import (
 # ---------------------------------------------------------------------------
 
 
+def _open_pr_github():
+    github = AsyncMock()
+    github.get_pr_review_context.return_value = {"state": "OPEN"}
+    return github
+
+
 class TestRunGit:
     @pytest.mark.asyncio
     async def test_runs_git_command(self) -> None:
@@ -301,7 +307,7 @@ class TestRebaseBranch:
             "CARD_A": {
                 "workspace_branch": "coordinare/PVTI_A/feat-a",
                 "phase": "monitoring_pr",
-                "current_card": {"pr_url": "https://github.com/o/r/pull/42"},
+                "current_card": {"pr_url": "https://github.com/o/r/pull/42", "pr_node_id": "PR42"},
             },
         }
 
@@ -323,6 +329,7 @@ class TestRebaseBranch:
              patch("shutil.rmtree"):
             rr = await run_rebase_round(
                 sessions, "newmainsha", "https://github.com/o/r.git", "tok",
+                github=_open_pr_github(),
             )
 
         assert len(rr.jobs) == 1
@@ -520,7 +527,7 @@ class TestRunRebaseRound:
             "CARD_A": {
                 "workspace_branch": "coordinare/PVTI_A/feat-a",
                 "phase": "monitoring_pr",
-                "current_card": {"pr_url": "https://github.com/o/r/pull/42"},
+                "current_card": {"pr_url": "https://github.com/o/r/pull/42", "pr_node_id": "PR42"},
             },
         }
 
@@ -546,6 +553,7 @@ class TestRunRebaseRound:
              patch("shutil.rmtree"):
             rr = await run_rebase_round(
                 sessions, "newmainsha", "https://github.com/o/r.git", "tok",
+                github=_open_pr_github(),
             )
 
         assert len(rr.jobs) == 1
@@ -560,7 +568,7 @@ class TestRunRebaseRound:
             "CARD_A": {
                 "workspace_branch": "coordinare/PVTI_A/feat-a",
                 "phase": "monitoring_performer",
-                "current_card": {"pr_url": "https://github.com/o/r/pull/42"},
+                "current_card": {"pr_url": "https://github.com/o/r/pull/42", "pr_node_id": "PR42"},
             },
         }
         rr = await run_rebase_round(
@@ -583,6 +591,7 @@ class TestRunRebaseRound:
                 "phase": "monitoring_pr",
                 "current_card": {
                     "pr_url": "https://github.com/o/r/pull/42",
+                    "pr_node_id": "PR42",
                     "issue_id": "I_kwDO_A",
                 },
             },
@@ -606,6 +615,7 @@ class TestRunRebaseRound:
 
         github = AsyncMock()
         github.add_comment = AsyncMock()
+        github.get_pr_review_context.return_value = {"state": "OPEN"}
 
         with patch("coordinare.services.rebase._run_git", side_effect=mock_git), \
              patch("coordinare.services.rebase.extract_conflict_info",
@@ -632,7 +642,7 @@ class TestRunRebaseRound:
             "CARD_A": {
                 "workspace_branch": "coordinare/PVTI_A/feat-a",
                 "phase": "monitoring_pr",
-                "current_card": {"pr_url": "https://github.com/o/r/pull/42"},
+                "current_card": {"pr_url": "https://github.com/o/r/pull/42", "pr_node_id": "PR42"},
             },
         }
 
@@ -655,7 +665,7 @@ class TestRunRebaseRound:
              patch("shutil.rmtree"):
             rr = await run_rebase_round(
                 sessions, "newmainsha", "https://github.com/o/r.git", "tok",
-                notification_service=notification_svc,
+                notification_service=notification_svc, github=_open_pr_github(),
             )
 
         assert len(rr.jobs) == 1
@@ -672,7 +682,7 @@ class TestRunRebaseRound:
             "CARD_A": {
                 "workspace_branch": "coordinare/PVTI_A/feat-a",
                 "phase": "monitoring_pr",
-                "current_card": {"pr_url": "https://github.com/o/r/pull/42"},
+                "current_card": {"pr_url": "https://github.com/o/r/pull/42", "pr_node_id": "PR42"},
             },
         }
 
@@ -692,7 +702,7 @@ class TestRunRebaseRound:
              patch("shutil.rmtree"):
             await run_rebase_round(
                 sessions, "newmainsha", "https://github.com/o/r.git", "tok",
-                notification_service=notification_svc,
+                notification_service=notification_svc, github=_open_pr_github(),
             )
 
         notification_svc.dispatch.assert_not_called()
