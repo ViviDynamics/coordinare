@@ -1648,9 +1648,11 @@ async def _all_ineligible_fallback(
     # The symphony swap restores the card pointer, not its flat fields.
     # Without hydration, fallback writes aggregate defaults (assessing,
     # blueprint=None) over a completed plan when the last worker blocks.
-    if any(sess.get("board_paused") for sess in active_sessions.values()):
+    focus = state.get("active_card_id")
+    focus_skip = (state.get("session_skip_reasons") or {}).get(focus or "") or {}
+    if any(sess.get("board_paused") for sess in active_sessions.values()) or focus_skip.get("reason") == BACKLOG_COLUMN:
         # Admission and board maintenance must continue, but the worker graph
-        # cannot run on a paused focus. A neutral flat view keeps check_board
+        # cannot run on a paused or intentionally held Backlog focus. A neutral flat view keeps check_board
         # from retiring the paused card through focus-specific cleanup.
         maintenance = dict(state)
         for field in _SESSION_FIELDS:
