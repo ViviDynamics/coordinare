@@ -41,6 +41,7 @@ def performance(output: str) -> Performance:
     ('"assessment": {"ready": false, "questions": ["' + QUESTION + '"]}', [QUESTION]),
     ('{"questions": ["' + QUESTION + '"]}', [QUESTION]),
     ('broken "questions": ["Should {} count as empty?" ]', ["Should {} count as empty?"]),
+    ('intro "[" note broken "questions":["Keep me?"]', ["Keep me?"]),
     ('broken "questions": ["Choose?"], "metadata": {}', ["Choose?"]),
     ('broken "questions": ["Choose?"], "metadata": {"assessment": {"ready": true}}', ["Choose?"]),
     (r'broken "quest\u0069ons": ["Choose?"]', ["Choose?"]),
@@ -159,6 +160,7 @@ async def test_recovered_questions_redact_secrets_before_surface_and_persistence
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["broken", 'intro "[" note broken'])
 @pytest.mark.parametrize("repaired", [
     '{"sufficient":true,"questions":[]}',
     '{"assessment":{"ready":true,"questions":[]}}',
@@ -167,8 +169,8 @@ async def test_recovered_questions_redact_secrets_before_surface_and_persistence
     '{"assessment":{"ready":false,"verdict":"not_work","questions":[]}}',
     '{"assessment":{"ready":false,"verdict":"needs_split","questions":[]}}',
 ])
-async def test_parse_repair_cannot_discard_an_unanswered_question(repaired):
-    perf = performance('broken "questions": ["' + QUESTION + '"]')
+async def test_parse_repair_cannot_discard_an_unanswered_question(repaired, prefix):
+    perf = performance(prefix + ' "questions": ["' + QUESTION + '"]')
     settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
     message = PerformerMessage(action="status", session_id="synthetic")
     with patch("performer.main.commit_file", new=AsyncMock()) as commit:

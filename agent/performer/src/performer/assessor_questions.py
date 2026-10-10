@@ -71,8 +71,8 @@ def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
 def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
     """Array elements cannot become root assessment fields.
 
-    Keyed values have their own ownership rules below. Ignore brackets in
-    strings and inside those values, including truncated containers.
+    Keyed values have their own ownership rules below. Bind decoded child
+    containers, not everything after an opening bracket in malformed prose.
     """
     keyed_containers = [
         (field.end(), _container_end(raw, field.end()))
@@ -80,29 +80,11 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
         if raw[field.end():field.end() + 1] in ("{", "[")
     ]
     ranges: list[tuple[int, int]] = []
-    decoder = json.JSONDecoder()
-    index = 0
-    while index < len(raw):
-        char = raw[index]
-        if char == '"':
-            try:
-                _, end = decoder.raw_decode(raw, index)
-            except ValueError:
-                pass
-            else:
-                # A damaged prose quote can pair with a later field's quote.
-                # Only a complete string token owns brackets inside it.
-                boundary = end
-                while boundary < len(raw) and raw[boundary].isspace():
-                    boundary += 1
-                if boundary == len(raw) or raw[boundary] in ":,]}":
-                    index = end
-                    continue
+    for index, char in enumerate(raw):
         if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]
         ):
-            ranges.append((index, _container_end(raw, index)))
-        index += 1
+            ranges.extend(_question_value_objects(raw, index))
     return ranges
 
 
