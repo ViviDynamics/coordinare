@@ -62,6 +62,7 @@ async def test_all_ineligible_fallback_keeps_backlog_terminal_owner(restore, pee
                  last_blocked_notified_at=datetime.now(UTC), blueprint={"summary": "Retain the plan"},
                  card_clarifications=[{"answer": "Keep the existing human instruction"}],
                  relay_feedback=[{"message": "Retain the review request"}])
+    original_history = owner["card_clarifications"]
     if restore:
         saved = PersistedSession.model_validate_json(_persist_one_session("story", owner).model_dump_json())
         owner = _restored_session_dict("story", saved, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked"), owner["current_card"])
@@ -83,7 +84,11 @@ async def test_all_ineligible_fallback_keeps_backlog_terminal_owner(restore, pee
     assert board.moves == []
     retained = daemon.state["active_sessions"]["story"]
     assert retained["blueprint"] == {"summary": "Retain the plan"}
-    assert retained["card_clarifications"] == [{"answer": "Keep the existing human instruction"}]
+    expected_history = [{"answer": "Keep the existing human instruction"}]
+    if restore:
+        expected_history[0].update(card_id="story", card_title="Synthetic CI hold", stage="implementing")
+    assert retained["card_clarifications"] == expected_history
+    assert original_history == [{"answer": "Keep the existing human instruction"}]
     assert retained["relay_feedback"] == [{"message": "Retain the review request"}]
     assert retained["performer_stage"] == "implementing"
     assert retained["agent_dispatch"] == {}

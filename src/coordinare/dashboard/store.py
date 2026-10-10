@@ -17,6 +17,7 @@ from coordinare.dashboard.helpers import (
     ownership_hint,
 )
 from coordinare.dashboard.sse import SSEBroadcaster
+from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 
@@ -582,11 +583,7 @@ class DashboardStore:
         performer_backend = perf.backend
         performer_logs = perf.logs
         active_card_issue_url = str(card_dict.get("issue_url", "")) or None
-        card_clarifications = self._annotate_clarifications(
-            list(snapshot.card_clarifications) if snapshot else [],
-            card_dict,
-            snapshot,
-        )
+        card_clarifications = self._serialize_clarifications(daemon, snapshot, card_dict)
         # 138 T016: the ONE key this feature adds (FR-002 is additive-only).
         # Quiet detection's other input, agent_dispatch_at, is already on each
         # session summary above.
@@ -774,17 +771,42 @@ class DashboardStore:
         ]
 
     @staticmethod
+    def _serialize_clarifications(
+        daemon: Any, snapshot: Any, card_dict: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Prefer each live owner's history over a stale flat mirror."""
+        sessions = daemon.state.get("active_sessions") or {}
+        if sessions:
+            rounds: list[dict[str, Any]] = []
+            for sid, session in sessions.items():
+                if not isinstance(session, dict):
+                    continue
+                card = session.get("current_card")
+                stage = session.get("performer_stage")
+                rounds.extend(DashboardStore._annotate_clarifications(
+                    list(session.get("card_clarifications") or []),
+                    card if isinstance(card, dict) else {}, None,
+                    card_id=str(sid), stage=stage if isinstance(stage, str) else "",
+                ))
+            return rounds
+        return DashboardStore._annotate_clarifications(
+            list(snapshot.card_clarifications) if snapshot else [], card_dict, snapshot,
+        )
+
+    @staticmethod
     def _annotate_clarifications(
         rounds: list[Any],
         card_dict: dict[str, Any],
         snapshot: Any,
+        *,
+        card_id: str | None = None,
+        stage: str | None = None,
     ) -> list[dict[str, Any]]:
         """355: label each Clarification History round with its card and stage.
 
-        The snapshot's rounds belong to the card that was active when they
-        were collected (flat state mirrors the active card in both single- and
-        multi-card modes), so attribution comes from the top-level card
-        fields. Round content is otherwise preserved byte-identically.
+        Live session callers supply their own card and stage. Legacy snapshot
+        callers use the top-level card fields. Existing round attribution and
+        content are preserved rather than relabelled.
         """
         if not rounds:
             return []
@@ -792,26 +814,17 @@ class DashboardStore:
             snapshot.active_card_issue_number if snapshot else None
         )
         card_title = str(card_dict.get("title") or (snapshot.active_card_title if snapshot else "") or "")
-        stage = (snapshot.performer_stage if snapshot else None) or ""
-        card_id = snapshot.active_card_id if snapshot else None
+        if stage is None:
+            stage = (snapshot.performer_stage if snapshot else None) or ""
+        if card_id is None:
+            card_id = snapshot.active_card_id if snapshot else None
         issue_url = str(card_dict.get("issue_url", "")) or (
             snapshot.active_card_issue_url if snapshot else None
         )
-        annotated: list[dict[str, Any]] = []
-        for rnd in rounds:
-            if isinstance(rnd, dict):
-                entry = dict(rnd)
-                # setdefault, not overwrite: a round that already carries its
-                # own attribution (a future writer) must not be relabelled.
-                entry.setdefault("card_id", card_id)
-                entry.setdefault("card_number", card_number)
-                entry.setdefault("card_title", card_title)
-                entry.setdefault("stage", stage)
-                entry.setdefault("issue_url", issue_url)
-                annotated.append(entry)
-            else:
-                annotated.append(rnd)
-        return annotated
+        return annotate_clarifications(rounds, {
+            "card_id": card_id, "card_number": card_number, "card_title": card_title,
+            "stage": stage, "issue_url": issue_url,
+        })
 
     @staticmethod
     def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:
