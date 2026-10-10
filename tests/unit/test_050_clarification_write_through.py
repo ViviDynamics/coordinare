@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from coordinare.daemon import CoordinareDaemon, _persist_one_session, _restored_session_dict
+from coordinare.dashboard import DashboardStore, is_session_stale
 from coordinare.graph.nodes.check_board import _collect_blocked_clarification
 from coordinare.graph.nodes.dispatch_performer import _base_card_context
 from coordinare.services.board_provider import MoveOutcome
@@ -61,6 +62,8 @@ def blocked_question():
         last_blocked_notified_at=datetime.now(UTC) - timedelta(minutes=1),
         dispatched_feedback={"stage": "assessing", "items": [{"id": "fb-1", "body": "Keep this correction"}]},
         pending_override={"action": "restart", "target_stage": "assessing", "control_id": "pending-command"},
+        agent_dispatch={"session_id": "previous-terminal-worker"},
+        agent_dispatch_at=datetime.now(UTC) - timedelta(hours=2),
     )
     return session
 
@@ -71,6 +74,7 @@ def assert_answer_survives(session):
     assert session["card_clarifications"] == [{"questions": [QUESTION], "answer": ANSWER}]
     assert session["last_blocked_notified_at"] is None
     assert session["agent_dispatch"] == {}
+    assert session["agent_dispatch_at"] is None
     assert session["performer_stage"] == "assessing"
     assert session["dispatched_feedback"]["items"][0]["body"] == "Keep this correction"
     assert session["pending_override"]["control_id"] == "pending-command"
@@ -89,6 +93,7 @@ async def test_clarification_consumer_writes_answer_and_resume_state_to_owner():
     await _collect_blocked_clarification(daemon.state, board, {}, "question", {"question": "I_question"})
     assert board.columns["question"] == "IN_PROGRESS"
     assert_answer_survives(session)
+    assert daemon.state["agent_dispatch_at"] is None
 
 
 @pytest.mark.asyncio
@@ -119,6 +124,10 @@ async def test_real_paused_maintenance_retains_answer_for_next_session_and_resta
         session["current_card"],
     )
     assert_answer_survives(restored)
+    summary = DashboardStore._session_summary(daemon, "question", restored)
+    assert summary["session_id"] is None
+    assert summary["agent_dispatch_at"] is None
+    assert is_session_stale(summary["agent_dispatch_at"]) is False
     assert select_pipelines(daemon.state["active_sessions"], 1, {"question"}) == {"question"}
     resumed = dict(daemon.state)
     session_to_state(restored, resumed)
