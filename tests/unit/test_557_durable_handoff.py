@@ -244,8 +244,8 @@ def test_schema31_contract_and_older_snapshot_defaults():
     contract = json.loads(Path("specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
     properties = contract["properties"]["active_sessions"]["additionalProperties"]["properties"]
     assert {"pending_pr_handoff", "pr_artefacts", "pr_artefacts_recorded_at"} <= set(properties)
-    assert CURRENT_SCHEMA_VERSION == 31
-    assert contract["properties"]["schema_version"]["enum"] == list(range(1, 32))
+    assert CURRENT_SCHEMA_VERSION == 32
+    assert contract["properties"]["schema_version"]["enum"] == list(range(1, 33))
     for version in range(1, 31):
         snapshot = WorkflowSnapshot.model_validate({"schema_version": version,
             "snapshot_at": datetime.now(UTC), "phase": "idle", "active_sessions": {"card": {"card_id": "card"}}})

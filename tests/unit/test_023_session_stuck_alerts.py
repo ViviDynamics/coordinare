@@ -174,3 +174,72 @@ async def test_worker_alert_does_not_consume_a_separate_dispatch_alert_cooldown(
     assert [e.payload["card_id"] for e in service.dispatched] == ["active", "pending"]
     await daemon._detect_stuck_card(service)
     assert len(service.dispatched) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_persistence_and_restore_preserve_overdue_worker_dispatch_clock() -> None:
+    from coordinare.daemon import _persist_active_sessions, _restored_session_dict
+    from coordinare.state_store import WorkflowSnapshot
+
+    original = worker("active")
+    persisted = _persist_active_sessions({"active": original})
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", active_sessions=persisted)
+    restored = _restored_session_dict("active", snapshot.active_sessions["active"], snapshot, original["current_card"])
+    assert restored.get("agent_dispatch_at") == original["agent_dispatch_at"]
+    daemon, log, service = detector({"active": restored, "paused": worker("paused", phase="blocked")})
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["active"]
+
+
+@pytest.mark.asyncio
+async def test_old_snapshot_uses_its_persisted_progress_clock_conservatively() -> None:
+    from coordinare.daemon import _restored_session_dict
+    from coordinare.state_store import PersistedSession, WorkflowSnapshot
+
+    persisted = PersistedSession(card_id="active", phase="monitoring_performer", agent_session_id="restored",
+                                 last_progress_at=datetime.now(UTC) - timedelta(seconds=300))
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", schema_version=31, active_sessions={"active": persisted})
+    restored = _restored_session_dict("active", persisted, snapshot, {"id": "active", "title": "Restored"})
+    daemon, log, service = detector({"active": restored})
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["active"]
+
+
+@pytest.mark.asyncio
+async def test_old_worker_without_any_clock_becomes_overdue_after_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coordinare.daemon as daemon_module
+
+    class Clock(datetime):
+        current = datetime.now(UTC)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(daemon_module, "datetime", Clock)
+    old = worker("active")
+    old["agent_dispatch_at"] = None
+    old["phase_entered_at"] = None
+    daemon, log, service = detector({"active": old})
+    await daemon._detect_stuck_card(service)
+    assert log.snapshot() == []
+    Clock.current += timedelta(seconds=181)
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["active"]
+
+
+def test_dispatch_clock_has_a_versioned_strict_snapshot_contract() -> None:
+    import json
+    from pathlib import Path
+
+    from jsonschema import validate
+
+    from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, WorkflowSnapshot
+
+    assert CURRENT_SCHEMA_VERSION == 32
+    contract = json.loads(Path("specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
+    assert contract["properties"]["schema_version"]["enum"] == list(range(1, 33))
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", active_sessions={"active": PersistedSession(card_id="active", agent_dispatch_at=datetime.now(UTC))})
+    validate(snapshot.model_dump(mode="json"), contract)
+    old = WorkflowSnapshot.model_validate({"schema_version": 31, "snapshot_at": datetime.now(UTC), "phase": "blocked", "active_sessions": {"active": {"card_id": "active"}}})
+    assert old.active_sessions["active"].agent_dispatch_at is None

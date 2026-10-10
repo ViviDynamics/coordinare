@@ -497,6 +497,11 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         agent_session_id=session_id if isinstance(session_id, str) and session_id else None,
         agent_performer_id=performer_id if isinstance(performer_id, str) and performer_id else None,
         agent_job_id=job_id if isinstance(job_id, str) and job_id else None,
+        agent_dispatch_at=(
+            sess["agent_dispatch_at"]
+            if isinstance(sess.get("agent_dispatch_at"), datetime)
+            and sess["agent_dispatch_at"].tzinfo is not None else None
+        ),
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
@@ -666,6 +671,7 @@ def _restored_session_dict(
         "agent_dispatch": dispatch,
         "performer_stage": persisted.performer_stage,
         "phase": "dispatching" if missing_identity else persisted.phase,
+        "agent_dispatch_at": persisted.agent_dispatch_at,
         "reconciled_dispatch_pending": persisted.reconciled_dispatch_pending or missing_identity,
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
@@ -2217,6 +2223,7 @@ class CoordinareDaemon:
         # reminds rather than reprints every cycle.
         self._logged_stalls: dict[str, float] = {}
         self._session_stuck_alerts: dict[tuple[str, str], float] = {}
+        self._stuck_observed_starts: dict[tuple[str, str], datetime] = {}
         self._cycle_active = False
         self._stop_during_cycle = False
         self._state_store = state_store
@@ -4931,6 +4938,7 @@ class CoordinareDaemon:
                 return
         else:
             self._session_stuck_alerts.clear()
+            self._stuck_observed_starts.clear()
         _stuck_phase = self._state.get("phase")
         _stuck_excluded = {"idle", "system_error"}
         # 138 T038: the `notification_service is not None` gate that used
@@ -4998,17 +5006,25 @@ class CoordinareDaemon:
                 continue
             session_id = dispatch.get("session_id")
             dispatched_at = session.get("agent_dispatch_at")
-            if (
-                not isinstance(session_id, str) or not session_id
-                or not isinstance(dispatched_at, datetime)
-                or dispatched_at.tzinfo is None
-            ):
+            if not isinstance(session_id, str) or not session_id:
                 continue
             card = session.get("current_card")
             if not isinstance(card, dict) or not card.get("id"):
                 continue
             key = (card_id, session_id)
             live_keys.add(key)
+            if dispatched_at is None:
+                # Older snapshots did not retain dispatch time. A persisted
+                # progress clock is a conservative minimum age; with neither,
+                # observe this worker once rather than skipping it forever.
+                progress_at = session.get("last_progress_at")
+                start = (
+                    progress_at if isinstance(progress_at, datetime)
+                    and progress_at.tzinfo is not None else now
+                )
+                dispatched_at = self._stuck_observed_starts.setdefault(key, start)
+            elif not isinstance(dispatched_at, datetime) or dispatched_at.tzinfo is None:
+                continue
             entered_at = session.get("phase_entered_at")
             if isinstance(entered_at, datetime) and entered_at.tzinfo is not None:
                 dispatched_at = max(dispatched_at, entered_at)
@@ -5034,6 +5050,10 @@ class CoordinareDaemon:
         # Ended/replaced workers cannot retain cooldowns indefinitely.
         self._session_stuck_alerts = {
             key: stamp for key, stamp in self._session_stuck_alerts.items()
+            if key in live_keys
+        }
+        self._stuck_observed_starts = {
+            key: stamp for key, stamp in self._stuck_observed_starts.items()
             if key in live_keys
         }
 

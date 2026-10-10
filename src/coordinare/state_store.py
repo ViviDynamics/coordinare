@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 31  # 557/559: completed handoff and per-card PR identity
+CURRENT_SCHEMA_VERSION: int = 32  # 23: durable per-worker dispatch clock
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -241,7 +241,8 @@ class PersistedSession(BaseModel):
     a re-adopted IN_PROGRESS card resumes at the implementer or closer).
     Transient fields (performer_events, performer_metrics, workspace_path,
     full agent_dispatch payload) are omitted. Only session/performer/job routing
-    identity survives so startup can adopt the correct live performer.
+    identity and dispatch clock survive so startup can adopt and monitor the
+    correct live performer.
     """
 
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -258,6 +259,7 @@ class PersistedSession(BaseModel):
     agent_session_id: str | None = None
     agent_performer_id: str | None = None
     agent_job_id: str | None = None
+    agent_dispatch_at: datetime | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)
     # 128: dedup marker for stale-review surfacing — {gating_review_id: head_oid}
