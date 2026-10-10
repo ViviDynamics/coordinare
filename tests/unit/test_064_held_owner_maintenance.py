@@ -160,8 +160,64 @@ async def test_backlog_ack_reaches_actual_owner_independent_of_focus(focus):
 
 
 @pytest.mark.asyncio
-async def test_held_comment_rotation_is_bounded_and_fair():
+@pytest.mark.parametrize("column", ["IN_PROGRESS", "IN_REVIEW"])
+async def test_backlog_ack_is_polled_while_native_eligible_sibling_ticks(column):
     daemon, board = restore()
+    board.columns = {"BACKLOG": ["story"], column: ["peer"]}
+    peer = daemon.state["active_sessions"]["peer"]
+    peer.update(
+        phase="monitoring_performer", board_paused=False, board_pause_column="",
+        board_pause_resume_phase="",
+        agent_dispatch={"session_id": "synthetic-peer-session", "performer_id": "synthetic-peer"},
+    )
+    peer["current_card"]["status"] = column
+    ticks = []
+
+    async def monitor(state):
+        ticks.append(state["active_card_id"])
+        return {"phase": "monitoring_performer"}
+
+    daemon._graph = CoordinareGraphBuilder(node_overrides={
+        "route_issue_comments": route_issue_comments, "check_board": check_board,
+        "classify_scope": passthrough, "notify": passthrough, "monitor_agent": monitor,
+    }).build()
+    daemon.state["active_card_id"] = "peer"
+    before = deepcopy(daemon.state["active_sessions"]["story"])
+    for _ in range(3):
+        await daemon._invoke_multi_session()
+    owner = daemon.state["active_sessions"]["story"]
+    assert ticks == ["peer"] * 3
+    assert owner["phase"] == "blocked" and owner["agent_dispatch"] == {} and board.moves == []
+    assert owner["card_clarifications"] == before["card_clarifications"]
+    assert owner["current_card"]["pr_number"] == 7
+    assert owner["current_card"]["pushed_branch"] == "conductor/story"
+    assert owner["last_issue_comment_id"] == 101, "Eligible sibling starved Backlog feedback"
+    assert owner["processed_issue_comment_ids"] == {100, 101}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eligible_peer", [False, True])
+async def test_held_comment_rotation_is_bounded_and_fair(eligible_peer):
+    daemon, board = restore()
+    ticks = []
+    if eligible_peer:
+        board.columns = {"BACKLOG": ["story"], "IN_PROGRESS": ["peer"]}
+        peer = daemon.state["active_sessions"]["peer"]
+        peer.update(
+            phase="monitoring_performer", board_paused=False, board_pause_column="",
+            board_pause_resume_phase="",
+            agent_dispatch={"session_id": "synthetic-peer-session", "performer_id": "synthetic-peer"},
+        )
+        peer["current_card"]["status"] = "IN_PROGRESS"
+
+        async def monitor(state):
+            ticks.append(state["active_card_id"])
+            return {"phase": "monitoring_performer"}
+
+        daemon._graph = CoordinareGraphBuilder(node_overrides={
+            "route_issue_comments": route_issue_comments, "check_board": check_board,
+            "classify_scope": passthrough, "notify": passthrough, "monitor_agent": monitor,
+        }).build()
     original = daemon.state["active_sessions"].pop("story")
     ids = [f"held-{index}" for index in range(7)]
     for cid in ids:
@@ -172,6 +228,8 @@ async def test_held_comment_rotation_is_bounded_and_fair():
     served = []
 
     async def number_for_card(cid):
+        if cid == "peer":
+            return 2
         served.append(cid)
         return 1
 
@@ -182,6 +240,7 @@ async def test_held_comment_rotation_is_bounded_and_fair():
         await daemon._invoke_multi_session()
         assert 0 < len(served) - start <= 3
     assert set(served) == set(ids)
+    assert ticks == (["peer"] * 3 if eligible_peer else [])
     assert board.moves == []
     assert "backlog_comment_poll_ids" not in daemon.state
 

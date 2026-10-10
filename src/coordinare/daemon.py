@@ -1664,6 +1664,24 @@ def _compute_session_eligibilities(
     return eligibilities
 
 
+async def _poll_held_backlog_comments(state: CoordinareState, card_ids: list[str]) -> None:
+    """Intake held feedback without ticking workers or overwriting new controls."""
+    for card_id in card_ids:
+        held_owner = (state.get("active_sessions") or {}).get(card_id)
+        if not isinstance(held_owner, dict):
+            continue
+        comments_state = cast("CoordinareState", dict(state))
+        session_to_state(cast("CardSession", held_owner), comments_state)
+        comments_state["active_card_id"] = card_id
+        _rederive_current_card(comments_state)
+        routed = await route_issue_comments(comments_state)
+        owner = (state.get("active_sessions") or {}).get(card_id)
+        if owner is held_owner:
+            for field in ("card_clarifications", "requirements_changed",
+                          "last_issue_comment_id", "processed_issue_comment_ids"):
+                owner[field] = routed.get(field)
+
+
 async def _all_ineligible_fallback(
     state: CoordinareState, graph: Any, active_sessions: dict[str, Any],
 ) -> CoordinareState:
@@ -1688,20 +1706,7 @@ async def _all_ineligible_fallback(
         # Read human feedback without running the held card's worker graph.
         # Hydrate a separate view and copy only comment fields so controls
         # accepted during comment IO remain on the authoritative owner.
-        for card_id in backlog_to_poll:
-            held_owner = (state.get("active_sessions") or {}).get(card_id)
-            if not isinstance(held_owner, dict):
-                continue
-            comments_state = cast("CoordinareState", dict(state))
-            session_to_state(cast("CardSession", held_owner), comments_state)
-            comments_state["active_card_id"] = card_id
-            _rederive_current_card(comments_state)
-            routed = await route_issue_comments(comments_state)
-            owner = (state.get("active_sessions") or {}).get(card_id)
-            if owner is held_owner:
-                for field in ("card_clarifications", "requirements_changed",
-                              "last_issue_comment_id", "processed_issue_comment_ids"):
-                    owner[field] = routed.get(field)
+        await _poll_held_backlog_comments(state, backlog_to_poll)
         # A neutral flat view lets check_board admit siblings without retiring
         # the paused or intentionally held focus through card-specific cleanup.
         maintenance = dict(state)
@@ -3045,25 +3050,26 @@ class CoordinareDaemon:
             self._state, active_sessions, self._max_concurrent_cards(),
         )
 
+        backlog = sorted(
+            cid for cid, session in active_sessions.items()
+            if _has_fresh_board_snapshot(self._state)
+            and self._find_card_column(self._state.get("board_snapshot") or {}, cid, session) == "BACKLOG"
+        )
+        symphony = str(self._state.get("current_symphony") or "__default__")
+        start = self._backlog_poll_cursors.get(symphony, 0) % len(backlog) if backlog else 0
+        backlog_to_poll = [
+            backlog[(start + offset) % len(backlog)]
+            for offset in range(min(len(backlog), BLOCKED_POLL_MAX_PER_CYCLE))
+        ]
+        if backlog_to_poll:
+            self._backlog_poll_cursors[symphony] = start + len(backlog_to_poll)
+
         # Fallback: if every session is ineligible this cycle (e.g. all BLOCKED /
         # dependency_blocked), run a single full graph invocation so check_board
         # can still pick up new sessions from open slots or do other per-cycle
         # maintenance.  Without this, check_board never fires and available slots
         # go unfilled until at least one existing session becomes eligible.
         if not any(e.eligible for e in eligibilities.values()):
-            backlog = sorted(
-                cid for cid, session in active_sessions.items()
-                if _has_fresh_board_snapshot(self._state)
-                and self._find_card_column(self._state.get("board_snapshot") or {}, cid, session) == "BACKLOG"
-            )
-            symphony = str(self._state.get("current_symphony") or "__default__")
-            start = self._backlog_poll_cursors.get(symphony, 0) % len(backlog) if backlog else 0
-            backlog_to_poll = [
-                backlog[(start + offset) % len(backlog)]
-                for offset in range(min(len(backlog), BLOCKED_POLL_MAX_PER_CYCLE))
-            ]
-            if backlog_to_poll:
-                self._backlog_poll_cursors[symphony] = start + len(backlog_to_poll)
             self._state["backlog_comment_poll_ids"] = backlog_to_poll
             try:
                 self._state = await _all_ineligible_fallback(
@@ -3073,6 +3079,12 @@ class CoordinareDaemon:
                 self._state.pop("backlog_comment_poll_ids", None)
             return
 
+        await _poll_held_backlog_comments(self._state, backlog_to_poll)
+        # Commands accepted during comment IO stay authoritative for fanout.
+        active_sessions = self._state.get("active_sessions") or {}
+        eligibilities = _compute_session_eligibilities(
+            self._state, active_sessions, self._max_concurrent_cards(),
+        )
         ctx = _FanoutContext(
             state=self._state,
             active_sessions=active_sessions,
