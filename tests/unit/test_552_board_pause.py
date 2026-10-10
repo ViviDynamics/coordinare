@@ -622,3 +622,93 @@ async def test_actual_invoke_successful_fresh_board_confirms_pause_without_extra
     github.poll_board.assert_awaited_once()
     assert session["board_paused"] is True
     assert session["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["monitoring_pr", "monitoring_performer", "dispatching"])
+async def test_manual_block_pauses_work_without_synthesizing_questions(phase):
+    daemon, session, service = daemon_with_worker("BLOCKED")
+    session["phase"] = phase
+    session["pr_artefacts"] = {"pr_node_id": "PR_existing", "pr_url": "https://github.com/example/repo/pull/1"}
+    if phase == "monitoring_pr":
+        session["current_card"]["status"] = "IN_REVIEW"
+        session["agent_dispatch"] = {}
+    await daemon._reconcile_board_pauses()
+    assert session["board_paused"] is True
+    assert session["board_pause_column"] == "BLOCKED"
+    assert session["phase"] == "blocked"
+    assert session["agent_dispatch"] == {}
+    assert session["pr_artefacts"]["pr_node_id"] == "PR_existing"
+    assert session["relay_feedback"] == [{"message": "keep instruction"}]
+    await daemon._reconcile_board_pauses()
+    assert session["board_paused"] is True
+    if phase != "monitoring_pr":
+        service.stop_session_confirmed.assert_awaited_once_with("owned")
+
+
+@pytest.mark.asyncio
+async def test_manual_block_pr_monitoring_resumes_same_pr_after_restart():
+    daemon, session, _ = daemon_with_worker("BLOCKED")
+    session.update(phase="monitoring_pr", agent_dispatch={})
+    session["current_card"].update(status="IN_REVIEW", pr_node_id="PR_existing")
+    await daemon._reconcile_board_pauses()
+    persisted = _persist_one_session("card", session)
+    restored = _restored_session_dict("card", persisted, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked"), session["current_card"])
+    daemon._state["active_sessions"] = {"card": restored}
+    daemon._reconcile_session_phases({"card": restored}, {"BLOCKED": ["card"]}, None)
+    await daemon._reconcile_board_pauses()
+    assert restored["board_paused"] is True
+    daemon._state["board_snapshot"] = {"TODO": ["card"]}
+    await daemon._reconcile_board_pauses()
+    assert restored["board_paused"] is False
+    assert restored["phase"] == "monitoring_pr"
+    assert restored["current_card"]["pr_node_id"] == "PR_existing"
+
+
+@pytest.mark.asyncio
+async def test_existing_clarification_block_keeps_recovery_path():
+    daemon, session, service = daemon_with_worker("BLOCKED")
+    session.update(phase="blocked", agent_dispatch={}, open_questions=["What should empty input return?"])
+    session["current_card"]["status"] = "BLOCKED"
+    await daemon._reconcile_board_pauses()
+    assert not session.get("board_paused")
+    assert session["open_questions"] == ["What should empty input return?"]
+    service.stop_session_confirmed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_block_unconfirmed_stop_keeps_capacity():
+    from coordinare.services.pipeline_budget import select_pipelines
+
+    daemon, session, _ = daemon_with_worker("BLOCKED", stopped=False)
+    await daemon._reconcile_board_pauses()
+    assert session["board_paused"] is True
+    assert session["agent_dispatch"]["session_id"] == "owned"
+    assert select_pipelines({"card": session, "sibling": {"current_card": {"id": "sibling"}, "phase": "dispatching"}}, 1, {"sibling"}) == {"card"}
+
+
+@pytest.mark.asyncio
+async def test_startup_captures_new_manual_block_before_phase_inference():
+    daemon, session, _ = daemon_with_worker("BLOCKED")
+    session.update(phase="monitoring_pr", agent_dispatch={})
+    session["current_card"]["status"] = "IN_REVIEW"
+    daemon._reconcile_session_phases({"card": session}, {"BLOCKED": ["card"]}, None)
+    assert session["board_paused"] is True
+    assert session["board_pause_resume_phase"] == "monitoring_pr"
+    await daemon._reconcile_board_pauses()
+    assert session["phase"] == "blocked"
+    daemon._state["board_snapshot"] = {"IN_REVIEW": ["card"]}
+    await daemon._reconcile_board_pauses()
+    assert session["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_manual_pr_block_releases_slot_for_sibling():
+    from coordinare.services.pipeline_budget import select_pipelines
+
+    daemon, session, _ = daemon_with_worker("BLOCKED")
+    session.update(phase="monitoring_pr", agent_dispatch={})
+    await daemon._reconcile_board_pauses()
+    sibling = {"current_card": {"id": "sibling"}, "phase": "dispatching"}
+    assert select_pipelines({"card": session, "sibling": sibling}, 1, {"sibling"}) == {"sibling"}
+    assert daemon._state["active_sessions"]["card"] is session

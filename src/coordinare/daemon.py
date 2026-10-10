@@ -1902,6 +1902,18 @@ def _handoff_needs_board_pause(session: dict[str, Any], column: str) -> bool:
     return bool(handoff) and column in {"TODO", "BACKLOG"} and column != handoff.get("resumed_board_column")
 
 
+def _is_manual_board_block(session: dict[str, Any], column: str) -> bool:
+    """A new Blocked move holds working intent without inventing a blocker."""
+    return (
+        column == "BLOCKED"
+        and session.get("phase") in {"dispatching", "monitoring_performer", "monitoring_agent", "monitoring_pr"}
+        and not session.get("open_questions")
+        and not session.get("system_error_reason")
+        and not session.get("env_blocked")
+        and (session.get("latest_ci_gate_decision") or {}).get("verdict") != "escalate"
+    )
+
+
 def _capture_board_pause_resume_phase(session: dict[str, Any]) -> None:
     """Remember foreground intent before cancellation changes ownership/phase."""
     if session.get("board_paused"):
@@ -2658,7 +2670,7 @@ class CoordinareDaemon:
                 continue
             _observe_handoff_board_column(session, column.strip().upper())
             dispatch = session.get("agent_dispatch") or {}
-            if column.strip().upper() in {"TODO", "BACKLOG"} and (
+            if _is_manual_board_block(session, column.strip().upper()) or column.strip().upper() in {"TODO", "BACKLOG"} and (
                 dispatch.get("session_id") or has_live_side_writer(session)
                 or _handoff_needs_board_pause(session, column.strip().upper())
             ):
@@ -4719,7 +4731,7 @@ class CoordinareDaemon:
             writers = [(sess.get("performer_stage"), dispatch, False)]
             if side.get("status") == "running" or side.get("writer_active"):
                 writers.append(("documenting", side, True))
-            newly_paused = column in {"TODO", "BACKLOG"} and (
+            newly_paused = _is_manual_board_block(sess, column) or column in {"TODO", "BACKLOG"} and (
                 any(identity.get("session_id") for _, identity, _ in writers)
                 or _handoff_needs_board_pause(sess, column)
             )
