@@ -1649,8 +1649,10 @@ async def _all_ineligible_fallback(
     # Without hydration, fallback writes aggregate defaults (assessing,
     # blueprint=None) over a completed plan when the last worker blocks.
     focus = state.get("active_card_id")
-    focus_skip = (state.get("session_skip_reasons") or {}).get(focus or "") or {}
-    if any(sess.get("board_paused") for sess in active_sessions.values()) or focus_skip.get("reason") == BACKLOG_COLUMN:
+    held_backlog_focus = focus is not None and CoordinareDaemon._find_card_column(
+        state.get("board_snapshot") or {}, focus, active_sessions.get(focus),
+    ) == "BACKLOG"
+    if any(sess.get("board_paused") for sess in active_sessions.values()) or held_backlog_focus:
         # Admission and board maintenance must continue, but the worker graph
         # cannot run on a paused or intentionally held Backlog focus. A neutral flat view keeps check_board
         # from retiring the paused card through focus-specific cleanup.

@@ -19,12 +19,17 @@ async def passthrough(state):
 
 
 class SyntheticBoard:
-    def __init__(self, peer):
+    def __init__(self, peer, dependency=None):
         self.columns = {"BACKLOG": ["story"], **({"BLOCKED": ["peer"]} if peer else {})}
         self.moves = []
+        self.dependency = dependency
+        if dependency:
+            self.columns.setdefault(dependency, []).append("dependency")
 
     async def poll_board(self):
-        return {"snapshot": deepcopy(self.columns), "titles": {"story": "Synthetic CI hold", "peer": "Synthetic error"}}
+        return {"snapshot": deepcopy(self.columns), "titles": {"story": "Synthetic CI hold", "peer": "Synthetic error"},
+                "descriptions": {"story": "Depends on #2"} if self.dependency else {},
+                "issue_numbers": {"story": 1, "dependency": 2}}
 
     async def move_card(self, card_id, column):
         self.moves.append((card_id, column))
@@ -121,3 +126,29 @@ async def test_legitimate_blocked_focus_still_runs_its_handler():
     await daemon._invoke_multi_session()
     assert board.columns == {"BLOCKED": ["story"]}
     assert board.moves == [("story", "BLOCKED")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dependency", ["TODO", "IN_PROGRESS", "BLOCKED", "DONE"])
+@pytest.mark.parametrize("restore", [False, True])
+async def test_backlog_hold_is_independent_of_dependency_skip_reason(dependency, restore):
+    board = SyntheticBoard(False, dependency)
+    owner = create_session_from_card({"id": "story", "status": "IN_PROGRESS", "issue_id": "synthetic-story"})
+    owner.update(phase="blocked", performer_stage="implementing", agent_dispatch={}, board_paused=False,
+                 env_blocked={"cause": "missing_failure_evidence"}, last_blocked_notified_at=datetime.now(UTC),
+                 relay_feedback=[{"message": "Retain the review request"}])
+    if restore:
+        saved = PersistedSession.model_validate_json(_persist_one_session("story", owner).model_dump_json())
+        owner = _restored_session_dict("story", saved, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked"), owner["current_card"])
+    graph = CoordinareGraphBuilder(node_overrides={"route_issue_comments": passthrough, "check_board": check_board,
+                                                   "classify_scope": passthrough, "notify": passthrough}).build()
+    daemon = CoordinareDaemon(graph)
+    daemon.state.update(active_sessions={"story": owner}, active_card_id="story", github_service=board,
+                        config=SimpleNamespace(max_concurrent_cards=1), lifecycle_sequence=["assessing", "implementing"])
+    session_to_state(owner, daemon.state)
+    for _ in range(3):
+        await daemon._invoke_multi_session()
+    assert board.columns["BACKLOG"] == ["story"]
+    assert not any(card_id == "story" for card_id, _ in board.moves)
+    assert daemon.state["active_sessions"]["story"]["relay_feedback"] == [{"message": "Retain the review request"}]
+    assert daemon.state["active_sessions"]["story"]["agent_dispatch"] == {}
