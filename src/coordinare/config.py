@@ -111,6 +111,9 @@ class DashboardOidcConfig(BaseModel):
             msg = "dashboard_oidc.redirect_url must contain a valid port"
             raise ValueError(msg) from None
         hostname = (parsed.hostname or "").lower()
+        if parsed.netloc.rsplit("@", 1)[-1].startswith("[") and hostname.startswith("v"):
+            msg = "dashboard_oidc.redirect_url does not support IPvFuture hosts"
+            raise ValueError(msg)
         loopback = hostname in ("localhost", "127.0.0.1", "::1")
         if parsed.scheme not in ("http", "https") or not hostname:
             msg = "dashboard_oidc.redirect_url must be an absolute http(s) URL"

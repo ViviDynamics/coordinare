@@ -144,3 +144,53 @@ def test_expanded_public_ipv6_redirect_accepts_compressed_browser_origin() -> No
     with TestClient(app, base_url="https://localhost") as client:
         response = client.post("/probe", headers={"Host": "[::1]", "Cookie": f"coordinare_session={session}", "Origin": "https://[::1]"})
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("host", ["v1.fe80::", "v1.example"])
+def test_unsupported_ipvfuture_redirect_host_is_rejected_at_configuration_load(host: str) -> None:
+    with pytest.raises(ValidationError, match=r"redirect_url.*IPvFuture"):
+        DashboardOidcConfig(
+            discovery_url="https://identity.example/.well-known/openid-configuration",
+            client_id="synthetic-client", client_secret=SecretStr("synthetic-secret"),
+            redirect_url=f"https://[{host}]/oidc/callback",
+        )
+
+
+def test_ordinary_dns_redirect_starting_with_v_remains_supported() -> None:
+    config = DashboardOidcConfig(
+        discovery_url="https://identity.example/.well-known/openid-configuration",
+        client_id="synthetic-client", client_secret=SecretStr("synthetic-secret"),
+        redirect_url="https://v1.example/oidc/callback",
+    )
+    assert config.redirect_url == "https://v1.example/oidc/callback"
+
+
+def test_bracketed_ipvfuture_origin_does_not_match_an_ordinary_dns_redirect() -> None:
+    from unittest.mock import MagicMock
+
+    from coordinare.dashboard import DashboardStore, create_dashboard_app
+    from coordinare.localhost_guard import build_permitted
+
+    flow = OidcFlow(DashboardOidcConfig(
+        discovery_url="https://identity.example/.well-known/openid-configuration",
+        client_id="synthetic-client", client_secret=SecretStr("synthetic-secret"),
+        redirect_url="https://v1.example/oidc/callback",
+    ))
+    session = flow.sessions.create("operator@example.test", lifetime_seconds=60)
+    daemon = MagicMock()
+    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state_store.last_snapshot = None
+    app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock(), oidc=flow,
+                               permitted_origins=build_permitted("0.0.0.0", 80, ["v1.example"]))
+
+    @app.post("/probe")
+    async def probe() -> dict[str, bool]:
+        return {"ok": True}
+
+    with TestClient(app, base_url="https://v1.example") as client:
+        cookie = {"Cookie": f"coordinare_session={session}"}
+        rejected = client.post("/probe", headers={**cookie, "Origin": "https://[v1.example]"})
+        assert rejected.status_code == 403
+        assert flow.sessions.lookup(session) is not None
+        accepted = client.post("/probe", headers={**cookie, "Origin": "https://v1.example"})
+        assert accepted.status_code == 200

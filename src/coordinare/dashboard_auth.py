@@ -31,7 +31,7 @@ def _normalized_origin(origin: str) -> str:
         port = default_port
     suffix = "" if port == default_port else f":{port}"
     hostname = (parsed.hostname or "").lower()
-    if ":" in hostname:
+    if parsed.netloc.rsplit("@", 1)[-1].startswith("["):
         hostname = f"[{IPv6Address(hostname).compressed}]"
     return f"{parsed.scheme}://{hostname}{suffix}"
 
