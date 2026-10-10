@@ -529,6 +529,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         if isinstance(f["relay_raw"], (list, tuple))
         else [],
         system_error_count=int(sess.get("system_error_count") or 0),
+        system_error_last_at=sess.get("system_error_last_at"),
         system_error_reason=(sess.get("system_error_reason") or None),
         system_error_notified=bool(sess.get("system_error_notified")),
         requirements_changed=bool(sess.get("requirements_changed")),
@@ -695,6 +696,7 @@ def _restored_session_dict(
         "relay_feedback": list(persisted.relay_feedback),
         "dispatched_feedback": dict(persisted.dispatched_feedback),
         "system_error_count": persisted.system_error_count,
+        "system_error_last_at": persisted.system_error_last_at,
         "system_error_reason": persisted.system_error_reason,
         "system_error_notified": persisted.system_error_notified,
         "requirements_changed": persisted.requirements_changed,
@@ -4859,6 +4861,14 @@ class CoordinareDaemon:
                 if column == "TODO" and sess.get("phase") == "system_error":
                     # Explicit retry uses the existing Todo rehydration path.
                     sess["phase"] = "blocked"
+                    if (
+                        sess.get("system_error_count", 0) > 0
+                        and not sess.get("system_error_notified")
+                        and sess.get("system_error_last_at") is None
+                    ):
+                        # Older snapshots lack the error clock. Anchor this
+                        # accepted retry so dispatch retains the existing budget.
+                        sess["system_error_last_at"] = datetime.now(UTC)
             logger.info("daemon.board_pause_reconciled", card_id=card_id, board_status=column, stopped=stopped)
 
     async def _reconcile_board_state_with_release(self) -> None:

@@ -77,6 +77,66 @@ async def test_terminal_error_backlog_and_completed_handoff_stay_paused(column, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("through_backlog", [False, True])
+@pytest.mark.parametrize("count", [2, 3])
+async def test_cold_terminal_todo_retry_keeps_budget_after_dispatch(legacy, through_backlog, count):
+    from unittest.mock import patch
+
+    from coordinare.config import PersonasConfig
+    from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+    from coordinare.session import session_to_state
+    from tests.unit.graph.nodes.test_dispatch_performer import _base_state, _Service
+
+    d, owner, _, _ = blocked_owner()
+    last_at = datetime(2026, 10, 10, 10, 0, tzinfo=UTC)
+    owner.update(phase="system_error", system_error_count=count,
+                 system_error_last_at=last_at, system_error_notified=False)
+    if through_backlog:
+        d.state["board_snapshot"] = {"BACKLOG": ["story"]}
+        await d._reconcile_board_pauses()
+    payload = _persist_one_session("story", owner).model_dump(mode="json")
+    if legacy:
+        payload.pop("system_error_last_at", None)
+    owner = _restored_session_dict("story", PersistedSession.model_validate(payload),
+        WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked"), owner["current_card"])
+    d.state["active_sessions"]["story"] = owner
+    d.state["board_snapshot"] = {"TODO": ["story"]}
+    await d._reconcile_board_pauses()
+    await _reset_and_rehydrate(d.state, d.state["board_snapshot"], ["story"], 2, d.state["active_sessions"])
+    # A second restart after reconciliation must retain the retry handoff.
+    owner = _restored_session_dict("story",
+        PersistedSession.model_validate_json(_persist_one_session("story", owner).model_dump_json()),
+        WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="dispatching"), owner["current_card"])
+    service = _Service()
+    flat = _base_state(performer_services={"assessing": service}, lifecycle_sequence=["assessing"])
+    from unittest.mock import AsyncMock
+
+    flat["github_service"].list_prs_by_branch_prefix = AsyncMock(return_value=[])
+    session_to_state(owner, flat)
+    with patch("coordinare.graph.nodes.dispatch_performer.load_personas_hot", return_value=PersonasConfig()):
+        result = await dispatch_performer(flat)
+    assert len(service.dispatched) == 1
+    assert result["phase"] == "monitoring_performer"
+    assert result["system_error_count"] == count
+    assert result["system_error_last_at"] is not None
+    if not legacy:
+        assert result["system_error_last_at"] == last_at
+    assert result["current_card"]["pr_url"] == "https://github.com/example/sample/pull/1"
+
+
+@pytest.mark.parametrize("version", range(1, 34))
+def test_legacy_snapshot_defaults_missing_system_error_clock(version):
+    snapshot = WorkflowSnapshot.model_validate({
+        "schema_version": version, "snapshot_at": datetime.now(UTC), "phase": "blocked",
+        "active_sessions": {"story": {"card_id": "story", "system_error_count": 3}},
+    })
+    session = snapshot.active_sessions["story"]
+    assert session.model_dump()["system_error_last_at"] is None
+    assert session.system_error_count == 3
+
+
+@pytest.mark.asyncio
 async def test_stale_board_never_admits_terminal_error_retry():
     d, owner, service, peer = blocked_owner()
     owner["phase"] = "system_error"
