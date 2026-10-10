@@ -97,3 +97,37 @@ async def test_closed_pr_error_retry_preserves_closed_pr_gate():
     assert owner["phase"] == "blocked"
     assert owner["system_error_reason"].startswith("PR closed without merging:")
     assert owner["current_card"]["pr_url"] == "https://github.com/example/sample/pull/1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("card_status", ["BLOCKED", "IN_PROGRESS"])
+async def test_terminal_error_backlog_then_todo_uses_explicit_retry(restore, card_status):
+    d, owner, service, peer = blocked_owner()
+    owner.update(phase="system_error", system_error_count=3,
+                 system_error_reason="BACKEND_FORMAT_ERROR: malformed assessment")
+    owner["current_card"]["status"] = card_status
+    owner["card_clarifications"] = [{"questions": ["Empty input?"], "answer": "Return empty string"}]
+    d.state["board_snapshot"] = {"BACKLOG": ["story"], "IN_PROGRESS": ["peer"]}
+    await d._reconcile_board_pauses()
+    assert owner["board_paused"] is True
+    assert owner["board_pause_resume_phase"] == "system_error"
+    assert owner["agent_dispatch"] == {}
+    service.stop_session_confirmed.assert_awaited_once_with("terminal")
+    if restore:
+        saved = PersistedSession.model_validate_json(_persist_one_session("story", owner).model_dump_json())
+        owner = _restored_session_dict("story", saved,
+            WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked"), owner["current_card"])
+        d.state["active_sessions"]["story"] = owner
+    d.state["board_snapshot"] = {"TODO": ["story"], "IN_PROGRESS": ["peer"]}
+    await d._reconcile_board_pauses()
+    assert owner["board_paused"] is False
+    assert owner["phase"] == "blocked"
+    await _reset_and_rehydrate(d.state, d.state["board_snapshot"], ["story"], 2, d.state["active_sessions"])
+    assert owner["phase"] == "dispatching"
+    assert owner["system_error_count"] == 3
+    assert owner["card_clarifications"] == [{"questions": ["Empty input?"], "answer": "Return empty string"}]
+    assert owner["relay_feedback"] == [{"message": "human instruction"}]
+    assert owner["current_card"]["pr_url"] == "https://github.com/example/sample/pull/1"
+    assert d.state["active_sessions"]["peer"] == peer
+    service.stop_session_confirmed.assert_awaited_once_with("terminal")
