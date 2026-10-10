@@ -94,3 +94,63 @@ def test_inline_feedback_retains_its_raising_stage() -> None:
     }]))
     assert "sample.py:9" in text and "Retain this assertion." in text
     assert "stage: qa" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_native_security_failure_reaches_the_implementer_prompt(backend: str) -> None:
+    import json
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from performer.backends.base import BackendStatus
+    from performer.main import handle_status
+    from performer.models import Performance, Stand
+    from performer.protocol import PerformerMessage
+
+    native = MagicMock()
+    native.get_status.return_value = BackendStatus(state="done", output=json.dumps({"security": {
+        "verdict": "security_failed", "blocking": [{"category": "injection", "problem": "Unsafe query construction.",
+        "why_blocking": "Input controls the query.", "evidence": "Unescaped user input.", "path": "sample.py", "line": 12,
+        "severity": "high", "routing": "implementer"}],
+    }}))
+    perf = Performance(session_id="synthetic", stand=Stand(path=Path("/tmp/synthetic"), branch="synthetic"),
+                       score=score(), backend=native, role="security", state="working")
+    response = await handle_status(PerformerMessage(action="status", session_id="synthetic"), perf)
+    assert response.status == "security_failed"
+    state = initial_state()
+    state.update(performer_services={"security": SimpleNamespace(check_status=AsyncMock(return_value=response.model_dump()))},
+                 performer_stage="security", lifecycle_sequence=["implementing", "security"],
+                 current_card={"id": "synthetic", "status": "IN_PROGRESS"}, agent_dispatch={"session_id": "synthetic"})
+    result = await monitor_performer(state)
+    assert result["phase"] == "dispatching" and result["performer_stage"] == "implementing"
+    text = prompt(backend, score(relay_feedback=result["relay_feedback"]))
+    for expected in ["[fb-1]", "Unsafe query construction.", "Input controls the query.", "Unescaped user input.", "sample.py:12", "stage: security"]:
+        assert expected in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("stage", ["implementing", "reviewing"])
+async def test_production_continuation_has_known_provenance(backend: str, stage: str) -> None:
+    from unittest.mock import patch
+
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+
+    service = SimpleNamespace(check_status=AsyncMock(return_value={
+        "status": "partial_progress", "next_focus": CONTINUATION, "head_before": "a" * 40, "head_after": "b" * 40,
+    }))
+    state = initial_state()
+    state.update(performer_services={stage: service}, performer_stage=stage,
+                 lifecycle_sequence=["implementing", "reviewing"],
+                 current_card={"id": "synthetic", "status": "IN_PROGRESS"}, agent_dispatch={"session_id": "synthetic"})
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "dispatching" and result["performer_stage"] == stage
+    text = prompt(backend, score(relay_feedback=result["relay_feedback"]))
+    for expected in [CONTINUATION, "author: coordinare", "source: performer", f"stage: {stage}", "does not constitute human approval"]:
+        assert expected in text
+    assert "## Human Feedback" not in text

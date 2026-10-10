@@ -32,9 +32,11 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
     for item in feedback:
         if isinstance(item, dict):
             parts.append(f"**Feedback ({_source_identity(item)}):**")
-            body = item.get("body")
+            body = item.get("body") or item.get("description")
             if body:
-                parts.append(f"- {body}")
+                path, line = item.get("file"), item.get("line")
+                location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+                parts.append(f"- {location} — {body}" if location else f"- {body}")
             inline = item.get("comments", [])
             if isinstance(inline, list):
                 for comment in inline:

@@ -3452,7 +3452,7 @@ async def _phase_feedback_bounce_s3(
     relay_body = ctx.relay_body
     stage = ctx.stage
     state["relay_feedback"] = [
-        {"body": relay_body, "author_login": "coordinare"},
+        {"body": relay_body, "author_login": "coordinare", "source": "performer", "stage": stage},
     ]
     # 072: preserve the originating stage rather than coercing to
     # "implementing" — a reviewer that checkpointed should resume
