@@ -1919,8 +1919,8 @@ async def _reset_and_rehydrate(
 ) -> None:
     # 066 T016/FR-002: unified un-block reset for any N (including N=1).
     # When the operator moves a card from BLOCKED back to TODO, the
-    # existing session is retained with current_card.status="BLOCKED"
-    # and phase="blocked".  Detect that the card is now eligible again
+    # existing session remains phase="blocked"; board reconciliation may
+    # already have changed its card status to TODO. Detect eligibility again
     # and reset feedback_cycle_count to 0 so the next dispatch gets a
     # fresh budget.  Monotonic stats (total_feedback_cycles,
     # triage_blocks) are preserved.
@@ -1933,7 +1933,7 @@ async def _reset_and_rehydrate(
         if is_closed_pr_block(_sess.get("system_error_reason")):
             await _resume_closed_pr(state, board, _cid, _sess)
             continue
-        if str(_sess_card.get("status", "")) != "BLOCKED":
+        if _sess.get("phase") != "blocked" and str(_sess_card.get("status", "")) != "BLOCKED":
             continue
         _prior_count = int(_sess.get("feedback_cycle_count") or 0)
         _sess["feedback_cycle_count"] = 0
