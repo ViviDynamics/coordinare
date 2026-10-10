@@ -89,9 +89,27 @@ def _keyed_value_ranges(raw: str) -> list[tuple[int, int]]:
     return keyed_containers
 
 
+
+def _leading_string_ranges(raw: str) -> list[tuple[int, int]]:
+    """Keep a complete scalar prefix atomic when followed by a JSON separator."""
+    start = len(raw) - len(raw.lstrip())
+    if raw[start:start + 1] != '"':
+        return []
+    try:
+        _, end = json.JSONDecoder().raw_decode(raw, start)
+    except ValueError:
+        return []
+    boundary = end
+    while boundary < len(raw) and raw[boundary].isspace():
+        boundary += 1
+    if boundary == len(raw) or raw[boundary] in ",]}":
+        return [(start, end)]
+    return []
+
+
 def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
     """Bind array child containers without letting prose swallow root fields."""
-    keyed_containers = _keyed_value_ranges(raw)
+    keyed_containers = [*_keyed_value_ranges(raw), *_leading_string_ranges(raw)]
     ranges: list[tuple[int, int]] = []
     decoder = json.JSONDecoder()
     for index, char in enumerate(raw):
@@ -119,6 +137,8 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
                 else:
                     if isinstance(value, (dict, list)):
                         ranges.append((cursor, end))
+                    elif isinstance(value, str):
+                        keyed_containers.append((cursor, end))
                     cursor = end
     return ranges
 
