@@ -570,3 +570,90 @@ async def test_blank_assessment_questions_are_not_human_prompts(workflow, ready,
     assert (response.questions or []) == ([QUESTION] if genuine else [])
     assert response.report is None
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separator", ["\t", "\n", "\r", "\f"])
+async def test_literal_bracket_prose_controls_preserve_root_question(separator):
+    perf = performance('intro "[" note' + separator + 'broken "questions":["Keep me?"]')
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == "blocked" and response.questions == ["Keep me?"]
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [
+    'broken "questions":[garbage, {"questions":["Unrelated?"]}]',
+    'broken "questions":["bad\nstring", {"questions":["Unrelated?"]}]',
+    'broken "questions":["note" garbage, {"questions":["Unrelated?"]}]',
+])
+@pytest.mark.parametrize("external", [False, True])
+async def test_malformed_question_array_children_cannot_supply_human_questions(raw, external):
+    if external:
+        raw += ', "questions":["Keep me?"]'
+    perf = performance(raw)
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if external else "error")
+    assert (response.questions or []) == (["Keep me?"] if external else [])
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bracket", ["{", "["])
+async def test_bad_escape_in_question_string_does_not_own_later_duplicate(bracket):
+    perf = performance('broken "questions":["literal ' + bracket + r'bad \q"], "questions":["Keep me?"]')
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == "blocked" and response.questions == ["Keep me?"]
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial", [
+    'intro "[" note\tbroken "questions":["Keep me?"]',
+    r'broken "questions":["literal {bad \q"], "questions":["Keep me?"]',
+    'broken "questions":[garbage, {"questions":["Unrelated?"]}], "questions":["Keep me?"]',
+])
+@pytest.mark.parametrize("repaired", [
+    '{"sufficient":true,"questions":[]}',
+    '{"assessment":{"ready":true,"questions":[]}}',
+    'Requirements are clear.',
+    '{"assessment":{"ready":false,"questions":["Different?"]}}',
+    '{"assessment":{"ready":false,"verdict":"not_work","questions":[]}}',
+    '{"assessment":{"ready":false,"verdict":"needs_split","questions":[]}}',
+])
+async def test_ownership_recovery_preserves_genuine_question_through_parse_retry(initial, repaired):
+    perf = performance(initial)
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        first = await handle_status(message, perf, settings)
+        assert first.status == "working" and perf.open_questions == ["Keep me?"]
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=repaired)
+        second = await handle_status(message, perf, settings)
+    assert second.status == "blocked" and second.questions == ["Keep me?"]
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", [r'bad \q, ', 'bad \\'])
+async def test_incomplete_escaped_root_array_string_stays_fail_closed(prefix):
+    perf = performance('["' + prefix + '{"questions":["Unrelated?"]}], "questions":["Keep me?"]')
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == "error" and not response.questions
+    commit.assert_not_awaited()

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _JSON_FIELD = re.compile(r'(?P<key>"(?:[^"\\]|\\.)*")\s*:\s*')
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
 _ASSESSMENT_KEYS = frozenset({"questions", "sufficient", "assessment", "ready"})
 
 
@@ -39,32 +40,31 @@ def _container_end(raw: str, start: int) -> int:
 
 
 def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
-    """Question arrays contain strings, never nested assessment objects.
-
-    Read complete elements even when the outer array is truncated. Stop at
-    malformed array syntax so a later complete duplicate field can still be
-    recovered rather than being swallowed by the damaged first array.
-    """
+    """Bind child containers across damaged elements without owning later keys."""
     ranges: list[tuple[int, int]] = []
-    index = start + 1
-    decoder = json.JSONDecoder()
-    while index < len(raw):
-        while index < len(raw) and raw[index].isspace():
-            index += 1
+    limit = _container_end(raw, start)
+    cursor = start + 1
+    field_starts = {field.start() for field in _JSON_FIELD.finditer(raw)}
+    # This decoder determines ownership only; question extraction stays strict.
+    decoder = json.JSONDecoder(strict=False)
+    while cursor < limit:
         try:
-            value, end = decoder.raw_decode(raw, index)
+            value, end = decoder.raw_decode(raw[:limit], cursor)
         except ValueError:
-            if raw[index:index + 1] in ("{", "["):
-                ranges.append((index, _container_end(raw, index)))
-            break
-        if isinstance(value, (dict, list)):
-            ranges.append((index, end))
-        index = end
-        while index < len(raw) and raw[index].isspace():
-            index += 1
-        if raw[index:index + 1] != ",":
-            break
-        index += 1
+            token = _JSON_STRING.match(raw, cursor, limit)
+            # A field's opening quote cannot close an incomplete escaped string.
+            if token and token.end() - 1 not in field_starts:
+                cursor = token.end()
+            elif raw[cursor] in "{[":
+                end = _container_end(raw, cursor)
+                ranges.append((cursor, end))
+                cursor = end
+            else:
+                cursor += 1
+        else:
+            if isinstance(value, (dict, list)):
+                ranges.append((cursor, end))
+            cursor = end
     return ranges
 
 
@@ -111,7 +111,9 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
     """Bind array child containers without letting prose swallow root fields."""
     keyed_containers = [*_keyed_value_ranges(raw), *_leading_string_ranges(raw)]
     ranges: list[tuple[int, int]] = []
-    decoder = json.JSONDecoder()
+    field_starts = {field.start() for field in _JSON_FIELD.finditer(raw)}
+    # Prose control characters must not break atomic string ownership.
+    decoder = json.JSONDecoder(strict=False)
     for index, char in enumerate(raw):
         if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]
@@ -127,7 +129,11 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
                 try:
                     value, end = decoder.raw_decode(raw[:limit], cursor)
                 except ValueError:
-                    if raw[cursor] in "{[":
+                    token = _JSON_STRING.match(raw, cursor, limit)
+                    if token and token.end() - 1 not in field_starts:
+                        keyed_containers.append((cursor, token.end()))
+                        cursor = token.end()
+                    elif raw[cursor] in "{[":
                         end = _container_end(raw, cursor)
                         ranges.append((cursor, end))
                         cursor = end
