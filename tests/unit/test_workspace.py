@@ -801,7 +801,7 @@ async def test_suffix_exhausted_falls_back_to_delete() -> None:
 @pytest.mark.parametrize("transport", ["kubernetes", "subprocess"])
 async def test_prepare_resumes_actual_pr_head(branch: str, transport: str, tmp_path: Path) -> None:
     github = MagicMock()
-    github.check_mergeability = AsyncMock(return_value={"head_ref_name": branch})
+    github.check_mergeability = AsyncMock(return_value={"head_ref_name": branch, "head_repo_name_with_owner": "acme/myrepo"})
     github.branch_exists = AsyncMock(return_value=True)
     github.delete_branch = AsyncMock()
     mgr = WorkspaceManager(_make_config(agent_transport=transport), github_service=github)
@@ -813,7 +813,8 @@ async def test_prepare_resumes_actual_pr_head(branch: str, transport: str, tmp_p
     github.branch_exists.assert_not_awaited()
     github.delete_branch.assert_not_awaited()
     if transport == "subprocess":
-        assert any(c.args == ("fetch", "--depth=1", "origin", f"refs/heads/{branch}") for c in git.await_args_list)
+        assert "--depth=1" not in git.await_args_list[0].args
+        assert any(c.args == ("fetch", "origin", f"refs/heads/{branch}") for c in git.await_args_list)
         assert git.await_args_list[-1].args == ("checkout", "-b", branch, "FETCH_HEAD")
     else:
         git.assert_not_awaited()
@@ -855,3 +856,13 @@ async def test_prepare_retained_pr_url_without_identity_stops() -> None:
     mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"))
     with pytest.raises(WorkspaceSetupError, match="PR head"):
         await mgr.prepare({"id": "CARD", "pr_url": "https://github.com/acme/myrepo/pull/1"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", ["contributor/myrepo", "", None])
+async def test_prepare_cross_repository_or_unknown_head_stops(repository):
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(return_value={"head_ref_name": "feature", "head_repo_name_with_owner": repository})
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"), github_service=github)
+    with pytest.raises(WorkspaceSetupError, match="PR head"):
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})

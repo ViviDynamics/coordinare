@@ -265,6 +265,7 @@ query CheckMergeability($prId: ID!) {
       reviewDecision
       headRefOid
       headRefName
+      headRepository { nameWithOwner }
     }
   }
 }
@@ -1947,6 +1948,7 @@ class GitHubService(CardIdentityMap):
             # 097: branch name, so the pre-dispatch rebase guard can rebase the
             # branch directly without depending on a (possibly unset) workspace_branch.
             "head_ref_name": str(node.get("headRefName", "")),
+            "head_repo_name_with_owner": str((node.get("headRepository") or {}).get("nameWithOwner") or ""),
         }
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:

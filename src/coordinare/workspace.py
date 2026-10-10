@@ -354,8 +354,11 @@ class WorkspaceManager:
                 env.pop(_trace_var, None)
 
             # Clone with auth via env (required for private repos).
+            # Retained work needs complete ancestry for review and rebasing;
+            # new cards keep the cheaper shallow default-branch clone.
+            clone_options = () if existing_pr else ("--depth=1",)
             await _run_git(
-                "clone", "--depth=1", clone_url, str(clone_dir),
+                "clone", *clone_options, clone_url, str(clone_dir),
                 env=env,
                 timeout=120.0,
             )
@@ -381,12 +384,12 @@ class WorkspaceManager:
                 cwd=clone_dir, env=env,
             )
 
-            # Shallow clones contain only the default branch. Fetch a retained
-            # PR's head explicitly so a resumed worker keeps its prior commits.
+            # Fetch the live head explicitly so a resumed worker keeps prior
+            # commits even if the branch was updated while cloning.
             start_point: tuple[str, ...] = ()
             if existing_pr:
                 await _run_git(
-                    "fetch", "--depth=1", "origin", f"refs/heads/{branch}",
+                    "fetch", "origin", f"refs/heads/{branch}",
                     cwd=clone_dir, env=env,
                 )
                 start_point = ("FETCH_HEAD",)
@@ -425,6 +428,11 @@ class WorkspaceManager:
         branch = result.get("head_ref_name") if isinstance(result, dict) else None
         if not isinstance(branch, str) or not branch.strip():
             msg = "Cannot resolve existing PR head: branch unavailable"
+            raise WorkspaceSetupError(msg)
+        repository = result.get("head_repo_name_with_owner")
+        expected_repository = f"{self._github_org}/{self._project_name}"
+        if not isinstance(repository, str) or repository.casefold() != expected_repository.casefold():
+            msg = "Cannot resolve existing PR head: source repository unavailable or unsupported"
             raise WorkspaceSetupError(msg)
         return branch
 
