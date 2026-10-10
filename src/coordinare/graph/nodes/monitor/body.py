@@ -418,8 +418,13 @@ async def _phase_slot_setup(
     # 048: Resolve the card's specific service instance via SlotManager so
     # status polls go to the correct transport (not just the primary).
     slot_manager = state.get("slot_manager")
-    service = None
-    if slot_manager is not None and hasattr(slot_manager, "acquire") and card_id:
+    dispatch = state.get("agent_dispatch") or {}
+    # Restored turns keep their transport identity even if current role
+    # aliases or slot defaults changed. Poll that existing instance before
+    # allocating a slot or falling back to the current stage default.
+    by_id = state.get("performer_services_by_id") or {}
+    service = by_id.get(str(dispatch.get("performer_id") or "")) if dispatch.get("session_id") else None
+    if service is None and slot_manager is not None and hasattr(slot_manager, "acquire") and card_id:
         # acquire() returns the already-allocated service for this card
         # (idempotent — doesn't consume a new slot).
         service = slot_manager.acquire(stage, card_id, config=state.get("config"))

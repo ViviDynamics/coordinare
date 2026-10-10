@@ -72,6 +72,19 @@ class SlotManager:
 
     def __init__(self) -> None:
         self.pools: dict[str, RolePool] = {}
+        # Persistent endpoint occupancy spans every registered role pool.
+        # Ephemeral handles may serve independent turns.
+        self._retained_slots: dict[tuple[str, str], Any] = {}
+
+    def _occupied_indices(self, pool: RolePool) -> set[int]:
+        occupied = {slot.service_index for slot in pool.active_slots.values()}
+        for service in self._retained_slots.values():
+            occupied.update(i for i, candidate in enumerate(pool.services) if candidate is service)
+        return occupied
+
+    def _free_service_index(self, pool: RolePool) -> int | None:
+        occupied = self._occupied_indices(pool)
+        return next((i for i in range(len(pool.services)) if i not in occupied), None)
 
     def register_pool(
         self,
@@ -171,10 +184,10 @@ class SlotManager:
                 return pool.services[slot.service_index]
             return pool.services[0] if pool.services else None
 
-        if pool.is_at_capacity:
+        if self.is_at_capacity(stage):
             return None
 
-        idx = pool.free_service_index()
+        idx = self._free_service_index(pool)
         if idx is None:
             # More active than services (shouldn't happen with correct setup)
             return None
@@ -184,6 +197,9 @@ class SlotManager:
             card_id=card_id,
             service_index=idx,
         )
+        service = pool.services[idx]
+        if getattr(getattr(service, "_config", None), "mode", None) == "persistent":
+            self._retained_slots[(stage, card_id)] = service
         logger.info(
             "slot_manager.acquired",
             stage=stage,
@@ -196,6 +212,7 @@ class SlotManager:
 
     def release(self, stage: str, card_id: str) -> None:
         """Free the slot after performer completes or crashes."""
+        self._retained_slots.pop((stage, card_id), None)
         pool = self.pools.get(stage)
         if pool is None:
             return
@@ -211,19 +228,51 @@ class SlotManager:
 
     def active_count(self, stage: str) -> int:
         pool = self.pools.get(stage)
-        return pool.active_count if pool else 0
+        if pool is None:
+            return 0
+        retained = {
+            card_id for (_, card_id), service in self._retained_slots.items()
+            if card_id not in pool.active_slots and any(candidate is service for candidate in pool.services)
+        }
+        return pool.active_count + len(retained)
 
     def is_at_capacity(self, stage: str) -> bool:
         pool = self.pools.get(stage)
         if pool is None:
             return False  # unknown/disabled stage → not "at capacity" (let dispatch skip it)
-        return pool.is_at_capacity
+        return pool.max_concurrency > 0 and self.active_count(stage) >= pool.max_concurrency
+
+    def _sync_retained_slots(self, active_sessions: dict[str, Any]) -> None:
+        by_id = {
+            getattr(getattr(service, "_config", None), "id", None): service
+            for pool in self.pools.values() for service in pool.services
+        }
+        retained: dict[tuple[str, str], Any] = {}
+        for card_id, session in active_sessions.items():
+            if not isinstance(session, dict) or session.get("phase") not in {"monitoring_performer", "monitoring_agent"}:
+                continue
+            dispatch = session.get("agent_dispatch") or {}
+            if not dispatch.get("session_id"):
+                continue
+            stage = session.get("performer_stage", "")
+            performer_id = dispatch.get("performer_id")
+            service = by_id.get(performer_id) if performer_id else None
+            if not performer_id:
+                pool = self.pools.get(stage)
+                slot = pool.active_slots.get(card_id) if pool is not None else None
+                if pool is not None and slot is not None and 0 <= slot.service_index < len(pool.services):
+                    service = pool.services[slot.service_index]
+            if service is None or getattr(getattr(service, "_config", None), "mode", None) != "persistent":
+                continue
+            retained[(stage, card_id)] = service
+        self._retained_slots = retained
 
     def sync_from_sessions(self, active_sessions: dict[str, Any]) -> None:
         """Rebuild active slots from session phases.
 
         Frees slots for sessions that completed or crashed since last sync.
         """
+        self._sync_retained_slots(active_sessions)
         # Build set of (stage, card_id) that are currently active performers
         active_performer_cards: set[tuple[str, str]] = set()
         for card_id, session in active_sessions.items():
@@ -231,7 +280,7 @@ class SlotManager:
                 continue
             phase = session.get("phase", "")
             stage = session.get("performer_stage", "")
-            if phase == "monitoring_performer" and stage:
+            if phase in {"monitoring_performer", "monitoring_agent"} and stage:
                 active_performer_cards.add((stage, card_id))
 
         # Free slots that are no longer in monitoring_performer
@@ -254,13 +303,15 @@ class SlotManager:
                 idx = next((
                     i for i, service in enumerate(slot_pool.services)
                     if performer_id and getattr(getattr(service, "_config", None), "id", None) == performer_id
-                ), None) if performer_id else slot_pool.free_service_index()
+                ), None) if performer_id else self._free_service_index(slot_pool)
                 if idx is not None:
                     slot_pool.active_slots[card_id] = PerformerSlot(
                         role=stage,
                         card_id=card_id,
                         service_index=idx,
                     )
+        # Legacy identities use the effective slot reconstructed above.
+        self._sync_retained_slots(active_sessions)
 
     def utilization(
         self,
@@ -277,7 +328,7 @@ class SlotManager:
         for stage, pool in sorted(self.pools.items()):
             result.append({
                 "role": stage,
-                "active": pool.active_count,
+                "active": self.active_count(stage),
                 "max": pool.max_concurrency,
                 "queued": queued.get(stage, 0),
             })
