@@ -16,3 +16,20 @@ def clarification_comment_lines(entry: dict[str, Any]) -> list[str]:
     )
     label = f"**Human clarification ({identity}):**" if identity else "**Human clarification:**"
     return [label, body, ""]
+
+
+def clarification_prompt_section(clarifications: list[dict[str, Any]]) -> list[str]:
+    """Preserve current human comments and legacy answered questions for every CLI."""
+    if not clarifications:
+        return []
+    parts = ["", "## Clarification Q&A", ""]
+    for entry in clarifications:
+        parts += clarification_comment_lines(entry)
+        questions = entry.get("questions") or []
+        answer = str(entry.get("answer", "")).strip()
+        if questions:
+            parts.append("**Questions asked:**")
+            parts.extend(f"- {question}" for question in questions)
+        if answer:
+            parts += [f"**Answer:** {answer}", ""]
+    return parts

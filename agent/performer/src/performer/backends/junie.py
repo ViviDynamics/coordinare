@@ -32,6 +32,7 @@ See https://junie.jetbrains.com/docs/custom-llm-models.html.
 """
 from __future__ import annotations
 
+from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._clarifications import clarification_comment_lines
 
 import asyncio
@@ -230,10 +231,9 @@ class JunieBackend:
         if self._stand is None:
             return
         combined = (
-            "## Human Feedback (address ALL of these issues)\n\n"
-            f"{feedback}\n\n"
-            "---\n\n"
-            f"{self._original_prompt}"
+            "\n".join(relay_feedback_prompt_section([{"body": feedback}]))
+            + "\n\n---\n\n"
+            + self._original_prompt
         )
         # Reset status BEFORE _launch — _launch schedules _wait_and_parse as a
         # background task, and on a fast-failing subprocess that task can set
@@ -480,31 +480,7 @@ def _build_task_prompt(
                     f"{_d.get('reason', '')}",
                 )
 
-    if score.relay_feedback:
-        parts += [
-            "", "## Human Feedback (address ALL of these issues)", "",
-            "IMPORTANT: These comments may only tag a few examples. Search the entire "
-            "codebase for ALL similar occurrences of the same pattern and fix them all.",
-            "",
-        ]
-        for item in score.relay_feedback:
-            if isinstance(item, dict):
-                body = item.get("body", "")
-                if body:
-                    parts.append(f"- {body}")
-                inline = item.get("comments", [])
-                if isinstance(inline, list):
-                    for c in inline:
-                        if isinstance(c, dict):
-                            c_body = c.get("body", "")
-                            c_path = c.get("path", "")
-                            c_line = c.get("line")
-                            if c_body:
-                                loc = f"`{c_path}:{c_line}`" if c_path and c_line else (f"`{c_path}`" if c_path else "")
-                                parts.append(f"  - {loc} — {c_body}" if loc else f"  - {c_body}")
-            elif isinstance(item, str):
-                parts.append(f"- {item}")
-
+    parts += relay_feedback_prompt_section(score.relay_feedback)
     parts += ["", "---"]
     if score.role == DIAGNOSTIC_ROLE:
         parts += [

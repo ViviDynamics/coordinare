@@ -22,6 +22,7 @@ Timeout:
 """
 from __future__ import annotations
 
+from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._clarifications import clarification_comment_lines
 
 import asyncio
@@ -820,25 +821,7 @@ def _build_task_prompt(
                     f"{_d.get('reason', '')}",
                 )
 
-    if queued_feedback or score.relay_feedback:
-        parts += [
-            "", "## Human Feedback (address ALL of these issues)", "",
-            "IMPORTANT: These comments may only tag a few examples. Search "
-            "the entire codebase for ALL similar occurrences of the same "
-            "pattern and fix them all.",
-            "",
-        ]
-        for fb in queued_feedback:
-            if fb:
-                parts.append(f"- {fb}")
-        for item in score.relay_feedback:
-            if isinstance(item, dict):
-                body = item.get("body", "")
-                if body:
-                    parts.append(f"- {body}")
-            elif isinstance(item, str):
-                parts.append(f"- {item}")
-
+    parts += relay_feedback_prompt_section([*queued_feedback, *score.relay_feedback])
     plan_path = score.architecture_plan_path
     if not plan_path and stand_path is not None:
         candidate = _conventional_plan_path(score)
