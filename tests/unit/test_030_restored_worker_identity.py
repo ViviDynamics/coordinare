@@ -61,7 +61,7 @@ async def test_legacy_stage_only_monitor_keeps_existing_fallback() -> None:
     assert result["phase"] == "monitoring_performer"
 
 
-def moved_worker_pool(mode: str = "persistent", *, spare: bool = False) -> tuple[SlotManager, Service, dict]:
+def moved_worker_pool(mode: str = "persistent", *, spare: bool = False, phase: str = "monitoring_performer") -> tuple[SlotManager, Service, dict]:
     retained = Service("retained-endpoint")
     retained._config.mode = mode
     services = [retained, Service("spare-endpoint")] if spare else [retained]
@@ -72,7 +72,7 @@ def moved_worker_pool(mode: str = "persistent", *, spare: bool = False) -> tuple
     manager = SlotManager()
     for stage, pool in pools.items():
         manager.register_pool(stage, pool, caps[stage])
-    session = {"phase": "monitoring_performer", "performer_stage": "assessing",
+    session = {"phase": phase, "performer_stage": "assessing",
                "agent_dispatch": {"session_id": "existing-session", "performer_id": "retained-endpoint"}}
     manager.sync_from_sessions({"card-A": session})
     return manager, retained, session
@@ -116,3 +116,24 @@ def test_moved_persistent_worker_does_not_consume_a_different_free_endpoint() ->
 def test_moved_ephemeral_endpoint_preserves_independent_role_capacity() -> None:
     manager, retained, _session = moved_worker_pool("ephemeral")
     assert manager.acquire("implementing", "card-B") is retained
+
+
+@pytest.mark.parametrize("phase", ["monitoring_performer", "monitoring_agent"])
+def test_both_live_monitoring_phases_retain_moved_persistent_capacity(phase: str) -> None:
+    manager, retained, session = moved_worker_pool(phase=phase)
+    assert manager.acquire("implementing", "card-B") is None
+    assert manager.active_count("implementing") == 1
+    assert next(row for row in manager.utilization() if row["role"] == "implementing")["active"] == 1
+    session["phase"] = "idle"
+    manager.sync_from_sessions({"card-A": session})
+    assert manager.acquire("implementing", "card-B") is retained
+
+
+def test_monitoring_agent_restores_capacity_in_unchanged_persistent_role_pool() -> None:
+    manager, retained, session = moved_worker_pool(phase="monitoring_agent")
+    manager.register_pool("assessing", [retained], 1)
+    manager.sync_from_sessions({"card-A": session})
+    assert manager.acquire("assessing", "card-B") is None
+    assert manager.active_count("assessing") == 1
+    manager.release("assessing", "card-A")
+    assert manager.acquire("assessing", "card-B") is retained

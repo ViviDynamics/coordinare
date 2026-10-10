@@ -246,7 +246,7 @@ class SlotManager:
         }
         retained: dict[tuple[str, str], Any] = {}
         for card_id, session in active_sessions.items():
-            if not isinstance(session, dict) or session.get("phase") != "monitoring_performer":
+            if not isinstance(session, dict) or session.get("phase") not in {"monitoring_performer", "monitoring_agent"}:
                 continue
             dispatch = session.get("agent_dispatch") or {}
             service = by_id.get(dispatch.get("performer_id")) if dispatch.get("session_id") else None
@@ -271,7 +271,7 @@ class SlotManager:
                 continue
             phase = session.get("phase", "")
             stage = session.get("performer_stage", "")
-            if phase == "monitoring_performer" and stage:
+            if phase in {"monitoring_performer", "monitoring_agent"} and stage:
                 active_performer_cards.add((stage, card_id))
 
         # Free slots that are no longer in monitoring_performer
