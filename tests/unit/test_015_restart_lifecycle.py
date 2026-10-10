@@ -99,7 +99,7 @@ async def test_legacy_snapshot_migrates_continuation_to_versioned_contract(tmp_p
     from coordinare.metrics import CoordinareMetrics
     from coordinare.state_store import CURRENT_SCHEMA_VERSION, StateStore
 
-    assert CURRENT_SCHEMA_VERSION == 33
+    assert CURRENT_SCHEMA_VERSION == 34
     path = tmp_path / "state.json"
     path.write_text(json.dumps({
         "schema_version": 31, "snapshot_at": datetime.now(UTC).isoformat(), "phase": "idle",
