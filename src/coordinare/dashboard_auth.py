@@ -144,6 +144,13 @@ class DashboardAuthentication:
             return
         origin = request.headers.get("origin")
         expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+        if self._oidc is not None:
+            expected_origin = _public_origin(self._oidc)
+            if origin is not None:
+                try:
+                    origin = _normalized_origin(origin)
+                except ValueError:
+                    origin = ""
         if request.method in MUTATING_METHODS and origin is not None and origin != expected_origin:
             refused_response = JSONResponse(
                 {"detail": "Cross-origin mutation refused"}, status_code=403,
