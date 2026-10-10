@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "coordinare/workflow-snapshot/v1",
   "title": "WorkflowSnapshot",
-  "description": "On-disk representation of the coordinare's current workflow position. Written atomically after every phase transition. v31 (557/559) retains per-card PR artefacts and a completed worker handoff waiting on final checks.",
+  "description": "On-disk representation of the coordinare's current workflow position. Written atomically after every phase transition. v32 retains per-card PR artefacts, completed worker handoff and dispatch/production evidence for restart-safe monitoring.",
   "type": "object",
   "required": [
     "schema_version",
@@ -724,6 +724,41 @@
             ],
             "default": null,
             "title": "Agent Dispatch At"
+          },
+          "last_production_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Production At"
+          },
+          "last_production_fingerprint": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Production Fingerprint"
           }
         }
       },

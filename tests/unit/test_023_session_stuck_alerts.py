@@ -239,7 +239,66 @@ def test_dispatch_clock_has_a_versioned_strict_snapshot_contract() -> None:
     assert CURRENT_SCHEMA_VERSION == 32
     contract = json.loads(Path("specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
     assert contract["properties"]["schema_version"]["enum"] == list(range(1, 33))
-    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", active_sessions={"active": PersistedSession(card_id="active", agent_dispatch_at=datetime.now(UTC))})
+    assert {"last_production_at", "last_production_fingerprint"} <= set(
+        contract["properties"]["active_sessions"]["additionalProperties"]["properties"]
+    )
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", active_sessions={"active": PersistedSession(card_id="active", agent_dispatch_at=datetime.now(UTC), last_production_at=datetime.now(UTC), last_production_fingerprint=(1, 0))})
     validate(snapshot.model_dump(mode="json"), contract)
     old = WorkflowSnapshot.model_validate({"schema_version": 31, "snapshot_at": datetime.now(UTC), "phase": "blocked", "active_sessions": {"active": {"card_id": "active"}}})
     assert old.active_sessions["active"].agent_dispatch_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("production_age,dispatch_age,expected_phase", [
+    (5, 2400, "monitoring_performer"),
+    (None, 2400, "blocked"),
+    (1300, 2400, "blocked"),
+    (5, 4900, "blocked"),
+])
+async def test_restored_worker_preserves_production_based_timeout_and_absolute_ceiling(
+    production_age: int | None, dispatch_age: int, expected_phase: str,
+) -> None:
+    from coordinare.daemon import _persist_active_sessions, _restored_session_dict
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from coordinare.session import session_to_state, state_to_session
+    from coordinare.state_store import WorkflowSnapshot
+    from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
+
+    now = datetime.now(UTC)
+    service = _Performer({"status": "working", "events": [{"type": "tool_use", "text": "running tests"}]})
+    original = _make_state(service=service, stage="reviewing")
+    produced_at = now - timedelta(seconds=production_age) if production_age is not None else None
+    original.update(phase="monitoring_performer", role_timeouts={"reviewing": 1200},
+                    agent_dispatch_at=now - timedelta(seconds=dispatch_age),
+                    last_production_at=produced_at, last_production_fingerprint=(1, 0))
+    snapshot = WorkflowSnapshot(snapshot_at=now, phase="monitoring_performer", active_card_id="ITEM_1",
+                                active_sessions=_persist_active_sessions({"ITEM_1": state_to_session(original)}))
+    snapshot = WorkflowSnapshot.model_validate_json(snapshot.model_dump_json())
+    restored = _restored_session_dict("ITEM_1", snapshot.active_sessions["ITEM_1"], snapshot, original["current_card"])
+    state = initial_state()
+    session_to_state(restored, state)
+    state.update(performer_services={"reviewing": service}, lifecycle_sequence=["reviewing"],
+                 role_timeouts={"reviewing": 1200})
+    await monitor_performer(state)
+    assert state["phase"] == expected_phase
+    if expected_phase == "monitoring_performer":
+        # Re-reported cumulative tools are not fresh production after restart.
+        assert state["last_production_at"] == produced_at
+        assert state["last_production_fingerprint"] == (1, 0)
+
+
+def test_production_clock_is_card_scoped_and_survives_session_projection() -> None:
+    from coordinare.graph.state import initial_state
+    from coordinare.session import create_session_from_card, session_to_state, state_to_session
+
+    state = initial_state()
+    produced_at = datetime.now(UTC)
+    state.update(last_production_at=produced_at, last_production_fingerprint=(7, 2))
+    saved = state_to_session(state)
+    session_to_state(create_session_from_card({"id": "new"}), state)
+    assert state.get("last_production_at") is None
+    assert state.get("last_production_fingerprint") is None
+    session_to_state(saved, state)
+    assert state["last_production_at"] == produced_at
+    assert state["last_production_fingerprint"] == (7, 2)

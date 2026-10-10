@@ -486,6 +486,8 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
     return PersistedSession(
         card_id=card_id,
         last_progress_at=sess.get("last_progress_at"),
+        last_production_at=sess.get("last_production_at"),
+        last_production_fingerprint=sess.get("last_production_fingerprint"),
         last_progress_fingerprint=sess.get("last_progress_fingerprint"),
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
@@ -672,6 +674,8 @@ def _restored_session_dict(
         "performer_stage": persisted.performer_stage,
         "phase": "dispatching" if missing_identity else persisted.phase,
         "agent_dispatch_at": persisted.agent_dispatch_at,
+        "last_production_at": persisted.last_production_at,
+        "last_production_fingerprint": persisted.last_production_fingerprint,
         "reconciled_dispatch_pending": persisted.reconciled_dispatch_pending or missing_identity,
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
