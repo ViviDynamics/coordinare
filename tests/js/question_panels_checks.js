@@ -110,7 +110,41 @@ check('history legacy: round header', q.includes('Round 1'));
 check('history legacy: no bogus #undefined', !q.includes('#undefined'));
 check('history legacy: question text', q.includes('Old round'));
 
-// 7. Empty history hides the panel.
+// 7. Ingested issue comments use body, rather than legacy question/answer keys.
+renderQuestionPanels({
+  open_questions: [],
+  card_clarifications: [{
+    source: 'issue', comment_id: 123, author: 'example-reviewer',
+    body: 'Preserve case and punctuation.\nKeep whitespace normalized.',
+  }],
+});
+q = el('clarifications-list').innerHTML;
+check('issue clarification: body rendered', q.includes('Preserve case and punctuation.'));
+check('issue clarification: multiline text retained', q.includes('\nKeep whitespace normalized.'));
+check('issue clarification: source rendered', q.includes('issue'));
+check('issue clarification: author rendered', q.includes('example-reviewer'));
+check('issue clarification: comment identity rendered', q.includes('123'));
+
+// 8. Mixed history preserves legacy content and escapes every comment field.
+renderQuestionPanels({
+  open_questions: [],
+  card_clarifications: [
+    {questions: ['Legacy question'], answer: 'Legacy answer'},
+    {source: '<issue>', author: '<reviewer>', comment_id: '<123>', body: '<script>alert("x")</script>'},
+    {body: 'A comment without optional metadata'},
+  ],
+});
+q = el('clarifications-list').innerHTML;
+check('mixed history: legacy question retained', q.includes('Legacy question'));
+check('mixed history: legacy answer retained', q.includes('Legacy answer'));
+check('mixed history: body escaped', q.includes('&lt;script&gt;') && !q.includes('<script>'));
+check('mixed history: source escaped', q.includes('&lt;issue&gt;'));
+check('mixed history: author escaped', q.includes('&lt;reviewer&gt;'));
+check('mixed history: comment identity escaped', q.includes('&lt;123&gt;'));
+check('mixed history: optional metadata absent safely', q.includes('A comment without optional metadata') && !q.includes('undefined'));
+check('mixed history: every entry rendered', q.includes('Round 3'));
+
+// 9. Empty history hides the panel.
 renderQuestionPanels({ open_questions: [], card_clarifications: [] });
 check('history empty: panel hidden', el('clarifications-card').style.display === 'none');
 
