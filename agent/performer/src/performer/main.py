@@ -2059,6 +2059,16 @@ async def handle_status(
 
     backend_status: BackendStatus = perf.backend.get_status()
 
+    if backend_status.state in ("done", "error") and backend_status.stop_reason == "idle_timeout":
+        # Partial narration is not a terminal verdict. Preserve the timeout
+        # signal on the existing error wire path before any commit/PR or role
+        # success processing, so the daemon applies its bounded replacement.
+        return await _non_done_response(perf, BackendStatus(
+            state="error", stop_reason="idle_timeout",
+            error_reason="Backend idle timeout before terminal completion",
+            tokens_processed=backend_status.tokens_processed,
+        ))
+
     if backend_status.state == "done":
         # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
         if perf.role == "qa":
