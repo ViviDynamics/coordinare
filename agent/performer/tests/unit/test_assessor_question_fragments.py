@@ -58,6 +58,13 @@ def performance(output: str) -> Performance:
     ('{"sufficient": false, "questions": ["Keep me?"], "questions": [null]}', ["Keep me?"]),
     ('{"sufficient": false, "questions": ["Keep me?"], "questions": ["Also me?"]}', ["Keep me?", "Also me?"]),
     ('{"sufficient": false, "questions": ["Keep me?"], "metadata": {"questions": ["Unrelated?"], "questions": []}}', ["Keep me?"]),
+    ('{"assessment":{"ready":false,"questions":["Need a decision?"]},"assessment":{"ready":true,"questions":[]}}', ["Need a decision?"]),
+    ('{"assessment":{"ready":true,"questions":[]},"assessment":{"ready":false,"questions":["Need a decision?"]}}', ["Need a decision?"]),
+    ('{"assessment":{"ready":false,"ready":true,"questions":["Need a decision?"]}}', ["Need a decision?"]),
+    ('{"assessment":{"ready":false,"questions":["Keep me?"],"questions":null}}', ["Keep me?"]),
+    ('{"assessment":{"ready":false,"questions":["Keep me?"],"verdict":"work","verdict":"not_work"}}', ["Keep me?"]),
+    ('{"assessment":{"ready":false,"questions":["Keep me?"],"questions":[]},"metadata":{"questions":["Unrelated?"]}}', ["Keep me?"]),
+    ('{"sufficient":false,"questions":["Keep me?"],"questions":null,"metadata":{"questions":["Unrelated?"]}}', ["Keep me?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)
@@ -86,6 +93,8 @@ async def test_recovered_questions_block_without_committing(output, questions):
     r'broken "suffici\u0065nt": false',
     '{"assessment": null}',
     '{"assessment": [], "questions": []}',
+    '{"assessment":{"ready":false,"questions":[]},"assessment":{"ready":true,"questions":[]}}',
+    '{"assessment":{"ready":false,"ready":true,"questions":[]}}',
 ])
 async def test_unrecoverable_contract_output_fails_closed(output):
     perf = performance(output)

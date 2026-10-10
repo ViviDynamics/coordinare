@@ -31,32 +31,62 @@ def assessment_fields_outside_object(raw: str) -> bool:
     )
 
 
-def assessment_has_duplicate_questions(raw: str) -> bool:
-    """Catch last-key-wins loss within a parsed legacy assessment object."""
+class _ObjectPairs(list[tuple[str, object]]):
+    """Keep object fields distinct from arrays and retain duplicate keys."""
+
+
+def _assessment_pairs(raw: str) -> _ObjectPairs | None:
     start, end = raw.find("{"), raw.rfind("}")
     if start >= 0 and end > start:
         try:
-            return bool(json.loads(
-                raw[start:end + 1],
-                object_pairs_hook=lambda pairs: sum(key == "questions" for key, _ in pairs) > 1,
-            ))
+            value = json.loads(raw[start:end + 1], object_pairs_hook=_ObjectPairs)
+            return value if isinstance(value, _ObjectPairs) else None
         except ValueError:
             pass
+    return None
+
+
+def _contract_objects(pairs: _ObjectPairs) -> list[_ObjectPairs]:
+    return [pairs, *[
+        value for key, value in pairs
+        if key == "assessment" and isinstance(value, _ObjectPairs)
+    ]]
+
+
+def assessment_has_duplicate_contract_fields(raw: str) -> bool:
+    """Reject ambiguous assessment fields while ignoring unrelated metadata."""
+    pairs = _assessment_pairs(raw)
+    if pairs is None:
+        return False
+    for index, obj in enumerate(_contract_objects(pairs)):
+        relevant = _ASSESSMENT_KEYS if index == 0 else {"ready", "questions", "verdict"}
+        keys = [key for key, _ in obj if key in relevant]
+        if len(keys) != len(set(keys)):
+            return True
     return False
+
+
+def _question_candidates(raw: str, fields: list[tuple[str, int, int]]) -> list[object]:
+    pairs = _assessment_pairs(raw)
+    if pairs is not None and not assessment_fields_outside_object(raw):
+        return [value for obj in _contract_objects(pairs) for key, value in obj if key == "questions"]
+    candidates = []
+    for key, _, end in fields:
+        if key == "questions":
+            try:
+                value, _ = json.JSONDecoder().raw_decode(raw[end:])
+                candidates.append(value)
+            except ValueError:
+                continue
+    return candidates
 
 
 def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
     """Identify contract fragments; recover only complete arrays of question strings."""
     fields = _assessment_fields(raw)
     questions: list[str] = []
-    for key, _, end in fields:
-        if key != "questions":
-            continue
-        try:
-            value, _ = json.JSONDecoder().raw_decode(raw[end:])
-        except ValueError:
-            continue
-        if not isinstance(value, list) or any(not isinstance(q, str) for q in value):
+    for value in _question_candidates(raw, fields):
+        if not isinstance(value, list) or isinstance(value, _ObjectPairs) or any(not isinstance(q, str) for q in value):
             continue
         for question in value:
             safe_question = _redact_secrets(question)

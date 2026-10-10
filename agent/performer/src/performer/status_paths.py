@@ -21,7 +21,7 @@ import structlog
 from performer.assessor_questions import (
     assessment_fields_outside_object,
     assessment_fragment_questions,
-    assessment_has_duplicate_questions,
+    assessment_has_duplicate_contract_fields,
 )
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
@@ -385,7 +385,7 @@ async def _assessor_lenient_response(
     if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw) or (
         "assessment" in assess_output and not isinstance(assess_output["assessment"], dict)
     ) or (
-        "assessment" not in assess_output and assessment_has_duplicate_questions(assess_raw)
+        assessment_has_duplicate_contract_fields(assess_raw)
     ) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
         and (assess_output.get("questions") or "ready" in assess_output)
