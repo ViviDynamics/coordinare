@@ -16,7 +16,7 @@ _ASSESSMENT_KEYS = frozenset({"questions", "sufficient", "assessment", "ready"})
 
 def _container_end(raw: str, start: int) -> int:
     """Bound a metadata value, including one truncated before its closing bracket."""
-    depth = 0
+    containers: list[str] = []
     in_string = escaped = False
     for index in range(start, len(raw)):
         char = raw[index]
@@ -30,10 +30,10 @@ def _container_end(raw: str, start: int) -> int:
         elif char == '"':
             in_string = True
         elif char in "{[":
-            depth += 1
-        elif char in "}]":
-            depth -= 1
-            if depth == 0:
+            containers.append(char)
+        elif char in "}]" and containers and containers[-1] == {"}": "{", "]": "["}[char]:
+            containers.pop()
+            if not containers:
                 return index + 1
     return len(raw)
 
