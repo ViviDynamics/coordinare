@@ -712,3 +712,23 @@ async def test_confirmed_manual_pr_block_releases_slot_for_sibling():
     sibling = {"current_card": {"id": "sibling"}, "phase": "dispatching"}
     assert select_pipelines({"card": session, "sibling": sibling}, 1, {"sibling"}) == {"sibling"}
     assert daemon._state["active_sessions"]["card"] is session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("startup", [False, True])
+async def test_manual_block_merge_retry_resumes_same_merge_intent(startup):
+    daemon, session, _ = daemon_with_worker("BLOCKED")
+    session.update(phase="merging", agent_dispatch={})
+    session["current_card"].update(status="IN_REVIEW", pr_node_id="PR_existing")
+    if startup:
+        daemon._reconcile_session_phases({"card": session}, {"BLOCKED": ["card"]}, None)
+    await daemon._reconcile_board_pauses()
+    assert session["board_paused"] is True
+    assert session["phase"] == "blocked"
+    assert session["board_pause_resume_phase"] == "merging"
+    assert not session.get("open_questions")
+    daemon._state["board_snapshot"] = {"IN_REVIEW": ["card"]}
+    await daemon._reconcile_board_pauses()
+    assert session["board_paused"] is False
+    assert session["phase"] == "merging"
+    assert session["current_card"]["pr_node_id"] == "PR_existing"

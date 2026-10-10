@@ -1906,7 +1906,7 @@ def _is_manual_board_block(session: dict[str, Any], column: str) -> bool:
     """A new Blocked move holds working intent without inventing a blocker."""
     return (
         column == "BLOCKED"
-        and session.get("phase") in {"dispatching", "monitoring_performer", "monitoring_agent", "monitoring_pr"}
+        and session.get("phase") in {"dispatching", "monitoring_performer", "monitoring_agent", "monitoring_pr", "merging"}
         and not session.get("open_questions")
         and not session.get("system_error_reason")
         and not session.get("env_blocked")
