@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 import structlog
 from fastapi import (
@@ -14,20 +15,86 @@ from coordinare.dashboard.helpers import _ACTIVE_PHASES
 
 if TYPE_CHECKING:
 
+        from typing import Any
+
         from coordinare.dashboard.context import DashboardContext
 
 _log = structlog.get_logger(__name__)
+
+
+def _control_sessions(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """Read working sessions for the current symphony and runtime-owned peers."""
+    flat_sessions = state.get("active_sessions") or {}
+    runtimes = state.get("symphony_states") or {}
+    sessions: dict[str, Any] = {}
+    owners: dict[str, list[str]] = {}
+    if runtimes:
+        for name, runtime in runtimes.items():
+            for cid, session in (getattr(runtime, "active_sessions", None) or {}).items():
+                owners.setdefault(cid, []).append(name)
+                sessions[cid] = session
+        # During a symphony tick the flat map is its live working map; other
+        # symphonies retain ownership in their runtime, not a stale aggregate.
+        current = state.get("current_symphony")
+        if current is not None:
+            for cid, session in flat_sessions.items():
+                if cid not in owners or owners[cid] == [current]:
+                    sessions[cid] = session
+            for cid in list(sessions):
+                if owners.get(cid) == [current] and cid not in flat_sessions:
+                    del sessions[cid]
+    else:
+        sessions = flat_sessions
+    return sessions, owners
+
+
+def _eligible_control_session(cid: str, session: Any, owners: dict[str, list[str]]) -> bool:
+    card = session.get("current_card") if isinstance(session, dict) else None
+    return (
+        isinstance(session, dict) and session.get("phase") in _ACTIVE_PHASES
+        and not session.get("board_paused") and isinstance(card, dict)
+        and card.get("id") == cid and len(owners.get(cid, [])) <= 1
+    )
+
+
+def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any] | JSONResponse:
+    """Resolve an eligible owning session without guessing between live cards."""
+    sessions, owners = _control_sessions(state)
+
+    if card_id is not None:
+        target = sessions.get(card_id)
+        if not _eligible_control_session(card_id, target, owners):
+            return JSONResponse({"error": "No eligible active card for this target"}, status_code=400)
+        return cast("dict[str, Any]", target)
+    live = [session for cid, session in sessions.items() if _eligible_control_session(cid, session, owners)]
+    if len(live) > 1:
+        return JSONResponse({"error": "Multiple active cards; specify card_id"}, status_code=409)
+    if live:
+        return cast("dict[str, Any]", live[0])
+    # Preserve the original single-card API only when no session map owns work.
+    if not sessions and not state.get("symphony_states") and state.get("phase") in _ACTIVE_PHASES:
+        return state
+    return JSONResponse({"error": "No active card to override"}, status_code=400)
+
+
+def _queue_override(state: dict[str, Any], target: dict[str, Any], override: dict[str, Any]) -> None:
+    if target is not state:
+        # Identical repeated commands are separate human decisions. The receipt
+        # lets fanout distinguish a fresh request from one its snapshot consumed.
+        override["control_id"] = uuid4().hex
+    target["pending_override"] = override
 
 
 def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
 
         @app.post("/api/skip-role")
-        async def skip_role() -> JSONResponse:
+        async def skip_role(card_id: str | None = None) -> JSONResponse:
             """Queue a skip-role override for the next graph cycle (031)."""
-            if daemon.state.get("phase") not in _ACTIVE_PHASES:
-                return JSONResponse({"error": "No active card to override"}, status_code=400)
-            daemon.state["pending_override"] = {"action": "skip"}
+            target = _control_target(daemon.state, card_id)
+            if isinstance(target, JSONResponse):
+                return target
+            _queue_override(daemon.state, target, {"action": "skip"})
             return JSONResponse({"status": "override_queued", "action": "skip"})
 
 
@@ -35,14 +102,15 @@ def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
 
         @app.post("/api/restart-from/{role}")
-        async def restart_from(role: str) -> JSONResponse:
+        async def restart_from(role: str, card_id: str | None = None) -> JSONResponse:
             """Queue a restart-from override for the next graph cycle (031).
 
             Accepts both role nouns (e.g. ``architect``) and stage names
             (e.g. ``architecting``).
             """
-            if daemon.state.get("phase") not in _ACTIVE_PHASES:
-                return JSONResponse({"error": "No active card to override"}, status_code=400)
+            target = _control_target(daemon.state, card_id)
+            if isinstance(target, JSONResponse):
+                return target
             lifecycle = list(daemon.state.get("lifecycle_sequence") or [])
             # Accept role nouns (architect) as well as stage names (architecting)
             from coordinare.graph.nodes.classify_human_feedback import _resolve_stage
@@ -52,7 +120,7 @@ def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
                     {"error": f"Role {role!r} not in lifecycle: {lifecycle}"},
                     status_code=400,
                 )
-            daemon.state["pending_override"] = {"action": "restart", "target_stage": resolved}
+            _queue_override(daemon.state, target, {"action": "restart", "target_stage": resolved})
             return JSONResponse({"status": "override_queued", "action": "restart", "target_stage": resolved})
 
 
@@ -60,11 +128,12 @@ def _register_veto(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
 
         @app.post("/api/veto")
-        async def veto() -> JSONResponse:
+        async def veto(card_id: str | None = None) -> JSONResponse:
             """Queue a veto override for the next graph cycle (031)."""
-            if daemon.state.get("phase") not in _ACTIVE_PHASES:
-                return JSONResponse({"error": "No active card to override"}, status_code=400)
-            daemon.state["pending_override"] = {"action": "veto"}
+            target = _control_target(daemon.state, card_id)
+            if isinstance(target, JSONResponse):
+                return target
+            _queue_override(daemon.state, target, {"action": "veto"})
             return JSONResponse({"status": "override_queued", "action": "veto"})
 
 

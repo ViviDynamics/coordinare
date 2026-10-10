@@ -406,6 +406,7 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
         if target in lifecycle:
             logger.info("override.restart", target_stage=target)
             state["performer_stage"] = target
+            state["lifecycle_continuation"] = []
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None

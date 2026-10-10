@@ -141,6 +141,7 @@ class AsyncSessionTickResult:
     error: str | None = None
     duration_ms: int = 0
     global_updates: dict[str, Any] | None = None
+    control_ids_at_start: dict[str, str] = field(default_factory=dict)
 
 
 _PHASE_PRIORITY: dict[str, int] = {
@@ -1834,6 +1835,12 @@ async def _invoke_session_tick(
         t0 = perf_counter()
         try:
             session_state, pre_fanout_siblings = _prepare_session_state(ctx, card_id)
+            control_ids_at_start = {
+                cid: override["control_id"]
+                for cid, sess in (session_state.get("active_sessions") or {}).items()
+                if isinstance((override := sess.get("pending_override")), dict)
+                and isinstance(override.get("control_id"), str)
+            }
             updated = await ctx.graph.ainvoke(session_state)
             updated_session, g_updates = _collect_session_updates(
                 ctx, card_id, session, updated, pre_fanout_siblings,
@@ -1844,6 +1851,7 @@ async def _invoke_session_tick(
                 session_state=cast("dict[str, Any]", updated_session),
                 duration_ms=int((perf_counter() - t0) * 1000),
                 global_updates=g_updates,
+                control_ids_at_start=control_ids_at_start,
             )
         except asyncio.CancelledError:
             raise
@@ -2105,7 +2113,9 @@ async def _merge_fanout_results(
                     if isinstance(entry, dict):
                         _merge_retry_queue_entry(merged_retry_queue, entry)
         cm = result.global_updates.get("_cross_session_mutations") or {}
-        cross_mutations.update(cm)  # last-writer-wins across concurrent results
+        for cid, mutated in cm.items():
+            _preserve_new_control(active_sessions.get(cid), mutated, result.control_ids_at_start.get(cid))
+            cross_mutations[cid] = mutated
         new_sessions = result.global_updates.get("_new_sessions") or {}
         for cid, sess in new_sessions.items():
             if cid not in active_sessions:
@@ -2137,6 +2147,20 @@ async def _merge_fanout_results(
     await _merge_session_results(state, active_sessions, eligibilities, results)
 
 
+def _preserve_new_control(
+    live_session: dict[str, Any] | None,
+    updated_session: dict[str, Any],
+    control_id_at_start: str | None,
+) -> None:
+    """Keep commands accepted after this result's snapshot, never its receipts."""
+    override = (live_session or {}).get("pending_override")
+    if not isinstance(override, dict):
+        return
+    control_id = override.get("control_id")
+    if isinstance(control_id, str) and control_id != control_id_at_start:
+        updated_session["pending_override"] = copy.deepcopy(override)
+
+
 async def _merge_session_results(
     state: CoordinareState,
     active_sessions: dict[str, Any],
@@ -2154,6 +2178,10 @@ async def _merge_session_results(
                 completed_ids.append(result.card_id)
             continue
         if result.ok:
+            _preserve_new_control(
+                active_sessions.get(result.card_id), result.session_state,
+                result.control_ids_at_start.get(result.card_id),
+            )
             # Only overwrite on success; preserves any cross-session
             # mutations applied above for sessions whose own tick failed.
             # A side poll can finish while fanout holds an older copy. Preserve
