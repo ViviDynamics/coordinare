@@ -27,7 +27,7 @@ from coordinare.graph.nodes.check_board import (
 from coordinare.graph.nodes.dispatch_performer import _finalise_success, dispatch_performer
 from coordinare.graph.nodes.monitor.verdict import _advance_stage, _apply_pending_override
 from coordinare.graph.state import SymphonyRuntimeState, _retire_active_session
-from coordinare.session import create_session_from_card, session_to_state
+from coordinare.session import create_session_from_card, session_to_state, state_to_session
 from tests.unit.test_dashboard import _make_app, _make_mock_daemon
 
 CONTROLS = [
@@ -68,6 +68,14 @@ async def test_flat_fallback_preserves_new_request_across_graph_copy(path, actio
     accepted = deepcopy(daemon.state["pending_override"])
     release.set()
     await task
+    if repeat:
+        assert response.status_code == 409
+        assert response.json() == {"error": "A control is already pending for this card"}
+        assert accepted == first
+        expected_stage = "assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing"
+        assert daemon.state["performer_stage"] == expected_stage
+        assert _apply_pending_override(daemon.state) is None
+        return
     assert response.status_code == 200
     expected = {"status": "override_queued", "action": action}
     if action == "restart":
@@ -75,8 +83,6 @@ async def test_flat_fallback_preserves_new_request_across_graph_copy(path, actio
     assert response.json() == expected
     assert daemon.state["pending_override"] == accepted
     assert isinstance(accepted.get("control_id"), str)
-    if first:
-        assert first["control_id"] != accepted["control_id"]
     assert _apply_pending_override(daemon.state) is not None
     assert _apply_pending_override(daemon.state) is None
 
@@ -344,13 +350,26 @@ async def test_control_accepted_after_tick_snapshot_survives_and_is_consumed_onc
     task = asyncio.create_task(_invoke_session_tick(context, "card-a", live))
     try:
         await entered.wait()
-        assert client.post(path).status_code == 200
+        response = client.post(path)
+        assert response.status_code == (409 if repeat else 200)
+        if repeat:
+            assert response.json() == {"error": "A control is already pending for this card"}
         accepted = deepcopy(live["pending_override"])
     finally:
         finish.set()
     result = await task
     assert result.ok
     await _merge_fanout_results(daemon.state, sessions, eligibility, [result])
+    if repeat:
+        final = sessions["card-a"]
+        assert final["performer_stage"] == ("assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing")
+        if action == "restart":
+            assert final["pending_override"]["control_id"] == accepted["control_id"]
+            assert final["pending_override"]["applied"] is True
+        else:
+            assert final["pending_override"] is None
+        assert _apply_pending_override(dict(final)) is None
+        return
     assert sessions["card-a"]["pending_override"] == accepted
     # The next genuine tick consumes this request. The stale result above
     # cannot erase it; nor can the merge resurrect it after consumption.
@@ -367,7 +386,7 @@ async def test_control_accepted_after_tick_snapshot_survives_and_is_consumed_onc
         assert final["pending_override"] is None
         assert final["phase"] == ("blocked" if action == "veto" else "dispatching")
         if action == "skip":
-            assert final["performer_stage"] == ("qa" if repeat else "reviewing")
+            assert final["performer_stage"] == "reviewing"
 
 
 @pytest.mark.asyncio
@@ -441,7 +460,8 @@ def test_invalid_restart_retains_the_existing_continuation() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("path", "action"), CONTROLS)
 @pytest.mark.parametrize("startup", [True, False])
-async def test_single_graph_writeback_preserves_new_control(path: str, action: str, startup: bool) -> None:
+@pytest.mark.parametrize("copy_result", [False, True])
+async def test_single_graph_writeback_preserves_new_control(path: str, action: str, startup: bool, copy_result: bool) -> None:
     entered, finish = asyncio.Event(), asyncio.Event()
 
     class Graph:
@@ -450,6 +470,8 @@ async def test_single_graph_writeback_preserves_new_control(path: str, action: s
                 state = await _pickup_todo_cards(state, {"titles": {"card-a": "Synthetic story"}}, ["card-a"])
                 _ensure_active_card_id(state)
             _apply_pending_override(state)
+            if copy_result:
+                state = {**state, "active_sessions": deepcopy(state.get("active_sessions", {}))}
             entered.set()
             await finish.wait()
             state.update(phase="monitoring_performer", agent_dispatch={"session_id": "synthetic-worker"})
@@ -574,9 +596,10 @@ async def test_reconciled_compiled_graph_consumes_exact_control_once(path: str, 
             recover.set()
             await asyncio.wait_for(consumed.wait(), 3)
             if newer_request:
-                assert client.post(path, params={"card_id": "card-a"}).status_code == 200
-                accepted = deepcopy(live["pending_override"])
-                assert accepted["control_id"] != first_id
+                response = client.post(path, params={"card_id": "card-a"})
+                assert response.status_code == 409
+                assert response.json() == {"error": "A control is already pending for this card"}
+                assert live["pending_override"]["control_id"] == first_id
         finally:
             recover.set()
             finish.set()
@@ -585,13 +608,109 @@ async def test_reconciled_compiled_graph_consumes_exact_control_once(path: str, 
     assert final["performer_stage"] == ("assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing")
     flat = dict(daemon.state)
     session_to_state(final, flat)
-    if newer_request:
-        assert final["pending_override"] == accepted
-        assert _apply_pending_override(flat) is not None
+    if action == "restart":
+        assert final["pending_override"]["applied"] is True
+        assert final["pending_override"]["control_id"] == first_id
     else:
-        if action == "restart":
-            assert final["pending_override"]["applied"] is True
-            assert final["pending_override"]["control_id"] == first_id
-        else:
-            assert final["pending_override"] is None
-        assert _apply_pending_override(flat) is None
+        assert final["pending_override"] is None
+    assert _apply_pending_override(flat) is None
+
+
+@pytest.mark.parametrize("ownership", ["flat", "mapped", "transient"])
+@pytest.mark.parametrize(("first_path", "_first_action"), CONTROLS)
+@pytest.mark.parametrize(("second_path", "_second_action"), CONTROLS)
+def test_pending_control_refuses_replacement_without_losing_first(ownership, first_path, _first_action, second_path, _second_action):
+    daemon = control_daemon("monitoring_performer")
+    daemon.state["current_card"] = {"id": "card-a"}
+    target = daemon.state
+    if ownership != "flat":
+        target = live_session()
+        if ownership == "transient":
+            target.pop("phase")
+        daemon.state["active_sessions"] = {"card-a": target}
+    client = _make_app(daemon=daemon)
+    assert client.post(first_path).status_code == 200
+    first = deepcopy(target["pending_override"])
+    response = client.post(second_path)
+    assert response.status_code == 409
+    assert response.json() == {"error": "A control is already pending for this card"}
+    assert target["pending_override"] == first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+async def test_single_graph_copy_preserves_sibling_control(path, action):
+    entered, finish = asyncio.Event(), asyncio.Event()
+    daemon = CoordinareDaemon(None)
+    sessions = {"card-a": live_session(), "card-b": live_session("card-b")}
+    daemon.state.update(active_card_id="card-a", active_sessions=sessions,
+                        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"],
+                        board_snapshot={"BLOCKED": list(sessions)})
+    session_to_state(sessions["card-a"], daemon.state)
+    async def tick(state):
+        copied = {**state, "active_sessions": deepcopy(state["active_sessions"])}
+        entered.set()
+        await finish.wait()
+        return copied
+    task = asyncio.create_task(_invoke_single_graph(daemon.state, SimpleNamespace(ainvoke=tick)))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        assert _make_app(daemon=daemon).post(path, params={"card_id": "card-b"}).status_code == 200
+        accepted = deepcopy(sessions["card-b"]["pending_override"])
+    finally:
+        finish.set()
+    updated = await task
+    assert updated["active_sessions"]["card-b"]["pending_override"] == accepted
+    assert updated["active_sessions"]["card-a"]["pending_override"] is None
+
+
+@pytest.mark.parametrize("ownership", ["flat", "mapped", "transient"])
+@pytest.mark.parametrize(("first_path", "first_action"), CONTROLS)
+@pytest.mark.parametrize(("second_path", "_second_action"), CONTROLS)
+def test_delivered_control_allows_next_request_only_on_active_owner(ownership, first_path, first_action, second_path, _second_action):
+    daemon = control_daemon("monitoring_performer")
+    daemon.state["current_card"] = {"id": "card-a"}
+    target = daemon.state
+    if ownership != "flat":
+        target = live_session()
+        if ownership == "transient":
+            target.pop("phase")
+        daemon.state["active_sessions"] = {"card-a": target}
+    client = _make_app(daemon=daemon)
+    assert client.post(first_path).status_code == 200
+    first_id = target["pending_override"]["control_id"]
+    flat = dict(daemon.state)
+    if ownership != "flat":
+        session_to_state(target, flat)
+    flat.setdefault("performer_stage", "implementing")
+    assert _apply_pending_override(flat) is not None
+    if ownership == "flat":
+        target.update(flat)
+    else:
+        target.update(state_to_session(flat))
+    before = deepcopy(target)
+    response = client.post(second_path)
+    if first_action == "veto":
+        assert response.status_code == 400
+        assert target == before
+    else:
+        assert response.status_code == 200
+        assert target["pending_override"]["control_id"] != first_id
+
+
+@pytest.mark.parametrize("ownership", ["flat", "mapped", "transient"])
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+def test_empty_legacy_pending_value_does_not_refuse_new_control(ownership, path, action):
+    daemon = control_daemon("monitoring_performer")
+    daemon.state["current_card"] = {"id": "card-a"}
+    target = daemon.state
+    if ownership != "flat":
+        target = live_session()
+        if ownership == "transient":
+            target.pop("phase")
+        daemon.state["active_sessions"] = {"card-a": target}
+    target["pending_override"] = {}
+    response = _make_app(daemon=daemon).post(path)
+    assert response.status_code == 200
+    assert target["pending_override"]["action"] == action
+    assert target["pending_override"]["control_id"]

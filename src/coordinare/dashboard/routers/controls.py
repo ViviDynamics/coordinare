@@ -94,11 +94,15 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
     return JSONResponse({"error": "No active card to override"}, status_code=400)
 
 
-def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> None:
+def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> JSONResponse | None:
+    pending = target.get("pending_override")
+    if isinstance(pending, dict) and pending and not pending.get("applied"):
+        return JSONResponse({"error": "A control is already pending for this card"}, status_code=409)
     # Identical repeated commands are separate human decisions, including in
     # flat state. The receipt distinguishes a fresh request from one consumed.
     override["control_id"] = uuid4().hex
     target["pending_override"] = override
+    return None
 
 
 def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
@@ -110,7 +114,9 @@ def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
             target = _control_target(daemon.state, card_id)
             if isinstance(target, JSONResponse):
                 return target
-            _queue_override(target, {"action": "skip"})
+            conflict = _queue_override(target, {"action": "skip"})
+            if conflict is not None:
+                return conflict
             return JSONResponse({"status": "override_queued", "action": "skip"})
 
 
@@ -136,7 +142,9 @@ def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
                     {"error": f"Role {role!r} not in lifecycle: {lifecycle}"},
                     status_code=400,
                 )
-            _queue_override(target, {"action": "restart", "target_stage": resolved})
+            conflict = _queue_override(target, {"action": "restart", "target_stage": resolved})
+            if conflict is not None:
+                return conflict
             return JSONResponse({"status": "override_queued", "action": "restart", "target_stage": resolved})
 
 
@@ -149,7 +157,9 @@ def _register_veto(app: FastAPI, ctx: DashboardContext) -> None:
             target = _control_target(daemon.state, card_id)
             if isinstance(target, JSONResponse):
                 return target
-            _queue_override(target, {"action": "veto"})
+            conflict = _queue_override(target, {"action": "veto"})
+            if conflict is not None:
+                return conflict
             return JSONResponse({"status": "override_queued", "action": "veto"})
 
 

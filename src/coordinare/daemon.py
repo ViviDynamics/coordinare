@@ -1705,13 +1705,15 @@ async def _invoke_single_graph(state: CoordinareState, graph: Any) -> Coordinare
         )
     active_card_id = state.get("active_card_id")
     sessions = state.get("active_sessions") or {}
+    live_sessions = dict(live_state.get("active_sessions") or {})
     if active_card_id in sessions:
         updated = cast("dict[str, Any]", state_to_session(state))
-        _preserve_new_control(
-            sessions[active_card_id], updated, control_ids.get(active_card_id),
-            consumed_control_id=state.get("consumed_control_id"),
-        )
         sessions[active_card_id] = updated
+    for cid, session in sessions.items():
+        _preserve_new_control(
+            live_sessions.get(cid, {}), session, control_ids.get(cid),
+            consumed_control_id=state.get("consumed_control_id") if cid == active_card_id else None,
+        )
     return state
 
 
