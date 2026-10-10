@@ -26,6 +26,8 @@ The model's judgement layers on top of this, and this keeps working without it.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -117,6 +119,23 @@ def production_fingerprint(events: Iterable[Any] | None) -> tuple[int, int]:
     """
     evidence = read_evidence(events)
     return (evidence.tool_uses, evidence.completions)
+
+
+def production_cursor(events: Iterable[Any] | None) -> str | None:
+    """Identify the newest productive event without retaining its payload.
+
+    Counts remain useful for old checkpoints, but stop increasing when the
+    rolling buffer fills. A cursor survives that rollover and ignores chatter
+    after the last tool/completion. Identical re-reports stay byte-stable.
+    """
+    newest = None
+    for event in events or ():
+        if _event_type(event) in PRODUCING_EVENT_TYPES:
+            newest = event
+    if newest is None:
+        return None
+    payload = json.dumps(newest, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 @dataclass(frozen=True)

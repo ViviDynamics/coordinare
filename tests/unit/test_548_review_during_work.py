@@ -112,5 +112,5 @@ async def test_accepted_command_is_durable_and_deduplicated_without_losing_other
 def test_override_snapshot_contract_advances_with_empty_legacy_default() -> None:
     from coordinare.state_store import CURRENT_SCHEMA_VERSION
 
-    assert CURRENT_SCHEMA_VERSION == 31
+    assert CURRENT_SCHEMA_VERSION == 32
     assert PersistedSession(card_id="legacy").pending_override is None

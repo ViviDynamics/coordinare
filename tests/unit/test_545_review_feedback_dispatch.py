@@ -382,7 +382,7 @@ def test_operator_kickback_still_excludes_performer(column: str) -> None:
 def test_replacement_intent_advances_snapshot_schema() -> None:
     from coordinare.state_store import CURRENT_SCHEMA_VERSION
 
-    assert CURRENT_SCHEMA_VERSION == 31
+    assert CURRENT_SCHEMA_VERSION == 32
 
 
 @pytest.mark.parametrize("version", range(1, 26))

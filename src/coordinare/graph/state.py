@@ -270,6 +270,7 @@ class CoordinareState(TypedDict, total=False):
     # check; consumed by monitor_performer's 3536 convergence reprieve logic.
     last_production_at: datetime | None
     last_production_fingerprint: tuple[int, int] | None
+    last_production_cursor: str | None
     convergence_reprieves: int
     # 425 — observer core. Written only when a symphony's observer is enabled;
     # absent (never defaulted) otherwise so disabled monitoring is byte-identical.
@@ -515,6 +516,9 @@ def initial_state() -> CoordinareState:
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
         "last_progress_at": None,
+        "last_production_at": None,
+        "last_production_fingerprint": None,
+        "last_production_cursor": None,
         "workflow_step": None,
         "workflow_step_entered_at": None,
         "workflow_step_trail": [],

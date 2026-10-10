@@ -729,6 +729,7 @@ def _advance_stage(
             # commands of its own before its clock could reset at all.
             "last_production_at": None,
             "last_production_fingerprint": None,
+            "last_production_cursor": None,
             "convergence_reprieves": 0,
             # 425: the observer's repetition streak and verdict belong to ONE
             # performer run, exactly like the production clock above them.

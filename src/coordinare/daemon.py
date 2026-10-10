@@ -486,6 +486,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
     return PersistedSession(
         card_id=card_id,
         last_progress_at=sess.get("last_progress_at"),
+        last_production_at=sess.get("last_production_at"),
+        last_production_fingerprint=sess.get("last_production_fingerprint"),
+        last_production_cursor=sess.get("last_production_cursor"),
         last_progress_fingerprint=sess.get("last_progress_fingerprint"),
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
@@ -497,6 +500,11 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         agent_session_id=session_id if isinstance(session_id, str) and session_id else None,
         agent_performer_id=performer_id if isinstance(performer_id, str) and performer_id else None,
         agent_job_id=job_id if isinstance(job_id, str) and job_id else None,
+        agent_dispatch_at=(
+            sess["agent_dispatch_at"]
+            if isinstance(sess.get("agent_dispatch_at"), datetime)
+            and sess["agent_dispatch_at"].tzinfo is not None else None
+        ),
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
@@ -666,6 +674,10 @@ def _restored_session_dict(
         "agent_dispatch": dispatch,
         "performer_stage": persisted.performer_stage,
         "phase": "dispatching" if missing_identity else persisted.phase,
+        "agent_dispatch_at": persisted.agent_dispatch_at,
+        "last_production_at": persisted.last_production_at,
+        "last_production_fingerprint": persisted.last_production_fingerprint,
+        "last_production_cursor": persisted.last_production_cursor,
         "reconciled_dispatch_pending": persisted.reconciled_dispatch_pending or missing_identity,
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
@@ -809,6 +821,10 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
         tuple(str(card.get(key) or "") for key in ("pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path")),
         (str(handoff.get("stage") or ""), str(handoff.get("completed_at") or ""),
          str(handoff.get("resumed_board_column") or "")),
+        tuple(str(session.get(key) or "") for key in (
+            "agent_dispatch_at", "last_production_at", "last_production_fingerprint",
+            "last_production_cursor",
+        )),
     )
 
 
@@ -2216,6 +2232,8 @@ class CoordinareDaemon:
         # 139: when each stall key was last logged, so a card that stays stuck
         # reminds rather than reprints every cycle.
         self._logged_stalls: dict[str, float] = {}
+        self._session_stuck_alerts: dict[tuple[str, str], float] = {}
+        self._stuck_observed_starts: dict[tuple[str, str], datetime] = {}
         self._cycle_active = False
         self._stop_during_cycle = False
         self._state_store = state_store
@@ -4918,6 +4936,19 @@ class CoordinareDaemon:
 
     async def _detect_stuck_card(self, notification_service: Any) -> None:
         """028: Stuck card detection (with cooldown to avoid alert spam)."""
+        sessions = self._state.get("active_sessions") or {}
+        if sessions:
+            await self._detect_stuck_performers(sessions, notification_service)
+            # Retained history must not turn an inactive aggregate phase into
+            # a worker alert. Preserve legacy non-monitoring transition alerts.
+            if self._state.get("phase") in {
+                "idle", "blocked", "system_error", "monitoring_pr",
+                "monitoring_performer", "monitoring_agent",
+            }:
+                return
+        else:
+            self._session_stuck_alerts.clear()
+            self._stuck_observed_starts.clear()
         _stuck_phase = self._state.get("phase")
         _stuck_excluded = {"idle", "system_error"}
         # 138 T038: the `notification_service is not None` gate that used
@@ -4964,6 +4995,106 @@ class CoordinareDaemon:
                             notification_service,
                         )
 
+    def _stuck_performer_start(
+        self, key: tuple[str, str], session: dict[str, Any], now: datetime,
+    ) -> datetime | None:
+        """Resolve a durable start or conservative older-snapshot fallback."""
+        dispatched_at = session.get("agent_dispatch_at")
+        if dispatched_at is None:
+            # Older snapshots omitted dispatch time. Persisted progress gives
+            # a minimum age; otherwise observe once rather than skip forever.
+            progress_at = session.get("last_progress_at")
+            start = (
+                progress_at if isinstance(progress_at, datetime)
+                and progress_at.tzinfo is not None else now
+            )
+            dispatched_at = self._stuck_observed_starts.setdefault(key, start)
+        elif not isinstance(dispatched_at, datetime) or dispatched_at.tzinfo is None:
+            return None
+        entered_at = session.get("phase_entered_at")
+        if isinstance(entered_at, datetime) and entered_at.tzinfo is not None:
+            dispatched_at = max(dispatched_at, entered_at)
+        return dispatched_at
+
+    def _stuck_worker_configs(self, sessions: dict[str, Any]) -> dict[str, Any]:
+        """Resolve alert settings from runtime ownership without swapping state."""
+        config = self._state.get("config")
+        symphony_configs = self._state.get("symphony_configs") or {}
+        if not symphony_configs:
+            return dict.fromkeys(sessions, getattr(config, "stuck_alerts", None))
+        result: dict[str, Any] = {}
+        runtimes = self._state.get("symphony_states") or {}
+        for name, symphony_config in symphony_configs.items():
+            if not getattr(symphony_config, "enabled", True):
+                continue
+            effective = (
+                symphony_config.effective_config(config)
+                if config is not None and hasattr(symphony_config, "effective_config")
+                else config
+            )
+            for card_id in getattr(runtimes.get(name), "active_sessions", None) or {}:
+                result[card_id] = getattr(effective, "stuck_alerts", None)
+        return result
+
+    async def _detect_stuck_performers(
+        self, sessions: dict[str, Any], notification_service: Any,
+    ) -> None:
+        """Use each live worker's clock and identity, independent of siblings."""
+        worker_configs = self._stuck_worker_configs(sessions)
+        now = datetime.now(UTC)
+        live_keys: set[tuple[str, str]] = set()
+        for card_id, session in sessions.items():
+            stuck_config = worker_configs.get(card_id)
+            if stuck_config is None:
+                continue
+            if not isinstance(session, dict) or session.get("board_paused"):
+                continue
+            phase = session.get("phase")
+            if phase not in {"monitoring_performer", "monitoring_agent"}:
+                continue
+            dispatch = session.get("agent_dispatch") or {}
+            if not isinstance(dispatch, dict):
+                continue
+            session_id = dispatch.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                continue
+            card = session.get("current_card")
+            if not isinstance(card, dict) or not card.get("id"):
+                continue
+            key = (card_id, session_id)
+            live_keys.add(key)
+            dispatched_at = self._stuck_performer_start(key, session, now)
+            if dispatched_at is None:
+                continue
+            threshold = stuck_config.per_phase_thresholds.get(
+                phase, stuck_config.threshold_seconds,
+            )
+            if not isinstance(threshold, int) or threshold <= 0:
+                continue
+            cooldown = getattr(stuck_config, "cooldown_seconds", threshold)
+            if not isinstance(cooldown, int):
+                cooldown = threshold
+            elapsed = (now - dispatched_at).total_seconds()
+            last_alert = self._session_stuck_alerts.get(key)
+            if elapsed <= threshold or (
+                last_alert is not None and monotonic() - last_alert < cooldown
+            ):
+                continue
+            await self._emit_stuck_alert(
+                phase, threshold, elapsed, dispatched_at, notification_service,
+                card=card, session_id=session_id,
+            )
+            self._session_stuck_alerts[key] = monotonic()
+        # Ended/replaced workers cannot retain cooldowns indefinitely.
+        self._session_stuck_alerts = {
+            key: stamp for key, stamp in self._session_stuck_alerts.items()
+            if key in live_keys
+        }
+        self._stuck_observed_starts = {
+            key: stamp for key, stamp in self._stuck_observed_starts.items()
+            if key in live_keys
+        }
+
     async def _emit_stuck_alert(
         self,
         _stuck_phase: str,
@@ -4971,6 +5102,9 @@ class CoordinareDaemon:
         _elapsed: float,
         _phase_entered: Any,
         notification_service: Any,
+        *,
+        card: dict[str, Any] | None = None,
+        session_id: str = "",
     ) -> None:
         """Emit one stuck-card alert: card_stuck log, activity-feed entry,
         optional channel dispatch, then advance the cooldown stamp."""
@@ -4980,7 +5114,7 @@ class CoordinareDaemon:
             NotificationSeverity,
         )
 
-        _card = resolve_stuck_card(self._state)
+        _card = card if card is not None else resolve_stuck_card(self._state)
         _card_title = str(_card.get("title", ""))[:50]
         _card_num = _card.get("issue_number", "")
         _card_id = str(_card.get("id", ""))
@@ -5000,6 +5134,8 @@ class CoordinareDaemon:
         _stuck_key = stuck_dedup_key(
             _card_id, _stuck_phase, _phase_entered,
         )
+        if session_id:
+            _stuck_key = f"{_stuck_key}:{session_id}"
         if should_log_stall(
             self._logged_stalls, _stuck_key, time.monotonic(),
         ):
@@ -5027,6 +5163,7 @@ class CoordinareDaemon:
                     card_title=str(_card.get("title", "")),
                     stage=_stuck_phase,
                     text=f"stuck in {_stuck_phase} for {round(_elapsed // 60)} min",
+                    session_id=session_id,
                 )
         try:
             if notification_service is not None:
@@ -5054,7 +5191,10 @@ class CoordinareDaemon:
         # the cooldown must advance whether or not a
         # channel exists, or the feed takes a stuck entry
         # every cycle (FR-013, SC-006).
-        self._last_stuck_alert_at = monotonic()
+        # Live workers advance their own episode cooldown in the caller;
+        # they must not consume a separate legacy transition's cooldown.
+        if not session_id:
+            self._last_stuck_alert_at = monotonic()
 
     async def _handle_circuit_open(self, exc: CircuitOpenError) -> bool:
         """Handle an open circuit mid-cycle.  Returns True when the daemon

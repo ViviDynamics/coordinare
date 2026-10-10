@@ -31,7 +31,7 @@ _ASSESSMENT = {
 
 
 def test_schema_version_is_24() -> None:
-    assert CURRENT_SCHEMA_VERSION == 31  # 557/559: durable handoff and per-card PR identity
+    assert CURRENT_SCHEMA_VERSION == 32  # 557/559: durable handoff and per-card PR identity
 
 
 def test_new_assessment_field_defaults_to_none() -> None:
