@@ -92,7 +92,10 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
             else:
                 # A damaged prose quote can pair with a later field's quote.
                 # Only a complete string token owns brackets inside it.
-                if end == len(raw) or raw[end].isspace() or raw[end] in ":,]}":
+                boundary = end
+                while boundary < len(raw) and raw[boundary].isspace():
+                    boundary += 1
+                if boundary == len(raw) or raw[boundary] in ":,]}":
                     index = end
                     continue
         if char == "[" and not any(

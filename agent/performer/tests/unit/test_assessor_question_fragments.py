@@ -265,6 +265,8 @@ async def test_invalid_contract_values_cannot_supply_nested_questions(output, qu
     ('[{"questions":["Unrelated?"]}]', []),
     ('": false, [{"questions":["Unrelated?"]}]', []),
     ('broken "prefix [{"questions":["Unrelated?"]}]', []),
+    ('": false, [" note", {"questions":["Unrelated?"]}]', []),
+    ('": false, ["\\tnote", {"questions":["Unrelated?"]}]', []),
     ('broken "prefix [not an array]" "questions":["Keep me?"]', ["Keep me?"]),
     ('": false, "questions":["Keep me?"]', ["Keep me?"]),
     ('[{"assessment":{"ready":false,"questions":["Unrelated?"]}}]', []),
