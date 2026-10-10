@@ -68,12 +68,8 @@ def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
     return ranges
 
 
-def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
-    """Array elements cannot become root assessment fields.
-
-    Keyed values have their own ownership rules below. Bind decoded child
-    containers, not everything after an opening bracket in malformed prose.
-    """
+def _keyed_value_ranges(raw: str) -> list[tuple[int, int]]:
+    """Protect keyed containers and complete strings from root-array scans."""
     keyed_containers = [
         (field.end(), _container_end(raw, field.end()))
         for field in _JSON_FIELD.finditer(raw)
@@ -93,7 +89,14 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
             boundary += 1
         if boundary == len(raw) or raw[boundary] in ",]}":
             keyed_containers.append((start, end))
+    return keyed_containers
+
+
+def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
+    """Bind array child containers without letting prose swallow root fields."""
+    keyed_containers = _keyed_value_ranges(raw)
     ranges: list[tuple[int, int]] = []
+    decoder = json.JSONDecoder()
     for index, char in enumerate(raw):
         if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]
