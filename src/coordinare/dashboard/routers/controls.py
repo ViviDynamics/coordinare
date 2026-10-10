@@ -95,8 +95,8 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
 
 
 def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> JSONResponse | None:
-    pending = target.get("pending_override")
-    if isinstance(pending, dict) and pending and not pending.get("applied"):
+    queued_control = target.get("pending_override")
+    if isinstance(queued_control, dict) and queued_control and not queued_control.get("applied"):
         return JSONResponse({"error": "A control is already pending for this card"}, status_code=409)
     # Identical repeated commands are separate human decisions, including in
     # flat state. The receipt distinguishes a fresh request from one consumed.
