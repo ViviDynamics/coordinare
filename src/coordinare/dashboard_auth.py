@@ -38,7 +38,16 @@ def _normalized_origin(origin: str) -> str:
 
 def _safe_normalized_origin(origin: str) -> str:
     """Malformed request origins never match the configured public origin."""
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in origin):
+        return ""
     try:
+        parsed = urlparse(origin)
+        invalid_components = (
+            parsed.path, parsed.params, parsed.username is not None,
+            parsed.password is not None, "?" in origin, "#" in origin,
+        )
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or any(invalid_components):
+            return ""
         return _normalized_origin(origin)
     except ValueError:
         return ""

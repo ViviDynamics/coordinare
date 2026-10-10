@@ -12,7 +12,15 @@ from coordinare.dashboard_oidc import OidcFlow
 from coordinare.localhost_guard import build_permitted
 
 
-@pytest.mark.parametrize("origin", ["https://dashboard.example:bad", "https://dashboard.example:65536"])
+@pytest.mark.parametrize("origin", [
+    "https://dashboard.example:bad", "https://dashboard.example:65536",
+    "https://dashboard.example:443/path", "https://dashboard.example:443/",
+    "https://dashboard.example:443?query", "https://dashboard.example:443#fragment",
+    "https://user:password@dashboard.example:443", "https://user@dashboard.example:443",
+    "https://dashboard.example:443?", "https://dashboard.example:443#",
+    " https://dashboard.example:443", "https://dashboard.example:443\t",
+    "https://dashboard.example:443@dashboard.example", "https://dashboard.example:443\r\n",
+])
 def test_malformed_logout_origin_is_rejected_and_legitimate_logout_still_revokes(origin: str) -> None:
     flow = OidcFlow(DashboardOidcConfig(
         discovery_url="https://identity.example/.well-known/openid-configuration",

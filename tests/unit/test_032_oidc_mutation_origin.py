@@ -194,3 +194,19 @@ def test_bracketed_ipvfuture_origin_does_not_match_an_ordinary_dns_redirect() ->
         assert flow.sessions.lookup(session) is not None
         accepted = client.post("/probe", headers={**cookie, "Origin": "https://v1.example"})
         assert accepted.status_code == 200
+
+
+@pytest.mark.parametrize("origin", [
+    "https://dashboard.example:443/path", "https://dashboard.example:443/",
+    "https://dashboard.example:443?q=1", "https://dashboard.example:443?",
+    "https://dashboard.example:443#fragment", "https://dashboard.example:443#",
+    "https://dashboard.example:443@dashboard.example", " https://dashboard.example:443",
+    "https://dashboard.example:443\r\n",
+])
+def test_non_origin_values_do_not_authorize_authenticated_mutations(origin: str) -> None:
+    app, session = authenticated_app()
+    with TestClient(app, base_url="http://dashboard.example") as client:
+        response = client.post("/probe", headers={
+            "Cookie": f"coordinare_session={session}", "Origin": origin,
+        })
+    assert response.status_code == 403
