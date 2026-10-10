@@ -1859,7 +1859,7 @@ function afQuietTick() {
   }
   sessions.forEach(function(sess) {
     var cid = sess.card_id;
-    if (!cid || _afQuietCards[cid]) return;
+    if (!cid) return;
     // Anchor on max(newest entry, agent_dispatch_at), skipping whichever is
     // absent. Entry-only anchoring leaves a session restored after a daemon
     // restart unmarked forever — the exact card this exists for (FR-028).
@@ -1867,7 +1867,12 @@ function afQuietTick() {
     var dispatched = sess.agent_dispatch_at ? Date.parse(sess.agent_dispatch_at) : NaN;
     if (!isNaN(dispatched)) lastHeard = isNaN(lastHeard) ? dispatched : Math.max(lastHeard, dispatched);
     if (isNaN(lastHeard)) return;   // never mark quiet off a missing timestamp
-    if ((now - lastHeard) / 1000 <= threshold) return;
+    if ((now - lastHeard) / 1000 <= threshold) {
+      // A fresh dispatch can replace a quiet worker without a phase change.
+      if (_afQuietCards[cid]) { delete _afQuietCards[cid]; marked = true; }
+      return;
+    }
+    if (_afQuietCards[cid]) return;
     _afQuietCards[cid] = true;
     marked = true;
     // One synthetic row per episode. Synthetic rows never enter the stored log

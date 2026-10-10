@@ -498,5 +498,19 @@ check('the chip label is OBSERVER', observerRow.includes('>OBSERVER<'));
 check('the verdict text is on the row',
       observerRow.includes('kill: burning without results'));
 
+section('Direct replacement resets quiet episode without a phase transition');
+resetFeed();
+_lastState = {
+  activity_quiet_threshold_seconds: 20,
+  active_sessions: [{card_id: 'PVTI_direct', session_id: 'old-worker', phase: 'monitoring_performer', agent_dispatch_at: iso(60000)}],
+};
+afQuietTick();
+check('old direct worker is quiet', _afQuietCards.PVTI_direct === true);
+_lastState.active_sessions[0].session_id = 'replacement-worker';
+_lastState.active_sessions[0].agent_dispatch_at = iso(0);
+afQuietTick();
+check('fresh replacement clears the previous live quiet marker', !_afQuietCards.PVTI_direct);
+check('historical episode remains one row', feed.rows.filter((r) => /ev-quiet/.test(r)).length === 1);
+
 console.log('\nSUMMARY ' + passed + ' ' + failed);
 process.exit(failed ? 1 : 0);
