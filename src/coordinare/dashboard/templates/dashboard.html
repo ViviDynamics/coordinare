@@ -1833,8 +1833,22 @@ function afQuietTick() {
   var s = _lastState;
   if (!s) return;
   var threshold = s.activity_quiet_threshold_seconds;
-  if (!threshold || threshold <= 0) return;   // 0 disables
-  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var sessions = (Array.isArray(s.active_sessions) ? s.active_sessions : []).filter(function(sess) {
+    return !!sess.session_id && (sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent');
+  });
+  var active = {};
+  sessions.forEach(function(sess) { if (sess.card_id) active[sess.card_id] = true; });
+  var marked = false;
+  Object.keys(_afQuietCards).forEach(function(cid) {
+    if (!active[cid] || !threshold || threshold <= 0) {
+      delete _afQuietCards[cid];
+      marked = true;
+    }
+  });
+  if (!threshold || threshold <= 0) {
+    if (marked) renderActivePerformers(s);
+    return;   // 0 disables detection and clears existing markers
+  }
   var now = Date.now();
   var newest = {};
   for (var i = 0; i < _afEntries.length; i++) {
@@ -1843,10 +1857,9 @@ function afQuietTick() {
     var t = Date.parse(e.timestamp);
     if (!isNaN(t) && (!newest[e.card_id] || t > newest[e.card_id])) newest[e.card_id] = t;
   }
-  var marked = false;
   sessions.forEach(function(sess) {
     var cid = sess.card_id;
-    if (!cid || _afQuietCards[cid]) return;
+    if (!cid) return;
     // Anchor on max(newest entry, agent_dispatch_at), skipping whichever is
     // absent. Entry-only anchoring leaves a session restored after a daemon
     // restart unmarked forever — the exact card this exists for (FR-028).
@@ -1854,7 +1867,12 @@ function afQuietTick() {
     var dispatched = sess.agent_dispatch_at ? Date.parse(sess.agent_dispatch_at) : NaN;
     if (!isNaN(dispatched)) lastHeard = isNaN(lastHeard) ? dispatched : Math.max(lastHeard, dispatched);
     if (isNaN(lastHeard)) return;   // never mark quiet off a missing timestamp
-    if ((now - lastHeard) / 1000 <= threshold) return;
+    if ((now - lastHeard) / 1000 <= threshold) {
+      // A fresh dispatch can replace a quiet worker without a phase change.
+      if (_afQuietCards[cid]) { delete _afQuietCards[cid]; marked = true; }
+      return;
+    }
+    if (_afQuietCards[cid]) return;
     _afQuietCards[cid] = true;
     marked = true;
     // One synthetic row per episode. Synthetic rows never enter the stored log
