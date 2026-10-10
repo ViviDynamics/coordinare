@@ -42,6 +42,59 @@ def detector(sessions: dict[str, Any]) -> tuple[CoordinareDaemon, ActivityLog, F
     return daemon, log, service
 
 
+def multi_detector() -> tuple[CoordinareDaemon, ActivityLog, FakeNotificationService]:
+    from coordinare.config import ProjectConfiguration, SymphonyConfig
+    from coordinare.graph.state import SymphonyRuntimeState
+
+    sessions = {name: worker(name) for name in ("fast", "slow", "paused")}
+    daemon, log, service = detector(sessions)
+    daemon.state["config"] = ProjectConfiguration(
+        github_org="example", github_token="synthetic-token", human_reviewers=["reviewer"],
+        stuck_alerts=StuckAlertConfig(threshold_seconds=1800, per_phase_thresholds={}, cooldown_seconds=1800),
+    )
+    daemon.state["symphony_configs"] = {
+        name: SymphonyConfig(
+            name=name, github_project_number=1, enabled=name != "paused",
+            overrides={"stuck_alerts": {"threshold_seconds": threshold, "per_phase_thresholds": {}, "cooldown_seconds": 10}},
+        ) for name, threshold in (("fast", 180), ("slow", 600), ("paused", 180))
+    }
+    daemon.state["symphony_states"] = {
+        name: SymphonyRuntimeState(name=name, active_sessions={name: session})
+        for name, session in sessions.items()
+    }
+    return daemon, log, service
+
+
+@pytest.mark.asyncio
+async def test_aggregate_worker_detection_uses_each_symphonys_effective_threshold() -> None:
+    daemon, log, service = multi_detector()
+    await daemon._detect_stuck_card(service)
+    assert [entry["card_id"] for entry in log.snapshot()] == ["fast"]
+    assert service.dispatched[0].payload["threshold_seconds"] == "180"
+
+
+@pytest.mark.asyncio
+async def test_disabled_symphonys_retained_worker_never_emits_alert() -> None:
+    daemon, log, service = multi_detector()
+    daemon.state["config"].stuck_alerts.threshold_seconds = 180
+    await daemon._detect_stuck_card(service)
+    assert [entry["card_id"] for entry in log.snapshot()] == ["fast"]
+    assert len(service.dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_aggregate_worker_alert_uses_its_symphonys_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coordinare.daemon as daemon_module
+
+    daemon, _log, service = multi_detector()
+    clock = [100.0]
+    monkeypatch.setattr(daemon_module, "monotonic", lambda: clock[0])
+    await daemon._detect_stuck_card(service)
+    clock[0] += 11
+    await daemon._detect_stuck_card(service)
+    assert [event.payload["card_id"] for event in service.dispatched] == ["fast", "fast"]
+
+
 @pytest.mark.asyncio
 async def test_paused_sibling_cannot_hide_overdue_worker_or_its_identity() -> None:
     paused = worker("paused", phase="blocked")

@@ -5016,17 +5016,37 @@ class CoordinareDaemon:
             dispatched_at = max(dispatched_at, entered_at)
         return dispatched_at
 
+    def _stuck_worker_configs(self, sessions: dict[str, Any]) -> dict[str, Any]:
+        """Resolve alert settings from runtime ownership without swapping state."""
+        config = self._state.get("config")
+        symphony_configs = self._state.get("symphony_configs") or {}
+        if not symphony_configs:
+            return dict.fromkeys(sessions, getattr(config, "stuck_alerts", None))
+        result: dict[str, Any] = {}
+        runtimes = self._state.get("symphony_states") or {}
+        for name, symphony_config in symphony_configs.items():
+            if not getattr(symphony_config, "enabled", True):
+                continue
+            effective = (
+                symphony_config.effective_config(config)
+                if config is not None and hasattr(symphony_config, "effective_config")
+                else config
+            )
+            for card_id in getattr(runtimes.get(name), "active_sessions", None) or {}:
+                result[card_id] = getattr(effective, "stuck_alerts", None)
+        return result
+
     async def _detect_stuck_performers(
         self, sessions: dict[str, Any], notification_service: Any,
     ) -> None:
         """Use each live worker's clock and identity, independent of siblings."""
-        config = self._state.get("config")
-        stuck_config = getattr(config, "stuck_alerts", None)
-        if stuck_config is None:
-            return
+        worker_configs = self._stuck_worker_configs(sessions)
         now = datetime.now(UTC)
         live_keys: set[tuple[str, str]] = set()
         for card_id, session in sessions.items():
+            stuck_config = worker_configs.get(card_id)
+            if stuck_config is None:
+                continue
             if not isinstance(session, dict) or session.get("board_paused"):
                 continue
             phase = session.get("phase")
