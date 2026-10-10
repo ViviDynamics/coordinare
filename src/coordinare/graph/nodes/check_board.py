@@ -51,6 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
 from coordinare.services.review_staleness import classify_review_staleness
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
@@ -1914,6 +1915,12 @@ async def _resume_closed_pr(
         _rederive_current_card(state)
 
 
+async def _passive_retry_pr_is_open(state: CoordinareState, session: dict[str, Any]) -> bool:
+    """Read the retained PR lifecycle before bypassing approval monitoring."""
+    return await retained_pr_is_open(state.get("github_service"), session.get("current_card") or {},
+                                     state=state)
+
+
 async def _reset_and_rehydrate(
     state: CoordinareState, board: dict[str, Any], eligible_todo: list[str], max_cards: int, active_sessions: dict[str, Any],
 ) -> None:
@@ -1977,7 +1984,19 @@ async def _reset_and_rehydrate(
     # already active. The pipeline admission guard controls dispatch.
     for item in eligible_todo:
         sess = active_sessions.get(item)
-        if sess is None or sess.get("board_paused") or sess.get("phase") != "idle":
+        if sess is None or sess.get("board_paused"):
+            continue
+        batch = sess.get("dispatched_feedback") or {}
+        unfinished_feedback = (
+            sess.get("phase") == "monitoring_pr"
+            and not (sess.get("agent_dispatch") or {}).get("session_id")
+            and isinstance(batch, dict)
+            and batch.get("stage") == sess.get("performer_stage")
+            and bool(batch.get("items"))
+        )
+        if sess.get("phase") != "idle" and not unfinished_feedback:
+            continue
+        if unfinished_feedback and not await _passive_retry_pr_is_open(state, sess):
             continue
         sess["current_card"] = {
             **(sess.get("current_card") or {}),
