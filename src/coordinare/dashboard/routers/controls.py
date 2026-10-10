@@ -75,6 +75,16 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
     """Resolve an eligible owning session without guessing between live cards."""
     sessions, owners = _control_sessions(state)
     transient = _legacy_transient_owner(state, sessions)
+    # Flat compatibility must obey the same current-card and pause contract.
+    card = state.get("current_card")
+    cid = card.get("id") if isinstance(card, dict) else None
+    if (
+        not sessions and not state.get("symphony_states")
+        and isinstance(cid, str) and cid
+        and _eligible_control_session(cid, state, {})
+        and (card_id is None or card_id == cid)
+    ):
+        return state
 
     if card_id is not None:
         target = sessions.get(card_id)
@@ -88,9 +98,6 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
         return JSONResponse({"error": "Multiple active cards; specify card_id"}, status_code=409)
     if live:
         return cast("dict[str, Any]", live[0])
-    # Preserve the original single-card API only when no session map owns work.
-    if not sessions and not state.get("symphony_states") and state.get("phase") in _ACTIVE_PHASES:
-        return state
     return JSONResponse({"error": "No active card to override"}, status_code=400)
 
 

@@ -1345,6 +1345,7 @@ def test_skip_role_active_card() -> None:
     daemon = _make_mock_daemon(phase="monitoring_performer")
     daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
     daemon.state["performer_stage"] = "implementing"
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/skip-role")
@@ -1370,6 +1371,7 @@ def test_restart_from_valid_role() -> None:
     """POST /api/restart-from/{role} queues restart override for valid role."""
     daemon = _make_mock_daemon(phase="monitoring_performer")
     daemon.state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/restart-from/reviewing")
@@ -1384,6 +1386,7 @@ def test_restart_from_role_noun() -> None:
     """POST /api/restart-from/{role} accepts role noun and resolves to stage."""
     daemon = _make_mock_daemon(phase="monitoring_performer")
     daemon.state["lifecycle_sequence"] = ["implementing", "architecting", "reviewing"]
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/restart-from/architect")
@@ -1397,6 +1400,7 @@ def test_restart_from_invalid_role() -> None:
     """POST /api/restart-from/{role} returns 400 for unknown role."""
     daemon = _make_mock_daemon(phase="monitoring_performer")
     daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/restart-from/nonexistent")
@@ -1419,6 +1423,7 @@ def test_restart_from_no_active_card() -> None:
 def test_veto_active_card() -> None:
     """POST /api/veto queues veto override when card is active."""
     daemon = _make_mock_daemon(phase="dispatching")
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/veto")
@@ -1442,6 +1447,7 @@ def test_skip_role_monitoring_agent_phase() -> None:
     """POST /api/skip-role works during monitoring_agent phase."""
     daemon = _make_mock_daemon(phase="monitoring_agent")
     daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    daemon.state["current_card"] = {"id": "active-card"}
     client = _make_app(daemon=daemon)
 
     res = client.post("/api/skip-role")

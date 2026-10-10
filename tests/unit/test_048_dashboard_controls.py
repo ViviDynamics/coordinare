@@ -714,3 +714,46 @@ def test_empty_legacy_pending_value_does_not_refuse_new_control(ownership, path,
     assert response.status_code == 200
     assert target["pending_override"]["action"] == action
     assert target["pending_override"]["control_id"]
+
+
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+@pytest.mark.parametrize("explicit", [False, True])
+def test_flat_owner_accepts_matching_target(path, action, explicit):
+    daemon = control_daemon(phase="monitoring_performer")
+    daemon.state.update(active_sessions={}, current_card={"id": "legacy"}, board_paused=False)
+    response = _make_app(daemon=daemon).post(path, params={"card_id": "legacy"} if explicit else None)
+    assert response.status_code == 200
+    expected = {"status": "override_queued", "action": action}
+    if action == "restart":
+        expected["target_stage"] = "assessing"
+    assert response.json() == expected
+    assert daemon.state["pending_override"]["action"] == action
+
+
+@pytest.mark.parametrize(("path", "_action"), CONTROLS)
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("condition", ["paused", "missing_card", "missing_id", "empty_id"])
+def test_flat_owner_refuses_ineligible_target_without_mutation(path, _action, explicit, condition):
+    daemon = control_daemon(phase="monitoring_performer")
+    daemon.state.update(active_sessions={}, current_card={"id": "legacy"}, board_paused=False)
+    if condition == "paused":
+        daemon.state["board_paused"] = True
+    elif condition == "missing_card":
+        daemon.state["current_card"] = None
+    elif condition == "missing_id":
+        daemon.state["current_card"] = {}
+    elif condition == "empty_id":
+        daemon.state["current_card"] = {"id": ""}
+    before = deepcopy(daemon.state.get("pending_override"))
+    response = _make_app(daemon=daemon).post(path, params={"card_id": "legacy"} if explicit else None)
+    assert response.status_code == 400
+    assert daemon.state.get("pending_override") == before
+
+
+@pytest.mark.parametrize(("path", "_action"), CONTROLS)
+def test_flat_owner_refuses_wrong_explicit_id(path, _action):
+    daemon = control_daemon(phase="monitoring_performer")
+    daemon.state.update(active_sessions={}, current_card={"id": "legacy"}, board_paused=False)
+    before = deepcopy(daemon.state.get("pending_override"))
+    assert _make_app(daemon=daemon).post(path, params={"card_id": "other"}).status_code == 400
+    assert daemon.state.get("pending_override") == before

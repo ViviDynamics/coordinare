@@ -23,5 +23,6 @@ An unqualified request can target the sole eligible live session. With multiple 
 - [x] Reproduce three explicit restart boundaries that skip configured stages; clear obsolete continuation only after valid restart.
 - [x] Preserve late controls from live owners when a single graph returns fresh mapped sessions, including non-focused siblings.
 - [x] Reproduce rapid receipt replacement before adding explicit pending conflicts and post-delivery active/blocked-owner neighbors.
+- [x] Validate legacy flat explicit targeting and refuse paused or missing flat cards without mutation.
 - [ ] Run configured checks, full suite, adversarial review, fresh Copilot and current-head CI before merge.
 - [ ] Verify actual publication/deployment and replay the original authenticated restart interaction and nearby regressions.
