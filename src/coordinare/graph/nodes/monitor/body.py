@@ -2479,10 +2479,10 @@ async def _phase_review_routes_s3(
         return state
     # Actionable feedback present — reset the empty-review retry counter.
     state["review_empty_retry_count"] = 0
-    # 065 Fix 4b: synthesise a comment from the prose body when the
-    # performer rejected with explanation but no structured comments.
-    if not comments and body:
-        comments = [{"body": body, "author_login": "coordinare"}]
+    # Preserve the summary alongside inline comments. Each may contain
+    # distinct instructions, and both must enter the feedback ledger.
+    if body:
+        comments = [*comments, {"body": body, "author_login": "coordinare"}]
     exhausted = _feedback_cycle_exhausted(state, card_id, stage, "changes_requested", comments)
     if exhausted is not None:
         return exhausted
@@ -3452,7 +3452,7 @@ async def _phase_feedback_bounce_s3(
     relay_body = ctx.relay_body
     stage = ctx.stage
     state["relay_feedback"] = [
-        {"body": relay_body, "author_login": "coordinare"},
+        {"body": relay_body, "author_login": "coordinare", "source": "performer", "stage": stage},
     ]
     # 072: preserve the originating stage rather than coercing to
     # "implementing" — a reviewer that checkpointed should resume
