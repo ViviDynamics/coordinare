@@ -1587,7 +1587,8 @@ async def _preflight_poll_board(
             state["board_snapshot"] = snapshot
         _mirror_board_metadata(state, board)
         if _valid_board_snapshot(snapshot):
-            present = {cid for ids in snapshot.values() for cid in ids}
+            valid_snapshot = cast("dict[str, list[str]]", snapshot)
+            present = {cid for ids in valid_snapshot.values() for cid in ids}
             for cid, session in active_sessions.items():
                 card = session.get("current_card")
                 if isinstance(card, dict) and cid in present:
@@ -1692,7 +1693,7 @@ async def _all_ineligible_fallback(
             if not isinstance(held_owner, dict):
                 continue
             comments_state = cast("CoordinareState", dict(state))
-            session_to_state(held_owner, comments_state)
+            session_to_state(cast("CardSession", held_owner), comments_state)
             comments_state["active_card_id"] = card_id
             _rederive_current_card(comments_state)
             routed = await route_issue_comments(comments_state)
