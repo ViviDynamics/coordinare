@@ -4843,12 +4843,12 @@ class CoordinareDaemon:
                     )
                 continue
             sess["phase"] = "blocked"
-            retry_blocked_todo = (
+            retry_terminal_todo = (
                 column == pause_column == "TODO"
-                and sess.get("board_pause_resume_phase") == "blocked"
+                and sess.get("board_pause_resume_phase") in {"blocked", "system_error"}
                 and not sess.get("pending_pr_handoff")
             )
-            if retry_blocked_todo or (
+            if retry_terminal_todo or (
                 was_paused and column != pause_column and column in {"TODO", "IN_PROGRESS", "IN_REVIEW"}
             ):
                 sess["board_paused"] = False
@@ -4856,6 +4856,9 @@ class CoordinareDaemon:
                 if sess.get("pending_pr_handoff"):
                     sess["pending_pr_handoff"]["resumed_board_column"] = column
                 _resume_board_paused_session(sess)
+                if retry_terminal_todo and sess.get("phase") == "system_error":
+                    # Explicit retry uses the existing Todo rehydration path.
+                    sess["phase"] = "blocked"
             logger.info("daemon.board_pause_reconciled", card_id=card_id, board_status=column, stopped=stopped)
 
     async def _reconcile_board_state_with_release(self) -> None:
