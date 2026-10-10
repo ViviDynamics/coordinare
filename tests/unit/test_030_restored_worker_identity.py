@@ -137,3 +137,38 @@ def test_monitoring_agent_restores_capacity_in_unchanged_persistent_role_pool() 
     assert manager.active_count("assessing") == 1
     manager.release("assessing", "card-A")
     assert manager.acquire("assessing", "card-B") is retained
+
+
+@pytest.mark.parametrize("phase", ["monitoring_performer", "monitoring_agent"])
+def test_live_shared_persistent_service_reserves_every_registered_role(phase: str) -> None:
+    manager, retained, session = moved_worker_pool(phase=phase)
+    manager.register_pool("assessing", [retained], 1)
+    manager.sync_from_sessions({"card-A": session})
+    assert manager.active_count("assessing") == 1
+    assert manager.active_count("implementing") == 1
+    assert manager.acquire("implementing", "card-B") is None
+    manager.release("assessing", "card-A")
+    assert manager.active_count("implementing") == 0
+    assert manager.acquire("implementing", "card-B") is retained
+
+
+@pytest.mark.parametrize("mode", ["persistent", "ephemeral"])
+@pytest.mark.parametrize("first_stage,second_stage", [("assessing", "implementing"), ("implementing", "assessing")])
+def test_fresh_shared_endpoint_allocation_reserves_persistent_roles_before_sync(
+    mode: str, first_stage: str, second_stage: str,
+) -> None:
+    retained = Service("shared-endpoint")
+    retained._config.mode = mode
+    manager = SlotManager()
+    for stage in (first_stage, second_stage):
+        manager.register_pool(stage, [retained], 1)
+    assert manager.acquire(first_stage, "card-A") is retained
+    assert manager.active_count(first_stage) == 1
+    sibling = manager.acquire(second_stage, "card-B")
+    if mode == "persistent":
+        assert sibling is None
+        assert manager.active_count(second_stage) == 1
+        manager.release(first_stage, "card-A")
+        assert manager.acquire(second_stage, "card-B") is retained
+    else:
+        assert sibling is retained

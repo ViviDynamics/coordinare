@@ -72,8 +72,8 @@ class SlotManager:
 
     def __init__(self) -> None:
         self.pools: dict[str, RolePool] = {}
-        # Persistent endpoints moved out of a live turn's original stage
-        # remain occupied. Ephemeral handles may serve independent turns.
+        # Persistent endpoint occupancy spans every registered role pool.
+        # Ephemeral handles may serve independent turns.
         self._retained_slots: dict[tuple[str, str], Any] = {}
 
     def _occupied_indices(self, pool: RolePool) -> set[int]:
@@ -197,6 +197,9 @@ class SlotManager:
             card_id=card_id,
             service_index=idx,
         )
+        service = pool.services[idx]
+        if getattr(getattr(service, "_config", None), "mode", None) == "persistent":
+            self._retained_slots[(stage, card_id)] = service
         logger.info(
             "slot_manager.acquired",
             stage=stage,
@@ -253,9 +256,7 @@ class SlotManager:
             if service is None or getattr(getattr(service, "_config", None), "mode", None) != "persistent":
                 continue
             stage = session.get("performer_stage", "")
-            pool = self.pools.get(stage)
-            if pool is None or not any(candidate is service for candidate in pool.services):
-                retained[(stage, card_id)] = service
+            retained[(stage, card_id)] = service
         self._retained_slots = retained
 
     def sync_from_sessions(self, active_sessions: dict[str, Any]) -> None:
