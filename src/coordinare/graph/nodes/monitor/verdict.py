@@ -798,6 +798,7 @@ def _advance_stage(
         # reviews submitted before this point (they were already addressed
         # by the lifecycle roles).
         "lifecycle_completed_at": datetime.now(UTC),
+        "lifecycle_continuation": [],
     }
 
 

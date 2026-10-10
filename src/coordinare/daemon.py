@@ -2487,6 +2487,9 @@ class CoordinareDaemon:
         current_sequence = self._state.get("lifecycle_sequence") or []
         for session in (self._state.get("active_sessions") or {}).values():
             stage = session.get("performer_stage")
+            if session.get("lifecycle_completed_at") or session.get("phase") in {"monitoring_pr", "merging", "idle"}:
+                session["lifecycle_continuation"] = []
+                continue
             if (
                 not session.get("lifecycle_continuation")
                 and stage not in current_sequence

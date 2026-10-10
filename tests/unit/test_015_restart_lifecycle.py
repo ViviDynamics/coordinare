@@ -122,3 +122,47 @@ async def test_legacy_snapshot_migrates_continuation_to_versioned_contract(tmp_p
     jsonschema.validate(saved, schema)
     restored = await store.load()
     assert restored.active_sessions["existing"].lifecycle_continuation == ["assessing", "implementing", "reviewing"]
+
+
+@pytest.mark.parametrize("saved_continuation", [[], ["implementing", "reviewing"]])
+def test_completed_lifecycle_does_not_reconstruct_removed_stage_continuation(saved_continuation):
+    daemon = CoordinareDaemon(AsyncMock(), poll_interval_seconds=1)
+    daemon._state.update(lifecycle_sequence=["implementing", "qa"], config=SimpleNamespace(max_concurrent_cards=2))
+    daemon._restore_from_snapshot(WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC), phase="monitoring_pr",
+        lifecycle_sequence=["implementing", "reviewing"],
+        active_sessions={"existing": PersistedSession(
+            card_id="existing", phase="monitoring_pr", performer_stage="reviewing",
+            lifecycle_continuation=saved_continuation, lifecycle_completed_at=datetime.now(UTC),
+        )},
+    ))
+    assert daemon._state["active_sessions"]["existing"]["lifecycle_continuation"] == []
+
+
+def test_completed_continuation_does_not_skip_current_stages_on_later_feedback():
+    from coordinare.graph.nodes.monitor.verdict import _advance_stage
+
+    state = {
+        "performer_stage": "reviewing", "phase": "monitoring_performer",
+        "lifecycle_sequence": ["implementing", "qa", "closing_review"],
+        "lifecycle_continuation": ["assessing", "implementing", "reviewing"],
+        "current_card": {"id": "existing", "status": "IN_PROGRESS"},
+    }
+    state.update(_advance_stage(state))
+    assert state["phase"] == "monitoring_pr"
+    state.update(performer_stage="implementing", phase="monitoring_performer")
+    assert _advance_stage(state)["performer_stage"] == "qa"
+
+
+def test_final_lint_bounce_keeps_unfinished_continuation(monkeypatch):
+    from coordinare.graph.nodes.monitor import verdict
+
+    state = {"performer_stage": "reviewing", "lifecycle_sequence": ["implementing", "qa"],
+             "lifecycle_continuation": ["implementing", "reviewing"],
+             "current_card": {"id": "existing", "status": "IN_PROGRESS"}}
+    monkeypatch.setattr(verdict, "_ci_lint_gate", lambda state, card: {"phase": "dispatching", "performer_stage": "implementing"})
+    update = verdict._advance_stage(state)
+    state.update(update)
+    assert state["phase"] == "dispatching"
+    assert state["lifecycle_continuation"] == ["implementing", "reviewing"]
+    assert "lifecycle_completed_at" not in update
