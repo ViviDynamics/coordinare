@@ -201,6 +201,8 @@ async def test_recovered_question_is_redacted_and_retained_during_parse_retry():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("output,expected", [
     ('broken "metadata": {"questions":["Unrelated?"]}', []),
+    ('broken "metadata":[garbage } {"questions":["Unrelated?"]}]', []),
+    ('broken "metadata":{garbage ] "questions":["Unrelated?"]}', []),
     ('broken "metadata": {"assessment":{"ready":false,"questions":["Unrelated?"]}}', []),
     ('broken "metadata": {"questions":["Unrelated?"]', []),
     ('broken "questions":["Keep me?"], "metadata":{"questions":["Unrelated?"]}', ["Keep me?"]),
@@ -218,6 +220,8 @@ async def test_malformed_metadata_cannot_supply_assessment_questions(output, exp
         )
     assert (response.questions or []) == expected
     assert "Unrelated?" not in str(perf.open_questions)
+    if not expected:
+        assert response.status == "assessment_complete"
 
 
 @pytest.mark.asyncio
@@ -269,8 +273,6 @@ async def test_invalid_contract_values_cannot_supply_nested_questions(output, qu
     ('[garbage } {"assessment":{"ready":true,"questions":[]}}]', []),
     ('[garbage } {"questions":["Unrelated?"]}]', []),
     ('[garbage } {"questions":["Unrelated?"]}], "questions":["Keep me?"]', ["Keep me?"]),
-    ('broken "metadata":[garbage } {"questions":["Unrelated?"]}]', []),
-    ('broken "metadata":{garbage ] "questions":["Unrelated?"]}', []),
     ('[{"questions":[]}, garbage, {"questions":["Unrelated?"]}]', []),
     ('[garbage, {"questions":["Unrelated?"]}], "questions":["Keep me?"]', ["Keep me?"]),
     ('[garbage, {"assessment":{"ready":true,"questions":[]}}]', []),
