@@ -1914,6 +1914,19 @@ async def _resume_closed_pr(
         _rederive_current_card(state)
 
 
+async def _passive_retry_pr_is_open(state: CoordinareState, session: dict[str, Any]) -> bool:
+    """Read the retained PR lifecycle before bypassing approval monitoring."""
+    github = state.get("github_service")
+    pr_node_id = (session.get("current_card") or {}).get("pr_node_id")
+    if github is None or not pr_node_id:
+        return False
+    try:
+        context = await github.get_pr_review_context(str(pr_node_id))
+    except Exception:
+        return False
+    return isinstance(context, dict) and context.get("state") == "OPEN"
+
+
 async def _reset_and_rehydrate(
     state: CoordinareState, board: dict[str, Any], eligible_todo: list[str], max_cards: int, active_sessions: dict[str, Any],
 ) -> None:
@@ -1988,6 +2001,8 @@ async def _reset_and_rehydrate(
             and bool(batch.get("items"))
         )
         if sess.get("phase") != "idle" and not unfinished_feedback:
+            continue
+        if unfinished_feedback and not await _passive_retry_pr_is_open(state, sess):
             continue
         sess["current_card"] = {
             **(sess.get("current_card") or {}),
