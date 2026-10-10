@@ -80,11 +80,33 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
         if raw[field.end():field.end() + 1] in ("{", "[")
     ]
     ranges: list[tuple[int, int]] = []
+    decoder = json.JSONDecoder()
     for index, char in enumerate(raw):
         if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]
         ):
-            ranges.extend(_question_value_objects(raw, index))
+            limit = _container_end(raw, index)
+            cursor = index + 1
+            while cursor < limit:
+                owned = next((end for start, end in keyed_containers if start <= cursor < end), None)
+                if owned is not None:
+                    cursor = owned
+                    continue
+                try:
+                    value, end = decoder.raw_decode(raw[:limit], cursor)
+                except ValueError:
+                    if raw[cursor] in "{[":
+                        end = _container_end(raw, cursor)
+                        ranges.append((cursor, end))
+                        cursor = end
+                    else:
+                        # Root arrays fail closed across malformed elements
+                        # and separators. Valid strings remain atomic.
+                        cursor += 1
+                else:
+                    if isinstance(value, (dict, list)):
+                        ranges.append((cursor, end))
+                    cursor = end
     return ranges
 
 
