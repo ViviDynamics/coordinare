@@ -44,6 +44,15 @@ def performance(output: str) -> Performance:
     ('broken "questions": ["Choose?"], "metadata": {}', ["Choose?"]),
     ('broken "questions": ["Choose?"], "metadata": {"assessment": {"ready": true}}', ["Choose?"]),
     (r'broken "quest\u0069ons": ["Choose?"]', ["Choose?"]),
+    ('broken "questions": ["Keep me?"], "questions": ["truncated?"', ["Keep me?"]),
+    ('broken "questions": ["truncated?", "questions": ["Keep me?"]', ["Keep me?"]),
+    ('broken "questions": null, "questions": ["Keep me?"]', ["Keep me?"]),
+    ('broken "questions": ["Keep me?"], "questions": [null]', ["Keep me?"]),
+    ('{"assessment": null, "questions": ["Need a decision?"]}', ["Need a decision?"]),
+    ('{"assessment": [], "questions": ["Need a decision?"]}', ["Need a decision?"]),
+    ('{"assessment": "ready", "questions": ["Need a decision?"]}', ["Need a decision?"]),
+    ('{"assessment": false, "questions": ["Need a decision?"]}', ["Need a decision?"]),
+    ('{"assessment": 1, "questions": ["Need a decision?"]}', ["Need a decision?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)
@@ -70,6 +79,8 @@ async def test_recovered_questions_block_without_committing(output, questions):
     '"assessment": {"ready": false, "questions": []}',
     'broken "questions": [], "metadata": {}',
     r'broken "suffici\u0065nt": false',
+    '{"assessment": null}',
+    '{"assessment": [], "questions": []}',
 ])
 async def test_unrecoverable_contract_output_fails_closed(output):
     perf = performance(output)

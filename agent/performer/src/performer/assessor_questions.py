@@ -41,9 +41,9 @@ def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
         try:
             value, _ = json.JSONDecoder().raw_decode(raw[end:])
         except ValueError:
-            return True, []
+            continue
         if not isinstance(value, list) or any(not isinstance(q, str) for q in value):
-            return True, []
+            continue
         for question in value:
             safe_question = _redact_secrets(question)
             if safe_question.strip() and safe_question not in questions:

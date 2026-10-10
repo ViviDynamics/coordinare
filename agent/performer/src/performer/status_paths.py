@@ -382,6 +382,8 @@ async def _assessor_lenient_response(
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
     if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw) or (
+        "assessment" in assess_output and not isinstance(assess_output["assessment"], dict)
+    ) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
         and (assess_output.get("questions") or "ready" in assess_output)
     ):
