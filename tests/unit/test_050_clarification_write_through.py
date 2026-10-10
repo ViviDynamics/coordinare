@@ -68,10 +68,13 @@ def blocked_question():
     return session
 
 
-def assert_answer_survives(session):
+def assert_answer_survives(session, expected_clarifications=None):
     assert session["phase"] == "dispatching"
     assert session["open_questions"] == []
-    assert session["card_clarifications"] == [{"questions": [QUESTION], "answer": ANSWER}]
+    assert session["card_clarifications"] == (
+        expected_clarifications if expected_clarifications is not None
+        else [{"questions": [QUESTION], "answer": ANSWER}]
+    )
     assert session["last_blocked_notified_at"] is None
     assert session["agent_dispatch"] == {}
     assert session["agent_dispatch_at"] is None
@@ -116,14 +119,25 @@ async def test_real_paused_maintenance_retains_answer_for_next_session_and_resta
     await daemon._invoke_multi_session()
     assert board.columns["question"] == "IN_PROGRESS"
     assert_answer_survives(daemon.state["active_sessions"]["question"])
-    assert daemon.state["active_sessions"]["paused"] == before
+    expected_paused = copy.deepcopy(before)
+    expected_paused["current_card"].update(
+        title="Paused story", description="", acceptance_criteria=[],
+        issue_number=1, issue_id="I_paused",
+    )
+    assert daemon.state["active_sessions"]["paused"] == expected_paused
+    original_history = copy.deepcopy(session["card_clarifications"])
     persisted = _persist_one_session("question", daemon.state["active_sessions"]["question"])
     restored = _restored_session_dict(
         "question", PersistedSession.model_validate_json(persisted.model_dump_json()),
         WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="dispatching"),
         session["current_card"],
     )
-    assert_answer_survives(restored)
+    expected_history = [{
+        "questions": [QUESTION], "answer": ANSWER, "card_id": "question",
+        "card_number": 2, "card_title": "Question story", "stage": "assessing",
+    }]
+    assert session["card_clarifications"] == original_history
+    assert_answer_survives(restored, expected_history)
     summary = DashboardStore._session_summary(daemon, "question", restored)
     assert summary["session_id"] is None
     assert summary["agent_dispatch_at"] is None
@@ -132,7 +146,7 @@ async def test_real_paused_maintenance_retains_answer_for_next_session_and_resta
     resumed = dict(daemon.state)
     session_to_state(restored, resumed)
     context, _ = _base_card_context(resumed, resumed["current_card"], "question", "assessing")
-    assert context["clarifications"] == [{"questions": [QUESTION], "answer": ANSWER}]
+    assert context["clarifications"] == expected_history
     prompt = _build_assess_prompt(context)
     assert QUESTION in prompt
     assert ANSWER in prompt
