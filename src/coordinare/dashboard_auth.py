@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+from ipaddress import IPv6Address
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -20,14 +21,38 @@ if TYPE_CHECKING:
     from coordinare.dashboard_oidc import OidcFlow
 
 _OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout"})
+_ORIGIN_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 
 def _normalized_origin(origin: str) -> str:
     parsed = urlparse(origin)
     default_port = 443 if parsed.scheme == "https" else 80
-    port = parsed.port or default_port
+    port = parsed.port
+    if port is None:
+        port = default_port
     suffix = "" if port == default_port else f":{port}"
-    return f"{parsed.scheme}://{(parsed.hostname or '').lower()}{suffix}"
+    hostname = (parsed.hostname or "").lower()
+    if parsed.netloc.rsplit("@", 1)[-1].startswith("["):
+        hostname = f"[{IPv6Address(hostname).compressed}]"
+    return f"{parsed.scheme}://{hostname}{suffix}"
+
+
+def _safe_normalized_origin(origin: str) -> str:
+    """Malformed request origins never match the configured public origin."""
+    if any(char.isspace() or char in _ORIGIN_CONTROL_CHARACTERS for char in origin):
+        return ""
+    try:
+        parsed = urlparse(origin)
+        invalid_components = (
+            parsed.path, parsed.params, parsed.username is not None,
+            parsed.password is not None, "?" in origin, "#" in origin,
+            parsed.netloc.endswith(":"),
+        )
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or any(invalid_components):
+            return ""
+        return _normalized_origin(origin)
+    except ValueError:
+        return ""
 
 
 def _public_origin(flow: OidcFlow) -> str:
@@ -116,7 +141,7 @@ class DashboardAuthentication:
             if request.method == "POST" and path == "/oidc/logout":
                 origin = request.headers.get("origin")
                 if origin is not None and (
-                    _normalized_origin(origin) != _public_origin(self._oidc)
+                    _safe_normalized_origin(origin) != _public_origin(self._oidc)
                 ):
                     refused_response = JSONResponse(
                         {"detail": "Cross-origin logout refused"}, status_code=403,
@@ -144,6 +169,10 @@ class DashboardAuthentication:
             return
         origin = request.headers.get("origin")
         expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+        if self._oidc is not None:
+            expected_origin = _public_origin(self._oidc)
+            if origin is not None:
+                origin = _safe_normalized_origin(origin)
         if request.method in MUTATING_METHODS and origin is not None and origin != expected_origin:
             refused_response = JSONResponse(
                 {"detail": "Cross-origin mutation refused"}, status_code=403,
