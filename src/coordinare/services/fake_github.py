@@ -431,6 +431,7 @@ class FakeGitHubService(CardIdentityMap):
             "review_decision": review_decision,
             "head_ref_oid": await self._rev(pr["head_ref"]),
             "head_ref_name": pr["head_ref"],
+            "head_repo_name_with_owner": f"{self._org}/{self._project_name}",
         }
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:

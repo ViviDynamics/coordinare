@@ -823,3 +823,15 @@ def test_parse_diff_paths_decodes_octal_escapes_in_quoted_headers() -> None:
         "new mode 100755\n"
     )
     assert GitHubService._parse_diff_paths(diff) == ["путь/файл.py"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", [{"nameWithOwner": "contributor/myrepo"}, None])
+async def test_mergeability_exposes_head_repository_identity(repository) -> None:
+    from coordinare.services.github import CHECK_MERGEABILITY_QUERY
+
+    assert "headRepository" in CHECK_MERGEABILITY_QUERY
+    service = _TestGitHubService([{"node": {"headRefName": "feature", "headRepository": repository}}])
+    result = await service.check_mergeability("PR_existing")
+    expected = repository["nameWithOwner"] if repository else ""
+    assert result["head_repo_name_with_owner"] == expected

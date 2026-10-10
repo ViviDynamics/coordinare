@@ -159,6 +159,7 @@ async def test_approver_withholds_until_ci_green_and_in_review(bench_repo: Path,
     assert m2["review_decision"] == "APPROVED"
     assert m2["mergeable"] is True
     assert m2["mergeable_raw"] == "MERGEABLE"
+    assert m2["head_repo_name_with_owner"] == "bench-org/bench-repo"
     reviews = await fake.get_pr_reviews(pr)
     assert reviews and reviews[0]["author_login"] == "human1"
     assert reviews[0]["state"] == "APPROVED"
