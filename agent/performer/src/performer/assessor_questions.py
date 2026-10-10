@@ -79,8 +79,21 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
         for field in _JSON_FIELD.finditer(raw)
         if raw[field.end():field.end() + 1] in ("{", "[")
     ]
-    ranges: list[tuple[int, int]] = []
     decoder = json.JSONDecoder()
+    for field in _JSON_FIELD.finditer(raw):
+        start = field.end()
+        if raw[start:start + 1] != '"':
+            continue
+        try:
+            _, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            continue
+        boundary = end
+        while boundary < len(raw) and raw[boundary].isspace():
+            boundary += 1
+        if boundary == len(raw) or raw[boundary] in ",]}":
+            keyed_containers.append((start, end))
+    ranges: list[tuple[int, int]] = []
     for index, char in enumerate(raw):
         if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]

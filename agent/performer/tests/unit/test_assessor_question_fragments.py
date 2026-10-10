@@ -1,6 +1,7 @@
 """Malformed assessment output must not discard a pending human decision."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,6 +43,10 @@ def performance(output: str) -> Performance:
     ('{"questions": ["' + QUESTION + '"]}', [QUESTION]),
     ('broken "questions": ["Should {} count as empty?" ]', ["Should {} count as empty?"]),
     ('intro "[" note broken "questions":["Keep me?"]', ["Keep me?"]),
+    (json.dumps({"notes": '[{"questions":["Unrelated?"]}]', "sufficient": False,
+                 "questions": ["Keep me?"]}), ["Keep me?"]),
+    (json.dumps({"notes": '[{"value":"note"}]', "assessment": {
+        "ready": False, "questions": ["Keep me?"]}}), ["Keep me?"]),
     ('broken "questions": ["Choose?"], "metadata": {}', ["Choose?"]),
     ('broken "questions": ["Choose?"], "metadata": {"assessment": {"ready": true}}', ["Choose?"]),
     (r'broken "quest\u0069ons": ["Choose?"]', ["Choose?"]),
@@ -160,7 +165,8 @@ async def test_recovered_questions_redact_secrets_before_surface_and_persistence
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prefix", ["broken", 'intro "[" note broken'])
+@pytest.mark.parametrize("prefix", ["broken", 'intro "[" note broken',
+                                    '"notes": ' + json.dumps('[{"value":"note"}]') + ','])
 @pytest.mark.parametrize("repaired", [
     '{"sufficient":true,"questions":[]}',
     '{"assessment":{"ready":true,"questions":[]}}',
