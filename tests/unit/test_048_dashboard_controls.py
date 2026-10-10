@@ -14,6 +14,7 @@ from coordinare.daemon import (
     SessionEligibility,
     _FanoutContext,
     _invoke_session_tick,
+    _invoke_single_graph,
     _merge_fanout_results,
     _persist_one_session,
 )
@@ -34,6 +35,132 @@ CONTROLS = [
     ("/api/skip-role", "skip"),
     ("/api/veto", "veto"),
 ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+@pytest.mark.parametrize("repeat", [False, True])
+async def test_flat_fallback_preserves_new_request_across_graph_copy(path, action, repeat):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Graph:
+        async def ainvoke(self, state):
+            updated = dict(state)
+            updated["pending_override"] = deepcopy(state.get("pending_override"))
+            _apply_pending_override(updated)
+            entered.set()
+            await release.wait()
+            return updated
+
+    daemon = CoordinareDaemon(Graph())
+    daemon.state.update(
+        phase="monitoring_performer", performer_stage="implementing",
+        current_card={"id": "legacy"},
+        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"],
+    )
+    client = _make_app(daemon=daemon)
+    if repeat:
+        assert client.post(path).status_code == 200
+    first = deepcopy(daemon.state.get("pending_override"))
+    task = asyncio.create_task(daemon._invoke_multi_session())
+    await asyncio.wait_for(entered.wait(), 3)
+    response = client.post(path)
+    accepted = deepcopy(daemon.state["pending_override"])
+    release.set()
+    await task
+    assert response.status_code == 200
+    expected = {"status": "override_queued", "action": action}
+    if action == "restart":
+        expected["target_stage"] = "assessing"
+    assert response.json() == expected
+    assert daemon.state["pending_override"] == accepted
+    assert isinstance(accepted.get("control_id"), str)
+    if first:
+        assert first["control_id"] != accepted["control_id"]
+    assert _apply_pending_override(daemon.state) is not None
+    assert _apply_pending_override(daemon.state) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+async def test_flat_fallback_does_not_replay_command_consumed_inside_graph(path, action):
+    daemon = CoordinareDaemon(None)
+    daemon.state.update(
+        phase="monitoring_performer", performer_stage="implementing",
+        current_card={"id": "legacy"},
+        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"],
+    )
+    assert _make_app(daemon=daemon).post(path).status_code == 200
+
+    async def tick(state):
+        updated = dict(state)
+        updated["pending_override"] = deepcopy(state["pending_override"])
+        _apply_pending_override(updated)
+        return updated
+
+    updated = await _invoke_single_graph(daemon.state, SimpleNamespace(ainvoke=tick))
+    expected = "assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing"
+    assert updated["performer_stage"] == expected
+    assert _apply_pending_override(updated) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "_action"), CONTROLS)
+@pytest.mark.parametrize("next_card", [None, {"id": "other"}])
+async def test_flat_fallback_does_not_transfer_late_control_to_a_new_card(path, _action, next_card):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Graph:
+        async def ainvoke(self, state):
+            updated = dict(state)
+            entered.set()
+            await release.wait()
+            updated.update(current_card=next_card, pending_override=None, phase="idle")
+            return updated
+
+    daemon = CoordinareDaemon(Graph())
+    daemon.state.update(phase="monitoring_performer", current_card={"id": "legacy"},
+                        lifecycle_sequence=["assessing", "implementing"])
+    task = asyncio.create_task(daemon._invoke_multi_session())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        assert _make_app(daemon=daemon).post(path).status_code == 200
+    finally:
+        release.set()
+        await task
+    assert daemon.state["current_card"] == next_card
+    assert daemon.state["pending_override"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+async def test_flat_fallback_does_not_replay_late_control_consumed_inside_graph(path, action):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Graph:
+        async def ainvoke(self, state):
+            updated = dict(state)
+            entered.set()
+            await release.wait()
+            updated["pending_override"] = deepcopy(state["pending_override"])
+            _apply_pending_override(updated)
+            return updated
+
+    daemon = CoordinareDaemon(Graph())
+    daemon.state.update(phase="monitoring_performer", performer_stage="implementing",
+                        current_card={"id": "legacy"},
+                        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"])
+    task = asyncio.create_task(daemon._invoke_multi_session())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        assert _make_app(daemon=daemon).post(path).status_code == 200
+    finally:
+        release.set()
+        await task
+    assert daemon.state["performer_stage"] == (
+        "assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing"
+    )
+    assert _apply_pending_override(daemon.state) is None
 
 
 def control_daemon(phase: str):

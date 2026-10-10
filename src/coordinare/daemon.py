@@ -1683,6 +1683,13 @@ async def _all_ineligible_fallback(
 
 async def _invoke_single_graph(state: CoordinareState, graph: Any) -> CoordinareState:
     """Mirror flat progress without erasing a command accepted during graph IO."""
+    live_state = state
+    flat_card_id = (
+        (state.get("current_card") or {}).get("id")
+        if not state.get("active_sessions") and not state.get("symphony_states") else None
+    )
+    flat_override = state.get("pending_override") or {}
+    flat_control_id = flat_override.get("control_id")
     control_ids = {
         cid: override["control_id"]
         for cid, session in (state.get("active_sessions") or {}).items()
@@ -1691,6 +1698,11 @@ async def _invoke_single_graph(state: CoordinareState, graph: Any) -> Coordinare
     }
     state["consumed_control_id"] = None
     state = await graph.ainvoke(state)
+    if flat_card_id is not None and flat_card_id == (state.get("current_card") or {}).get("id"):
+        _preserve_new_control(
+            cast("dict[str, Any]", live_state), cast("dict[str, Any]", state), flat_control_id,
+            consumed_control_id=state.get("consumed_control_id"),
+        )
     active_card_id = state.get("active_card_id")
     sessions = state.get("active_sessions") or {}
     if active_card_id in sessions:

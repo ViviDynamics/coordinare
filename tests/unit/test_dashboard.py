@@ -6,6 +6,7 @@ import socket
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1332,6 +1333,13 @@ def test_put_persona_responds_under_two_seconds(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _assert_pending_control(daemon: Any, expected: dict[str, str]) -> None:
+    override = dict(daemon.state["pending_override"])
+    receipt = override.pop("control_id")
+    assert UUID(receipt).hex == receipt
+    assert override == expected
+
+
 def test_skip_role_active_card() -> None:
     """POST /api/skip-role queues skip override when card is active."""
     daemon = _make_mock_daemon(phase="monitoring_performer")
@@ -1344,7 +1352,7 @@ def test_skip_role_active_card() -> None:
     assert res.status_code == 200
     assert res.json()["status"] == "override_queued"
     assert res.json()["action"] == "skip"
-    assert daemon.state["pending_override"] == {"action": "skip"}
+    _assert_pending_control(daemon, {"action": "skip"})
 
 
 def test_skip_role_no_active_card() -> None:
@@ -1369,7 +1377,7 @@ def test_restart_from_valid_role() -> None:
     assert res.status_code == 200
     assert res.json()["action"] == "restart"
     assert res.json()["target_stage"] == "reviewing"
-    assert daemon.state["pending_override"] == {"action": "restart", "target_stage": "reviewing"}
+    _assert_pending_control(daemon, {"action": "restart", "target_stage": "reviewing"})
 
 
 def test_restart_from_role_noun() -> None:
@@ -1382,7 +1390,7 @@ def test_restart_from_role_noun() -> None:
 
     assert res.status_code == 200
     assert res.json()["target_stage"] == "architecting"
-    assert daemon.state["pending_override"] == {"action": "restart", "target_stage": "architecting"}
+    _assert_pending_control(daemon, {"action": "restart", "target_stage": "architecting"})
 
 
 def test_restart_from_invalid_role() -> None:
@@ -1417,7 +1425,7 @@ def test_veto_active_card() -> None:
 
     assert res.status_code == 200
     assert res.json()["action"] == "veto"
-    assert daemon.state["pending_override"] == {"action": "veto"}
+    _assert_pending_control(daemon, {"action": "veto"})
 
 
 def test_veto_no_active_card() -> None:
@@ -1439,7 +1447,7 @@ def test_skip_role_monitoring_agent_phase() -> None:
     res = client.post("/api/skip-role")
 
     assert res.status_code == 200
-    assert daemon.state["pending_override"] == {"action": "skip"}
+    _assert_pending_control(daemon, {"action": "skip"})
 
 
 # ---------------------------------------------------------------------------

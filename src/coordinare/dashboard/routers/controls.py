@@ -77,11 +77,10 @@ def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any
     return JSONResponse({"error": "No active card to override"}, status_code=400)
 
 
-def _queue_override(state: dict[str, Any], target: dict[str, Any], override: dict[str, Any]) -> None:
-    if target is not state:
-        # Identical repeated commands are separate human decisions. The receipt
-        # lets fanout distinguish a fresh request from one its snapshot consumed.
-        override["control_id"] = uuid4().hex
+def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> None:
+    # Identical repeated commands are separate human decisions, including in
+    # flat state. The receipt distinguishes a fresh request from one consumed.
+    override["control_id"] = uuid4().hex
     target["pending_override"] = override
 
 
@@ -94,7 +93,7 @@ def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
             target = _control_target(daemon.state, card_id)
             if isinstance(target, JSONResponse):
                 return target
-            _queue_override(daemon.state, target, {"action": "skip"})
+            _queue_override(target, {"action": "skip"})
             return JSONResponse({"status": "override_queued", "action": "skip"})
 
 
@@ -120,7 +119,7 @@ def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
                     {"error": f"Role {role!r} not in lifecycle: {lifecycle}"},
                     status_code=400,
                 )
-            _queue_override(daemon.state, target, {"action": "restart", "target_stage": resolved})
+            _queue_override(target, {"action": "restart", "target_stage": resolved})
             return JSONResponse({"status": "override_queued", "action": "restart", "target_stage": resolved})
 
 
@@ -133,7 +132,7 @@ def _register_veto(app: FastAPI, ctx: DashboardContext) -> None:
             target = _control_target(daemon.state, card_id)
             if isinstance(target, JSONResponse):
                 return target
-            _queue_override(daemon.state, target, {"action": "veto"})
+            _queue_override(target, {"action": "veto"})
             return JSONResponse({"status": "override_queued", "action": "veto"})
 
 
