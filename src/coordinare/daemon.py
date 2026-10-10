@@ -141,6 +141,7 @@ class AsyncSessionTickResult:
     error: str | None = None
     duration_ms: int = 0
     global_updates: dict[str, Any] | None = None
+    control_ids_at_start: dict[str, str] = field(default_factory=dict)
 
 
 _PHASE_PRIORITY: dict[str, int] = {
@@ -1668,19 +1669,7 @@ async def _all_ineligible_fallback(
         session_to_state(active_sessions[focus], state)
         state["active_card_id"] = focus
         _rederive_current_card(state)
-    state = await graph.ainvoke(state)
-    # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
-    # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
-    # see the same view as the per-session fanout writeback at line 911.  Without
-    # this, a same-cycle readopt+dispatch leaves session.phase="dispatching"
-    # while flat state["phase"]="monitoring_performer"; _derive_global_phase
-    # then clobbers the flat phase back to "dispatching" and slot_manager
-    # releases the slot, orphaning the implementer container.
-    active_card_id = state.get("active_card_id")
-    if active_card_id:
-        active_sessions_after = state.get("active_sessions") or {}
-        if active_card_id in active_sessions_after:
-            active_sessions_after[active_card_id] = state_to_session(state)
+    state = await _invoke_single_graph(state, graph)
     # If the graph settled into a passive phase (monitoring_pr),
     # clear active_card_id so route_issue_comments doesn't poll the
     # card's issue on every cycle.  check_board rescans the full board
@@ -1689,6 +1678,42 @@ async def _all_ineligible_fallback(
     if state.get("phase") in PASSIVE_PHASES:
         state["active_card_id"] = None
     _rederive_current_card(state)
+    return state
+
+
+async def _invoke_single_graph(state: CoordinareState, graph: Any) -> CoordinareState:
+    """Mirror flat progress without erasing a command accepted during graph IO."""
+    live_state = state
+    flat_card_id = (
+        (state.get("current_card") or {}).get("id")
+        if not state.get("active_sessions") and not state.get("symphony_states") else None
+    )
+    flat_override = state.get("pending_override") or {}
+    flat_control_id = flat_override.get("control_id")
+    control_ids = {
+        cid: override["control_id"]
+        for cid, session in (state.get("active_sessions") or {}).items()
+        if isinstance(override := session.get("pending_override"), dict)
+        and isinstance(override.get("control_id"), str)
+    }
+    state["consumed_control_id"] = None
+    state = await graph.ainvoke(state)
+    if flat_card_id is not None and flat_card_id == (state.get("current_card") or {}).get("id"):
+        _preserve_new_control(
+            cast("dict[str, Any]", live_state), cast("dict[str, Any]", state), flat_control_id,
+            consumed_control_id=state.get("consumed_control_id"),
+        )
+    active_card_id = state.get("active_card_id")
+    sessions = state.get("active_sessions") or {}
+    live_sessions = dict(live_state.get("active_sessions") or {})
+    if active_card_id in sessions:
+        updated = cast("dict[str, Any]", state_to_session(state))
+        sessions[active_card_id] = updated
+    for cid, session in sessions.items():
+        _preserve_new_control(
+            live_sessions.get(cid, {}), session, control_ids.get(cid),
+            consumed_control_id=state.get("consumed_control_id") if cid == active_card_id else None,
+        )
     return state
 
 
@@ -1834,6 +1859,12 @@ async def _invoke_session_tick(
         t0 = perf_counter()
         try:
             session_state, pre_fanout_siblings = _prepare_session_state(ctx, card_id)
+            control_ids_at_start = {
+                cid: override["control_id"]
+                for cid, sess in (session_state.get("active_sessions") or {}).items()
+                if isinstance((override := sess.get("pending_override")), dict)
+                and isinstance(override.get("control_id"), str)
+            }
             updated = await ctx.graph.ainvoke(session_state)
             updated_session, g_updates = _collect_session_updates(
                 ctx, card_id, session, updated, pre_fanout_siblings,
@@ -1844,6 +1875,7 @@ async def _invoke_session_tick(
                 session_state=cast("dict[str, Any]", updated_session),
                 duration_ms=int((perf_counter() - t0) * 1000),
                 global_updates=g_updates,
+                control_ids_at_start=control_ids_at_start,
             )
         except asyncio.CancelledError:
             raise
@@ -2105,7 +2137,9 @@ async def _merge_fanout_results(
                     if isinstance(entry, dict):
                         _merge_retry_queue_entry(merged_retry_queue, entry)
         cm = result.global_updates.get("_cross_session_mutations") or {}
-        cross_mutations.update(cm)  # last-writer-wins across concurrent results
+        for cid, mutated in cm.items():
+            _preserve_new_control(active_sessions.get(cid), mutated, result.control_ids_at_start.get(cid))
+            cross_mutations[cid] = mutated
         new_sessions = result.global_updates.get("_new_sessions") or {}
         for cid, sess in new_sessions.items():
             if cid not in active_sessions:
@@ -2137,6 +2171,21 @@ async def _merge_fanout_results(
     await _merge_session_results(state, active_sessions, eligibilities, results)
 
 
+def _preserve_new_control(
+    live_session: dict[str, Any] | None,
+    updated_session: dict[str, Any],
+    control_id_at_start: str | None,
+    *, consumed_control_id: str | None = None,
+) -> None:
+    """Keep commands accepted after this result's snapshot, never its receipts."""
+    override = (live_session or {}).get("pending_override")
+    if not isinstance(override, dict):
+        return
+    control_id = override.get("control_id")
+    if isinstance(control_id, str) and control_id not in {control_id_at_start, consumed_control_id}:
+        updated_session["pending_override"] = copy.deepcopy(override)
+
+
 async def _merge_session_results(
     state: CoordinareState,
     active_sessions: dict[str, Any],
@@ -2154,6 +2203,10 @@ async def _merge_session_results(
                 completed_ids.append(result.card_id)
             continue
         if result.ok:
+            _preserve_new_control(
+                active_sessions.get(result.card_id), result.session_state,
+                result.control_ids_at_start.get(result.card_id),
+            )
             # Only overwrite on success; preserves any cross-session
             # mutations applied above for sessions whose own tick failed.
             # A side poll can finish while fanout holds an older copy. Preserve
@@ -2905,18 +2958,7 @@ class CoordinareDaemon:
 
         if not active_sessions:
             # No sessions yet — run one graph cycle to let check_board populate them
-            self._state = await self._graph.ainvoke(self._state)
-            # 069: mirror flat-state mutations onto active_sessions[active_card_id]
-            # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
-            # see the same view as the per-session fanout writeback (line 911).
-            # Without this, a same-cycle readopt+dispatch leaves the new session at
-            # phase="dispatching" while flat state["phase"]="monitoring_performer"
-            # — and slot_manager then releases the slot, orphaning the implementer.
-            _active_card_id = self._state.get("active_card_id")
-            if _active_card_id:
-                _sessions_after = self._state.get("active_sessions") or {}
-                if _active_card_id in _sessions_after:
-                    _sessions_after[_active_card_id] = state_to_session(self._state)
+            self._state = await _invoke_single_graph(self._state, self._graph)
             return
 
         # Pre-fanout: give every session ONE shared marker map per per-cycle key.
@@ -3140,7 +3182,6 @@ class CoordinareDaemon:
         from coordinare.observability import bind_symphony, clear_symphony
 
         bind_symphony(symphony_name)
-        self._state["current_symphony"] = symphony_name
         _propagating = False
         # Save symphony-scoped graph keys before entering the try so the outer
         # finally can always restore them (prevents cross-symphony contamination).
@@ -3167,6 +3208,9 @@ class CoordinareDaemon:
             ) = self._swap_symphony_state_in(
                 symphony_name, sym_state, _sym_sessions, _effective_cfg,
             )
+            # The marker means the working map is swapped in, not merely that
+            # restored-session ownership is being resolved across an IO await.
+            self._state["current_symphony"] = symphony_name
             try:
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits

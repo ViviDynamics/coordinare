@@ -391,6 +391,8 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     action = override.get("action")
     if action == "restart" and override.get("applied"):
         return None
+    control_id = override.get("control_id")
+    state["consumed_control_id"] = control_id if isinstance(control_id, str) else None
     state["pending_override"] = None  # FR-008: clear immediately
 
     if action == "skip":
@@ -406,6 +408,7 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
         if target in lifecycle:
             logger.info("override.restart", target_stage=target)
             state["performer_stage"] = target
+            state["lifecycle_continuation"] = []
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
