@@ -6,18 +6,40 @@ import re
 
 from performer.models import _redact_secrets
 
-_ASSESSMENT_FIELD = re.compile(r'"(questions|sufficient|assessment|ready)"\s*:\s*')
+_JSON_FIELD = re.compile(r'(?P<key>"(?:[^"\\]|\\.)*")\s*:\s*')
+_ASSESSMENT_KEYS = frozenset({"questions", "sufficient", "assessment", "ready"})
+
+
+def _assessment_fields(raw: str) -> list[tuple[str, int, int]]:
+    fields = []
+    for field in _JSON_FIELD.finditer(raw):
+        try:
+            key = json.loads(field.group("key"))
+        except ValueError:
+            continue
+        if key in _ASSESSMENT_KEYS:
+            fields.append((key, field.start(), field.end()))
+    return fields
+
+
+def assessment_fields_outside_object(raw: str) -> bool:
+    """A nested object is not an assessment when its contract fields lie outside it."""
+    start, end = raw.find("{"), raw.rfind("}")
+    return any(
+        start < 0 or field_start < start or field_end > end
+        for _, field_start, field_end in _assessment_fields(raw)
+    )
 
 
 def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
     """Identify contract fragments; recover only complete arrays of question strings."""
-    fields = list(_ASSESSMENT_FIELD.finditer(raw))
+    fields = _assessment_fields(raw)
     questions: list[str] = []
-    for field in fields:
-        if field.group(1) != "questions":
+    for key, _, end in fields:
+        if key != "questions":
             continue
         try:
-            value, _ = json.JSONDecoder().raw_decode(raw[field.end():])
+            value, _ = json.JSONDecoder().raw_decode(raw[end:])
         except ValueError:
             return True, []
         if not isinstance(value, list) or any(not isinstance(q, str) for q in value):

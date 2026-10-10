@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from performer.assessor_questions import assessment_fragment_questions
+from performer.assessor_questions import (
+    assessment_fields_outside_object,
+    assessment_fragment_questions,
+)
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
@@ -245,13 +248,13 @@ async def assessor_path(
     # workflow_metrics); coordinare lifts the assessment and records it on the
     # card session. The prose path below is untouched (164 FR-005).
     assess_raw = backend_status.output or ""
-    _workflow = await _assessor_workflow_response(perf, assess_raw)
-    if _workflow is not None:
-        return _workflow
-
     _lenient = await _assessor_lenient_response(perf, assess_raw, settings)
     if _lenient is not None:
         return _lenient
+
+    _workflow = await _assessor_workflow_response(perf, assess_raw)
+    if _workflow is not None:
+        return _workflow
 
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
     sufficient = assess_output.get("sufficient", True)
@@ -378,7 +381,7 @@ async def _assessor_lenient_response(
             perf, assess_raw, "assessment", settings, "was empty",
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-    if not isinstance(assess_output, dict) or (
+    if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
         and (assess_output.get("questions") or "ready" in assess_output)
     ):
