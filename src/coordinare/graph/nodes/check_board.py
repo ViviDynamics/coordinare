@@ -1568,7 +1568,7 @@ async def _handle_blocked_cards(
                 return state
             # else: fall through to TODO pickup below — skip blocked-card handling.
         else:
-            item = blocked[0]
+            item = _cur_id or blocked[0]
             titles = board.get("titles", {})
             descriptions = board.get("descriptions", {})
             issue_numbers = board.get("issue_numbers", {})
@@ -1594,8 +1594,11 @@ async def _handle_blocked_cards(
                 _sess_b["phase"] = "blocked"
                 _sessions_b[item] = _sess_b
                 state["active_sessions"] = _sessions_b
-            if not state.get("active_card_id"):
-                state["active_card_id"] = item
+            if _cur_id != item:
+                # Bind identity and card-scoped fields together. Flat history
+                # left by a retired sibling cannot become this card's context.
+                session_to_state(cast("CardSession", _sessions_b[item]), state)
+            state["active_card_id"] = item
             _rederive_current_card(state)
 
             result = await _collect_blocked_clarification(state, board_provider, board, item, content_node_ids)
@@ -1916,8 +1919,8 @@ async def _reset_and_rehydrate(
 ) -> None:
     # 066 T016/FR-002: unified un-block reset for any N (including N=1).
     # When the operator moves a card from BLOCKED back to TODO, the
-    # existing session is retained with current_card.status="BLOCKED"
-    # and phase="blocked".  Detect that the card is now eligible again
+    # existing session remains phase="blocked"; board reconciliation may
+    # already have changed its card status to TODO. Detect eligibility again
     # and reset feedback_cycle_count to 0 so the next dispatch gets a
     # fresh budget.  Monotonic stats (total_feedback_cycles,
     # triage_blocks) are preserved.
@@ -1930,7 +1933,7 @@ async def _reset_and_rehydrate(
         if is_closed_pr_block(_sess.get("system_error_reason")):
             await _resume_closed_pr(state, board, _cid, _sess)
             continue
-        if str(_sess_card.get("status", "")) != "BLOCKED":
+        if _sess.get("phase") != "blocked" and str(_sess_card.get("status", "")) != "BLOCKED":
             continue
         _prior_count = int(_sess.get("feedback_cycle_count") or 0)
         _sess["feedback_cycle_count"] = 0
