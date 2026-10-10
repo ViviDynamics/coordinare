@@ -9,6 +9,7 @@ from coordinare.__main__ import _compose_performer_pools
 from coordinare.daemon import _restored_session_dict
 from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.state import initial_state
+from coordinare.services.slot_manager import SlotManager
 from coordinare.state_store import PersistedSession, WorkflowSnapshot
 
 
@@ -58,3 +59,60 @@ async def test_legacy_stage_only_monitor_keeps_existing_fallback() -> None:
     result = await monitor_performer(state)
     assert service.polls == ["existing-session"]
     assert result["phase"] == "monitoring_performer"
+
+
+def moved_worker_pool(mode: str = "persistent", *, spare: bool = False) -> tuple[SlotManager, Service, dict]:
+    retained = Service("retained-endpoint")
+    retained._config.mode = mode
+    services = [retained, Service("spare-endpoint")] if spare else [retained]
+    config = SimpleNamespace(performers=SimpleNamespace(resolved_role=lambda _: None))
+    pools, caps, _by_id = _compose_performer_pools(
+        config=config, service_lists={}, http_services_by_stage={"implementing": services}, performer_services={},
+    )
+    manager = SlotManager()
+    for stage, pool in pools.items():
+        manager.register_pool(stage, pool, caps[stage])
+    session = {"phase": "monitoring_performer", "performer_stage": "assessing",
+               "agent_dispatch": {"session_id": "existing-session", "performer_id": "retained-endpoint"}}
+    manager.sync_from_sessions({"card-A": session})
+    return manager, retained, session
+
+
+@pytest.mark.asyncio
+async def test_moved_persistent_worker_keeps_sibling_queued_instead_of_busy_dispatch() -> None:
+    from coordinare.graph.nodes.dispatch_performer import _acquire_via_slot_manager
+
+    manager, retained, _session = moved_worker_pool()
+    state = initial_state()
+    state.update(phase="dispatching", slot_manager=manager, performer_services={"implementing": retained})
+    ctx = {"performer_stage": "implementing", "card_id": "card-B",
+           "performer_services": state["performer_services"]}
+    result = await _acquire_via_slot_manager(state, ctx)
+    assert result is state
+    assert state["phase"] == "dispatching"
+    assert isinstance(state["slot_queued_since"], datetime)
+    assert manager.active_count("implementing") == 1
+
+
+@pytest.mark.parametrize("terminal", ["idle", "blocked", "system_error", "removed", "release"])
+def test_moved_persistent_reservation_releases_with_its_original_stage(terminal: str) -> None:
+    manager, retained, session = moved_worker_pool()
+    assert manager.acquire("implementing", "card-B") is None
+    if terminal == "release":
+        manager.release("assessing", "card-A")
+    else:
+        session["phase"] = terminal
+        manager.sync_from_sessions({} if terminal == "removed" else {"card-A": session})
+    assert manager.acquire("implementing", "card-B") is retained
+
+
+def test_moved_persistent_worker_does_not_consume_a_different_free_endpoint() -> None:
+    manager, retained, _session = moved_worker_pool(spare=True)
+    manager.pools["implementing"].max_concurrency = 2
+    acquired = manager.acquire("implementing", "card-B")
+    assert acquired is not None and acquired is not retained
+
+
+def test_moved_ephemeral_endpoint_preserves_independent_role_capacity() -> None:
+    manager, retained, _session = moved_worker_pool("ephemeral")
+    assert manager.acquire("implementing", "card-B") is retained
