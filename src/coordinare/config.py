@@ -105,6 +105,11 @@ class DashboardOidcConfig(BaseModel):
     def _absolute_redirect(cls, v: Any) -> str:
         url = str(v).strip()
         parsed = urlparse(url)
+        try:
+            _ = parsed.port
+        except ValueError:
+            msg = "dashboard_oidc.redirect_url must contain a valid port"
+            raise ValueError(msg) from None
         hostname = (parsed.hostname or "").lower()
         loopback = hostname in ("localhost", "127.0.0.1", "::1")
         if parsed.scheme not in ("http", "https") or not hostname:

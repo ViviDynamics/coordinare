@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from coordinare.config import DashboardOidcConfig
 from coordinare.dashboard_auth import DashboardAuthentication
@@ -33,6 +33,9 @@ def authenticated_app() -> tuple[DashboardAuthentication, str]:
     ("http://dashboard.example", 403),
     ("https://unrelated.example", 403),
     ("https://dashboard.example:8443", 403),
+    ("https://dashboard.example:0", 403),
+    ("https://dashboard.example:not-a-port", 403),
+    ("https://dashboard.example:65536", 403),
 ])
 def test_authenticated_mutations_use_configured_public_origin_after_tls_termination(origin: str, status: int) -> None:
     app, session = authenticated_app()
@@ -58,3 +61,28 @@ def test_oidc_mutation_without_origin_retains_authenticated_api_behavior() -> No
     with TestClient(app, base_url="http://dashboard.example") as client:
         response = client.post("/probe", headers={"Cookie": f"coordinare_session={session}"})
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("port", ["not-a-port", "65536"])
+def test_invalid_public_redirect_port_is_rejected_at_configuration_load(port: str) -> None:
+    with pytest.raises(ValidationError, match=r"redirect_url.*valid port"):
+        DashboardOidcConfig(
+            discovery_url="https://identity.example/.well-known/openid-configuration",
+            client_id="synthetic-client", client_secret=SecretStr("synthetic-secret"),
+            redirect_url=f"https://dashboard.example:{port}/oidc/callback",
+        )
+
+
+@pytest.mark.parametrize("origin,status", [
+    ("https://dashboard.example", 200),
+    ("https://dashboard.example:443", 200),
+    ("http://dashboard.example", 403),
+    ("https://unrelated.example", 403),
+    ("https://dashboard.example:not-a-port", 403),
+])
+def test_bearer_mutations_with_oidc_use_the_same_public_origin(origin: str, status: int) -> None:
+    session_app, _session = authenticated_app()
+    app = DashboardAuthentication(session_app.app, token=SecretStr("synthetic-bearer-token-32-characters"), oidc=session_app._oidc)
+    with TestClient(app, base_url="http://dashboard.example") as client:
+        response = client.post("/probe", headers={"Authorization": "Bearer synthetic-bearer-token-32-characters", "Origin": origin})
+    assert response.status_code == status

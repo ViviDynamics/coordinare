@@ -25,7 +25,9 @@ _OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout"}
 def _normalized_origin(origin: str) -> str:
     parsed = urlparse(origin)
     default_port = 443 if parsed.scheme == "https" else 80
-    port = parsed.port or default_port
+    port = parsed.port
+    if port is None:
+        port = default_port
     suffix = "" if port == default_port else f":{port}"
     return f"{parsed.scheme}://{(parsed.hostname or '').lower()}{suffix}"
 
