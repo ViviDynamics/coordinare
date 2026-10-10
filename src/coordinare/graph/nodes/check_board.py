@@ -51,6 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
 from coordinare.services.review_staleness import classify_review_staleness
@@ -171,15 +172,43 @@ PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 # Kept separate from PASSIVE_PHASES because the daemon clears ``current_card``
 # whenever the fallback cycle settles into PASSIVE_PHASES — that's correct for
 # ``monitoring_pr`` but would disrupt blocked-card answer detection.
-NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked"})
+NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked", "idle", "done", "env_blocked"})
+
+
+def _session_consumes_slot(session: dict[str, Any], board_status: str | None = None) -> bool:
+    """Quiescent history releases admission; owned writers keep their slot."""
+    if has_live_side_writer(session):
+        return True
+    phase = session.get("phase")
+    if phase in {"monitoring_performer", "monitoring_agent"} and (session.get("agent_dispatch") or {}).get("session_id"):
+        return True
+    card = session.get("current_card") or {}
+    status = board_status if board_status is not None else card.get("status")
+    if session.get("board_paused") or status in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:
+        return False
+    return board_status == "IN_PROGRESS" or phase not in NON_SLOT_PHASES
 
 
 def _count_slot_consuming_sessions(state: CoordinareState) -> int:
     """Count active sessions occupying a concurrency slot."""
     sessions: dict[str, Any] = state.get("active_sessions") or {}
+    snapshot = state.get("board_snapshot") or {}
+    live_statuses = {
+        card_id: column
+        for column, card_ids in snapshot.items()
+        if isinstance(card_ids, list)
+        for card_id in card_ids
+    }
+
+    def consumes_slot(card_id: str, session: dict[str, Any]) -> bool:
+        card = session.get("current_card") or {}
+        candidates = (card_id, str(card.get("id") or ""), str(card.get("content_id") or ""))
+        status = next((live_statuses[candidate] for candidate in candidates if candidate in live_statuses), None)
+        return _session_consumes_slot(session, status)
+
     return sum(
-        1 for sess in sessions.values()
-        if sess.get("phase") not in NON_SLOT_PHASES
+        1 for card_id, sess in sessions.items()
+        if consumes_slot(card_id, sess)
     )
 
 
@@ -2021,10 +2050,7 @@ async def _pickup_todo_cards(
     await _reset_and_rehydrate(state, board, eligible_todo, max_cards, active_sessions)
     # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
     # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
-    active_count = sum(
-        1 for sess in active_sessions.values()
-        if sess.get("phase") not in NON_SLOT_PHASES
-    )
+    active_count = _count_slot_consuming_sessions(state)
     slots_available = max(0, max_cards - active_count)
     lifecycle_seq = [
         str(s) for s in (state.get("lifecycle_sequence") or ["implementing"])
