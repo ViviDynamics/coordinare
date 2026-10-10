@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from coordinare.dashboard_oidc import OidcFlow
 
 _OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout"})
+_ORIGIN_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 
 def _normalized_origin(origin: str) -> str:
@@ -38,7 +39,7 @@ def _normalized_origin(origin: str) -> str:
 
 def _safe_normalized_origin(origin: str) -> str:
     """Malformed request origins never match the configured public origin."""
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in origin):
+    if any(char.isspace() or char in _ORIGIN_CONTROL_CHARACTERS for char in origin):
         return ""
     try:
         parsed = urlparse(origin)
