@@ -80,21 +80,26 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
         if raw[field.end():field.end() + 1] in ("{", "[")
     ]
     ranges: list[tuple[int, int]] = []
-    in_string = escaped = False
-    for index, char in enumerate(raw):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-        elif char == "[" and not any(
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            try:
+                _, end = decoder.raw_decode(raw, index)
+            except ValueError:
+                pass
+            else:
+                # A damaged prose quote can pair with a later field's quote.
+                # Only a complete string token owns brackets inside it.
+                if end == len(raw) or raw[end].isspace() or raw[end] in ":,]}":
+                    index = end
+                    continue
+        if char == "[" and not any(
             start <= index < end for start, end in [*keyed_containers, *ranges]
         ):
             ranges.append((index, _container_end(raw, index)))
+        index += 1
     return ranges
 
 

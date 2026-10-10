@@ -263,6 +263,10 @@ async def test_invalid_contract_values_cannot_supply_nested_questions(output, qu
 @pytest.mark.asyncio
 @pytest.mark.parametrize("output,questions", [
     ('[{"questions":["Unrelated?"]}]', []),
+    ('": false, [{"questions":["Unrelated?"]}]', []),
+    ('broken "prefix [{"questions":["Unrelated?"]}]', []),
+    ('broken "prefix [not an array]" "questions":["Keep me?"]', ["Keep me?"]),
+    ('": false, "questions":["Keep me?"]', ["Keep me?"]),
     ('[{"assessment":{"ready":false,"questions":["Unrelated?"]}}]', []),
     ('```json\n[{"questions":["Unrelated?"]}]\n```', []),
     ('```json\n[{"assessment":{"ready":false,"questions":["Unrelated?"]}}]\n```', []),
