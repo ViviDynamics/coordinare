@@ -863,6 +863,14 @@ function renderState(s) {
         return '<li>' + esc(q) + '</li>';
       }).join('');
       var ans = round.answer ? '<div class="qa-round-a">&#x1F4AC; ' + esc(round.answer) + '</div>' : '';
+      var comment = '';
+      if (round.body) {
+        var source = esc(round.source || 'comment');
+        if (round.comment_id != null) source += ' #' + esc(String(round.comment_id));
+        if (round.author) source += ' · ' + esc(round.author);
+        comment = '<div class="muted" style="font-size:11px">' + source + '</div>' +
+          '<div class="qa-round-a" style="white-space:pre-wrap">' + esc(round.body) + '</div>';
+      }
       var attr = '';
       if (round.card_number != null) {
         var num = '#' + String(round.card_number);
@@ -878,7 +886,7 @@ function renderState(s) {
       return '<div class="qa-round">' +
         '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">' + header + '</div>' +
         (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
-        ans +
+        ans + comment +
         '</div>';
     }).join('');
   } else {
