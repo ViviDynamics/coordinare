@@ -14,7 +14,12 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
-from coordinare.graph.nodes.check_board import NON_SLOT_PHASES, PASSIVE_PHASES, check_board
+from coordinare.graph.nodes.check_board import (
+    NON_SLOT_PHASES,
+    PASSIVE_PHASES,
+    _refresh_current_card_metadata,
+    check_board,
+)
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -1581,6 +1586,13 @@ async def _preflight_poll_board(
         if isinstance(snapshot, dict):
             state["board_snapshot"] = snapshot
         _mirror_board_metadata(state, board)
+        if _valid_board_snapshot(snapshot):
+            present = {cid for ids in snapshot.values() for cid in ids}
+            for cid, session in active_sessions.items():
+                card = session.get("current_card")
+                if isinstance(card, dict) and cid in present:
+                    view = cast("CoordinareState", {"current_card": card})
+                    _refresh_current_card_metadata(view, board)
         await _preflight_seed_main_sha_cache(state, github, active_sessions)
     except Exception as _poll_exc:
         # Transient upstream GitHub failures (5xx, timeouts, DNS) are
@@ -1668,18 +1680,23 @@ async def _all_ineligible_fallback(
     held_backlog_focus = focus is not None and CoordinareDaemon._find_card_column(
         state.get("board_snapshot") or {}, focus, active_sessions.get(focus),
     ) == "BACKLOG"
-    if any(sess.get("board_paused") for sess in active_sessions.values()) or held_backlog_focus:
+    backlog_to_poll = state.get("backlog_comment_poll_ids")
+    if backlog_to_poll is None:
+        backlog_to_poll = [focus] if held_backlog_focus and focus is not None else []
+    if any(sess.get("board_paused") for sess in active_sessions.values()) or held_backlog_focus or backlog_to_poll:
         # Read human feedback without running the held card's worker graph.
         # Hydrate a separate view and copy only comment fields so controls
         # accepted during comment IO remain on the authoritative owner.
-        if held_backlog_focus and focus in active_sessions:
-            held_owner = active_sessions[focus]
+        for card_id in backlog_to_poll:
+            held_owner = (state.get("active_sessions") or {}).get(card_id)
+            if not isinstance(held_owner, dict):
+                continue
             comments_state = cast("CoordinareState", dict(state))
             session_to_state(held_owner, comments_state)
-            comments_state["active_card_id"] = focus
+            comments_state["active_card_id"] = card_id
             _rederive_current_card(comments_state)
             routed = await route_issue_comments(comments_state)
-            owner = (state.get("active_sessions") or {}).get(focus)
+            owner = (state.get("active_sessions") or {}).get(card_id)
             if owner is held_owner:
                 for field in ("card_clarifications", "requirements_changed",
                               "last_issue_comment_id", "processed_issue_comment_ids"):
@@ -2308,6 +2325,7 @@ class CoordinareDaemon:
     ) -> None:
         # Rotates the BLOCKED-session poll window; see _blocked_sessions_to_poll.
         self._blocked_poll_cursor: int = 0
+        self._backlog_poll_cursor: int = 0
         self._graph = graph
         self._run_mode = run_mode
         self._poll_interval_seconds = poll_interval_seconds
@@ -3032,9 +3050,24 @@ class CoordinareDaemon:
         # maintenance.  Without this, check_board never fires and available slots
         # go unfilled until at least one existing session becomes eligible.
         if not any(e.eligible for e in eligibilities.values()):
-            self._state = await _all_ineligible_fallback(
-                self._state, self._graph, active_sessions,
+            backlog = sorted(
+                cid for cid, session in active_sessions.items()
+                if _has_fresh_board_snapshot(self._state)
+                and self._find_card_column(self._state.get("board_snapshot") or {}, cid, session) == "BACKLOG"
             )
+            start = self._backlog_poll_cursor % len(backlog) if backlog else 0
+            backlog_to_poll = [
+                backlog[(start + offset) % len(backlog)]
+                for offset in range(min(len(backlog), BLOCKED_POLL_MAX_PER_CYCLE))
+            ]
+            self._backlog_poll_cursor = start + len(backlog_to_poll)
+            self._state["backlog_comment_poll_ids"] = backlog_to_poll
+            try:
+                self._state = await _all_ineligible_fallback(
+                    self._state, self._graph, active_sessions,
+                )
+            finally:
+                self._state.pop("backlog_comment_poll_ids", None)
             return
 
         ctx = _FanoutContext(
