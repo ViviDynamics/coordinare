@@ -240,7 +240,7 @@ def test_dispatch_clock_has_a_versioned_strict_snapshot_contract() -> None:
     contract = json.loads(Path("specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
     assert contract["properties"]["schema_version"]["enum"] == list(range(1, 33))
     assert {"last_production_at", "last_production_fingerprint"} <= set(
-        contract["properties"]["active_sessions"]["additionalProperties"]["properties"]
+        contract["properties"]["active_sessions"]["additionalProperties"]["properties"],
     )
     snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="blocked", active_sessions={"active": PersistedSession(card_id="active", agent_dispatch_at=datetime.now(UTC), last_production_at=datetime.now(UTC), last_production_fingerprint=(1, 0))})
     validate(snapshot.model_dump(mode="json"), contract)
