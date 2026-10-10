@@ -11,8 +11,15 @@ def route_from_board_check(state: dict[str, Any]) -> str:
         # Feedback or an override already selected a performer stage. Re-assessing a card
         # with an open PR would send it back to monitoring before the selected
         # performer can address the review (#545).
+        batch = state.get("dispatched_feedback") or {}
+        unfinished_stage_feedback = (
+            isinstance(batch, dict)
+            and batch.get("stage") == state.get("performer_stage")
+            and bool(batch.get("items"))
+        )
         if (
-            state.get("relay_feedback") or state.get("pending_override")
+            unfinished_stage_feedback
+            or state.get("relay_feedback") or state.get("pending_override")
             or state.get("reconciled_dispatch_pending")
         ):
             return "dispatch"
