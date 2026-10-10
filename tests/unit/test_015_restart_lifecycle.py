@@ -125,14 +125,15 @@ async def test_legacy_snapshot_migrates_continuation_to_versioned_contract(tmp_p
 
 
 @pytest.mark.parametrize("saved_continuation", [[], ["implementing", "reviewing"]])
-def test_completed_lifecycle_does_not_reconstruct_removed_stage_continuation(saved_continuation):
+@pytest.mark.parametrize("completed_phase", ["monitoring_pr", "idle"])
+def test_completed_lifecycle_does_not_reconstruct_removed_stage_continuation(saved_continuation, completed_phase):
     daemon = CoordinareDaemon(AsyncMock(), poll_interval_seconds=1)
     daemon._state.update(lifecycle_sequence=["implementing", "qa"], config=SimpleNamespace(max_concurrent_cards=2))
     daemon._restore_from_snapshot(WorkflowSnapshot(
         snapshot_at=datetime.now(UTC), phase="monitoring_pr",
         lifecycle_sequence=["implementing", "reviewing"],
         active_sessions={"existing": PersistedSession(
-            card_id="existing", phase="monitoring_pr", performer_stage="reviewing",
+            card_id="existing", phase=completed_phase, performer_stage="reviewing",
             lifecycle_continuation=saved_continuation, lifecycle_completed_at=datetime.now(UTC),
         )},
     ))
@@ -166,3 +167,32 @@ def test_final_lint_bounce_keeps_unfinished_continuation(monkeypatch):
     assert state["phase"] == "dispatching"
     assert state["lifecycle_continuation"] == ["implementing", "reviewing"]
     assert "lifecycle_completed_at" not in update
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_continuation", [[], ["assessing", "implementing", "reviewing"]])
+async def test_unfinished_idle_todo_keeps_removed_role_continuation_across_restart(saved_continuation):
+    from coordinare.graph.nodes.monitor.verdict import _advance_stage
+    from coordinare.session import session_to_state, state_to_session
+
+    daemon = CoordinareDaemon(AsyncMock(), poll_interval_seconds=1)
+    daemon._state.update(lifecycle_sequence=["implementing"], config=SimpleNamespace(max_concurrent_cards=2))
+    daemon._restore_from_snapshot(WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC), phase="idle", lifecycle_sequence=["assessing", "implementing", "reviewing"],
+        active_sessions={"existing": PersistedSession(card_id="existing", performer_stage="assessing", phase="idle",
+                                                      lifecycle_continuation=saved_continuation)},
+    ))
+    session = daemon._state["active_sessions"]["existing"]
+    assert session["lifecycle_continuation"] == ["assessing", "implementing", "reviewing"]
+    await _pickup_todo_cards(daemon._state, {"titles": {"existing": "Unfinished task"}}, ["existing"])
+    session_to_state(session, daemon._state)
+    update = _advance_stage(daemon._state)
+    assert update["phase"] == "dispatching"
+    assert update["performer_stage"] == "implementing"
+    daemon._state.update(update)
+    daemon._state["active_sessions"]["existing"] = state_to_session(daemon._state)
+    restarted = CoordinareDaemon(AsyncMock(), poll_interval_seconds=1)
+    restarted._state.update(lifecycle_sequence=["implementing"], config=SimpleNamespace(max_concurrent_cards=2))
+    restarted._restore_from_snapshot(daemon._build_snapshot())
+    session_to_state(restarted._state["active_sessions"]["existing"], restarted._state)
+    assert _advance_stage(restarted._state)["performer_stage"] == "reviewing"
