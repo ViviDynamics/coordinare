@@ -759,6 +759,18 @@
             ],
             "default": null,
             "title": "Last Production Fingerprint"
+          },
+          "last_production_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Production Cursor"
           }
         }
       },

@@ -351,6 +351,7 @@ class PersistedSession(BaseModel):
     last_progress_at: datetime | None = None
     last_production_at: datetime | None = None
     last_production_fingerprint: tuple[int, int] | None = None
+    last_production_cursor: str | None = None
     last_progress_fingerprint: str | None = None
     # 343: the workflow step this card is in and when it entered it. Persisted
     # so the answer survives a daemon restart and outlives the performer job,

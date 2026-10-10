@@ -164,6 +164,7 @@ from coordinare.services.observer import (  # noqa: E402
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
     production_advanced,
+    production_cursor,
     production_fingerprint,
     read_evidence,
 )
@@ -959,7 +960,14 @@ async def _phase_merge_events(
         # does not count: the turn this was filed for emitted 164 progress
         # deltas while changing zero files and running zero commands.
         _fingerprint = production_fingerprint(state["performer_events"])
-        _advanced = production_advanced(_fingerprint, state.get("last_production_fingerprint"))
+        _cursor = production_cursor(state["performer_events"])
+        _previous_cursor = state.get("last_production_cursor")
+        _advanced = production_advanced(_fingerprint, state.get("last_production_fingerprint")) or (
+            _cursor is not None and _previous_cursor is not None and _cursor != _previous_cursor
+        )
+        # Seed a restored count-only checkpoint without counting its replay as
+        # fresh work. Future rolling-window production changes the cursor.
+        state["last_production_cursor"] = _cursor or _previous_cursor
         if _advanced:
             state["last_production_fingerprint"] = _fingerprint
             state["last_production_at"] = datetime.now(UTC)

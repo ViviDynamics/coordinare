@@ -186,6 +186,7 @@ class CardSession(TypedDict, total=False):
     # Production evidence is scoped to the card/run, distinct from talking.
     last_production_at: datetime | None
     last_production_fingerprint: tuple[int, int] | None
+    last_production_cursor: str | None
     # 343: which workflow step this card is in, when it entered, and the
     # observed trail of transitions.
     workflow_step: str | None
@@ -358,6 +359,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "last_progress_at",
     "last_production_at",
     "last_production_fingerprint",
+    "last_production_cursor",
     "last_progress_fingerprint",
     # 343: which workflow step this card is in, when it entered, and the
     # observed trail. Per-card by construction -- two performers are in
@@ -502,6 +504,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         last_progress_at=None,
         last_production_at=None,
         last_production_fingerprint=None,
+        last_production_cursor=None,
         workflow_step=None,
         workflow_step_entered_at=None,
         workflow_step_trail=[],

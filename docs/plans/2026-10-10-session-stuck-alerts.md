@@ -24,3 +24,5 @@ Fresh Copilot review found that persistent restored workers lack the dispatch cl
 Independent adversarial review reproduced dispatch restoration causing a healthy worker timeout before polling. The existing card projection also omitted production evidence and leaked it into a fresh sibling (#27). Paired production clock/fingerprint now round-trip through sessions and schema32, preserving current timeout semantics. Two failing actual regressions and strict contract reproduction precede the fix.
 
 The actual normal/shutdown signature save paths also dropped updated production evidence. Two real save-gate regressions failed, then pass when durable monitoring evidence participates in the snapshot signature; identical cumulative tools cause no extra write.
+
+Review follow-up: a full rolling event buffer keeps production counts constant. Preserve a digest cursor for the newest productive event across session projection, checkpoint save and restart; cumulative replay and chatter must not refresh the clock. Regression tests cover both fresh and restored full buffers, a second restart, complete eviction by chatter and subsequent new production.

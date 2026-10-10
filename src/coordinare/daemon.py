@@ -488,6 +488,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         last_progress_at=sess.get("last_progress_at"),
         last_production_at=sess.get("last_production_at"),
         last_production_fingerprint=sess.get("last_production_fingerprint"),
+        last_production_cursor=sess.get("last_production_cursor"),
         last_progress_fingerprint=sess.get("last_progress_fingerprint"),
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
@@ -676,6 +677,7 @@ def _restored_session_dict(
         "agent_dispatch_at": persisted.agent_dispatch_at,
         "last_production_at": persisted.last_production_at,
         "last_production_fingerprint": persisted.last_production_fingerprint,
+        "last_production_cursor": persisted.last_production_cursor,
         "reconciled_dispatch_pending": persisted.reconciled_dispatch_pending or missing_identity,
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
@@ -821,6 +823,7 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
          str(handoff.get("resumed_board_column") or "")),
         tuple(str(session.get(key) or "") for key in (
             "agent_dispatch_at", "last_production_at", "last_production_fingerprint",
+            "last_production_cursor",
         )),
     )
 

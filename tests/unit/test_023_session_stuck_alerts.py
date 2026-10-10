@@ -344,3 +344,91 @@ async def test_actual_snapshot_save_gate_flushes_new_production_and_ignores_repl
     daemon.state["active_sessions"] = {"ITEM_1": state_to_session(state)}
     await daemon._save_snapshot_if_changed(signature)
     assert len(sink.saved) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restart", [False, True])
+async def test_full_event_buffer_records_fresh_production_after_replay(restart: bool) -> None:
+    from coordinare.daemon import _persist_active_sessions, _restored_session_dict
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from coordinare.session import session_to_state, state_to_session
+    from coordinare.state_store import WorkflowSnapshot
+    from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
+
+    now = datetime.now(UTC)
+    produced_at = now - timedelta(seconds=1190)
+    events = [{"type": "tool_use", "text": f"run test {i}", "seq": i} for i in range(100)]
+    service = _Performer({"status": "working", "events": events})
+    state = _make_state(service=service, stage="reviewing")
+    state.update(phase="monitoring_performer", role_timeouts={"reviewing": 1200},
+                 agent_dispatch_at=now - timedelta(seconds=2400),
+                 last_production_at=produced_at, last_production_fingerprint=(100, 0),
+                 performer_events=list(events))
+    if restart:
+        snapshot = WorkflowSnapshot(snapshot_at=now, phase="monitoring_performer", active_card_id="ITEM_1",
+                                    active_sessions=_persist_active_sessions({"ITEM_1": state_to_session(state)}))
+        snapshot = WorkflowSnapshot.model_validate_json(snapshot.model_dump_json())
+        restored = _restored_session_dict("ITEM_1", snapshot.active_sessions["ITEM_1"], snapshot, state["current_card"])
+        state = initial_state()
+        session_to_state(restored, state)
+        state.update(performer_services={"reviewing": service}, lifecycle_sequence=["reviewing"],
+                     role_timeouts={"reviewing": 1200})
+    await monitor_performer(state)
+    assert state["last_production_at"] == produced_at, "Replaying a full buffer must not reset the clock"
+    # Persist the seeded cursor, then restore without the in-memory event list.
+    snapshot = WorkflowSnapshot(snapshot_at=now, phase="monitoring_performer", active_card_id="ITEM_1",
+                                active_sessions=_persist_active_sessions({"ITEM_1": state_to_session(state)}))
+    snapshot = WorkflowSnapshot.model_validate_json(snapshot.model_dump_json())
+    restored = _restored_session_dict("ITEM_1", snapshot.active_sessions["ITEM_1"], snapshot, state["current_card"])
+    state = initial_state()
+    session_to_state(restored, state)
+    state.update(performer_services={"reviewing": service}, lifecycle_sequence=["reviewing"],
+                 role_timeouts={"reviewing": 1200})
+    await monitor_performer(state)
+    assert state["last_production_at"] == produced_at
+    service._response["events"] = [*events[1:], {"type": "tool_use", "text": "run fresh test", "seq": 100}]
+    await monitor_performer(state)
+    assert state["phase"] == "monitoring_performer"
+    assert state["last_production_at"] > produced_at, "A new tool at unchanged counts is real production"
+    fresh_clock = state["last_production_at"]
+    service._response["events"] = [{"type": "progress", "text": f"thought {i}"} for i in range(100)]
+    await monitor_performer(state)
+    assert state["last_production_at"] == fresh_clock
+    service._response["events"] = [{"type": "tool_use", "text": "run next fresh test", "seq": 101}]
+    await monitor_performer(state)
+    assert state["last_production_at"] > fresh_clock
+
+
+def test_production_cursor_changes_only_for_newest_productive_event() -> None:
+    from coordinare.services.progress_evidence import production_cursor
+
+    events = [{"type": "tool_use", "text": "run same command", "seq": 1},
+              {"type": "progress", "text": "thinking", "seq": 2}]
+    cursor = production_cursor(events)
+    assert cursor is not None
+    assert production_cursor(events[:1]) == cursor
+    assert production_cursor([*events, {"type": "progress", "text": "more thoughts"}]) == cursor
+    assert production_cursor([*events, {"type": "tool_use", "text": "run same command", "seq": 3}]) != cursor
+    assert production_cursor([{"type": "progress", "text": "thinking"}]) is None
+
+
+def test_production_cursor_is_durable_and_card_scoped() -> None:
+    from coordinare.daemon import _persist_active_sessions, _restored_session_dict
+    from coordinare.graph.state import initial_state
+    from coordinare.session import create_session_from_card, session_to_state, state_to_session
+    from coordinare.state_store import WorkflowSnapshot
+
+    state = initial_state()
+    card = {"id": "active", "title": "Synthetic card"}
+    state.update(current_card=card, last_production_cursor="cursor-A")
+    saved = state_to_session(state)
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="monitoring_performer",
+                                active_sessions=_persist_active_sessions({"active": saved}))
+    snapshot = WorkflowSnapshot.model_validate_json(snapshot.model_dump_json())
+    restored = _restored_session_dict("active", snapshot.active_sessions["active"], snapshot, card)
+    state = initial_state()
+    session_to_state(restored, state)
+    assert state.get("last_production_cursor") == "cursor-A"
+    session_to_state(create_session_from_card({"id": "sibling"}), state)
+    assert state.get("last_production_cursor") is None
