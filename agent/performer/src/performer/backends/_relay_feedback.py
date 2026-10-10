@@ -11,7 +11,7 @@ def _source_identity(item: dict) -> str:
     author = item.get("author_login") or item.get("author")
     if isinstance(author, dict):
         author = author.get("login")
-    fields = [("author", author), ("source", item.get("source")), ("stage", item.get("stage"))]
+    fields = [("author", author), ("source", item.get("source")), ("stage", item.get("stage") or item.get("raiser"))]
     identity = ", ".join(f"{name}: {value}" for name, value in fields if value)
     return identity or "source unspecified"
 
@@ -42,7 +42,7 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
                         continue
                     path, line = comment.get("path"), comment.get("line")
                     location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
-                    identity = f" ({_source_identity(comment)})" if any(comment.get(k) for k in ("author_login", "author", "source", "stage")) else ""
+                    identity = f" ({_source_identity(comment)})" if any(comment.get(k) for k in ("author_login", "author", "source", "stage", "raiser")) else ""
                     parts.append(f"  - {location} — {comment['body']}{identity}" if location else f"  - {comment['body']}{identity}")
         elif isinstance(item, str):
             parts += ["**Feedback (source unspecified):**", f"- {item}"]

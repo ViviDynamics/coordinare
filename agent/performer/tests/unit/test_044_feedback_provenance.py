@@ -76,3 +76,21 @@ async def test_junie_resumed_feedback_does_not_claim_a_human_source() -> None:
     assert "## Human Feedback" not in text
     assert "source unspecified" in text
     assert CONTINUATION in text and "original task" in text
+
+
+@pytest.mark.parametrize("raiser", ["reviewing", "qa", "security", "closing_review"])
+def test_production_feedback_bounce_retains_its_raising_stage(raiser: str) -> None:
+    from coordinare.graph.nodes.monitor.verdict import _stamp_feedback_bounce
+
+    feedback = _stamp_feedback_bounce({}, [{"body": "Address this validation finding."}], raiser, "a" * 40)
+    text = prompt("claude_code", score(relay_feedback=feedback))
+    assert f"stage: {raiser}" in text
+    assert "Address this validation finding." in text
+
+
+def test_inline_feedback_retains_its_raising_stage() -> None:
+    text = prompt("claude_code", score(relay_feedback=[{
+        "author_login": "reviewer", "comments": [{"body": "Retain this assertion.", "path": "sample.py", "line": 9, "raiser": "qa"}],
+    }]))
+    assert "sample.py:9" in text and "Retain this assertion." in text
+    assert "stage: qa" in text
