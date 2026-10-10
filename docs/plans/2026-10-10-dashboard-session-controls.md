@@ -16,6 +16,7 @@ An unqualified request can target the sole eligible live session. With multiple 
 - [x] Add failing endpoint tests and route accepted commands to the owning session.
 - [x] Preserve a newer accepted command across own and sibling fanout and single-graph admission/fallback writeback; consume each request once.
 - [x] Reject retired aggregate cards while restored-session ownership is awaiting board routing.
+- [x] Record the exact command consumed inside the compiled graph, preventing replay after recovery while retaining a newer distinct request.
 - [x] Verify persisted receipts, unchanged legacy behavior, paused/ambiguous refusal and cross-symphony isolation.
 - [x] Reproduce three explicit restart boundaries that skip configured stages; clear obsolete continuation only after valid restart.
 - [ ] Run configured checks, full suite, adversarial review, fresh Copilot and current-head CI before merge.

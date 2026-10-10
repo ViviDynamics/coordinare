@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -16,7 +17,13 @@ from coordinare.daemon import (
     _merge_fanout_results,
     _persist_one_session,
 )
-from coordinare.graph.nodes.check_board import _ensure_active_card_id, _pickup_todo_cards
+from coordinare.graph.builder import CoordinareGraphBuilder
+from coordinare.graph.nodes.check_board import (
+    _ensure_active_card_id,
+    _pickup_todo_cards,
+    check_board,
+)
+from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.nodes.monitor.verdict import _advance_stage, _apply_pending_override
 from coordinare.graph.state import SymphonyRuntimeState, _retire_active_session
 from coordinare.session import create_session_from_card, session_to_state
@@ -317,3 +324,87 @@ async def test_restore_routing_cannot_accept_a_retired_aggregate_target(path: st
         finish.set()
         await task
     assert "retired" not in owner.active_sessions and "retired" not in peer.active_sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+@pytest.mark.parametrize("newer_request", [False, True])
+async def test_reconciled_compiled_graph_consumes_exact_control_once(path: str, action: str, newer_request: bool) -> None:
+    entered, recover = asyncio.Event(), asyncio.Event()
+    consumed, finish = asyncio.Event(), asyncio.Event()
+
+    class Docker:
+        async def list_containers_by_label(self, *_args, **_kwargs):
+            entered.set()
+            await recover.wait()
+            return []
+
+    class GitHub:
+        def __init__(self):
+            self.polls = 0
+
+        async def poll_board(self):
+            self.polls += 1
+            return {"snapshot": {"BLOCKED" if self.polls == 1 else "IN_PROGRESS": ["card-a"]},
+                    "titles": {"card-a": "Synthetic story"}}
+
+        async def move_card(self, *_args):
+            return None
+
+    async def passthrough(state):
+        return state
+
+    async def dispatch_leaf(state):
+        state.update(phase="monitoring_performer", agent_dispatch={"session_id": "synthetic-new-worker"})
+        return state
+
+    async def notify(state):
+        consumed.set()
+        await finish.wait()
+        return state
+
+    graph = CoordinareGraphBuilder(node_overrides={
+        "route_issue_comments": passthrough, "check_board": check_board,
+        "classify_scope": passthrough, "dispatch_card": dispatch_performer,
+        "notify": notify, "handle_blocked": passthrough,
+    }).build()
+    daemon = CoordinareDaemon(graph)
+    live = live_session()
+    live.update(performer_stage="implementing", system_error_reason="Synthetic prior technical failure")
+    service = SimpleNamespace(_config=SimpleNamespace(mode="ephemeral"), has_live_session=lambda _sid: False)
+    daemon.state.update(active_sessions={"card-a": live}, active_card_id="card-a",
+                        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa", "closing_review"],
+                        performer_services={"implementing": service}, github_service=GitHub())
+    session_to_state(live, daemon.state)
+    client = _make_app(daemon=daemon)
+    with patch("coordinare.services.reconciliation.DockerExecutor", return_value=Docker()), \
+         patch("coordinare.graph.nodes.dispatch_performer._dispatch_performer_body", side_effect=dispatch_leaf):
+        task = asyncio.create_task(daemon._invoke_multi_session())
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            assert client.post(path, params={"card_id": "card-a"}).status_code == 200
+            first_id = live["pending_override"]["control_id"]
+            recover.set()
+            await asyncio.wait_for(consumed.wait(), 3)
+            if newer_request:
+                assert client.post(path, params={"card_id": "card-a"}).status_code == 200
+                accepted = deepcopy(live["pending_override"])
+                assert accepted["control_id"] != first_id
+        finally:
+            recover.set()
+            finish.set()
+            await task
+    final = daemon.state["active_sessions"]["card-a"]
+    assert final["performer_stage"] == ("assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing")
+    flat = dict(daemon.state)
+    session_to_state(final, flat)
+    if newer_request:
+        assert final["pending_override"] == accepted
+        assert _apply_pending_override(flat) is not None
+    else:
+        if action == "restart":
+            assert final["pending_override"]["applied"] is True
+            assert final["pending_override"]["control_id"] == first_id
+        else:
+            assert final["pending_override"] is None
+        assert _apply_pending_override(flat) is None

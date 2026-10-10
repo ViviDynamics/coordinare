@@ -1689,12 +1689,16 @@ async def _invoke_single_graph(state: CoordinareState, graph: Any) -> Coordinare
         if isinstance(override := session.get("pending_override"), dict)
         and isinstance(override.get("control_id"), str)
     }
+    state["consumed_control_id"] = None
     state = await graph.ainvoke(state)
     active_card_id = state.get("active_card_id")
     sessions = state.get("active_sessions") or {}
     if active_card_id in sessions:
         updated = cast("dict[str, Any]", state_to_session(state))
-        _preserve_new_control(sessions[active_card_id], updated, control_ids.get(active_card_id))
+        _preserve_new_control(
+            sessions[active_card_id], updated, control_ids.get(active_card_id),
+            consumed_control_id=state.get("consumed_control_id"),
+        )
         sessions[active_card_id] = updated
     return state
 
@@ -2157,13 +2161,14 @@ def _preserve_new_control(
     live_session: dict[str, Any] | None,
     updated_session: dict[str, Any],
     control_id_at_start: str | None,
+    *, consumed_control_id: str | None = None,
 ) -> None:
     """Keep commands accepted after this result's snapshot, never its receipts."""
     override = (live_session or {}).get("pending_override")
     if not isinstance(override, dict):
         return
     control_id = override.get("control_id")
-    if isinstance(control_id, str) and control_id != control_id_at_start:
+    if isinstance(control_id, str) and control_id not in {control_id_at_start, consumed_control_id}:
         updated_session["pending_override"] = copy.deepcopy(override)
 
 
