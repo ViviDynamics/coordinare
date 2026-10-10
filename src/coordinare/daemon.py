@@ -2326,7 +2326,7 @@ class CoordinareDaemon:
     ) -> None:
         # Rotates the BLOCKED-session poll window; see _blocked_sessions_to_poll.
         self._blocked_poll_cursor: int = 0
-        self._backlog_poll_cursor: int = 0
+        self._backlog_poll_cursors: dict[str, int] = {}
         self._graph = graph
         self._run_mode = run_mode
         self._poll_interval_seconds = poll_interval_seconds
@@ -3056,12 +3056,13 @@ class CoordinareDaemon:
                 if _has_fresh_board_snapshot(self._state)
                 and self._find_card_column(self._state.get("board_snapshot") or {}, cid, session) == "BACKLOG"
             )
-            start = self._backlog_poll_cursor % len(backlog) if backlog else 0
+            symphony = str(self._state.get("current_symphony") or "__default__")
+            start = self._backlog_poll_cursors.get(symphony, 0) % len(backlog) if backlog else 0
             backlog_to_poll = [
                 backlog[(start + offset) % len(backlog)]
                 for offset in range(min(len(backlog), BLOCKED_POLL_MAX_PER_CYCLE))
             ]
-            self._backlog_poll_cursor = start + len(backlog_to_poll)
+            self._backlog_poll_cursors[symphony] = start + len(backlog_to_poll)
             self._state["backlog_comment_poll_ids"] = backlog_to_poll
             try:
                 self._state = await _all_ineligible_fallback(

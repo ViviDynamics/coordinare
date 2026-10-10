@@ -13,6 +13,7 @@ from coordinare.dashboard import DashboardStore
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.nodes.route_issue_comments import route_issue_comments
+from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.state_store import PersistedSession, WorkflowSnapshot
 
 
@@ -182,6 +183,66 @@ async def test_held_comment_rotation_is_bounded_and_fair():
     assert set(served) == set(ids)
     assert board.moves == []
     assert "backlog_comment_poll_ids" not in daemon.state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", [("large", "small"), ("small", "large")])
+async def test_held_comment_rotation_is_fair_across_symphonies(order):
+    daemon, _ = restore()
+    original = daemon.state["active_sessions"]["story"]
+    runtimes = {}
+    boards = {}
+    served = {name: [] for name in order}
+    for name, count in (("large", 7), ("small", 3)):
+        ids = [f"{name}-{index}" for index in range(count)]
+        sessions = {}
+        for cid in ids:
+            owner = deepcopy(original)
+            owner["current_card"]["id"] = cid
+            sessions[cid] = owner
+        runtimes[name] = SymphonyRuntimeState(
+            name=name,
+            active_sessions=sessions,
+            previous_phase="blocked",
+            board_snapshot={"BACKLOG": ids},
+        )
+        board = Board()
+        board.columns = {"BACKLOG": ids}
+
+        async def number_for_card(cid, symphony=name):
+            served[symphony].append(cid)
+            return 1
+
+        board.issue_number_for_card = number_for_card
+        boards[name] = board
+    daemon.state.update(
+        active_sessions={
+            cid: owner
+            for runtime in runtimes.values()
+            for cid, owner in runtime.active_sessions.items()
+        },
+        active_card_id=None,
+        current_card=None,
+        phase="blocked",
+        symphony_states=runtimes,
+        symphony_github_services=boards,
+    )
+    for _ in range(3):
+        for name in order:
+            before = len(served[name])
+            await daemon._conduct_single_symphony(name, SimpleNamespace(name=name))
+            assert runtimes[name].error_count == 0 and runtimes[name].last_error is None
+            assert len(served[name]) - before <= 3
+            assert "backlog_comment_poll_ids" not in daemon.state
+    for name, runtime in runtimes.items():
+        assert set(served[name]) == set(runtime.active_sessions)
+        assert boards[name].moves == []
+        for owner in runtime.active_sessions.values():
+            assert owner["last_issue_comment_id"] == 101
+            assert owner["phase"] == "blocked" and owner["agent_dispatch"] == {}
+            assert owner["card_clarifications"] == [{"answer": "Keep the prior NO."}]
+            assert owner["current_card"]["pr_number"] == 7
+            assert owner["current_card"]["head_after"] == "head-before"
 
 
 @pytest.mark.asyncio
