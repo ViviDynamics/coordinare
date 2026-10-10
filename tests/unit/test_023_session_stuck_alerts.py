@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from coordinare.config import StuckAlertConfig
+from coordinare.daemon import CoordinareDaemon
+from coordinare.services.activity_log import ActivityLog
+from tests.utils.fake_notification import FakeNotificationService
+
+
+def worker(card: str, *, age: int = 300, phase: str = "monitoring_performer") -> dict[str, Any]:
+    entered = datetime.now(UTC) - timedelta(seconds=age)
+    return {
+        "phase": phase,
+        "phase_entered_at": entered,
+        "agent_dispatch": {"session_id": f"worker-{card}"},
+        "agent_dispatch_at": entered,
+        "current_card": {"id": card, "title": f"Task {card}", "issue_number": 1},
+    }
+
+
+def detector(sessions: dict[str, Any]) -> tuple[CoordinareDaemon, ActivityLog, FakeNotificationService]:
+    log = ActivityLog()
+    service = FakeNotificationService()
+    daemon = CoordinareDaemon(None)
+    daemon.state.update({
+        "phase": "blocked",
+        "phase_entered_at": datetime.now(UTC) - timedelta(seconds=300),
+        "current_card": None,
+        "config": SimpleNamespace(stuck_alerts=StuckAlertConfig(
+            threshold_seconds=1800,
+            per_phase_thresholds={"monitoring_performer": 180, "monitoring_agent": 180},
+            cooldown_seconds=1800,
+        )),
+        "activity_log": log,
+        "active_sessions": sessions,
+    })
+    return daemon, log, service
+
+
+@pytest.mark.asyncio
+async def test_paused_sibling_cannot_hide_overdue_worker_or_its_identity() -> None:
+    paused = worker("paused", phase="blocked")
+    paused["agent_dispatch"] = {}
+    paused["agent_dispatch_at"] = None
+    daemon, log, service = detector({"active": worker("active"), "paused": paused})
+    await daemon._detect_stuck_card(service)
+    assert [(e["card_id"], e["stage"]) for e in log.snapshot()] == [("active", "monitoring_performer")]
+    assert len(service.dispatched) == 1
+    assert service.dispatched[0].payload["card_id"] == "active"
+    assert service.dispatched[0].payload["threshold_seconds"] == "180"
+
+
+@pytest.mark.asyncio
+async def test_overdue_workers_do_not_share_a_cooldown() -> None:
+    daemon, log, service = detector({"first": worker("first"), "second": worker("second", phase="monitoring_agent")})
+    await daemon._detect_stuck_card(service)
+    assert {e["card_id"] for e in log.snapshot()} == {"first", "second"}
+    assert len(service.dispatched) == 2
+    await daemon._detect_stuck_card(service)
+    assert len(service.dispatched) == 2
+
+
+@pytest.mark.asyncio
+async def test_newly_overdue_sibling_does_not_inherit_another_cards_cooldown() -> None:
+    daemon, log, service = detector({"first": worker("first"), "second": worker("second", age=1)})
+    await daemon._detect_stuck_card(service)
+    daemon.state["active_sessions"]["second"] = worker("second")
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["first", "second"]
+    assert len(service.dispatched) == 2
+
+
+@pytest.mark.asyncio
+async def test_fresh_replacement_does_not_inherit_old_phase_age_or_cooldown() -> None:
+    daemon, _log, service = detector({"active": worker("active")})
+    await daemon._detect_stuck_card(service)
+    fresh = worker("active", age=1)
+    fresh["agent_dispatch"]["session_id"] = "replacement"
+    fresh["phase_entered_at"] = datetime.now(UTC) - timedelta(hours=2)
+    daemon.state["active_sessions"]["active"] = fresh
+    await daemon._detect_stuck_card(service)
+    assert len(service.dispatched) == 1
+    fresh["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=300)
+    await daemon._detect_stuck_card(service)
+    assert len(service.dispatched) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["idle", "blocked", "system_error", "monitoring_pr", "dispatching"])
+async def test_retained_inactive_sessions_do_not_emit_worker_stuck_alerts(phase: str) -> None:
+    session = worker("inactive", phase=phase)
+    daemon, log, service = detector({"inactive": session})
+    daemon.state["phase_entered_at"] = datetime.now(UTC) - timedelta(hours=2)
+    await daemon._detect_stuck_card(service)
+    assert log.snapshot() == []
+    assert service.dispatched == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["identity", "dispatch", "paused"])
+async def test_monitoring_without_a_live_worker_is_not_a_stuck_worker(missing: str) -> None:
+    session = worker("inactive")
+    if missing == "identity":
+        session["agent_dispatch"] = {}
+    elif missing == "dispatch":
+        session["agent_dispatch_at"] = None
+    else:
+        session["board_paused"] = True
+    daemon, log, service = detector({"inactive": session})
+    daemon.state["phase_entered_at"] = datetime.now(UTC) - timedelta(hours=2)
+    await daemon._detect_stuck_card(service)
+    assert log.snapshot() == []
+    assert service.dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_monitoring_threshold_and_fresh_dispatch_are_respected() -> None:
+    daemon, log, service = detector({"disabled": worker("disabled"), "fresh": worker("fresh", age=1, phase="monitoring_agent")})
+    daemon.state["config"].stuck_alerts.per_phase_thresholds["monitoring_performer"] = 0
+    await daemon._detect_stuck_card(service)
+    assert log.snapshot() == []
+    assert service.dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_flat_detection_still_names_and_deduplicates_a_stuck_card() -> None:
+    daemon, log, service = detector({})
+    daemon.state.update({
+        "phase": "monitoring_performer",
+        "phase_entered_at": datetime.now(UTC) - timedelta(seconds=300),
+        "current_card": {"id": "legacy", "title": "Legacy task", "issue_number": 9},
+    })
+    await daemon._detect_stuck_card(service)
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["legacy"]
+    assert len(service.dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_worker_alert_reaches_feed_without_notification_channels() -> None:
+    daemon, log, _service = detector({"active": worker("active")})
+    await daemon._detect_stuck_card(None)
+    assert [(e["card_id"], e["session_id"]) for e in log.snapshot()] == [("active", "worker-active")]
+
+
+@pytest.mark.asyncio
+async def test_legacy_dispatching_detection_remains_available_with_session_history() -> None:
+    daemon, log, service = detector({"pending": {"phase": "dispatching"}})
+    daemon.state.update({
+        "phase": "dispatching",
+        "phase_entered_at": datetime.now(UTC) - timedelta(seconds=1900),
+        "current_card": {"id": "pending", "title": "Pending task", "issue_number": 9},
+    })
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["pending"]

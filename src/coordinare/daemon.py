@@ -2216,6 +2216,7 @@ class CoordinareDaemon:
         # 139: when each stall key was last logged, so a card that stays stuck
         # reminds rather than reprints every cycle.
         self._logged_stalls: dict[str, float] = {}
+        self._session_stuck_alerts: dict[tuple[str, str], float] = {}
         self._cycle_active = False
         self._stop_during_cycle = False
         self._state_store = state_store
@@ -4918,6 +4919,18 @@ class CoordinareDaemon:
 
     async def _detect_stuck_card(self, notification_service: Any) -> None:
         """028: Stuck card detection (with cooldown to avoid alert spam)."""
+        sessions = self._state.get("active_sessions") or {}
+        if sessions:
+            await self._detect_stuck_performers(sessions, notification_service)
+            # Retained history must not turn an inactive aggregate phase into
+            # a worker alert. Preserve legacy non-monitoring transition alerts.
+            if self._state.get("phase") in {
+                "idle", "blocked", "system_error", "monitoring_pr",
+                "monitoring_performer", "monitoring_agent",
+            }:
+                return
+        else:
+            self._session_stuck_alerts.clear()
         _stuck_phase = self._state.get("phase")
         _stuck_excluded = {"idle", "system_error"}
         # 138 T038: the `notification_service is not None` gate that used
@@ -4964,6 +4977,66 @@ class CoordinareDaemon:
                             notification_service,
                         )
 
+    async def _detect_stuck_performers(
+        self, sessions: dict[str, Any], notification_service: Any,
+    ) -> None:
+        """Use each live worker's clock and identity, independent of siblings."""
+        config = self._state.get("config")
+        stuck_config = getattr(config, "stuck_alerts", None)
+        if stuck_config is None:
+            return
+        now = datetime.now(UTC)
+        live_keys: set[tuple[str, str]] = set()
+        for card_id, session in sessions.items():
+            if not isinstance(session, dict) or session.get("board_paused"):
+                continue
+            phase = session.get("phase")
+            if phase not in {"monitoring_performer", "monitoring_agent"}:
+                continue
+            dispatch = session.get("agent_dispatch") or {}
+            if not isinstance(dispatch, dict):
+                continue
+            session_id = dispatch.get("session_id")
+            dispatched_at = session.get("agent_dispatch_at")
+            if (
+                not isinstance(session_id, str) or not session_id
+                or not isinstance(dispatched_at, datetime)
+                or dispatched_at.tzinfo is None
+            ):
+                continue
+            card = session.get("current_card")
+            if not isinstance(card, dict) or not card.get("id"):
+                continue
+            key = (card_id, session_id)
+            live_keys.add(key)
+            entered_at = session.get("phase_entered_at")
+            if isinstance(entered_at, datetime) and entered_at.tzinfo is not None:
+                dispatched_at = max(dispatched_at, entered_at)
+            threshold = stuck_config.per_phase_thresholds.get(
+                phase, stuck_config.threshold_seconds,
+            )
+            if not isinstance(threshold, int) or threshold <= 0:
+                continue
+            cooldown = getattr(stuck_config, "cooldown_seconds", threshold)
+            if not isinstance(cooldown, int):
+                cooldown = threshold
+            elapsed = (now - dispatched_at).total_seconds()
+            last_alert = self._session_stuck_alerts.get(key)
+            if elapsed <= threshold or (
+                last_alert is not None and monotonic() - last_alert < cooldown
+            ):
+                continue
+            await self._emit_stuck_alert(
+                phase, threshold, elapsed, dispatched_at, notification_service,
+                card=card, session_id=session_id,
+            )
+            self._session_stuck_alerts[key] = monotonic()
+        # Ended/replaced workers cannot retain cooldowns indefinitely.
+        self._session_stuck_alerts = {
+            key: stamp for key, stamp in self._session_stuck_alerts.items()
+            if key in live_keys
+        }
+
     async def _emit_stuck_alert(
         self,
         _stuck_phase: str,
@@ -4971,6 +5044,9 @@ class CoordinareDaemon:
         _elapsed: float,
         _phase_entered: Any,
         notification_service: Any,
+        *,
+        card: dict[str, Any] | None = None,
+        session_id: str = "",
     ) -> None:
         """Emit one stuck-card alert: card_stuck log, activity-feed entry,
         optional channel dispatch, then advance the cooldown stamp."""
@@ -4980,7 +5056,7 @@ class CoordinareDaemon:
             NotificationSeverity,
         )
 
-        _card = resolve_stuck_card(self._state)
+        _card = card if card is not None else resolve_stuck_card(self._state)
         _card_title = str(_card.get("title", ""))[:50]
         _card_num = _card.get("issue_number", "")
         _card_id = str(_card.get("id", ""))
@@ -5000,6 +5076,8 @@ class CoordinareDaemon:
         _stuck_key = stuck_dedup_key(
             _card_id, _stuck_phase, _phase_entered,
         )
+        if session_id:
+            _stuck_key = f"{_stuck_key}:{session_id}"
         if should_log_stall(
             self._logged_stalls, _stuck_key, time.monotonic(),
         ):
@@ -5027,6 +5105,7 @@ class CoordinareDaemon:
                     card_title=str(_card.get("title", "")),
                     stage=_stuck_phase,
                     text=f"stuck in {_stuck_phase} for {round(_elapsed // 60)} min",
+                    session_id=session_id,
                 )
         try:
             if notification_service is not None:
