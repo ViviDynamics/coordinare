@@ -84,11 +84,7 @@ def _keyed_value_ranges(raw: str) -> list[tuple[int, int]]:
             _, end = decoder.raw_decode(raw, start)
         except ValueError:
             continue
-        boundary = end
-        while boundary < len(raw) and raw[boundary].isspace():
-            boundary += 1
-        if boundary == len(raw) or raw[boundary] in ",]}":
-            keyed_containers.append((start, end))
+        keyed_containers.append((start, end))
     return keyed_containers
 
 

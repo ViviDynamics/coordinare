@@ -47,6 +47,9 @@ def performance(output: str) -> Performance:
                  "questions": ["Keep me?"]}), ["Keep me?"]),
     (json.dumps({"notes": '[{"value":"note"}]', "assessment": {
         "ready": False, "questions": ["Keep me?"]}}), ["Keep me?"]),
+    ('"notes": ' + json.dumps('[{"value":"note"}]') + ' "questions":["Keep me?"]', ["Keep me?"]),
+    ('"notes": ' + json.dumps('[{"value":"note"}]') + ' broken "questions":["Keep me?"]', ["Keep me?"]),
+    ('"notes": ' + json.dumps('[{"value":"note"}]') + ' "assessment":{"ready":false,"questions":["Keep me?"]}', ["Keep me?"]),
     ('broken "questions": ["Choose?"], "metadata": {}', ["Choose?"]),
     ('broken "questions": ["Choose?"], "metadata": {"assessment": {"ready": true}}', ["Choose?"]),
     (r'broken "quest\u0069ons": ["Choose?"]', ["Choose?"]),
@@ -166,7 +169,9 @@ async def test_recovered_questions_redact_secrets_before_surface_and_persistence
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prefix", ["broken", 'intro "[" note broken',
-                                    '"notes": ' + json.dumps('[{"value":"note"}]') + ','])
+                                    '"notes": ' + json.dumps('[{"value":"note"}]') + ',',
+                                    '"notes": ' + json.dumps('[{"value":"note"}]'),
+                                    '"notes": ' + json.dumps('[{"value":"note"}]') + ' broken'])
 @pytest.mark.parametrize("repaired", [
     '{"sufficient":true,"questions":[]}',
     '{"assessment":{"ready":true,"questions":[]}}',
