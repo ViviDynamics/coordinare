@@ -261,6 +261,32 @@ async def test_invalid_contract_values_cannot_supply_nested_questions(output, qu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("output,questions", [
+    ('[{"questions":["Unrelated?"]}]', []),
+    ('[{"assessment":{"ready":false,"questions":["Unrelated?"]}}]', []),
+    ('```json\n[{"questions":["Unrelated?"]}]\n```', []),
+    ('```json\n[{"assessment":{"ready":false,"questions":["Unrelated?"]}}]\n```', []),
+    ('broken [{"questions":["Unrelated?"]}]', []),
+    ('[{"questions":["Unrelated?"]}', []),
+    ('broken [{"assessment":{"ready":true,"questions":["Unrelated?"]}}]', []),
+    ('broken "questions":["Keep me?"], [{"questions":["Unrelated?"]}]', ["Keep me?"]),
+    ('broken "questions":["Keep me?"]\n```json\n[{"questions":["Unrelated?"]}]\n```', ["Keep me?"]),
+    ('intro [\n```json\n{"assessment":{"ready":false,"questions":["Keep me?"]}}\n```', ["Keep me?"]),
+])
+async def test_root_array_children_are_not_assessment_questions(output, questions):
+    perf = performance(output)
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    assert "Unrelated?" not in str(perf.open_questions)
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("output,status", [
     ('intro "metadata": {\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```', "assessment_complete"),
     ('intro "metadata": {\n```json\n{"assessment":{"ready":false,"verdict":"not_work","questions":[]}}\n```', "assessment_not_work"),

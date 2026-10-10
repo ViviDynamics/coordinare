@@ -68,6 +68,36 @@ def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
     return ranges
 
 
+def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
+    """Array elements cannot become root assessment fields.
+
+    Keyed values have their own ownership rules below. Ignore brackets in
+    strings and inside those values, including truncated containers.
+    """
+    keyed_containers = [
+        (field.end(), _container_end(raw, field.end()))
+        for field in _JSON_FIELD.finditer(raw)
+        if raw[field.end():field.end() + 1] in ("{", "[")
+    ]
+    ranges: list[tuple[int, int]] = []
+    in_string = escaped = False
+    for index, char in enumerate(raw):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "[" and not any(
+            start <= index < end for start, end in [*keyed_containers, *ranges]
+        ):
+            ranges.append((index, _container_end(raw, index)))
+    return ranges
+
+
 def _selected_fence_span(raw: str, extract_json: Callable[..., object]) -> tuple[int, int] | None:
     """Use the successful canonical candidate, not a second code-fence parser."""
     span = None
@@ -97,10 +127,17 @@ def _assessment_fields(
     fields = []
     metadata_ranges: list[tuple[int, int]] = []
     assessment_ranges: list[tuple[int, int]] = []
+    root_arrays = _root_array_ranges(raw) if exclude_metadata else []
     for field in _JSON_FIELD.finditer(raw):
         try:
             key = json.loads(field.group("key"))
         except ValueError:
+            continue
+        if any(start <= field.start() < end for start, end in root_arrays):
+            if key in _ASSESSMENT_KEYS:
+                # Preserve the invalid-contract signal without recovering
+                # questions owned by an array element.
+                fields.append(("invalid_root_array", field.start(), field.end()))
             continue
         if exclude_metadata and any(start <= field.start() < end for start, end in metadata_ranges):
             continue
@@ -125,6 +162,8 @@ def assessment_fields_outside_object(raw: str, extract_json: Callable[..., objec
     fence_span = _selected_fence_span(raw, extract_json)
     start, end = fence_span if fence_span is not None else (raw.find("{"), raw.rfind("}"))
     fields = _assessment_fields(raw, fence_span=fence_span)
+    if any(key == "invalid_root_array" for key, _, _ in fields):
+        return True
     if not fields and _assessment_fields(raw, exclude_metadata=False):
         return True
     return any(
