@@ -121,6 +121,7 @@ def _root_array_ranges(raw: str) -> list[tuple[int, int]]:
             while cursor < limit:
                 owned = next((end for start, end in keyed_containers if start <= cursor < end), None)
                 if owned is not None:
+                    ranges.append((cursor, owned))
                     cursor = owned
                     continue
                 try:
@@ -244,7 +245,7 @@ def assessment_has_invalid_field_types(output: dict) -> bool:
             return True
         if "questions" in obj and (
             not isinstance(obj["questions"], list)
-            or any(not isinstance(q, str) for q in obj["questions"])
+            or any(not isinstance(q, str) or not q.strip() for q in obj["questions"])
         ):
             return True
     return False

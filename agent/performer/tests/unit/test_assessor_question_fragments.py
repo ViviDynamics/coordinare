@@ -525,3 +525,48 @@ async def test_invalid_workflow_readiness_uses_existing_parse_retry(repaired, ex
         second = await handle_status(message, perf, settings)
     assert second.status == expected
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw,questions", [
+    ('[garbage, "questions":["Unrelated?"]]', []),
+    ('[garbage } "questions":["Unrelated?"]]', []),
+    ('[garbage, "sufficient":false,"questions":["Unrelated?"]]', []),
+    ('[garbage, "assessment":{"ready":false,"questions":["Unrelated?"]}]', []),
+    ('[garbage, "questions":["Unrelated?"]', []),
+    ('[garbage } "questions":["Unrelated?"]', []),
+    ('[garbage, "questions":["Unrelated?"]], "questions":["Keep me?"]', ["Keep me?"]),
+    ('[garbage } "questions":["Unrelated?"]], "questions":["Keep me?"]', ["Keep me?"]),
+    ('[garbage, "questions":["Unrelated?"]], "sufficient":false,"questions":["Keep me?"]', ["Keep me?"]),
+    ('intro [example] "questions":["Keep me?"]', ["Keep me?"]),
+    ('intro "[" note broken "questions":["Keep me?"]', ["Keep me?"]),
+])
+async def test_root_array_pseudo_fields_do_not_supply_questions(raw, questions):
+    perf = performance(raw)
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow,ready", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+@pytest.mark.parametrize("genuine", [False, True])
+async def test_blank_assessment_questions_are_not_human_prompts(workflow, ready, blank, genuine):
+    questions = [blank, QUESTION] if genuine else [blank]
+    assessment = {"ready" if workflow else "sufficient": ready, "questions": questions}
+    perf = performance(json.dumps({"assessment": assessment} if workflow else assessment))
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if genuine else "error")
+    assert (response.questions or []) == ([QUESTION] if genuine else [])
+    assert response.report is None
+    commit.assert_not_awaited()
