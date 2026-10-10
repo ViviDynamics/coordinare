@@ -697,7 +697,9 @@ def _advance_stage(
     If no more roles remain, transitions to ``monitoring_pr`` and copies
     ``pr_url`` / ``pr_node_id`` from the terminal status into the card.
     """
-    sequence: list[str] = list(state.get("lifecycle_sequence") or ["implementing"])
+    sequence: list[str] = list(
+        state.get("lifecycle_continuation") or state.get("lifecycle_sequence") or ["implementing"],
+    )
     current: str = state.get("performer_stage", "implementing")
 
     try:

@@ -249,6 +249,7 @@ class PersistedSession(BaseModel):
 
     card_id: str
     performer_stage: str | None = None
+    lifecycle_continuation: list[str] = Field(default_factory=list)
     phase: str | None = None
     # 545: replacement intent survives deferral/restart; older schemas
     # load with false so their existing routing remains unchanged.

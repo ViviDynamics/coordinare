@@ -492,6 +492,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         last_progress_fingerprint=sess.get("last_progress_fingerprint"),
         idle_timeout_retries=sess.get("idle_timeout_retries") or {},
         performer_stage=(sess.get("performer_stage") or None),
+        lifecycle_continuation=list(sess.get("lifecycle_continuation") or []),
         phase=(sess.get("phase") or None),
         board_paused=bool(sess.get("board_paused")),
         board_pause_column=str(sess.get("board_pause_column") or ""),
@@ -673,6 +674,7 @@ def _restored_session_dict(
         "board_pause_resume_phase": persisted.board_pause_resume_phase,
         "agent_dispatch": dispatch,
         "performer_stage": persisted.performer_stage,
+        "lifecycle_continuation": list(persisted.lifecycle_continuation),
         "phase": "dispatching" if missing_identity else persisted.phase,
         "agent_dispatch_at": persisted.agent_dispatch_at,
         "last_production_at": persisted.last_production_at,
@@ -2478,6 +2480,19 @@ class CoordinareDaemon:
             self._state["active_sessions"] = {
                 snapshot.active_card_id: _synthesize_v1_session(snapshot, current_card),
             }
+
+        # A removed active role must finish its saved path without changing
+        # the configured lifecycle used to admit future cards. Persist this
+        # per-card continuation so a second restart cannot lose it.
+        current_sequence = self._state.get("lifecycle_sequence") or []
+        for session in (self._state.get("active_sessions") or {}).values():
+            stage = session.get("performer_stage")
+            if (
+                not session.get("lifecycle_continuation")
+                and stage not in current_sequence
+                and stage in snapshot.lifecycle_sequence
+            ):
+                session["lifecycle_continuation"] = list(snapshot.lifecycle_sequence)
 
         _rehydrate_env_cache(self._state, snapshot)
 
