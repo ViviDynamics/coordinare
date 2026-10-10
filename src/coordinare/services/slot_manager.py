@@ -252,10 +252,18 @@ class SlotManager:
             if not isinstance(session, dict) or session.get("phase") not in {"monitoring_performer", "monitoring_agent"}:
                 continue
             dispatch = session.get("agent_dispatch") or {}
-            service = by_id.get(dispatch.get("performer_id")) if dispatch.get("session_id") else None
-            if service is None or getattr(getattr(service, "_config", None), "mode", None) != "persistent":
+            if not dispatch.get("session_id"):
                 continue
             stage = session.get("performer_stage", "")
+            performer_id = dispatch.get("performer_id")
+            service = by_id.get(performer_id) if performer_id else None
+            if not performer_id:
+                pool = self.pools.get(stage)
+                slot = pool.active_slots.get(card_id) if pool is not None else None
+                if pool is not None and slot is not None and 0 <= slot.service_index < len(pool.services):
+                    service = pool.services[slot.service_index]
+            if service is None or getattr(getattr(service, "_config", None), "mode", None) != "persistent":
+                continue
             retained[(stage, card_id)] = service
         self._retained_slots = retained
 
@@ -302,6 +310,8 @@ class SlotManager:
                         card_id=card_id,
                         service_index=idx,
                     )
+        # Legacy identities use the effective slot reconstructed above.
+        self._sync_retained_slots(active_sessions)
 
     def utilization(
         self,

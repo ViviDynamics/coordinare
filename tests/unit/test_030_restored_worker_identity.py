@@ -172,3 +172,35 @@ def test_fresh_shared_endpoint_allocation_reserves_persistent_roles_before_sync(
         assert manager.acquire(second_stage, "card-B") is retained
     else:
         assert sibling is retained
+
+
+@pytest.mark.parametrize("phase", ["monitoring_performer", "monitoring_agent"])
+@pytest.mark.parametrize("existing_slot", [False, True])
+@pytest.mark.parametrize("mode", ["persistent", "ephemeral"])
+def test_identityless_restored_shared_endpoint_preserves_cross_role_capacity(
+    phase: str, existing_slot: bool, mode: str,
+) -> None:
+    retained = Service("shared-endpoint")
+    retained._config.mode = mode
+    config = SimpleNamespace(performers=SimpleNamespace(resolved_role=lambda _: None))
+    pools, caps, _by_id = _compose_performer_pools(
+        config=config, service_lists={},
+        http_services_by_stage={"assessing": [retained], "implementing": [retained]}, performer_services={},
+    )
+    manager = SlotManager()
+    for stage, services in pools.items():
+        manager.register_pool(stage, services, caps[stage])
+    if existing_slot:
+        assert manager.acquire("assessing", "card-A") is retained
+    snapshot = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase=phase, active_card_id="card-A")
+    persisted = PersistedSession(card_id="card-A", phase=phase, performer_stage="assessing",
+                                 agent_session_id="legacy-session")
+    persisted = PersistedSession.model_validate_json(persisted.model_dump_json())
+    session = _restored_session_dict("card-A", persisted, snapshot, {"id": "card-A", "status": "IN_PROGRESS"})
+    assert not session["agent_dispatch"].get("performer_id")
+    manager.sync_from_sessions({"card-A": session})
+    assert manager.active_count("implementing") == (1 if mode == "persistent" else 0)
+    if mode == "persistent":
+        assert manager.acquire("implementing", "card-B") is None
+        manager.release("assessing", "card-A")
+    assert manager.acquire("implementing", "card-B") is retained
