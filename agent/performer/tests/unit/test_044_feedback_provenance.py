@@ -154,3 +154,66 @@ async def test_production_continuation_has_known_provenance(backend: str, stage:
     for expected in [CONTINUATION, "author: coordinare", "source: performer", f"stage: {stage}", "does not constitute human approval"]:
         assert expected in text
     assert "## Human Feedback" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("kind", ["qa_workflow", "qa_legacy", "reviewer", "closer"])
+async def test_native_qa_and_review_contracts_reach_the_implementer_prompt(backend: str, kind: str) -> None:
+    import json
+    from contextlib import ExitStack
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from performer.backends.base import BackendStatus
+    from performer.main import handle_status
+    from performer.models import Performance, Stand
+    from performer.protocol import PerformerMessage, PerformerResponse
+
+    if kind.startswith("qa"):
+        role = "qa"
+        payload = {"passed": False, "criteria_checked": 1, "criteria_passed": 0}
+        if kind == "qa_workflow":
+            payload.update(executed_checks=[{"command": "synthetic-check", "exit_code": 1, "output": "synthetic failure"}],
+                           qa_findings=[{"category": "unexpected_regression", "criterion": "SYNTHETIC criterion",
+                                         "expected": "SYNTHETIC expected value", "observed": "SYNTHETIC actual value"}])
+        else:
+            payload["failures"] = [{"criterion": "SYNTHETIC criterion", "expected": "SYNTHETIC expected value",
+                                    "actual": "SYNTHETIC actual value", "test": "tests/test_synthetic.py::test_case"}]
+        expected = ["SYNTHETIC criterion", "SYNTHETIC expected value", "SYNTHETIC actual value"]
+        if kind == "qa_legacy":
+            expected.append("tests/test_synthetic.py::test_case")
+    elif kind == "reviewer":
+        role = "reviewing"
+        payload = {"review": {"verdict": "changes_requested", "findings": [{"path": "synthetic_review.py", "line": 23,
+                   "category": "correctness", "problem": "SYNTHETIC review problem", "why_blocking": "SYNTHETIC review rationale"}]}}
+        expected = ["synthetic_review.py:23", "SYNTHETIC review problem", "SYNTHETIC review rationale"]
+    else:
+        role = "closing_review"
+        payload = {"closing": {"verdict": "changes_requested", "threads_read": 1, "classifications": [],
+                   "open_threads": [{"path": "synthetic_closer.py", "line": 24, "excerpt": "SYNTHETIC unresolved comment", "thread_id": "synthetic-thread"}]}}
+        expected = ["synthetic_closer.py:24", "SYNTHETIC unresolved comment"]
+    native = MagicMock()
+    native.get_status.return_value = BackendStatus(state="done", output=json.dumps(payload))
+    perf = Performance(session_id="synthetic", stand=Stand(path=Path("/tmp/synthetic-unused"), branch="synthetic"),
+                       score=score(), backend=native, role=role, state="working")
+    with ExitStack() as stack:
+        for name in ("commit_file", "post_pr_comment", "post_issue_comment", "get_head_sha"):
+            stack.enter_context(patch("performer.main." + name, new=AsyncMock()))
+        stack.enter_context(patch("performer.main.resolve_visual_evidence_urls", new=AsyncMock(return_value=[])))
+        stack.enter_context(patch("performer.main.boot_and_capture_app_screenshot", return_value=None))
+        stack.enter_context(patch("performer.workspace.consume_services_start_failure", return_value=None))
+        response = await handle_status(PerformerMessage(action="status", session_id="synthetic"), perf)
+    response = PerformerResponse.model_validate_json(response.model_dump_json())
+    assert response.status == ("qa_failed" if role == "qa" else "changes_requested")
+    state = initial_state()
+    state.update(performer_services={role: SimpleNamespace(check_status=AsyncMock(return_value=response.model_dump()))},
+                 performer_stage=role, lifecycle_sequence=["implementing", role],
+                 current_card={"id": "synthetic", "status": "IN_PROGRESS"}, agent_dispatch={"session_id": "synthetic"})
+    result = await monitor_performer(state)
+    assert result["phase"] == "dispatching" and result["performer_stage"] == "implementing"
+    text = prompt(backend, score(relay_feedback=result["relay_feedback"]))
+    for value in [*expected, "[fb-1]", "stage: " + role]:
+        assert value in text
