@@ -4985,6 +4985,27 @@ class CoordinareDaemon:
                             notification_service,
                         )
 
+    def _stuck_performer_start(
+        self, key: tuple[str, str], session: dict[str, Any], now: datetime,
+    ) -> datetime | None:
+        """Resolve a durable start or conservative older-snapshot fallback."""
+        dispatched_at = session.get("agent_dispatch_at")
+        if dispatched_at is None:
+            # Older snapshots omitted dispatch time. Persisted progress gives
+            # a minimum age; otherwise observe once rather than skip forever.
+            progress_at = session.get("last_progress_at")
+            start = (
+                progress_at if isinstance(progress_at, datetime)
+                and progress_at.tzinfo is not None else now
+            )
+            dispatched_at = self._stuck_observed_starts.setdefault(key, start)
+        elif not isinstance(dispatched_at, datetime) or dispatched_at.tzinfo is None:
+            return None
+        entered_at = session.get("phase_entered_at")
+        if isinstance(entered_at, datetime) and entered_at.tzinfo is not None:
+            dispatched_at = max(dispatched_at, entered_at)
+        return dispatched_at
+
     async def _detect_stuck_performers(
         self, sessions: dict[str, Any], notification_service: Any,
     ) -> None:
@@ -5005,7 +5026,6 @@ class CoordinareDaemon:
             if not isinstance(dispatch, dict):
                 continue
             session_id = dispatch.get("session_id")
-            dispatched_at = session.get("agent_dispatch_at")
             if not isinstance(session_id, str) or not session_id:
                 continue
             card = session.get("current_card")
@@ -5013,21 +5033,9 @@ class CoordinareDaemon:
                 continue
             key = (card_id, session_id)
             live_keys.add(key)
+            dispatched_at = self._stuck_performer_start(key, session, now)
             if dispatched_at is None:
-                # Older snapshots did not retain dispatch time. A persisted
-                # progress clock is a conservative minimum age; with neither,
-                # observe this worker once rather than skipping it forever.
-                progress_at = session.get("last_progress_at")
-                start = (
-                    progress_at if isinstance(progress_at, datetime)
-                    and progress_at.tzinfo is not None else now
-                )
-                dispatched_at = self._stuck_observed_starts.setdefault(key, start)
-            elif not isinstance(dispatched_at, datetime) or dispatched_at.tzinfo is None:
                 continue
-            entered_at = session.get("phase_entered_at")
-            if isinstance(entered_at, datetime) and entered_at.tzinfo is not None:
-                dispatched_at = max(dispatched_at, entered_at)
             threshold = stuck_config.per_phase_thresholds.get(
                 phase, stuck_config.threshold_seconds,
             )
