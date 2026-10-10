@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+from ipaddress import IPv6Address
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -29,7 +30,10 @@ def _normalized_origin(origin: str) -> str:
     if port is None:
         port = default_port
     suffix = "" if port == default_port else f":{port}"
-    return f"{parsed.scheme}://{(parsed.hostname or '').lower()}{suffix}"
+    hostname = (parsed.hostname or "").lower()
+    if ":" in hostname:
+        hostname = f"[{IPv6Address(hostname).compressed}]"
+    return f"{parsed.scheme}://{hostname}{suffix}"
 
 
 def _safe_normalized_origin(origin: str) -> str:
