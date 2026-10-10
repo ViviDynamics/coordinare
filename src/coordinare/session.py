@@ -62,6 +62,7 @@ class CardSession(TypedDict, total=False):
 
     current_card: dict[str, Any] | None
     performer_stage: str
+    lifecycle_continuation: list[str]
     agent_dispatch: dict[str, Any]
     agent_dispatch_at: datetime | None
     workspace_path: Path | None
@@ -305,6 +306,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "pipeline_admitted",
     "current_card",
     "performer_stage",
+    "lifecycle_continuation",
     "agent_dispatch",
     "agent_dispatch_at",
     "workspace_path",
@@ -449,6 +451,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
     return CardSession(
         current_card=card,
         performer_stage="implementing",
+        lifecycle_continuation=[],
         agent_dispatch={},
         agent_dispatch_at=None,
         workspace_path=None,
@@ -563,6 +566,7 @@ def session_to_state(session: CardSession, state: CoordinareState) -> None:
     # Older partial sessions must not inherit another card's performer or intent.
     if "agent_dispatch" not in session:
         state["agent_dispatch"] = {}
+    state["lifecycle_continuation"] = list(session.get("lifecycle_continuation") or [])
     state["dispatched_feedback"] = dict(session.get("dispatched_feedback") or {})
     state["pending_override"] = session.get("pending_override")
     state["board_paused"] = bool(session.get("board_paused"))
