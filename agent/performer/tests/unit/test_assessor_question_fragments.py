@@ -149,3 +149,79 @@ async def test_recovered_questions_redact_secrets_before_surface_and_persistence
     assert token not in str(perf.assessment_questions)
     assert response.questions and "Can I use" in response.questions[0]
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repaired", [
+    '{"sufficient":true,"questions":[]}',
+    '{"assessment":{"ready":true,"questions":[]}}',
+    'The issue is clear and ready for implementation.',
+    '{"assessment":{"ready":false,"questions":["Different?"]}}',
+    '{"assessment":{"ready":false,"verdict":"not_work","questions":[]}}',
+    '{"assessment":{"ready":false,"verdict":"needs_split","questions":[]}}',
+])
+async def test_parse_repair_cannot_discard_an_unanswered_question(repaired):
+    perf = performance('broken "questions": ["' + QUESTION + '"]')
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        first = await handle_status(message, perf, settings)
+        assert first.status == "working"
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=repaired)
+        second = await handle_status(message, perf, settings)
+    assert second.status == "blocked"
+    assert second.questions == [QUESTION]
+    assert perf.assessment_questions == [QUESTION]
+    assert perf.open_questions == [QUESTION]
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recovered_question_is_redacted_and_retained_during_parse_retry():
+    token = "ghp_" + "B" * 36
+    perf = performance('broken "questions": ["Use ' + token + '?"]')
+    response = await handle_status(
+        PerformerMessage(action="status", session_id="synthetic"), perf,
+        Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1),
+    )
+    assert response.status == "working"
+    assert perf.open_questions and perf.assessment_questions == perf.open_questions
+    assert token not in str(perf.open_questions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output,expected", [
+    ('broken "metadata": {"questions":["Unrelated?"]}', []),
+    ('broken "metadata": {"assessment":{"ready":false,"questions":["Unrelated?"]}}', []),
+    ('broken "metadata": {"questions":["Unrelated?"]', []),
+    ('broken "questions":["Keep me?"], "metadata":{"questions":["Unrelated?"]}', ["Keep me?"]),
+    ('broken "questions":["Keep me?"], "metadata":{"questions":["Unrelated?"]', ["Keep me?"]),
+    ('broken "metadata":[{"questions":["Unrelated?"]}], "questions":["Keep me?"]', ["Keep me?"]),
+    ('broken "metadata":{"sufficient":false,"questions":["Unrelated?"]}', []),
+    ('broken "questions":["Keep me?"], "metadata":{"notes":"brace } and [", "questions":["Unrelated?"]}', ["Keep me?"]),
+])
+async def test_malformed_metadata_cannot_supply_assessment_questions(output, expected):
+    perf = performance(output)
+    with patch("performer.main.commit_file", new=AsyncMock()):
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert (response.questions or []) == expected
+    assert "Unrelated?" not in str(perf.open_questions)
+
+
+@pytest.mark.asyncio
+async def test_fresh_assessment_after_human_answer_can_advance():
+    # Human answers cause daemon redispatch with a fresh Performance, rather
+    # than format-repair feedback being mistaken for the human's decision.
+    previous = performance('broken "questions":["' + QUESTION + '"]')
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()):
+        blocked = await handle_status(message, previous, settings)
+        assert blocked.status == "blocked"
+        reassessment = performance('{"sufficient":true,"questions":[]}')
+        ready = await handle_status(message, reassessment, settings)
+    assert ready.status == "assessment_complete"
+    assert previous.open_questions == [QUESTION]

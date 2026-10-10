@@ -14,14 +14,43 @@ _JSON_FIELD = re.compile(r'(?P<key>"(?:[^"\\]|\\.)*")\s*:\s*')
 _ASSESSMENT_KEYS = frozenset({"questions", "sufficient", "assessment", "ready"})
 
 
-def _assessment_fields(raw: str) -> list[tuple[str, int, int]]:
+def _container_end(raw: str, start: int) -> int:
+    """Bound a metadata value, including one truncated before its closing bracket."""
+    depth = 0
+    in_string = escaped = False
+    for index in range(start, len(raw)):
+        char = raw[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(raw)
+
+
+def _assessment_fields(raw: str, *, exclude_metadata: bool = True) -> list[tuple[str, int, int]]:
     fields = []
+    metadata_ranges: list[tuple[int, int]] = []
     for field in _JSON_FIELD.finditer(raw):
         try:
             key = json.loads(field.group("key"))
         except ValueError:
             continue
-        if key in _ASSESSMENT_KEYS:
+        if exclude_metadata and any(start <= field.start() < end for start, end in metadata_ranges):
+            continue
+        if key not in _ASSESSMENT_KEYS and raw[field.end():field.end() + 1] in ("{", "["):
+            metadata_ranges.append((field.end(), _container_end(raw, field.end())))
+        elif key in _ASSESSMENT_KEYS:
             fields.append((key, field.start(), field.end()))
     return fields
 
@@ -29,9 +58,12 @@ def _assessment_fields(raw: str) -> list[tuple[str, int, int]]:
 def assessment_fields_outside_object(raw: str) -> bool:
     """A nested object is not an assessment when its contract fields lie outside it."""
     start, end = raw.find("{"), raw.rfind("}")
+    fields = _assessment_fields(raw)
+    if not fields and _assessment_fields(raw, exclude_metadata=False):
+        return True
     return any(
         start < 0 or field_start < start or field_end > end
-        for _, field_start, field_end in _assessment_fields(raw)
+        for _, field_start, field_end in fields
     )
 
 
@@ -81,6 +113,8 @@ def assessment_has_duplicate_contract_fields(raw: str, extract_json: Callable[..
 
 
 def _question_candidates(raw: str, fields: list[tuple[str, int, int]], extract_json: Callable[..., object]) -> list[object]:
+    if not any(key == "questions" for key, _, _ in fields):
+        return []
     pairs = _assessment_pairs(raw, extract_json)
     if pairs is not None and not assessment_fields_outside_object(raw):
         return [value for obj in _contract_objects(pairs) for key, value in obj if key == "questions"]

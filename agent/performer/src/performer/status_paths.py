@@ -250,6 +250,15 @@ async def assessor_path(
     # workflow_metrics); coordinare lifts the assessment and records it on the
     # card session. The prose path below is untouched (164 FR-005).
     assess_raw = backend_status.output or ""
+    # Format repair cannot answer a human decision recovered from an earlier
+    # response. Surface it before interpreting any replacement readiness verdict.
+    if perf.assessment_questions:
+        perf.open_questions = perf.assessment_questions
+        perf.state = "blocked"
+        return PerformerResponse(
+            status="blocked", session_id=perf.session_id,
+            questions=perf.assessment_questions,
+        )
     _lenient = await _assessor_lenient_response(perf, assess_raw, settings)
     if _lenient is not None:
         return _lenient
@@ -394,6 +403,9 @@ async def _assessor_lenient_response(
         and (assess_output.get("questions") or "ready" in assess_output)
     ):
         contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw, _extract_json)
+        if fragment_questions:
+            perf.assessment_questions = fragment_questions
+            perf.open_questions = fragment_questions
         async def _assessor_lenient_sufficient() -> PerformerResponse:
             if fragment_questions:
                 perf.assessment_questions = fragment_questions
