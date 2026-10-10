@@ -121,3 +121,37 @@ def test_snapshot_preserves_explicit_history_metadata_and_exact_content():
     snapshot = daemon._build_snapshot()
     assert snapshot.active_sessions["A"].card_clarifications == [round_]
     assert a["card_clarifications"] == [round_]
+
+
+@pytest.mark.parametrize("known_key, missing_keys", [
+    ("issue_number", ["card_title", "issue_url"]),
+    ("title", ["card_number", "issue_url"]),
+])
+def test_partial_owner_metadata_can_be_filled_after_board_refresh(known_key, missing_keys):
+    session = owner("A", 1, "assessing", "Exact answer")
+    complete_card = deepcopy(session["current_card"])
+    session["current_card"] = {"id": "A", known_key: complete_card[known_key]}
+    daemon = CoordinareDaemon(SimpleNamespace())
+    daemon.state.update(active_sessions={"A": session})
+    snapshot = WorkflowSnapshot.model_validate_json(daemon._build_snapshot().model_dump_json())
+    for key in missing_keys:
+        assert key not in snapshot.active_sessions["A"].card_clarifications[0]
+    restored = CoordinareDaemon(SimpleNamespace())
+    restored._restore_from_snapshot(snapshot)
+    restored.state["active_sessions"]["A"]["current_card"] = complete_card
+    enriched = WorkflowSnapshot.model_validate_json(restored._build_snapshot().model_dump_json())
+    restored_again = CoordinareDaemon(SimpleNamespace())
+    restored_again._restore_from_snapshot(enriched)
+    restored_again._state_store = SimpleNamespace(last_snapshot=enriched)
+    round_ = dashboard(restored_again)["card_clarifications"][0]
+    assert (round_["card_number"], round_["card_title"], round_["issue_url"], round_["answer"]) == (
+        1, "Story 1", "https://github.com/example/sample/issues/1", "Exact answer")
+
+
+@pytest.mark.parametrize("history", [None, "malformed"])
+def test_known_owner_with_malformed_history_still_snapshots_safely(history):
+    session = owner("A", 1, "assessing", "Unused")
+    session["card_clarifications"] = history
+    daemon = CoordinareDaemon(SimpleNamespace())
+    daemon.state.update(active_sessions={"A": session})
+    assert daemon._build_snapshot().active_sessions["A"].card_clarifications == []

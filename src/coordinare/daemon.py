@@ -486,6 +486,20 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
             "pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path",
         ) if isinstance(card, dict) and card.get(key) is not None
     }
+    clarifications = [dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)] \
+        if isinstance(f["clarifications_raw"], (list, tuple)) else []
+    if isinstance(card, dict) and (card.get("issue_number") or card.get("title")):
+        attribution = {
+            "card_id": card_id, "card_number": card.get("issue_number"),
+            "card_title": str(card.get("title") or ""),
+            "stage": str(sess.get("performer_stage") or ""),
+            "issue_url": str(card.get("issue_url") or ""),
+        }
+        # Missing board metadata must remain absent so a later refresh can
+        # supply it; explicit metadata already on a round remains untouched.
+        clarifications = annotate_clarifications(
+            clarifications, {key: value for key, value in attribution.items() if value},
+        )
     return PersistedSession(
         card_id=card_id,
         last_progress_at=sess.get("last_progress_at"),
@@ -518,17 +532,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         consumed_loop_questions=[
             str(qf) for qf in (sess.get("consumed_loop_questions") or ()) if qf is not None
         ],
-        card_clarifications=annotate_clarifications(
-            [dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)], {
-                "card_id": card_id,
-                "card_number": card.get("issue_number") if isinstance(card, dict) else None,
-                "card_title": str(card.get("title") or "") if isinstance(card, dict) else "",
-                "stage": str(sess.get("performer_stage") or ""),
-                "issue_url": (str(card.get("issue_url") or "") or None) if isinstance(card, dict) else None,
-            },
-        )
-        if isinstance(f["clarifications_raw"], (list, tuple))
-        else [],
+        card_clarifications=clarifications,
         dispatched_feedback=dict(sess.get("dispatched_feedback") or {}),
         pending_override=_dict_or_none(sess.get("pending_override")),
         pr_comment_tracking=dict(sess.get("pr_comment_tracking") or {}),
