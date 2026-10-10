@@ -87,3 +87,38 @@ async def test_removed_active_stage_keeps_saved_continuation_across_two_restarts
     await _pickup_todo_cards(restarted._state, {"titles": {"new-card": "New task"}}, ["new-card"])
     session_to_state(restarted._state["active_sessions"]["new-card"], restarted._state)
     assert _advance_stage(restarted._state)["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_legacy_snapshot_migrates_continuation_to_versioned_contract(tmp_path):
+    import json
+    from pathlib import Path
+
+    import jsonschema
+
+    from coordinare.metrics import CoordinareMetrics
+    from coordinare.state_store import CURRENT_SCHEMA_VERSION, StateStore
+
+    assert CURRENT_SCHEMA_VERSION >= 32
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "schema_version": 31, "snapshot_at": datetime.now(UTC).isoformat(), "phase": "idle",
+        "lifecycle_sequence": ["assessing", "implementing", "reviewing"],
+        "active_sessions": {"existing": {"card_id": "existing", "performer_stage": "assessing", "phase": "dispatching"}},
+    }))
+    store = StateStore(path=path, metrics=CoordinareMetrics())
+    legacy = await store.load()
+    assert legacy.active_sessions["existing"].lifecycle_continuation == []
+    daemon = CoordinareDaemon(AsyncMock(), poll_interval_seconds=1)
+    daemon._state.update(lifecycle_sequence=["implementing"], config=SimpleNamespace(max_concurrent_cards=2))
+    daemon._restore_from_snapshot(legacy)
+    await store.save(daemon._build_snapshot())
+    saved = json.loads(path.read_text())
+    assert saved["schema_version"] == CURRENT_SCHEMA_VERSION
+    schema = json.loads((Path(__file__).resolve().parents[2] / "specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
+    assert CURRENT_SCHEMA_VERSION in schema["properties"]["schema_version"]["enum"]
+    declared = schema["properties"]["active_sessions"]["additionalProperties"]["properties"]["lifecycle_continuation"]
+    assert declared["items"]["type"] == "string"
+    jsonschema.validate(saved, schema)
+    restored = await store.load()
+    assert restored.active_sessions["existing"].lifecycle_continuation == ["assessing", "implementing", "reviewing"]
