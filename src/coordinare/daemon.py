@@ -2419,7 +2419,12 @@ class CoordinareDaemon:
         self._state["phase"] = snapshot.phase
         self._state["open_questions"] = list(snapshot.open_questions)
         self._state["card_clarifications"] = list(snapshot.card_clarifications)
-        if snapshot.lifecycle_sequence:
+        # Bootstrap resolves the current configured lifecycle. Saved workflow
+        # state retains session progress, but must not change new admission.
+        # Legacy callers without a configured sequence still recover it.
+        if snapshot.lifecycle_sequence and (
+            self._state.get("config") is None or not self._state.get("lifecycle_sequence")
+        ):
             self._state["lifecycle_sequence"] = list(snapshot.lifecycle_sequence)
         if snapshot.performer_stage:
             self._state["performer_stage"] = snapshot.performer_stage
