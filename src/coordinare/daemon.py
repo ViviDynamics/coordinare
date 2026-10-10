@@ -21,6 +21,7 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
+from coordinare.graph.nodes.route_issue_comments import route_issue_comments
 from coordinare.graph.state import (
     CoordinareState,
     DaemonPhase,
@@ -1653,9 +1654,23 @@ async def _all_ineligible_fallback(
         state.get("board_snapshot") or {}, focus, active_sessions.get(focus),
     ) == "BACKLOG"
     if any(sess.get("board_paused") for sess in active_sessions.values()) or held_backlog_focus:
-        # Admission and board maintenance must continue, but the worker graph
-        # cannot run on a paused or intentionally held Backlog focus. A neutral flat view keeps check_board
-        # from retiring the paused card through focus-specific cleanup.
+        # Read human feedback without running the held card's worker graph.
+        # Hydrate a separate view and copy only comment fields so controls
+        # accepted during comment IO remain on the authoritative owner.
+        if held_backlog_focus and focus in active_sessions:
+            held_owner = active_sessions[focus]
+            comments_state = cast("CoordinareState", dict(state))
+            session_to_state(held_owner, comments_state)
+            comments_state["active_card_id"] = focus
+            _rederive_current_card(comments_state)
+            routed = await route_issue_comments(comments_state)
+            owner = (state.get("active_sessions") or {}).get(focus)
+            if owner is held_owner:
+                for field in ("card_clarifications", "requirements_changed",
+                              "last_issue_comment_id", "processed_issue_comment_ids"):
+                    owner[field] = routed.get(field)
+        # A neutral flat view lets check_board admit siblings without retiring
+        # the paused or intentionally held focus through card-specific cleanup.
         maintenance = dict(state)
         for field in _SESSION_FIELDS:
             maintenance.pop(field, None)
