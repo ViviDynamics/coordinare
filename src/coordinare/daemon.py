@@ -2670,10 +2670,10 @@ class CoordinareDaemon:
                 continue
             _observe_handoff_board_column(session, column.strip().upper())
             dispatch = session.get("agent_dispatch") or {}
-            if _is_manual_board_block(session, column.strip().upper()) or column.strip().upper() in {"TODO", "BACKLOG"} and (
+            if _is_manual_board_block(session, column.strip().upper()) or (column.strip().upper() in {"TODO", "BACKLOG"} and (
                 dispatch.get("session_id") or has_live_side_writer(session)
                 or _handoff_needs_board_pause(session, column.strip().upper())
-            ):
+            )):
                 _capture_board_pause_resume_phase(session)
                 session["board_paused"] = True
                 session["board_pause_column"] = column.strip().upper()
@@ -4731,10 +4731,10 @@ class CoordinareDaemon:
             writers = [(sess.get("performer_stage"), dispatch, False)]
             if side.get("status") == "running" or side.get("writer_active"):
                 writers.append(("documenting", side, True))
-            newly_paused = _is_manual_board_block(sess, column) or column in {"TODO", "BACKLOG"} and (
+            newly_paused = _is_manual_board_block(sess, column) or (column in {"TODO", "BACKLOG"} and (
                 any(identity.get("session_id") for _, identity, _ in writers)
                 or _handoff_needs_board_pause(sess, column)
-            )
+            ))
             if not sess.get("board_paused") and not newly_paused:
                 continue
             was_paused = bool(sess.get("board_paused"))
