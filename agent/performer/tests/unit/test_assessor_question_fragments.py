@@ -53,6 +53,11 @@ def performance(output: str) -> Performance:
     ('{"assessment": "ready", "questions": ["Need a decision?"]}', ["Need a decision?"]),
     ('{"assessment": false, "questions": ["Need a decision?"]}', ["Need a decision?"]),
     ('{"assessment": 1, "questions": ["Need a decision?"]}', ["Need a decision?"]),
+    ('{"sufficient": false, "questions": ["Keep me?"], "questions": null}', ["Keep me?"]),
+    ('{"sufficient": false, "questions": null, "questions": ["Keep me?"]}', ["Keep me?"]),
+    ('{"sufficient": false, "questions": ["Keep me?"], "questions": [null]}', ["Keep me?"]),
+    ('{"sufficient": false, "questions": ["Keep me?"], "questions": ["Also me?"]}', ["Keep me?", "Also me?"]),
+    ('{"sufficient": false, "questions": ["Keep me?"], "metadata": {"questions": ["Unrelated?"], "questions": []}}', ["Keep me?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)

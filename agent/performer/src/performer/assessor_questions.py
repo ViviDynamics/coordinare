@@ -31,6 +31,20 @@ def assessment_fields_outside_object(raw: str) -> bool:
     )
 
 
+def assessment_has_duplicate_questions(raw: str) -> bool:
+    """Catch last-key-wins loss within a parsed legacy assessment object."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return bool(json.loads(
+                raw[start:end + 1],
+                object_pairs_hook=lambda pairs: sum(key == "questions" for key, _ in pairs) > 1,
+            ))
+        except ValueError:
+            pass
+    return False
+
+
 def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
     """Identify contract fragments; recover only complete arrays of question strings."""
     fields = _assessment_fields(raw)
