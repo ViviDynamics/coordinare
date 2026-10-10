@@ -1833,8 +1833,22 @@ function afQuietTick() {
   var s = _lastState;
   if (!s) return;
   var threshold = s.activity_quiet_threshold_seconds;
-  if (!threshold || threshold <= 0) return;   // 0 disables
-  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var sessions = (Array.isArray(s.active_sessions) ? s.active_sessions : []).filter(function(sess) {
+    return sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent';
+  });
+  var active = {};
+  sessions.forEach(function(sess) { if (sess.card_id) active[sess.card_id] = true; });
+  var marked = false;
+  Object.keys(_afQuietCards).forEach(function(cid) {
+    if (!active[cid] || !threshold || threshold <= 0) {
+      delete _afQuietCards[cid];
+      marked = true;
+    }
+  });
+  if (!threshold || threshold <= 0) {
+    if (marked) renderActivePerformers(s);
+    return;   // 0 disables detection and clears existing markers
+  }
   var now = Date.now();
   var newest = {};
   for (var i = 0; i < _afEntries.length; i++) {
@@ -1843,7 +1857,6 @@ function afQuietTick() {
     var t = Date.parse(e.timestamp);
     if (!isNaN(t) && (!newest[e.card_id] || t > newest[e.card_id])) newest[e.card_id] = t;
   }
-  var marked = false;
   sessions.forEach(function(sess) {
     var cid = sess.card_id;
     if (!cid || _afQuietCards[cid]) return;

@@ -211,7 +211,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_demo1', card_title: 'Add retry budget', issue_number: 142,
-    performer_stage: 'implementing', agent_dispatch_at: iso(600000),
+    phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
   }],
 };
 afQuietTick();
@@ -243,7 +243,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_restored', card_title: 'Restored card', issue_number: 7,
-    performer_stage: 'implementing', agent_dispatch_at: iso(600000),
+    phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
   }],
 };
 afQuietTick();
@@ -258,7 +258,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_noanchor', card_title: 'No anchor', issue_number: 8,
-    performer_stage: 'implementing',
+    phase: 'monitoring_performer', performer_stage: 'implementing',
   }],
 };
 afQuietTick();
@@ -266,10 +266,63 @@ check('a card with neither anchor is left UNMARKED', !_afQuietCards['PVTI_noanch
 
 _lastState = {
   activity_quiet_threshold_seconds: 0,
-  active_sessions: [{ card_id: 'PVTI_off', agent_dispatch_at: iso(9999999) }],
+  active_sessions: [{ card_id: 'PVTI_off', phase: 'monitoring_performer', agent_dispatch_at: iso(9999999) }],
 };
 afQuietTick();
 check('threshold 0 disables detection', !_afQuietCards['PVTI_off']);
+
+// ---------------------------------------------------------------------------
+section('Inactive cards never start quiet episodes');
+for (const phase of ['blocked', 'idle', 'monitoring_pr', 'dispatching', undefined]) {
+  resetFeed();
+  afAppend([entry(300, { card_id: 'PVTI_inactive', timestamp: iso(60000) })]);
+  _lastState = {
+    activity_quiet_threshold_seconds: 20,
+    active_sessions: [{ card_id: 'PVTI_inactive', phase, agent_dispatch_at: null }],
+  };
+  afQuietTick();
+  check('no quiet marker for inactive phase ' + phase, !_afQuietCards.PVTI_inactive);
+  check('no synthetic quiet row for inactive phase ' + phase,
+        !feed.rows.some((r) => /ev-quiet/.test(r)));
+}
+
+section('Quiet markers clear when a performer stops or disappears');
+for (const phase of ['monitoring_performer', 'monitoring_agent']) {
+  resetFeed();
+  _lastState = {
+    activity_quiet_threshold_seconds: 20,
+    active_sessions: [{ card_id: 'PVTI_transition', phase, agent_dispatch_at: iso(60000) }],
+  };
+  afQuietTick();
+  check('active phase can become quiet ' + phase, _afQuietCards.PVTI_transition === true);
+  const paints = _renderPerformersCalls;
+  _lastState.active_sessions[0].phase = 'blocked';
+  _lastState.active_sessions[0].agent_dispatch_at = null;
+  afQuietTick();
+  check('pause clears live marker ' + phase, !_afQuietCards.PVTI_transition);
+  check('pause repaints marker ' + phase, _renderPerformersCalls === paints + 1);
+  check('historical quiet row remains visible ' + phase,
+        feed.rows.filter((r) => /ev-quiet/.test(r)).length === 1);
+  _lastState.active_sessions[0].phase = phase;
+  _lastState.active_sessions[0].agent_dispatch_at = iso(0);
+  afQuietTick();
+  check('resume uses fresh dispatch timestamp ' + phase, !_afQuietCards.PVTI_transition);
+  _lastState.active_sessions[0].agent_dispatch_at = iso(60000);
+  afQuietTick();
+  check('resumed worker can become quiet again ' + phase, _afQuietCards.PVTI_transition === true);
+  _lastState.active_sessions = [];
+  afQuietTick();
+  check('removed session clears marker ' + phase, !_afQuietCards.PVTI_transition);
+}
+resetFeed();
+_lastState = {
+  activity_quiet_threshold_seconds: 20,
+  active_sessions: [{ card_id: 'PVTI_disabled', phase: 'monitoring_performer', agent_dispatch_at: iso(60000) }],
+};
+afQuietTick();
+_lastState.activity_quiet_threshold_seconds = 0;
+afQuietTick();
+check('disabling quiet detection clears live markers', !_afQuietCards.PVTI_disabled);
 
 // ---------------------------------------------------------------------------
 section('C10 — filter survives live updates');
