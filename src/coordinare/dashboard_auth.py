@@ -32,6 +32,14 @@ def _normalized_origin(origin: str) -> str:
     return f"{parsed.scheme}://{(parsed.hostname or '').lower()}{suffix}"
 
 
+def _safe_normalized_origin(origin: str) -> str:
+    """Malformed request origins never match the configured public origin."""
+    try:
+        return _normalized_origin(origin)
+    except ValueError:
+        return ""
+
+
 def _public_origin(flow: OidcFlow) -> str:
     return _normalized_origin(flow.config.redirect_url)
 
@@ -118,7 +126,7 @@ class DashboardAuthentication:
             if request.method == "POST" and path == "/oidc/logout":
                 origin = request.headers.get("origin")
                 if origin is not None and (
-                    _normalized_origin(origin) != _public_origin(self._oidc)
+                    _safe_normalized_origin(origin) != _public_origin(self._oidc)
                 ):
                     refused_response = JSONResponse(
                         {"detail": "Cross-origin logout refused"}, status_code=403,
@@ -149,10 +157,7 @@ class DashboardAuthentication:
         if self._oidc is not None:
             expected_origin = _public_origin(self._oidc)
             if origin is not None:
-                try:
-                    origin = _normalized_origin(origin)
-                except ValueError:
-                    origin = ""
+                origin = _safe_normalized_origin(origin)
         if request.method in MUTATING_METHODS and origin is not None and origin != expected_origin:
             refused_response = JSONResponse(
                 {"detail": "Cross-origin mutation refused"}, status_code=403,
