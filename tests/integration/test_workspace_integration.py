@@ -254,7 +254,6 @@ async def test_workspace_root_pvc_simulation(
     assert pvc_mount.exists()
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.asyncio
 async def test_resumed_pr_preserves_commits_and_pushes_same_head(bare_repo: Path, tmp_path: Path) -> None:
     """A renamed card resumes prior work and updates only the actual PR branch."""

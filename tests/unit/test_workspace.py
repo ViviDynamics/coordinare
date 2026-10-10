@@ -825,9 +825,11 @@ async def test_prepare_unknown_pr_head_stops_before_git(result: dict[str, object
     github = MagicMock()
     github.check_mergeability = AsyncMock(return_value=result)
     mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"), github_service=github)
-    with patch("coordinare.workspace._run_git", new_callable=AsyncMock) as git:
-        with pytest.raises(WorkspaceSetupError, match="PR head"):
-            await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
+    with (
+        patch("coordinare.workspace._run_git", new_callable=AsyncMock) as git,
+        pytest.raises(WorkspaceSetupError, match="PR head"),
+    ):
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
     git.assert_not_awaited()
 
 
