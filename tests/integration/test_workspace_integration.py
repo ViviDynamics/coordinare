@@ -252,3 +252,65 @@ async def test_workspace_root_pvc_simulation(
     await mgr.teardown(info.path)
     assert not info.path.exists()
     assert pvc_mount.exists()
+
+
+@pytest.mark.asyncio
+async def test_resumed_pr_preserves_commits_and_pushes_same_head(bare_repo: Path, tmp_path: Path) -> None:
+    """A renamed card resumes prior work and updates only the actual PR branch."""
+    import subprocess
+    from unittest.mock import AsyncMock
+
+    def git_at(path: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    original_work = tmp_path / "work"
+    base_sha = git_at(original_work, "rev-parse", "HEAD")
+    branch = "conductor/CARD/old-title"
+    git_at(original_work, "checkout", "-b", branch)
+    (original_work / "previous-work.txt").write_text("preserve this PR work")
+    git_at(original_work, "add", ".")
+    git_at(original_work, "commit", "-m", "Prior implementation")
+    (original_work / "second-work.txt").write_text("second prior commit")
+    git_at(original_work, "add", ".")
+    git_at(original_work, "commit", "-m", "Second prior commit")
+    prior_sha = git_at(original_work, "rev-parse", "HEAD")
+    git_at(original_work, "push", "origin", branch)
+    default_branch = git_at(bare_repo, "symbolic-ref", "--short", "HEAD")
+    git_at(original_work, "checkout", default_branch)
+    (original_work / "base-change.txt").write_text("concurrent main work")
+    git_at(original_work, "add", ".")
+    git_at(original_work, "commit", "-m", "Advance default branch")
+    latest_base_sha = git_at(original_work, "rev-parse", "HEAD")
+    git_at(original_work, "push", "origin", default_branch)
+
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(return_value={"head_ref_name": branch, "head_repo_name_with_owner": "test-org/test-repo"})
+    mgr = WorkspaceManager(_make_config(workspace_root=tmp_path), github_service=github)
+    original_run_git = _ws_module._run_git
+
+    async def local_remote(*args, **kwargs):
+        if args[0] == "clone":
+            args = ("clone", *args[1:-2], "file://" + str(bare_repo), args[-1])
+        elif args[:3] == ("remote", "set-url", "origin"):
+            args = (*args[:3], str(bare_repo))
+        return await original_run_git(*args, **kwargs)
+
+    with patch("coordinare.workspace._run_git", side_effect=local_remote):
+        info = await mgr.prepare({"id": "CARD", "title": "New title", "pr_node_id": "PR_retained"})
+    assert info.path is not None
+    assert info.branch == branch
+    assert git_at(info.path, "branch", "--show-current") == branch
+    assert git_at(info.path, "rev-parse", "HEAD") == prior_sha
+    assert git_at(info.path, "rev-list", "--count", f"{base_sha}..HEAD") == "2"
+    assert git_at(info.path, "merge-base", "HEAD", f"origin/{default_branch}") == base_sha
+    assert (info.path / "previous-work.txt").read_text() == "preserve this PR work"
+    (info.path / "feedback.txt").write_text("new feedback change")
+    git_at(info.path, "add", ".")
+    git_at(info.path, "commit", "-m", "Address feedback")
+    git_at(info.path, "push", "origin", branch)
+    assert git_at(bare_repo, "rev-parse", f"refs/heads/{branch}") == git_at(info.path, "rev-parse", "HEAD")
+    assert git_at(bare_repo, "rev-parse", "HEAD") == latest_base_sha
+    assert not git_at(bare_repo, "branch", "--list", "coordinare/*")
+    await mgr.teardown(info.path)

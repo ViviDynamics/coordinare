@@ -794,3 +794,75 @@ async def test_suffix_exhausted_falls_back_to_delete() -> None:
     branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
     github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
     assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("branch", ["conductor/CARD/original-title", "feature/custom-head"])
+@pytest.mark.parametrize("transport", ["kubernetes", "subprocess"])
+async def test_prepare_resumes_actual_pr_head(branch: str, transport: str, tmp_path: Path) -> None:
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(return_value={"head_ref_name": branch, "head_repo_name_with_owner": "acme/myrepo"})
+    github.branch_exists = AsyncMock(return_value=True)
+    github.delete_branch = AsyncMock()
+    mgr = WorkspaceManager(_make_config(agent_transport=transport), github_service=github)
+    card = {"id": "CARD", "title": "Renamed title", "status": "TODO", "pr_node_id": "PR_existing"}
+    with patch("coordinare.workspace._run_git", new_callable=AsyncMock) as git:
+        info = await mgr.prepare(card)
+    assert info.branch == branch
+    github.check_mergeability.assert_awaited_once_with("PR_existing")
+    github.branch_exists.assert_not_awaited()
+    github.delete_branch.assert_not_awaited()
+    if transport == "subprocess":
+        assert "--depth=1" not in git.await_args_list[0].args
+        assert any(c.args == ("fetch", "origin", f"refs/heads/{branch}") for c in git.await_args_list)
+        assert git.await_args_list[-1].args == ("checkout", "-b", branch, "FETCH_HEAD")
+    else:
+        git.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [{}, {"head_ref_name": ""}, {"head_ref_name": None}])
+async def test_prepare_unknown_pr_head_stops_before_git(result: dict[str, object]) -> None:
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(return_value=result)
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"), github_service=github)
+    with (
+        patch("coordinare.workspace._run_git", new_callable=AsyncMock) as git,
+        pytest.raises(WorkspaceSetupError, match="PR head"),
+    ):
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
+    git.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_unreadable_pr_head_stops_without_token_details() -> None:
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(side_effect=RuntimeError("sensitive-token"))
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"), github_service=github)
+    with pytest.raises(WorkspaceSetupError, match="PR head") as exc:
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
+    assert "sensitive-token" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_prepare_retained_pr_without_resolver_stops() -> None:
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"))
+    with pytest.raises(WorkspaceSetupError, match="PR head"):
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
+
+
+@pytest.mark.asyncio
+async def test_prepare_retained_pr_url_without_identity_stops() -> None:
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"))
+    with pytest.raises(WorkspaceSetupError, match="PR head"):
+        await mgr.prepare({"id": "CARD", "pr_url": "https://github.com/acme/myrepo/pull/1"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", ["contributor/myrepo", "", None])
+async def test_prepare_cross_repository_or_unknown_head_stops(repository):
+    github = MagicMock()
+    github.check_mergeability = AsyncMock(return_value={"head_ref_name": "feature", "head_repo_name_with_owner": repository})
+    mgr = WorkspaceManager(_make_config(agent_transport="kubernetes"), github_service=github)
+    with pytest.raises(WorkspaceSetupError, match="PR head"):
+        await mgr.prepare({"id": "CARD", "pr_node_id": "PR_existing"})
