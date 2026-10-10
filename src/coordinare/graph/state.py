@@ -242,6 +242,7 @@ class CoordinareState(TypedDict, total=False):
     requirements_changed: bool  # 030: True if card requirements changed during monitoring
     requirements_changed_details: dict[str, Any]  # 030: diff details
     pending_override: dict[str, Any] | None  # 031: human override queued via dashboard or PR comment
+    consumed_control_id: str | None  # exact receipt consumed in this single graph invocation
     lifecycle_completed_at: datetime | None  # Cutoff for filtering old PR reviews after lifecycle completion
     processed_review_ids: set[str]  # Review node IDs already processed — prevents re-dispatch loops
     surfaced_stale_reviews: dict[str, str]  # 128: {review_id: head_oid} — stale-review surfacing dedup
@@ -514,6 +515,7 @@ def initial_state() -> CoordinareState:
         "dispatched_feedback": {},
         "role_timeouts": {},
         "pending_override": None,
+        "consumed_control_id": None,
         "card_tokens_total": 0,
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
