@@ -1568,7 +1568,7 @@ async def _handle_blocked_cards(
                 return state
             # else: fall through to TODO pickup below — skip blocked-card handling.
         else:
-            item = blocked[0]
+            item = _cur_id or blocked[0]
             titles = board.get("titles", {})
             descriptions = board.get("descriptions", {})
             issue_numbers = board.get("issue_numbers", {})
@@ -1594,8 +1594,11 @@ async def _handle_blocked_cards(
                 _sess_b["phase"] = "blocked"
                 _sessions_b[item] = _sess_b
                 state["active_sessions"] = _sessions_b
-            if not state.get("active_card_id"):
-                state["active_card_id"] = item
+            if _cur_id != item:
+                # Bind identity and card-scoped fields together. Flat history
+                # left by a retired sibling cannot become this card's context.
+                session_to_state(cast("CardSession", _sessions_b[item]), state)
+            state["active_card_id"] = item
             _rederive_current_card(state)
 
             result = await _collect_blocked_clarification(state, board_provider, board, item, content_node_ids)

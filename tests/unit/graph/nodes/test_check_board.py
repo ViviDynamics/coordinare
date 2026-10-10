@@ -412,6 +412,8 @@ class _GitHubBlockedNoNewComment:
 @pytest.mark.asyncio
 async def test_check_board_resumes_blocked_card_on_new_comment() -> None:
     state = initial_state()
+    # Questions and cutoff belong to this legacy flat card, not anonymous history.
+    state["current_card"] = {"id": "ITEM_B", "status": "BLOCKED"}
     github = _GitHubBlockedWithNewComment()
     state["github_service"] = github
     state["last_blocked_notified_at"] = datetime(2026, 2, 25, 10, 0, tzinfo=UTC)
@@ -555,6 +557,8 @@ async def test_check_board_ignores_bot_comments_on_blocked_card() -> None:
     from datetime import UTC, datetime, timedelta
 
     state = initial_state()
+    # Questions and cutoff belong to this legacy flat card, not anonymous history.
+    state["current_card"] = {"id": "ITEM_B", "status": "BLOCKED"}
     github = _GitHubBlockedOnlyBotComments()
     state["github_service"] = github
     # Stale cutoff — all bot comments are "newer" by timestamp but must
@@ -619,6 +623,8 @@ async def test_check_board_human_answer_still_triggers_redispatch() -> None:
     from datetime import UTC, datetime
 
     state = initial_state()
+    # Questions and cutoff belong to this legacy flat card, not anonymous history.
+    state["current_card"] = {"id": "ITEM_B", "status": "BLOCKED"}
     github = _GitHubBlockedMixedAuthors()
     state["github_service"] = github
     state["last_blocked_notified_at"] = datetime(2026, 4, 13, 19, 30, tzinfo=UTC)
