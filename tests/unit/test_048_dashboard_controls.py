@@ -9,13 +9,16 @@ import pytest
 
 from coordinare.daemon import (
     ELIGIBLE,
+    CoordinareDaemon,
     SessionEligibility,
     _FanoutContext,
     _invoke_session_tick,
     _merge_fanout_results,
     _persist_one_session,
 )
+from coordinare.graph.nodes.check_board import _ensure_active_card_id, _pickup_todo_cards
 from coordinare.graph.nodes.monitor.verdict import _advance_stage, _apply_pending_override
+from coordinare.graph.state import SymphonyRuntimeState, _retire_active_session
 from coordinare.session import create_session_from_card, session_to_state
 from tests.unit.test_dashboard import _make_app, _make_mock_daemon
 
@@ -239,3 +242,78 @@ def test_invalid_restart_retains_the_existing_continuation() -> None:
     _apply_pending_override(daemon.state)
     assert daemon.state["performer_stage"] == "implementing"
     assert daemon.state["lifecycle_continuation"] == ["implementing", "reviewing"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+@pytest.mark.parametrize("startup", [True, False])
+async def test_single_graph_writeback_preserves_new_control(path: str, action: str, startup: bool) -> None:
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    class Graph:
+        async def ainvoke(self, state):
+            if startup:
+                state = await _pickup_todo_cards(state, {"titles": {"card-a": "Synthetic story"}}, ["card-a"])
+                _ensure_active_card_id(state)
+            _apply_pending_override(state)
+            entered.set()
+            await finish.wait()
+            state.update(phase="monitoring_performer", agent_dispatch={"session_id": "synthetic-worker"})
+            return state
+
+    daemon = CoordinareDaemon(Graph())
+    daemon.state.update(lifecycle_sequence=["assessing", "implementing", "reviewing", "qa", "closing_review"],
+                        config=SimpleNamespace(max_concurrent_cards=1), github_service=None)
+    if not startup:
+        daemon.state.update(active_card_id="card-a", active_sessions={"card-a": live_session()},
+                            board_snapshot={"BLOCKED": ["card-a"]})
+    task = asyncio.create_task(daemon._invoke_multi_session())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        response = _make_app(daemon=daemon).post(path, params={"card_id": "card-a"})
+        assert response.status_code == 200
+        accepted = deepcopy(daemon.state["active_sessions"]["card-a"]["pending_override"])
+    finally:
+        finish.set()
+    await task
+    assert daemon.state["active_sessions"]["card-a"]["pending_override"] == accepted
+    assert accepted["action"] == action
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "_action"), CONTROLS)
+async def test_restore_routing_cannot_accept_a_retired_aggregate_target(path: str, _action: str) -> None:
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    class Board:
+        async def poll_board(self):
+            entered.set()
+            await finish.wait()
+            return {"snapshot": {"IN_PROGRESS": ["restored"]}}
+
+    class Graph:
+        async def ainvoke(self, state):
+            if state.get("current_symphony") == "owner":
+                state["phase"] = "idle"
+                _retire_active_session(state, trigger="synthetic_terminal_completion")
+            return state
+
+    daemon = CoordinareDaemon(Graph())
+    retired = live_session("retired")
+    owner = SymphonyRuntimeState(name="owner", active_sessions={"retired": retired})
+    peer = SymphonyRuntimeState(name="peer", active_sessions={})
+    daemon.state.update(active_sessions={"retired": retired}, symphony_states={"owner": owner, "peer": peer},
+                        symphony_github_services={"peer": Board()}, lifecycle_sequence=["assessing", "implementing"])
+    await daemon._conduct_single_symphony("owner", SimpleNamespace())
+    assert not owner.active_sessions
+    daemon._unassigned_restored_sessions = {"restored": dict(create_session_from_card({"id": "restored"}))}
+    task = asyncio.create_task(daemon._conduct_single_symphony("peer", SimpleNamespace()))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        response = _make_app(daemon=daemon).post(path, params={"card_id": "retired"})
+        assert response.status_code == 400
+        assert retired["pending_override"] is None
+    finally:
+        finish.set()
+        await task
+    assert "retired" not in owner.active_sessions and "retired" not in peer.active_sessions

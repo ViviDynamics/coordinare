@@ -1669,19 +1669,7 @@ async def _all_ineligible_fallback(
         session_to_state(active_sessions[focus], state)
         state["active_card_id"] = focus
         _rederive_current_card(state)
-    state = await graph.ainvoke(state)
-    # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
-    # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
-    # see the same view as the per-session fanout writeback at line 911.  Without
-    # this, a same-cycle readopt+dispatch leaves session.phase="dispatching"
-    # while flat state["phase"]="monitoring_performer"; _derive_global_phase
-    # then clobbers the flat phase back to "dispatching" and slot_manager
-    # releases the slot, orphaning the implementer container.
-    active_card_id = state.get("active_card_id")
-    if active_card_id:
-        active_sessions_after = state.get("active_sessions") or {}
-        if active_card_id in active_sessions_after:
-            active_sessions_after[active_card_id] = state_to_session(state)
+    state = await _invoke_single_graph(state, graph)
     # If the graph settled into a passive phase (monitoring_pr),
     # clear active_card_id so route_issue_comments doesn't poll the
     # card's issue on every cycle.  check_board rescans the full board
@@ -1690,6 +1678,24 @@ async def _all_ineligible_fallback(
     if state.get("phase") in PASSIVE_PHASES:
         state["active_card_id"] = None
     _rederive_current_card(state)
+    return state
+
+
+async def _invoke_single_graph(state: CoordinareState, graph: Any) -> CoordinareState:
+    """Mirror flat progress without erasing a command accepted during graph IO."""
+    control_ids = {
+        cid: override["control_id"]
+        for cid, session in (state.get("active_sessions") or {}).items()
+        if isinstance(override := session.get("pending_override"), dict)
+        and isinstance(override.get("control_id"), str)
+    }
+    state = await graph.ainvoke(state)
+    active_card_id = state.get("active_card_id")
+    sessions = state.get("active_sessions") or {}
+    if active_card_id in sessions:
+        updated = cast("dict[str, Any]", state_to_session(state))
+        _preserve_new_control(sessions[active_card_id], updated, control_ids.get(active_card_id))
+        sessions[active_card_id] = updated
     return state
 
 
@@ -2933,18 +2939,7 @@ class CoordinareDaemon:
 
         if not active_sessions:
             # No sessions yet — run one graph cycle to let check_board populate them
-            self._state = await self._graph.ainvoke(self._state)
-            # 069: mirror flat-state mutations onto active_sessions[active_card_id]
-            # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
-            # see the same view as the per-session fanout writeback (line 911).
-            # Without this, a same-cycle readopt+dispatch leaves the new session at
-            # phase="dispatching" while flat state["phase"]="monitoring_performer"
-            # — and slot_manager then releases the slot, orphaning the implementer.
-            _active_card_id = self._state.get("active_card_id")
-            if _active_card_id:
-                _sessions_after = self._state.get("active_sessions") or {}
-                if _active_card_id in _sessions_after:
-                    _sessions_after[_active_card_id] = state_to_session(self._state)
+            self._state = await _invoke_single_graph(self._state, self._graph)
             return
 
         # Pre-fanout: give every session ONE shared marker map per per-cycle key.
@@ -3168,7 +3163,6 @@ class CoordinareDaemon:
         from coordinare.observability import bind_symphony, clear_symphony
 
         bind_symphony(symphony_name)
-        self._state["current_symphony"] = symphony_name
         _propagating = False
         # Save symphony-scoped graph keys before entering the try so the outer
         # finally can always restore them (prevents cross-symphony contamination).
@@ -3195,6 +3189,9 @@ class CoordinareDaemon:
             ) = self._swap_symphony_state_in(
                 symphony_name, sym_state, _sym_sessions, _effective_cfg,
             )
+            # The marker means the working map is swapped in, not merely that
+            # restored-session ownership is being resolved across an IO await.
+            self._state["current_symphony"] = symphony_name
             try:
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits
