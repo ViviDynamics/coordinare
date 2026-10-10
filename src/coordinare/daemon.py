@@ -819,6 +819,9 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
         tuple(str(card.get(key) or "") for key in ("pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path")),
         (str(handoff.get("stage") or ""), str(handoff.get("completed_at") or ""),
          str(handoff.get("resumed_board_column") or "")),
+        tuple(str(session.get(key) or "") for key in (
+            "agent_dispatch_at", "last_production_at", "last_production_fingerprint",
+        )),
     )
 
 

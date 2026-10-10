@@ -302,3 +302,45 @@ def test_production_clock_is_card_scoped_and_survives_session_projection() -> No
     session_to_state(saved, state)
     assert state["last_production_at"] == produced_at
     assert state["last_production_fingerprint"] == (7, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_actual_snapshot_save_gate_flushes_new_production_and_ignores_replayed_tools(shutdown: bool) -> None:
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.session import state_to_session
+    from coordinare.state_store import WorkflowSnapshot
+    from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
+
+    class SnapshotSink:
+        def __init__(self) -> None:
+            self.saved: list[WorkflowSnapshot] = []
+
+        async def save(self, snapshot: WorkflowSnapshot) -> None:
+            self.saved.append(WorkflowSnapshot.model_validate_json(snapshot.model_dump_json()))
+
+    sink = SnapshotSink()
+    daemon = CoordinareDaemon(None, state_store=sink)
+    service = _Performer({"status": "working", "events": [{"type": "tool_use", "text": "run tests"}]})
+    state = _make_state(service=service, stage="reviewing")
+    state.update(phase="monitoring_performer", role_timeouts={"reviewing": 1200},
+                 agent_dispatch_at=datetime.now(UTC) - timedelta(seconds=600))
+    state["active_sessions"] = {"ITEM_1": state_to_session(state)}
+    daemon.state.update(state)
+    signature = await daemon._save_snapshot_if_changed(None)
+    await monitor_performer(state)
+    daemon.state.update(state)
+    daemon.state["active_sessions"] = {"ITEM_1": state_to_session(state)}
+    if shutdown:
+        await daemon._shutdown_flush(signature)
+    else:
+        signature = await daemon._save_snapshot_if_changed(signature)
+    assert len(sink.saved) == 2
+    assert sink.saved[-1].active_sessions["ITEM_1"].last_production_at == state["last_production_at"]
+    assert sink.saved[-1].active_sessions["ITEM_1"].last_production_fingerprint == (1, 0)
+    signature = daemon._lifecycle_signature()
+    await monitor_performer(state)
+    daemon.state.update(state)
+    daemon.state["active_sessions"] = {"ITEM_1": state_to_session(state)}
+    await daemon._save_snapshot_if_changed(signature)
+    assert len(sink.saved) == 2

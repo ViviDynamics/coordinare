@@ -22,3 +22,5 @@ Out: board routing, worker timeout policy, approval/CI gates and infrastructure 
 Fresh Copilot review found that persistent restored workers lack the dispatch clock. Three valid restart regressions and a strict-contract version regression fail before the fix. Schema32 persists/restores the clock, retains older defaults, and uses a conservative fallback when no old clock exists.
 
 Independent adversarial review reproduced dispatch restoration causing a healthy worker timeout before polling. The existing card projection also omitted production evidence and leaked it into a fresh sibling (#27). Paired production clock/fingerprint now round-trip through sessions and schema32, preserving current timeout semantics. Two failing actual regressions and strict contract reproduction precede the fix.
+
+The actual normal/shutdown signature save paths also dropped updated production evidence. Two real save-gate regressions failed, then pass when durable monitoring evidence participates in the snapshot signature; identical cumulative tools cause no extra write.
