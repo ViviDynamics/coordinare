@@ -165,7 +165,7 @@ async def _excerpt(ctx: RunContext, failed: list[dict]) -> str:
     parts: list[str] = []
     for run in failed[:3]:
         text = ""
-        if ctx.get_check_run_logs is not None:
+        if not run.get("evidence_log_available") and ctx.get_check_run_logs is not None:
             try:
                 text = await ctx.get_check_run_logs(run)
                 ctx.github_api_calls += 1

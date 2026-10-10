@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+import re
 from typing import Any, Literal
 
 import httpx
@@ -136,6 +137,18 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
             output = dict(run.get("output") or {})
             output["summary"] = "\n".join([str(output.get("summary") or ""), *messages])
             run["output"] = output
+        if run["evidence_access_denied"] and not run["setup_failure"]:
+            # An optional annotations/workflow read may fail while the
+            # Actions log is still readable. Keep the failed check and only
+            # lift the evidence hold after actually obtaining that log.
+            match = re.search(r"/actions/runs/\d+/job/(\d+)", str(run.get("details_url") or ""))
+            if match:
+                tail = await get_check_run_logs(owner, repo, int(match.group(1)), token)
+                if tail.strip():
+                    output = dict(run.get("output") or {})
+                    output["text"] = "\n".join([str(output.get("text") or ""), tail])
+                    run["output"] = output
+                    run["evidence_log_available"] = True
     return runs
 
 

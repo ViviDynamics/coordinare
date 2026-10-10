@@ -1629,7 +1629,8 @@ def _format_check_failures(failed_runs: list[dict[str, Any]]) -> str:
         output = run.get("output") or {}
         title = output.get("title") or ""
         summary = output.get("summary") or ""
-        text = (output.get("text") or "")[:4000]
+        text = output.get("text") or ""
+        text = text[-4000:] if run.get("evidence_log_available") else text[:4000]
         part = f"### {name}"
         if title:
             part += f"\n{title}"
@@ -1667,7 +1668,7 @@ async def _format_check_failures_with_logs(
     for run in failed_runs:
         output = run.get("output") or {}
         text = output.get("text") or ""
-        if len(text) < min_output_chars:
+        if not run.get("evidence_log_available") and len(text) < min_output_chars:
             candidates.append((run.get("id"), run))  # type: ignore[arg-type]
     if not candidates:
         return base

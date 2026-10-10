@@ -46,7 +46,7 @@ def check_infrastructure_reason(checks: list[dict]) -> str | None:
         reason = infrastructure_reason(text)
         if reason:
             return reason
-    if any(check.get('evidence_access_denied') for check in checks):
+    if any(check.get('evidence_access_denied') and not check.get('evidence_log_available') for check in checks):
         return ('Cannot diagnose failed CI because GitHub denied access to failure evidence; '
                 'grant the performer Checks and Actions read permissions, then retry CI inspection')
     return None
