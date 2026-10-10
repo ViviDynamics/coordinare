@@ -1565,6 +1565,14 @@ async def _collect_blocked_clarification(
                     # trying to check status on an already-terminated performer.
                     state["phase"] = "dispatching"
                     state["last_blocked_notified_at"] = None
+                    # Neutral board maintenance keeps flat card fields local.
+                    # Persist the answer on its owner before that view is discarded.
+                    if isinstance(_sess_qa, dict):
+                        _sess_qa.update(
+                            card_clarifications=state["card_clarifications"],
+                            open_questions=[], agent_dispatch={}, phase="dispatching",
+                            last_blocked_notified_at=None,
+                        )
                     return state
             except (ValueError, TypeError):
                 continue
