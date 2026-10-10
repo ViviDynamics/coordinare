@@ -10,7 +10,7 @@ class TestReviewFindingsSchemaV19:
 
     def test_schema_version_is_24(self):
         """545 advances the snapshot schema to 26; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 31  # 557/559: durable handoff and per-card PR identity
+        assert CURRENT_SCHEMA_VERSION == 32  # 557/559: durable handoff and per-card PR identity
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""
