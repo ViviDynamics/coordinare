@@ -46,6 +46,7 @@ def _safe_normalized_origin(origin: str) -> str:
         invalid_components = (
             parsed.path, parsed.params, parsed.username is not None,
             parsed.password is not None, "?" in origin, "#" in origin,
+            parsed.netloc.endswith(":"),
         )
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or any(invalid_components):
             return ""

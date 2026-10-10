@@ -20,6 +20,7 @@ from coordinare.localhost_guard import build_permitted
     "https://dashboard.example:443?", "https://dashboard.example:443#",
     " https://dashboard.example:443", "https://dashboard.example:443\t",
     "https://dashboard.example:443@dashboard.example", "https://dashboard.example:443\r\n",
+    "https://dashboard.example:",
 ])
 def test_malformed_logout_origin_is_rejected_and_legitimate_logout_still_revokes(origin: str) -> None:
     flow = OidcFlow(DashboardOidcConfig(

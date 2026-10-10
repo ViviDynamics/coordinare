@@ -201,7 +201,7 @@ def test_bracketed_ipvfuture_origin_does_not_match_an_ordinary_dns_redirect() ->
     "https://dashboard.example:443?q=1", "https://dashboard.example:443?",
     "https://dashboard.example:443#fragment", "https://dashboard.example:443#",
     "https://dashboard.example:443@dashboard.example", " https://dashboard.example:443",
-    "https://dashboard.example:443\r\n",
+    "https://dashboard.example:443\r\n", "https://dashboard.example:",
 ])
 def test_non_origin_values_do_not_authorize_authenticated_mutations(origin: str) -> None:
     app, session = authenticated_app()
