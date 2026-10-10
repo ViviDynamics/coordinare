@@ -28,6 +28,8 @@ from dataclasses import replace as _dc_replace
 import psutil
 import structlog
 
+from performer.backends._clarifications import clarification_prompt_section
+from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._card_docs import (
     brief_prompt_sections,
     card_docs_prompt_section,
@@ -376,6 +378,7 @@ def _build_task_prompt(score: Score, *, stand_path: pathlib.Path | None = None) 
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)
+    parts += clarification_prompt_section(score.clarifications)
     if score.pr_diff:
         parts += [
             "", "## PR Diff Under Review", "",
@@ -421,15 +424,7 @@ def _feedback_sections(score: Score) -> list[str]:
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
                     f"{_d.get('reason', '')}",
                 )
-    if score.relay_feedback:
-        parts += ["", "## Human Feedback (address ALL of these)", ""]
-        for item in score.relay_feedback:
-            if isinstance(item, dict):
-                body = item.get("body", "")
-                if body:
-                    parts.append(f"- {body}")
-            elif isinstance(item, str):
-                parts.append(f"- {item}")
+    parts += relay_feedback_prompt_section(score.relay_feedback)
     return parts
 
 

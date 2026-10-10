@@ -25,6 +25,7 @@ research.md R1/R3 for the rationale.
 """
 from __future__ import annotations
 
+from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._clarifications import clarification_comment_lines
 
 import asyncio
@@ -698,33 +699,7 @@ def _build_task_prompt(
                     f"{_d.get('reason', '')}",
                 )
 
-    if score.relay_feedback:
-        parts += [
-            "", "## Human Feedback (address ALL of these issues)", "",
-            "IMPORTANT: These comments may only tag a few examples. Search the entire "
-            "codebase for ALL similar occurrences of the same pattern and fix them all.",
-            "",
-        ]
-        for item in score.relay_feedback:
-            if isinstance(item, dict):
-                body = item.get("body", "")
-                if body:
-                    parts.append(f"- {body}")
-                inline = item.get("comments", [])
-                if isinstance(inline, list):
-                    for c in inline:
-                        if isinstance(c, dict):
-                            c_body = c.get("body", "")
-                            c_path = c.get("path", "")
-                            c_line = c.get("line")
-                            if c_body:
-                                loc = (
-                                    f"`{c_path}:{c_line}`" if c_path and c_line
-                                    else (f"`{c_path}`" if c_path else "")
-                                )
-                                parts.append(f"  - {loc} — {c_body}" if loc else f"  - {c_body}")
-            elif isinstance(item, str):
-                parts.append(f"- {item}")
+    parts += relay_feedback_prompt_section(score.relay_feedback)
     parts += ["", "---"]
     if score.role == DIAGNOSTIC_ROLE:
         parts += [
