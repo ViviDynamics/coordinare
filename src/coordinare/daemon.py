@@ -5133,7 +5133,10 @@ class CoordinareDaemon:
         # the cooldown must advance whether or not a
         # channel exists, or the feed takes a stuck entry
         # every cycle (FR-013, SC-006).
-        self._last_stuck_alert_at = monotonic()
+        # Live workers advance their own episode cooldown in the caller;
+        # they must not consume a separate legacy transition's cooldown.
+        if not session_id:
+            self._last_stuck_alert_at = monotonic()
 
     async def _handle_circuit_open(self, exc: CircuitOpenError) -> bool:
         """Handle an open circuit mid-cycle.  Returns True when the daemon

@@ -77,7 +77,7 @@ async def test_newly_overdue_sibling_does_not_inherit_another_cards_cooldown() -
 
 @pytest.mark.asyncio
 async def test_fresh_replacement_does_not_inherit_old_phase_age_or_cooldown() -> None:
-    daemon, _log, service = detector({"active": worker("active")})
+    daemon, log, service = detector({"active": worker("active")})
     await daemon._detect_stuck_card(service)
     fresh = worker("active", age=1)
     fresh["agent_dispatch"]["session_id"] = "replacement"
@@ -88,6 +88,7 @@ async def test_fresh_replacement_does_not_inherit_old_phase_age_or_cooldown() ->
     fresh["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=300)
     await daemon._detect_stuck_card(service)
     assert len(service.dispatched) == 2
+    assert [e["session_id"] for e in log.snapshot()] == ["worker-active", "replacement"]
 
 
 @pytest.mark.asyncio
@@ -158,3 +159,18 @@ async def test_legacy_dispatching_detection_remains_available_with_session_histo
     })
     await daemon._detect_stuck_card(service)
     assert [e["card_id"] for e in log.snapshot()] == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_worker_alert_does_not_consume_a_separate_dispatch_alert_cooldown() -> None:
+    daemon, log, service = detector({"active": worker("active"), "pending": {"phase": "dispatching"}})
+    daemon.state.update({
+        "phase": "dispatching",
+        "phase_entered_at": datetime.now(UTC) - timedelta(seconds=1900),
+        "current_card": {"id": "pending", "title": "Pending task", "issue_number": 2},
+    })
+    await daemon._detect_stuck_card(service)
+    assert [e["card_id"] for e in log.snapshot()] == ["active", "pending"]
+    assert [e.payload["card_id"] for e in service.dispatched] == ["active", "pending"]
+    await daemon._detect_stuck_card(service)
+    assert len(service.dispatched) == 2
