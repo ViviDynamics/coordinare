@@ -414,15 +414,18 @@ class WorkspaceManager:
         pr_id = str(card.get("pr_node_id") or "").strip()
         github = self._github_service
         if not pr_id or github is None or not hasattr(github, "check_mergeability"):
-            raise WorkspaceSetupError("Cannot resolve existing PR head: missing PR identity or resolver")
+            msg = "Cannot resolve existing PR head: missing PR identity or resolver"
+            raise WorkspaceSetupError(msg)
         try:
             result = await github.check_mergeability(pr_id)
         except Exception:
             # API exceptions may include credential-bearing request details.
-            raise WorkspaceSetupError("Cannot resolve existing PR head: lookup failed") from None
+            msg = "Cannot resolve existing PR head: lookup failed"
+            raise WorkspaceSetupError(msg) from None
         branch = result.get("head_ref_name") if isinstance(result, dict) else None
         if not isinstance(branch, str) or not branch.strip():
-            raise WorkspaceSetupError("Cannot resolve existing PR head: branch unavailable")
+            msg = "Cannot resolve existing PR head: branch unavailable"
+            raise WorkspaceSetupError(msg)
         return branch
 
     async def _resolve_branch(self, branch: str, card: dict[str, Any]) -> str:
