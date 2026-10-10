@@ -378,7 +378,10 @@ async def _assessor_lenient_response(
             perf, assess_raw, "assessment", settings, "was empty",
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-    if not isinstance(assess_output, dict):
+    if not isinstance(assess_output, dict) or (
+        "sufficient" not in assess_output and "assessment" not in assess_output
+        and (assess_output.get("questions") or "ready" in assess_output)
+    ):
         contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw)
         async def _assessor_lenient_sufficient() -> PerformerResponse:
             if fragment_questions:

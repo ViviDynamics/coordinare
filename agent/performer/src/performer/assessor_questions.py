@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 
+from performer.models import _redact_secrets
+
 _ASSESSMENT_FIELD = re.compile(r'"(questions|sufficient|assessment|ready)"\s*:\s*')
 
 
@@ -21,6 +23,7 @@ def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
         if not isinstance(value, list) or any(not isinstance(q, str) for q in value):
             return True, []
         for question in value:
-            if question.strip() and question not in questions:
-                questions.append(question)
+            safe_question = _redact_secrets(question)
+            if safe_question.strip() and safe_question not in questions:
+                questions.append(safe_question)
     return bool(fields), questions
