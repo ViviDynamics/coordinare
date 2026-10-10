@@ -226,6 +226,7 @@ class CoordinareState(TypedDict, total=False):
     # 019 — Performer Lifecycle
     performer_stage: str  # Active role in the lifecycle (e.g. "implementing", "reviewing")
     performer_services: dict[str, Any]  # stage name (e.g. "implementing", "reviewing") → AgentService instance
+    lifecycle_continuation: list[str]  # Saved per-card path for removed active stages
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
     dispatched_feedback: dict[str, Any]  # feedback awaiting successful stage completion
     pr_comment_tracking: dict[str, Any]  # 550: accepted comment versions scoped to this PR
@@ -505,6 +506,7 @@ def initial_state() -> CoordinareState:
         "performer_stage": "implementing",
         "performer_services": {},
         "lifecycle_sequence": ["implementing"],
+        "lifecycle_continuation": [],
         "pr_comment_tracking": {},
         "pending_pr_handoff": None,
         "_pr_comment_poll_incomplete": False,
