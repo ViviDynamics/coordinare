@@ -402,8 +402,10 @@ async def _assessor_lenient_response(
         "assessment" in assess_output
         and any(key in assess_output for key in ("questions", "sufficient", "ready"))
     ) or (
+        "ready" in assess_output
+    ) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
-        and (assess_output.get("questions") or "ready" in assess_output)
+        and assess_output.get("questions")
     ):
         contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw, _extract_json)
         if fragment_questions:

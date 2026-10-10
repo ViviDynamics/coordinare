@@ -423,3 +423,57 @@ async def test_mixed_schema_parse_retry_retains_the_human_question(repaired):
     assert second.status == "blocked"
     assert second.questions == [QUESTION]
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [False, None, 0, [], {}, "", "not-work", "unknown"])
+@pytest.mark.parametrize("questions", [[], [QUESTION]])
+async def test_invalid_workflow_verdict_cannot_advance(verdict, questions):
+    perf = performance(json.dumps({"assessment": {"ready": True, "verdict": verdict, "questions": questions}}))
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ready", [False, True, None, 0, "false", []])
+@pytest.mark.parametrize("questions", [[], [QUESTION]])
+async def test_root_ready_is_invalid_even_with_legacy_sufficient(ready, questions):
+    perf = performance(json.dumps({"sufficient": True, "ready": ready, "questions": questions}))
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_output", [
+    {"assessment": {"ready": True, "verdict": False, "questions": [QUESTION]}},
+    {"assessment": {"ready": True, "verdict": "unknown", "questions": [QUESTION]}},
+    {"sufficient": True, "ready": False, "questions": [QUESTION]},
+])
+@pytest.mark.parametrize("repaired", [
+    {"assessment": {"ready": True, "questions": []}},
+    {"assessment": {"ready": False, "verdict": "not_work", "questions": []}},
+    {"sufficient": True, "questions": []},
+])
+async def test_invalid_controls_retain_questions_across_parse_retry(first_output, repaired):
+    perf = performance(json.dumps(first_output))
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        first = await handle_status(message, perf, settings)
+        assert first.status == "working" and perf.open_questions == [QUESTION]
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=json.dumps(repaired))
+        second = await handle_status(message, perf, settings)
+    assert second.status == "blocked" and second.questions == [QUESTION]
+    commit.assert_not_awaited()

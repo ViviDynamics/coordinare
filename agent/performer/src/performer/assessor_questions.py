@@ -230,6 +230,9 @@ def assessment_has_invalid_field_types(output: dict) -> bool:
     """Malformed controls and question values must never use truthiness/coercion."""
     objects = [(output, "sufficient")]
     if isinstance(output.get("assessment"), dict):
+        verdict = output["assessment"].get("verdict", "work")
+        if not isinstance(verdict, str) or verdict not in ("work", "not_work", "needs_split"):
+            return True
         objects.append((output["assessment"], "ready"))
     for obj, control in objects:
         if control in obj and not isinstance(obj[control], bool):
