@@ -207,13 +207,14 @@ def is_multi_symphony_config(raw: dict[str, Any]) -> bool:
 def coerce_multi_symphony_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Build the CoordinareConfiguration constructor dict from a multi-symphony raw config.
 
-    Separates the symphony/orchestra top-level keys from the global config fields.
+    Separates root configuration blocks from the global project fields.
     """
-    _sym_keys = frozenset({"symphonies", "orchestra"})
+    _root_keys = frozenset({"symphonies", "orchestra", "dispatcher_dedup"})
     return {
-        "global_config": {k: v for k, v in raw.items() if k not in _sym_keys},
+        "global_config": {k: v for k, v in raw.items() if k not in _root_keys},
         "symphonies": raw.get("symphonies", []),
         "orchestra": raw.get("orchestra", {"mode": "shared_pool", "performers": []}),
+        "dispatcher_dedup": raw.get("dispatcher_dedup", {}),
     }
 
 
@@ -224,7 +225,7 @@ def wrap_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
     CoordinareConfiguration with a single 'default' symphony (underscore-free
     to pass validation regex; context default is "__default__" for backwards compat).
     """
-    global_cfg = dict(raw)
+    global_cfg = {k: v for k, v in raw.items() if k != "dispatcher_dedup"}
     _env_pn = os.environ.get("COORDINARE_GITHUB_PROJECT_NUMBER", "") or ""
     try:
         project_number = global_cfg.get("github_project_number") or (int(_env_pn) if _env_pn else 0)
@@ -242,6 +243,7 @@ def wrap_legacy_config(raw: dict[str, Any]) -> dict[str, Any]:
             },
         ],
         "orchestra": {"mode": "shared_pool", "performers": []},
+        "dispatcher_dedup": raw.get("dispatcher_dedup", {}),
     }
 
 
