@@ -69,12 +69,13 @@ def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
 
 
 def _keyed_value_ranges(raw: str) -> list[tuple[int, int]]:
-    """Protect keyed containers and complete strings from root-array scans."""
-    keyed_containers = [
+    """Protect key tokens and keyed containers/strings from root-array scans."""
+    keyed_containers = [field.span("key") for field in _JSON_FIELD.finditer(raw)]
+    keyed_containers.extend(
         (field.end(), _container_end(raw, field.end()))
         for field in _JSON_FIELD.finditer(raw)
         if raw[field.end():field.end() + 1] in ("{", "[")
-    ]
+    )
     decoder = json.JSONDecoder()
     for field in _JSON_FIELD.finditer(raw):
         start = field.end()

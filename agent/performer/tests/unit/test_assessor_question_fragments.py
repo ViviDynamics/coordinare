@@ -50,6 +50,10 @@ def performance(output: str) -> Performance:
     ('"notes": ' + json.dumps('[{"value":"note"}]') + ' "questions":["Keep me?"]', ["Keep me?"]),
     ('"notes": ' + json.dumps('[{"value":"note"}]') + ' broken "questions":["Keep me?"]', ["Keep me?"]),
     ('"notes": ' + json.dumps('[{"value":"note"}]') + ' "assessment":{"ready":false,"questions":["Keep me?"]}', ["Keep me?"]),
+    (json.dumps({'[{"value":"note"}]': "ignored", "sufficient": False,
+                 "questions": ["Keep me?"]}), ["Keep me?"]),
+    (json.dumps({'[{"value":"note"}]': "ignored", "assessment": {
+        "ready": False, "questions": ["Keep me?"]}}), ["Keep me?"]),
     ('broken "questions": ["Choose?"], "metadata": {}', ["Choose?"]),
     ('broken "questions": ["Choose?"], "metadata": {"assessment": {"ready": true}}', ["Choose?"]),
     (r'broken "quest\u0069ons": ["Choose?"]', ["Choose?"]),
@@ -352,3 +356,20 @@ def test_json_parser_reports_the_successful_candidate(raw, kind, selected):
     actual_kind, start, end = candidates[0]
     assert actual_kind == kind
     assert raw[start:end] == selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contract,status", [
+    ({"sufficient": True, "questions": []}, "assessment_complete"),
+    ({"assessment": {"ready": True, "questions": []}}, "assessment_complete"),
+    ({"assessment": {"ready": False, "verdict": "not_work", "questions": []}}, "assessment_not_work"),
+])
+async def test_metadata_key_string_preserves_valid_assessment(contract, status):
+    perf = performance(json.dumps({'[{"value":"note"}]': "ignored", **contract}))
+    with patch("performer.main.commit_file", new=AsyncMock()):
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == status
+    assert not perf.open_questions
