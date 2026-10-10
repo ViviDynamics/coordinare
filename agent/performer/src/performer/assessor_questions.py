@@ -233,7 +233,12 @@ def assessment_has_invalid_field_types(output: dict) -> bool:
         verdict = output["assessment"].get("verdict", "work")
         if not isinstance(verdict, str) or verdict not in ("work", "not_work", "needs_split"):
             return True
-        objects.append((output["assessment"], "ready"))
+        assessment = output["assessment"]
+        if "ready" not in assessment or (
+            verdict == "work" and assessment["ready"] is False and not assessment.get("questions")
+        ):
+            return True
+        objects.append((assessment, "ready"))
     for obj, control in objects:
         if control in obj and not isinstance(obj[control], bool):
             return True

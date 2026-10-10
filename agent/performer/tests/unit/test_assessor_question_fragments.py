@@ -477,3 +477,51 @@ async def test_invalid_controls_retain_questions_across_parse_retry(first_output
         second = await handle_status(message, perf, settings)
     assert second.status == "blocked" and second.questions == [QUESTION]
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("assessment,questions", [
+    ({"ready": False, "questions": []}, []),
+    ({"ready": False}, []),
+    ({"ready": False, "verdict": "work", "questions": []}, []),
+    ({"ready": False, "verdict": "work"}, []),
+    ({"questions": []}, []),
+    ({"questions": [QUESTION]}, [QUESTION]),
+    ({"verdict": "work", "questions": []}, []),
+    ({"verdict": "work", "questions": [QUESTION]}, [QUESTION]),
+    ({"verdict": "not_work", "questions": []}, []),
+    ({"verdict": "not_work", "questions": [QUESTION]}, [QUESTION]),
+    ({"verdict": "needs_split", "questions": []}, []),
+    ({"verdict": "needs_split", "questions": [QUESTION]}, [QUESTION]),
+])
+async def test_workflow_requires_readiness_and_a_question_when_not_ready(assessment, questions):
+    perf = performance(json.dumps({"assessment": assessment}))
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    assert response.report is None
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repaired,expected", [
+    ({"assessment": {"ready": False, "questions": []}}, "error"),
+    ({"assessment": {"questions": []}}, "error"),
+    ({"assessment": {"ready": True, "questions": []}}, "assessment_complete"),
+    ({"assessment": {"ready": False, "questions": [QUESTION]}}, "blocked"),
+])
+async def test_invalid_workflow_readiness_uses_existing_parse_retry(repaired, expected):
+    perf = performance('{"assessment":{"ready":false,"questions":[]}}')
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        first = await handle_status(message, perf, settings)
+        assert first.status == "working"
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=json.dumps(repaired))
+        second = await handle_status(message, perf, settings)
+    assert second.status == expected
+    commit.assert_not_awaited()
