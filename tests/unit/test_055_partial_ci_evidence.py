@@ -17,11 +17,13 @@ from performer.workflows.implementer.ci import CIFailed, run_ci_phase
 @pytest.mark.parametrize("denied_status", [401, 403])
 @pytest.mark.parametrize("denied_source", ["annotations", "workflow"])
 @pytest.mark.parametrize("log_status", [200, 403])
+@pytest.mark.parametrize("long_log", [False, True])
 async def test_partial_denial_uses_readable_current_check_log(
-    monkeypatch, denied_status, denied_source, log_status,
+    monkeypatch, denied_status, denied_source, log_status, long_log,
 ):
     calls = []
     failure = "FAILED test_boolean: DID NOT RAISE ValueError"
+    log_text = ("successful prior step\n" * 300 if long_log else "") + failure
 
     def handler(request):
         path = request.url.path
@@ -46,7 +48,7 @@ async def test_partial_denial_uses_readable_current_check_log(
         if path.endswith("/actions/jobs/197/logs"):
             return httpx.Response(200, text="UNRELATED_JOB_ERROR")
         if path.endswith("/actions/jobs/7/logs"):
-            return httpx.Response(log_status, text=failure if log_status == 200 else "")
+            return httpx.Response(log_status, text=log_text if log_status == 200 else "")
         raise AssertionError(path)
 
     original = httpx.AsyncClient
