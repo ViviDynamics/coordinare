@@ -1003,31 +1003,34 @@ async def _service_inference_run(
     }
 
 
-def _extract_json(text: str, *, object_pairs_hook: Any = None) -> dict | list | None:
+def _extract_json(
+    text: str, *, object_pairs_hook: Any = None,
+    candidate_callback: Callable[[str, int, int], None] | None = None,
+) -> dict | list | None:
     """Try to extract a JSON object from text that may contain prose.
 
     Strategies: (1) parse full text, (2) find ```json``` code fence,
     (3) find first { ... } or [ ... ] substring.
     """
-    try:
-        return _json_module.loads(text, object_pairs_hook=object_pairs_hook)
-    except (ValueError, TypeError):
-        pass
+    candidates = [("full", 0, len(text))]
     match = _CODE_FENCE_RE.search(text)
     if match:
-        try:
-            return _json_module.loads(match.group(1).strip(), object_pairs_hook=object_pairs_hook)
-        except (ValueError, TypeError):
-            pass
+        candidates.append(("fence", match.start(1), match.end(1)))
     for start_char, end_char in [('{', '}'), ('[', ']')]:
-        start = text.find(start_char)
-        if start >= 0:
-            end = text.rfind(end_char)
-            if end > start:
-                try:
-                    return _json_module.loads(text[start:end + 1], object_pairs_hook=object_pairs_hook)
-                except (ValueError, TypeError):
-                    pass
+        start, end = text.find(start_char), text.rfind(end_char)
+        if start >= 0 and end > start:
+            candidates.append(("substring", start, end + 1))
+    for kind, start, end in candidates:
+        candidate = text[start:end]
+        if kind == "fence":
+            candidate = candidate.strip()
+        try:
+            value = _json_module.loads(candidate, object_pairs_hook=object_pairs_hook)
+        except (ValueError, TypeError):
+            continue
+        if candidate_callback is not None:
+            candidate_callback(kind, start, end)
+        return value
     return None
 
 

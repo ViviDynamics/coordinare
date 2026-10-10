@@ -392,7 +392,7 @@ async def _assessor_lenient_response(
             perf, assess_raw, "assessment", settings, "was empty",
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-    if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw) or (
+    if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw, _extract_json) or (
         "assessment" in assess_output and not isinstance(assess_output["assessment"], dict)
     ) or (
         assessment_has_duplicate_contract_fields(assess_raw, _extract_json)

@@ -74,6 +74,10 @@ def performance(output: str) -> Performance:
     ('intro {example}\n```json\n{"sufficient":false,"questions":["Keep me?"],"questions":[]}\n```', ["Keep me?"]),
     ('intro {example}\n```json\n{"assessment":{"ready":false,"questions":["Keep me?"]},"assessment":{"ready":true,"questions":[]}}\n```', ["Keep me?"]),
     ('intro {example}\n```json\n{"sufficient":false,"questions":["Keep me?"],"questions":null,"metadata":{"questions":["Unrelated?"]}}\n```', ["Keep me?"]),
+    ('intro "metadata": {\n```json\n{"assessment":{"ready":false,"questions":["Need a decision?"]}}\n```', ["Need a decision?"]),
+    ('intro "metadata": [\n```json\n{"sufficient":false,"questions":["Need a decision?"]}\n```', ["Need a decision?"]),
+    ('intro "metadata": {\n```json\n{"assessment":{"ready":false,"questions":["Keep me?"],"questions":[]}}\n```', ["Keep me?"]),
+    ('broken "questions":["Keep me?"]\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```', ["Keep me?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)
@@ -237,6 +241,9 @@ async def test_fresh_assessment_after_human_answer_can_advance():
     ('broken "questions":["Keep me?"], "ready":{"questions":["Unrelated?"]}', ["Keep me?"]),
     ('broken "questions":[{"questions":["Unrelated?"]}', []),
     ('broken "questions":[{"questions":["Unrelated?"]},{"questions":["Also unrelated?"]}', []),
+    ('broken "assessment":{"ready":false,"assessment":{"questions":["Unrelated?"]}}', []),
+    ('broken "questions":["Keep me?"], "assessment":{"assessment":{"questions":["Unrelated?"]}}', ["Keep me?"]),
+    ('broken "assessment":{"ready":false,"questions":["Keep me?"]}', ["Keep me?"]),
 ])
 async def test_invalid_contract_values_cannot_supply_nested_questions(output, questions):
     perf = performance(output)
@@ -248,3 +255,36 @@ async def test_invalid_contract_values_cannot_supply_nested_questions(output, qu
     assert response.status == ("blocked" if questions else "error")
     assert (response.questions or []) == questions
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output,status", [
+    ('intro "metadata": {\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```', "assessment_complete"),
+    ('intro "metadata": {\n```json\n{"assessment":{"ready":false,"verdict":"not_work","questions":[]}}\n```', "assessment_not_work"),
+])
+async def test_selected_fenced_assessment_keeps_its_workflow_outcome(output, status):
+    perf = performance(output)
+    with patch("performer.main.commit_file", new=AsyncMock()):
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == status
+    assert not perf.open_questions
+
+
+@pytest.mark.parametrize("raw,kind,selected", [
+    (' {"sufficient":true} ', "full", ' {"sufficient":true} '),
+    ('intro {example}\n```json\n{"sufficient":true}\n```', "fence", '{"sufficient":true}'),
+    ('intro {"sufficient":true} tail', "substring", '{"sufficient":true}'),
+])
+def test_json_parser_reports_the_successful_candidate(raw, kind, selected):
+    from performer.main import _extract_json
+
+    candidates = []
+    result = _extract_json(raw, candidate_callback=lambda *args: candidates.append(args))
+    assert result == _extract_json(raw) == {"sufficient": True}
+    assert len(candidates) == 1
+    actual_kind, start, end = candidates[0]
+    assert actual_kind == kind
+    assert raw[start:end] == selected

@@ -68,9 +68,35 @@ def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
     return ranges
 
 
-def _assessment_fields(raw: str, *, exclude_metadata: bool = True) -> list[tuple[str, int, int]]:
+def _selected_fence_span(raw: str, extract_json: Callable[..., object]) -> tuple[int, int] | None:
+    """Use the successful canonical candidate, not a second code-fence parser."""
+    span = None
+
+    def selected(kind: str, start: int, end: int) -> None:
+        nonlocal span
+        if kind == "fence":
+            span = (start, end)
+
+    extract_json(raw, candidate_callback=selected)
+    return span
+
+
+def _assessment_fields(
+    raw: str, *, exclude_metadata: bool = True,
+    fence_span: tuple[int, int] | None = None,
+) -> list[tuple[str, int, int]]:
+    if fence_span is not None:
+        # Unclosed prose containers cannot own a successfully parsed fence.
+        # Preserve explicit root questions outside it as separate fragments.
+        start, end = fence_span
+        return [
+            (key, offset + field_start, offset + field_end)
+            for offset, segment in ((0, raw[:start]), (start, raw[start:end]), (end, raw[end:]))
+            for key, field_start, field_end in _assessment_fields(segment, exclude_metadata=exclude_metadata)
+        ]
     fields = []
     metadata_ranges: list[tuple[int, int]] = []
+    assessment_ranges: list[tuple[int, int]] = []
     for field in _JSON_FIELD.finditer(raw):
         try:
             key = json.loads(field.group("key"))
@@ -82,17 +108,22 @@ def _assessment_fields(raw: str, *, exclude_metadata: bool = True) -> list[tuple
             fields.append((key, field.start(), field.end()))
         value_start = field.end()
         first = raw[value_start:value_start + 1]
+        immediate_assessment = key == "assessment" and first == "{" and not any(
+            start <= field.start() < end for start, end in assessment_ranges
+        )
         if key == "questions" and first == "[":
             metadata_ranges.extend(_question_value_objects(raw, value_start))
-        elif first in ("{", "[") and not (key == "assessment" and first == "{"):
+        elif immediate_assessment:
+            assessment_ranges.append((value_start, _container_end(raw, value_start)))
+        elif first in ("{", "["):
             metadata_ranges.append((value_start, _container_end(raw, value_start)))
     return fields
 
 
-def assessment_fields_outside_object(raw: str) -> bool:
+def assessment_fields_outside_object(raw: str, extract_json: Callable[..., object]) -> bool:
     """A nested object is not an assessment when its contract fields lie outside it."""
     start, end = raw.find("{"), raw.rfind("}")
-    fields = _assessment_fields(raw)
+    fields = _assessment_fields(raw, fence_span=_selected_fence_span(raw, extract_json))
     if not fields and _assessment_fields(raw, exclude_metadata=False):
         return True
     return any(
@@ -150,7 +181,7 @@ def _question_candidates(raw: str, fields: list[tuple[str, int, int]], extract_j
     if not any(key == "questions" for key, _, _ in fields):
         return []
     pairs = _assessment_pairs(raw, extract_json)
-    if pairs is not None and not assessment_fields_outside_object(raw):
+    if pairs is not None and not assessment_fields_outside_object(raw, extract_json):
         return [value for obj in _contract_objects(pairs) for key, value in obj if key == "questions"]
     candidates = []
     for key, _, end in fields:
@@ -165,7 +196,7 @@ def _question_candidates(raw: str, fields: list[tuple[str, int, int]], extract_j
 
 def assessment_fragment_questions(raw: str, extract_json: Callable[..., object]) -> tuple[bool, list[str]]:
     """Identify contract fragments; recover only complete arrays of question strings."""
-    fields = _assessment_fields(raw)
+    fields = _assessment_fields(raw, fence_span=_selected_fence_span(raw, extract_json))
     questions: list[str] = []
     for value in _question_candidates(raw, fields, extract_json):
         if not isinstance(value, list) or isinstance(value, _ObjectPairs) or any(not isinstance(q, str) for q in value):
