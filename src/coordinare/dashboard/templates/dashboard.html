@@ -1834,7 +1834,7 @@ function afQuietTick() {
   if (!s) return;
   var threshold = s.activity_quiet_threshold_seconds;
   var sessions = (Array.isArray(s.active_sessions) ? s.active_sessions : []).filter(function(sess) {
-    return sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent';
+    return !!sess.session_id && (sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent');
   });
   var active = {};
   sessions.forEach(function(sess) { if (sess.card_id) active[sess.card_id] = true; });

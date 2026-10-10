@@ -211,7 +211,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_demo1', card_title: 'Add retry budget', issue_number: 142,
-    phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
+    session_id: 'worker-demo', phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
   }],
 };
 afQuietTick();
@@ -243,7 +243,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_restored', card_title: 'Restored card', issue_number: 7,
-    phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
+    session_id: 'worker-demo', phase: 'monitoring_performer', performer_stage: 'implementing', agent_dispatch_at: iso(600000),
   }],
 };
 afQuietTick();
@@ -258,7 +258,7 @@ _lastState = {
   activity_quiet_threshold_seconds: 20,
   active_sessions: [{
     card_id: 'PVTI_noanchor', card_title: 'No anchor', issue_number: 8,
-    phase: 'monitoring_performer', performer_stage: 'implementing',
+    session_id: 'worker-demo', phase: 'monitoring_performer', performer_stage: 'implementing',
   }],
 };
 afQuietTick();
@@ -286,12 +286,26 @@ for (const phase of ['blocked', 'idle', 'monitoring_pr', 'dispatching', undefine
         !feed.rows.some((r) => /ev-quiet/.test(r)));
 }
 
+section('Gate re-evaluation without a worker stays quiet-free');
+for (const session_id of [null, undefined, '']) {
+  resetFeed();
+  afAppend([entry(301, { card_id: 'PVTI_gate', timestamp: iso(60000) })]);
+  _lastState = {
+    activity_quiet_threshold_seconds: 20,
+    active_sessions: [{ card_id: 'PVTI_gate', phase: 'monitoring_performer', session_id, agent_dispatch_at: null }],
+  };
+  afQuietTick();
+  check('gate-only session has no marker: ' + session_id, !_afQuietCards.PVTI_gate);
+  check('gate-only session has no synthetic row: ' + session_id,
+        !feed.rows.some((r) => /ev-quiet/.test(r)));
+}
+
 section('Quiet markers clear when a performer stops or disappears');
 for (const phase of ['monitoring_performer', 'monitoring_agent']) {
   resetFeed();
   _lastState = {
     activity_quiet_threshold_seconds: 20,
-    active_sessions: [{ card_id: 'PVTI_transition', phase, agent_dispatch_at: iso(60000) }],
+    active_sessions: [{ card_id: 'PVTI_transition', session_id: 'worker-transition', phase, agent_dispatch_at: iso(60000) }],
   };
   afQuietTick();
   check('active phase can become quiet ' + phase, _afQuietCards.PVTI_transition === true);
@@ -317,7 +331,7 @@ for (const phase of ['monitoring_performer', 'monitoring_agent']) {
 resetFeed();
 _lastState = {
   activity_quiet_threshold_seconds: 20,
-  active_sessions: [{ card_id: 'PVTI_disabled', phase: 'monitoring_performer', agent_dispatch_at: iso(60000) }],
+  active_sessions: [{ card_id: 'PVTI_disabled', session_id: 'worker-disabled', phase: 'monitoring_performer', agent_dispatch_at: iso(60000) }],
 };
 afQuietTick();
 _lastState.activity_quiet_threshold_seconds = 0;
