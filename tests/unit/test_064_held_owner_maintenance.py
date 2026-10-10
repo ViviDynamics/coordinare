@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -193,6 +194,89 @@ async def test_backlog_ack_is_polled_while_native_eligible_sibling_ticks(column)
     assert owner["current_card"]["pushed_branch"] == "conductor/story"
     assert owner["last_issue_comment_id"] == 101, "Eligible sibling starved Backlog feedback"
     assert owner["processed_issue_comment_ids"] == {100, 101}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", [None, "IN_PROGRESS", "IN_REVIEW"])
+async def test_held_classification_waits_overlap_before_native_monitoring(column):
+    daemon, board = restore()
+    held = ["held-0", "held-1", "held-2"]
+    original = daemon.state["active_sessions"].pop("story")
+    for cid in held:
+        owner = deepcopy(original)
+        owner["current_card"]["id"] = cid
+        daemon.state["active_sessions"][cid] = owner
+    board.columns = {"BACKLOG": held, (column or "BLOCKED"): ["peer"]}
+
+    async def number_for_card(cid):
+        return 2 if cid == "peer" else 1
+
+    board.issue_number_for_card = number_for_card
+    entered = []
+    all_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Classifier:
+        async def prompt(self, text, response_format):
+            assert response_format == "json"
+            entered.append(text)
+            if len(entered) == len(held):
+                all_entered.set()
+            await release.wait()
+            return {"data": {"label": "clarification"}}
+
+    class ExistingPerformer:
+        def __init__(self):
+            self.polls = []
+
+        async def check_status(self, session_id, payload=None):
+            self.polls.append(session_id)
+            return {"status": "working", "events": [], "tokens_processed": 0}
+
+        def has_live_session(self, session_id):
+            return session_id == "synthetic-existing-peer"
+
+        async def dispatch_card(self, *_args, **_kwargs):
+            raise AssertionError("Comment maintenance must not dispatch a worker")
+
+    service = ExistingPerformer()
+    if column:
+        peer = daemon.state["active_sessions"]["peer"]
+        peer.update(
+            phase="monitoring_performer", board_paused=False, board_pause_column="",
+            board_pause_resume_phase="", agent_dispatch_at=datetime.now(UTC),
+            agent_dispatch={"session_id": "synthetic-existing-peer", "performer_id": "synthetic-peer"},
+        )
+        peer["current_card"]["status"] = column
+    daemon._graph = CoordinareGraphBuilder().build()
+    daemon.state.update(
+        active_card_id="peer", conducting_backend=Classifier(),
+        performer_services={"assessing": service},
+        performer_services_by_id={"synthetic-peer": service},
+    )
+    before = deepcopy(daemon.state["active_sessions"])
+    cycle = asyncio.create_task(daemon._invoke_multi_session())
+    overlapped = False
+    try:
+        # An event barrier measures overlap, not a wall-clock performance threshold.
+        await asyncio.wait_for(all_entered.wait(), timeout=1)
+        overlapped = True
+    except TimeoutError:
+        pass
+    finally:
+        release.set()
+        await asyncio.wait_for(cycle, timeout=5)
+    assert overlapped, "Held classification budgets accumulated sequentially before monitoring"
+    assert service.polls == (["synthetic-existing-peer"] if column else [])
+    for cid in held:
+        owner = daemon.state["active_sessions"][cid]
+        assert owner["last_issue_comment_id"] == 101
+        assert owner["processed_issue_comment_ids"] == {100, 101}
+        assert owner["card_clarifications"][0] == before[cid]["card_clarifications"][0]
+        assert len(owner["card_clarifications"]) == 2
+        assert owner["phase"] == "blocked" and owner["agent_dispatch"] == {}
+        assert owner["current_card"]["pushed_branch"] == "conductor/story"
+    assert board.moves == []
 
 
 @pytest.mark.asyncio

@@ -1665,11 +1665,11 @@ def _compute_session_eligibilities(
 
 
 async def _poll_held_backlog_comments(state: CoordinareState, card_ids: list[str]) -> None:
-    """Intake held feedback without ticking workers or overwriting new controls."""
-    for card_id in card_ids:
+    """Overlap the bounded owners' intake without accumulating classifier waits."""
+    async def poll_owner(card_id: str) -> None:
         held_owner = (state.get("active_sessions") or {}).get(card_id)
         if not isinstance(held_owner, dict):
-            continue
+            return
         comments_state = cast("CoordinareState", dict(state))
         session_to_state(cast("CardSession", held_owner), comments_state)
         comments_state["active_card_id"] = card_id
@@ -1680,6 +1680,15 @@ async def _poll_held_backlog_comments(state: CoordinareState, card_ids: list[str
             for field in ("card_clarifications", "requirements_changed",
                           "last_issue_comment_id", "processed_issue_comment_ids"):
                 owner[field] = routed.get(field)
+
+    # Await every selected owner even on failure so no intake can outlive this
+    # cycle and race with fanout, persistence, or a subsequent board command.
+    results = await asyncio.gather(
+        *(poll_owner(card_id) for card_id in card_ids), return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 async def _all_ineligible_fallback(
