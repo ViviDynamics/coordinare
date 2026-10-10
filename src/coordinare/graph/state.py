@@ -515,6 +515,8 @@ def initial_state() -> CoordinareState:
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
         "last_progress_at": None,
+        "last_production_at": None,
+        "last_production_fingerprint": None,
         "workflow_step": None,
         "workflow_step_entered_at": None,
         "workflow_step_trail": [],
