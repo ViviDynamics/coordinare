@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
+import coordinare.graph.nodes.github_retry as github_retry
 from coordinare.daemon import CoordinareDaemon
 from coordinare.dashboard import DashboardStore
 from coordinare.graph.builder import CoordinareGraphBuilder
@@ -243,6 +244,83 @@ async def test_held_comment_rotation_is_fair_across_symphonies(order):
             assert owner["card_clarifications"] == [{"answer": "Keep the prior NO."}]
             assert owner["current_card"]["pr_number"] == 7
             assert owner["current_card"]["head_after"] == "head-before"
+
+
+@pytest.mark.asyncio
+async def test_held_comment_rotation_survives_outages_and_deferred_retries(monkeypatch):
+    now = datetime.now(UTC)
+
+    class ClockMeta(type):
+        def __instancecheck__(cls, value):
+            return isinstance(value, datetime)
+
+    class Clock(datetime, metaclass=ClockMeta):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(github_retry, "datetime", Clock)
+    daemon, board = restore()
+    original = daemon.state["active_sessions"]["story"]
+    ids = [f"held-{index}" for index in range(7)]
+    sessions = {}
+    for cid in ids:
+        owner = deepcopy(original)
+        owner["current_card"]["id"] = cid
+        sessions[cid] = owner
+    runtime = SymphonyRuntimeState(
+        name="sample",
+        active_sessions=sessions,
+        previous_phase="blocked",
+        board_snapshot={"BACKLOG": ids},
+    )
+    board.columns = {"BACKLOG": ids}
+    real_poll = board.poll_board
+    failed = False
+    polls = []
+    served = []
+
+    async def poll():
+        polls.append(failed)
+        if failed:
+            raise TimeoutError("Synthetic upstream board outage")
+        return await real_poll()
+
+    async def number_for_card(cid):
+        served.append(cid)
+        return 1
+
+    board.poll_board = poll
+    board.issue_number_for_card = number_for_card
+    daemon.state.update(
+        active_sessions=sessions,
+        active_card_id=None,
+        current_card=None,
+        phase="blocked",
+        symphony_states={"sample": runtime},
+        symphony_github_services={"sample": board},
+    )
+    for step in ("healthy", "outage", "deferred", "healthy", "outage", "deferred", "healthy"):
+        now += timedelta(seconds=1 if step == "deferred" else 61)
+        failed = step == "outage"
+        before = len(served)
+        polls_before = len(polls)
+        await daemon._conduct_single_symphony("sample", SimpleNamespace(name="sample"))
+        assert runtime.error_count == 0 and runtime.last_error is None
+        assert len(served) - before <= 3
+        if step != "healthy":
+            assert len(served) == before
+        if step == "deferred":
+            assert len(polls) == polls_before
+        assert "backlog_comment_poll_ids" not in daemon.state
+    assert polls.count(False) >= 3 and polls.count(True) >= 2
+    assert set(served) == set(ids), "Outage reset starved later held owners"
+    assert board.moves == [] and board.columns == {"BACKLOG": ids}
+    for owner in runtime.active_sessions.values():
+        assert owner["last_issue_comment_id"] == 101
+        assert owner["phase"] == "blocked" and owner["agent_dispatch"] == {}
+        assert owner["card_clarifications"] == [{"answer": "Keep the prior NO."}]
+        assert owner["current_card"]["head_after"] == "head-before"
 
 
 @pytest.mark.asyncio

@@ -3062,7 +3062,8 @@ class CoordinareDaemon:
                 backlog[(start + offset) % len(backlog)]
                 for offset in range(min(len(backlog), BLOCKED_POLL_MAX_PER_CYCLE))
             ]
-            self._backlog_poll_cursors[symphony] = start + len(backlog_to_poll)
+            if backlog_to_poll:
+                self._backlog_poll_cursors[symphony] = start + len(backlog_to_poll)
             self._state["backlog_comment_poll_ids"] = backlog_to_poll
             try:
                 self._state = await _all_ineligible_fallback(
