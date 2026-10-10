@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from performer.assessor_questions import assessment_fragment_questions
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
@@ -378,7 +379,16 @@ async def _assessor_lenient_response(
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
     if not isinstance(assess_output, dict):
+        contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw)
         async def _assessor_lenient_sufficient() -> PerformerResponse:
+            if fragment_questions:
+                perf.assessment_questions = fragment_questions
+                perf.open_questions = fragment_questions
+                perf.state = "blocked"
+                return PerformerResponse(
+                    status="blocked", session_id=perf.session_id,
+                    questions=fragment_questions,
+                )
             # 077: prose assessment (no parseable JSON) → treat as sufficient.
             # We cannot extract blocking questions from prose, and the parser
             # already biases to sufficient when no questions are present
@@ -412,7 +422,10 @@ async def _assessor_lenient_response(
         return await _handle_backend_parse_failure(
             perf, assess_raw, "assessment", settings,
             "could not be parsed as a JSON object",
-            lenient_fallback=_assessor_lenient_sufficient,
+            lenient_fallback=(
+                _assessor_lenient_sufficient
+                if fragment_questions or not contract_fragment else None
+            ),
         )
 
     return None
