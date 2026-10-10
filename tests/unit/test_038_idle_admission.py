@@ -132,3 +132,29 @@ async def test_fresh_held_board_status_releases_stale_queued_work(live_status: s
     result = await _pickup_todo_cards(state, {}, ["fresh"])
     assert result["active_sessions"]["fresh"]["performer_stage"] == "assessing"
     assert result["active_sessions"]["retained"] is retained
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["idle", "done", "env_blocked"])
+@pytest.mark.parametrize("saved_status", ["DONE", "BLOCKED", "TODO"])
+async def test_live_in_progress_retained_history_holds_board_admission(phase: str, saved_status: str) -> None:
+    retained = {"phase": phase, "current_card": {"id": "retained", "status": saved_status},
+                "processed_review_ids": ["original-review"]}
+    state = {"config": SimpleNamespace(max_concurrent_cards=1),
+             "active_sessions": {"retained": retained}, "lifecycle_sequence": ["assessing"],
+             "board_snapshot": {"IN_PROGRESS": ["retained"], "TODO": ["fresh"]}}
+    result = await _pickup_todo_cards(state, {}, ["fresh"])
+    assert "fresh" not in result["active_sessions"]
+    assert result["active_sessions"]["retained"] is retained
+    assert retained["processed_review_ids"] == ["original-review"]
+
+
+@pytest.mark.asyncio
+async def test_explicitly_paused_history_still_releases_capacity_on_live_in_progress_board() -> None:
+    retained = {"phase": "idle", "board_paused": True, "current_card": {"id": "retained", "status": "DONE"}}
+    state = {"config": SimpleNamespace(max_concurrent_cards=1),
+             "active_sessions": {"retained": retained}, "lifecycle_sequence": ["assessing"],
+             "board_snapshot": {"IN_PROGRESS": ["retained"], "TODO": ["fresh"]}}
+    result = await _pickup_todo_cards(state, {}, ["fresh"])
+    assert result["active_sessions"]["fresh"]["performer_stage"] == "assessing"
+    assert retained["board_paused"] is True

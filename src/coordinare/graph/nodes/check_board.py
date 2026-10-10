@@ -186,7 +186,7 @@ def _session_consumes_slot(session: dict[str, Any], board_status: str | None = N
     status = board_status if board_status is not None else card.get("status")
     if session.get("board_paused") or status in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:
         return False
-    return phase not in NON_SLOT_PHASES
+    return board_status == "IN_PROGRESS" or phase not in NON_SLOT_PHASES
 
 
 def _count_slot_consuming_sessions(state: CoordinareState) -> int:
@@ -199,6 +199,7 @@ def _count_slot_consuming_sessions(state: CoordinareState) -> int:
         if isinstance(card_ids, list)
         for card_id in card_ids
     }
+
     def consumes_slot(card_id: str, session: dict[str, Any]) -> bool:
         card = session.get("current_card") or {}
         candidates = (card_id, str(card.get("id") or ""), str(card.get("content_id") or ""))
