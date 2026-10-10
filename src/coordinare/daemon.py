@@ -30,6 +30,7 @@ from coordinare.graph.state import (
     _set_current_card,
     initial_state,
 )
+from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -517,7 +518,15 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         consumed_loop_questions=[
             str(qf) for qf in (sess.get("consumed_loop_questions") or ()) if qf is not None
         ],
-        card_clarifications=[dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)]
+        card_clarifications=annotate_clarifications(
+            [dict(c) for c in f["clarifications_raw"] if isinstance(c, dict)], {
+                "card_id": card_id,
+                "card_number": card.get("issue_number") if isinstance(card, dict) else None,
+                "card_title": str(card.get("title") or "") if isinstance(card, dict) else "",
+                "stage": str(sess.get("performer_stage") or ""),
+                "issue_url": (str(card.get("issue_url") or "") or None) if isinstance(card, dict) else None,
+            },
+        )
         if isinstance(f["clarifications_raw"], (list, tuple))
         else [],
         dispatched_feedback=dict(sess.get("dispatched_feedback") or {}),

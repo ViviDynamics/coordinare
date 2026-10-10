@@ -17,6 +17,7 @@ from coordinare.dashboard.helpers import (
     ownership_hint,
 )
 from coordinare.dashboard.sse import SSEBroadcaster
+from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 
@@ -820,21 +821,10 @@ class DashboardStore:
         issue_url = str(card_dict.get("issue_url", "")) or (
             snapshot.active_card_issue_url if snapshot else None
         )
-        annotated: list[dict[str, Any]] = []
-        for rnd in rounds:
-            if isinstance(rnd, dict):
-                entry = dict(rnd)
-                # setdefault, not overwrite: a round that already carries its
-                # own attribution (a future writer) must not be relabelled.
-                entry.setdefault("card_id", card_id)
-                entry.setdefault("card_number", card_number)
-                entry.setdefault("card_title", card_title)
-                entry.setdefault("stage", stage)
-                entry.setdefault("issue_url", issue_url)
-                annotated.append(entry)
-            else:
-                annotated.append(rnd)
-        return annotated
+        return annotate_clarifications(rounds, {
+            "card_id": card_id, "card_number": card_number, "card_title": card_title,
+            "stage": stage, "issue_url": issue_url,
+        })
 
     @staticmethod
     def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:

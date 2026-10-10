@@ -84,3 +84,40 @@ def test_explicit_round_attribution_and_content_are_preserved(live):
                                               card_clarifications=[deepcopy(round_)]))
     assert dashboard(daemon)["card_clarifications"] == [round_]
     assert a["card_clarifications"] == [round_]
+
+
+@pytest.mark.parametrize("focus", [False, True])
+@pytest.mark.parametrize("second_restart", [False, True])
+def test_actual_daemon_restart_preserves_visible_history_owners(focus, second_restart):
+    a = owner("A", 1, "assessing", "Return an empty string.")
+    b = owner("B", 2, "implementing", "No, tests only.")
+    daemon = CoordinareDaemon(SimpleNamespace())
+    daemon.state.update(active_sessions={"A": a, "B": b}, active_card_id="A",
+                        card_clarifications=deepcopy(b["card_clarifications"]))
+    _finalize_multi_session(daemon.state, daemon.state["active_sessions"])
+    if not focus:
+        daemon.state.update(active_card_id=None, current_card=None)
+    before = deepcopy(daemon.state["active_sessions"])
+    snapshot = WorkflowSnapshot.model_validate_json(daemon._build_snapshot().model_dump_json())
+    assert daemon.state["active_sessions"] == before
+    for _ in range(2 if second_restart else 1):
+        restored = CoordinareDaemon(SimpleNamespace())
+        restored._restore_from_snapshot(snapshot)
+        restored._state_store = SimpleNamespace(last_snapshot=snapshot)
+        rounds = dashboard(restored)["card_clarifications"]
+        assert [(r["card_id"], r["card_number"], r["card_title"], r["issue_url"], r["stage"], r["answer"]) for r in rounds] == [
+            ("A", 1, "Story 1", "https://github.com/example/sample/issues/1", "assessing", "Return an empty string."),
+            ("B", 2, "Story 2", "https://github.com/example/sample/issues/2", "implementing", "No, tests only.")]
+        snapshot = WorkflowSnapshot.model_validate_json(restored._build_snapshot().model_dump_json())
+
+
+def test_snapshot_preserves_explicit_history_metadata_and_exact_content():
+    round_ = {"card_id": "historical-owner", "card_number": None, "card_title": "Historical title",
+              "stage": "reviewing", "issue_url": None, "answer": "Exact Unicode λ\nanswer", "comment_id": 12}
+    daemon = CoordinareDaemon(SimpleNamespace())
+    a = owner("A", 1, "assessing", "Unused")
+    a["card_clarifications"] = [deepcopy(round_)]
+    daemon.state.update(active_sessions={"A": a})
+    snapshot = daemon._build_snapshot()
+    assert snapshot.active_sessions["A"].card_clarifications == [round_]
+    assert a["card_clarifications"] == [round_]
