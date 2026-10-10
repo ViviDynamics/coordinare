@@ -15,7 +15,7 @@ from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, Wor
 class TestSlotQueuedSinceSchemaV25:
     def test_schema_version_is_25(self) -> None:
         """545 advances the schema to 26; queued-since remains supported."""
-        assert CURRENT_SCHEMA_VERSION == 33
+        assert CURRENT_SCHEMA_VERSION == 34
 
     def test_slot_queued_since_defaults_none(self) -> None:
         session = PersistedSession(card_id="test-card")
