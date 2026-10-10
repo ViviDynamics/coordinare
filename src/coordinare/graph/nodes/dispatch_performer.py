@@ -1288,6 +1288,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         inflight = await _inflight_gates(state, card_id, performer_stage)
         if inflight is None and not await _retained_feedback_retry_is_open(state, performer_stage):
             state["phase"] = "monitoring_pr"
+            state["slot_queued_since"] = None
             inflight = state
         if inflight is not None:
             return inflight
@@ -1312,7 +1313,7 @@ async def _retained_feedback_retry_is_open(state: CoordinareState, performer_sta
     batch = state.get("dispatched_feedback") or {}
     if batch.get("stage") != performer_stage or not batch.get("items") or not card.get("pr_url"):
         return True
-    return await retained_pr_is_open(state.get("github_service"), card)
+    return await retained_pr_is_open(state.get("github_service"), card, state=state)
 
 
 def _owner_repo_from_pr_url(pr_url: str | None) -> tuple[str | None, str | None]:

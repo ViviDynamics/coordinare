@@ -1917,7 +1917,8 @@ async def _resume_closed_pr(
 
 async def _passive_retry_pr_is_open(state: CoordinareState, session: dict[str, Any]) -> bool:
     """Read the retained PR lifecycle before bypassing approval monitoring."""
-    return await retained_pr_is_open(state.get("github_service"), session.get("current_card") or {})
+    return await retained_pr_is_open(state.get("github_service"), session.get("current_card") or {},
+                                     state=state)
 
 
 async def _reset_and_rehydrate(
