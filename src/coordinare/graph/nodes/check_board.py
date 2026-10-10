@@ -175,7 +175,7 @@ PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked", "idle", "done", "env_blocked"})
 
 
-def _session_consumes_slot(session: dict[str, Any]) -> bool:
+def _session_consumes_slot(session: dict[str, Any], board_status: str | None = None) -> bool:
     """Quiescent history releases admission; owned writers keep their slot."""
     if has_live_side_writer(session):
         return True
@@ -183,7 +183,8 @@ def _session_consumes_slot(session: dict[str, Any]) -> bool:
     if phase in {"monitoring_performer", "monitoring_agent"} and (session.get("agent_dispatch") or {}).get("session_id"):
         return True
     card = session.get("current_card") or {}
-    if session.get("board_paused") or card.get("status") in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:
+    status = board_status if board_status is not None else card.get("status")
+    if session.get("board_paused") or status in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:
         return False
     return phase not in NON_SLOT_PHASES
 
@@ -191,9 +192,22 @@ def _session_consumes_slot(session: dict[str, Any]) -> bool:
 def _count_slot_consuming_sessions(state: CoordinareState) -> int:
     """Count active sessions occupying a concurrency slot."""
     sessions: dict[str, Any] = state.get("active_sessions") or {}
+    snapshot = state.get("board_snapshot") or {}
+    live_statuses = {
+        card_id: column
+        for column, card_ids in snapshot.items()
+        if isinstance(card_ids, list)
+        for card_id in card_ids
+    }
+    def consumes_slot(card_id: str, session: dict[str, Any]) -> bool:
+        card = session.get("current_card") or {}
+        candidates = (card_id, str(card.get("id") or ""), str(card.get("content_id") or ""))
+        status = next((live_statuses[candidate] for candidate in candidates if candidate in live_statuses), None)
+        return _session_consumes_slot(session, status)
+
     return sum(
-        1 for sess in sessions.values()
-        if _session_consumes_slot(sess)
+        1 for card_id, sess in sessions.items()
+        if consumes_slot(card_id, sess)
     )
 
 

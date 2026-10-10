@@ -95,3 +95,40 @@ def test_owned_foreground_worker_keeps_capacity_during_board_pause_or_completion
     session = {"phase": phase, "board_paused": True, "current_card": {"id": "old", "status": "DONE"},
                "agent_dispatch": {"session_id": "still-running-worker"}}
     assert _count_slot_consuming_sessions({"active_sessions": {"old": session}}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_status", ["DONE", "BLOCKED"])
+@pytest.mark.parametrize("phase,live_status", [
+    ("monitoring_agent", "IN_PROGRESS"),
+    ("dispatching", "IN_PROGRESS"),
+    ("dispatching", "IN_REVIEW"),
+])
+@pytest.mark.parametrize("board_id", ["retained", "retained-content"])
+async def test_fresh_active_board_status_keeps_restored_work_capacity(
+    saved_status: str, phase: str, live_status: str, board_id: str,
+) -> None:
+    retained = {"phase": phase,
+                "current_card": {"id": "retained", "content_id": "retained-content", "status": saved_status},
+                "processed_review_ids": ["original-review"],
+                "dispatched_feedback": {"stage": "implementing", "items": [{"body": "Keep the requested change"}]}}
+    state = {"config": SimpleNamespace(max_concurrent_cards=1),
+             "active_sessions": {"retained": retained}, "lifecycle_sequence": ["assessing"],
+             "board_snapshot": {live_status: [board_id], "TODO": ["fresh"]}}
+    result = await _pickup_todo_cards(state, {}, ["fresh"])
+    assert "fresh" not in result["active_sessions"]
+    assert result["active_sessions"]["retained"] is retained
+    assert retained["processed_review_ids"] == ["original-review"]
+    assert retained["dispatched_feedback"]["items"][0]["body"] == "Keep the requested change"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_status", ["BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"])
+async def test_fresh_held_board_status_releases_stale_queued_work(live_status: str) -> None:
+    retained = {"phase": "dispatching", "current_card": {"id": "retained", "status": "IN_PROGRESS"}}
+    state = {"config": SimpleNamespace(max_concurrent_cards=1),
+             "active_sessions": {"retained": retained}, "lifecycle_sequence": ["assessing"],
+             "board_snapshot": {live_status: ["retained"], "TODO": ["fresh"]}}
+    result = await _pickup_todo_cards(state, {}, ["fresh"])
+    assert result["active_sessions"]["fresh"]["performer_stage"] == "assessing"
+    assert result["active_sessions"]["retained"] is retained
