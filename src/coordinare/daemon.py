@@ -4843,7 +4843,14 @@ class CoordinareDaemon:
                     )
                 continue
             sess["phase"] = "blocked"
-            if was_paused and column != pause_column and column in {"TODO", "IN_PROGRESS", "IN_REVIEW"}:
+            retry_blocked_todo = (
+                column == pause_column == "TODO"
+                and sess.get("board_pause_resume_phase") == "blocked"
+                and not sess.get("pending_pr_handoff")
+            )
+            if retry_blocked_todo or (
+                was_paused and column != pause_column and column in {"TODO", "IN_PROGRESS", "IN_REVIEW"}
+            ):
                 sess["board_paused"] = False
                 sess["board_pause_column"] = ""
                 if sess.get("pending_pr_handoff"):
