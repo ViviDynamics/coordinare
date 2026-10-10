@@ -18,6 +18,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from performer.assessor_questions import (
+    assessment_fields_outside_object,
+    assessment_fragment_questions,
+    assessment_has_duplicate_contract_fields,
+    assessment_has_invalid_field_types,
+)
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
@@ -244,13 +250,22 @@ async def assessor_path(
     # workflow_metrics); coordinare lifts the assessment and records it on the
     # card session. The prose path below is untouched (164 FR-005).
     assess_raw = backend_status.output or ""
-    _workflow = await _assessor_workflow_response(perf, assess_raw)
-    if _workflow is not None:
-        return _workflow
-
+    # Format repair cannot answer a human decision recovered from an earlier
+    # response. Surface it before interpreting any replacement readiness verdict.
+    if perf.assessment_questions:
+        perf.open_questions = perf.assessment_questions
+        perf.state = "blocked"
+        return PerformerResponse(
+            status="blocked", session_id=perf.session_id,
+            questions=perf.assessment_questions,
+        )
     _lenient = await _assessor_lenient_response(perf, assess_raw, settings)
     if _lenient is not None:
         return _lenient
+
+    _workflow = await _assessor_workflow_response(perf, assess_raw)
+    if _workflow is not None:
+        return _workflow
 
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
     sufficient = assess_output.get("sufficient", True)
@@ -377,8 +392,34 @@ async def _assessor_lenient_response(
             perf, assess_raw, "assessment", settings, "was empty",
         )
     assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-    if not isinstance(assess_output, dict):
+    if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw, _extract_json) or (
+        "assessment" in assess_output and not isinstance(assess_output["assessment"], dict)
+    ) or (
+        assessment_has_duplicate_contract_fields(assess_raw, _extract_json)
+    ) or (
+        assessment_has_invalid_field_types(assess_output)
+    ) or (
+        "assessment" in assess_output
+        and any(key in assess_output for key in ("questions", "sufficient", "ready"))
+    ) or (
+        "ready" in assess_output
+    ) or (
+        "sufficient" not in assess_output and "assessment" not in assess_output
+        and assess_output.get("questions")
+    ):
+        contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw, _extract_json)
+        if fragment_questions:
+            perf.assessment_questions = fragment_questions
+            perf.open_questions = fragment_questions
         async def _assessor_lenient_sufficient() -> PerformerResponse:
+            if fragment_questions:
+                perf.assessment_questions = fragment_questions
+                perf.open_questions = fragment_questions
+                perf.state = "blocked"
+                return PerformerResponse(
+                    status="blocked", session_id=perf.session_id,
+                    questions=fragment_questions,
+                )
             # 077: prose assessment (no parseable JSON) → treat as sufficient.
             # We cannot extract blocking questions from prose, and the parser
             # already biases to sufficient when no questions are present
@@ -412,7 +453,10 @@ async def _assessor_lenient_response(
         return await _handle_backend_parse_failure(
             perf, assess_raw, "assessment", settings,
             "could not be parsed as a JSON object",
-            lenient_fallback=_assessor_lenient_sufficient,
+            lenient_fallback=(
+                _assessor_lenient_sufficient
+                if fragment_questions or not contract_fragment else None
+            ),
         )
 
     return None
