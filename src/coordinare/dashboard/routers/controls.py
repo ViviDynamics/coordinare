@@ -57,16 +57,33 @@ def _eligible_control_session(cid: str, session: Any, owners: dict[str, list[str
     )
 
 
+def _legacy_transient_owner(state: dict[str, Any], sessions: dict[str, Any]) -> dict[str, Any] | None:
+    """A legacy graph may materialize its sole owner before flat writeback."""
+    if state.get("symphony_states") or len(sessions) != 1 or state.get("phase") not in _ACTIVE_PHASES:
+        return None
+    cid, session = next(iter(sessions.items()))
+    if not isinstance(session, dict) or session.get("phase") is not None:
+        return None
+    if (state.get("current_card") or {}).get("id") != cid:
+        return None
+    if not _eligible_control_session(cid, {**session, "phase": state["phase"]}, {}):
+        return None
+    return session
+
+
 def _control_target(state: dict[str, Any], card_id: str | None) -> dict[str, Any] | JSONResponse:
     """Resolve an eligible owning session without guessing between live cards."""
     sessions, owners = _control_sessions(state)
+    transient = _legacy_transient_owner(state, sessions)
 
     if card_id is not None:
         target = sessions.get(card_id)
-        if not _eligible_control_session(card_id, target, owners):
+        if not _eligible_control_session(card_id, target, owners) and (transient is None or target is not transient):
             return JSONResponse({"error": "No eligible active card for this target"}, status_code=400)
         return cast("dict[str, Any]", target)
     live = [session for cid, session in sessions.items() if _eligible_control_session(cid, session, owners)]
+    if transient is not None:
+        live.append(transient)
     if len(live) > 1:
         return JSONResponse({"error": "Multiple active cards; specify card_id"}, status_code=409)
     if live:

@@ -19,6 +19,7 @@ An unqualified request can target the sole eligible live session. With multiple 
 - [x] Record the exact command consumed inside the compiled graph, preventing replay after recovery while retaining a newer distinct request.
 - [x] Verify persisted receipts, unchanged public responses, paused/ambiguous refusal and cross-symphony isolation.
 - [x] Retain late flat-state commands with distinct receipts; never replay consumed commands or transfer commands to a replacement card.
+- [x] Route controls to the same legacy singleton owner during native flat-to-session finalization, while refusing paused, complete blocked, peer and runtime-owned entries.
 - [x] Reproduce three explicit restart boundaries that skip configured stages; clear obsolete continuation only after valid restart.
 - [ ] Run configured checks, full suite, adversarial review, fresh Copilot and current-head CI before merge.
 - [ ] Verify actual publication/deployment and replay the original authenticated restart interaction and nearby regressions.

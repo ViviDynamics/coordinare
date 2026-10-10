@@ -24,7 +24,7 @@ from coordinare.graph.nodes.check_board import (
     _pickup_todo_cards,
     check_board,
 )
-from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+from coordinare.graph.nodes.dispatch_performer import _finalise_success, dispatch_performer
 from coordinare.graph.nodes.monitor.verdict import _advance_stage, _apply_pending_override
 from coordinare.graph.state import SymphonyRuntimeState, _retire_active_session
 from coordinare.session import create_session_from_card, session_to_state
@@ -161,6 +161,66 @@ async def test_flat_fallback_does_not_replay_late_control_consumed_inside_graph(
         "assessing" if action == "restart" else "reviewing" if action == "skip" else "implementing"
     )
     assert _apply_pending_override(daemon.state) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "action"), CONTROLS)
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_legacy_transient_owner_accepts_control_during_native_finalization(path, action, explicit):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Graph:
+        async def ainvoke(self, state):
+            updated = dict(state)
+            await _finalise_success(updated, {"session_id": "synthetic-worker"}, {
+                "card": updated["current_card"], "performer_stage": "implementing", "card_context": {},
+            })
+            entered.set()
+            await release.wait()
+            return updated
+
+    daemon = CoordinareDaemon(Graph())
+    daemon.state.update(phase="monitoring_performer", performer_stage="implementing",
+                        current_card={"id": "legacy", "status": "IN_PROGRESS"},
+                        lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"])
+    task = asyncio.create_task(daemon._invoke_multi_session())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        owner = daemon.state["active_sessions"]["legacy"]
+        assert "phase" not in owner
+        response = _make_app(daemon=daemon).post(path, params={"card_id": "legacy"} if explicit else None)
+        assert response.status_code == 200
+        accepted = deepcopy(owner["pending_override"])
+        assert accepted["action"] == action and isinstance(accepted["control_id"], str)
+    finally:
+        release.set()
+        await task
+    final = daemon.state["active_sessions"]["legacy"]
+    assert final["phase"] == "monitoring_performer"
+    assert final["pending_override"] == accepted
+    flat = dict(daemon.state)
+    session_to_state(final, flat)
+    assert _apply_pending_override(flat) is not None
+    assert _apply_pending_override(flat) is None
+
+
+@pytest.mark.parametrize("condition", ["paused", "other_card", "other_owner", "runtime", "complete_blocked"])
+def test_legacy_transient_owner_refuses_ineligible_or_ambiguous_targets(condition):
+    daemon = control_daemon("monitoring_performer")
+    owner = {"current_card": {"id": "legacy"}}
+    daemon.state.update(current_card={"id": "legacy"}, active_sessions={"legacy": owner})
+    if condition == "paused":
+        owner["board_paused"] = True
+    elif condition == "other_card":
+        daemon.state["current_card"] = {"id": "other"}
+    elif condition == "other_owner":
+        daemon.state["active_sessions"]["other"] = {"current_card": {"id": "other"}}
+    elif condition == "runtime":
+        daemon.state["symphony_states"] = {"owner": SymphonyRuntimeState(name="owner", active_sessions={"legacy": owner})}
+    else:
+        owner["phase"] = "blocked"
+    assert _make_app(daemon=daemon).post("/api/veto", params={"card_id": "legacy"}).status_code == 400
+    assert owner.get("pending_override") is None
 
 
 def control_daemon(phase: str):
