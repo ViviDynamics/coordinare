@@ -1548,6 +1548,7 @@ async def _collect_blocked_clarification(
                     state["card_clarifications"] = [*existing, clarification]
                     state["open_questions"] = []
                     state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
 
                     await move_card_or_warn(board_provider, item, "IN_PROGRESS")
                     # 066 T018/FR-011: write through the session entry only.
@@ -1565,6 +1566,15 @@ async def _collect_blocked_clarification(
                     # trying to check status on an already-terminated performer.
                     state["phase"] = "dispatching"
                     state["last_blocked_notified_at"] = None
+                    # Neutral board maintenance keeps flat card fields local.
+                    # Persist the answer on its owner before that view is discarded.
+                    if isinstance(_sess_qa, dict):
+                        _sess_qa.update(
+                            card_clarifications=state["card_clarifications"],
+                            open_questions=[], agent_dispatch={}, phase="dispatching",
+                            agent_dispatch_at=None,
+                            last_blocked_notified_at=None,
+                        )
                     return state
             except (ValueError, TypeError):
                 continue
