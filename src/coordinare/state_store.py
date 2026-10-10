@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 33  # 23: durable per-worker dispatch clock
+CURRENT_SCHEMA_VERSION: int = 33  # 015: per-card continuation, following durable worker clocks
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -123,7 +123,7 @@ CURRENT_SCHEMA_VERSION: int = 33  # 23: durable per-worker dispatch clock
 # reject v26 instead of silently dropping pending work when downgraded.
 # v29 (552) retains board-pause intent until owned writers are confirmed stopped.
 # Versions 27-28 are reserved for concurrently integrated feedback fixes.
-# v32 (015) retains a removed active stage's lifecycle continuation per card.
+# v33 (015) retains a removed active stage's lifecycle continuation per card.
 # v1-v31 snapshots default to an empty continuation and reconstruct it at restore.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
