@@ -304,11 +304,14 @@ class WorkspaceManager:
         project = self._project_name
         # Performer-facing remote (returned in WorkspaceInfo, handed to the container).
         repo_url = f"{self._performer_git_base_url}/{org}/{project}.git"
-        branch = make_branch_name(str(card.get("id", "")), str(card.get("title", "")))
-
-        # 052: Stale branch cleanup — detect and handle pre-existing remote branch
-        # before any transport path so the performer always starts from a clean state.
-        branch = await self._resolve_branch(branch, card)
+        existing_pr = bool(card.get("pr_node_id") or card.get("pr_url"))
+        if existing_pr:
+            branch = await self._resolve_pr_head(card)
+        else:
+            branch = make_branch_name(str(card.get("id", "")), str(card.get("title", "")))
+            # Stale cleanup applies only to a new card's generated branch. A
+            # retained PR's head must never be deleted or renamed by this policy.
+            branch = await self._resolve_branch(branch, card)
 
         # For Kubernetes transport, the performer container handles its own git
         # setup (no local clone or branch creation here), but it still makes
@@ -378,9 +381,17 @@ class WorkspaceManager:
                 cwd=clone_dir, env=env,
             )
 
-            # Create and check out the card-specific branch.
+            # Shallow clones contain only the default branch. Fetch a retained
+            # PR's head explicitly so a resumed worker keeps its prior commits.
+            start_point: tuple[str, ...] = ()
+            if existing_pr:
+                await _run_git(
+                    "fetch", "--depth=1", "origin", f"refs/heads/{branch}",
+                    cwd=clone_dir, env=env,
+                )
+                start_point = ("FETCH_HEAD",)
             await _run_git(
-                "checkout", "-b", branch,
+                "checkout", "-b", branch, *start_point,
                 cwd=clone_dir, env=env,
             )
 
@@ -397,6 +408,22 @@ class WorkspaceManager:
             repo_url=repo_url,
         )
         return WorkspaceInfo(path=clone_dir, branch=branch, repo_url=repo_url, github_token=token)
+
+    async def _resolve_pr_head(self, card: dict[str, Any]) -> str:
+        """Use the retained PR identity, never a reconstructed branch name."""
+        pr_id = str(card.get("pr_node_id") or "").strip()
+        github = self._github_service
+        if not pr_id or github is None or not hasattr(github, "check_mergeability"):
+            raise WorkspaceSetupError("Cannot resolve existing PR head: missing PR identity or resolver")
+        try:
+            result = await github.check_mergeability(pr_id)
+        except Exception:
+            # API exceptions may include credential-bearing request details.
+            raise WorkspaceSetupError("Cannot resolve existing PR head: lookup failed") from None
+        branch = result.get("head_ref_name") if isinstance(result, dict) else None
+        if not isinstance(branch, str) or not branch.strip():
+            raise WorkspaceSetupError("Cannot resolve existing PR head: branch unavailable")
+        return branch
 
     async def _resolve_branch(self, branch: str, card: dict[str, Any]) -> str:
         """Apply stale branch cleanup or suffix strategy before workspace creation.
