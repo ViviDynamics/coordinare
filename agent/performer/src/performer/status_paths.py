@@ -22,6 +22,7 @@ from performer.assessor_questions import (
     assessment_fields_outside_object,
     assessment_fragment_questions,
     assessment_has_duplicate_contract_fields,
+    assessment_has_invalid_field_types,
 )
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
@@ -385,12 +386,14 @@ async def _assessor_lenient_response(
     if not isinstance(assess_output, dict) or assessment_fields_outside_object(assess_raw) or (
         "assessment" in assess_output and not isinstance(assess_output["assessment"], dict)
     ) or (
-        assessment_has_duplicate_contract_fields(assess_raw)
+        assessment_has_duplicate_contract_fields(assess_raw, _extract_json)
+    ) or (
+        assessment_has_invalid_field_types(assess_output)
     ) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
         and (assess_output.get("questions") or "ready" in assess_output)
     ):
-        contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw)
+        contract_fragment, fragment_questions = assessment_fragment_questions(assess_raw, _extract_json)
         async def _assessor_lenient_sufficient() -> PerformerResponse:
             if fragment_questions:
                 perf.assessment_questions = fragment_questions

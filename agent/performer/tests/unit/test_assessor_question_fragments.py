@@ -65,6 +65,15 @@ def performance(output: str) -> Performance:
     ('{"assessment":{"ready":false,"questions":["Keep me?"],"verdict":"work","verdict":"not_work"}}', ["Keep me?"]),
     ('{"assessment":{"ready":false,"questions":["Keep me?"],"questions":[]},"metadata":{"questions":["Unrelated?"]}}', ["Keep me?"]),
     ('{"sufficient":false,"questions":["Keep me?"],"questions":null,"metadata":{"questions":["Unrelated?"]}}', ["Keep me?"]),
+    ('{"sufficient":"false","questions":["Need a decision?"]}', ["Need a decision?"]),
+    ('{"sufficient":1,"questions":["Need a decision?"]}', ["Need a decision?"]),
+    ('{"sufficient":null,"questions":["Need a decision?"]}', ["Need a decision?"]),
+    ('{"assessment":{"ready":"false","questions":["Need a decision?"]}}', ["Need a decision?"]),
+    ('{"assessment":{"ready":1,"questions":["Need a decision?"]}}', ["Need a decision?"]),
+    ('{"assessment":{"ready":null,"questions":["Need a decision?"]}}', ["Need a decision?"]),
+    ('intro {example}\n```json\n{"sufficient":false,"questions":["Keep me?"],"questions":[]}\n```', ["Keep me?"]),
+    ('intro {example}\n```json\n{"assessment":{"ready":false,"questions":["Keep me?"]},"assessment":{"ready":true,"questions":[]}}\n```', ["Keep me?"]),
+    ('intro {example}\n```json\n{"sufficient":false,"questions":["Keep me?"],"questions":null,"metadata":{"questions":["Unrelated?"]}}\n```', ["Keep me?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)
@@ -95,6 +104,15 @@ async def test_recovered_questions_block_without_committing(output, questions):
     '{"assessment": [], "questions": []}',
     '{"assessment":{"ready":false,"questions":[]},"assessment":{"ready":true,"questions":[]}}',
     '{"assessment":{"ready":false,"ready":true,"questions":[]}}',
+    '{"sufficient":"false","questions":[]}',
+    '{"sufficient":1,"questions":[]}',
+    '{"sufficient":false,"questions":"Need a decision?"}',
+    '{"sufficient":false,"questions":["Need a decision?",42]}',
+    '{"sufficient":true,"questions":null}',
+    '{"assessment":{"ready":"false","questions":[]}}',
+    '{"assessment":{"ready":false,"questions":"Need a decision?"}}',
+    '{"assessment":{"ready":false,"questions":["Need a decision?",42]}}',
+    '{"assessment":{"ready":true,"questions":{}}}',
 ])
 async def test_unrecoverable_contract_output_fails_closed(output):
     perf = performance(output)

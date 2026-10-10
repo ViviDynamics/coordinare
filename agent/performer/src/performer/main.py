@@ -1003,20 +1003,20 @@ async def _service_inference_run(
     }
 
 
-def _extract_json(text: str) -> dict | list | None:
+def _extract_json(text: str, *, object_pairs_hook: Any = None) -> dict | list | None:
     """Try to extract a JSON object from text that may contain prose.
 
     Strategies: (1) parse full text, (2) find ```json``` code fence,
     (3) find first { ... } or [ ... ] substring.
     """
     try:
-        return _json_module.loads(text)
+        return _json_module.loads(text, object_pairs_hook=object_pairs_hook)
     except (ValueError, TypeError):
         pass
     match = _CODE_FENCE_RE.search(text)
     if match:
         try:
-            return _json_module.loads(match.group(1).strip())
+            return _json_module.loads(match.group(1).strip(), object_pairs_hook=object_pairs_hook)
         except (ValueError, TypeError):
             pass
     for start_char, end_char in [('{', '}'), ('[', ']')]:
@@ -1025,7 +1025,7 @@ def _extract_json(text: str) -> dict | list | None:
             end = text.rfind(end_char)
             if end > start:
                 try:
-                    return _json_module.loads(text[start:end + 1])
+                    return _json_module.loads(text[start:end + 1], object_pairs_hook=object_pairs_hook)
                 except (ValueError, TypeError):
                     pass
     return None

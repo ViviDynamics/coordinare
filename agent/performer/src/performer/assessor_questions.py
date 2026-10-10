@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING
 
 from performer.models import _redact_secrets
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _JSON_FIELD = re.compile(r'(?P<key>"(?:[^"\\]|\\.)*")\s*:\s*')
 _ASSESSMENT_KEYS = frozenset({"questions", "sufficient", "assessment", "ready"})
@@ -35,15 +39,25 @@ class _ObjectPairs(list[tuple[str, object]]):
     """Keep object fields distinct from arrays and retain duplicate keys."""
 
 
-def _assessment_pairs(raw: str) -> _ObjectPairs | None:
-    start, end = raw.find("{"), raw.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            value = json.loads(raw[start:end + 1], object_pairs_hook=_ObjectPairs)
-            return value if isinstance(value, _ObjectPairs) else None
-        except ValueError:
-            pass
-    return None
+def _assessment_pairs(raw: str, extract_json: Callable[..., object]) -> _ObjectPairs | None:
+    value = extract_json(raw, object_pairs_hook=_ObjectPairs)
+    return value if isinstance(value, _ObjectPairs) else None
+
+
+def assessment_has_invalid_field_types(output: dict) -> bool:
+    """Malformed controls and question values must never use truthiness/coercion."""
+    objects = [(output, "sufficient")]
+    if isinstance(output.get("assessment"), dict):
+        objects.append((output["assessment"], "ready"))
+    for obj, control in objects:
+        if control in obj and not isinstance(obj[control], bool):
+            return True
+        if "questions" in obj and (
+            not isinstance(obj["questions"], list)
+            or any(not isinstance(q, str) for q in obj["questions"])
+        ):
+            return True
+    return False
 
 
 def _contract_objects(pairs: _ObjectPairs) -> list[_ObjectPairs]:
@@ -53,9 +67,9 @@ def _contract_objects(pairs: _ObjectPairs) -> list[_ObjectPairs]:
     ]]
 
 
-def assessment_has_duplicate_contract_fields(raw: str) -> bool:
+def assessment_has_duplicate_contract_fields(raw: str, extract_json: Callable[..., object]) -> bool:
     """Reject ambiguous assessment fields while ignoring unrelated metadata."""
-    pairs = _assessment_pairs(raw)
+    pairs = _assessment_pairs(raw, extract_json)
     if pairs is None:
         return False
     for index, obj in enumerate(_contract_objects(pairs)):
@@ -66,8 +80,8 @@ def assessment_has_duplicate_contract_fields(raw: str) -> bool:
     return False
 
 
-def _question_candidates(raw: str, fields: list[tuple[str, int, int]]) -> list[object]:
-    pairs = _assessment_pairs(raw)
+def _question_candidates(raw: str, fields: list[tuple[str, int, int]], extract_json: Callable[..., object]) -> list[object]:
+    pairs = _assessment_pairs(raw, extract_json)
     if pairs is not None and not assessment_fields_outside_object(raw):
         return [value for obj in _contract_objects(pairs) for key, value in obj if key == "questions"]
     candidates = []
@@ -81,11 +95,11 @@ def _question_candidates(raw: str, fields: list[tuple[str, int, int]]) -> list[o
     return candidates
 
 
-def assessment_fragment_questions(raw: str) -> tuple[bool, list[str]]:
+def assessment_fragment_questions(raw: str, extract_json: Callable[..., object]) -> tuple[bool, list[str]]:
     """Identify contract fragments; recover only complete arrays of question strings."""
     fields = _assessment_fields(raw)
     questions: list[str] = []
-    for value in _question_candidates(raw, fields):
+    for value in _question_candidates(raw, fields, extract_json):
         if not isinstance(value, list) or isinstance(value, _ObjectPairs) or any(not isinstance(q, str) for q in value):
             continue
         for question in value:
