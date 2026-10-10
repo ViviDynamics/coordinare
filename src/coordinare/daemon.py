@@ -837,6 +837,10 @@ def _recovery_signature(session: Mapping[str, Any]) -> tuple[Any, ...]:
         bool(side.get("writer_active")),
         (str(override.get("action") or ""), str(override.get("target_stage") or ""), bool(override.get("applied"))),
         _pr_comment_tracking_signature(session),
+        # Held issue intake can advance without changing phase or PR state.
+        # Track durable progress so its feedback and dedup state reach disk.
+        (str(session.get("last_issue_comment_id") or ""),
+         tuple(_persist_comment_ids(session.get("processed_issue_comment_ids")))),
         tuple(str(card.get(key) or "") for key in ("pr_url", "pr_node_id", "pr_number", "head_after", "pushed_branch", "plan_path")),
         (str(handoff.get("stage") or ""), str(handoff.get("completed_at") or ""),
          str(handoff.get("resumed_board_column") or "")),
