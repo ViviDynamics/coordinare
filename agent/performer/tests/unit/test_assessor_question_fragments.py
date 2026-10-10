@@ -78,6 +78,9 @@ def performance(output: str) -> Performance:
     ('intro "metadata": [\n```json\n{"sufficient":false,"questions":["Need a decision?"]}\n```', ["Need a decision?"]),
     ('intro "metadata": {\n```json\n{"assessment":{"ready":false,"questions":["Keep me?"],"questions":[]}}\n```', ["Keep me?"]),
     ('broken "questions":["Keep me?"]\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```', ["Keep me?"]),
+    ('intro {example}\nbroken "questions":["Keep me?"]\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```', ["Keep me?"]),
+    ('```json\n{"assessment":{"ready":true,"questions":[]}}\n```\nbroken "questions":["Keep me?"]\ntrailer {example}', ["Keep me?"]),
+    ('intro {example}\nbroken "questions":["Keep me?"]\n```json\n{"assessment":{"ready":true,"questions":[]}}\n```\nbroken "questions":["Also me?"]\ntrailer {example}', ["Keep me?", "Also me?"]),
 ])
 async def test_recovered_questions_block_without_committing(output, questions):
     perf = performance(output)

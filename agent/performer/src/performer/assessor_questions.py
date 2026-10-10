@@ -122,8 +122,9 @@ def _assessment_fields(
 
 def assessment_fields_outside_object(raw: str, extract_json: Callable[..., object]) -> bool:
     """A nested object is not an assessment when its contract fields lie outside it."""
-    start, end = raw.find("{"), raw.rfind("}")
-    fields = _assessment_fields(raw, fence_span=_selected_fence_span(raw, extract_json))
+    fence_span = _selected_fence_span(raw, extract_json)
+    start, end = fence_span if fence_span is not None else (raw.find("{"), raw.rfind("}"))
+    fields = _assessment_fields(raw, fence_span=fence_span)
     if not fields and _assessment_fields(raw, exclude_metadata=False):
         return True
     return any(
