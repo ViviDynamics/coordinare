@@ -1977,7 +1977,17 @@ async def _reset_and_rehydrate(
     # already active. The pipeline admission guard controls dispatch.
     for item in eligible_todo:
         sess = active_sessions.get(item)
-        if sess is None or sess.get("board_paused") or sess.get("phase") != "idle":
+        if sess is None or sess.get("board_paused"):
+            continue
+        batch = sess.get("dispatched_feedback") or {}
+        unfinished_feedback = (
+            sess.get("phase") == "monitoring_pr"
+            and not (sess.get("agent_dispatch") or {}).get("session_id")
+            and isinstance(batch, dict)
+            and batch.get("stage") == sess.get("performer_stage")
+            and bool(batch.get("items"))
+        )
+        if sess.get("phase") != "idle" and not unfinished_feedback:
             continue
         sess["current_card"] = {
             **(sess.get("current_card") or {}),
