@@ -68,6 +68,7 @@ function renderActiveWorkPanels(s) {
   var symphonies = Array.isArray(s.symphonies) ? s.symphonies : [];
   var perSymCounts = {};  // symphony name → total card count
   var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
+  var hasBoardSnapshot = false;
   symphonies.forEach(function(sym) {
     var st = sym && sym.state ? sym.state : {};
     Object.assign(titles, st.board_titles || {});
@@ -75,6 +76,9 @@ function renderActiveWorkPanels(s) {
     Object.assign(issueUrls, st.board_issue_urls || {});
     Object.assign(prUrls, st.board_pr_urls || {});
     var snap = st.board_snapshot || {};
+    if (st.board_snapshot && typeof st.board_snapshot === 'object' && !Array.isArray(st.board_snapshot)) {
+      hasBoardSnapshot = true;
+    }
     var symName = sym.name || '';
     perSymCounts[symName] = 0;
     COLUMNS.forEach(function(col) {
@@ -128,7 +132,7 @@ function renderActiveWorkPanels(s) {
   // phase (blocked → BLOCKED, monitoring_pr / merging / relay_feedback → IN_REVIEW,
   // everything else → IN_PROGRESS). This keeps the swimlane usable in legacy /
   // single-symphony deployments where board_titles/board_snapshot aren't populated.
-  if (totalCards === 0 && sessions.length > 0) {
+  if (!hasBoardSnapshot && totalCards === 0 && sessions.length > 0) {
     function colForPhase(ph) {
       if (ph === 'blocked') return 'BLOCKED';
       if (ph === 'monitoring_pr' || ph === 'merging' || ph === 'relay_feedback') return 'IN_REVIEW';
