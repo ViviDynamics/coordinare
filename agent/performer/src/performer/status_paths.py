@@ -399,6 +399,9 @@ async def _assessor_lenient_response(
     ) or (
         assessment_has_invalid_field_types(assess_output)
     ) or (
+        "assessment" in assess_output
+        and any(key in assess_output for key in ("questions", "sufficient", "ready"))
+    ) or (
         "sufficient" not in assess_output and "assessment" not in assess_output
         and (assess_output.get("questions") or "ready" in assess_output)
     ):

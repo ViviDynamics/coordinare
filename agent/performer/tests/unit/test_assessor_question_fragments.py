@@ -379,3 +379,47 @@ async def test_metadata_key_string_preserves_valid_assessment(contract, status):
         )
     assert response.status == status
     assert not perf.open_questions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("assessment,root,expected", [
+    ({"ready": True, "questions": []}, {"questions": ["Root decision?"]}, ["Root decision?"]),
+    ({"ready": False, "verdict": "not_work", "questions": []}, {"questions": ["Root decision?"]}, ["Root decision?"]),
+    ({"ready": True, "questions": ["Nested decision?"]}, {"questions": ["Root decision?"]}, ["Nested decision?", "Root decision?"]),
+    ({"ready": True, "questions": ["Nested decision?"]}, {"sufficient": True}, ["Nested decision?"]),
+    ({"ready": True, "questions": []}, {"sufficient": False}, []),
+    ({"ready": True, "questions": []}, {"ready": False}, []),
+    ({"ready": True, "questions": []}, {"questions": []}, []),
+])
+async def test_mixed_assessment_contracts_fail_closed(assessment, root, expected):
+    perf = performance(json.dumps({"assessment": assessment, **root}))
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status", session_id="synthetic"), perf,
+            Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if expected else "error")
+    assert set(response.questions or []) == set(expected)
+    assert set(perf.open_questions or []) == set(expected)
+    commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repaired", [
+    {"assessment": {"ready": True, "questions": []}},
+    {"assessment": {"ready": False, "verdict": "not_work", "questions": []}},
+    {"sufficient": True, "questions": []},
+])
+async def test_mixed_schema_parse_retry_retains_the_human_question(repaired):
+    perf = performance(json.dumps({"assessment": {"ready": True, "questions": []}, "questions": [QUESTION]}))
+    settings = Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1)
+    message = PerformerMessage(action="status", session_id="synthetic")
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        first = await handle_status(message, perf, settings)
+        assert first.status == "working"
+        assert perf.open_questions == [QUESTION]
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=json.dumps(repaired))
+        second = await handle_status(message, perf, settings)
+    assert second.status == "blocked"
+    assert second.questions == [QUESTION]
+    commit.assert_not_awaited()
