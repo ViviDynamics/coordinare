@@ -225,3 +225,26 @@ async def test_fresh_assessment_after_human_answer_can_advance():
         ready = await handle_status(message, reassessment, settings)
     assert ready.status == "assessment_complete"
     assert previous.open_questions == [QUESTION]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output,questions", [
+    ('broken "questions":[{"questions":["Unrelated?"]}]', []),
+    ('broken "questions":{"questions":["Unrelated?"]}', []),
+    ('broken "ready":{"questions":["Unrelated?"]}', []),
+    ('broken "sufficient":{"questions":["Unrelated?"]}', []),
+    ('broken "assessment":[{"questions":["Unrelated?"]}]', []),
+    ('broken "questions":["Keep me?"], "ready":{"questions":["Unrelated?"]}', ["Keep me?"]),
+    ('broken "questions":[{"questions":["Unrelated?"]}', []),
+    ('broken "questions":[{"questions":["Unrelated?"]},{"questions":["Also unrelated?"]}', []),
+])
+async def test_invalid_contract_values_cannot_supply_nested_questions(output, questions):
+    perf = performance(output)
+    with patch("performer.main.commit_file", new=AsyncMock()) as commit:
+        response = await handle_status(
+            PerformerMessage(action="status",session_id="synthetic"),perf,
+            Settings(AGENT_BACKEND="claude_code",BACKEND_PARSE_RETRIES=0),
+        )
+    assert response.status == ("blocked" if questions else "error")
+    assert (response.questions or []) == questions
+    commit.assert_not_awaited()

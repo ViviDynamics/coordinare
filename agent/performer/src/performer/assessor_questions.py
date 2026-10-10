@@ -38,6 +38,36 @@ def _container_end(raw: str, start: int) -> int:
     return len(raw)
 
 
+def _question_value_objects(raw: str, start: int) -> list[tuple[int, int]]:
+    """Question arrays contain strings, never nested assessment objects.
+
+    Read complete elements even when the outer array is truncated. Stop at
+    malformed array syntax so a later complete duplicate field can still be
+    recovered rather than being swallowed by the damaged first array.
+    """
+    ranges: list[tuple[int, int]] = []
+    index = start + 1
+    decoder = json.JSONDecoder()
+    while index < len(raw):
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        try:
+            value, end = decoder.raw_decode(raw, index)
+        except ValueError:
+            if raw[index:index + 1] in ("{", "["):
+                ranges.append((index, _container_end(raw, index)))
+            break
+        if isinstance(value, (dict, list)):
+            ranges.append((index, end))
+        index = end
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        if raw[index:index + 1] != ",":
+            break
+        index += 1
+    return ranges
+
+
 def _assessment_fields(raw: str, *, exclude_metadata: bool = True) -> list[tuple[str, int, int]]:
     fields = []
     metadata_ranges: list[tuple[int, int]] = []
@@ -48,10 +78,14 @@ def _assessment_fields(raw: str, *, exclude_metadata: bool = True) -> list[tuple
             continue
         if exclude_metadata and any(start <= field.start() < end for start, end in metadata_ranges):
             continue
-        if key not in _ASSESSMENT_KEYS and raw[field.end():field.end() + 1] in ("{", "["):
-            metadata_ranges.append((field.end(), _container_end(raw, field.end())))
-        elif key in _ASSESSMENT_KEYS:
+        if key in _ASSESSMENT_KEYS:
             fields.append((key, field.start(), field.end()))
+        value_start = field.end()
+        first = raw[value_start:value_start + 1]
+        if key == "questions" and first == "[":
+            metadata_ranges.extend(_question_value_objects(raw, value_start))
+        elif first in ("{", "[") and not (key == "assessment" and first == "{"):
+            metadata_ranges.append((value_start, _container_end(raw, value_start)))
     return fields
 
 
