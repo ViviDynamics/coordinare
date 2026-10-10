@@ -51,6 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
 from coordinare.services.review_staleness import classify_review_staleness
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
@@ -1916,15 +1917,7 @@ async def _resume_closed_pr(
 
 async def _passive_retry_pr_is_open(state: CoordinareState, session: dict[str, Any]) -> bool:
     """Read the retained PR lifecycle before bypassing approval monitoring."""
-    github = state.get("github_service")
-    pr_node_id = (session.get("current_card") or {}).get("pr_node_id")
-    if github is None or not pr_node_id:
-        return False
-    try:
-        context = await github.get_pr_review_context(str(pr_node_id))
-    except Exception:
-        return False
-    return isinstance(context, dict) and context.get("state") == "OPEN"
+    return await retained_pr_is_open(state.get("github_service"), session.get("current_card") or {})
 
 
 async def _reset_and_rehydrate(

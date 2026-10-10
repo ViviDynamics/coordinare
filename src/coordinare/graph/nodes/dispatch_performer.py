@@ -34,6 +34,7 @@ from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
+from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
@@ -1285,6 +1286,9 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
 
     async with dispatch_mutex(card_id, performer_stage):
         inflight = await _inflight_gates(state, card_id, performer_stage)
+        if inflight is None and not await _retained_feedback_retry_is_open(state, performer_stage):
+            state["phase"] = "monitoring_pr"
+            inflight = state
         if inflight is not None:
             return inflight
         # 097: pre-dispatch rebase guard. We are past check_inflight (no performer
@@ -1301,6 +1305,14 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             return state
 
         return await _dispatch_performer_body(state)
+
+
+async def _retained_feedback_retry_is_open(state: CoordinareState, performer_stage: str) -> bool:
+    card = state.get("current_card") or {}
+    batch = state.get("dispatched_feedback") or {}
+    if batch.get("stage") != performer_stage or not batch.get("items") or not card.get("pr_url"):
+        return True
+    return await retained_pr_is_open(state.get("github_service"), card)
 
 
 def _owner_repo_from_pr_url(pr_url: str | None) -> tuple[str | None, str | None]:

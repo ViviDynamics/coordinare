@@ -97,3 +97,45 @@ async def test_passive_retry_reads_current_pr_lifecycle_before_real_dispatch(con
     await daemon._invoke_multi_session()
     assert not service.dispatched
     github.get_pr_review_context.assert_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("queue_kind", ["pipeline", "performer"])
+@pytest.mark.parametrize("context", [{"state": "CLOSED"}, {"state": "MERGED"}, {}, None, {"state": "OPEN"}])
+async def test_capacity_queued_retained_feedback_rechecks_pr_when_dispatch_becomes_possible(queue_kind, context):
+    from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+    from coordinare.services.slot_manager import SlotManager
+    from tests.unit.graph.nodes.test_dispatch_performer import _Service
+
+    session = passive_session()
+    state = await admission(session)
+    service = _Service()
+    state["performer_services"] = {"implementing": service}
+    github = state["github_service"]
+    github.list_prs_by_branch_prefix = AsyncMock(return_value=[])
+    github.move_card = AsyncMock()
+    if queue_kind == "pipeline":
+        state["_pipeline_selected"] = {"sibling"}
+    else:
+        slots = SlotManager()
+        slots.register_pool("implementing", services=[service], max_concurrency=1)
+        assert slots.acquire("implementing", "sibling") is service
+        state["slot_manager"] = slots
+    state.update(await dispatch_performer(state))
+    assert not service.dispatched
+    assert state["phase"] == "dispatching"
+    github.get_pr_review_context.return_value = context
+    github.get_pr_review_context.reset_mock()
+    if queue_kind == "pipeline":
+        state["_pipeline_selected"] = set()
+    else:
+        slots.release("implementing", "sibling")
+    state.update(await dispatch_performer(state))
+    if context == {"state": "OPEN"}:
+        assert len(service.dispatched) == 1
+        assert service.dispatched[0]["pr_url"] == session["current_card"]["pr_url"]
+    else:
+        assert not service.dispatched
+        assert state["phase"] == "monitoring_pr"
+    github.get_pr_review_context.assert_awaited_with("pr-A")
+    assert state["dispatched_feedback"] == session["dispatched_feedback"]
