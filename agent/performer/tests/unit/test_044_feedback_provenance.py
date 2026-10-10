@@ -217,3 +217,47 @@ async def test_native_qa_and_review_contracts_reach_the_implementer_prompt(backe
     text = prompt(backend, score(relay_feedback=result["relay_feedback"]))
     for value in [*expected, "[fb-1]", "stage: " + role]:
         assert value in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("role", ["reviewing", "closing_review"])
+async def test_native_review_body_and_inline_comment_both_reach_the_prompt(backend: str, role: str) -> None:
+    import json
+    from copy import deepcopy
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from performer.backends.base import BackendStatus
+    from performer.main import handle_status
+    from performer.models import Performance, Stand
+    from performer.protocol import PerformerMessage, PerformerResponse
+
+    summary = "SYNTHETIC summary: handle whitespace in every public input path."
+    inline = "SYNTHETIC inline: retain this focused regression."
+    native = MagicMock()
+    native.get_status.return_value = BackendStatus(state="done", output=json.dumps({
+        "approved": False, "body": summary,
+        "comments": [{"path": "synthetic_review.py", "line": 23, "body": inline}],
+    }))
+    perf = Performance(session_id="synthetic", stand=Stand(path=Path("/tmp/synthetic-unused"), branch="synthetic"),
+                       score=score(), backend=native, role=role, state="working",
+                       pr_url="https://github.com/example/sample/pull/1")
+    with patch("performer.main.post_pull_request_review", new=AsyncMock()):
+        response = await handle_status(PerformerMessage(action="status", session_id="synthetic"), perf)
+    response = PerformerResponse.model_validate_json(response.model_dump_json())
+    assert response.status == "changes_requested" and response.body == summary
+    wire = response.model_dump()
+    unchanged = deepcopy(wire)
+    state = initial_state()
+    state.update(performer_services={role: SimpleNamespace(check_status=AsyncMock(return_value=wire))},
+                 performer_stage=role, lifecycle_sequence=["implementing", role],
+                 current_card={"id": "synthetic", "status": "IN_PROGRESS"}, agent_dispatch={"session_id": "synthetic"})
+    result = await monitor_performer(state)
+    assert result["phase"] == "dispatching" and result["performer_stage"] == "implementing"
+    text = prompt(backend, score(relay_feedback=result["relay_feedback"]))
+    for value in [summary, inline, "synthetic_review.py:23", "[fb-1]", "[fb-2]", "stage: " + role]:
+        assert value in text
+    assert wire == unchanged
