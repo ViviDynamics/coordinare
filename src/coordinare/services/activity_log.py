@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import structlog
 
@@ -99,6 +100,9 @@ class ActivityLog:
         max_stream_entries: int = MAX_STREAM_ENTRIES,
         max_tracked_streams: int = MAX_TRACKED_STREAMS,
     ) -> None:
+        # Sequence numbers restart with this in-memory history. The browser
+        # needs its identity to distinguish a new producer from replay.
+        self.run_id = uuid4().hex
         self._entries: deque[ActivityEntry] = deque(maxlen=maxlen)
         self._max_text = max_text
         self._max_seen = max_seen_per_card

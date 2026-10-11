@@ -48,6 +48,7 @@ function queuedPhaseLabel(sess) {
 }
 
 // in-flight work the coordinare is reasoning about.
+var _swimlaneTabExplicit = false;
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var workCard = document.getElementById('active-work-card');
@@ -69,6 +70,7 @@ function renderActiveWorkPanels(s) {
   var perSymCounts = {};  // symphony name → total card count
   var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
   var hasBoardSnapshot = false;
+  var boardSnapshots = {};
   symphonies.forEach(function(sym) {
     var st = sym && sym.state ? sym.state : {};
     Object.assign(titles, st.board_titles || {});
@@ -78,6 +80,7 @@ function renderActiveWorkPanels(s) {
     var snap = st.board_snapshot || {};
     if (st.board_snapshot && typeof st.board_snapshot === 'object' && !Array.isArray(st.board_snapshot)) {
       hasBoardSnapshot = true;
+      boardSnapshots[sym.name || ''] = st.board_snapshot;
     }
     var symName = sym.name || '';
     perSymCounts[symName] = 0;
@@ -90,14 +93,18 @@ function renderActiveWorkPanels(s) {
     });
   });
 
-  // Determine which symphony tab is active (default: first symphony).
+  // Prefer a received board until the operator explicitly chooses a tab.
   var symphonyNames = symphonies.map(function(sym) { return sym.name || ''; }).filter(Boolean);
   if (symphonyNames.length > 0) {
     if (!_swimlaneTab || symphonyNames.indexOf(_swimlaneTab) === -1) {
-      _swimlaneTab = symphonyNames[0];
+      _swimlaneTabExplicit = false;
+      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || symphonyNames[0];
+    } else if (!_swimlaneTabExplicit && !boardSnapshots[_swimlaneTab]) {
+      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || _swimlaneTab;
     }
   } else {
     _swimlaneTab = null;
+    _swimlaneTabExplicit = false;
   }
 
   // Filter to the active tab (only one symphony's cards visible at a time).
@@ -150,6 +157,19 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
+    var selectedSnapshot = _swimlaneTab ? boardSnapshots[_swimlaneTab] : null;
+    if (selectedSnapshot) {
+      var backlogCount = Array.isArray(selectedSnapshot.BACKLOG) ? selectedSnapshot.BACKLOG.length : 0;
+      var doneCount = Array.isArray(selectedSnapshot.DONE) ? selectedSnapshot.DONE.length : 0;
+      workEl.innerHTML = '<span class="empty-state">No active cards in this board. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
+    if (_swimlaneTab) {
+      workEl.innerHTML = '<span class="empty-state">Waiting for board snapshot&hellip;</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
       ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
