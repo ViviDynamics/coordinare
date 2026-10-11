@@ -258,8 +258,9 @@ class ActivityLog:
         # event arrives with a new observation time, so including either would
         # disable suppression entirely and make a wedged agent scroll (FR-022).
         key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}"
-        if is_delta and source_id:
-            # Source identity is stable on replay; distinct repeated words survive.
+        if source_id and (is_delta or kind == "tool_use"):
+            # Backend identity is stable on replay. Distinct executions of the
+            # same tool, like repeated streaming words, are real new activity.
             key += f"|{stream}|{source_id}"
         seen = self._seen.setdefault(cid, set())
         if key in seen:
