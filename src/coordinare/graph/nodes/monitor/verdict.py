@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -718,8 +719,6 @@ def _advance_stage(
             # and batches owned by another stage retain their isolation.
             batch = state.get("dispatched_feedback") or {}
             if batch.get("stage") == current:
-                from copy import deepcopy
-
                 queued = list(state.get("relay_feedback") or [])
                 for item in batch.get("items") or []:
                     if (
