@@ -713,6 +713,23 @@ def _advance_stage(
 
     if idx + 1 < len(sequence):
         if status is not None:
+            # An assessor detour must not acknowledge a reviewer correction
+            # that is still awaiting implementation. Ordinary stage feedback
+            # and batches owned by another stage retain their isolation.
+            batch = state.get("dispatched_feedback") or {}
+            if batch.get("stage") == current:
+                from copy import deepcopy
+
+                queued = list(state.get("relay_feedback") or [])
+                for item in batch.get("items") or []:
+                    if (
+                        item.get("raiser") == "reviewing"
+                        and item.get("delivery_stage") == "implementing"
+                        and "implementing" in sequence[idx + 1:]
+                        and item not in queued
+                    ):
+                        queued.append(deepcopy(item))
+                state["relay_feedback"] = queued
             state["dispatched_feedback"] = {}
         # More roles remain — advance to the next stage.
         # Persist PR identifiers from the current role's status so they're
