@@ -8,7 +8,7 @@ Feature: `551-mcp-management-layer` | Branch: `551-mcp-management-layer` | Date:
 set -a && source .env && set +a   # provides the tokens the config expands
 
 export COORDINARE_MCP_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-export COORDINARE_MCP_DASHBOARD_TOKEN="$COORDINARE_DASHBOARD_TOKEN"   # existing operator token
+export COORDINARE_MCP_DASHBOARD_TOKEN="$COORDINARE_DASHBOARD_AUTH_TOKEN"   # existing operator token
 
 .venv/bin/python -m coordinare.mcp --transport http --listen-port 8091 \
     --dashboard-url http://localhost:8090 \

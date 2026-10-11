@@ -1035,7 +1035,7 @@ class TestMcpManagementSidecar:
         objects = _render()
         assert self._sidecar(objects) is None
         assert self._service_port(objects, "mcp") is None
-        assert not _by_kind(objects, "Ingress") or True  # ingress has its own gate
+        # Ingress gating lives in test_no_mcp_route_when_disabled.
 
     def test_enabled_renders_the_sidecar_on_the_same_image(self) -> None:
         objects = _render(**{"mcp.enabled": True})

@@ -87,7 +87,7 @@ whose recovery hint is to re-read.
   (tool, action, outcome, error kind, credential fingerprint, duration) — the
   audit trail for "who changed what".
 - Errors map to a shared vocabulary (`auth_failed`, `conflict`, `validation`,
-  `daemon_error`, `unreachable`, timeout) with recovery hints, uniformly
+  `daemon_error`, `daemon_unreachable`, timeout) with recovery hints, uniformly
   across all tools.
 
 ## Deployment posture

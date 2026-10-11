@@ -46,6 +46,8 @@ async def upsert_persona_handler(
     input: UpsertPersonaInput, client: DashboardClient,
 ) -> ToolResult:
     """Replace one role's persona instructions (T033)."""
+    # Persona writes are small single-body PUT/DELETEs; the read budget (not
+    # the lifecycle budget) is the documented choice for them, per docs/mcp.md.
     return await client.send_json(
         "PUT",
         _persona_path(input.role),
