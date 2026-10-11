@@ -331,7 +331,10 @@ async def test_correction_restores_after_handoff_and_replays_only_to_implementer
     )
     state.update(
         _restored_session_dict(
-            "SYNTHETIC_CARD", persisted, snapshot, copy.deepcopy(state["current_card"]),
+            "SYNTHETIC_CARD",
+            persisted,
+            snapshot,
+            copy.deepcopy(state["current_card"]),
         ),
     )
     assert _feedback_for_dispatch(state, "implementing") == original
@@ -348,3 +351,48 @@ async def test_correction_restores_after_handoff_and_replays_only_to_implementer
     assert _feedback_for_dispatch(state, "implementing") == original
     assert not _feedback_for_dispatch(state, "reviewing")
     assert state["feedback_ledger"] == ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["skip", "restart"])
+async def test_assessor_control_preserves_correction_for_implementer(action):
+    from coordinare.graph.nodes.monitor.verdict import _apply_pending_override
+
+    state = await routed()
+    assessor_context = await context(state, "assessing")
+    original = copy.deepcopy(assessor_context["relay_feedback"])
+    await _finalise_success(
+        state,
+        {"session_id": "assessor", "performer_id": "assessing"},
+        {
+            "card_context": assessor_context,
+            "performer_stage": "assessing",
+            "card": state["current_card"],
+        },
+    )
+    state["pending_override"] = {
+        "action": action,
+        "target_stage": "implementing",
+        "control_id": "human-control",
+    }
+    assert _apply_pending_override(state) is state
+    assert state["performer_stage"] == "implementing"
+    assert state["consumed_control_id"] == "human-control"
+    implementer_context = await context(state, "implementing")
+    assert implementer_context.get("relay_feedback") == original
+    prompt = _build_task_prompt(
+        Score.model_validate(
+            {
+                **implementer_context,
+                "repo_url": "https://github.com/example/sample",
+                "branch": "synthetic/held",
+            },
+        ),
+    )
+    assert MARKER in prompt
+    assert OLD in prompt
+    if action == "restart":
+        assert state["pending_override"]["applied"] is True
+        assert state["override_forced_dispatch"] == "implementing"
+    else:
+        assert state["pending_override"] is None

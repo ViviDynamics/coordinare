@@ -408,6 +408,7 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
         lifecycle = list(state.get("lifecycle_sequence") or [])
         if target in lifecycle:
             logger.info("override.restart", target_stage=target)
+            _carry_review_corrections(state, lifecycle[lifecycle.index(target):])
             state["performer_stage"] = target
             state["lifecycle_continuation"] = []
             state["phase"] = "dispatching"
@@ -688,6 +689,22 @@ def _carry_dispatched_feedback(state: CoordinareState, updates: dict[str, Any]) 
     updates["relay_feedback"] = items
 
 
+def _carry_review_corrections(state: CoordinareState, remaining: list[str]) -> None:
+    """Keep marked corrections until their implementation stage completes."""
+    batch = state.get("dispatched_feedback") or {}
+    if batch.get("stage") != state.get("performer_stage") or "implementing" not in remaining:
+        return
+    queued = list(state.get("relay_feedback") or [])
+    for item in batch.get("items") or []:
+        if (
+            item.get("raiser") == "reviewing"
+            and item.get("delivery_stage") == "implementing"
+            and item not in queued
+        ):
+            queued.append(deepcopy(item))
+    state["relay_feedback"] = queued
+
+
 def _advance_stage(
     state: CoordinareState, status: dict[str, Any] | None = None,
     *, acknowledge_final_feedback: bool = True,
@@ -713,22 +730,10 @@ def _advance_stage(
         idx = len(sequence)
 
     if idx + 1 < len(sequence):
+        # Success or an explicit skip changes the stage, not the pending
+        # implementation correction. A skip still leaves its batch unfinished.
+        _carry_review_corrections(state, sequence[idx + 1:])
         if status is not None:
-            # An assessor detour must not acknowledge a reviewer correction
-            # that is still awaiting implementation. Ordinary stage feedback
-            # and batches owned by another stage retain their isolation.
-            batch = state.get("dispatched_feedback") or {}
-            if batch.get("stage") == current:
-                queued = list(state.get("relay_feedback") or [])
-                for item in batch.get("items") or []:
-                    if (
-                        item.get("raiser") == "reviewing"
-                        and item.get("delivery_stage") == "implementing"
-                        and "implementing" in sequence[idx + 1:]
-                        and item not in queued
-                    ):
-                        queued.append(deepcopy(item))
-                state["relay_feedback"] = queued
             state["dispatched_feedback"] = {}
         # More roles remain — advance to the next stage.
         # Persist PR identifiers from the current role's status so they're
