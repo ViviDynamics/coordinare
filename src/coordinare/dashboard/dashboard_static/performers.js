@@ -48,6 +48,7 @@ function queuedPhaseLabel(sess) {
 }
 
 // in-flight work the coordinare is reasoning about.
+var _swimlaneTabExplicit = false;
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var workCard = document.getElementById('active-work-card');
@@ -92,14 +93,18 @@ function renderActiveWorkPanels(s) {
     });
   });
 
-  // Determine which symphony tab is active (default: first symphony).
+  // Prefer a received board until the operator explicitly chooses a tab.
   var symphonyNames = symphonies.map(function(sym) { return sym.name || ''; }).filter(Boolean);
   if (symphonyNames.length > 0) {
     if (!_swimlaneTab || symphonyNames.indexOf(_swimlaneTab) === -1) {
-      _swimlaneTab = symphonyNames[0];
+      _swimlaneTabExplicit = false;
+      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || symphonyNames[0];
+    } else if (!_swimlaneTabExplicit && !boardSnapshots[_swimlaneTab]) {
+      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || _swimlaneTab;
     }
   } else {
     _swimlaneTab = null;
+    _swimlaneTabExplicit = false;
   }
 
   // Filter to the active tab (only one symphony's cards visible at a time).

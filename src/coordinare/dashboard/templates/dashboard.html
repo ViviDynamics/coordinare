@@ -987,6 +987,7 @@ var _selectedCardId = null;   // card_id shown in card-detail-view
 var _swimlaneTab = null;      // currently selected symphony tab (null = no symphonies)
 function selectSwimlaneTab(name) {
   _swimlaneTab = name;
+  _swimlaneTabExplicit = true;
   if (_lastState) renderActiveWorkPanels(_lastState);
 }
 
