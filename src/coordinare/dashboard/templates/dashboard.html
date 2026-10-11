@@ -1898,38 +1898,64 @@ function afTick() {
 }
 
 var banner = document.getElementById('disconnected-banner');
-var es = new EventSource('/events');
-es.addEventListener('activity_event', function(e) {
-  afNoteMessage();
-  try { afAppend(JSON.parse(e.data).entries); }
-  catch(err) { console.error('activity parse error', err); }
-});
-es.addEventListener('heartbeat', function() { afNoteMessage(); });
-es.addEventListener('state_update', function(e) {
-  afNoteMessage();
-  try {
-    _lastState = JSON.parse(e.data);
-    renderState(_lastState);
-    // 049: re-render current page with new state
-    var path = location.pathname;
-    if (path === '/performers') renderPerformersPage(_lastState);
-    else if (path === '/history') renderHistoryPage(_lastState);
-    else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
-    else renderDashboardExtras(_lastState);
-  } catch(err) { console.error('parse error', err); }
-});
-es.onerror = function() {
-  banner.style.display = 'block';
-  var dot = document.getElementById('nav-sse-dot');
-  if (dot) { dot.classList.add('disconnected'); dot.title = 'SSE disconnected — reconnecting'; }
-  var fpBtn = document.getElementById('force-poll-btn');
-  if (fpBtn) fpBtn.disabled = true;
-};
-es.onopen = function() {
-  banner.style.display = 'none';
-  var dot = document.getElementById('nav-sse-dot');
-  if (dot) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
-};
+var es;
+var _sseRetryTimer = null;
+var _sseRetryDelay = 1000;
+function connectEventStream() {
+  var source = new EventSource('/events');
+  es = source;
+  source.addEventListener('activity_event', function(e) {
+    if (es !== source) return;
+    afNoteMessage();
+    try { afAppend(JSON.parse(e.data).entries); }
+    catch(err) { console.error('activity parse error', err); }
+  });
+  source.addEventListener('heartbeat', function() { if (es === source) afNoteMessage(); });
+  source.addEventListener('state_update', function(e) {
+    if (es !== source) return;
+    afNoteMessage();
+    try {
+      _lastState = JSON.parse(e.data);
+      renderState(_lastState);
+      // 049: re-render current page with new state
+      var path = location.pathname;
+      if (path === '/performers') renderPerformersPage(_lastState);
+      else if (path === '/history') renderHistoryPage(_lastState);
+      else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
+      else renderDashboardExtras(_lastState);
+    } catch(err) { console.error('parse error', err); }
+  });
+  source.onerror = function() {
+    if (es !== source) return;
+    banner.style.display = 'block';
+    var dot = document.getElementById('nav-sse-dot');
+    if (dot) { dot.classList.add('disconnected'); dot.title = 'SSE disconnected — reconnecting'; }
+    var fpBtn = document.getElementById('force-poll-btn');
+    if (fpBtn) fpBtn.disabled = true;
+    // Native EventSource retries CONNECTING, but HTTP failures can close it permanently.
+    if (source.readyState === EventSource.CLOSED && _sseRetryTimer === null) {
+      _sseRetryTimer = setTimeout(function() {
+        _sseRetryTimer = null;
+        if (es !== source || source.readyState !== EventSource.CLOSED) return;
+        source.close();
+        connectEventStream();
+      }, _sseRetryDelay);
+      _sseRetryDelay = Math.min(_sseRetryDelay * 2, 30000);
+    }
+  };
+  source.onopen = function() {
+    if (es !== source) return;
+    if (_sseRetryTimer !== null) {
+      clearTimeout(_sseRetryTimer);
+      _sseRetryTimer = null;
+    }
+    _sseRetryDelay = 1000;
+    banner.style.display = 'none';
+    var dot = document.getElementById('nav-sse-dot');
+    if (dot) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
+  };
+}
+connectEventStream();
 
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
