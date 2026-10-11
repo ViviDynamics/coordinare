@@ -482,6 +482,20 @@ def validate_config(
                 passed=False,
             )
 
+    return validate_raw_config(raw, config_file_path=resolved_path)
+
+
+def validate_raw_config(
+    raw: dict[str, Any],
+    *,
+    config_file_path: Path | None = None,
+) -> ConfigValidationResult:
+    """Validate an already-loaded raw config dict (steps 3-4 of validate_config).
+
+    Shared derivation for the CLI/daemon preflight and the dashboard's additive
+    POST /api/config/validate route (551 T019): both validate the same way
+    without writing or reloading anything.
+    """
     # Step 3: Pre-validation pass (deprecated + unknown fields)
     pre_errors, pre_warnings = pre_validate_raw(raw)
 
@@ -634,7 +648,7 @@ def validate_config(
     return ConfigValidationResult(
         errors=all_errors,
         warnings=pre_warnings,
-        config_file_path=resolved_path,
+        config_file_path=config_file_path,
         env_var_fields_count=env_var_fields_count,
         passed=len(all_errors) == 0,
     )

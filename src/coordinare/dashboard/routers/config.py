@@ -11,6 +11,7 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.config_validation import validate_raw_config
 from coordinare.dashboard.routers.config_write import (
     _atomic_write_yaml,
     _global_cfg_editable,
@@ -711,6 +712,45 @@ def _register_delete_config_routing_entry(app: FastAPI, ctx: DashboardContext) -
             return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
 
 
+def _serialize_config_validation(result: Any) -> dict[str, Any]:
+    """JSON shape of a ConfigValidationResult for the additive validate route."""
+    return {
+        "passed": result.passed,
+        "errors": [
+            {
+                "field_path": e.field_path,
+                "error_type": str(e.error_type),
+                "fix_hint": e.fix_hint,
+                "source": e.source,
+            }
+            for e in result.errors
+        ],
+        "warnings": [
+            {
+                "field_name": w.field_name,
+                "removed_in": w.removed_in,
+                "replacement_path": w.replacement_path,
+                "migration_hint": w.migration_hint,
+            }
+            for w in result.warnings
+        ],
+    }
+
+
+def _register_config_validate(app: FastAPI, ctx: DashboardContext) -> None:
+    @app.post("/api/config/validate")
+    async def validate_config_payload(payload: dict[str, Any]) -> JSONResponse:
+        """Validate a config payload without writing or reloading (551 T019).
+
+        Additive read-only route delegating to the same preflight
+        ``config_validation.validate_raw_config`` that ``python -m coordinare
+        config validate`` and boot use, so an agent's report cannot disagree
+        with the daemon's own opinion. Never writes, never reloads.
+        """
+        result = validate_raw_config(payload)
+        return JSONResponse(_serialize_config_validation(result))
+
+
 def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_get_config_all(app, ctx)
     _register_get_config_section(app, ctx)
@@ -727,3 +767,4 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_post_config_routing_entry(app, ctx)
     _register_put_config_routing_entry(app, ctx)
     _register_delete_config_routing_entry(app, ctx)
+    _register_config_validate(app, ctx)

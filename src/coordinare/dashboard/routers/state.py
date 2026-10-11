@@ -102,8 +102,43 @@ def _register_sse_events(app: FastAPI, ctx: DashboardContext) -> None:
             )
 
 
+def _register_state_snapshot(app: FastAPI, ctx: DashboardContext) -> None:
+    daemon = ctx.daemon
+    store = ctx.store
+    metrics = ctx.metrics
+    health = ctx.health
+
+    @app.get("/api/state")
+    async def state_snapshot() -> JSONResponse:
+        """JSON snapshot mirroring the state_update SSE payload (551 T023).
+
+        Reuses build_snapshot so the REST read and the SSE stream can never
+        disagree about the dashboard state. No new state is created here.
+        """
+        return JSONResponse(store.build_snapshot(daemon, metrics, health))
+
+
+def _register_activity_feed(app: FastAPI, ctx: DashboardContext) -> None:
+    store = ctx.store
+
+    @app.get("/api/activity")
+    async def activity_feed(card_id: str | None = None) -> JSONResponse:
+        """Newest-first JSON read of the in-memory ActivityLog (551 T024).
+
+        Mirrors the SSE activity backfill payload; the client reverses to
+        newest-first for display, so the wire order stays oldest-first. An
+        optional ``card_id`` query parameter narrows the entries.
+        """
+        entries = store.activity_log.snapshot()
+        if card_id is not None:
+            entries = [e for e in entries if e.get("card_id") == card_id]
+        return JSONResponse({"entries": entries})
+
+
 def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_performer_logs_stream(app, ctx)
     _register_force_poll(app, ctx)
     _register_cancel_card(app, ctx)
     _register_sse_events(app, ctx)
+    _register_state_snapshot(app, ctx)
+    _register_activity_feed(app, ctx)

@@ -30,6 +30,10 @@ dependencies = [
     "stamina>=24.2.0,<25",
     "PyJWT[crypto]>=2.8",
     "jinja2>=3.1",
+    # Spec 551 (#mcp-management-layer): the official MCP SDK. The alternative is
+    # hand-rolling JSON-RPC plus streamable-HTTP transport semantics against the
+    # MCP spec — a protocol surface that moves underneath us.
+    "mcp==2.3.0",
     "coordinare-service-inference",
     "coordinare-ci-detection",
     # Spec 146 (#200): the Kubernetes transport. The alternative is hand-rolling
@@ -102,6 +106,7 @@ ignore = [
 # interface being exercised, so S607 (partial executable path) is exempt here.
 "tests/**" = ["TC001", "TC002", "TC003", "T201", "S607"]
 "src/coordinare/__main__.py" = ["E402", "T201"]  # CLI entry point; T201: user-facing output is the interface
+"src/coordinare/mcp/__main__.py" = ["T201"]  # CLI entry point; T201: user-facing output is the interface
 # 435: monitor decomposition helpers are keyword-only by design; the arg count
 # is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/graph/nodes/monitor/**" = ["PLR0913"]

@@ -84,6 +84,36 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.mcp.enabled }}
+        # The MCP management server (spec 551): env-driven, so it needs no
+        # config.yaml — only the bearer tokens, which arrive via the same
+        # secretRef the main container uses. It talks to the dashboard over
+        # loopback inside the Pod, never across the network.
+        - name: mcp
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/app/.venv/bin/python", "-m", "coordinare.mcp"]
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.mcp.port }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | default (include "coordinare.fullname" .) }}
+                optional: true
+          env:
+            - name: COORDINARE_MCP_PORT
+              value: {{ .Values.mcp.port | quote }}
+            - name: COORDINARE_MCP_DASHBOARD_URL
+              value: "http://localhost:{{ .Values.dashboard.port }}"
+            - name: COORDINARE_MCP_HEALTH_URL
+              value: "http://localhost:{{ .Values.health.port }}"
+        {{- end }}
         {{- with .Values.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
