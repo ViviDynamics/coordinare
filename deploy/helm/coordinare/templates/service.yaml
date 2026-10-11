@@ -21,6 +21,14 @@ spec:
     - name: dashboard
       port: {{ .Values.dashboard.port }}
       targetPort: dashboard
+    {{- if .Values.mcp.enabled }}
+    # The MCP management server (spec 551). Bearer-authenticated; still a
+    # ClusterIP-only exposure — publish it through an Ingress at your own
+    # assessed risk, exactly like the dashboard.
+    - name: mcp
+      port: {{ .Values.mcp.port }}
+      targetPort: mcp
+    {{- end }}
     {{- if .Values.metrics.expose }}
     # /metrics discloses card counts, model identifiers and error rates to
     # anyone who can reach it. Exposed only because you asked.

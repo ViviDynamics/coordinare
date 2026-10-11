@@ -1,6 +1,6 @@
 # Dependency Licence Audit
 
-**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-08-28
+**Feature**: 142-license-and-legal-posture | **Audit date**: 2026-10-11
 **Enforces**: FR-018, FR-019, FR-019a, FR-020 | **Contract**: [accepted-licenses.md](./contracts/accepted-licenses.md)
 
 ## How this was produced
@@ -17,10 +17,10 @@ Licence field precedence: `License-Expression` (PEP 639 SPDX), then a short free
 
 | Verdict | Count |
 |---|---|
-| Tier 1, permitted | 70 |
+| Tier 1, permitted | 80 |
 | Tier 2, permitted with rationale | 4 |
 | Tier 3, rejected | 0 |
-| Platform-conditional, not verifiable here | 2 |
+| Platform-conditional, not verifiable here | 6 |
 | Redistributed in the performer image | 1 |
 
 **No distributed dependency carries a licence incompatible with ELv2 distribution.**
@@ -74,6 +74,10 @@ Reachable only through marker-gated edges, so absent from this environment and *
 
 - **`tzdata` 2025.3** — Reachable only via `psycopg -> tzdata` under the marker `sys_platform == 'win32'`. Not installed on this platform, so its licence is NOT verified by the automated check. Listed here so the gap is visible.
 - **`colorama` 0.4.6** — Reachable only via `click -> colorama` under the marker `sys_platform == 'win32'`. It appeared in Tier 1 of the 2026-08-27 audit because a copy happened to be installed in that environment; it is not installed here, so its licence is NOT verified by the automated check. Its classifier reads `BSD License`. The move between sections is a correction, not a change in the dependency.
+- **`pywin32` 306+** — Reachable only via `mcp -> pywin32` under the marker `sys_platform == 'win32'`. Not installed on this platform, so its licence is NOT verified by the automated check. Listed here so the gap is visible.
+- **`httpx2-jsfetch`** — Reachable only via `httpx2 -> httpx2-jsfetch` under the marker `sys_platform == 'emscripten'`. Not installed on this platform, so its licence is NOT verified by the automated check. Listed here so the gap is visible.
+- **`httpcore2` 2.13.1** — Reachable via `httpx2 -> httpcore2` under the marker `sys_platform != 'emscripten'`. The marker is present on the edge, so the checker treats the package as platform-conditional and does not certify it here, even though a copy is installed on this platform whose metadata reads `BSD-3-Clause` (via `License-Expression`).
+- **`truststore` 0.10.4** — Reachable only through `httpcore2 -> truststore`, and therefore conditional by propagation through a conditional package. A copy is installed on this platform whose metadata reads `MIT` (via `License-Expression`), but like `httpcore2` the automated check does not verify conditional packages.
 
 ## Tier 1: permitted without comment
 
@@ -101,11 +105,14 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `h11` | 0.16.0 | `MIT` | `License` |
 | `httpcore` | 1.0.9 | `BSD-3-Clause` | `License-Expression` |
 | `httpx` | 0.28.1 | `BSD-3-Clause` | `License` |
+| `httpx2` | 2.13.1 | `BSD-3-Clause` | `License-Expression` |
 | `idna` | 3.11 | `BSD-3-Clause` | `License-Expression` |
 | `jinja2` | 3.1.6 | `BSD License` | `Classifier` |
 | `jiter` | 0.13.0 | `MIT License` | `Classifier` |
 | `jsonpatch` | 1.33 | `Modified BSD License` | `License` |
 | `jsonpointer` | 3.0.0 | `Modified BSD License` | `License` |
+| `jsonschema` | 4.26.0 | `MIT` | `License-Expression` |
+| `jsonschema-specifications` | 2025.9.1 | `MIT` | `License-Expression` |
 | `kubernetes` | 36.0.3 | `Apache License Version 2.0` | `License` |
 | `langchain-core` | 1.2.13 | `MIT` | `License` |
 | `langgraph` | 1.0.8 | `MIT` | `License-Expression` |
@@ -115,8 +122,11 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `langgraph-sdk` | 0.3.6 | `MIT` | `License-Expression` |
 | `langsmith` | 0.7.3 | `MIT` | `License` |
 | `markupsafe` | 3.0.3 | `BSD-3-Clause` | `License-Expression` |
+| `mcp` | 2.3.0 | `MIT` | `License` |
+| `mcp-types` | 2.3.0 | `MIT` | `License` |
 | `multidict` | 6.7.1 | `Apache License 2.0` | `License` |
 | `oauthlib` | 3.3.1 | `BSD-3-Clause` | `License` |
+| `opentelemetry-api` | 1.45.1 | `Apache-2.0` | `License-Expression` |
 | `ormsgpack` | 1.12.2 | `Apache-2.0 OR MIT` | `License-Expression` |
 | `packaging` | 26.0 | `Apache-2.0 OR BSD-2-Clause` | `License-Expression` |
 | `prometheus-client` | 0.24.1 | `Apache-2.0 AND BSD-2-Clause` | `License-Expression` |
@@ -128,13 +138,17 @@ Reachable only through marker-gated edges, so absent from this environment and *
 | `pyjwt` | 2.12.1 | `MIT` | `License-Expression` |
 | `python-dateutil` | 2.9.0.post0 | `Apache-2.0 OR BSD-3-Clause` | `verified` |
 | `python-dotenv` | 1.2.1 | `BSD-3-Clause` | `License-Expression` |
+| `python-multipart` | 0.0.32 | `Apache-2.0` | `License-Expression` |
 | `pyyaml` | 6.0.3 | `MIT` | `License` |
+| `referencing` | 0.37.0 | `MIT` | `License-Expression` |
+| `rpds-py` | 0.30.0 | `MIT` | `License-Expression` |
 | `requests` | 2.32.5 | `Apache-2.0` | `License` |
 | `requests-oauthlib` | 2.0.0 | `ISC` | `License` |
 | `requests-toolbelt` | 1.0.0 | `Apache 2.0` | `License` |
 | `six` | 1.17.0 | `MIT` | `License` |
 | `slack-sdk` | 3.40.0 | `MIT` | `License` |
 | `sniffio` | 1.3.1 | `MIT OR Apache-2.0` | `License` |
+| `sse-starlette` | 3.5.0 | `BSD-3-Clause` | `License-Expression` |
 | `stamina` | 24.3.0 | `MIT` | `License-Expression` |
 | `starlette` | 0.52.1 | `BSD-3-Clause` | `License-Expression` |
 | `structlog` | 25.5.0 | `MIT OR Apache-2.0` | `License-Expression` |

@@ -41,5 +41,17 @@ spec:
                 name: {{ include "coordinare.fullname" $ }}
                 port:
                   name: dashboard
+          {{- if $.Values.mcp.enabled }}
+          # Spec 551: the MCP management server rides the same Ingress under
+          # /mcp. It is bearer-authenticated, but the same ingress-layer
+          # authentication warning as the dashboard applies.
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "coordinare.fullname" $ }}
+                port:
+                  name: mcp
+          {{- end }}
     {{- end }}
 {{- end }}

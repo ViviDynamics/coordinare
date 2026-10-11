@@ -17,6 +17,9 @@ kubectl create secret generic coordinare-credentials \
   --namespace coordinare \
   --from-literal=GITHUB_TOKEN=... \
   --from-literal=COORDINARE_DASHBOARD_AUTH_TOKEN="$(openssl rand -hex 32)"
+# With mcp.enabled=true, the Secret must also carry the sidecar's two tokens:
+#   --from-literal=COORDINARE_MCP_TOKEN="$(openssl rand -hex 32)" \
+#   --from-literal=COORDINARE_MCP_DASHBOARD_TOKEN="<same value as COORDINARE_DASHBOARD_AUTH_TOKEN>"
 
 helm install coordinare deploy/helm/coordinare \
   --namespace coordinare \

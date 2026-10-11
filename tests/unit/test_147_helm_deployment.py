@@ -1005,6 +1005,108 @@ class TestTheChartJobRunsEveryHelmDependentAssertion:
         )
 
 
+class TestMcpManagementSidecar:
+    """Spec 551 T037 — the MCP sidecar, its Service port, and its Ingress route.
+
+    The management layer is a second container on the SAME image talking to the
+    dashboard over pod-local loopback. The properties worth asserting are the
+    ones an operator would otherwise have to trust: it is off by default, its
+    tokens travel only inside the Secret, and the exposure it adds appears and
+    disappears with ``mcp.enabled``.
+    """
+
+    DEFAULT_PORT = 8091
+
+    @staticmethod
+    def _sidecar(objects: list[dict]) -> dict | None:
+        spec = _one(objects, "StatefulSet")["spec"]["template"]["spec"]
+        matches = [c for c in spec["containers"] if c["name"] == "mcp"]
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _service_port(objects: list[dict], name: str) -> dict | None:
+        for port in _one(objects, "Service")["spec"]["ports"]:
+            if port.get("name") == name:
+                return port
+        return None
+
+    def test_off_by_default(self) -> None:
+        """The management surface is a deliberate act, not a default."""
+        objects = _render()
+        assert self._sidecar(objects) is None
+        assert self._service_port(objects, "mcp") is None
+        # Ingress gating lives in test_no_mcp_route_when_disabled.
+
+    def test_enabled_renders_the_sidecar_on_the_same_image(self) -> None:
+        objects = _render(**{"mcp.enabled": True})
+        sidecar = self._sidecar(objects)
+        assert sidecar is not None
+        main = _container(objects)
+        assert sidecar["image"] == main["image"], "one image, two deployments"
+        assert sidecar["imagePullPolicy"] == "Always", (
+            "#518: the tag is mutable, so the sidecar must re-resolve it too"
+        )
+        assert "coordinare.mcp" in " ".join(sidecar["command"])
+
+    def test_enabled_uses_the_digest_when_pinned(self) -> None:
+        digest = "sha256:" + "c" * 64
+        sidecar = self._sidecar(_render(**{"mcp.enabled": True, "image.digest": digest}))
+        assert sidecar is not None and digest in sidecar["image"]
+
+    def test_sidecar_talks_to_the_dashboard_over_loopback(self) -> None:
+        env = {
+            e["name"]: e["value"]
+            for e in self._sidecar(_render(**{"mcp.enabled": True}))["env"]
+        }
+        assert env["COORDINARE_MCP_DASHBOARD_URL"] == "http://localhost:8090"
+        assert env["COORDINARE_MCP_HEALTH_URL"] == "http://localhost:8080"
+        assert env["COORDINARE_MCP_PORT"] == str(self.DEFAULT_PORT)
+
+    def test_sidecar_gets_its_tokens_from_the_same_secret(self) -> None:
+        """envFrom, like the main container — never rendered values."""
+        sidecar = self._sidecar(_render(**{"mcp.enabled": True}))
+        assert any("secretRef" in e for e in sidecar.get("envFrom", []))
+
+    def test_the_service_exposes_the_mcp_port_when_enabled(self) -> None:
+        port = self._service_port(_render(**{"mcp.enabled": True}), "mcp")
+        assert port is not None and port["port"] == self.DEFAULT_PORT
+        assert port["targetPort"] == "mcp"
+
+    def test_an_overridden_port_is_honoured(self) -> None:
+        port = self._service_port(_render(**{"mcp.enabled": True, "mcp.port": 8099}), "mcp")
+        assert port is not None and port["port"] == 8099
+
+    def test_the_ingress_routes_mcp_under_slash_mcp(self) -> None:
+        objects = _render(
+            **{"mcp.enabled": True,
+               "dashboard.ingress.enabled": True,
+               "dashboard.ingress.hosts": [{"host": "coordinare.example.com"}]},
+        )
+        paths = _one(objects, "Ingress")["spec"]["rules"][0]["http"]["paths"]
+        mcp_paths = [p for p in paths if p["path"] == "/mcp"]
+        assert len(mcp_paths) == 1, f"expected exactly one /mcp path, got {paths}"
+        assert mcp_paths[0]["backend"]["service"]["port"]["name"] == "mcp"
+
+    def test_no_mcp_route_when_disabled(self) -> None:
+        objects = _render(
+            **{"dashboard.ingress.enabled": True,
+               "dashboard.ingress.hosts": [{"host": "coordinare.example.com"}]},
+        )
+        paths = _one(objects, "Ingress")["spec"]["rules"][0]["http"]["paths"]
+        assert all(p["path"] != "/mcp" for p in paths)
+
+    def test_the_agent_token_never_leaks_outside_a_secret(self) -> None:
+        sentinel = "ghp-SENTINEL-mcp-token-000"
+        objects = _render(**{"mcp.enabled": True, "secrets.COORDINARE_MCP_TOKEN": sentinel})
+        for obj in objects:
+            if obj.get("kind") == "Secret":
+                continue
+            assert sentinel not in yaml.safe_dump(obj), (
+                f"the agent token leaked into a {obj.get('kind')} named "
+                f"{obj.get('metadata', {}).get('name')}"
+            )
+
+
 def test_performer_owner_is_stable_and_distinct_between_releases():
     def owner(release, namespace=NAMESPACE):
         config_map = _one(_render(release=release, namespace=namespace), "ConfigMap")
