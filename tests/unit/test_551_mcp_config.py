@@ -72,11 +72,11 @@ def test_timeout_bounds_enforced() -> None:
 
 def test_transport_rejects_stdio_in_phase_1() -> None:
     with pytest.raises(ValidationError):
-        McpServerConfig(
-            transport="stdio",  # type: ignore[arg-type]
-            agent_token=SecretStr("x" * 32),
-            dashboard_token=SecretStr("y" * 32),
-        )
+        McpServerConfig.model_validate({
+            "transport": "stdio",
+            "agent_token": SecretStr("x" * 32).get_secret_value(),
+            "dashboard_token": SecretStr("y" * 32).get_secret_value(),
+        })
 
 
 def test_dashboard_url_must_parse() -> None:

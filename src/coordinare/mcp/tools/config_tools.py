@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from coordinare.mcp.client import ToolResult, get_client
-from coordinare.mcp.tools import ToolDefinition
+from coordinare.mcp.tools._registry import ToolDefinition
 
 if TYPE_CHECKING:
     from coordinare.mcp.client import DashboardClient
@@ -84,7 +84,7 @@ async def get_config_handler(
 
 async def get_config(scope: str, id: str | None = None) -> dict[str, Any]:
     """Read the redacted coordinare configuration (all/effective/global/section/catalog/routing)."""
-    parsed = GetConfigInput(scope=scope, id=id)  # type: ignore[arg-type]
+    parsed = GetConfigInput.model_validate({'scope': scope, 'id': id})
     return (await get_config_handler(parsed, get_client())).model_dump(exclude_none=True)
 
 
@@ -97,27 +97,21 @@ class UpdateConfigInput(BaseModel):
     base_hash: str | None = None
 
 
-def _update_body(input: UpdateConfigInput) -> dict[str, Any] | None:
+def _update_body(input: UpdateConfigInput) -> dict[str, Any]:
     """Shape the request body per the dashboard's per-route conventions."""
     payload = input.payload or {}
     base = input.base_hash
-    if input.action == "put_global":
-        return {**payload, "expected_hash": base}
-    if input.action == "put_section":
-        return {"changes": payload, "base_hash": base}
-    if input.action == "catalog_create":
-        return {"item": payload, "base_hash": base}
-    if input.action == "catalog_update":
-        return {"changes": payload, "base_hash": base}
-    if input.action == "catalog_delete":
-        return {"base_hash": base}
-    if input.action == "routing_create":
-        return {"entry": payload, "base_hash": base}
-    if input.action == "routing_update":
-        return {"changes": payload, "base_hash": base}
-    if input.action == "routing_delete":
-        return {"base_hash": base}
-    return {}  # reload
+    body_by_action: dict[str, dict[str, Any]] = {
+        "put_global": {**payload, "expected_hash": base},
+        "put_section": {"changes": payload, "base_hash": base},
+        "catalog_create": {"item": payload, "base_hash": base},
+        "catalog_update": {"changes": payload, "base_hash": base},
+        "catalog_delete": {"base_hash": base},
+        "routing_create": {"entry": payload, "base_hash": base},
+        "routing_update": {"changes": payload, "base_hash": base},
+        "routing_delete": {"base_hash": base},
+    }
+    return body_by_action.get(input.action, {})  # reload → {}
 
 
 async def update_config_handler(
@@ -151,16 +145,13 @@ async def update_config_handler(
     )
 
 
-async def update_config(
-    action: str,
-    id: str | None = None,
-    item_id: str | None = None,
-    index: int | None = None,
-    payload: dict[str, Any] | None = None,
-    base_hash: str | None = None,
-) -> dict[str, Any]:
-    """Write configuration with optimistic concurrency (put/section/catalog/routing/reload)."""
-    parsed = UpdateConfigInput(action=action, id=id, item_id=item_id, index=index, payload=payload, base_hash=base_hash)  # type: ignore[arg-type]
+async def update_config(action: str, **kwargs: Any) -> dict[str, Any]:
+    """Write configuration with optimistic concurrency (put/section/catalog/routing/reload).
+
+    Keyword arguments mirror ``UpdateConfigInput``: the optional ``id``,
+    ``item_id``, ``index``, ``payload`` and ``base_hash``.
+    """
+    parsed = UpdateConfigInput.model_validate({"action": action, **kwargs})
     return (await update_config_handler(parsed, get_client())).model_dump(exclude_none=True)
 
 

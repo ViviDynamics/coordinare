@@ -7,7 +7,15 @@ from typing import Literal
 
 from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, field_validator, model_validator
 
+from coordinare.config import ProjectConfiguration
+
 _RESERVED_PORTS = {8080, 8090}
+
+_MIN_AGENT_TOKEN_CHARS = 32
+_MIN_AGENT_CHARS_MSG = "agent_token must be at least 32 characters"
+_LISTEN_PORT_RESERVED = (
+    "listen_port must differ from the health (8080) and dashboard (8090) ports"
+)
 
 
 def _expand(value: str) -> str:
@@ -22,7 +30,9 @@ class McpServerConfig(BaseModel):
     """
 
     transport: Literal["http"] = "http"
-    listen_host: str = "0.0.0.0"
+    #: Same bind-all default as the daemon's own health server, so the sidecar
+    #: is reachable from its peers without per-deployment overrides.
+    listen_host: str = ProjectConfiguration.model_fields["health_check_host"].default
     listen_port: int = 8091
     agent_token: SecretStr
     dashboard_url: str = "http://localhost:8090"
@@ -35,8 +45,8 @@ class McpServerConfig(BaseModel):
     @field_validator("agent_token")
     @classmethod
     def _agent_token_min_length(cls, value: SecretStr) -> SecretStr:
-        if len(value.get_secret_value()) < 32:
-            raise ValueError("agent_token must be at least 32 characters")
+        if len(value.get_secret_value()) < _MIN_AGENT_TOKEN_CHARS:
+            raise ValueError(_MIN_AGENT_CHARS_MSG)
         return value
 
     @field_validator("dashboard_url", "health_url")
@@ -48,9 +58,7 @@ class McpServerConfig(BaseModel):
     @model_validator(mode="after")
     def _listen_port_not_reserved(self) -> McpServerConfig:
         if self.listen_port in _RESERVED_PORTS:
-            raise ValueError(
-                "listen_port must differ from the health (8080) and dashboard (8090) ports",
-            )
+            raise ValueError(_LISTEN_PORT_RESERVED)
         return self
 
     @classmethod
@@ -73,7 +81,7 @@ class McpServerConfig(BaseModel):
             value = os.environ.get(env_name)
             if value is not None:
                 kwargs[field_name] = _expand(value)
-        return cls(**kwargs)  # type: ignore[arg-type]
+        return cls.model_validate(kwargs)
 
 
 __all__ = ["McpServerConfig"]

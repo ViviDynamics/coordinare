@@ -9,7 +9,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from coordinare.mcp.client import DashboardClient, ToolResult, get_client
-from coordinare.mcp.tools import ToolDefinition
+from coordinare.mcp.tools._registry import ToolDefinition
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True)
 

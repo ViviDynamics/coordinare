@@ -9,7 +9,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from coordinare.mcp.client import DashboardClient, ToolResult, get_client
-from coordinare.mcp.tools import ToolDefinition
+from coordinare.mcp.tools._registry import ToolDefinition
 
 #: FR5: control actions get the lifecycle budget, not the read budget.
 _DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False)

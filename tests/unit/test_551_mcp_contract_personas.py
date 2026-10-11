@@ -78,7 +78,7 @@ async def test_delete_persona_is_empty_success() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_persona_requires_role() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:  # pragma: no cover
+    def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("no HTTP call expected")
 
     result = await delete_persona_handler(GetPersonasInput(), make_client(handler))

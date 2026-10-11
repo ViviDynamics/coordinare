@@ -23,6 +23,11 @@ _MAX_DETAIL_CHARS = 500
 #: get_stream_head never buffers more than this much stream output (FR4).
 _MAX_STREAM_HEAD_BYTES = 64 * 1024
 
+_HTTP_OK = 200
+_HTTP_REDIRECT_MAX = 300
+_HTTP_CONFLICT = 409
+_HTTP_SERVER_ERROR = 500
+
 _CONFLICT_RECOVERY_HINT = (
     "re-read via get_config and retry with the fresh base_hash"
 )
@@ -119,7 +124,7 @@ class DashboardClient:
                 request = http.build_request("GET", path, headers=self._headers())
                 response = await http.send(request, stream=True)
                 try:
-                    if response.status_code != 200:
+                    if response.status_code != _HTTP_OK:
                         await response.aread()
                         return self._map_response(response)
                     chunks: list[bytes] = []
@@ -187,21 +192,27 @@ class DashboardClient:
 
     def _map_response(self, response: httpx.Response) -> ToolResult:
         status = response.status_code
-        if 200 <= status < 300:
+        if _HTTP_OK <= status < _HTTP_REDIRECT_MAX:
             if response.headers.get("content-type", "").startswith("application/json"):
                 return ToolResult(ok=True, data=response.json())
             return ToolResult(ok=True, data={"text": response.text})
         body = response.text
         if status in (401, 403):
             return ToolResult.failure("auth_failed", status, _truncate(body), "")
-        if status == 409:
+        if status == _HTTP_CONFLICT:
             return ToolResult.failure("conflict", status, body, _CONFLICT_RECOVERY_HINT)
         if status in (400, 422):
             return ToolResult.failure("validation", status, body, "")
-        if status >= 500:
-            return ToolResult.failure("daemon_error", status, _truncate(body), "")
+        kind: ERROR_KIND = "daemon_error" if status >= _HTTP_SERVER_ERROR else "validation"
         # 404/405/anything else: the agent asked for a missing resource; surface it.
-        return ToolResult.failure("validation", status, _truncate(body), "")
+        return ToolResult.failure(kind, status, _truncate(body), "")
+
+
+class ClientNotConfiguredError(RuntimeError):
+    """get_client() before set_client(); boot via coordinare.mcp.server."""
+
+    def __init__(self) -> None:
+        super().__init__("DashboardClient not configured; boot via coordinare.mcp.server")
 
 
 _client: DashboardClient | None = None
@@ -216,8 +227,15 @@ def set_client(client: DashboardClient) -> None:
 def get_client() -> DashboardClient:
     """Return the installed client; raises when the server has not booted."""
     if _client is None:
-        raise RuntimeError("DashboardClient not configured; boot via coordinare.mcp.server")
+        raise ClientNotConfiguredError()
     return _client
 
 
-__all__ = ["DashboardClient", "ToolError", "ToolResult", "get_client", "set_client"]
+__all__ = [
+    "ClientNotConfiguredError",
+    "DashboardClient",
+    "ToolError",
+    "ToolResult",
+    "get_client",
+    "set_client",
+]

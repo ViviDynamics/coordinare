@@ -11,6 +11,7 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.config_validation import validate_raw_config
 from coordinare.dashboard.routers.config_write import (
     _atomic_write_yaml,
     _global_cfg_editable,
@@ -746,8 +747,6 @@ def _register_config_validate(app: FastAPI, ctx: DashboardContext) -> None:
         config validate`` and boot use, so an agent's report cannot disagree
         with the daemon's own opinion. Never writes, never reloads.
         """
-        from coordinare.config_validation import validate_raw_config
-
         result = validate_raw_config(payload)
         return JSONResponse(_serialize_config_validation(result))
 

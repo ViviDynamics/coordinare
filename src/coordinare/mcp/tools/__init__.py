@@ -6,67 +6,23 @@ The registry is immutable at runtime: every domain module contributes a static
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from typing import Any
-
-    from mcp.types import ToolAnnotations
-
-ToolDomain = Literal["config", "symphonies", "personas", "lifecycle", "state"]
-
-#: A (method, path template) pair, e.g. ``("PUT", "/api/config/global")``.
-RESTCall = tuple[str, str]
-
-#: REST surfaces deliberately NOT proxied in phase 1 (contracts/mcp-tools.md).
-DEFERRED_REST_PREFIXES = (
-    "/oidc",
-    "/static",
-    "/events",
-    "/webhook",
-    "/api/assistant",
-    "/health",
-    "/live",
-    "/ready",
+from . import (
+    config_tools,
+    lifecycle_tools,
+    persona_tools,
+    state_tools,
+    symphony_tools,
 )
-
-#: Human dashboard page paths (HTML), deferred like the static assets.
-DEFERRED_PAGE_PATHS = (
-    "/",
-    "/performers",
-    "/personas",
-    "/history",
-    "/symphonies",
-    "/symphonies/{name}",
-    "/admin/config",
-    "/config",
+from ._registry import (
+    DEFERRED_PAGE_PATHS,
+    DEFERRED_REST_PREFIXES,
+    RESTCall,
+    ToolDefinition,
+    ToolDomain,
 )
-
-
-@dataclass(frozen=True)
-class ToolDefinition:
-    """Static registration record describing one MCP tool (data-model.md)."""
-
-    name: str
-    domain: ToolDomain
-    description: str
-    input_model: type[Any]
-    annotations: ToolAnnotations
-    rest_calls: tuple[RESTCall, ...]
-    handler: Callable[..., Any]
 
 
 def _all_tools() -> tuple[ToolDefinition, ...]:
-    from . import (
-        config_tools,
-        lifecycle_tools,
-        persona_tools,
-        state_tools,
-        symphony_tools,
-    )
-
     modules: tuple[tuple[ToolDefinition, ...], ...] = (
         config_tools.TOOLS,
         symphony_tools.TOOLS,

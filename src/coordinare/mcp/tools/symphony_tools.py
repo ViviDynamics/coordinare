@@ -9,8 +9,9 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
 from coordinare.mcp.client import DashboardClient, ToolResult, get_client
-from coordinare.mcp.tools import ToolDefinition
+from coordinare.mcp.tools._registry import ToolDefinition
 
+_HTTP_NOT_FOUND = 404
 _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True)
 _WRITE_IDEMPOTENT = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=True,
@@ -82,7 +83,7 @@ async def upsert_symphony_handler(
     write = await client.send_json(
         "PUT", _symphony_path(input.name), json=spec, timeout_seconds=client.read_budget,
     )
-    if not write.ok and write.error is not None and write.error.status == 404:
+    if not write.ok and write.error is not None and write.error.status == _HTTP_NOT_FOUND:
         spec.setdefault("name", input.name)
         write = await client.send_json(
             "POST", "/api/symphonies", json=spec, timeout_seconds=client.read_budget,
