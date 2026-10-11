@@ -227,7 +227,8 @@ class TestTheDeclaredPortsMatchReality:
 
     Documentation-only, so nothing broke — but it is the kind of wrong that sends
     someone debugging the wrong layer, and it survived because nothing compared
-    the two.
+    the two. Spec 551 adds 8091: the MCP management server, which this same image
+    serves in sidecar mode.
     """
 
     def test_expose_matches_the_configured_defaults(self, image: str) -> None:
@@ -235,11 +236,13 @@ class TestTheDeclaredPortsMatchReality:
 
         sys.path.insert(0, "src")
         from coordinare.config import ProjectConfiguration
+        from coordinare.mcp.config import McpServerConfig
 
         fields = ProjectConfiguration.model_fields
         expected = {
             str(fields["health_check_port"].default),
             str(fields["dashboard_port"].default),
+            str(McpServerConfig.model_fields["listen_port"].default),
         }
 
         result = _docker("inspect", image, "--format", "{{json .Config.ExposedPorts}}")

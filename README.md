@@ -127,6 +127,15 @@ docker-compose up
 
 ## Configuration
 
+### MCP Management Layer
+
+An external AI agent can drive the full operator surface (config, symphonies,
+personas, lifecycle controls, live state) over MCP — no browser, no shell on the
+daemon host. Run `python -m coordinare.mcp` next to the daemon, or set
+`mcp.enabled: true` in the Helm chart for a sidecar. See `docs/mcp.md` for the
+architecture, security notes, and the env vars, and
+`specs/551-mcp-management-layer/quickstart.md` for a walkthrough.
+
 ### Config Discovery
 
 Coordinare searches for config in this order (first match wins):

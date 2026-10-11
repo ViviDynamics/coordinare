@@ -180,6 +180,20 @@ dashboard:
     hosts: []
     tls: []
 
+# --- MCP management server ---------------------------------------------------
+
+mcp:
+  # The MCP management server (spec 551) as a sidecar container: the same
+  # daemon image running `python -m coordinare.mcp`, proxying the dashboard
+  # REST API for external AI agents. Off by default.
+  #
+  # Enabling it requires COORDINARE_MCP_TOKEN (the agent-facing bearer) AND
+  # COORDINARE_DASHBOARD_AUTH_TOKEN (what the sidecar presents to the
+  # dashboard) in the configured Secret. Two different tokens: one per trust
+  # boundary, so an escaped agent token is not a dashboard token.
+  enabled: false
+  port: 8091
+
 # --- Health -----------------------------------------------------------------
 
 health:
