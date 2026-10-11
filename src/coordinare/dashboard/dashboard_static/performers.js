@@ -165,6 +165,11 @@ function renderActiveWorkPanels(s) {
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
+    if (_swimlaneTab) {
+      workEl.innerHTML = '<span class="empty-state">Waiting for board snapshot&hellip;</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
       ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'

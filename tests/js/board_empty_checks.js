@@ -14,6 +14,7 @@ const cases={
  empty(){const html=render([sym('sample',{})]);assert.ok(!html.includes('Waiting for board snapshot'),'A received empty snapshot is not missing');},
  missing(){const html=render([sym('sample',null)]);assert.ok(html.includes('Waiting for board snapshot'));},
  selected(){const syms=[sym('unpolled',null),sym('sample',held)];select('unpolled');assert.ok(render(syms).includes('Waiting for board snapshot'));select('sample');assert.ok(!render(syms).includes('Waiting for board snapshot'),'Selection must use the selected board snapshot');},
- populated(){const html=render([sym('sample',{TODO:['new-card']})]);assert.ok(html.includes('new-card'));assert.ok(!html.includes('Waiting for board snapshot'));}
+ populated(){const html=render([sym('sample',{TODO:['new-card']})]);assert.ok(html.includes('new-card'));assert.ok(!html.includes('Waiting for board snapshot'));},
+ idleMissing(){const html=render([sym('sample',null)],'idle');assert.ok(html.includes('Waiting for board snapshot'),'A selected board with a missing snapshot must wait, not claim an empty TODO column');assert.ok(!html.includes('No cards in the TODO column'),'Global idle does not prove the selected board is empty');}
 };
 assert.ok(cases[process.argv[3]]);cases[process.argv[3]]();console.log('PASS '+process.argv[3]);

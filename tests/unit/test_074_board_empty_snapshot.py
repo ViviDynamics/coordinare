@@ -10,7 +10,7 @@ import pytest
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
 
-@pytest.mark.parametrize("case", ["held", "empty", "missing", "selected", "populated", "initial", "late"])
+@pytest.mark.parametrize("case", ["held", "empty", "missing", "selected", "populated", "initial", "late", "idleMissing"])
 def test_received_board_empty_state(tmp_path: Path, case: str) -> None:
     source = tmp_path / "performers.js"
     source.write_text(_DASHBOARD_JS_SOURCES["performers"])
