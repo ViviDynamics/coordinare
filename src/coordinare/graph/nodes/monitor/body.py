@@ -2530,6 +2530,10 @@ async def _phase_review_routes_s4(
             )
             if len(set(categories)) >= 2:
                 next_stage = "assessing"
+                # Reassessment scopes the correction; implementation still
+                # owns it. Carry these exact requests through intervening roles.
+                for item in comments:
+                    item["delivery_stage"] = "implementing"
                 logger.info(
                     "monitor_performer.multi_concern_route_to_assessing",
                     card_id=card_id,
