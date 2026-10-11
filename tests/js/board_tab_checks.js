@@ -8,6 +8,8 @@ var _swimlaneTab = null;
 var STALE_THRESHOLD_MS = 300000;
 eval(fs.readFileSync(process.argv[2], 'utf8'));
 eval(fs.readFileSync(process.argv[3], 'utf8'));
+var _lastState = null;
+eval(fs.readFileSync(process.argv[4], 'utf8'));
 
 const sessions = [
   {card_id: 'working', card_title: 'Other symphony active card', phase: 'blocked'},
@@ -22,8 +24,13 @@ function check(name, run) {
   try {run(); passed++;} catch (error) {failures.push(name + ': ' + error.message);}
 }
 function render(tab, symphonies, active = sessions) {
-  _swimlaneTab = tab;
-  renderActiveWorkPanels({phase: 'blocked', symphonies, active_sessions: active});
+  _lastState = {phase: 'blocked', symphonies, active_sessions: active};
+  if (tab) selectSwimlaneTab(tab);
+  else {
+    _swimlaneTab = null;
+    _swimlaneTabExplicit = false;
+    renderActiveWorkPanels(_lastState);
+  }
   return elements['swimlane-section'].innerHTML;
 }
 check('unavailable tab cannot leak another known board', () => {
