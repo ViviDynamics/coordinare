@@ -29,6 +29,7 @@ const context = {
   clearTimeout(id) { timers.delete(id); },
   afNoteMessage() { messages.push('message'); },
   afAppend(entries) { messages.push(entries); },
+  afSyncRun() {},
   renderState(state) { messages.push(state); },
   renderPerformersPage() {}, renderHistoryPage() {}, renderSymphoniesPage() {}, renderDashboardExtras() {},
 };

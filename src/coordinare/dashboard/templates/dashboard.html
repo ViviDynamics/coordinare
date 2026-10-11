@@ -1696,10 +1696,24 @@ var AF_LABELS = {
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
 var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
+var _afRunId = null;
 var _afFilter = '';
 var _afLastMsgAt = Date.now();
 var _afLive = true;
 var _afQuietCards = {};     // card_id -> true while that card is in a quiet episode
+
+function afSyncRun(runId) {
+  if (typeof runId !== 'string' || !runId || runId === _afRunId) return;
+  _afRunId = runId;
+  _afEntries = [];
+  _afSeen = {};
+  _afQuietCards = {};
+  _afGroupingActive = false;
+  var feed = document.getElementById('activity-feed');
+  if (feed) feed.innerHTML = '';
+  afUpdateEmpty();
+  afUpdateFilterOptions();
+}
 
 function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
 
@@ -1916,6 +1930,8 @@ function connectEventStream() {
     afNoteMessage();
     try {
       _lastState = JSON.parse(e.data);
+      // state_update precedes backfill on every stream connection.
+      afSyncRun(_lastState.activity_run_id);
       renderState(_lastState);
       // 049: re-render current page with new state
       var path = location.pathname;

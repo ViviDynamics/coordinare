@@ -133,6 +133,7 @@ def test_state_update_shape_additive_only() -> None:
     # uses to decide when a step has sat too long -- the per-step fields
     # themselves live on each active_sessions entry, not at top level.
     assert added == {
+        "activity_run_id",
         "activity_quiet_threshold_seconds",
         "include_unassigned",
         "ownership_hint",

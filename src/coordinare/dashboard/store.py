@@ -664,6 +664,7 @@ class DashboardStore:
             "last_cycle_duration_seconds": self.last_cycle_duration,
             "consecutive_error_count": error_count,
             "daemon_start_time": started_at,
+            "activity_run_id": self.activity_log.run_id,
             "cycle_history": list(self.history),
             "cycle_active": daemon._cycle_active,
             "daemon_running": daemon.running,

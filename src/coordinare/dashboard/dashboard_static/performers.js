@@ -69,6 +69,7 @@ function renderActiveWorkPanels(s) {
   var perSymCounts = {};  // symphony name → total card count
   var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
   var hasBoardSnapshot = false;
+  var boardSnapshots = {};
   symphonies.forEach(function(sym) {
     var st = sym && sym.state ? sym.state : {};
     Object.assign(titles, st.board_titles || {});
@@ -78,6 +79,7 @@ function renderActiveWorkPanels(s) {
     var snap = st.board_snapshot || {};
     if (st.board_snapshot && typeof st.board_snapshot === 'object' && !Array.isArray(st.board_snapshot)) {
       hasBoardSnapshot = true;
+      boardSnapshots[sym.name || ''] = st.board_snapshot;
     }
     var symName = sym.name || '';
     perSymCounts[symName] = 0;
@@ -150,6 +152,14 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
+    var selectedSnapshot = _swimlaneTab ? boardSnapshots[_swimlaneTab] : null;
+    if (selectedSnapshot) {
+      var backlogCount = Array.isArray(selectedSnapshot.BACKLOG) ? selectedSnapshot.BACKLOG.length : 0;
+      var doneCount = Array.isArray(selectedSnapshot.DONE) ? selectedSnapshot.DONE.length : 0;
+      workEl.innerHTML = '<span class="empty-state">No active cards in this board. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
       ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
