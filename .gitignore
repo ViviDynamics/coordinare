@@ -254,6 +254,7 @@ routing.*.yaml
 .codex/tmp/
 .codex/rules/default.rules
 .claude/worktrees
+.worktrees/
 tmp
 coordinare.state.json*
 .claude/scheduled_tasks.lock

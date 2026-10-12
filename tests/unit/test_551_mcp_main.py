@@ -18,7 +18,7 @@ from coordinare.mcp.server import _audit_wrapped, _extract_action
 
 def test_parse_args_defaults() -> None:
     args = mcp_main._parse_args([])
-    assert args.transport == "http"
+    assert args.transport is None  # the env decides (552)
     assert args.listen_host is None and args.listen_port is None
 
 
