@@ -2153,6 +2153,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     if board is None:
         return state
 
+    # 553 — per-cycle janitor sweep (opt-in; the disabled path performs no
+    # reconciliation GitHub reads at all).
+    from coordinare.services.orphan_pr import run_orphan_pr_sweep
+
+    await run_orphan_pr_sweep(github, board, getattr(config, "orphan_pr", None))
+
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
     # 046: Stash titles and issue_numbers so assess_card can inject active-card

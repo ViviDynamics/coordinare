@@ -150,7 +150,7 @@ def _cards_from_board(board: dict[str, Any]) -> dict[str, dict[str, Any]]:
 async def run_orphan_pr_sweep(
     github: GitHubServiceProtocol,
     board: dict[str, Any],
-    orphan_cfg: OrphanPrConfig,
+    orphan_cfg: OrphanPrConfig | None,
 ) -> list[OrphanPrDecision]:
     """Per-cycle janitor (US-2): close open PRs of terminal-card work.
 
@@ -159,7 +159,7 @@ async def run_orphan_pr_sweep(
     then attribution against the board snapshot supplied by the caller; every
     evaluated PR yields one ``orphan_pr.decision`` log line (FR-005).
     """
-    if not (orphan_cfg.enabled and orphan_cfg.sweep):
+    if orphan_cfg is None or not (orphan_cfg.enabled and orphan_cfg.sweep):
         logger.debug("orphan_pr.disabled")
         return []
     owner = getattr(github, "_org", None) or getattr(github, "org", None)
@@ -273,3 +273,28 @@ async def close_superseded_prs(
             _decision(pr, card_id, attribution.method, "closed", comment_posted, closed_ok),
         )
     return decisions
+
+
+async def reconcile_completed_card(
+    github: GitHubServiceProtocol,
+    config: Any,
+    card: dict[str, Any],
+) -> list[OrphanPrDecision]:
+    """Merge-path hook (US-1): close open PRs still pointing at *card*.
+
+    Called from ``merge_pr`` right after the winning merge and card move to
+    DONE. Gated on ``orphan_pr.enabled and orphan_pr.completion_reconciliation``
+    — the disabled path returns without any GitHub read (SC-003).
+    """
+    orphan_cfg = getattr(config, "orphan_pr", None)
+    if orphan_cfg is None or not (
+        orphan_cfg.enabled and orphan_cfg.completion_reconciliation
+    ):
+        return []
+    owner = getattr(github, "_org", None) or getattr(github, "org", None)
+    repo = getattr(github, "_project_name", None) or getattr(github, "project_name", None)
+    if not owner or not repo:
+        logger.warning("orphan_pr.completion_no_repo_context")
+        return []
+    open_prs = await github.list_open_pull_requests(owner, repo)
+    return await close_superseded_prs(github, card, open_prs)

@@ -1,6 +1,8 @@
 """Unit tests for 553 — orphaned PR reconciliation for completed cards (issue #78)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -407,3 +409,158 @@ async def test_sweep_disabled_never_reads_github(tmp_path, monkeypatch) -> None:
     assert decisions == []
     called.assert_not_awaited()
 
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — wire-in: merge path + per-cycle sweep call sites
+# ---------------------------------------------------------------------------
+
+
+class _MergeGitHub:
+    def __init__(self, open_prs: list[dict[str, Any]]) -> None:
+        self._open_prs = open_prs
+        self.closed: list[str] = []
+        self.comments: list[str] = []
+        self.list_calls = 0
+        self._org = "acme"
+        self._project_name = "repo"
+
+    async def check_mergeability(self, pr_id: str) -> dict[str, Any]:
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str) -> dict[str, Any]:
+        return {"merged": True, "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "t"}}
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        _ = item_id, status
+
+    async def list_open_pull_requests(self, owner: str, repo: str, first: int = 50) -> list[dict[str, Any]]:
+        self.list_calls += 1
+        return self._open_prs
+
+    async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
+        self.comments.append(subject_id)
+        return {"comment": "OK"}
+
+    async def close_pull_request(self, pr_id: str) -> dict[str, Any]:
+        self.closed.append(pr_id)
+        return {"closed": True}
+
+
+_LOSER = {
+    "id": "PR_LOSER",
+    "number": 21,
+    "url": "https://github.com/acme/repo/pull/21",
+    "head_ref": "coordinare/PVTI_1/loser",
+    "base_ref": "main",
+}
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_closes_superseded_prs_when_enabled() -> None:
+    from coordinare.graph.nodes.merge_pr import merge_pr
+    from coordinare.graph.state import initial_state
+
+    github = _MergeGitHub([dict(_LOSER)])
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = SimpleNamespace(
+        orphan_pr=OrphanPrConfig(enabled=True, completion_reconciliation=True),
+    )
+    state["current_card"] = {
+        "id": "PVTI_1",
+        "pr_node_id": "PR_WINNER",
+        "pr_url": "https://github.com/acme/repo/pull/22",
+        "status": "IN_REVIEW",
+    }
+
+    result = await merge_pr(state)
+
+    assert result["current_card"]["status"] == "DONE"
+    assert github.closed == ["PR_LOSER"]
+    assert github.list_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_disabled_performs_no_reconciliation_reads() -> None:
+    from coordinare.graph.nodes.merge_pr import merge_pr
+    from coordinare.graph.state import initial_state
+
+    github = _MergeGitHub([dict(_LOSER)])
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = SimpleNamespace(orphan_pr=OrphanPrConfig())
+    state["current_card"] = {
+        "id": "PVTI_1",
+        "pr_node_id": "PR_WINNER",
+        "pr_url": "https://github.com/acme/repo/pull/22",
+        "status": "IN_REVIEW",
+    }
+
+    await merge_pr(state)
+
+    assert github.closed == []
+    assert github.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coordinare.graph.nodes.check_board as check_board_module
+    import coordinare.services.orphan_pr as orphan_pr_module
+    from coordinare.graph.state import initial_state
+
+    github = SimpleNamespace(
+        poll_board=AsyncMock(return_value={"snapshot": {"DONE": ["c1"]}}),
+    )
+    config = SimpleNamespace(
+        max_concurrent_cards=1,
+        orphan_pr=OrphanPrConfig(enabled=True, sweep=True),
+    )
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = config
+
+    seen: list[tuple[Any, Any, Any]] = []
+
+    class StopSweepError(Exception):
+        pass
+
+    async def _spy(g: Any, board: Any, cfg: Any) -> list[Any]:
+        seen.append((g, board, cfg))
+        raise StopSweepError
+
+    monkeypatch.setattr(orphan_pr_module, "run_orphan_pr_sweep", _spy)
+    with pytest.raises(StopSweepError):
+        await check_board_module.check_board(state)
+
+    github.poll_board.assert_awaited_once()
+    assert len(seen) == 1
+    assert seen[0][0] is github
+    assert seen[0][2] is config.orphan_pr
+
+
+@pytest.mark.asyncio
+async def test_check_board_sweep_disabled_never_reads_github(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coordinare.graph.nodes.check_board as check_board_module
+    from coordinare.graph.state import initial_state
+
+    github = SimpleNamespace(
+        poll_board=AsyncMock(return_value={"snapshot": {"DONE": ["c1"]}}),
+        list_open_pull_requests=AsyncMock(side_effect=AssertionError("must not read")),
+    )
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = SimpleNamespace(max_concurrent_cards=1)
+
+    class StopAfterError(Exception):
+        pass
+
+    async def _checkpoint(*args: Any) -> None:
+        raise StopAfterError
+
+    monkeypatch.setattr(check_board_module, "_maybe_rebase_on_main_change", _checkpoint)
+    with pytest.raises(StopAfterError):
+        await check_board_module.check_board(state)
+
+    github.poll_board.assert_awaited_once()
+    github.list_open_pull_requests.assert_not_awaited()
