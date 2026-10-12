@@ -508,6 +508,7 @@ async def test_merge_pr_disabled_performs_no_reconciliation_reads() -> None:
 @pytest.mark.asyncio
 async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.MonkeyPatch) -> None:
     import coordinare.graph.nodes.check_board as check_board_module
+    import coordinare.services.orphan_pr as orphan_pr_module
     from coordinare.graph.state import initial_state
 
     github = SimpleNamespace(
@@ -520,6 +521,7 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
     state = initial_state()
     state["github_service"] = github
     state["config"] = config
+    state["orphan_sweep_cycle_token"] = 12345
 
     seen: list[tuple[Any, Any, Any, Any]] = []
 
@@ -530,7 +532,7 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
         seen.append((g, board, cfg, active_card_ids))
         raise StopSweepError
 
-    monkeypatch.setattr(check_board_module, "run_orphan_pr_sweep", _spy)
+    monkeypatch.setattr(orphan_pr_module, "run_orphan_pr_sweep", _spy)
     with pytest.raises(StopSweepError):
         await check_board_module.check_board(state)
 
@@ -572,6 +574,15 @@ async def test_check_board_sweep_disabled_never_reads_github(monkeypatch: pytest
 # Review round 1 — Copilot findings (qualifier validation, live-session
 # guard, merged=False gate, pagination, self-URL comment, bare-close guard)
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_sweep_token() -> Any:
+    import coordinare.services.orphan_pr as orphan_pr_module
+
+    orphan_pr_module._last_sweep_token = None
+    yield
+    orphan_pr_module._last_sweep_token = None
 
 
 def test_resolve_rejects_cross_repo_qualified_reference() -> None:
@@ -902,12 +913,13 @@ async def test_closed_decision_carry_superseded_by(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sweep_close_guard_serializes_concurrent_ticks(
+async def test_per_cycle_sweep_dedupes_concurrent_ticks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
 
     import coordinare.graph.nodes.check_board as check_board_module
+    import coordinare.services.orphan_pr as orphan_pr_module
     from coordinare.graph.state import initial_state
 
     github = SimpleNamespace(
@@ -920,30 +932,40 @@ async def test_sweep_close_guard_serializes_concurrent_ticks(
     state_a = initial_state()
     state_a["github_service"] = github
     state_a["config"] = config
+    state_a["orphan_sweep_cycle_token"] = 12345
     state_b = initial_state()
     state_b["github_service"] = github
     state_b["config"] = config
+    state_b["orphan_sweep_cycle_token"] = 12345
 
     inflight = 0
     max_inflight = 0
-
-    class StopSweepError(Exception):
-        pass
+    seen = 0
 
     async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None) -> list[Any]:
-        nonlocal inflight, max_inflight
+        nonlocal inflight, max_inflight, seen
+        seen += 1
         inflight += 1
         max_inflight = max(max_inflight, inflight)
         await asyncio.sleep(0.05)
         inflight -= 1
-        raise StopSweepError
+        return []
 
-    monkeypatch.setattr(check_board_module, "run_orphan_pr_sweep", _spy)
+    monkeypatch.setattr(orphan_pr_module, "run_orphan_pr_sweep", _spy)
     results = await asyncio.gather(
         check_board_module.check_board(state_a),
         check_board_module.check_board(state_b),
         return_exceptions=True,
     )
 
-    assert all(isinstance(r, StopSweepError) for r in results)
+    assert not any(isinstance(r, BaseException) for r in results)
+    assert seen == 1
     assert max_inflight == 1
+
+    # A fresh cycle token sweeps again.
+    state_c = initial_state()
+    state_c["github_service"] = github
+    state_c["config"] = config
+    state_c["orphan_sweep_cycle_token"] = 67890
+    await check_board_module.check_board(state_c)
+    assert seen == 2

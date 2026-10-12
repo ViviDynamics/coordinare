@@ -3046,6 +3046,11 @@ class CoordinareDaemon:
         if github is not None:
             await _preflight_poll_board(self._state, github, active_sessions)
 
+        # 553 — stamp a fresh per-cycle token so check_board's janitor sweep
+        # runs exactly once per cycle across the concurrent session ticks
+        # (SC-004); the sweep itself dedupes on this token.
+        self._state["orphan_sweep_cycle_token"] = time.time_ns()
+
         await self._reconcile_board_pauses(board_is_fresh=_has_fresh_board_snapshot(self._state))
 
         dispatchable = {

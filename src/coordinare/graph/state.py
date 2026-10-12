@@ -165,6 +165,10 @@ class CoordinareState(TypedDict, total=False):
     board_snapshot: dict[str, list[str]]
     # Bounded held-comment selection for this cycle only; never persisted.
     backlog_comment_poll_ids: list[str]
+    # 553: fresh per-cycle token stamped by the daemon before fan-out; makes
+    # the orphan-PR sweep run exactly once per cycle across the concurrent
+    # session ticks. Never persisted.
+    orphan_sweep_cycle_token: int
     phase: DaemonPhase
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None

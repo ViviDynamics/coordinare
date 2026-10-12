@@ -367,6 +367,41 @@ async def close_superseded_prs(
     return decisions
 
 
+_last_sweep_token: int | None = None
+
+
+async def run_per_cycle_sweep(
+    github: GitHubServiceProtocol,
+    board: dict[str, Any],
+    orphan_cfg: OrphanPrConfig | None,
+    active_card_ids: set[str] | None,
+    cycle_token: int | None,
+) -> list[OrphanPrDecision]:
+    """Once-per-cycle wrapper around the sweep (US-2, SC-004).
+
+    The daemon stamps a fresh ``orphan_sweep_cycle_token`` on the state
+    before fanning the session ticks out; since every tick deep-copies the
+    state, the shared record of "this cycle already swept" lives here, in
+    the process. The first tick to hold the close guard sweeps and records
+    the token; every other tick for the same cycle returns without any
+    GitHub read. A missing token (or a disabled config) performs no reads
+    at all (SC-003).
+    """
+    global _last_sweep_token
+    if cycle_token is None:
+        return []
+    if orphan_cfg is None or not (orphan_cfg.enabled and orphan_cfg.sweep):
+        return []
+    async with close_guard():
+        if _last_sweep_token == cycle_token:
+            return []
+        decisions = await run_orphan_pr_sweep(
+            github, board, orphan_cfg, active_card_ids=active_card_ids,
+        )
+        _last_sweep_token = cycle_token
+        return decisions
+
+
 async def reconcile_completed_card(
     github: GitHubServiceProtocol,
     config: Any,
