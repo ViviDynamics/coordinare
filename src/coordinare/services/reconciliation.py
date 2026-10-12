@@ -707,18 +707,13 @@ async def _classify_active_session(
     session_id = agent_dispatch.get("session_id") if isinstance(agent_dispatch, dict) else None
     performer_stage = sess.get("performer_stage")
 
-    # Issue #85: every dispatch (persistent services included) pre-allocates
-    # agent_dispatch.session_id, so a session without one has no adoptable
-    # work in ANY mode.  Fresh-dispatch it before the persistent-mode no-op,
-    # which would otherwise leave the zombie consuming a pipeline slot.
-    if not session_id:
-        return _clear_agent_dispatch_and_return(
-            sess, ReconciliationDecision.FRESH_DISPATCHED, card_id,
-        )
-
-    # FR-011: persistent-mode services have no per-job container.
+    # FR-011: persistent-mode services have no per-job container.  Issue
+    # #85: a session WITHOUT agent_dispatch.session_id is a zombie in
+    # every service mode — every dispatch (persistent included)
+    # pre-allocates one — so it must not hit the persistent-mode no-op.
+    # It skips this gate and falls through to the fresh-dispatch below.
     service = _resolve_service(state, performer_stage, agent_dispatch.get("performer_id")) if performer_stage else None
-    if not _is_ephemeral_container_service(service):
+    if session_id and not _is_ephemeral_container_service(service):
         return (ReconciliationDecision.SKIPPED_PERSISTENT
                 if _is_persistent_mode(service) else ReconciliationDecision.DEFERRED)
 
@@ -729,8 +724,9 @@ async def _classify_active_session(
     container = by_session.get(session_id) if isinstance(session_id, str) else None
     if container is None:
         # No matching container → just fresh-dispatch by clearing
-        # agent_dispatch.  Don't emit reap_failed — there's nothing to
-        # reap.
+        # agent_dispatch.  The no-session_id restart-orphaned zombie
+        # (issue #85) lands here too.  Don't emit reap_failed — there's
+        # nothing to reap.
         return _clear_agent_dispatch_and_return(
             sess, ReconciliationDecision.FRESH_DISPATCHED, card_id,
         )
