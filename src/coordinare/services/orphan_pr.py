@@ -138,7 +138,9 @@ def resolve_pr_to_card(
     when the qualifier matches ``expected_qualifier``; either form of reference
     is accepted only when the card's board issue URL also lives in the
     expected repository (an org Project can span repositories, and issue
-    numbers are per-repo). Unresolved PRs are never touched (FR-006).
+    numbers are per-repo). A body referencing several different cards is
+    itself ambiguous and resolves to nothing — attribution must not depend on
+    reference order. Unresolved PRs are never touched (FR-006).
     """
     head_ref = pr.get("head_ref")
     if isinstance(head_ref, str):
@@ -151,6 +153,7 @@ def resolve_pr_to_card(
 
     body = pr.get("body")
     if isinstance(body, str):
+        matched_ids: list[str] = []
         for match in _BODY_ISSUE_RE.finditer(body):
             qualifier = match.group("qualifier")
             if qualifier and expected_qualifier and qualifier != expected_qualifier:
@@ -170,7 +173,17 @@ def resolve_pr_to_card(
                     issue_url = urlsplit(str(card.get("issue_url") or "")).path.rstrip("/")
                     if issue_url != f"/{expected_qualifier}/issues/{issue_number}":
                         continue
-                return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
+                matched_ids.append(item_id)
+        # Fail-safe (FR-006): a body naming several different cards is
+        # ambiguous, and attribution must not depend on reference order —
+        # "Related #19\nFixes #20" must not close work for #20 just because
+        # #19 sorts first. Distinct references to the SAME card (e.g. ``#19``
+        # and ``org/repo#19``) are not ambiguous. The session-branch signal
+        # above is order-independent and stays authoritative instead.
+        if len(set(matched_ids)) == 1:
+            return OrphanAttribution(
+                pr=pr, card_item_id=matched_ids[0], method="body_reference",
+            )
 
     return OrphanAttribution(pr=pr, card_item_id=None, method="unresolved")
 

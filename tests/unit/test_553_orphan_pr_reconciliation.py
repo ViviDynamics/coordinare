@@ -969,3 +969,39 @@ async def test_per_cycle_sweep_dedupes_concurrent_ticks(
     state_c["orphan_sweep_cycle_token"] = 67890
     await check_board_module.check_board(state_c)
     assert seen == 2
+
+
+def test_resolve_rejects_body_referencing_multiple_cards() -> None:
+    cards = {
+        "PVTI_DONE": {
+            "id": "PVTI_DONE", "status": "DONE", "issue_number": 19, "title": "done",
+            "issue_url": "https://github.com/acme/repo/issues/19",
+        },
+        "PVTI_ACTIVE": {
+            "id": "PVTI_ACTIVE", "status": "IN_PROGRESS", "issue_number": 20, "title": "active",
+            "issue_url": "https://github.com/acme/repo/issues/20",
+        },
+    }
+    pr = {
+        "id": "PR_1", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Related #19\nFixes #20",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id is None
+    assert attribution.method == "unresolved"
+
+
+def test_resolve_allows_repeated_references_to_same_card() -> None:
+    cards = {
+        "PVTI_19": {
+            "id": "PVTI_19", "status": "DONE", "issue_number": 19, "title": "done",
+            "issue_url": "https://github.com/acme/repo/issues/19",
+        },
+    }
+    pr = {
+        "id": "PR_1", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Related #19 (acme/repo#19)",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id == "PVTI_19"
+    assert attribution.method == "body_reference"
