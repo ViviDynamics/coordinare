@@ -48,6 +48,40 @@ class OrphanAttribution:
     method: Literal["session_branch", "body_reference", "unresolved"]
 
 
+def build_close_comment(
+    card: dict[str, Any],
+    basis: Literal["session_branch", "body_reference", "unresolved"],
+) -> str:
+    """Assemble the explanatory comment posted before a superseded PR closes.
+
+    FR-004: the comment must name the card, its terminal state, the
+    superseding (winning) PR when one exists, and carry the
+    ``coordinare-attribution`` marker so operators can trace the closure.
+    """
+    issue_number = card.get("issue_number")
+    title = card.get("title") or card.get("id") or "the card"
+    status = str(card.get("status", "DONE")).strip().upper()
+    issue_ref = f"#{issue_number}" if isinstance(issue_number, int) else str(card.get("id", ""))
+    pr_url = card.get("pr_url")
+    lines: list[str] = []
+    if isinstance(pr_url, str) and pr_url:
+        lines.append(
+            f"Card {issue_ref} ({title}) completed via {pr_url}, which was merged. "
+            f"This pull request was left open when the card finished; the card is "
+            f"{status} and no further work will land here."
+        )
+    else:
+        lines.append(
+            f"Card {issue_ref} ({title}) is {status} on the board without a merged "
+            f"pull request, so no further work will land here."
+        )
+    lines.append(
+        f"Closing as superseded. (coordinare-attribution: 553 orphan "
+        f"reconciliation — card {card.get('id', 'unknown')}, basis {basis})"
+    )
+    return "\n\n".join(lines)
+
+
 def resolve_pr_to_card(
     pr: dict[str, Any],
     board_cards: dict[str, dict[str, Any]],

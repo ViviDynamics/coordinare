@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.config import OrphanPrConfig, ProjectConfiguration
-from coordinare.services.orphan_pr import is_terminal_card_status, resolve_pr_to_card
+from coordinare.services.orphan_pr import build_close_comment, is_terminal_card_status, resolve_pr_to_card
 from coordinare.services.github import CLOSE_PULL_REQUEST_MUTATION, LIST_OPEN_PULL_REQUESTS_QUERY, GitHubService
 from coordinare.services.fake_github import FakeGitHubService
 
@@ -198,4 +198,34 @@ def test_terminal_card_status_recognition() -> None:
     assert not is_terminal_card_status("TODO")
     assert not is_terminal_card_status("IN_REVIEW")
     assert not is_terminal_card_status(None)
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — comment assembly (FR-004: explanatory, names the superseding PR)
+# ---------------------------------------------------------------------------
+
+_CARD_DONE = {
+    "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+    "content_node_id": "I_1", "title": "add collapse",
+    "pr_url": "https://github.com/acme/repo/pull/22",
+}
+
+
+def test_close_comment_names_superseding_pr() -> None:
+    body = build_close_comment(_CARD_DONE, "session_branch")
+    assert "https://github.com/acme/repo/pull/22" in body
+    assert "#19" in body
+    assert "add collapse" in body
+    assert "coordinare-attribution" in body
+    assert "session_branch" in body
+    assert "DONE" in body
+
+
+def test_close_comment_without_superseding_pr() -> None:
+    card = dict(_CARD_DONE, pr_url=None)
+    body = build_close_comment(card, "session_branch")
+    assert "coordinare-attribution" in body
+    assert "#19" in body
+    assert "DONE" in body
+    assert "pull/" not in body
 
