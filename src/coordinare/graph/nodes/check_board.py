@@ -51,6 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.orphan_pr import run_per_cycle_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
@@ -2152,6 +2153,18 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     board = await _poll_board_once(state, github, board_provider, config, max_cards)
     if board is None:
         return state
+
+    # 553 — per-cycle janitor sweep (opt-in). The daemon stamps a fresh
+    # cycle token before fanning the session ticks out; the sweep dedupes
+    # on that token so exactly one tick per cycle performs the maintenance
+    # (SC-004), and the disabled path performs no reconciliation GitHub
+    # reads at all (SC-003). Cards with a live session are never touched
+    # (FR-006), even when the board snapshot shows terminal.
+    await run_per_cycle_sweep(
+        github, board, getattr(config, "orphan_pr", None),
+        active_card_ids=set((state.get("active_sessions") or {}).keys()),
+        cycle_token=state.get("orphan_sweep_cycle_token"),
+    )
 
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}

@@ -296,6 +296,40 @@ mutation CloseIssue($issueId: ID!) {
 }
 """
 
+# 553: open-PR inventory for orphan reconciliation (issue #78). Nodes carry the
+# PR node id (needed by closePullRequest) and the body (used to attribute the
+# PR to its card via issue references).
+LIST_OPEN_PULL_REQUESTS_QUERY = """
+query ListOpenPullRequests($owner: String!, $repo: String!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(first: $first, states: [OPEN], orderBy: { field: CREATED_AT, direction: DESC }, after: $after) {
+      nodes {
+        id
+        number
+        url
+        headRefName
+        body
+      }
+      pageInfo {
+        endCursor
+        hasNextPage
+      }
+    }
+  }
+}
+"""
+
+CLOSE_PULL_REQUEST_MUTATION = """
+mutation ClosePullRequest($pullRequestId: ID!) {
+  closePullRequest(input: { pullRequestId: $pullRequestId }) {
+    pullRequest {
+      id
+      state
+    }
+  }
+}
+"""
+
 # 128: re-request review from a human whose stale change-request has been
 # addressed. union:true ADDS to any existing requested reviewers (never clobbers).
 # There is deliberately NO dismiss/approve mutation — coordinare never clears a
@@ -2250,3 +2284,84 @@ class GitHubService(CardIdentityMap):
             if len(matches) >= limit:
                 break
         return matches
+
+    async def list_open_pull_requests(
+        self, owner: str, repo: str, first: int = 100,
+    ) -> list[dict[str, Any]]:
+        """553: open-PR inventory for orphan reconciliation (issue #78).
+
+        Returns ``{"id", "number", "url", "head_ref", "body"}`` dicts; empty
+        list on any error (callers treat as "nothing to reconcile"). Uses
+        GraphQL because the reconciliation needs both the PR node id (for the
+        close mutation) and the body (for issue-reference attribution), which
+        REST's search-only PR listing does not combine. Pages newest-first to
+        exhaustion with a 1000-PR safety ceiling and warns on truncation.
+        """
+        out: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _page in range(10):  # safety ceiling: 10 x 100 = 1000 newest open PRs
+            variables: dict[str, Any] = {"owner": owner, "repo": repo, "first": first}
+            if cursor:
+                variables["after"] = cursor
+            try:
+                result = await self._guarded_execute(LIST_OPEN_PULL_REQUESTS_QUERY, variables)
+            except Exception as exc:
+                logger.warning(
+                    "github.list_open_pull_requests_failed",
+                    owner=owner,
+                    repo=repo,
+                    error=str(exc),
+                )
+                return []
+            payload = (
+                result.get("repository", {}).get("pullRequests", {})
+                if isinstance(result, dict)
+                else {}
+            )
+            nodes = payload.get("nodes", [])
+            if not isinstance(nodes, list):
+                return out
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                out.append({
+                    "id": str(node.get("id", "")),
+                    "number": node.get("number"),
+                    "url": node.get("url"),
+                    "head_ref": str(node.get("headRefName", "")),
+                    "body": str(node.get("body", "") or ""),
+                })
+            page_info = payload.get("pageInfo") or {}
+            if not isinstance(page_info, dict) or not page_info.get("hasNextPage"):
+                return out
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                return out
+        logger.warning(
+            "github.list_open_pull_requests_truncated",
+            owner=owner,
+            repo=repo,
+            returned=len(out),
+        )
+        return out
+
+    async def close_pull_request(self, pr_id: str) -> dict[str, Any]:
+        """553: close a superseded PR by node id (issue #78).
+
+        Returns {"closed": bool, "id": str} — closed is False on any shape
+        surprise so the caller can warn without raising. The PR's comments are
+        posted separately via ``add_comment`` (same node id).
+        """
+        try:
+            result = await self._guarded_execute(
+                CLOSE_PULL_REQUEST_MUTATION, {"pullRequestId": pr_id},
+            )
+        except Exception as exc:
+            logger.warning(
+                "github.close_pull_request_failed", pr_id=pr_id, error=str(exc),
+            )
+            return {"closed": False, "id": pr_id}
+        node = result.get("closePullRequest", {}).get("pullRequest", {})
+        if not isinstance(node, dict):
+            return {"closed": False, "id": pr_id}
+        return {"closed": node.get("state") == "CLOSED", "id": str(node.get("id", ""))}

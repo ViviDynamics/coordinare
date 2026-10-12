@@ -81,6 +81,9 @@ class GitHubServiceProtocol(Protocol):
     async def list_prs_by_branch_prefix(
         self, owner: str, repo: str, prefix: str, *, state: str = "OPEN", limit: int = 20,
     ) -> list[dict[str, Any]]: ...
+    # 553 — orphan reconciliation (issue #78)
+    async def list_open_pull_requests(self, owner: str, repo: str, first: int = 50) -> list[dict[str, Any]]: ...
+    async def close_pull_request(self, pr_id: str) -> dict[str, Any]: ...
 
     # Labels
     async def get_label_ids(self, owner: str, repo: str) -> dict[str, str]: ...
@@ -162,6 +165,10 @@ class CoordinareState(TypedDict, total=False):
     board_snapshot: dict[str, list[str]]
     # Bounded held-comment selection for this cycle only; never persisted.
     backlog_comment_poll_ids: list[str]
+    # 553: fresh per-cycle token stamped by the daemon before fan-out; makes
+    # the orphan-PR sweep run exactly once per cycle across the concurrent
+    # session ticks. Never persisted.
+    orphan_sweep_cycle_token: int
     phase: DaemonPhase
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None
