@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from pydantic import SecretStr
 
 from coordinare.mcp.config import McpServerConfig

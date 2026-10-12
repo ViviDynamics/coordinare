@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -63,12 +61,11 @@ async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> Non
             "COORDINARE_MCP_DASHBOARD_URL": "http://localhost:8090",
         },
     )
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            assert len(tools.tools) == len(REGISTRY) == 16
-            result = await session.call_tool("get_config", {"scope": "all"})
-            payload = json.loads(result.content[0].text)
-            assert payload["ok"] is False
-            assert payload["error"]["kind"] == "daemon_unreachable"
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+        await session.initialize()
+        tools = await session.list_tools()
+        assert len(tools.tools) == len(REGISTRY) == 16
+        result = await session.call_tool("get_config", {"scope": "all"})
+        payload = json.loads(result.content[0].text)
+        assert payload["ok"] is False
+        assert payload["error"]["kind"] == "daemon_unreachable"
