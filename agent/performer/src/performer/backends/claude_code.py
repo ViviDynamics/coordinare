@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._clarifications import clarification_comment_lines
+from performer.models import _redact_secrets
 
 import asyncio
 import json
@@ -782,12 +783,19 @@ class ClaudeCodeBackend:
                             # Redact the complete value BEFORE slicing: a
                             # credential crossing the 50-char slice boundary
                             # survives both truncated fragments otherwise.
+                            # Compose the shared _SECRET_PATTERNS redactor
+                            # (GitHub PATs, Anthropic keys, ...) with the
+                            # backend's own env-value scrubber.
                             log.warning(
                                 "claude_code.result.output_divergence",
                                 accumulator_len=len(output_text),
                                 result_len=len(result_field),
-                                accumulator_head=self._redact(output_text)[:50],
-                                result_head=self._redact(result_field)[:50],
+                                accumulator_head=_redact_secrets(
+                                    self._redact(output_text)
+                                )[:50],
+                                result_head=_redact_secrets(
+                                    self._redact(result_field)
+                                )[:50],
                             )
                         output_text = result_field
                     if not output_text:

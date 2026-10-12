@@ -705,6 +705,32 @@ class TestClaudeCodeBackendGetStatus:
         assert "t" * 30 not in logged
         assert "[REDACTED]" in logged
 
+    def test_result_field_divergence_uses_shared_secret_patterns(self) -> None:
+        """Copilot round 2: the divergence log must apply the shared
+        _SECRET_PATTERNS redactor, not just the backend's Bearer/env
+        scrubber — a GitHub PAT must not leak."""
+        adapter = ClaudeCodeBackend()
+        pat = "ghp_" + "a" * 36
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": f"token={pat}"},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        divergence = [e for e in cap if e.get("event") == "claude_code.result.output_divergence"]
+        assert divergence, [e.get("event") for e in cap]
+        logged = f"{divergence[0].get('accumulator_head')}{divergence[0].get('result_head')}"
+        assert pat not in logged
+        assert "[REDACTED]" in logged
+
     def test_redact_scrubs_bearer_tokens(self) -> None:
         line = "Authorization: Bearer sk-ant-abc123XYZ.def_456 failed"
         out = ClaudeCodeBackend._redact(line)
