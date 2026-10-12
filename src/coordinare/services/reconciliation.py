@@ -485,10 +485,40 @@ def detect_wedged_state(
 # ---------------------------------------------------------------------------
 
 
+# Issue #85: phases that legitimately keep no performer container.  A
+# session parked in one of them is not a zombie and must never be swept.
+# Mirrors NON_SLOT_PHASES (check_board.py) plus the watchdog-owned
+# recovery / system_error states and the orchestration retry parks:
+# ``merging`` (merge_pr.py leaves it for the next cycle after a
+# transient GitHub failure) and ``relay_feedback`` (monitor_pr.py).
+_ZOMBIE_EXEMPT_PHASES: frozenset[str] = frozenset({
+    "monitoring_pr",
+    "blocked",
+    "idle",
+    "done",
+    "env_blocked",
+    "recovery",
+    "system_error",
+    "merging",
+    "relay_feedback",
+})
+
+
 def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, Any]]:
     """Return the subset of ``state.active_sessions`` that the reconciliation
-    pass needs to consider — sessions in dispatching / monitoring phases
-    with a non-empty agent_dispatch.session_id."""
+    pass needs to consider.
+
+    Two populations:
+
+    - Live in-flight sessions: dispatching / monitoring phases with a
+      non-empty ``agent_dispatch.session_id`` (adopt / reap candidates).
+    - Issue #85 zombie sessions: a session in a working phase with NO
+      ``agent_dispatch.session_id`` — there is nothing to adopt or poll,
+      so it survives daemon restarts forever and, while it occupies a
+      pipeline slot, starves the board.  They are collected so the
+      classification pass fresh-dispatches them.  Parked / terminal
+      phases (:data:`_ZOMBIE_EXEMPT_PHASES`) are exempt.
+    """
     sessions = state.get("active_sessions") or {}
     if not isinstance(sessions, dict):
         return {}
@@ -497,14 +527,17 @@ def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, A
         if not isinstance(sess, dict):
             continue
         phase = sess.get("phase")
-        if phase not in {"dispatching", "monitoring_performer", "monitoring_agent"}:
-            continue
-        agent_dispatch = sess.get("agent_dispatch") or {}
+        agent_dispatch = sess.get("agent_dispatch")
         if not isinstance(agent_dispatch, dict):
+            agent_dispatch = {}
+        if agent_dispatch.get("session_id"):
+            if phase in {"dispatching", "monitoring_performer", "monitoring_agent"}:
+                in_flight[card_id] = sess
             continue
-        if not agent_dispatch.get("session_id"):
-            continue
-        in_flight[card_id] = sess
+        # No session_id → zombie candidate.  Only sweep working phases;
+        # a parked/terminal session keeps no container by design.
+        if phase not in _ZOMBIE_EXEMPT_PHASES:
+            in_flight[card_id] = sess
     return in_flight
 
 
@@ -674,9 +707,13 @@ async def _classify_active_session(
     session_id = agent_dispatch.get("session_id") if isinstance(agent_dispatch, dict) else None
     performer_stage = sess.get("performer_stage")
 
-    # FR-011: persistent-mode services have no per-job container.
+    # FR-011: persistent-mode services have no per-job container.  Issue
+    # #85: a session WITHOUT agent_dispatch.session_id is a zombie in
+    # every service mode — every dispatch (persistent included)
+    # pre-allocates one — so it must not hit the persistent-mode no-op.
+    # It skips this gate and falls through to the fresh-dispatch below.
     service = _resolve_service(state, performer_stage, agent_dispatch.get("performer_id")) if performer_stage else None
-    if not _is_ephemeral_container_service(service):
+    if session_id and not _is_ephemeral_container_service(service):
         return (ReconciliationDecision.SKIPPED_PERSISTENT
                 if _is_persistent_mode(service) else ReconciliationDecision.DEFERRED)
 
@@ -687,8 +724,9 @@ async def _classify_active_session(
     container = by_session.get(session_id) if isinstance(session_id, str) else None
     if container is None:
         # No matching container → just fresh-dispatch by clearing
-        # agent_dispatch.  Don't emit reap_failed — there's nothing to
-        # reap.
+        # agent_dispatch.  The no-session_id restart-orphaned zombie
+        # (issue #85) lands here too.  Don't emit reap_failed — there's
+        # nothing to reap.
         return _clear_agent_dispatch_and_return(
             sess, ReconciliationDecision.FRESH_DISPATCHED, card_id,
         )
