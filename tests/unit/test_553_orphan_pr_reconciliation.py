@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.config import OrphanPrConfig, ProjectConfiguration
-from coordinare.services.orphan_pr import build_close_comment, is_terminal_card_status, resolve_pr_to_card
+from coordinare.services.orphan_pr import (
+    build_close_comment,
+    close_superseded_prs,
+    is_terminal_card_status,
+    resolve_pr_to_card,
+)
 from coordinare.services.github import CLOSE_PULL_REQUEST_MUTATION, LIST_OPEN_PULL_REQUESTS_QUERY, GitHubService
 from coordinare.services.fake_github import FakeGitHubService
 
@@ -228,4 +233,78 @@ def test_close_comment_without_superseding_pr() -> None:
     assert "#19" in body
     assert "DONE" in body
     assert "pull/" not in body
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — completion-time reconciliation (US-1)
+# ---------------------------------------------------------------------------
+
+
+def _fake_repo(tmp_path) -> FakeGitHubService:
+    return FakeGitHubService(bare_repo_path=tmp_path, org="acme", project_name="repo")
+
+
+@pytest.mark.asyncio
+async def test_completion_two_pr_card_closes_loser(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    # open_pr creates no commits, so the fake's local merge cannot run; mark
+    # the winner merged the same way test_151_identity does.
+    fake._prs[winner]["merged"] = True  # noqa: SLF001 — benchmark state fixture
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/retry-attempt")
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse",
+        "pr_url": f"https://fake/acme/repo/pull/{int(winner.split('_')[1])}",
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    assert len(open_prs) == 1
+    decisions = await close_superseded_prs(fake, card, open_prs)
+    assert [d.outcome for d in decisions] == ["closed"]
+    assert decisions[0].pr_url == open_prs[0]["url"]
+    assert decisions[0].comment_posted is True
+    prs = await fake.list_open_pull_requests("acme", "repo")
+    assert prs == []
+
+
+@pytest.mark.asyncio
+async def test_completion_single_pr_card_noop(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True  # noqa: SLF001 — benchmark state fixture
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse",
+        "pr_url": f"https://fake/acme/repo/pull/{int(winner.split('_')[1])}",
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    assert open_prs == []  # winner merged → not listed
+    decisions = await close_superseded_prs(fake, card, open_prs)
+    assert decisions == []
+
+
+@pytest.mark.asyncio
+async def test_completion_nonterminal_card_never_closes(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="IN_REVIEW", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    card = {
+        "id": "PVTI_1", "status": "IN_REVIEW", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse", "pr_url": None,
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    decisions = await close_superseded_prs(fake, card, open_prs)
+    assert [d.outcome for d in decisions] == ["skipped-active"]
+    assert await fake.list_open_pull_requests("acme", "repo") == open_prs
 

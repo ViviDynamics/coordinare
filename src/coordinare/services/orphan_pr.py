@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
+
+if TYPE_CHECKING:
+    from coordinare.graph.state import GitHubServiceProtocol
 
 logger = structlog.get_logger(__name__)
 
@@ -111,3 +114,93 @@ def resolve_pr_to_card(
                     return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
 
     return OrphanAttribution(pr=pr, card_item_id=None, method="unresolved")
+
+
+@dataclass(frozen=True)
+class OrphanPrDecision:
+    """One evaluated open PR and what the janitor did with it (FR-005)."""
+
+    pr_number: int | None
+    pr_url: str | None
+    card_item_id: str | None
+    basis: Literal["session_branch", "body_reference", "unresolved"]
+    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"]
+    comment_posted: bool = False
+    closed_ok: bool = False
+
+
+def _decision(
+    pr: dict[str, Any],
+    card_item_id: str | None,
+    basis: Literal["session_branch", "body_reference", "unresolved"],
+    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"],
+    comment_posted: bool = False,
+    closed_ok: bool = False,
+) -> OrphanPrDecision:
+    decision = OrphanPrDecision(
+        pr_number=pr.get("number"),
+        pr_url=pr.get("url"),
+        card_item_id=card_item_id,
+        basis=basis,
+        outcome=outcome,
+        comment_posted=comment_posted,
+        closed_ok=closed_ok,
+    )
+    logger.info(
+        "orphan_pr.decision",
+        pr_number=decision.pr_number,
+        pr_url=decision.pr_url,
+        card_id=decision.card_item_id,
+        basis=decision.basis,
+        outcome=decision.outcome,
+        comment_posted=decision.comment_posted,
+        closed_ok=decision.closed_ok,
+    )
+    return decision
+
+
+async def close_superseded_prs(
+    github: GitHubServiceProtocol,
+    card: dict[str, Any],
+    open_prs: list[dict[str, Any]],
+) -> list[OrphanPrDecision]:
+    """Close every open PR attributable to a completed *card* except the winner.
+
+    US-1 completion-time path. ``open_prs`` is the ``list_open_pull_requests``
+    snapshot taken by the caller. The card's own ``pr_url`` (the winning PR) is
+    never touched; unresolvable PRs are never touched (FR-006); the card's
+    terminal state is re-checked here so a stale snapshot cannot close work
+    that reopened between the board read and the close.
+    """
+    card_id = str(card.get("id", ""))
+    board_cards: dict[str, dict[str, Any]] = {card_id: card} if card_id else {}
+    decisions: list[OrphanPrDecision] = []
+    for pr in open_prs:
+        url = pr.get("url")
+        if isinstance(url, str) and url == card.get("pr_url"):
+            decisions.append(_decision(pr, card_id, "session_branch", "skipped-active"))
+            continue
+        attribution = resolve_pr_to_card(pr, board_cards)
+        if attribution.card_item_id is None:
+            decisions.append(_decision(pr, None, attribution.method, "skipped-unresolved"))
+            continue
+        if not is_terminal_card_status(card.get("status")):
+            decisions.append(_decision(pr, card_id, attribution.method, "skipped-active"))
+            continue
+        comment = build_close_comment(card, attribution.method)
+        comment_posted = True
+        try:
+            await github.add_comment(pr["id"], comment)
+        except Exception as exc:
+            logger.warning(
+                "orphan_pr.comment_failed", pr_number=pr.get("number"), error=str(exc)
+            )
+            comment_posted = False
+        result = await github.close_pull_request(pr["id"])
+        closed_ok = bool(result.get("closed", False))
+        if not closed_ok:
+            logger.warning("orphan_pr.close_failed", pr_number=pr.get("number"))
+        decisions.append(
+            _decision(pr, card_id, attribution.method, "closed", comment_posted, closed_ok)
+        )
+    return decisions
