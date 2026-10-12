@@ -844,7 +844,7 @@ async def test_list_open_pull_requests_warns_on_truncation() -> None:
     service._guarded_execute = _execute  # type: ignore[method-assign]
     prs = await service.list_open_pull_requests("acme", "repo")
 
-    assert len(prs) == 200  # 2 pages x 100 = cap
+    assert len(prs) == 1000  # 10 pages x 100 = safety ceiling
 
 
 def test_resolve_rejects_qualified_reference_to_other_repo_card() -> None:

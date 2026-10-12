@@ -2294,12 +2294,12 @@ class GitHubService(CardIdentityMap):
         list on any error (callers treat as "nothing to reconcile"). Uses
         GraphQL because the reconciliation needs both the PR node id (for the
         close mutation) and the body (for issue-reference attribution), which
-        REST's search-only PR listing does not combine. Pages newest-first up
-        to a bounded 200-PR cap and warns on truncation.
+        REST's search-only PR listing does not combine. Pages newest-first to
+        exhaustion with a 1000-PR safety ceiling and warns on truncation.
         """
         out: list[dict[str, Any]] = []
         cursor: str | None = None
-        for _page in range(2):  # cap: 2 x 100 = 200 newest open PRs
+        for _page in range(10):  # safety ceiling: 10 x 100 = 1000 newest open PRs
             variables: dict[str, Any] = {"owner": owner, "repo": repo, "first": first}
             if cursor:
                 variables["after"] = cursor

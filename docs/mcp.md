@@ -47,7 +47,7 @@ is configured.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `COORDINARE_MCP_TRANSPORT` | `http` | `http` or `stdio` (552) |
+| `COORDINARE_MCP_TRANSPORT` | `http` | only `http` is supported today (`stdio` arrives with 552) |
 | `COORDINARE_MCP_TOKEN` | — | required; agent-facing bearer, min 32 chars |
 | `COORDINARE_MCP_DASHBOARD_TOKEN` | — | required; presented to the dashboard |
 | `COORDINARE_MCP_HOST` | `0.0.0.0` | |
@@ -78,9 +78,10 @@ whose recovery hint is to re-read.
 ## Security notes
 
 - Bearer checks are constant-time compares with a 32-character minimum. The
-  stdio transport has no bearer gate by design: its boundary is the local
-  process spawn itself, so only run it for same-machine agents you already
-  trust with full operator privilege.
+  HTTP transport is the only one supported today; the future stdio transport
+  (552) will have no bearer gate by design — its boundary is the local
+  process spawn itself — so it should only run for same-machine agents
+  already trusted with full operator privilege.
 - The internal hop's token is never echoed into tool results or logs.
 - Secret redaction happens in the dashboard; the MCP layer cannot and does not
   un-redact anything `get_config` returns.
