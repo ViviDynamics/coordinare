@@ -200,6 +200,7 @@ class FakeGitHubService(CardIdentityMap):
         issue_item_id: str,
         head_ref: str,
         base_ref: str = "main",
+        body: str = "",
     ) -> str:
         """Create a PR for a card's head branch (simulates the performer's push+PR).
 
@@ -220,6 +221,8 @@ class FakeGitHubService(CardIdentityMap):
             "reviews": [],
             "comments": [],
             "merged": False,
+            "closed": False,
+            "body": body,
             "merge_commit": None,
             "created_at": datetime.now(UTC).isoformat(),
         }
@@ -592,7 +595,10 @@ class FakeGitHubService(CardIdentityMap):
         return bool(await self._rev(branch_name))
 
     async def branch_has_open_pr(self, branch_name: str) -> bool | None:
-        return any(pr["head_ref"] == branch_name and not pr["merged"] for pr in self._prs.values())
+        return any(
+            pr["head_ref"] == branch_name and not pr["merged"] and not pr.get("closed", False)
+            for pr in self._prs.values()
+        )
 
     async def delete_branch(self, branch_name: str) -> None:
         try:
@@ -624,10 +630,35 @@ class FakeGitHubService(CardIdentityMap):
         for pr in self._prs.values():
             if not pr["head_ref"].startswith(prefix):
                 continue
-            if want_open and pr["merged"]:
+            if want_open and (pr["merged"] or pr.get("closed", False)):
                 continue
             out.append({"id": pr["pr_id"], "url": pr["url"], "head_ref": pr["head_ref"]})
         return out[:limit]
+
+    # 553 — orphan reconciliation (issue #78)
+
+    async def list_open_pull_requests(
+        self, owner: str, repo: str, first: int = 50,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": pr["pr_id"],
+                "number": pr["pr_number"],
+                "url": pr["url"],
+                "head_ref": pr["head_ref"],
+                "body": pr.get("body", ""),
+            }
+            for pr in self._prs.values()
+            if not pr["merged"] and not pr.get("closed", False)
+        ][:first]
+
+    async def close_pull_request(self, pr_id: str) -> dict[str, Any]:
+        pr = self._prs.get(pr_id)
+        if pr is None:
+            return {"closed": False, "id": pr_id}
+        pr["closed"] = True
+        self._record("close_pull_request", pr_id=pr_id)
+        return {"closed": True, "id": pr_id}
 
     # ---- labels ----------------------------------------------------------
 

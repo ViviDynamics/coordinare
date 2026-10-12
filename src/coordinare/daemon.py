@@ -3027,6 +3027,13 @@ class CoordinareDaemon:
         self._state["_board_cache"] = None  # type: ignore[typeddict-unknown-key]
         self._state["_main_sha_cache"] = None  # type: ignore[typeddict-unknown-key]
 
+        # 553 — stamp a fresh per-cycle token so check_board's janitor sweep
+        # runs exactly once per cycle across the concurrent session ticks
+        # (SC-004); the sweep itself dedupes on this token. Stamped before the
+        # no-session early return too: an idle board still gets its one graph
+        # cycle, and that is the cycle that must sweep historical orphans.
+        self._state["orphan_sweep_cycle_token"] = time.time_ns()
+
         if not active_sessions:
             # No sessions yet — run one graph cycle to let check_board populate them
             self._state = await _invoke_single_graph(self._state, self._graph)
