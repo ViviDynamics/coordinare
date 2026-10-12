@@ -13,6 +13,9 @@ _RESERVED_PORTS = {8080, 8090}
 
 _MIN_AGENT_TOKEN_CHARS = 32
 _MIN_AGENT_CHARS_MSG = "agent_token must be at least 32 characters"
+_AGENT_CREDENTIAL_REQUIRED_MSG = "agent_token is required unless the OAuth resource server is enabled"
+_STDIO_CREDENTIAL_REQUIRED_MSG = "stdio transport requires the static agent token"
+_OAUTH_ENABLED_REQUIRES_ISSUER_MSG = "oauth.enabled requires an issuer URL"
 _LISTEN_PORT_RESERVED = (
     "listen_port must differ from the health (8080) and dashboard (8090) ports"
 )
@@ -42,7 +45,7 @@ class McpOAuthConfig(BaseModel):
     @model_validator(mode="after")
     def _enabled_requires_issuer(self) -> McpOAuthConfig:
         if self.enabled and self.issuer is None:
-            raise ValueError("oauth.enabled requires an issuer URL")
+            raise ValueError(_OAUTH_ENABLED_REQUIRES_ISSUER_MSG)
         return self
 
     @classmethod
@@ -104,12 +107,10 @@ class McpServerConfig(BaseModel):
     @model_validator(mode="after")
     def _agent_token_needed_per_mode(self) -> McpServerConfig:
         if self.agent_token is None and not self.oauth.enabled:
-            raise ValueError(
-                "agent_token is required unless the OAuth resource server is enabled"
-            )
+            raise ValueError(_AGENT_CREDENTIAL_REQUIRED_MSG)
         if self.agent_token is None and self.transport == "stdio":
             # OAuth is an HTTP concept; stdio keeps the local static-token trust.
-            raise ValueError("stdio transport requires the static agent token")
+            raise ValueError(_STDIO_CREDENTIAL_REQUIRED_MSG)
         return self
 
     @field_validator("dashboard_url", "health_url")
@@ -139,7 +140,7 @@ class McpServerConfig(BaseModel):
             "lifecycle_timeout_seconds": "COORDINARE_MCP_LIFECYCLE_TIMEOUT",
             "server_name": "COORDINARE_MCP_SERVER_NAME",
         }
-        kwargs: dict[str, str] = {}
+        kwargs: dict[str, object] = {}
         for field_name, env_name in env_names.items():
             value = os.environ.get(env_name)
             if value is not None:
