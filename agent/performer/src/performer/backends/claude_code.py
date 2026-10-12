@@ -774,6 +774,25 @@ class ClaudeCodeBackend:
                             stop_reason=stop_reason,
                             tokens=tokens,
                         )
+                    # Issue #83: the CLI `result` event carries the complete
+                    # final message in its `result` field. The accumulator is
+                    # assembled from streamed `assistant` text blocks and has
+                    # been observed losing the head chunk of the final turn,
+                    # yielding a head-chopped suffix that fails JSON parsing
+                    # (BACKEND_FORMAT_ERROR loops, card parks in Blocked).
+                    # The `result` field is authoritative; the accumulator
+                    # stays as the fallback for shapes without the field.
+                    result_field = event.get("result")
+                    if isinstance(result_field, str) and result_field:
+                        if output_text and output_text != result_field:
+                            log.warning(
+                                "claude_code.result.output_divergence",
+                                accumulator_len=len(output_text),
+                                result_len=len(result_field),
+                                accumulator_head=output_text[:50],
+                                result_head=result_field[:50],
+                            )
+                        output_text = result_field
                     self._status = BackendStatus(
                         state="done",
                         stop_reason=stop_reason,

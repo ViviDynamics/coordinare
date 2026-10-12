@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
+import structlog
 
 
 from performer.backends.claude_code import ClaudeCodeBackend, _build_task_prompt
@@ -599,6 +600,68 @@ class TestClaudeCodeBackendGetStatus:
             "output_tokens": 1,
         })
         assert adapter.get_status().output is None
+
+    def test_result_event_field_beats_head_chopped_accumulator(self) -> None:
+        """Issue #83: the accumulator can miss the head of the final message
+        (streamed chunk loss), producing a head-chopped suffix that fails
+        JSON parsing. The CLI `result` event carries the authoritative
+        complete text in its `result` field — prefer it over the join."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": 'ufficient": true, "questions": []}'},
+            ]},
+        })
+        adapter._handle_event({
+            "type": "result",
+            "subtype": "success",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "result": '{"sufficient": true, "questions": []}',
+        })
+        status = adapter.get_status()
+        assert status.state == "done"
+        assert status.output == '{"sufficient": true, "questions": []}'
+
+    def test_result_field_absent_falls_back_to_accumulator(self) -> None:
+        """Older CLI shapes / proxies without a `result` field keep the
+        accumulator join (no regression)."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "block1 "}]},
+        })
+        adapter._handle_event({
+            "type": "result",
+            "subtype": "success",
+            "input_tokens": 1,
+            "output_tokens": 1,
+        })
+        assert adapter.get_status().output == "block1 "
+
+    def test_result_field_divergence_is_logged(self) -> None:
+        """When the accumulator join and the authoritative `result` field
+        differ, the capture seam must be visible in the log."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": 'ufficient": true}'},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        assert any(
+            entry.get("event") == "claude_code.result.output_divergence"
+            for entry in cap
+        ), [entry.get("event") for entry in cap]
 
     def test_redact_scrubs_bearer_tokens(self) -> None:
         line = "Authorization: Bearer sk-ant-abc123XYZ.def_456 failed"
