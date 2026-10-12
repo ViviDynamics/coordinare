@@ -29,7 +29,7 @@ class McpServerConfig(BaseModel):
     Loaded from environment variables; CLI flags override in ``__main__.py``.
     """
 
-    transport: Literal["http"] = "http"
+    transport: Literal["http", "stdio"] = "http"
     #: Same bind-all default as the daemon's own health server, so the sidecar
     #: is reachable from its peers without per-deployment overrides.
     listen_host: str = ProjectConfiguration.model_fields["health_check_host"].default

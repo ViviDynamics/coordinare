@@ -1,6 +1,6 @@
 """CLI entry point for the MCP management server (``python -m coordinare.mcp``).
 
-Phase 1 (T014): streamable HTTP transport only; stdio arrives in spec 552.
+HTTP (streamable, phase 1) and stdio (552) transports.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import uvicorn
 from pydantic import ValidationError
 
 from coordinare.mcp.config import McpServerConfig
-from coordinare.mcp.server import build_asgi_app
+from coordinare.mcp.server import build_asgi_app, run_stdio
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -22,9 +22,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--transport",
-        choices=("http",),
-        default="http",
-        help="Transport (streamable HTTP in phase 1; stdio arrives in spec 552)",
+        choices=("http", "stdio"),
+        default=None,
+        help="Transport: streamable HTTP (default) or stdio for local agents",
     )
     parser.add_argument("--listen-host", default=None, help="Bind host (env: COORDINARE_MCP_HOST)")
     parser.add_argument("--listen-port", type=int, default=None, help="Bind port (env: COORDINARE_MCP_PORT)")
@@ -39,6 +39,18 @@ def main() -> int:
     except ValidationError as exc:
         print(f"coordinare.mcp: misconfigured: {exc}", file=sys.stderr)
         return 2
+    # The CLI flag overrides the env; the env is the default (552 FR2).
+    transport = args.transport if args.transport is not None else config.transport
+    config = config.model_copy(update={"transport": transport})
+    if transport == "stdio":
+        if args.listen_host is not None or args.listen_port is not None:
+            print(
+                "coordinare.mcp: --listen-host/--listen-port apply only to the http transport",
+                file=sys.stderr,
+            )
+            return 2
+        run_stdio(config)
+        return 0
     host = args.listen_host if args.listen_host is not None else config.listen_host
     port = args.listen_port if args.listen_port is not None else config.listen_port
     app = build_asgi_app(config)
