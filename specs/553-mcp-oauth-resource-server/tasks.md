@@ -38,8 +38,8 @@
 
 ## 5. Ship
 
-- [ ] Gates: ruff, baseline ratchet, mypy, full unit suite, coverage ≥ 90%.
-- [ ] Preflight pass; branch `553-mcp-oauth-resource-server`; PR `Closes #80`
+- [x] Gates: ruff, baseline ratchet, mypy, full unit suite, coverage ≥ 90%.
+- [x] Preflight pass; branch `553-mcp-oauth-resource-server`; PR `Closes #80`
   with verification summary and quality-gate changes (none expected).
-- [ ] CI green; adversarial review over the full diff; re-verify every claim;
+- [x] CI green; adversarial review over the full diff; re-verify every claim;
   resolve findings; merge.

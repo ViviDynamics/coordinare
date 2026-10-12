@@ -20,7 +20,7 @@ MCP client (agent)                sidecar / process                     daemon
   with `COORDINARE_MCP_DASHBOARD_TOKEN`. A leaked agent credential is not a
   dashboard credential; they rotate independently.
 - **16 tools, 5 domains.** Config, symphonies, personas, lifecycle, and state
-  inspection — see the table below. Tool consolidation is deliberate: agents
+  inspection; see the table below. Tool consolidation is deliberate: agents
   select better among 16 rich tools than 40 thin ones.
 
 ## Running it
@@ -153,7 +153,7 @@ whose recovery hint is to re-read.
   Origin guard does not apply; the bearer check is the boundary. Treat the
   agent token as full operator privilege.
 - Every mutating tool call emits one `mcp.tool_invoked` structured-log line
-  (tool, action, outcome, error kind, credential fingerprint, duration) — the
+  (tool, action, outcome, error kind, credential fingerprint, duration), the
   audit trail for "who changed what".
 - Errors map to a shared vocabulary (`auth_failed`, `conflict`, `validation`,
   `daemon_error`, `daemon_unreachable`, timeout) with recovery hints, uniformly
