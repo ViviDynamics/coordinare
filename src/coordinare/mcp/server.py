@@ -1,11 +1,13 @@
 """MCP server assembly, tool registry, and transport selection (T014).
 
-Phase 1 ships the streamable HTTP transport mounted at ``/mcp``; every request
-passes the bearer check in :mod:`coordinare.mcp.auth` first.
+HTTP (phase 1) mounts the streamable transport at ``/mcp`` behind the bearer
+check in :mod:`coordinare.mcp.auth`; stdio (552) serves the same registry over
+the local pipe with no bearer gate.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import time
@@ -143,13 +145,33 @@ def _register(mcp_server: MCPServer, tool: ToolDefinition) -> None:
     )
 
 
-def build_asgi_app(config: McpServerConfig) -> Any:
-    """Assemble the MCP ASGI app: registry tools, streamable HTTP, bearer gate."""
+def _build_mcp_server(config: McpServerConfig) -> MCPServer:
+    """Assemble the MCPServer with the registry tools, shared by both transports."""
     set_client(DashboardClient(config))
     mcp_server = MCPServer(name=config.server_name)
     _register_tools(mcp_server)
-    inner = mcp_server.streamable_http_app(stateless_http=True, streamable_http_path="/mcp")
-    return BearerAuthMiddleware(inner, config.agent_token)
+    return mcp_server
 
 
-__all__ = ["BearerAuthMiddleware", "build_asgi_app"]
+def build_asgi_app(config: McpServerConfig) -> Any:
+    """Assemble the MCP ASGI app: registry tools, streamable HTTP, bearer gate."""
+    mcp_server = _build_mcp_server(config)
+    return BearerAuthMiddleware(
+        mcp_server.streamable_http_app(stateless_http=True, streamable_http_path="/mcp"),
+        config.agent_token,
+    )
+
+
+def run_stdio(config: McpServerConfig) -> None:
+    """Run the MCP server over stdio (552 FR2/FR3): local trust, no bearer gate.
+
+    The stream is inherited from the operator's shell, so authentication
+    happens at the shell; the audit fingerprint identifies the agent token
+    this process runs with (FR5).
+    """
+    mcp_server = _build_mcp_server(config)
+    _caller_fingerprint.set(credential_fingerprint(config.agent_token.get_secret_value()))
+    asyncio.run(mcp_server.run_stdio_async())
+
+
+__all__ = ["BearerAuthMiddleware", "build_asgi_app", "run_stdio"]
