@@ -71,12 +71,46 @@ credential fingerprint in `mcp.tool_invoked` is the agent token's, since the
 local pipe replaces the bearer check. The daemon must still be running and
 reachable at `COORDINARE_MCP_DASHBOARD_URL` (default `http://localhost:8090`).
 
+### OAuth resource server (HTTP)
+
+Spec 553: instead of the static agent token, the HTTP surface can validate
+bearer tokens against an external OAuth 2.1 authorization server via RFC 7662
+token introspection. Opt in per deployment:
+
+```sh
+export COORDINARE_MCP_OAUTH_ENABLED=true
+export COORDINARE_MCP_OAUTH_ISSUER=https://as.example.com
+export COORDINARE_MCP_OAUTH_INTROSPECTION_URL=https://as.example.com/introspect
+export COORDINARE_MCP_OAUTH_CLIENT_ID=coordinare-mcp
+export COORDINARE_MCP_OAUTH_CLIENT_SECRET=<secret>
+export COORDINARE_MCP_OAUTH_RESOURCE_SERVER_URL=https://mcp.example.com/mcp
+export COORDINARE_MCP_OAUTH_REQUIRED_SCOPES=coordinare:mcp
+export COORDINARE_MCP_OAUTH_TIMEOUT=5.0
+```
+
+Every request's bearer token is introspected at the authorization server
+(`client_id`/`client_secret` produce the Basic-auth credentials when both are
+set); inactive tokens, malformed responses, unreachable introspection endpoints,
+and audience mismatches all deny with 401. Nothing is cached and nothing falls
+open: an AS outage means agents wait, not that gates lift. With
+`COORDINARE_MCP_OAUTH_RESOURCE_SERVER_URL` set, tokens are additionally checked
+for RFC 8707 audience binding. `COORDINARE_MCP_OAUTH_REQUIRED_SCOPES` becomes a
+403 (`insufficient_scope`) when the token lacks any listed scope.
+
+The static `COORDINARE_MCP_TOKEN` is not required in this mode and is not
+accepted on the wire; tokens must come from the authorization server. The audit
+line gains a `caller_client_id` field (the introspected token's client id) and
+the credential fingerprint is of the presented token, so per-agent activity
+stays attributable. stdio ignores this block entirely: local trust stays
+static-token (552 FR5).
+
 ## Configuration (env)
 
 | Variable | Default | Notes |
 |---|---|---|
 | `COORDINARE_MCP_TRANSPORT` | `http` | `http` or `stdio` (552) |
 | `COORDINARE_MCP_TOKEN` | — | required; agent-facing bearer, min 32 chars |
+| `COORDINARE_MCP_OAUTH_*` | off | OAuth resource server (553); see above |
 | `COORDINARE_MCP_DASHBOARD_TOKEN` | — | required; presented to the dashboard |
 | `COORDINARE_MCP_HOST` | `0.0.0.0` | |
 | `COORDINARE_MCP_PORT` | `8091` | must differ from 8080/8090 |
@@ -109,6 +143,9 @@ whose recovery hint is to re-read.
   stdio transport has no bearer gate by design: its boundary is the local
   process spawn itself, so only run it for same-machine agents you already
   trust with full operator privilege.
+- In OAuth mode the bearer boundary is RFC 7662 introspection, checked per
+  request and fail-closed: introspection failures deny the request rather than
+  admit it. Token values never reach logs; only fingerprints and client ids do.
 - The internal hop's token is never echoed into tool results or logs.
 - Secret redaction happens in the dashboard; the MCP layer cannot and does not
   un-redact anything `get_config` returns.
