@@ -37,7 +37,7 @@ class IntrospectionTokenVerifier:
         payload = await self._introspect(token)
         if payload is None:
             return None
-        if not payload.get("active", False):
+        if payload.get("active") is not True:
             self._log.debug("mcp_oauth.token_inactive")
             return None
         if not self._audience_ok(payload):
@@ -76,8 +76,11 @@ class IntrospectionTokenVerifier:
             )
             return None
         try:
-            payload: dict[str, Any] = response.json()
+            payload: dict[str, Any] | Any = response.json()
         except ValueError:
+            self._log.error(_INTROSPECTION_FAILED, kind="malformed_payload")
+            return None
+        if not isinstance(payload, dict):
             self._log.error(_INTROSPECTION_FAILED, kind="malformed_payload")
             return None
         return payload
@@ -85,25 +88,42 @@ class IntrospectionTokenVerifier:
     def _audience_ok(self, payload: dict[str, Any]) -> bool:
         expected = self._config.resource_server_url
         if expected is None:
-            return True
+            aud = payload.get("aud")
+            return aud is None or isinstance(aud, (str, list))
         aud = payload.get("aud")
-        audiences = [aud] if isinstance(aud, str) else (aud or [])
-        return str(expected) in audiences
+        if isinstance(aud, str):
+            return aud == str(expected)
+        return isinstance(aud, list) and str(expected) in [
+            entry for entry in aud if isinstance(entry, str)
+        ]
 
-    def _to_access_token(self, token: str, payload: dict[str, Any]) -> AccessToken:
+    def _to_access_token(self, token: str, payload: dict[str, Any]) -> AccessToken | None:
         raw_scopes = payload.get("scope", "")
         scopes = (
             [part for part in raw_scopes.split(" ") if part]
             if isinstance(raw_scopes, str)
             else list(raw_scopes)
         )
-        expires_at = payload.get("exp")
+        raw_exp = payload.get("exp")
+        try:
+            expires_at = int(raw_exp) if raw_exp is not None else None
+        except (TypeError, ValueError):
+            self._log.error(_INTROSPECTION_FAILED, kind="malformed_payload")
+            return None
+        aud = payload.get("aud")
+        resource: str | None
+        if isinstance(aud, str):
+            resource = aud
+        elif isinstance(aud, list) and len(aud) == 1 and isinstance(aud[0], str):
+            resource = aud[0]
+        else:
+            resource = None
         return AccessToken(
             token=token,
             client_id=payload.get("client_id", "unknown"),
             scopes=scopes,
-            expires_at=int(expires_at) if expires_at is not None else None,
-            resource=payload.get("aud"),
+            expires_at=expires_at,
+            resource=resource,
             subject=payload.get("sub"),
             claims=payload,
         )

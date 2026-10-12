@@ -37,7 +37,11 @@ def _oauth_config(**overrides: object) -> McpServerConfig:
 class _StubVerifier(IntrospectionTokenVerifier):
     def __init__(self, accepted: set[str]) -> None:
         super().__init__(
-            McpOAuthConfig.model_validate({"enabled": True, "issuer": "https://as.example.com"}),
+            McpOAuthConfig.model_validate({
+                "enabled": True,
+                "issuer": "https://as.example.com",
+                "introspection_url": "https://as.example.com/introspect",
+            }),
         )
         self._accepted = accepted
 

@@ -16,6 +16,7 @@ _MIN_AGENT_CHARS_MSG = "agent_token must be at least 32 characters"
 _AGENT_CREDENTIAL_REQUIRED_MSG = "agent_token is required unless the OAuth resource server is enabled"
 _STDIO_CREDENTIAL_REQUIRED_MSG = "stdio transport requires the static agent token"
 _OAUTH_ENABLED_REQUIRES_ISSUER_MSG = "oauth.enabled requires an issuer URL"
+_OAUTH_ENABLED_REQUIRES_INTROSPECTION_URL_MSG = "oauth.enabled requires an introspection URL"
 _LISTEN_PORT_RESERVED = (
     "listen_port must differ from the health (8080) and dashboard (8090) ports"
 )
@@ -44,8 +45,11 @@ class McpOAuthConfig(BaseModel):
 
     @model_validator(mode="after")
     def _enabled_requires_issuer(self) -> McpOAuthConfig:
-        if self.enabled and self.issuer is None:
-            raise ValueError(_OAUTH_ENABLED_REQUIRES_ISSUER_MSG)
+        if self.enabled:
+            if self.issuer is None:
+                raise ValueError(_OAUTH_ENABLED_REQUIRES_ISSUER_MSG)
+            if self.introspection_url is None:
+                raise ValueError(_OAUTH_ENABLED_REQUIRES_INTROSPECTION_URL_MSG)
         return self
 
     @classmethod

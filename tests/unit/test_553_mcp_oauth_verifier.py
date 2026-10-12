@@ -48,15 +48,17 @@ def _verifier(
     return verifier, requests
 
 
-def _active_payload() -> bytes:
-    return json.dumps({
+def _active_payload(**overrides: object) -> bytes:
+    payload: dict[str, object] = {
         "active": True,
         "client_id": "agent-7",
         "scope": "coordinare:mcp coordinare:write",
         "exp": _TEST_EXP,
         "sub": "agent-7",
         "aud": "https://mcp.example.com/mcp",
-    }).encode()
+    }
+    payload.update(overrides)
+    return json.dumps(payload).encode()
 
 
 async def test_active_token_maps_to_access_token() -> None:
@@ -123,3 +125,44 @@ async def test_without_client_credentials_no_auth_header() -> None:
     )
     assert await verifier.verify_token(TOKEN) is not None
     assert "Authorization" not in requests[0].headers
+
+
+async def test_active_as_string_never_admits() -> None:
+    verifier, _ = _verifier([httpx.Response(200, content=b'{"active": "false"}')])
+    assert await verifier.verify_token(TOKEN) is None
+
+
+async def test_json_array_payload_fails_closed() -> None:
+    verifier, _ = _verifier([httpx.Response(200, content=b"[]")])
+    with structlog.testing.capture_logs() as captured:
+        assert await verifier.verify_token(TOKEN) is None
+    assert any(log.get("event") == "mcp_oauth.introspection_failed" for log in captured)
+
+
+async def test_null_payload_fails_closed() -> None:
+    verifier, _ = _verifier([httpx.Response(200, content=b"null")])
+    with structlog.testing.capture_logs() as captured:
+        assert await verifier.verify_token(TOKEN) is None
+    assert any(log.get("event") == "mcp_oauth.introspection_failed" for log in captured)
+
+
+async def test_non_int_exp_fails_closed() -> None:
+    verifier, _ = _verifier([httpx.Response(200, content=_active_payload(exp="abc"))])
+    with structlog.testing.capture_logs() as captured:
+        assert await verifier.verify_token(TOKEN) is None
+    assert any(log.get("event") == "mcp_oauth.introspection_failed" for log in captured)
+
+
+async def test_audience_list_single_entry_maps_to_resource() -> None:
+    verifier, _ = _verifier(
+        [httpx.Response(200, content=_active_payload(aud=["https://mcp.example.com/mcp"]))],
+        resource_server_url="https://mcp.example.com/mcp",
+    )
+    access = await verifier.verify_token(TOKEN)
+    assert access is not None
+    assert access.resource == "https://mcp.example.com/mcp"
+
+
+async def test_non_string_audience_denies() -> None:
+    verifier, _ = _verifier([httpx.Response(200, content=_active_payload(aud=123))])
+    assert await verifier.verify_token(TOKEN) is None

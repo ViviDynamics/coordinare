@@ -34,9 +34,11 @@ access without changing the tool surface.
 A `McpOAuthConfig` block under `McpServerConfig.oauth` (or equivalent config
 surface) controls the mode. Default state is `enabled: false` with no issuer;
 the server boots in static-token mode byte-identically to spec 552 when the
-block is absent. Enabling requires an issuer URL. Settings include:
-introspection endpoint URL (defaulting to `<issuer>/.well-known/openid-configuration`
-discovery or an explicit URL), introspection client credentials (client_id /
+block is absent. Enabling requires an issuer URL and an explicit introspection
+endpoint URL (discovery via `<issuer>/.well-known/openid-configuration` is
+deliberately not implemented: the introspection URL is deploy-time
+configuration, and requiring it explicitly fails at boot rather than per
+request). Settings include: introspection client credentials (client_id /
 client_secret, RFC 7662 section 2.3), RFC 8707 resource-server URL, required
 scopes, and a read timeout. All settings round-trip through the `from_env`
 pattern (`COORDINARE_MCP_OAUTH_*`).

@@ -123,8 +123,8 @@ def _audit_wrapped(tool: ToolDefinition, handler: Any) -> Any:
                 action=action,
                 outcome="error",
                 error_kind=type(exc).__name__,
-                duration_ms=round((time.perf_counter() - started) * 1000),
                 **identity,
+                duration_ms=round((time.perf_counter() - started) * 1000),
             )
             raise
         error_kind: str | None = None
@@ -139,8 +139,8 @@ def _audit_wrapped(tool: ToolDefinition, handler: Any) -> Any:
             action=action,
             outcome=outcome,
             error_kind=error_kind,
-            duration_ms=round((time.perf_counter() - started) * 1000),
             **identity,
+            duration_ms=round((time.perf_counter() - started) * 1000),
         )
         return result
 
