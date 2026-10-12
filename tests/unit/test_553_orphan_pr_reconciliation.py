@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.config import OrphanPrConfig, ProjectConfiguration
+from coordinare.services.orphan_pr import is_terminal_card_status, resolve_pr_to_card
 from coordinare.services.github import CLOSE_PULL_REQUEST_MUTATION, LIST_OPEN_PULL_REQUESTS_QUERY, GitHubService
 from coordinare.services.fake_github import FakeGitHubService
 
@@ -138,4 +139,63 @@ async def test_real_close_pull_request_parses_state() -> None:
     result = await service.close_pull_request("PR_k1")
     assert result == {"closed": True, "id": "PR_k1"}
     assert "closePullRequest" in CLOSE_PULL_REQUEST_MUTATION
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — attribution: open PR → completed card
+# ---------------------------------------------------------------------------
+
+_CARDS = {
+    "PVTI_1": {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse", "pr_url": "https://fake/pr/22",
+    },
+    "PVTI_2": {
+        "id": "PVTI_2", "status": "TODO", "issue_number": 20,
+        "content_node_id": "I_2", "title": "other", "pr_url": None,
+    },
+}
+
+
+def test_attribution_via_canonical_session_branch() -> None:
+    pr = {"id": "PR_a", "number": 3, "head_ref": "coordinare/PVTI_1/add-collapse", "body": ""}
+    att = resolve_pr_to_card(pr, _CARDS)
+    assert att.card_item_id == "PVTI_1"
+    assert att.method == "session_branch"
+
+
+def test_attribution_via_legacy_session_branch() -> None:
+    pr = {"id": "PR_a", "number": 21, "head_ref": "conductor/PVTI_1/080-t037-add-collapse", "body": ""}
+    att = resolve_pr_to_card(pr, _CARDS)
+    assert att.card_item_id == "PVTI_1"
+    assert att.method == "session_branch"
+
+
+def test_attribution_via_body_issue_reference() -> None:
+    pr = {"id": "PR_a", "number": 3, "head_ref": "feature/foo", "body": "Closes #19."}
+    att = resolve_pr_to_card(pr, _CARDS)
+    assert att.card_item_id == "PVTI_1"
+    assert att.method == "body_reference"
+
+
+def test_attribution_via_body_repo_qualified_reference() -> None:
+    pr = {"id": "PR_a", "number": 3, "head_ref": "feature/foo", "body": "see acme/repo#20"}
+    att = resolve_pr_to_card(pr, _CARDS)
+    assert att.card_item_id == "PVTI_2"
+    assert att.method == "body_reference"
+
+
+def test_attribution_unresolved() -> None:
+    pr = {"id": "PR_a", "number": 3, "head_ref": "feature/foo", "body": "no refs here"}
+    att = resolve_pr_to_card(pr, _CARDS)
+    assert att.card_item_id is None
+    assert att.method == "unresolved"
+
+
+def test_terminal_card_status_recognition() -> None:
+    assert is_terminal_card_status("DONE")
+    assert is_terminal_card_status("Closed")
+    assert not is_terminal_card_status("TODO")
+    assert not is_terminal_card_status("IN_REVIEW")
+    assert not is_terminal_card_status(None)
 
