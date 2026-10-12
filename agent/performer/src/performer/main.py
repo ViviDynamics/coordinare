@@ -1276,6 +1276,22 @@ async def _handle_backend_parse_failure(
     """
     max_retries = settings.BACKEND_PARSE_RETRIES if settings else get_settings().BACKEND_PARSE_RETRIES
     is_json_contract_role = _json_required_role(perf.role)
+    # Issue #83: performer stderr is reaped with the container, so this
+    # daemon-visible log is the only durable evidence of the captured
+    # output's shape (the error_reason preview alone cannot show whether
+    # the head or the tail was lost). Emit on EVERY parse failure.
+    # Redact the complete value BEFORE slicing: a credential crossing the
+    # 50-char boundary survives both truncated fragments otherwise.
+    redacted_raw = _redact_secrets(raw or "")
+    log.warning(
+        "backend.parse_failure.raw_shape",
+        stage=stage_label,
+        role=perf.role,
+        length=len(raw or ""),
+        has_open_brace=bool(raw) and "{" in raw,
+        head=redacted_raw[:50],
+        tail=redacted_raw[-50:],
+    )
     # Copilot round 4: ``raw`` is untrusted backend output; run it through
     # the existing secret-pattern redactor before logging it or embedding
     # it in perf.error_reason (which propagates to coordinare-side logs,
