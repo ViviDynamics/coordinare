@@ -519,13 +519,13 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
     state["github_service"] = github
     state["config"] = config
 
-    seen: list[tuple[Any, Any, Any]] = []
+    seen: list[tuple[Any, Any, Any, Any]] = []
 
     class StopSweepError(Exception):
         pass
 
-    async def _spy(g: Any, board: Any, cfg: Any) -> list[Any]:
-        seen.append((g, board, cfg))
+    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None) -> list[Any]:
+        seen.append((g, board, cfg, active_card_ids))
         raise StopSweepError
 
     monkeypatch.setattr(check_board_module, "run_orphan_pr_sweep", _spy)
@@ -536,6 +536,7 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
     assert len(seen) == 1
     assert seen[0][0] is github
     assert seen[0][2] is config.orphan_pr
+    assert seen[0][3] == set()
 
 
 @pytest.mark.asyncio
@@ -563,3 +564,205 @@ async def test_check_board_sweep_disabled_never_reads_github(monkeypatch: pytest
 
     github.poll_board.assert_awaited_once()
     github.list_open_pull_requests.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Review round 1 — Copilot findings (qualifier validation, live-session
+# guard, merged=False gate, pagination, self-URL comment, bare-close guard)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_rejects_cross_repo_qualified_reference() -> None:
+    cards = {
+        "PVTI_1": {"id": "PVTI_1", "status": "DONE", "issue_number": 19, "title": "x"},
+    }
+    base = {
+        "id": "PR_9", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc",
+    }
+    attribution = resolve_pr_to_card(
+        {**base, "body": "Fixes other/repo#19"}, cards, expected_qualifier="acme/repo",
+    )
+    assert attribution.card_item_id is None
+
+    same_repo = resolve_pr_to_card(
+        {**base, "body": "Fixes acme/repo#19"}, cards, expected_qualifier="acme/repo",
+    )
+    assert same_repo.card_item_id == "PVTI_1"
+
+    unqualified = resolve_pr_to_card(
+        {**base, "body": "Fixes #19"}, cards, expected_qualifier="acme/repo",
+    )
+    assert unqualified.card_item_id == "PVTI_1"
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_cards_with_live_sessions(tmp_path: Any) -> None:
+    fake = FakeGitHubService(bare_repo_path=tmp_path, org="acme", project_name="repo")
+    loser = fake.open_pr(
+        issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/redo",
+    )
+    fake._prs[loser]["merged"] = True
+    orphan = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/loser")
+    board = {
+        "snapshot": {"DONE": ["PVTI_1"]},
+        "titles": {"PVTI_1": "Demo"},
+        "issue_numbers": {"PVTI_1": 1},
+    }
+    cfg = OrphanPrConfig(enabled=True, sweep=True)
+
+    decisions = await run_orphan_pr_sweep(
+        fake, board, cfg, active_card_ids={"PVTI_1"},
+    )
+
+    assert [d.outcome for d in decisions] == ["skipped-active"]
+    assert fake._prs[orphan]["closed"] is False
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_reconciliation_when_merge_reported_not_merged() -> None:
+    from coordinare.graph.nodes.merge_pr import merge_pr
+    from coordinare.graph.state import initial_state
+
+    class _NotMergedGitHub(_MergeGitHub):
+        async def squash_merge(self, pr_id: str) -> dict[str, Any]:
+            return {"merged": False}
+
+    github = _NotMergedGitHub([dict(_LOSER)])
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = SimpleNamespace(
+        orphan_pr=OrphanPrConfig(enabled=True, completion_reconciliation=True),
+    )
+    state["current_card"] = {
+        "id": "PVTI_1",
+        "pr_node_id": "PR_WINNER",
+        "pr_url": "https://github.com/acme/repo/pull/22",
+        "status": "IN_REVIEW",
+    }
+
+    await merge_pr(state)
+
+    assert github.closed == []
+    assert github.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_comment_failure_defers_close_to_next_cycle(tmp_path: Any) -> None:
+    fake = FakeGitHubService(bare_repo_path=tmp_path, org="acme", project_name="repo")
+    fake._prs["loser"] = {
+        "id": "loser", "number": 21, "url": "https://fake/acme/repo/pull/21",
+        "head_ref": "coordinare/PVTI_1/loser", "base_ref": "main",
+        "body": "", "comments": [], "reviews": [], "merged": False, "closed": False,
+    }
+
+    async def _boom(subject_id: str, body: str) -> dict[str, Any]:
+        raise RuntimeError("transient")
+
+    fake.add_comment = _boom  # type: ignore[method-assign]
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 1, "title": "Demo",
+        "pr_url": "https://fake/acme/repo/pull/22",
+    }
+    decisions = await close_superseded_prs(fake, card, [fake._prs["loser"]])
+
+    assert len(decisions) == 1
+    assert decisions[0].outcome == "skipped-comment-failed"
+    assert decisions[0].closed_ok is False
+
+
+@pytest.mark.asyncio
+async def test_sweep_closes_board_pr_url_orphan_without_self_reference(tmp_path: Any) -> None:
+    fake = FakeGitHubService(bare_repo_path=tmp_path, org="acme", project_name="repo")
+    orphan = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/loser")
+    orphan_url = fake._prs[orphan]["url"]
+    posted: list[str] = []
+
+    async def _capture(subject_id: str, body: str) -> dict[str, Any]:
+        posted.append(body)
+        return {"comment": "OK"}
+
+    fake.add_comment = _capture  # type: ignore[method-assign]
+    board = {
+        "snapshot": {"DONE": ["PVTI_1"]},
+        "titles": {"PVTI_1": "Demo"},
+        "issue_numbers": {"PVTI_1": 1},
+        "pr_urls": {"PVTI_1": orphan_url},
+    }
+    cfg = OrphanPrConfig(enabled=True, sweep=True)
+    decisions = await run_orphan_pr_sweep(fake, board, cfg, active_card_ids=set())
+
+    assert [d.outcome for d in decisions] == ["closed"]
+    assert fake._prs[orphan]["closed"] is True
+    assert len(posted) == 1
+    assert "completed via" not in posted[0]
+
+
+@pytest.mark.asyncio
+async def test_list_open_pull_requests_paginates_with_cap() -> None:
+    from coordinare.services.github import GitHubService
+
+    service = GitHubService(token="test", org="acme", project_number=1)
+
+    def _page(nums: list[int], has_next: bool, cursor: str = "CUR") -> dict[str, Any]:
+        return {
+            "repository": {
+                "pullRequests": {
+                    "nodes": [
+                        {
+                            "id": f"PR_{n}",
+                            "number": n,
+                            "url": f"https://github.com/acme/repo/pull/{n}",
+                            "headRefName": f"coordinare/PVTI_{n}/x",
+                            "body": "",
+                        }
+                        for n in nums
+                    ],
+                    "pageInfo": {"endCursor": cursor, "hasNextPage": has_next},
+                },
+            },
+        }
+
+    pages = [
+        _page(list(range(100, 200)), True),
+        _page(list(range(200, 290)), False),
+    ]
+    calls: list[dict[str, Any]] = []
+
+    async def _execute(_query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        calls.append(variables)
+        return pages[len(calls) - 1]
+
+    service._guarded_execute = _execute  # type: ignore[method-assign]
+    prs = await service.list_open_pull_requests("acme", "repo")
+
+    assert [p["number"] for p in prs] == list(range(100, 290))
+    assert len(calls) == 2
+    assert "after" not in calls[0]
+    assert calls[1]["after"] == "CUR"
+
+
+@pytest.mark.asyncio
+async def test_list_open_pull_requests_warns_on_truncation() -> None:
+    from coordinare.services.github import GitHubService
+
+    service = GitHubService(token="test", org="acme", project_number=1)
+    truncated_page = {
+        "repository": {
+            "pullRequests": {
+                "nodes": [
+                    {"id": f"PR_{n}", "number": n, "url": f"u{n}", "headRefName": "b", "body": ""}
+                    for n in range(300, 400)
+                ],
+                "pageInfo": {"endCursor": "MORE", "hasNextPage": True},
+            },
+        },
+    }
+
+    async def _execute(_query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        return truncated_page
+
+    service._guarded_execute = _execute  # type: ignore[method-assign]
+    prs = await service.list_open_pull_requests("acme", "repo")
+
+    assert len(prs) == 200  # 2 pages x 100 = cap

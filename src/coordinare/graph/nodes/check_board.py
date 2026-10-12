@@ -2155,8 +2155,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         return state
 
     # 553 — per-cycle janitor sweep (opt-in; the disabled path performs no
-    # reconciliation GitHub reads at all).
-    await run_orphan_pr_sweep(github, board, getattr(config, "orphan_pr", None))
+    # reconciliation GitHub reads at all). Cards with a live session are
+    # never touched (FR-006), even when the board snapshot shows terminal.
+    await run_orphan_pr_sweep(
+        github, board, getattr(config, "orphan_pr", None),
+        active_card_ids=set((state.get("active_sessions") or {}).keys()),
+    )
 
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}

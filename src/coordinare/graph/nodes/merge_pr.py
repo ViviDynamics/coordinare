@@ -99,8 +99,11 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     _set_current_card(state, card)
 
     # 553 — opt-in completion reconciliation: close other open PRs that
-    # still point at this card. Disabled path performs no GitHub reads.
-    await reconcile_completed_card(github, state.get("config"), card)
+    # still point at this card. Only meaningful when the merge actually
+    # landed (squash_merge can report merged=False without raising); the
+    # disabled path performs no GitHub reads.
+    if merge_result.get("merged", True):
+        await reconcile_completed_card(github, state.get("config"), card)
 
     # 047: Trigger rebase round for all other in-flight branches after merge.
     # The new main HEAD is the merge commit OID we just received.

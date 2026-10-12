@@ -32,8 +32,9 @@ logger = structlog.get_logger(__name__)
 # ``conductor/`` prefix predates the 076 canonicalization and still identifies
 # a card branch (observed in live deployments: conductor/PVTI_.../<slug>).
 _SESSION_BRANCH_RE = re.compile(r"^(?:coordinare|conductor)/(?P<node_id>PVTI_[A-Za-z0-9_-]+?)/")
-# Issue references in a PR body: "#19" or "org/repo#19".
-_BODY_ISSUE_RE = re.compile(r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(\d+)")
+# Issue references in a PR body: "#19" or "org/repo#19" (qualifier captured so
+# cross-repo references cannot attribute to this repo's cards).
+_BODY_ISSUE_RE = re.compile(r"(?:(?P<qualifier>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>\d+)")
 
 
 def is_terminal_card_status(status: str | None) -> bool:
@@ -89,13 +90,17 @@ def build_close_comment(
 def resolve_pr_to_card(
     pr: dict[str, Any],
     board_cards: dict[str, dict[str, Any]],
+    expected_qualifier: str | None = None,
 ) -> OrphanAttribution:
     """Attribute one open PR to a board card (data-model §2).
 
     ``board_cards`` maps project-item id → card dict with at least ``id``,
     ``status``, ``issue_number``, ``content_node_id``. Resolution chain:
     session-branch node id first (strongest signal), then the PR body's issue
-    reference. Unresolved PRs are never touched (FR-006).
+    reference. Repository-qualified references (``org/repo#19``) only count
+    when the qualifier matches ``expected_qualifier``; unqualified references
+    are accepted (coordinare-authored bodies reference their own issues).
+    Unresolved PRs are never touched (FR-006).
     """
     head_ref = pr.get("head_ref")
     if isinstance(head_ref, str):
@@ -109,7 +114,10 @@ def resolve_pr_to_card(
     body = pr.get("body")
     if isinstance(body, str):
         for match in _BODY_ISSUE_RE.finditer(body):
-            issue_number = int(match.group(1))
+            qualifier = match.group("qualifier")
+            if qualifier and expected_qualifier and qualifier != expected_qualifier:
+                continue
+            issue_number = int(match.group("number"))
             for item_id, card in board_cards.items():
                 if card.get("issue_number") == issue_number:
                     return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
@@ -151,16 +159,18 @@ async def run_orphan_pr_sweep(
     github: GitHubServiceProtocol,
     board: dict[str, Any],
     orphan_cfg: OrphanPrConfig | None,
+    active_card_ids: set[str] | None = None,
 ) -> list[OrphanPrDecision]:
     """Per-cycle janitor (US-2): close open PRs of terminal-card work.
 
-    Disabled → returns [] without touching GitHub at all (byte-identical to a
-    pre-553 build, SC-003). Enabled → one GitHub read (open-PR inventory),
-    then attribution against the board snapshot supplied by the caller; every
-    evaluated PR yields one ``orphan_pr.decision`` log line (FR-005).
+    Disabled → returns [] silently without touching GitHub at all
+    (byte-identical to a pre-553 build, SC-003). Enabled → one GitHub read
+    (open-PR inventory), then attribution against the board snapshot supplied
+    by the caller; every evaluated PR yields one ``orphan_pr.decision`` log
+    line (FR-005). Cards with a live session (FR-006) are never touched even
+    when the board snapshot shows a terminal column.
     """
     if orphan_cfg is None or not (orphan_cfg.enabled and orphan_cfg.sweep):
-        logger.debug("orphan_pr.disabled")
         return []
     owner = getattr(github, "_org", None) or getattr(github, "org", None)
     repo = getattr(github, "_project_name", None) or getattr(github, "project_name", None)
@@ -169,19 +179,21 @@ async def run_orphan_pr_sweep(
         return []
     open_prs = await github.list_open_pull_requests(owner, repo)
     cards = _cards_from_board(board)
+    qualifier = f"{owner}/{repo}"
+    live = active_card_ids or set()
     decisions: list[OrphanPrDecision] = []
     for pr in open_prs:
-        attribution = resolve_pr_to_card(pr, cards)
+        attribution = resolve_pr_to_card(pr, cards, expected_qualifier=qualifier)
         if attribution.card_item_id is None:
             decisions.append(_log_decision(_decision(pr, None, attribution.method, "skipped-unresolved")))
             continue
         card = cards[attribution.card_item_id]
-        if not is_terminal_card_status(card.get("status")):
+        if not is_terminal_card_status(card.get("status")) or attribution.card_item_id in live:
             decisions.append(
                 _log_decision(_decision(pr, attribution.card_item_id, attribution.method, "skipped-active")),
             )
             continue
-        decisions.extend(await close_superseded_prs(github, card, [pr]))
+        decisions.extend(await close_superseded_prs(github, card, [pr], expected_qualifier=qualifier))
     return decisions
 
 
@@ -193,7 +205,9 @@ class OrphanPrDecision:
     pr_url: str | None
     card_item_id: str | None
     basis: Literal["session_branch", "body_reference", "unresolved"]
-    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"]
+    outcome: Literal[
+        "closed", "skipped-active", "skipped-unresolved", "disabled", "skipped-comment-failed",
+    ]
     comment_posted: bool = False
     closed_ok: bool = False
 
@@ -216,7 +230,9 @@ def _decision(
     pr: dict[str, Any],
     card_item_id: str | None,
     basis: Literal["session_branch", "body_reference", "unresolved"],
-    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"],
+    outcome: Literal[
+        "closed", "skipped-active", "skipped-unresolved", "disabled", "skipped-comment-failed",
+    ],
 ) -> OrphanPrDecision:
     return OrphanPrDecision(
         pr_number=pr.get("number"),
@@ -231,31 +247,36 @@ async def close_superseded_prs(
     github: GitHubServiceProtocol,
     card: dict[str, Any],
     open_prs: list[dict[str, Any]],
+    expected_qualifier: str | None = None,
 ) -> list[OrphanPrDecision]:
-    """Close every open PR attributable to a completed *card* except the winner.
+    """Close every open PR attributable to a completed *card*.
 
-    US-1 completion-time path. ``open_prs`` is the ``list_open_pull_requests``
-    snapshot taken by the caller. The card's own ``pr_url`` (the winning PR) is
-    never touched; unresolvable PRs are never touched (FR-006); the card's
-    terminal state is re-checked here so a stale snapshot cannot close work
-    that reopened between the board read and the close.
+    US-1 completion-time path, also reused per-PR by the US-2 sweep.
+    ``open_prs`` is the ``list_open_pull_requests`` snapshot taken by the
+    caller; a merged winner is never in it (it is not open), so every
+    attributable open PR here is superseded work. The card's terminal state
+    is re-checked so a stale snapshot cannot close work that reopened between
+    the board read and the close. A failed explanatory comment defers the
+    close to the next cycle (FR-008: no bare closes).
     """
     card_id = str(card.get("id", ""))
     board_cards: dict[str, dict[str, Any]] = {card_id: card} if card_id else {}
     decisions: list[OrphanPrDecision] = []
     for pr in open_prs:
-        url = pr.get("url")
-        if isinstance(url, str) and url == card.get("pr_url"):
-            decisions.append(_log_decision(_decision(pr, card_id, "session_branch", "skipped-active")))
-            continue
-        attribution = resolve_pr_to_card(pr, board_cards)
+        attribution = resolve_pr_to_card(pr, board_cards, expected_qualifier=expected_qualifier)
         if attribution.card_item_id is None:
             decisions.append(_log_decision(_decision(pr, None, attribution.method, "skipped-unresolved")))
             continue
         if not is_terminal_card_status(card.get("status")):
             decisions.append(_log_decision(_decision(pr, card_id, attribution.method, "skipped-active")))
             continue
-        comment = build_close_comment(card, attribution.method)
+        # The board's pr_url can be an OPEN cross-reference (poll_board prefers
+        # open over merged), i.e. this very PR — naming it as the superseding
+        # winner would be false. Only name a URL that is not this PR's.
+        comment_card = card
+        if pr.get("url") and pr.get("url") == card.get("pr_url"):
+            comment_card = {**card, "pr_url": None}
+        comment = build_close_comment(comment_card, attribution.method)
         comment_posted = True
         try:
             await github.add_comment(pr["id"], comment)
@@ -263,7 +284,16 @@ async def close_superseded_prs(
             logger.warning(
                 "orphan_pr.comment_failed", pr_number=pr.get("number"), error=str(exc),
             )
-            comment_posted = False
+            decisions.append(
+                _log_decision(
+                    replace(
+                        _decision(pr, card_id, attribution.method, "skipped-comment-failed"),
+                        comment_posted=False,
+                        closed_ok=False,
+                    ),
+                ),
+            )
+            continue
         result = await github.close_pull_request(pr["id"])
         closed_ok = bool(result.get("closed", False))
         if not closed_ok:
@@ -302,4 +332,6 @@ async def reconcile_completed_card(
         logger.warning("orphan_pr.completion_no_repo_context")
         return []
     open_prs = await github.list_open_pull_requests(owner, repo)
-    return await close_superseded_prs(github, card, open_prs)
+    return await close_superseded_prs(
+        github, card, open_prs, expected_qualifier=f"{owner}/{repo}",
+    )

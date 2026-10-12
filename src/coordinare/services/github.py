@@ -300,15 +300,19 @@ mutation CloseIssue($issueId: ID!) {
 # PR node id (needed by closePullRequest) and the body (used to attribute the
 # PR to its card via issue references).
 LIST_OPEN_PULL_REQUESTS_QUERY = """
-query ListOpenPullRequests($owner: String!, $repo: String!, $first: Int!) {
+query ListOpenPullRequests($owner: String!, $repo: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
-    pullRequests(first: $first, states: [OPEN], orderBy: { field: CREATED_AT, direction: DESC }) {
+    pullRequests(first: $first, states: [OPEN], orderBy: { field: CREATED_AT, direction: DESC }, after: $after) {
       nodes {
         id
         number
         url
         headRefName
         body
+      }
+      pageInfo {
+        endCursor
+        hasNextPage
       }
     }
   }
@@ -2282,7 +2286,7 @@ class GitHubService(CardIdentityMap):
         return matches
 
     async def list_open_pull_requests(
-        self, owner: str, repo: str, first: int = 50,
+        self, owner: str, repo: str, first: int = 100,
     ) -> list[dict[str, Any]]:
         """553: open-PR inventory for orphan reconciliation (issue #78).
 
@@ -2290,37 +2294,55 @@ class GitHubService(CardIdentityMap):
         list on any error (callers treat as "nothing to reconcile"). Uses
         GraphQL because the reconciliation needs both the PR node id (for the
         close mutation) and the body (for issue-reference attribution), which
-        REST's search-only PR listing does not combine.
+        REST's search-only PR listing does not combine. Pages newest-first up
+        to a bounded 200-PR cap and warns on truncation.
         """
-        variables: dict[str, Any] = {"owner": owner, "repo": repo, "first": first}
-        try:
-            result = await self._guarded_execute(LIST_OPEN_PULL_REQUESTS_QUERY, variables)
-        except Exception as exc:
-            logger.warning(
-                "github.list_open_pull_requests_failed",
-                owner=owner,
-                repo=repo,
-                error=str(exc),
-            )
-            return []
-        nodes = (
-            result.get("repository", {}).get("pullRequests", {}).get("nodes", [])
-            if isinstance(result, dict)
-            else []
-        )
-        if not isinstance(nodes, list):
-            return []
         out: list[dict[str, Any]] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            out.append({
-                "id": str(node.get("id", "")),
-                "number": node.get("number"),
-                "url": node.get("url"),
-                "head_ref": str(node.get("headRefName", "")),
-                "body": str(node.get("body", "") or ""),
-            })
+        cursor: str | None = None
+        for _page in range(2):  # cap: 2 x 100 = 200 newest open PRs
+            variables: dict[str, Any] = {"owner": owner, "repo": repo, "first": first}
+            if cursor:
+                variables["after"] = cursor
+            try:
+                result = await self._guarded_execute(LIST_OPEN_PULL_REQUESTS_QUERY, variables)
+            except Exception as exc:
+                logger.warning(
+                    "github.list_open_pull_requests_failed",
+                    owner=owner,
+                    repo=repo,
+                    error=str(exc),
+                )
+                return []
+            payload = (
+                result.get("repository", {}).get("pullRequests", {})
+                if isinstance(result, dict)
+                else {}
+            )
+            nodes = payload.get("nodes", [])
+            if not isinstance(nodes, list):
+                return out
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                out.append({
+                    "id": str(node.get("id", "")),
+                    "number": node.get("number"),
+                    "url": node.get("url"),
+                    "head_ref": str(node.get("headRefName", "")),
+                    "body": str(node.get("body", "") or ""),
+                })
+            page_info = payload.get("pageInfo") or {}
+            if not isinstance(page_info, dict) or not page_info.get("hasNextPage"):
+                return out
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                return out
+        logger.warning(
+            "github.list_open_pull_requests_truncated",
+            owner=owner,
+            repo=repo,
+            returned=len(out),
+        )
         return out
 
     async def close_pull_request(self, pr_id: str) -> dict[str, Any]:
