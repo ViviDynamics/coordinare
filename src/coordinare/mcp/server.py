@@ -11,19 +11,27 @@ import asyncio
 import functools
 import json
 import time
+from collections.abc import MutableMapping
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
+from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.mcpserver import MCPServer
+from starlette.middleware.authentication import AuthenticationMiddleware
 
 from coordinare.mcp.audit import emit_tool_invoked
 from coordinare.mcp.auth import check_bearer, credential_fingerprint
 from coordinare.mcp.client import DashboardClient, set_client
+from coordinare.mcp.oauth import IntrospectionTokenVerifier
 from coordinare.mcp.tools import REGISTRY, ToolDefinition
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
+    from mcp.server.auth.provider import TokenVerifier
     from pydantic import SecretStr
+    from starlette.applications import Starlette
 
     from coordinare.mcp.config import McpServerConfig
 
@@ -31,6 +39,9 @@ log = structlog.get_logger(__name__)
 
 #: Identity of the caller, derived from the bearer token per request (US6).
 _caller_fingerprint: ContextVar[str] = ContextVar("mcp_caller_fingerprint", default="")
+
+#: Principal identity of the caller in OAuth mode (553 FR4); empty in static mode.
+_caller_client_id: ContextVar[str] = ContextVar("mcp_caller_client_id", default="")
 
 _401_BODY = json.dumps(
     {
@@ -101,6 +112,9 @@ def _audit_wrapped(tool: ToolDefinition, handler: Any) -> Any:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         action = _extract_action(args, kwargs)
         started = time.perf_counter()
+        identity: dict[str, Any] = {"credential_fingerprint": _caller_fingerprint.get()}
+        if principal := _caller_client_id.get():
+            identity["caller_client_id"] = principal
         try:
             result = await handler(*args, **kwargs)
         except Exception as exc:
@@ -109,8 +123,8 @@ def _audit_wrapped(tool: ToolDefinition, handler: Any) -> Any:
                 action=action,
                 outcome="error",
                 error_kind=type(exc).__name__,
-                credential_fingerprint=_caller_fingerprint.get(),
                 duration_ms=round((time.perf_counter() - started) * 1000),
+                **identity,
             )
             raise
         error_kind: str | None = None
@@ -125,8 +139,8 @@ def _audit_wrapped(tool: ToolDefinition, handler: Any) -> Any:
             action=action,
             outcome=outcome,
             error_kind=error_kind,
-            credential_fingerprint=_caller_fingerprint.get(),
             duration_ms=round((time.perf_counter() - started) * 1000),
+            **identity,
         )
         return result
 
@@ -153,13 +167,75 @@ def _build_mcp_server(config: McpServerConfig) -> MCPServer:
     return mcp_server
 
 
-def build_asgi_app(config: McpServerConfig) -> Any:
+_STATIC_CREDENTIAL_REQUIRED_MSG = "static-token mode requires an agent token"
+_STDIO_CREDENTIAL_REQUIRED_MSG = "stdio transport requires the static agent token"
+
+
+class _OAuthAuditFingerprint:
+    """Set the per-request audit identity from the authenticated access token (553 FR4).
+
+    Runs inside ``AuthenticationMiddleware``, so ``scope["user"]`` already
+    carries a verified ``AccessToken``; the fingerprint and principal reach the
+    audit context via the module contextvars.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        user = scope.get("user")
+        access_token = getattr(user, "access_token", None)
+        if access_token is not None:
+            _caller_fingerprint.set(credential_fingerprint(access_token.token))
+            _caller_client_id.set(getattr(access_token, "client_id", "") or "")
+        await self._app(scope, receive, send)
+
+
+class _RequireAuth(RequireAuthMiddleware):
+    """SDK ``RequireAuthMiddleware`` with non-HTTP scopes (lifespan) passed through."""
+
+    async def __call__(
+        self,
+        scope: MutableMapping[str, Any],
+        receive: Any,
+        send: Any,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+def build_asgi_app(
+    config: McpServerConfig,
+    *,
+    token_verifier: TokenVerifier | None = None,
+) -> Starlette:
     """Assemble the MCP ASGI app: registry tools, streamable HTTP, bearer gate."""
     mcp_server = _build_mcp_server(config)
-    return BearerAuthMiddleware(
-        mcp_server.streamable_http_app(stateless_http=True, streamable_http_path="/mcp"),
-        config.agent_token,
+    streamable = mcp_server.streamable_http_app(stateless_http=True, streamable_http_path="/mcp")
+    streamable.middleware_stack = streamable.build_middleware_stack()
+    if config.oauth.enabled:
+        verifier = token_verifier if token_verifier is not None else IntrospectionTokenVerifier(config.oauth)
+        streamable.middleware_stack = AuthenticationMiddleware(
+            _RequireAuth(
+                _OAuthAuditFingerprint(streamable.middleware_stack),
+                required_scopes=config.oauth.required_scopes,
+            ),
+            backend=BearerAuthBackend(
+                verifier,
+                resource_server_url=config.oauth.resource_server_url,
+            ),
+        )
+        return streamable
+    agent_token = config.agent_token
+    if agent_token is None:
+        raise ValueError(_STATIC_CREDENTIAL_REQUIRED_MSG)
+    streamable.middleware_stack = BearerAuthMiddleware(
+        streamable.middleware_stack,
+        agent_token,
     )
+    return streamable
 
 
 def run_stdio(config: McpServerConfig) -> None:
@@ -169,8 +245,11 @@ def run_stdio(config: McpServerConfig) -> None:
     happens at the shell; the audit fingerprint identifies the agent token
     this process runs with (FR5).
     """
+    agent_token = config.agent_token
+    if agent_token is None:
+        raise ValueError(_STDIO_CREDENTIAL_REQUIRED_MSG)
     mcp_server = _build_mcp_server(config)
-    _caller_fingerprint.set(credential_fingerprint(config.agent_token.get_secret_value()))
+    _caller_fingerprint.set(credential_fingerprint(agent_token.get_secret_value()))
     asyncio.run(mcp_server.run_stdio_async())
 
 
