@@ -1024,6 +1024,29 @@ class PerformerDigestPinConfig(BaseModel):
     refresh_seconds: int = Field(default=300, ge=1, le=86400)
 
 
+# ---------------------------------------------------------------------------
+# 553 — Orphaned PR reconciliation (opt-in; default-off)
+# ---------------------------------------------------------------------------
+
+
+class OrphanPrConfig(BaseModel):
+    """553: reconcile open PRs of completed cards (issue #78).
+
+    Opt-in: default-off means byte-identical behavior to a pre-553 build
+    (SC-003). ``completion_reconciliation`` closes superseded open PRs when a
+    card completes via its winning PR; ``sweep`` runs a per-cycle janitor over
+    open PRs whose resolved board card is terminal (DONE/CLOSED). Both
+    ``completion_reconciliation`` and ``sweep`` additionally require
+    ``enabled=True`` so a single master switch can silence the feature.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    completion_reconciliation: bool = False
+    sweep: bool = False
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1159,6 +1182,8 @@ class ProjectConfiguration(BaseSettings):
     bot_identity: BotIdentityConfig = Field(default_factory=BotIdentityConfig)
     env_passthrough: list[str] = Field(default_factory=list)
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
+    # 553 — Orphaned PR reconciliation (opt-in; default-off; see specs/553-...).
+    orphan_pr: OrphanPrConfig = Field(default_factory=OrphanPrConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)
