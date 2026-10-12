@@ -43,10 +43,39 @@ from the same Secret the main container uses. Enabling `mcp` also adds the
 `mcp` port to the Service and a `/mcp` route to the dashboard Ingress when one
 is configured.
 
+### stdio (local agents)
+
+Spec 552 adds a stdio transport for same-machine agents: the MCP JSON-RPC
+session runs over the spawned process's stdin/stdout, so there is no listener,
+no bearer gate, and no port. Boot it with `--transport stdio` (or
+`COORDINARE_MCP_TRANSPORT=stdio`); `--listen-host`/`--listen-port` are HTTP-only
+and rejected with exit code 2. Point Claude Code or OpenCode at it:
+
+```json
+{
+  "mcpServers": {
+    "coordinare": {
+      "command": "/path/to/venv/bin/python",
+      "args": ["-m", "coordinare.mcp", "--transport", "stdio"],
+      "env": {
+        "COORDINARE_MCP_TOKEN": "<32+ chars>",
+        "COORDINARE_MCP_DASHBOARD_TOKEN": "<the dashboard bearer>"
+      }
+    }
+  }
+}
+```
+
+The tool surface, audit lines, and error vocabulary are identical to HTTP; the
+credential fingerprint in `mcp.tool_invoked` is the agent token's, since the
+local pipe replaces the bearer check. The daemon must still be running and
+reachable at `COORDINARE_MCP_DASHBOARD_URL` (default `http://localhost:8090`).
+
 ## Configuration (env)
 
 | Variable | Default | Notes |
 |---|---|---|
+| `COORDINARE_MCP_TRANSPORT` | `http` | `http` or `stdio` (552) |
 | `COORDINARE_MCP_TOKEN` | — | required; agent-facing bearer, min 32 chars |
 | `COORDINARE_MCP_DASHBOARD_TOKEN` | — | required; presented to the dashboard |
 | `COORDINARE_MCP_HOST` | `0.0.0.0` | |
@@ -76,7 +105,10 @@ whose recovery hint is to re-read.
 
 ## Security notes
 
-- Bearer checks are constant-time compares with a 32-character minimum.
+- Bearer checks are constant-time compares with a 32-character minimum. The
+  stdio transport has no bearer gate by design: its boundary is the local
+  process spawn itself, so only run it for same-machine agents you already
+  trust with full operator privilege.
 - The internal hop's token is never echoed into tool results or logs.
 - Secret redaction happens in the dashboard; the MCP layer cannot and does not
   un-redact anything `get_config` returns.
