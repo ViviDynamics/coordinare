@@ -90,19 +90,23 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     else:
         state["commit_summary"] = None
 
+    move_ok = True
     try:
-        await move_card_or_warn(board_provider, str(card.get("id", "")), "DONE")
+        move_ok = await move_card_or_warn(board_provider, str(card.get("id", "")), "DONE")
     except Exception as exc:
         logger.warning("merge_pr.move_card_failed", error=str(exc))
+        move_ok = False
     card["previous_status"] = card.get("status", "IN_REVIEW")
     card["status"] = "DONE"
     _set_current_card(state, card)
 
     # 553 — opt-in completion reconciliation: close other open PRs that
     # still point at this card. Only meaningful when the merge actually
-    # landed (squash_merge can report merged=False without raising); the
-    # disabled path performs no GitHub reads.
-    if merge_result.get("merged", True):
+    # landed (squash_merge can report merged=False without raising) and the
+    # board transition succeeded — otherwise the card is not really terminal
+    # and its PRs stay protected (FR-006). The disabled path performs no
+    # GitHub reads.
+    if merge_result.get("merged", True) and move_ok:
         await reconcile_completed_card(github, state.get("config"), card)
 
     # 047: Trigger rebase round for all other in-flight branches after merge.

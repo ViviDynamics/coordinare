@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.config import OrphanPrConfig, ProjectConfiguration
+from coordinare.services.board_provider import MoveOutcome
 from coordinare.services.fake_github import FakeGitHubService
 from coordinare.services.github import (
     CLOSE_PULL_REQUEST_MUTATION,
@@ -431,8 +432,9 @@ class _MergeGitHub:
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:
         return {"merged": True, "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "t"}}
 
-    async def move_card(self, item_id: str, status: str) -> None:
+    async def move_card(self, item_id: str, status: str) -> MoveOutcome:
         _ = item_id, status
+        return MoveOutcome.ok()
 
     async def list_open_pull_requests(self, owner: str, repo: str, first: int = 50) -> list[dict[str, Any]]:
         self.list_calls += 1
@@ -631,6 +633,36 @@ async def test_merge_pr_skips_reconciliation_when_merge_reported_not_merged() ->
     github = _NotMergedGitHub([dict(_LOSER)])
     state = initial_state()
     state["github_service"] = github
+    state["config"] = SimpleNamespace(
+        orphan_pr=OrphanPrConfig(enabled=True, completion_reconciliation=True),
+    )
+    state["current_card"] = {
+        "id": "PVTI_1",
+        "pr_node_id": "PR_WINNER",
+        "pr_url": "https://github.com/acme/repo/pull/22",
+        "status": "IN_REVIEW",
+    }
+
+    await merge_pr(state)
+
+    assert github.closed == []
+    assert github.list_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_reconciliation_when_board_move_refused() -> None:
+    from coordinare.graph.nodes.merge_pr import merge_pr
+    from coordinare.graph.state import initial_state
+
+    class _RefusingBoard:
+        async def move_card(self, item_id: str, status: str) -> MoveOutcome:
+            _ = item_id, status
+            return MoveOutcome.refused("workflow forbids")
+
+    github = _MergeGitHub([dict(_LOSER)])
+    state = initial_state()
+    state["github_service"] = github
+    state["board_provider"] = _RefusingBoard()
     state["config"] = SimpleNamespace(
         orphan_pr=OrphanPrConfig(enabled=True, completion_reconciliation=True),
     )
