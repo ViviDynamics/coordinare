@@ -1,4 +1,4 @@
-"""Spec 553: OAuth ASGI assembly — SDK bearer stack + per-request fingerprint."""
+"""Spec 553: OAuth ASGI assembly: SDK bearer stack + per-request fingerprint."""
 
 from __future__ import annotations
 

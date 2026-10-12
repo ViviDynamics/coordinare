@@ -2,7 +2,7 @@
 
 Fails closed: any transport, status, or payload failure denies the token with
 one structured ``mcp_oauth.introspection_failed`` line. Token text never
-reaches logs — only error types and payload-derived identities.
+reaches logs; only error types and payload-derived identities.
 """
 
 from __future__ import annotations

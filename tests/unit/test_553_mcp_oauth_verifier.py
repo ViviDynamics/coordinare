@@ -1,9 +1,10 @@
-"""Spec 553: the RFC 7662 introspection token verifier (FR2) — fail closed."""
+"""Spec 553: the RFC 7662 introspection token verifier (FR2), fail closed."""
 
 from __future__ import annotations
 
 import base64
 import json
+from typing import cast
 
 import httpx
 import structlog
@@ -38,7 +39,7 @@ def _verifier(
         outcome = responses[min(len(requests) - 1, len(responses) - 1)]
         if isinstance(outcome, Exception):
             raise outcome
-        return outcome  # type: ignore[return-value]
+        return cast("httpx.Response", outcome)
 
     verifier = IntrospectionTokenVerifier(
         _config(**overrides),

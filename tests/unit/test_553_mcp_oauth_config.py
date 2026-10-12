@@ -1,4 +1,4 @@
-"""Spec 553: OAuth resource-server configuration (FR1) — default off."""
+"""Spec 553: OAuth resource-server configuration (FR1), default off."""
 
 from __future__ import annotations
 
