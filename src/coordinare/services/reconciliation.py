@@ -488,7 +488,9 @@ def detect_wedged_state(
 # Issue #85: phases that legitimately keep no performer container.  A
 # session parked in one of them is not a zombie and must never be swept.
 # Mirrors NON_SLOT_PHASES (check_board.py) plus the watchdog-owned
-# recovery / system_error states.
+# recovery / system_error states and the orchestration retry parks:
+# ``merging`` (merge_pr.py leaves it for the next cycle after a
+# transient GitHub failure) and ``relay_feedback`` (monitor_pr.py).
 _ZOMBIE_EXEMPT_PHASES: frozenset[str] = frozenset({
     "monitoring_pr",
     "blocked",
@@ -497,6 +499,8 @@ _ZOMBIE_EXEMPT_PHASES: frozenset[str] = frozenset({
     "env_blocked",
     "recovery",
     "system_error",
+    "merging",
+    "relay_feedback",
 })
 
 
@@ -702,6 +706,15 @@ async def _classify_active_session(
     agent_dispatch = sess.get("agent_dispatch") or {}
     session_id = agent_dispatch.get("session_id") if isinstance(agent_dispatch, dict) else None
     performer_stage = sess.get("performer_stage")
+
+    # Issue #85: every dispatch (persistent services included) pre-allocates
+    # agent_dispatch.session_id, so a session without one has no adoptable
+    # work in ANY mode.  Fresh-dispatch it before the persistent-mode no-op,
+    # which would otherwise leave the zombie consuming a pipeline slot.
+    if not session_id:
+        return _clear_agent_dispatch_and_return(
+            sess, ReconciliationDecision.FRESH_DISPATCHED, card_id,
+        )
 
     # FR-011: persistent-mode services have no per-job container.
     service = _resolve_service(state, performer_stage, agent_dispatch.get("performer_id")) if performer_stage else None

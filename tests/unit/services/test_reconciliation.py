@@ -162,6 +162,29 @@ async def test_reconciliation_fresh_dispatches_zombie_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_fresh_dispatches_persistent_mode_zombie() -> None:
+    """Copilot round 1: a session with no agent_dispatch.session_id is a
+    zombie in EVERY service mode — every dispatch (persistent included)
+    pre-allocates a session_id — so the persistent-mode no-op must not
+    leave it consuming a pipeline slot."""
+    state: dict = {
+        "active_sessions": {
+            "PVTI_PZ": {
+                "phase": "monitoring_performer",
+                "agent_dispatch": {},
+                "performer_stage": "implementing",
+            },
+        },
+        "performer_services": {"implementing": _MockHTTPService(mode="persistent")},
+    }
+    executor = _MockDockerExecutor()
+    report = await run_startup_reconciliation(state, executor)
+    assert report.decisions["PVTI_PZ"] == ReconciliationDecision.FRESH_DISPATCHED
+    assert state["active_sessions"]["PVTI_PZ"]["agent_dispatch"] == {}
+    assert state["active_sessions"]["PVTI_PZ"]["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_orphan_swept_when_container_has_no_matching_session() -> None:
     """Container exists on host but its session_id label is NOT in the
     snapshot's in-flight sessions → ORPHAN_SWEPT.  We need at least one
@@ -473,6 +496,8 @@ def test_collect_in_flight_sessions_sweeps_zombie_sessions() -> None:
             "PVTI_IDLE": {"phase": "idle", "agent_dispatch": {}},
             "PVTI_DONE": {"phase": "done", "agent_dispatch": {}},
             "PVTI_ENV_BLOCKED": {"phase": "env_blocked", "agent_dispatch": {}},
+            "PVTI_MERGING": {"phase": "merging", "agent_dispatch": {}},
+            "PVTI_RELAY": {"phase": "relay_feedback", "agent_dispatch": {}},
         },
     }
     result = _collect_in_flight_sessions(state)
