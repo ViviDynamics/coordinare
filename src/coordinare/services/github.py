@@ -2332,11 +2332,11 @@ class GitHubService(CardIdentityMap):
         """
         try:
             result = await self._guarded_execute(
-                CLOSE_PULL_REQUEST_MUTATION, {"pullRequestId": pr_id}
+                CLOSE_PULL_REQUEST_MUTATION, {"pullRequestId": pr_id},
             )
         except Exception as exc:
             logger.warning(
-                "github.close_pull_request_failed", pr_id=pr_id, error=str(exc)
+                "github.close_pull_request_failed", pr_id=pr_id, error=str(exc),
             )
             return {"closed": False, "id": pr_id}
         node = result.get("closePullRequest", {}).get("pullRequest", {})
