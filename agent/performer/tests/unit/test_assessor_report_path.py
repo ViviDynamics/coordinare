@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import structlog
 
 from performer.backends.base import BackendStatus
 from performer.config import Settings
@@ -94,6 +95,31 @@ async def test_not_ready_assessment_report_is_returned_and_nothing_is_committed(
     assert resp.report == blocked_report
     assert perf.state == "blocked" and perf.open_questions == ["What audience?"]
     commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_logs_raw_shape_evidence():
+    """Issue #83: every parse failure emits durable evidence of the raw
+    captured output's shape — length, has_open_brace, redacted head/tail —
+    because performer stderr is reaped with the container and the
+    daemon-side fragment is the only surviving trace."""
+    perf = _perf()
+    perf.backend = MagicMock()
+    chopped = 'ufficient": true, "questions": [], "dependencies": []}'
+    perf.backend.get_status.return_value = BackendStatus(state="done", output=chopped)
+    perf.backend.relay_feedback = AsyncMock()
+    perf.backend.start = AsyncMock()
+    settings = Settings(AGENT_BACKEND="codex", AGENT_TIMEOUT=1800)
+
+    with structlog.testing.capture_logs() as cap:
+        await handle_status(_status_msg(), perf, settings)
+
+    shape = [e for e in cap if e.get("event") == "backend.parse_failure.raw_shape"]
+    assert shape, [e.get("event") for e in cap]
+    assert shape[0]["length"] == len(chopped)
+    assert shape[0]["has_open_brace"] is False
+    assert shape[0]["head"].startswith("ufficient")
+    assert shape[0]["tail"].endswith("]}")
 
 
 @pytest.mark.asyncio

@@ -37,11 +37,11 @@ Out:
 - Redaction reuse (`_redact_secrets`) applies to any logged raw-output slices.
 
 ## Tasks
-- [ ] 1. Backend result-event preference: prefer `result` field over accumulator join,
+- [x] 1. Backend result-event preference: prefer `result` field over accumulator join,
       fallback when absent, divergence log when both exist and differ. Failing test:
       backend fed assistant text missing its head chunk plus a `result` event carrying the
       complete text must produce `status.output ==` complete text.
-- [ ] 2. Parse-failure raw-shape evidence log on every `_handle_backend_parse_failure`
+- [x] 2. Parse-failure raw-shape evidence log on every `_handle_backend_parse_failure`
       invocation. Failing test: parse-failure path emits `backend.parse_failure.raw_shape`
       with length and redacted head/tail.
-- [ ] 3. House-rules sweep + preflight; open PR with `Closes #83`.
+- [x] 3. House-rules sweep + preflight; open PR with `Closes #83`.
