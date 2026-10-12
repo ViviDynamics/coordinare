@@ -485,10 +485,36 @@ def detect_wedged_state(
 # ---------------------------------------------------------------------------
 
 
+# Issue #85: phases that legitimately keep no performer container.  A
+# session parked in one of them is not a zombie and must never be swept.
+# Mirrors NON_SLOT_PHASES (check_board.py) plus the watchdog-owned
+# recovery / system_error states.
+_ZOMBIE_EXEMPT_PHASES: frozenset[str] = frozenset({
+    "monitoring_pr",
+    "blocked",
+    "idle",
+    "done",
+    "env_blocked",
+    "recovery",
+    "system_error",
+})
+
+
 def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, Any]]:
     """Return the subset of ``state.active_sessions`` that the reconciliation
-    pass needs to consider — sessions in dispatching / monitoring phases
-    with a non-empty agent_dispatch.session_id."""
+    pass needs to consider.
+
+    Two populations:
+
+    - Live in-flight sessions: dispatching / monitoring phases with a
+      non-empty ``agent_dispatch.session_id`` (adopt / reap candidates).
+    - Issue #85 zombie sessions: a session in a working phase with NO
+      ``agent_dispatch.session_id`` — there is nothing to adopt or poll,
+      so it survives daemon restarts forever and, while it occupies a
+      pipeline slot, starves the board.  They are collected so the
+      classification pass fresh-dispatches them.  Parked / terminal
+      phases (:data:`_ZOMBIE_EXEMPT_PHASES`) are exempt.
+    """
     sessions = state.get("active_sessions") or {}
     if not isinstance(sessions, dict):
         return {}
@@ -497,14 +523,17 @@ def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, A
         if not isinstance(sess, dict):
             continue
         phase = sess.get("phase")
-        if phase not in {"dispatching", "monitoring_performer", "monitoring_agent"}:
-            continue
-        agent_dispatch = sess.get("agent_dispatch") or {}
+        agent_dispatch = sess.get("agent_dispatch")
         if not isinstance(agent_dispatch, dict):
+            agent_dispatch = {}
+        if agent_dispatch.get("session_id"):
+            if phase in {"dispatching", "monitoring_performer", "monitoring_agent"}:
+                in_flight[card_id] = sess
             continue
-        if not agent_dispatch.get("session_id"):
-            continue
-        in_flight[card_id] = sess
+        # No session_id → zombie candidate.  Only sweep working phases;
+        # a parked/terminal session keeps no container by design.
+        if phase not in _ZOMBIE_EXEMPT_PHASES:
+            in_flight[card_id] = sess
     return in_flight
 
 

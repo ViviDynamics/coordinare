@@ -139,6 +139,29 @@ async def test_reconciliation_fresh_dispatched_when_no_matching_container() -> N
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_fresh_dispatches_zombie_session() -> None:
+    """Issue #85: a persisted zombie session (working phase, no
+    session_id, no container) must be classified and cleared by the
+    startup pass instead of staying invisible and starving the board."""
+    state: dict = {
+        "active_sessions": {
+            "PVTI_Z": {
+                "phase": "assessing",
+                "agent_dispatch": {},
+                "performer_stage": "implementing",
+            },
+        },
+        "performer_services": {"implementing": _MockHTTPService()},
+    }
+    executor = _MockDockerExecutor()
+    report = await run_startup_reconciliation(state, executor)
+    assert report.cards_considered == 1
+    assert report.decisions["PVTI_Z"] == ReconciliationDecision.FRESH_DISPATCHED
+    assert state["active_sessions"]["PVTI_Z"]["agent_dispatch"] == {}
+    assert state["active_sessions"]["PVTI_Z"]["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_orphan_swept_when_container_has_no_matching_session() -> None:
     """Container exists on host but its session_id label is NOT in the
     snapshot's in-flight sessions → ORPHAN_SWEPT.  We need at least one
@@ -386,11 +409,13 @@ def test_collect_in_flight_sessions_skips_non_dict_entries() -> None:
                 "agent_dispatch": {"session_id": "uuid"},
                 "performer_stage": "implementing",
             },
+            # Issue #85: working phase with no session_id → zombie, collected.
             "PVTI_NO_SESSION": {
                 "phase": "monitoring_performer",
                 "agent_dispatch": {},
                 "performer_stage": "implementing",
             },
+            # Parked phase → exempt even with a stale session_id.
             "PVTI_WRONG_PHASE": {
                 "phase": "idle",
                 "agent_dispatch": {"session_id": "x"},
@@ -398,7 +423,7 @@ def test_collect_in_flight_sessions_skips_non_dict_entries() -> None:
         },
     }
     result = _collect_in_flight_sessions(state)
-    assert list(result.keys()) == ["PVTI_OK"]
+    assert set(result.keys()) == {"PVTI_OK", "PVTI_NO_SESSION"}
 
 
 def test_collect_in_flight_sessions_no_active_sessions() -> None:
@@ -407,6 +432,51 @@ def test_collect_in_flight_sessions_no_active_sessions() -> None:
 
     assert _collect_in_flight_sessions({}) == {}
     assert _collect_in_flight_sessions({"active_sessions": "not a dict"}) == {}
+
+
+def test_collect_in_flight_sessions_sweeps_zombie_sessions() -> None:
+    """Issue #85: a session in a working phase with NO
+    agent_dispatch.session_id is a zombie — nothing to adopt or poll, so
+    it survives restarts forever and starves the board. It must be
+    collected so the classification pass fresh-dispatches it. Parked and
+    terminal phases (which legitimately keep no container by design) stay
+    exempt."""
+    from coordinare.services.reconciliation import _collect_in_flight_sessions
+
+    state = {
+        "active_sessions": {
+            "PVTI_Z_ASSESS": {
+                "phase": "assessing",
+                "agent_dispatch": {},
+                "performer_stage": "assessor",
+            },
+            "PVTI_Z_CLOSING": {
+                "phase": "closing_review",
+                "agent_dispatch": {},
+                "performer_stage": "closer",
+            },
+            "PVTI_Z_DISPATCH": {
+                "phase": "dispatching",
+                "agent_dispatch": {"performer_id": "svc"},
+                "performer_stage": "implementing",
+            },
+            "PVTI_PASSIVE_CLOSER": {
+                "phase": "monitoring_pr",
+                "agent_dispatch": {},
+                "performer_stage": "closer",
+            },
+            "PVTI_BLOCKED": {
+                "phase": "blocked",
+                "agent_dispatch": {},
+                "performer_stage": "assessor",
+            },
+            "PVTI_IDLE": {"phase": "idle", "agent_dispatch": {}},
+            "PVTI_DONE": {"phase": "done", "agent_dispatch": {}},
+            "PVTI_ENV_BLOCKED": {"phase": "env_blocked", "agent_dispatch": {}},
+        },
+    }
+    result = _collect_in_flight_sessions(state)
+    assert set(result.keys()) == {"PVTI_Z_ASSESS", "PVTI_Z_CLOSING", "PVTI_Z_DISPATCH"}
 
 
 def test_wedge_window_parses_iso_strings_from_snapshot() -> None:
