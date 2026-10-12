@@ -576,7 +576,10 @@ async def test_check_board_sweep_disabled_never_reads_github(monkeypatch: pytest
 
 def test_resolve_rejects_cross_repo_qualified_reference() -> None:
     cards = {
-        "PVTI_1": {"id": "PVTI_1", "status": "DONE", "issue_number": 19, "title": "x"},
+        "PVTI_1": {
+            "id": "PVTI_1", "status": "DONE", "issue_number": 19, "title": "x",
+            "issue_url": "https://github.com/acme/repo/issues/19",
+        },
     }
     base = {
         "id": "PR_9", "number": 21, "url": "https://github.com/acme/repo/pull/21",
@@ -596,6 +599,24 @@ def test_resolve_rejects_cross_repo_qualified_reference() -> None:
         {**base, "body": "Fixes #19"}, cards, expected_qualifier="acme/repo",
     )
     assert unqualified.card_item_id == "PVTI_1"
+
+
+def test_resolve_rejects_unqualified_reference_to_other_repo_card() -> None:
+    cards = {
+        "PVTI_9": {
+            "id": "PVTI_9", "status": "DONE", "issue_number": 19, "title": "other",
+            "issue_url": "https://github.com/other/repo/issues/19",
+        },
+    }
+    pr = {
+        "id": "PR_9", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Fixes #19",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id is None
+
+    no_url = resolve_pr_to_card(pr, {**cards, "PVTI_9": {**cards["PVTI_9"], "issue_url": ""}}, expected_qualifier="acme/repo")
+    assert no_url.card_item_id is None
 
 
 @pytest.mark.asyncio

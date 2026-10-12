@@ -97,10 +97,11 @@ def resolve_pr_to_card(
     ``board_cards`` maps project-item id → card dict with at least ``id``,
     ``status``, ``issue_number``, ``content_node_id``. Resolution chain:
     session-branch node id first (strongest signal), then the PR body's issue
-    reference. Repository-qualified references (``org/repo#19``) only count
+    reference.     Repository-qualified references (``org/repo#19``) only count
     when the qualifier matches ``expected_qualifier``; unqualified references
-    are accepted (coordinare-authored bodies reference their own issues).
-    Unresolved PRs are never touched (FR-006).
+    are accepted only when the card's board issue URL also lives in the
+    expected repository (an org Project can span repositories, and issue
+    numbers are per-repo). Unresolved PRs are never touched (FR-006).
     """
     head_ref = pr.get("head_ref")
     if isinstance(head_ref, str):
@@ -119,8 +120,17 @@ def resolve_pr_to_card(
                 continue
             issue_number = int(match.group("number"))
             for item_id, card in board_cards.items():
-                if card.get("issue_number") == issue_number:
-                    return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
+                if card.get("issue_number") != issue_number:
+                    continue
+                if expected_qualifier and not qualifier:
+                    # Unqualified "#N" is ambiguous across an org Project that
+                    # spans repositories — issue numbers are per-repo. Only a
+                    # card whose board issue URL lives in the expected
+                    # repository can absorb the reference.
+                    issue_url = str(card.get("issue_url") or "")
+                    if not issue_url.startswith(f"https://github.com/{expected_qualifier}/issues/"):
+                        continue
+                return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
 
     return OrphanAttribution(pr=pr, card_item_id=None, method="unresolved")
 
@@ -129,13 +139,14 @@ def _cards_from_board(board: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Flatten ``poll_board``'s parallel maps into item id → card dicts.
 
     The card shape here is the sweep's own minimal projection (id, status,
-    title, issue_number, content_node_id, pr_url) — deliberately not
+    title, issue_number, issue_url, content_node_id, pr_url) — deliberately not
     ``check_board._build_card_dict`` so the janitor carries no node imports.
     """
     cards: dict[str, dict[str, Any]] = {}
     snapshot = board.get("snapshot") or {}
     titles = board.get("titles") or {}
     issue_numbers = board.get("issue_numbers") or {}
+    issue_urls = board.get("issue_urls") or {}
     content_node_ids = board.get("content_node_ids") or {}
     pr_urls = board.get("pr_urls") or {}
     for status, members in snapshot.items():
@@ -149,6 +160,7 @@ def _cards_from_board(board: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "status": str(status),
                 "title": titles.get(item_id),
                 "issue_number": issue_numbers.get(item_id),
+                "issue_url": issue_urls.get(item_id, ""),
                 "content_node_id": content_node_ids.get(item_id),
                 "pr_url": pr_urls.get(item_id),
             }
