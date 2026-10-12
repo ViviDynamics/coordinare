@@ -123,6 +123,31 @@ async def test_parse_failure_logs_raw_shape_evidence():
 
 
 @pytest.mark.asyncio
+async def test_parse_failure_raw_shape_redacts_before_slicing():
+    """Copilot round 1: a credential crossing the 50-char slice boundary
+    must not leak — redact the complete value first, then slice."""
+    perf = _perf()
+    filler_45 = "x" * 45
+    chopped = filler_45 + "Bearer " + "t" * 30 + "z"
+    perf.backend = MagicMock()
+    perf.backend.get_status.return_value = BackendStatus(state="done", output=chopped)
+    perf.backend.relay_feedback = AsyncMock()
+    perf.backend.start = AsyncMock()
+    settings = Settings(AGENT_BACKEND="codex", AGENT_TIMEOUT=1800)
+
+    with structlog.testing.capture_logs() as cap:
+        await handle_status(_status_msg(), perf, settings)
+
+    shape = [e for e in cap if e.get("event") == "backend.parse_failure.raw_shape"]
+    assert shape, [e.get("event") for e in cap]
+    logged = f"{shape[0]['head']}{shape[0]['tail']}"
+    assert "Bearer" not in logged
+    assert "t" * 30 not in logged
+    assert "[REDACTED]" in logged  # the marker survives the slices
+    assert shape[0]["length"] == len(chopped)  # length is the pre-redaction truth
+
+
+@pytest.mark.asyncio
 async def test_prose_json_still_takes_the_assessment_md_path():
     """Prose JSON (no workflow report shape) goes down the legacy path and commits."""
     perf = _perf()

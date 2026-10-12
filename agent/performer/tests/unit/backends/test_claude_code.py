@@ -663,6 +663,48 @@ class TestClaudeCodeBackendGetStatus:
             for entry in cap
         ), [entry.get("event") for entry in cap]
 
+    def test_result_only_event_does_not_warn_empty_output(self) -> None:
+        """Copilot round 1: a valid result-only event (no assistant text
+        blocks) carries its output in the `result` field and must not emit
+        the empty-output warning."""
+        adapter = ClaudeCodeBackend()
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        assert adapter.get_status().output == '{"sufficient": true}'
+        assert not any(
+            entry.get("event") == "claude_code.result.empty_output" for entry in cap
+        ), [entry.get("event") for entry in cap]
+
+    def test_result_field_divergence_redacts_before_slicing(self) -> None:
+        """Copilot round 1: model output in the divergence log must be
+        redacted before the 50-char slice, not after."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": "Bearer " + "t" * 30},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        divergence = [e for e in cap if e.get("event") == "claude_code.result.output_divergence"]
+        assert divergence, [e.get("event") for e in cap]
+        logged = f"{divergence[0].get('accumulator_head')}{divergence[0].get('result_head')}"
+        assert "t" * 30 not in logged
+        assert "[REDACTED]" in logged
+
     def test_redact_scrubs_bearer_tokens(self) -> None:
         line = "Authorization: Bearer sk-ant-abc123XYZ.def_456 failed"
         out = ClaudeCodeBackend._redact(line)

@@ -767,13 +767,6 @@ class ClaudeCodeBackend:
                         tokens_processed=tokens,
                     )
                 else:
-                    output_text = "".join(self._output_accumulator)
-                    if not output_text:
-                        log.warning(
-                            "claude_code.result.empty_output",
-                            stop_reason=stop_reason,
-                            tokens=tokens,
-                        )
                     # Issue #83: the CLI `result` event carries the complete
                     # final message in its `result` field. The accumulator is
                     # assembled from streamed `assistant` text blocks and has
@@ -783,16 +776,26 @@ class ClaudeCodeBackend:
                     # The `result` field is authoritative; the accumulator
                     # stays as the fallback for shapes without the field.
                     result_field = event.get("result")
+                    output_text = "".join(self._output_accumulator)
                     if isinstance(result_field, str) and result_field:
                         if output_text and output_text != result_field:
+                            # Redact the complete value BEFORE slicing: a
+                            # credential crossing the 50-char slice boundary
+                            # survives both truncated fragments otherwise.
                             log.warning(
                                 "claude_code.result.output_divergence",
                                 accumulator_len=len(output_text),
                                 result_len=len(result_field),
-                                accumulator_head=output_text[:50],
-                                result_head=result_field[:50],
+                                accumulator_head=self._redact(output_text)[:50],
+                                result_head=self._redact(result_field)[:50],
                             )
                         output_text = result_field
+                    if not output_text:
+                        log.warning(
+                            "claude_code.result.empty_output",
+                            stop_reason=stop_reason,
+                            tokens=tokens,
+                        )
                     self._status = BackendStatus(
                         state="done",
                         stop_reason=stop_reason,
