@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
+import structlog
 
 
 from performer.backends.claude_code import ClaudeCodeBackend, _build_task_prompt
@@ -599,6 +600,136 @@ class TestClaudeCodeBackendGetStatus:
             "output_tokens": 1,
         })
         assert adapter.get_status().output is None
+
+    def test_result_event_field_beats_head_chopped_accumulator(self) -> None:
+        """Issue #83: the accumulator can miss the head of the final message
+        (streamed chunk loss), producing a head-chopped suffix that fails
+        JSON parsing. The CLI `result` event carries the authoritative
+        complete text in its `result` field — prefer it over the join."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": 'ufficient": true, "questions": []}'},
+            ]},
+        })
+        adapter._handle_event({
+            "type": "result",
+            "subtype": "success",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "result": '{"sufficient": true, "questions": []}',
+        })
+        status = adapter.get_status()
+        assert status.state == "done"
+        assert status.output == '{"sufficient": true, "questions": []}'
+
+    def test_result_field_absent_falls_back_to_accumulator(self) -> None:
+        """Older CLI shapes / proxies without a `result` field keep the
+        accumulator join (no regression)."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "block1 "}]},
+        })
+        adapter._handle_event({
+            "type": "result",
+            "subtype": "success",
+            "input_tokens": 1,
+            "output_tokens": 1,
+        })
+        assert adapter.get_status().output == "block1 "
+
+    def test_result_field_divergence_is_logged(self) -> None:
+        """When the accumulator join and the authoritative `result` field
+        differ, the capture seam must be visible in the log."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": 'ufficient": true}'},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        assert any(
+            entry.get("event") == "claude_code.result.output_divergence"
+            for entry in cap
+        ), [entry.get("event") for entry in cap]
+
+    def test_result_only_event_does_not_warn_empty_output(self) -> None:
+        """Copilot round 1: a valid result-only event (no assistant text
+        blocks) carries its output in the `result` field and must not emit
+        the empty-output warning."""
+        adapter = ClaudeCodeBackend()
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        assert adapter.get_status().output == '{"sufficient": true}'
+        assert not any(
+            entry.get("event") == "claude_code.result.empty_output" for entry in cap
+        ), [entry.get("event") for entry in cap]
+
+    def test_result_field_divergence_redacts_before_slicing(self) -> None:
+        """Copilot round 1: model output in the divergence log must be
+        redacted before the 50-char slice, not after."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": "Bearer " + "t" * 30},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        divergence = [e for e in cap if e.get("event") == "claude_code.result.output_divergence"]
+        assert divergence, [e.get("event") for e in cap]
+        logged = f"{divergence[0].get('accumulator_head')}{divergence[0].get('result_head')}"
+        assert "t" * 30 not in logged
+        assert "[REDACTED]" in logged
+
+    def test_result_field_divergence_uses_shared_secret_patterns(self) -> None:
+        """Copilot round 2: the divergence log must apply the shared
+        _SECRET_PATTERNS redactor, not just the backend's Bearer/env
+        scrubber — a GitHub PAT must not leak."""
+        adapter = ClaudeCodeBackend()
+        pat = "ghp_" + "a" * 36
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "text", "text": f"token={pat}"},
+            ]},
+        })
+        with structlog.testing.capture_logs() as cap:
+            adapter._handle_event({
+                "type": "result",
+                "subtype": "success",
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "result": '{"sufficient": true}',
+            })
+        divergence = [e for e in cap if e.get("event") == "claude_code.result.output_divergence"]
+        assert divergence, [e.get("event") for e in cap]
+        logged = f"{divergence[0].get('accumulator_head')}{divergence[0].get('result_head')}"
+        assert pat not in logged
+        assert "[REDACTED]" in logged
 
     def test_redact_scrubs_bearer_tokens(self) -> None:
         line = "Authorization: Bearer sk-ant-abc123XYZ.def_456 failed"
