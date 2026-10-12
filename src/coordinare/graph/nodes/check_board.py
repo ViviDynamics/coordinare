@@ -51,6 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.orphan_pr import run_orphan_pr_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
@@ -2155,8 +2156,6 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
 
     # 553 — per-cycle janitor sweep (opt-in; the disabled path performs no
     # reconciliation GitHub reads at all).
-    from coordinare.services.orphan_pr import run_orphan_pr_sweep
-
     await run_orphan_pr_sweep(github, board, getattr(config, "orphan_pr", None))
 
     snapshot = board.get("snapshot")

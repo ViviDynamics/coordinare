@@ -8,6 +8,7 @@ from coordinare.graph.state import _set_current_card
 from coordinare.metrics import METRICS
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.github import PermanentGitHubError
+from coordinare.services.orphan_pr import reconcile_completed_card
 from coordinare.services.rebase import repo_url_from_config
 
 if TYPE_CHECKING:
@@ -99,8 +100,6 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
 
     # 553 — opt-in completion reconciliation: close other open PRs that
     # still point at this card. Disabled path performs no GitHub reads.
-    from coordinare.services.orphan_pr import reconcile_completed_card
-
     await reconcile_completed_card(github, state.get("config"), card)
 
     # 047: Trigger rebase round for all other in-flight branches after merge.

@@ -506,7 +506,6 @@ async def test_merge_pr_disabled_performs_no_reconciliation_reads() -> None:
 @pytest.mark.asyncio
 async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.MonkeyPatch) -> None:
     import coordinare.graph.nodes.check_board as check_board_module
-    import coordinare.services.orphan_pr as orphan_pr_module
     from coordinare.graph.state import initial_state
 
     github = SimpleNamespace(
@@ -529,7 +528,7 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
         seen.append((g, board, cfg))
         raise StopSweepError
 
-    monkeypatch.setattr(orphan_pr_module, "run_orphan_pr_sweep", _spy)
+    monkeypatch.setattr(check_board_module, "run_orphan_pr_sweep", _spy)
     with pytest.raises(StopSweepError):
         await check_board_module.check_board(state)
 

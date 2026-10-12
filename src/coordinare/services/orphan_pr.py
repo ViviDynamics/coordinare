@@ -17,7 +17,7 @@ here runs and behavior is byte-identical to a pre-553 build (SC-003).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -173,12 +173,12 @@ async def run_orphan_pr_sweep(
     for pr in open_prs:
         attribution = resolve_pr_to_card(pr, cards)
         if attribution.card_item_id is None:
-            decisions.append(_decision(pr, None, attribution.method, "skipped-unresolved"))
+            decisions.append(_log_decision(_decision(pr, None, attribution.method, "skipped-unresolved")))
             continue
         card = cards[attribution.card_item_id]
         if not is_terminal_card_status(card.get("status")):
             decisions.append(
-                _decision(pr, attribution.card_item_id, attribution.method, "skipped-active"),
+                _log_decision(_decision(pr, attribution.card_item_id, attribution.method, "skipped-active")),
             )
             continue
         decisions.extend(await close_superseded_prs(github, card, [pr]))
@@ -198,23 +198,7 @@ class OrphanPrDecision:
     closed_ok: bool = False
 
 
-def _decision(
-    pr: dict[str, Any],
-    card_item_id: str | None,
-    basis: Literal["session_branch", "body_reference", "unresolved"],
-    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"],
-    comment_posted: bool = False,
-    closed_ok: bool = False,
-) -> OrphanPrDecision:
-    decision = OrphanPrDecision(
-        pr_number=pr.get("number"),
-        pr_url=pr.get("url"),
-        card_item_id=card_item_id,
-        basis=basis,
-        outcome=outcome,
-        comment_posted=comment_posted,
-        closed_ok=closed_ok,
-    )
+def _log_decision(decision: OrphanPrDecision) -> OrphanPrDecision:
     logger.info(
         "orphan_pr.decision",
         pr_number=decision.pr_number,
@@ -226,6 +210,21 @@ def _decision(
         closed_ok=decision.closed_ok,
     )
     return decision
+
+
+def _decision(
+    pr: dict[str, Any],
+    card_item_id: str | None,
+    basis: Literal["session_branch", "body_reference", "unresolved"],
+    outcome: Literal["closed", "skipped-active", "skipped-unresolved", "disabled"],
+) -> OrphanPrDecision:
+    return OrphanPrDecision(
+        pr_number=pr.get("number"),
+        pr_url=pr.get("url"),
+        card_item_id=card_item_id,
+        basis=basis,
+        outcome=outcome,
+    )
 
 
 async def close_superseded_prs(
@@ -247,14 +246,14 @@ async def close_superseded_prs(
     for pr in open_prs:
         url = pr.get("url")
         if isinstance(url, str) and url == card.get("pr_url"):
-            decisions.append(_decision(pr, card_id, "session_branch", "skipped-active"))
+            decisions.append(_log_decision(_decision(pr, card_id, "session_branch", "skipped-active")))
             continue
         attribution = resolve_pr_to_card(pr, board_cards)
         if attribution.card_item_id is None:
-            decisions.append(_decision(pr, None, attribution.method, "skipped-unresolved"))
+            decisions.append(_log_decision(_decision(pr, None, attribution.method, "skipped-unresolved")))
             continue
         if not is_terminal_card_status(card.get("status")):
-            decisions.append(_decision(pr, card_id, attribution.method, "skipped-active"))
+            decisions.append(_log_decision(_decision(pr, card_id, attribution.method, "skipped-active")))
             continue
         comment = build_close_comment(card, attribution.method)
         comment_posted = True
@@ -270,7 +269,13 @@ async def close_superseded_prs(
         if not closed_ok:
             logger.warning("orphan_pr.close_failed", pr_number=pr.get("number"))
         decisions.append(
-            _decision(pr, card_id, attribution.method, "closed", comment_posted, closed_ok),
+            _log_decision(
+                replace(
+                    _decision(pr, card_id, attribution.method, "closed"),
+                    comment_posted=comment_posted,
+                    closed_ok=closed_ok,
+                ),
+            ),
         )
     return decisions
 
