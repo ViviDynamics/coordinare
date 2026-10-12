@@ -16,9 +16,11 @@ here runs and behavior is byte-identical to a pre-553 build (SC-003).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -27,6 +29,28 @@ if TYPE_CHECKING:
     from coordinare.graph.state import GitHubServiceProtocol
 
 logger = structlog.get_logger(__name__)
+
+_close_guard_lock: asyncio.Lock | None = None
+_close_guard_loop: asyncio.AbstractEventLoop | None = None
+
+
+def close_guard() -> asyncio.Lock:
+    """Per-cycle close synchronization (FR-006, once-per-cycle contracts).
+
+    The daemon fans session ticks out concurrently and each session's
+    ``check_board`` runs the repository-wide sweep, so without shared
+    synchronization two ticks can list the same orphan before either closes
+    it — duplicate comments, one ``closed`` plus one ``close-failed``. The
+    guard serializes every 553 close path (sweep and merge reconciliation)
+    within the process; the second arrival lists after the first closed and
+    finds nothing left to do.
+    """
+    global _close_guard_lock, _close_guard_loop
+    loop = asyncio.get_running_loop()
+    if _close_guard_lock is None or _close_guard_loop is not loop:
+        _close_guard_lock = asyncio.Lock()
+        _close_guard_loop = loop
+    return _close_guard_lock
 
 # Session branches embed the project-item node id directly. The legacy
 # ``conductor/`` prefix predates the 076 canonicalization and still identifies
@@ -139,11 +163,12 @@ def resolve_pr_to_card(
                     # Repository corroboration is card-side as well as
                     # body-side: an org Project can span repositories, issue
                     # numbers are per-repo, and a card's number alone cannot
-                    # distinguish them. Only a card whose board issue URL
-                    # lives in the expected repository can absorb either
-                    # form of reference.
-                    issue_url = str(card.get("issue_url") or "")
-                    if not issue_url.startswith(f"https://github.com/{expected_qualifier}/issues/"):
+                    # distinguish them. The card's board issue URL must name
+                    # the expected repository. The comparison is path-based,
+                    # not a github.com prefix, so GitHub Enterprise issue URLs
+                    # (whose host differs) corroborate the same way.
+                    issue_url = urlsplit(str(card.get("issue_url") or "")).path.rstrip("/")
+                    if issue_url != f"/{expected_qualifier}/issues/{issue_number}":
                         continue
                 return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
 

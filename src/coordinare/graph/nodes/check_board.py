@@ -51,7 +51,7 @@ from coordinare.services.dependency import (
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
-from coordinare.services.orphan_pr import run_orphan_pr_sweep
+from coordinare.services.orphan_pr import close_guard, run_orphan_pr_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.rebase import repo_url_from_config
@@ -2157,10 +2157,14 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     # 553 — per-cycle janitor sweep (opt-in; the disabled path performs no
     # reconciliation GitHub reads at all). Cards with a live session are
     # never touched (FR-006), even when the board snapshot shows terminal.
-    await run_orphan_pr_sweep(
-        github, board, getattr(config, "orphan_pr", None),
-        active_card_ids=set((state.get("active_sessions") or {}).keys()),
-    )
+    # The close guard serializes across the daemon's concurrent session
+    # ticks: the second arrival lists after the first closed and finds
+    # nothing left to do.
+    async with close_guard():
+        await run_orphan_pr_sweep(
+            github, board, getattr(config, "orphan_pr", None),
+            active_card_ids=set((state.get("active_sessions") or {}).keys()),
+        )
 
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}

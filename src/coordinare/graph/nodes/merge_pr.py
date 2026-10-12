@@ -8,7 +8,7 @@ from coordinare.graph.state import _set_current_card
 from coordinare.metrics import METRICS
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.github import PermanentGitHubError
-from coordinare.services.orphan_pr import reconcile_completed_card
+from coordinare.services.orphan_pr import close_guard, reconcile_completed_card
 from coordinare.services.rebase import repo_url_from_config
 
 if TYPE_CHECKING:
@@ -105,9 +105,11 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     # landed (squash_merge can report merged=False without raising) and the
     # board transition succeeded — otherwise the card is not really terminal
     # and its PRs stay protected (FR-006). The disabled path performs no
-    # GitHub reads.
+    # GitHub reads. The close guard serializes against the concurrent
+    # per-session sweeps.
     if merge_result.get("merged", True) and move_ok:
-        await reconcile_completed_card(github, state.get("config"), card)
+        async with close_guard():
+            await reconcile_completed_card(github, state.get("config"), card)
 
     # 047: Trigger rebase round for all other in-flight branches after merge.
     # The new main HEAD is the merge commit OID we just received.

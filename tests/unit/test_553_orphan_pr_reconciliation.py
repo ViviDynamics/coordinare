@@ -619,6 +619,21 @@ def test_resolve_rejects_unqualified_reference_to_other_repo_card() -> None:
     assert no_url.card_item_id is None
 
 
+def test_resolve_corroborates_via_enterprise_issue_url() -> None:
+    cards = {
+        "PVTI_1": {
+            "id": "PVTI_1", "status": "DONE", "issue_number": 19, "title": "x",
+            "issue_url": "https://ghe.acme.corp/acme/repo/issues/19",
+        },
+    }
+    pr = {
+        "id": "PR_9", "number": 21, "url": "https://ghe.acme.corp/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Fixes #19",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id == "PVTI_1"
+
+
 @pytest.mark.asyncio
 async def test_sweep_skips_cards_with_live_sessions(tmp_path: Any) -> None:
     fake = FakeGitHubService(bare_repo_path=tmp_path, org="acme", project_name="repo")
@@ -884,3 +899,51 @@ async def test_closed_decision_carry_superseded_by(tmp_path: Any) -> None:
 
     assert [d.outcome for d in decisions] == ["closed"]
     assert decisions[0].superseded_by is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_close_guard_serializes_concurrent_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import coordinare.graph.nodes.check_board as check_board_module
+    from coordinare.graph.state import initial_state
+
+    github = SimpleNamespace(
+        poll_board=AsyncMock(return_value={"snapshot": {"DONE": ["c1"]}}),
+    )
+    config = SimpleNamespace(
+        max_concurrent_cards=1,
+        orphan_pr=OrphanPrConfig(enabled=True, sweep=True),
+    )
+    state_a = initial_state()
+    state_a["github_service"] = github
+    state_a["config"] = config
+    state_b = initial_state()
+    state_b["github_service"] = github
+    state_b["config"] = config
+
+    inflight = 0
+    max_inflight = 0
+
+    class StopSweepError(Exception):
+        pass
+
+    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None) -> list[Any]:
+        nonlocal inflight, max_inflight
+        inflight += 1
+        max_inflight = max(max_inflight, inflight)
+        await asyncio.sleep(0.05)
+        inflight -= 1
+        raise StopSweepError
+
+    monkeypatch.setattr(check_board_module, "run_orphan_pr_sweep", _spy)
+    results = await asyncio.gather(
+        check_board_module.check_board(state_a),
+        check_board_module.check_board(state_b),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(r, StopSweepError) for r in results)
+    assert max_inflight == 1
