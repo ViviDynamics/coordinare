@@ -43,34 +43,6 @@ from the same Secret the main container uses. Enabling `mcp` also adds the
 `mcp` port to the Service and a `/mcp` route to the dashboard Ingress when one
 is configured.
 
-### stdio (local agents)
-
-Spec 552 adds a stdio transport for same-machine agents: the MCP JSON-RPC
-session runs over the spawned process's stdin/stdout, so there is no listener,
-no bearer gate, and no port. Boot it with `--transport stdio` (or
-`COORDINARE_MCP_TRANSPORT=stdio`); `--listen-host`/`--listen-port` are HTTP-only
-and rejected with exit code 2. Point Claude Code or OpenCode at it:
-
-```json
-{
-  "mcpServers": {
-    "coordinare": {
-      "command": "/path/to/venv/bin/python",
-      "args": ["-m", "coordinare.mcp", "--transport", "stdio"],
-      "env": {
-        "COORDINARE_MCP_TOKEN": "<32+ chars>",
-        "COORDINARE_MCP_DASHBOARD_TOKEN": "<the dashboard bearer>"
-      }
-    }
-  }
-}
-```
-
-The tool surface, audit lines, and error vocabulary are identical to HTTP; the
-credential fingerprint in `mcp.tool_invoked` is the agent token's, since the
-local pipe replaces the bearer check. The daemon must still be running and
-reachable at `COORDINARE_MCP_DASHBOARD_URL` (default `http://localhost:8090`).
-
 ## Configuration (env)
 
 | Variable | Default | Notes |

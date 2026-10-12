@@ -819,3 +819,68 @@ async def test_list_open_pull_requests_warns_on_truncation() -> None:
     prs = await service.list_open_pull_requests("acme", "repo")
 
     assert len(prs) == 200  # 2 pages x 100 = cap
+
+
+def test_resolve_rejects_qualified_reference_to_other_repo_card() -> None:
+    cards = {
+        "PVTI_9": {
+            "id": "PVTI_9", "status": "DONE", "issue_number": 19, "title": "other",
+            "issue_url": "https://github.com/other/repo/issues/19",
+        },
+    }
+    pr = {
+        "id": "PR_9", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Fixes acme/repo#19",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_close_failure_yields_close_failed_outcome(tmp_path: Any) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/loser")
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse",
+        "pr_url": "https://fake/acme/repo/pull/22",
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    assert len(open_prs) == 1
+
+    async def _decline(pr_id: str) -> dict[str, Any]:
+        return {"closed": False, "id": pr_id}
+
+    fake.close_pull_request = _decline  # type: ignore[method-assign]
+    decisions = await close_superseded_prs(fake, card, open_prs)
+
+    assert len(decisions) == 1
+    assert decisions[0].outcome == "close-failed"
+    assert decisions[0].closed_ok is False
+    assert decisions[0].superseded_by == "https://fake/acme/repo/pull/22"
+
+
+@pytest.mark.asyncio
+async def test_closed_decision_carry_superseded_by(tmp_path: Any) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    orphan = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/loser")
+    orphan_url = fake._prs[orphan]["url"]
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse",
+        "pr_url": orphan_url,
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    assert len(open_prs) == 1
+    decisions = await close_superseded_prs(fake, card, open_prs)
+
+    assert [d.outcome for d in decisions] == ["closed"]
+    assert decisions[0].superseded_by is None

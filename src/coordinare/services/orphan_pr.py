@@ -87,6 +87,19 @@ def build_close_comment(
     return "\n\n".join(lines)
 
 
+def _winner_url(card: dict[str, Any], pr: dict[str, Any]) -> str | None:
+    """The superseding PR's URL for FR-005's audit trail, when it exists.
+
+    The board's pr_url can be an OPEN cross-reference (poll_board prefers
+    open over merged), i.e. this very PR — naming it as the superseding
+    winner would be false. Only name a URL that is not this PR's.
+    """
+    url = card.get("pr_url")
+    if isinstance(url, str) and url and url != pr.get("url"):
+        return url
+    return None
+
+
 def resolve_pr_to_card(
     pr: dict[str, Any],
     board_cards: dict[str, dict[str, Any]],
@@ -98,8 +111,8 @@ def resolve_pr_to_card(
     ``status``, ``issue_number``, ``content_node_id``. Resolution chain:
     session-branch node id first (strongest signal), then the PR body's issue
     reference.     Repository-qualified references (``org/repo#19``) only count
-    when the qualifier matches ``expected_qualifier``; unqualified references
-    are accepted only when the card's board issue URL also lives in the
+    when the qualifier matches ``expected_qualifier``; either form of reference
+    is accepted only when the card's board issue URL also lives in the
     expected repository (an org Project can span repositories, and issue
     numbers are per-repo). Unresolved PRs are never touched (FR-006).
     """
@@ -122,11 +135,13 @@ def resolve_pr_to_card(
             for item_id, card in board_cards.items():
                 if card.get("issue_number") != issue_number:
                     continue
-                if expected_qualifier and not qualifier:
-                    # Unqualified "#N" is ambiguous across an org Project that
-                    # spans repositories — issue numbers are per-repo. Only a
-                    # card whose board issue URL lives in the expected
-                    # repository can absorb the reference.
+                if expected_qualifier:
+                    # Repository corroboration is card-side as well as
+                    # body-side: an org Project can span repositories, issue
+                    # numbers are per-repo, and a card's number alone cannot
+                    # distinguish them. Only a card whose board issue URL
+                    # lives in the expected repository can absorb either
+                    # form of reference.
                     issue_url = str(card.get("issue_url") or "")
                     if not issue_url.startswith(f"https://github.com/{expected_qualifier}/issues/"):
                         continue
@@ -218,10 +233,12 @@ class OrphanPrDecision:
     card_item_id: str | None
     basis: Literal["session_branch", "body_reference", "unresolved"]
     outcome: Literal[
-        "closed", "skipped-active", "skipped-unresolved", "disabled", "skipped-comment-failed",
+        "closed", "close-failed", "skipped-active", "skipped-unresolved", "disabled",
+        "skipped-comment-failed",
     ]
     comment_posted: bool = False
     closed_ok: bool = False
+    superseded_by: str | None = None
 
 
 def _log_decision(decision: OrphanPrDecision) -> OrphanPrDecision:
@@ -234,6 +251,7 @@ def _log_decision(decision: OrphanPrDecision) -> OrphanPrDecision:
         outcome=decision.outcome,
         comment_posted=decision.comment_posted,
         closed_ok=decision.closed_ok,
+        superseded_by=decision.superseded_by,
     )
     return decision
 
@@ -243,7 +261,8 @@ def _decision(
     card_item_id: str | None,
     basis: Literal["session_branch", "body_reference", "unresolved"],
     outcome: Literal[
-        "closed", "skipped-active", "skipped-unresolved", "disabled", "skipped-comment-failed",
+        "closed", "close-failed", "skipped-active", "skipped-unresolved", "disabled",
+        "skipped-comment-failed",
     ],
 ) -> OrphanPrDecision:
     return OrphanPrDecision(
@@ -282,9 +301,6 @@ async def close_superseded_prs(
         if not is_terminal_card_status(card.get("status")):
             decisions.append(_log_decision(_decision(pr, card_id, attribution.method, "skipped-active")))
             continue
-        # The board's pr_url can be an OPEN cross-reference (poll_board prefers
-        # open over merged), i.e. this very PR — naming it as the superseding
-        # winner would be false. Only name a URL that is not this PR's.
         comment_card = card
         if pr.get("url") and pr.get("url") == card.get("pr_url"):
             comment_card = {**card, "pr_url": None}
@@ -313,9 +329,13 @@ async def close_superseded_prs(
         decisions.append(
             _log_decision(
                 replace(
-                    _decision(pr, card_id, attribution.method, "closed"),
+                    _decision(
+                        pr, card_id, attribution.method,
+                        "closed" if closed_ok else "close-failed",
+                    ),
                     comment_posted=comment_posted,
                     closed_ok=closed_ok,
+                    superseded_by=_winner_url(card, pr),
                 ),
             ),
         )

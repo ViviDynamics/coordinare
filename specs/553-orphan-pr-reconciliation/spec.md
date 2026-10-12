@@ -42,7 +42,7 @@ Open PRs left behind by past runs (before any fix, or left by restarts mid-fligh
 
 ### User Story 3 - Operator opt-in with observable decisions (Priority: P3)
 
-Both behaviors are opt-in and off by default, so a default deployment behaves byte-identically to today. Each reconciliation decision is emitted as a structured log line (per-PR outcome: closed, skipped-active, skipped-unresolved, disabled, skipped-comment-failed) so an operator can audit exactly why any PR was or was not closed.
+Both behaviors are opt-in and off by default, so a default deployment behaves byte-identically to today. Each reconciliation decision is emitted as a structured log line (per-PR outcome: closed, close-failed, skipped-active, skipped-unresolved, disabled, skipped-comment-failed) so an operator can audit exactly why any PR was or was not closed.
 
 **Why this priority**: The 090 precedent: autonomy layers default off so routing, verdicts, and merge decisions stay identical until explicitly enabled. Observability without action would not clean anything up, and action without observability would not be auditable.
 
@@ -72,7 +72,7 @@ Both behaviors are opt-in and off by default, so a default deployment behaves by
 - **FR-002**: System MUST provide a per-cycle janitor sweep that closes open PRs whose resolved board card is in a terminal state (DONE/CLOSED), each with the same explanatory comment.
 - **FR-003**: Attribution MUST NOT rely solely on the current canonical branch prefix; it MUST also recognize PRs from prior eras' branch naming and PRs linked by issue/body reference.
 - **FR-004**: The feature MUST be opt-in via configuration, default disabled, with independent switches for completion-time reconciliation and the janitor sweep.
-- **FR-005**: System MUST emit one structured-log decision per evaluated PR with outcome vocabulary `closed | skipped-active | skipped-unresolved | disabled | skipped-comment-failed`, including the PR number, the resolution basis, and (when closed) the superseding PR reference.
+- **FR-005**: System MUST emit one structured-log decision per evaluated PR with outcome vocabulary `closed | close-failed | skipped-active | skipped-unresolved | disabled | skipped-comment-failed`, including the PR number, the resolution basis, and the superseding PR reference when one exists.
 - **FR-006**: System MUST never close a PR whose card is active (has a live session or is in a non-terminal board column).
 - **FR-007**: System MUST fail safe: resolution or lookup failures skip the candidate (log and continue), and closure is idempotent.
 - **FR-008**: The reconciliation comment MUST identify the daemon (attribution marker consistent with existing lifecycle comments), the card, the superseding PR, and the reason.
@@ -80,7 +80,7 @@ Both behaviors are opt-in and off by default, so a default deployment behaves by
 ### Key Entities *(include if feature involves data)*
 
 - **OrphanPrCandidate**: an open PR plus its resolution basis — the board card it belongs to, the card's terminal state, and the superseding merged PR when known.
-- **ReconciliationDecision**: the per-PR outcome (`closed | skipped-active | skipped-unresolved | disabled | skipped-comment-failed`) with the reason and the evidence used to decide.
+- **ReconciliationDecision**: the per-PR outcome (`closed | close-failed | skipped-active | skipped-unresolved | disabled | skipped-comment-failed`) with the reason and the evidence used to decide.
 - **ReconciliationConfig**: the opt-in switches (enabled, completion-time switch, sweep switch) and their defaults (off).
 
 ## Success Criteria *(mandatory)*
