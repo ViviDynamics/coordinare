@@ -70,10 +70,10 @@ def test_timeout_bounds_enforced() -> None:
         )
 
 
-def test_transport_still_rejects_unknown_values() -> None:
+def test_transport_rejects_stdio_in_phase_1() -> None:
     with pytest.raises(ValidationError):
         McpServerConfig.model_validate({
-            "transport": "grpc",
+            "transport": "stdio",
             "agent_token": SecretStr("x" * 32).get_secret_value(),
             "dashboard_token": SecretStr("y" * 32).get_secret_value(),
         })
