@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 from typing import Any
 
@@ -50,6 +51,9 @@ def test_run_stdio_builds_the_bare_server_and_sets_the_fingerprint(
 @pytest.mark.asyncio
 async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> None:
     """The real process speaks MCP over stdio: registry served, errors as data."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        free_port = probe.getsockname()[1]
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "coordinare.mcp", "--transport", "stdio"],
@@ -58,7 +62,7 @@ async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> Non
             "HOME": os.environ.get("HOME", "/"),
             "COORDINARE_MCP_TOKEN": "a" * 32,
             "COORDINARE_MCP_DASHBOARD_TOKEN": "d" * 32,
-            "COORDINARE_MCP_DASHBOARD_URL": "http://localhost:8090",
+            "COORDINARE_MCP_DASHBOARD_URL": f"http://127.0.0.1:{free_port}",
         },
     )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
