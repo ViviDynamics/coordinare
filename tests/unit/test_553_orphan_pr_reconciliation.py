@@ -6,14 +6,19 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.config import OrphanPrConfig, ProjectConfiguration
+from coordinare.services.fake_github import FakeGitHubService
+from coordinare.services.github import (
+    CLOSE_PULL_REQUEST_MUTATION,
+    LIST_OPEN_PULL_REQUESTS_QUERY,
+    GitHubService,
+)
 from coordinare.services.orphan_pr import (
     build_close_comment,
     close_superseded_prs,
     is_terminal_card_status,
     resolve_pr_to_card,
+    run_orphan_pr_sweep,
 )
-from coordinare.services.github import CLOSE_PULL_REQUEST_MUTATION, LIST_OPEN_PULL_REQUESTS_QUERY, GitHubService
-from coordinare.services.fake_github import FakeGitHubService
 
 _BASE = {
     "project_name": "Demo",
@@ -39,7 +44,7 @@ def test_orphan_pr_config_defaults_off() -> None:
 
 def test_orphan_pr_config_independent_switches() -> None:
     cfg = ProjectConfiguration(
-        **_BASE, orphan_pr=OrphanPrConfig(enabled=True, sweep=True)
+        **_BASE, orphan_pr=OrphanPrConfig(enabled=True, sweep=True),
     )
     assert cfg.orphan_pr.enabled is True
     assert cfg.orphan_pr.sweep is True
@@ -254,7 +259,7 @@ async def test_completion_two_pr_card_closes_loser(tmp_path) -> None:
     winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
     # open_pr creates no commits, so the fake's local merge cannot run; mark
     # the winner merged the same way test_151_identity does.
-    fake._prs[winner]["merged"] = True  # noqa: SLF001 — benchmark state fixture
+    fake._prs[winner]["merged"] = True
     fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/retry-attempt")
     card = {
         "id": "PVTI_1", "status": "DONE", "issue_number": 19,
@@ -279,7 +284,7 @@ async def test_completion_single_pr_card_noop(tmp_path) -> None:
         issue_number=19, issue_node_id="I_1",
     )
     winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
-    fake._prs[winner]["merged"] = True  # noqa: SLF001 — benchmark state fixture
+    fake._prs[winner]["merged"] = True
     card = {
         "id": "PVTI_1", "status": "DONE", "issue_number": 19,
         "content_node_id": "I_1", "title": "add collapse",
@@ -307,4 +312,98 @@ async def test_completion_nonterminal_card_never_closes(tmp_path) -> None:
     decisions = await close_superseded_prs(fake, card, open_prs)
     assert [d.outcome for d in decisions] == ["skipped-active"]
     assert await fake.list_open_pull_requests("acme", "repo") == open_prs
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — per-cycle janitor sweep (US-2)
+# ---------------------------------------------------------------------------
+
+
+def _done_card_fixture(tmp_path):
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_sweep_closes_done_card_prs_including_legacy_branches(tmp_path) -> None:
+    fake = _done_card_fixture(tmp_path)
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="conductor/PVTI_1/080-t037-add-collapse")
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True
+    board = await fake.poll_board()
+    decisions = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert [d.outcome for d in decisions] == ["closed"]
+    assert decisions[0].basis == "session_branch"
+    assert decisions[0].comment_posted is True
+    assert await fake.list_open_pull_requests("acme", "repo") == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_multi_pr_same_card_closes_all_losers(tmp_path) -> None:
+    fake = _done_card_fixture(tmp_path)
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/attempt-one")
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/attempt-two")
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True
+    board = await fake.poll_board()
+    decisions = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert sorted(d.outcome for d in decisions) == ["closed", "closed"]
+    assert await fake.list_open_pull_requests("acme", "repo") == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_leaves_active_card_prs_open(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_2", status="IN_REVIEW", title="live work", body="do it",
+        issue_number=20, issue_node_id="I_2",
+    )
+    fake.open_pr(issue_item_id="PVTI_2", head_ref="coordinare/PVTI_2/live")
+    board = await fake.poll_board()
+    decisions = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert [d.outcome for d in decisions] == ["skipped-active"]
+    assert len(await fake.list_open_pull_requests("acme", "repo")) == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_unresolvable_prs(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    fake.open_pr(issue_item_id="ghost", head_ref="feature/human-authored", body="no refs")
+    board = await fake.poll_board()
+    decisions = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert [d.outcome for d in decisions] == ["skipped-unresolved"]
+    assert len(await fake.list_open_pull_requests("acme", "repo")) == 1
+
+
+@pytest.mark.asyncio
+async def test_sweep_is_idempotent(tmp_path) -> None:
+    fake = _done_card_fixture(tmp_path)
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="conductor/PVTI_1/080-t037-add-collapse")
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True
+    board = await fake.poll_board()
+    first = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert [d.outcome for d in first] == ["closed"]
+    second = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=True, sweep=True))
+    assert second == []  # nothing open left → no double comments, no re-closes
+
+
+@pytest.mark.asyncio
+async def test_sweep_disabled_never_reads_github(tmp_path, monkeypatch) -> None:
+    fake = _done_card_fixture(tmp_path)
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    board = await fake.poll_board()
+    called = AsyncMock(side_effect=AssertionError("must not read when disabled"))
+    monkeypatch.setattr(fake, "list_open_pull_requests", called)
+    decisions = await run_orphan_pr_sweep(fake, board, OrphanPrConfig(enabled=False))
+    assert decisions == []
+    called.assert_not_awaited()
 

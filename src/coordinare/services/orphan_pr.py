@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 
 if TYPE_CHECKING:
+    from coordinare.config import OrphanPrConfig
     from coordinare.graph.state import GitHubServiceProtocol
 
 logger = structlog.get_logger(__name__)
@@ -71,16 +72,16 @@ def build_close_comment(
         lines.append(
             f"Card {issue_ref} ({title}) completed via {pr_url}, which was merged. "
             f"This pull request was left open when the card finished; the card is "
-            f"{status} and no further work will land here."
+            f"{status} and no further work will land here.",
         )
     else:
         lines.append(
             f"Card {issue_ref} ({title}) is {status} on the board without a merged "
-            f"pull request, so no further work will land here."
+            f"pull request, so no further work will land here.",
         )
     lines.append(
         f"Closing as superseded. (coordinare-attribution: 553 orphan "
-        f"reconciliation — card {card.get('id', 'unknown')}, basis {basis})"
+        f"reconciliation — card {card.get('id', 'unknown')}, basis {basis})",
     )
     return "\n\n".join(lines)
 
@@ -114,6 +115,74 @@ def resolve_pr_to_card(
                     return OrphanAttribution(pr=pr, card_item_id=item_id, method="body_reference")
 
     return OrphanAttribution(pr=pr, card_item_id=None, method="unresolved")
+
+
+def _cards_from_board(board: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Flatten ``poll_board``'s parallel maps into item id → card dicts.
+
+    The card shape here is the sweep's own minimal projection (id, status,
+    title, issue_number, content_node_id, pr_url) — deliberately not
+    ``check_board._build_card_dict`` so the janitor carries no node imports.
+    """
+    cards: dict[str, dict[str, Any]] = {}
+    snapshot = board.get("snapshot") or {}
+    titles = board.get("titles") or {}
+    issue_numbers = board.get("issue_numbers") or {}
+    content_node_ids = board.get("content_node_ids") or {}
+    pr_urls = board.get("pr_urls") or {}
+    for status, members in snapshot.items():
+        if not isinstance(members, list):
+            continue
+        for item_id in members:
+            if not isinstance(item_id, str) or not item_id:
+                continue
+            cards[item_id] = {
+                "id": item_id,
+                "status": str(status),
+                "title": titles.get(item_id),
+                "issue_number": issue_numbers.get(item_id),
+                "content_node_id": content_node_ids.get(item_id),
+                "pr_url": pr_urls.get(item_id),
+            }
+    return cards
+
+
+async def run_orphan_pr_sweep(
+    github: GitHubServiceProtocol,
+    board: dict[str, Any],
+    orphan_cfg: OrphanPrConfig,
+) -> list[OrphanPrDecision]:
+    """Per-cycle janitor (US-2): close open PRs of terminal-card work.
+
+    Disabled → returns [] without touching GitHub at all (byte-identical to a
+    pre-553 build, SC-003). Enabled → one GitHub read (open-PR inventory),
+    then attribution against the board snapshot supplied by the caller; every
+    evaluated PR yields one ``orphan_pr.decision`` log line (FR-005).
+    """
+    if not (orphan_cfg.enabled and orphan_cfg.sweep):
+        logger.debug("orphan_pr.disabled")
+        return []
+    owner = getattr(github, "_org", None) or getattr(github, "org", None)
+    repo = getattr(github, "_project_name", None) or getattr(github, "project_name", None)
+    if not owner or not repo:
+        logger.warning("orphan_pr.sweep_no_repo_context")
+        return []
+    open_prs = await github.list_open_pull_requests(owner, repo)
+    cards = _cards_from_board(board)
+    decisions: list[OrphanPrDecision] = []
+    for pr in open_prs:
+        attribution = resolve_pr_to_card(pr, cards)
+        if attribution.card_item_id is None:
+            decisions.append(_decision(pr, None, attribution.method, "skipped-unresolved"))
+            continue
+        card = cards[attribution.card_item_id]
+        if not is_terminal_card_status(card.get("status")):
+            decisions.append(
+                _decision(pr, attribution.card_item_id, attribution.method, "skipped-active"),
+            )
+            continue
+        decisions.extend(await close_superseded_prs(github, card, [pr]))
+    return decisions
 
 
 @dataclass(frozen=True)
@@ -193,7 +262,7 @@ async def close_superseded_prs(
             await github.add_comment(pr["id"], comment)
         except Exception as exc:
             logger.warning(
-                "orphan_pr.comment_failed", pr_number=pr.get("number"), error=str(exc)
+                "orphan_pr.comment_failed", pr_number=pr.get("number"), error=str(exc),
             )
             comment_posted = False
         result = await github.close_pull_request(pr["id"])
@@ -201,6 +270,6 @@ async def close_superseded_prs(
         if not closed_ok:
             logger.warning("orphan_pr.close_failed", pr_number=pr.get("number"))
         decisions.append(
-            _decision(pr, card_id, attribution.method, "closed", comment_posted, closed_ok)
+            _decision(pr, card_id, attribution.method, "closed", comment_posted, closed_ok),
         )
     return decisions
