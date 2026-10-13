@@ -211,6 +211,9 @@ def _add_native_edges(
                 blocker_issue_number=blocker_num,
                 source=DependencySource.NATIVE_RELATIONSHIP,
                 status=status,
+                # Tag cross-repo edges so they can never merge with a
+                # same-numbered local edge (Copilot round 2).
+                blocker_repo=blocker_repo if cross_repo else "",
             )
             graph.dependencies.append(dep)
             graph.by_dependent.setdefault(item_id, []).append(dep)
@@ -275,7 +278,7 @@ async def resolve_comment_dependencies(
             else:
                 comments = await fetch(own_issue)
         explicit_pairs = {
-            (d.dependent_item_id, d.blocker_issue_number)
+            (d.dependent_item_id, d.blocker_repo, d.blocker_issue_number)
             for d in graph.dependencies
             if d.source == DependencySource.EXPLICIT
         }
@@ -287,7 +290,7 @@ async def resolve_comment_dependencies(
                 if blocker_num == own_issue or blocker_num in seen_in_card:
                     continue
                 seen_in_card.add(blocker_num)
-                if (item_id, blocker_num) in explicit_pairs:
+                if (item_id, "", blocker_num) in explicit_pairs:
                     continue
                 edges.append(
                     CardDependency(
@@ -337,14 +340,16 @@ def _merge_comment_edges(graph: DependencyGraph, incoming: list[CardDependency])
 
     Precedence: COMMENT replaces NATIVE_RELATIONSHIP for the same pair,
     keeping the more optimistic of the two statuses; EXPLICIT and existing
-    COMMENT edges win.
+    COMMENT edges win.  The key includes the blocker's repo slug: issue
+    numbers are repo-local, so a cross-repo native edge never merges with a
+    same-numbered local edge (Copilot round 2).
     """
-    merged: dict[tuple[str, int], CardDependency] = {
-        (d.dependent_item_id, d.blocker_issue_number): d
+    merged: dict[tuple[str, str, int], CardDependency] = {
+        (d.dependent_item_id, d.blocker_repo, d.blocker_issue_number): d
         for d in graph.dependencies
     }
     for dep in incoming:
-        key = (dep.dependent_item_id, dep.blocker_issue_number)
+        key = (dep.dependent_item_id, dep.blocker_repo, dep.blocker_issue_number)
         current = merged.get(key)
         if current is None:
             merged[key] = dep
@@ -354,6 +359,7 @@ def _merge_comment_edges(graph: DependencyGraph, incoming: list[CardDependency])
                 blocker_issue_number=dep.blocker_issue_number,
                 source=DependencySource.COMMENT,
                 status=_merge_status(dep.status, current.status),
+                blocker_repo=dep.blocker_repo,
             )
     graph.dependencies = list(merged.values())
     graph.by_dependent.clear()
@@ -403,6 +409,8 @@ def detect_cycles(
     for dep in graph.dependencies:
         if dep.status != DependencyStatus.PENDING:
             continue
+        if dep.blocker_repo:
+            continue  # cross-repo edge — the foreign issue can't be a local node
         blocker_item = issue_to_item.get(dep.blocker_issue_number)
         if blocker_item is None:
             continue  # off-board — can't form a cycle

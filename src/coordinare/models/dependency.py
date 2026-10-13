@@ -38,6 +38,12 @@ class CardDependency:
     blocker_issue_number: int     # GitHub issue number the card depends on
     source: DependencySource = DependencySource.EXPLICIT
     status: DependencyStatus = DependencyStatus.PENDING
+    # Repository slug the blocker number lives in.  Empty means the
+    # dependent card's own repo (bare #N references are repo-local).
+    # Non-empty only for native blocked-by edges that point at a
+    # different repository — issue numbers are repo-local, so those
+    # edges must never merge with a same-numbered local edge.
+    blocker_repo: str = ""
 
 
 @dataclass

@@ -419,6 +419,27 @@ class TestNativeBlockers:
         graph = build_graph(board)
         assert graph.dependencies[0].status == DependencyStatus.SATISFIED
 
+    @pytest.mark.asyncio
+    async def test_cross_repo_native_does_not_absorb_local_comment(self) -> None:
+        """Copilot round 2: a CLOSED foreign-repo blocker and a same-numbered
+        local comment blocker are different edges — the local one keeps the
+        card blocked even though _merge_status favors the native status."""
+        board = _board({
+            "A": {"number": 1, "description": ""},
+            "B": {"number": 2, "description": ""},
+        })
+        board["native_blockers"] = {"A": [{"number": 2, "state": "CLOSED", "repo": "other/repo"}]}
+        github = _FakeGithub(comments={1: [{"id": 9, "body": "Blocked by #2"}]})
+        graph = build_graph(board, repo="o/r")
+        await resolve_comment_dependencies(graph, board, github, ["A"])
+        assert len(graph.dependencies) == 2
+        local = [d for d in graph.by_dependent["A"] if not d.blocker_repo]
+        foreign = [d for d in graph.by_dependent["A"] if d.blocker_repo]
+        assert len(local) == 1 and len(foreign) == 1
+        assert local[0].status == DependencyStatus.PENDING
+        assert foreign[0].status == DependencyStatus.SATISFIED
+        assert filter_eligible_todo(["A", "B"], graph) == ["B"]
+
 
 class _FakeGithub:
     def __init__(
