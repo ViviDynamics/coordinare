@@ -66,7 +66,7 @@ stateDiagram-v2
   system_error --> dispatching: retry (backoff, budget)
   system_error --> blocked: budget exhausted
   monitoring_performer --> dispatching: stage done → next role
-  monitoring_performer --> monitoring_pr: all stages done (CI lint gate)
+  monitoring_performer --> monitoring_pr: all stages done
   monitoring_performer --> blocked: terminal error
   monitoring_performer --> system_error: transient backend error / malformed_output*
   monitoring_pr --> dispatching: CI bounce / changes requested
