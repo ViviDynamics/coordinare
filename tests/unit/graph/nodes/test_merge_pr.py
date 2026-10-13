@@ -341,9 +341,9 @@ class _GitHubWithToken:
 
 @pytest.mark.asyncio
 async def test_merge_pr_records_main_and_touches_no_other_branch() -> None:
-    """555: after merge the new main SHA is recorded and no git command runs for
-    the other in-flight sessions (047's post-merge rebase round is gone)."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+    """555: after merge the new main SHA is recorded and the other in-flight
+    sessions are left alone (047's post-merge rebase round is gone)."""
+    from unittest.mock import MagicMock
 
     state = initial_state()
     state["github_service"] = _GitHubWithToken()
@@ -359,15 +359,13 @@ async def test_merge_pr_records_main_and_touches_no_other_branch() -> None:
     state["active_sessions"] = {"ITEM_2": dict(other)}
     state["config"] = MagicMock()
 
-    with patch("coordinare.services.rebase._run_git", AsyncMock()) as git:
-        result = await merge_pr(state)
+    result = await merge_pr(state)
 
     assert result["phase"] == "idle"
     assert result["current_card"]["status"] == "DONE"
     assert result["last_known_main_sha"] == "abc1234def5678"
     assert result["last_rebase_round"] is None
     assert result["active_sessions"]["ITEM_2"] == other
-    git.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

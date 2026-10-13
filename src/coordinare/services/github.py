@@ -1773,6 +1773,30 @@ class GitHubService(CardIdentityMap):
             logger.warning("branch_has_open_pr.request_failed", branch=branch_name, error=str(exc))
             return None
 
+    async def get_branch_head_sha(self, branch_name: str = "main") -> str | None:
+        """Head commit SHA of a branch via REST (read-only).
+
+        555: replaces the daemon's ``git ls-remote``, so coordinare runs no git
+        command to learn where the base branch is. Returns None on any failure;
+        the caller treats that as "unknown" and never blocks on it.
+        """
+        if not self._project_name:
+            return None
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/git/ref/heads/{quote(branch_name, safe='')}"
+        try:
+            token = await self._current_token()
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+            if not resp.is_success:
+                logger.warning("fetch_main_sha.failed", branch=branch_name, error=f"HTTP {resp.status_code}")
+                return None
+            sha = ((resp.json() or {}).get("object") or {}).get("sha")
+            return sha if isinstance(sha, str) and sha else None
+        except Exception as exc:
+            logger.warning("fetch_main_sha.failed", branch=branch_name, error=type(exc).__name__)
+            return None
+
     async def delete_branch(self, branch_name: str) -> None:
         """Delete a remote branch via REST.
 

@@ -4,7 +4,7 @@
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | When true, the daemon classifies in-flight PR branches and routes diverged ones to the implementer. When false, no classification runs and dispatch is independent of mergeability. |
+| `enabled` | bool | `true` | When true, the daemon classifies in-flight PR branches and routes diverged ones to the implementer. When false, no classification runs and dispatch is independent of mergeability. |
 
 `extra="forbid"`. Exposed as `ProjectConfiguration.implementer_rebase`.
 
@@ -19,6 +19,17 @@ Adds `DELEGATED = "delegated"`: divergence detected, handed to the implementer. 
 ## Decision values (`classify_pre_dispatch`)
 
 `proceed` | `unknown` (was `defer`) | `request` (was `rebase`) | `blocked_thrash`.
+
+## Divergence feedback entry (relay_feedback item)
+
+| Key | Meaning |
+| --- | --- |
+| `kind` | `"branch_divergence"`; the performer's trigger |
+| `source` | `"coordinare"` |
+| `base_branch` | branch to rebase onto |
+| `main_sha` | base revision the daemon saw; must be contained in the rebased history |
+| `expected_head_sha` | branch revision the daemon classified; the lease |
+| `body` | the agent-facing instruction |
 
 ## State transition on a request
 

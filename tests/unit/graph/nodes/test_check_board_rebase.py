@@ -237,3 +237,21 @@ async def test_sweep_emits_secret_free_observability() -> None:
     assert rec["outcome"] == "delegated"
     blob = " ".join(str(v) for v in rec.values()).lower()
     assert "token" not in blob and "secret" not in blob and "password" not in blob
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", [{"status": "running"}, {"status": "done", "writer_active": True}])
+async def test_documenter_side_run_is_never_rebased_under(side) -> None:
+    """165: a side run may still push to the branch; no history rewrite is asked
+    for (and the PR is not even looked up) until it has finished."""
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    sess = _session(2)
+    sess["documenting_side"] = side
+    state = _state(gh, {"ITEM_2": sess})
+    await _run(state)
+    assert gh.checked == [] and not sess.get("relay_feedback")
+
+    sess["documenting_side"] = {"status": "done"}
+    await _run(state)
+    assert sess["last_rebase_attempt"]["outcome"] == "delegated"
+    assert sess["relay_feedback"][0]["expected_head_sha"] == "headX"

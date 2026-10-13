@@ -5,16 +5,14 @@ This module only *decides*. It classifies a branch from the hosting
 platform's mergeability verdict, applies the 096 anti-thrash marker, and on
 divergence routes the card to the implementer with a relay-feedback
 instruction (555). The implementer brings the branch up to date inside its
-own container, where git credentials already exist.
+own container, where git credentials already exist, and publishes it with a
+force-with-lease pinned to the head the daemon classified.
 
-The one git command left here is the read-only ``git ls-remote`` in
-``fetch_main_sha``.
+No git command runs here: the base branch head is read through the platform
+API (``fetch_main_sha``).
 """
 from __future__ import annotations
 
-import asyncio
-import shutil
-import tempfile
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -32,8 +30,6 @@ logger = structlog.get_logger(__name__)
 _COORDINARE_BRANCH_PREFIX = "coordinare/"
 
 
-_PUBLIC_GITHUB_API_HOSTS = frozenset({"github.com", "api.github.com"})
-
 # Outcomes that mean "nothing moved": do not re-issue against the same
 # (main, head). BLOCKED/FAILED are pre-555 values still found in snapshots.
 _NON_PROGRESSING_OUTCOMES = frozenset({
@@ -41,131 +37,22 @@ _NON_PROGRESSING_OUTCOMES = frozenset({
 })
 
 
-def repo_url_from_config(config: object) -> str:
-    """Build the HTTPS clone URL from coordinare config.
+async def fetch_main_sha(github: Any, *, default_branch: str = "main") -> str | None:
+    """Current head SHA of the default branch, read through the platform API.
 
-    Uses ``parsed.hostname`` + ``parsed.port`` (not ``.netloc``) so that any
-    userinfo (``user:pass@host``) embedded in ``github_api_url`` is never
-    propagated into the clone URL or logs.  Non-standard ports are still
-    preserved.  Returns ``""`` when org or project is unset.
+    555: no git here. Returns None when the service cannot answer (no such
+    method, transport error, malformed reply); every caller treats None as
+    "unknown" and carries on.
     """
-    from urllib.parse import urlparse
-
-    org = str(getattr(config, "github_org", "") or "")
-    project = str(getattr(config, "project_name", "") or "")
-    if not org or not project:
-        return ""
-    # 151: prefer an explicitly-configured git host (the board-sim bench sets
-    # git_base_url to a loopback git:// daemon). A *defaulted* git_base_url falls
-    # through to the github_api_url-derived host so GitHub Enterprise — where the
-    # API host and git host differ — is unaffected (FR-013). pydantic's
-    # model_fields_set is what distinguishes set-to-the-default from defaulted,
-    # so an operator who explicitly writes the default host still gets this branch.
-    git_base = str(getattr(config, "git_base_url", "") or "").rstrip("/")
-    if git_base and "git_base_url" in getattr(config, "model_fields_set", ()):
-        return f"{git_base}/{org}/{project}.git"
-    api_url = str(getattr(config, "github_api_url", "") or "")
-    host = "github.com"
-    if api_url:
-        parsed = urlparse(api_url)
-        hostname = (parsed.hostname or "").lower()
-        if hostname and hostname not in _PUBLIC_GITHUB_API_HOSTS:
-            # Wrap IPv6 literals in brackets so the URL stays valid
-            # (urlparse strips them from .hostname, so detect via ":").
-            bracketed = f"[{hostname}]" if ":" in hostname else hostname
-            host = f"{bracketed}:{parsed.port}" if parsed.port else bracketed
-    return f"https://{host}/{org}/{project}.git"
-
-
-async def _run_git(
-    args: list[str],
-    cwd: str,
-    *,
-    env: dict[str, str] | None = None,
-    timeout: int = 120,
-) -> tuple[int, str, str]:
-    """Run a git command via async subprocess.
-
-    Returns ``(exit_code, stdout, stderr)``.
-    """
-    import os
-
-    full_env = {**os.environ, **(env or {})}
+    reader = getattr(github, "get_branch_head_sha", None)
+    if reader is None:
+        return None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=full_env,
-        )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout,
-        )
-        return (
-            proc.returncode or 0,
-            stdout_bytes.decode(errors="replace").strip(),
-            stderr_bytes.decode(errors="replace").strip(),
-        )
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return 128, "", "git command timed out"
+        sha = await reader(default_branch)
     except Exception as exc:
-        return 128, "", str(exc)
-
-
-def _git_env_for_token(token: str) -> dict[str, str]:
-    """Build env vars that inject a GitHub token into git HTTP auth.
-
-    Uses the ``x-access-token`` Basic-auth pattern (same as
-    WorkspaceManager) and suppresses git trace vars so tokens don't
-    leak into subprocess debug output.
-    """
-    import base64
-    credentials = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    return {
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.extraHeader",
-        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credentials}",
-        # Disable interactive prompts so git fails fast on auth issues
-        "GIT_TERMINAL_PROMPT": "0",
-        # Suppress all trace output to avoid token leakage in subprocess stderr
-        "GIT_TRACE": "0",
-        "GIT_TRACE_PACKET": "0",
-        "GIT_TRACE_PERFORMANCE": "0",
-        "GIT_TRACE_SETUP": "0",
-        "GIT_CURL_VERBOSE": "0",
-    }
-
-
-async def fetch_main_sha(
-    repo_url: str,
-    token: str,
-    *,
-    default_branch: str = "main",
-) -> str | None:
-    """Get the current HEAD SHA of the default branch without cloning.
-
-    Uses ``git ls-remote``.  Returns the SHA string or None on failure.
-    """
-    tmp = tempfile.mkdtemp(prefix="coordinare-ls-remote-")
-    try:
-        env = _git_env_for_token(token)
-        exit_code, stdout, stderr = await _run_git(
-            ["ls-remote", repo_url, f"refs/heads/{default_branch}"],
-            cwd=tmp,
-            env=env,
-            timeout=30,
-        )
-        if exit_code != 0:
-            logger.warning("fetch_main_sha.failed", error=stderr)
-            return None
-        # Output format: "<sha>\trefs/heads/main"
-        parts = stdout.split()
-        return parts[0] if parts else None
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        logger.warning("fetch_main_sha.failed", error=type(exc).__name__)
+        return None
+    return sha if isinstance(sha, str) and sha else None
 
 
 def _board_pauses_rebase(
@@ -310,39 +197,65 @@ async def _live_pr_allows_rebase(session: Any, github: Any, card_id: str) -> boo
     return allowed
 
 
+# relay_feedback ``kind`` the performer keys its rebase + lease push on (555).
+DIVERGENCE_FEEDBACK_KIND = "branch_divergence"
+
+
 def implementer_rebase_enabled(config: object) -> bool:
-    """555 (FR-008): divergence handling is opt-in; anything unreadable is off."""
-    return bool(getattr(getattr(config, "implementer_rebase", None), "enabled", False))
+    """555 (FR-008): on by default; only an explicit ``enabled: false`` turns it off.
+
+    A config object with no ``implementer_rebase`` attribute (test doubles, a
+    partially built config) reads as the model default.
+    """
+    block = getattr(config, "implementer_rebase", None)
+    return bool(getattr(block, "enabled", True)) if config is not None else False
+
+
+def side_writer_active(session: Any) -> bool:
+    """165: a documenter side run may be committing to this branch right now.
+
+    A history rewrite under it would strand its push, so no rebase is requested
+    until it has finished.
+    """
+    side = session.get("documenting_side")
+    return isinstance(side, dict) and (side.get("status") == "running" or bool(side.get("writer_active")))
 
 
 def build_divergence_feedback(
-    branch: str, main_sha: str, *, conflicting: bool, default_branch: str = "main",
+    branch: str, main_sha: str, head_sha: str, *, conflicting: bool, default_branch: str = "main",
 ) -> dict[str, str]:
     """Build the relay_feedback entry that hands a diverged branch to the implementer.
 
-    Asks for a merge of the default branch, not a history rewrite: the performer
-    push path never force-pushes over an existing branch (165), so a rebased
-    branch could not be published. PRs are squash-merged, so the result on the
-    default branch is the same.
+    The machine-readable keys are the performer's contract: it rebases the
+    workspace onto ``base_branch`` before the agent starts and, at push time,
+    publishes the rewritten branch with a force-with-lease pinned to
+    ``expected_head_sha``. The body is what the agent reads when the rebase
+    stopped on a conflict.
     """
     verdict = (
         f"conflicts with `{default_branch}`" if conflicting
         else f"is behind `{default_branch}`"
     )
     return {
+        "kind": DIVERGENCE_FEEDBACK_KIND,
+        "source": "coordinare",
+        "base_branch": default_branch,
+        "main_sha": main_sha,
+        "expected_head_sha": head_sha,
         "body": (
             f"**Branch out of date with {default_branch}**: the PR branch `{branch}` {verdict} "
-            f"(`{main_sha[:8]}`). Before anything else in this turn, bring it up to date "
-            "in your workspace:\n\n"
-            f"1. `git fetch origin {default_branch}` (if the fetch is refused, the "
-            f"`origin/{default_branch}` ref from this workspace's fresh clone is current enough).\n"
-            f"2. `git merge origin/{default_branch}`.\n"
-            "3. Resolve every conflict, keeping the intent of both sides, and remove all "
-            "conflict markers.\n"
-            "4. Run the project's tests and checks, then commit the merge.\n\n"
-            "Do not `git rebase` and do not force-push: this branch is already published "
-            "and the push path never overwrites it. Then continue with any other work "
-            "this turn carries."
+            f"(`{main_sha[:8]}`). It must be rebased onto `{default_branch}` in this turn. "
+            f"Your workspace already attempted `git rebase origin/{default_branch}` when it "
+            "was prepared. Before anything else:\n\n"
+            f"1. Run `git status` and `git log --oneline -1 origin/{default_branch}`. If the "
+            f"branch already sits on top of `origin/{default_branch}`, this item is done.\n"
+            f"2. Otherwise run `git rebase origin/{default_branch}`. For each stop, resolve "
+            "every conflict keeping the intent of both sides, remove all conflict markers, "
+            "`git add` the files and `git rebase --continue`.\n"
+            "3. Run the project's tests and checks on the rebased branch and commit any fix.\n\n"
+            "Leave no rebase in progress. Do not push: the performer publishes the rebased "
+            "branch itself with a lease, and refuses if anyone else pushed in the meantime. "
+            "Then continue with any other work this turn carries."
         ),
     }
 
@@ -368,7 +281,7 @@ def request_implementer_rebase(
     Only mutates the session dict. If the implementer cannot resolve the
     divergence, the normal monitor_performer error/blocked path escalates.
     """
-    entry = build_divergence_feedback(branch, main_sha, conflicting=conflicting)
+    entry = build_divergence_feedback(branch, main_sha, head_sha, conflicting=conflicting)
     queued = [item for item in (session.get("relay_feedback") or []) if item != entry]
     session["relay_feedback"] = [entry, *queued]
     session["performer_stage"] = "implementing"

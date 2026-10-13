@@ -600,6 +600,14 @@ class FakeGitHubService(CardIdentityMap):
             for pr in self._prs.values()
         )
 
+    async def get_branch_head_sha(self, branch_name: str = "main") -> str | None:
+        try:
+            result = await self._git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch_name}")
+        except Exception:
+            return None
+        sha = (result.stdout or "").strip()
+        return sha if result.returncode == 0 and sha else None
+
     async def delete_branch(self, branch_name: str) -> None:
         try:
             await self._git("branch", "-D", branch_name)

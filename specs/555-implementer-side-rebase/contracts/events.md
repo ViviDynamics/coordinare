@@ -4,7 +4,7 @@
 
 | Event | Emitted by | Note |
 | --- | --- | --- |
-| `fetch_main_sha.failed` | daemon | read-only `ls-remote` |
+| `fetch_main_sha.failed` | daemon | now a REST read of the branch head, not `ls-remote` |
 | `rebase.skipped_active_performer` | daemon | |
 | `rebase.pr_state_unreadable`, `rebase.pr_state_deferred` | daemon | now guards a request, not a branch write |
 | `rebase.triggered` | daemon | `reason` is `pre_dispatch` or `proactive_conflict`; `outcome` is now always `delegated` |
@@ -13,7 +13,7 @@
 | `check_board.proactive_mergeability_failed`, `check_board.proactive_rebase_failed` | daemon | per card |
 | `check_board.rebase_round_failed` | daemon | now wraps the whole read-only sweep |
 | `dispatch_performer.pre_dispatch_guard_failed` | daemon | fail open |
-| `dispatch_performer.pre_dispatch_held_on_conflict` | daemon | anti-thrash hold |
+| `dispatch_performer.pre_dispatch_held_on_conflict` | daemon | anti-thrash; gains `escalated=true` and the card is blocked |
 | `dispatch_performer.pre_dispatch_branch_unknown` | daemon | now followed by a normal dispatch |
 
 ## New
@@ -22,15 +22,23 @@
 | --- | --- |
 | `dispatch_performer.pre_dispatch_mergeability_unknown` | mergeability not computed; dispatching anyway |
 | `dispatch_performer.pre_dispatch_rerouted_to_implementer` | another stage was due; the implementer goes first, next cycle |
+| `dispatch_performer.pre_dispatch_side_writer_active` | a documenter side run is active; dispatching without a request |
+| `workspace.rebase.clean` (performer) | the setup rebase onto the base succeeded |
+| `workspace.rebase.conflict` (performer) | the setup rebase stopped on a conflict and was aborted for the agent |
+| `workspace.rebase.skipped_head_moved` (performer) | the branch moved after the request; history left alone |
+| `workspace.rebase.failed` (performer) | the setup rebase could not run; setup continues |
+| `push_branch.rebased_onto_base` (performer) | the rebased branch was published under the lease |
+| `push_branch.rebase_lease_stale`, `push_branch.rebase_lease_rejected` (performer) | someone else pushed; nothing was overwritten |
 
 ## Removed from the daemon, and where the work now reports
 
 | Old daemon event | New owner and event |
 | --- | --- |
 | `rebase.round_starting`, `rebase.round_complete`, `rebase.no_stale_branches` | none; there is no round. `rebase.triggered` marks each request |
-| `rebase.clean` | performer: the implementer's normal turn completion; the push logs `push_branch.rebased` only when it had to replay onto concurrent remote work |
-| `rebase.conflict_detected` | daemon `rebase.triggered` (the platform's CONFLICTING verdict); resolution happens in the implementer's turn |
-| `rebase.failed`, `rebase.push_failed` | performer: `push_branch.rebase_conflict`, `push_branch.uncommitted_changes`, or the turn's own failure report |
+| `rebase.clean` | performer: `workspace.rebase.clean`, then `push_branch.rebased_onto_base` |
+| `rebase.conflict_detected` | performer: `workspace.rebase.conflict` |
+| `rebase.failed` | performer: `workspace.rebase.failed`, or the turn's own failure report |
+| `rebase.push_failed` | performer: `push_branch.rebase_lease_stale`, `push_branch.rebase_lease_rejected`, `push_branch.rebase_in_progress`, `push_branch.uncommitted_changes` |
 | `rebase.already_up_to_date` | none; a current branch classifies as `proceed` silently |
 | `rebase.notification_failed` | none; the round summary notification is gone |
 | `dispatch_performer.pre_dispatch_defer` | `dispatch_performer.pre_dispatch_mergeability_unknown` (and it no longer defers) |

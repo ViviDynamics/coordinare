@@ -49,7 +49,7 @@ from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import has_live_side_writer
-from coordinare.services.rebase import fetch_main_sha, repo_url_from_config
+from coordinare.services.rebase import fetch_main_sha
 from coordinare.services.reconciliation import (
     reconcile_board_state,
     recover_documenting_side_session,
@@ -1447,25 +1447,14 @@ def stuck_dedup_key(card_id: str, phase: str, phase_entered: Any) -> str:
 async def _preflight_seed_main_sha_cache(
     state: CoordinareState, github: Any, active_sessions: dict[str, Any],
 ) -> None:
-    """Pre-seed _main_sha_cache so concurrent sessions share one ls-remote
-    result instead of each making an independent call, then record a main
+    """Pre-seed _main_sha_cache so concurrent sessions share one main-SHA
+    read instead of each making an independent call, then record a main
     advance once for the whole cycle. 555: nothing is rebased here.
     """
-    _config = state.get("config")
-    if _config is None or not hasattr(github, "_current_token"):
-        return
-    # suppress is scoped only to _current_token() — fetch_main_sha
-    # failures are logged explicitly so they're visible.
-    _token = ""
-    with contextlib.suppress(Exception):
-        _token = await github._current_token()
-    if not _token:
-        return
-    _repo_url = repo_url_from_config(_config)
-    if not _repo_url:
+    if state.get("config") is None or github is None:
         return
     try:
-        _sha = await fetch_main_sha(_repo_url, _token)
+        _sha = await fetch_main_sha(github)
     except Exception:
         logger.warning(
             "multi_session.preflight.sha_fetch_failed", exc_info=True,

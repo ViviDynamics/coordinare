@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import structlog.testing
@@ -34,9 +35,10 @@ _HEAD = "b" * 40
 # --- config (FR-008) ---------------------------------------------------------- #
 
 
-def test_config_defaults_off() -> None:
+def test_config_defaults_on() -> None:
+    """Owner decision 2026-10-13: on by default; `enabled: false` opts out."""
     assert ProjectConfiguration.model_fields["implementer_rebase"].default_factory is ImplementerRebaseConfig
-    assert ImplementerRebaseConfig().enabled is False
+    assert ImplementerRebaseConfig().enabled is True
 
 
 def test_config_rejects_unknown_keys() -> None:
@@ -48,44 +50,130 @@ def test_config_rejects_unknown_keys() -> None:
 
 @pytest.mark.parametrize(("config", "expected"), [
     (None, False),
-    (SimpleNamespace(), False),
-    (SimpleNamespace(implementer_rebase=None), False),
-    (SimpleNamespace(implementer_rebase=ImplementerRebaseConfig()), False),
-    (SimpleNamespace(implementer_rebase=ImplementerRebaseConfig(enabled=True)), True),
+    (SimpleNamespace(), True),
+    (SimpleNamespace(implementer_rebase=None), True),
+    (SimpleNamespace(implementer_rebase=ImplementerRebaseConfig()), True),
+    (SimpleNamespace(implementer_rebase=ImplementerRebaseConfig(enabled=False)), False),
 ])
-def test_enabled_reads_anything_unreadable_as_off(config, expected) -> None:
+def test_enabled_follows_the_model_default_unless_switched_off(config, expected) -> None:
     assert implementer_rebase_enabled(config) is expected
 
 
+# --- main SHA is read through the platform API, never git --------------------- #
+
+
+@pytest.mark.asyncio
+async def test_fetch_main_sha_reads_the_branch_head_from_the_service() -> None:
+    github = SimpleNamespace(get_branch_head_sha=AsyncMock(return_value=_MAIN))
+    assert await rebase.fetch_main_sha(github) == _MAIN
+    github.get_branch_head_sha.assert_awaited_once_with("main")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("github", [
+    None,
+    SimpleNamespace(),
+    SimpleNamespace(get_branch_head_sha=AsyncMock(return_value=None)),
+    SimpleNamespace(get_branch_head_sha=AsyncMock(return_value="")),
+    SimpleNamespace(get_branch_head_sha=AsyncMock(return_value={"sha": "x"})),
+    SimpleNamespace(get_branch_head_sha=AsyncMock(side_effect=RuntimeError("transport"))),
+])
+async def test_fetch_main_sha_unknown_is_none_never_an_error(github) -> None:
+    assert await rebase.fetch_main_sha(github) is None
+
+
+@pytest.mark.asyncio
+async def test_github_service_reads_branch_head_over_rest(monkeypatch) -> None:
+    from coordinare.services.github import GitHubService
+
+    seen: dict = {}
+
+    class _Resp:
+        is_success = True
+        status_code = 200
+
+        def json(self):
+            return {"ref": "refs/heads/main", "object": {"sha": _MAIN, "type": "commit"}}
+
+    class _Client:
+        def __init__(self, **_kw) -> None: ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_a) -> None: ...
+        async def get(self, url, headers):
+            seen.update(url=url, headers=headers)
+            return _Resp()
+
+    monkeypatch.setattr("coordinare.services.github.httpx.AsyncClient", _Client)
+    svc = GitHubService.__new__(GitHubService)
+    svc._org, svc._project_name = "acme", "repo"
+    svc._rest_api_base = lambda: "https://api.github.com"  # type: ignore[method-assign]
+    svc._current_token = AsyncMock(return_value="tok")  # type: ignore[method-assign]
+    assert await svc.get_branch_head_sha("main") == _MAIN
+    assert seen["url"] == "https://api.github.com/repos/acme/repo/git/ref/heads/main"
+
+    svc._current_token = AsyncMock(side_effect=RuntimeError("app auth down"))  # type: ignore[method-assign]
+    assert await svc.get_branch_head_sha("main") is None
+
+
 # --- feedback contract (contracts/divergence-feedback.md) --------------------- #
+
+
+def _feedback(**kw) -> dict:
+    kwargs = {"conflicting": True}
+    kwargs.update(kw)
+    return build_divergence_feedback(_BRANCH, _MAIN, _HEAD, **kwargs)
 
 
 @pytest.mark.parametrize(("conflicting", "verdict"), [
     (True, "conflicts with `main`"), (False, "is behind `main`"),
 ])
 def test_feedback_names_branch_main_and_verdict(conflicting, verdict) -> None:
-    body = build_divergence_feedback(_BRANCH, _MAIN, conflicting=conflicting)["body"]
+    body = _feedback(conflicting=conflicting)["body"]
     assert f"`{_BRANCH}`" in body and f"`{_MAIN[:8]}`" in body and verdict in body
-    assert _MAIN not in body  # short SHA only
+    assert _MAIN not in body  # short SHA only in the prose
 
 
-def test_feedback_asks_for_a_merge_and_forbids_history_rewrite() -> None:
-    """The performer push path never force-pushes over an existing branch (165),
-    so a rebased branch could not be published. The instruction must say merge."""
-    body = build_divergence_feedback(_BRANCH, _MAIN, conflicting=True)["body"]
-    assert "`git merge origin/main`" in body
-    assert "Do not `git rebase`" in body and "do not force-push" in body
-    assert "commit the merge" in body
+def test_feedback_carries_the_performer_contract() -> None:
+    """The performer keys its setup rebase and its lease push on these fields."""
+    entry = _feedback()
+    assert entry["kind"] == "branch_divergence"
+    assert entry["expected_head_sha"] == _HEAD and entry["main_sha"] == _MAIN
+    assert entry["base_branch"] == "main" and entry["source"] == "coordinare"
+
+
+def test_feedback_asks_for_a_rebase_and_leaves_publishing_to_the_performer() -> None:
+    body = _feedback()["body"]
+    assert "`git rebase origin/main`" in body and "`git rebase --continue`" in body
+    assert "Leave no rebase in progress" in body
+    assert "Do not push" in body and "lease" in body
 
 
 def test_feedback_follows_the_default_branch() -> None:
-    body = build_divergence_feedback(_BRANCH, _MAIN, conflicting=True, default_branch="trunk")["body"]
-    assert "git merge origin/trunk" in body and "origin/main" not in body
+    entry = _feedback(default_branch="trunk")
+    assert "git rebase origin/trunk" in entry["body"] and "origin/main" not in entry["body"]
+    assert entry["base_branch"] == "trunk"
 
 
 def test_feedback_carries_no_credential_or_url() -> None:
-    body = build_divergence_feedback(_BRANCH, _MAIN, conflicting=True)["body"].lower()
+    body = _feedback()["body"].lower()
     assert "https://" not in body and "token" not in body and "x-access-token" not in body
+
+
+def test_daemon_and_performer_agree_on_the_feedback_kind() -> None:
+    from performer import workspace as performer_workspace
+
+    assert performer_workspace._DIVERGENCE_FEEDBACK_KIND == rebase.DIVERGENCE_FEEDBACK_KIND
+
+
+def test_performer_recognises_the_daemon_built_entry() -> None:
+    from performer import workspace as performer_workspace
+    from performer.models import Score
+
+    score = Score(card_id="c", title="t", description="d", acceptance_criteria=[],
+                  repo_url="https://github.com/org/repo", branch=_BRANCH, github_token="x",
+                  role="implementing", relay_feedback=[{"body": "review note"}, _feedback()])
+    assert performer_workspace._rebase_request(score) == _feedback()
 
 
 # --- request helper (FR-003, FR-007) ------------------------------------------ #
@@ -105,7 +193,7 @@ def test_request_routes_session_to_implementer() -> None:
     assert session["performer_stage"] == "implementing"
     assert session["phase"] == "dispatching"
     assert session["agent_dispatch"] == {} and session["agent_dispatch_at"] is None
-    assert session["relay_feedback"] == [build_divergence_feedback(_BRANCH, _MAIN, conflicting=True)]
+    assert session["relay_feedback"] == [_feedback()]
     assert session["last_rebase_attempt"] == {
         "main_sha": _MAIN, "head_sha": _HEAD, "outcome": "delegated",
     }
@@ -189,6 +277,7 @@ def test_job_no_longer_carries_clone_paths() -> None:
 
 
 _REMOVED = (
+    "_run_git", "_git_env_for_token", "repo_url_from_config",
     "rebase_branch", "force_push_with_lease", "extract_conflict_info",
     "run_rebase_round", "prepare_conflict_resolution", "build_conflict_feedback",
     "build_conflict_block_comment",
@@ -200,19 +289,12 @@ def test_daemon_side_rebase_entry_points_are_gone(name) -> None:
     assert not hasattr(rebase, name)
 
 
-def test_only_git_invocation_left_in_the_service_is_ls_remote() -> None:
-    """Every git call in the module goes through _run_git; its only caller must
-    be the read-only ls-remote in fetch_main_sha."""
+def test_the_service_runs_no_subprocess_at_all() -> None:
+    """Not even ls-remote: the base head comes from the platform API."""
     source = inspect.getsource(rebase)
-    callers = [
-        name for name, fn in inspect.getmembers(rebase, inspect.isfunction)
-        if fn.__module__ == rebase.__name__ and name != "_run_git"
-        and "_run_git(" in inspect.getsource(fn)
-    ]
-    assert callers == ["fetch_main_sha"]
-    assert '["ls-remote", repo_url' in inspect.getsource(rebase.fetch_main_sha)
-    for verb in ('"clone"', '"rebase"', '"push"', '"fetch"', '"checkout"', "--force"):
-        assert verb not in source
+    for needle in ("subprocess", "create_subprocess", "tempfile", "shutil", '"ls-remote"',
+                   '"clone"', '"push"', '"fetch"', '"checkout"', "--force"):
+        assert needle not in source, needle
 
 
 @pytest.mark.parametrize("module_name", [

@@ -55,7 +55,6 @@ from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.orphan_pr import run_per_cycle_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
-from coordinare.services.rebase import repo_url_from_config
 from coordinare.services.review_staleness import classify_review_staleness
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
@@ -814,51 +813,42 @@ async def _maybe_rebase_on_main_change(
 
     active_sessions = {cid: sess for cid, sess in (state.get("active_sessions") or {}).items()
                        if not _board_pauses_rebase(cid, sess, state.get("board_snapshot"))}
-    if active_sessions and config is not None:
-        # Derive repo URL from config (not WorkspaceManager internals)
-        repo_url = repo_url_from_config(config)
-        # Get token from github_service (which owns the auth)
-        token = ""
-        if github is not None and hasattr(github, "_current_token"):
-            import contextlib
-            with contextlib.suppress(Exception):
-                token = await github._current_token()
-        if repo_url and token:
-            from coordinare.services.rebase import fetch_main_sha
-            # Cache the fetched main SHA per cycle to avoid N ls-remote
-            # calls in multi-session mode (check_board runs once per
-            # active session within a single daemon cycle).
-            cached_main = cast("str | None", state.get("_main_sha_cache"))
-            current_main: str | None
-            if cached_main and max_cards > 1:
-                current_main = cached_main
-            else:
-                current_main = await fetch_main_sha(repo_url, token)
-                if current_main and max_cards > 1:
-                    state["_main_sha_cache"] = current_main  # type: ignore[typeddict-unknown-key]
-            if current_main:
-                prev_main = state.get("last_known_main_sha")
-                # 096/555: record main movement (the baseline is persisted, so
-                # this also catches cross-restart drift). Movement itself triggers
-                # nothing: coordinare never rebases.
-                if prev_main is None:
-                    # First cycle / post-upgrade — initialize the baseline.
-                    state["last_known_main_sha"] = current_main
-                elif current_main != prev_main:
-                    logger.info(
-                        "check_board.main_head_changed",
-                        old_sha=prev_main[:8] if prev_main else "?",
-                        new_sha=current_main[:8],
-                    )
-                    state["last_known_main_sha"] = current_main
-                # 096 US2 / 555: hand any in-flight branch the platform reports
-                # CONFLICTING/BEHIND to the implementer. Read-only here; opt-in.
-                from coordinare.services.rebase import implementer_rebase_enabled
-                if implementer_rebase_enabled(config):
-                    try:
-                        await _request_rebase_for_diverged_branches(state, github, active_sessions, current_main, prev_main)
-                    except Exception as exc:
-                        logger.warning("check_board.rebase_round_failed", error=str(exc))
+    if active_sessions and config is not None and github is not None:
+        from coordinare.services.rebase import fetch_main_sha
+        # Cache the fetched main SHA per cycle to avoid N API
+        # calls in multi-session mode (check_board runs once per
+        # active session within a single daemon cycle).
+        cached_main = cast("str | None", state.get("_main_sha_cache"))
+        current_main: str | None
+        if cached_main and max_cards > 1:
+            current_main = cached_main
+        else:
+            current_main = await fetch_main_sha(github)
+            if current_main and max_cards > 1:
+                state["_main_sha_cache"] = current_main  # type: ignore[typeddict-unknown-key]
+        if current_main:
+            prev_main = state.get("last_known_main_sha")
+            # 096/555: record main movement (the baseline is persisted, so
+            # this also catches cross-restart drift). Movement itself triggers
+            # nothing: coordinare never rebases.
+            if prev_main is None:
+                # First cycle / post-upgrade — initialize the baseline.
+                state["last_known_main_sha"] = current_main
+            elif current_main != prev_main:
+                logger.info(
+                    "check_board.main_head_changed",
+                    old_sha=prev_main[:8] if prev_main else "?",
+                    new_sha=current_main[:8],
+                )
+                state["last_known_main_sha"] = current_main
+            # 096 US2 / 555: hand any in-flight branch the platform reports
+            # CONFLICTING/BEHIND to the implementer. Read-only here; opt-in.
+            from coordinare.services.rebase import implementer_rebase_enabled
+            if implementer_rebase_enabled(config):
+                try:
+                    await _request_rebase_for_diverged_branches(state, github, active_sessions, current_main, prev_main)
+                except Exception as exc:
+                    logger.warning("check_board.rebase_round_failed", error=str(exc))
 
 
 async def _request_rebase_for_diverged_branches(
@@ -870,6 +860,7 @@ async def _request_rebase_for_diverged_branches(
         detect_stale_branches,
         request_implementer_rebase,
         should_attempt_rebase,
+        side_writer_active,
     )
     rr = RebaseRound(trigger_sha=current_main)
     for _cand in detect_stale_branches(active_sessions, current_main):
@@ -880,8 +871,8 @@ async def _request_rebase_for_diverged_branches(
         if not isinstance(_sess, dict):
             continue
         _pr_node = (_sess.get("current_card") or {}).get("pr_node_id")
-        if not _pr_node:
-            continue
+        if not _pr_node or side_writer_active(_sess):
+            continue  # 165: never rewrite history under a documenter side run
         try:
             _mc = await github.check_mergeability(_pr_node)
         except Exception as exc:  # per-card isolation

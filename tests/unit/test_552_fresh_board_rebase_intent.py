@@ -36,8 +36,6 @@ def setup(monkeypatch, column, edge):
     )
     config = SimpleNamespace(max_concurrent_cards=1, implementer_rebase=SimpleNamespace(enabled=True))
     state.update(github_service=github, config=config)
-    monkeypatch.setattr(check_board_module, "repo_url_from_config", lambda _: "https://github.com/acme/repo")
-    monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/acme/repo")
     monkeypatch.setattr(rebase, "fetch_main_sha", AsyncMock(return_value="new-main"))
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
     return state, github, parked, sibling

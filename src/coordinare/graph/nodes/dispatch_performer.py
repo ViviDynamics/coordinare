@@ -961,8 +961,10 @@ async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bo
 
     Fail-open (555 FR-005): disabled, no open PR, missing deps, unknown
     mergeability, unreadable main, unidentifiable branch or any error all return
-    ``True``. The one cross-cycle hold is the anti-thrash case: the implementer
-    was already asked about this exact (main, head) and neither moved (FR-007).
+    ``True``. The one refusal is the anti-thrash case: the implementer was
+    already asked about this exact (main, head) and neither moved (FR-007).
+    That is not a silent wait: the card is escalated to ``blocked`` with the
+    reason, so a human sees it (FR-013).
     A dispatch already carrying pending feedback (incl. the divergence
     instruction) is let through unchanged so resolution is never starved.
     """
@@ -1015,20 +1017,14 @@ async def _rebase_guard_classify(state: CoordinareState, card_id: str, github: A
         _live_pr_allows_rebase,
         classify_pre_dispatch,
         fetch_main_sha,
-        repo_url_from_config,
         request_implementer_rebase,
+        side_writer_active,
     )
 
     current_main = state.get("last_known_main_sha")
     if not current_main:
-        repo_url = repo_url_from_config(config)
-        token = ""
-        if hasattr(github, "_current_token"):
-            with contextlib.suppress(Exception):
-                token = await github._current_token()
-        if repo_url and token:
-            with contextlib.suppress(Exception):
-                current_main = await fetch_main_sha(repo_url, token)
+        with contextlib.suppress(Exception):
+            current_main = await fetch_main_sha(github)
     if not current_main:
         return True  # main unknown: no anti-thrash anchor, so never classify on a guess
 
@@ -1048,11 +1044,22 @@ async def _rebase_guard_classify(state: CoordinareState, card_id: str, github: A
         return True
     if decision == "blocked_thrash":
         # Confirmed CONFLICTING/BEHIND and the implementer was already asked
-        # about this same (main, head): do NOT dispatch a fresh performer onto it.
+        # about this same (main, head): do NOT dispatch a fresh performer onto
+        # it, and do not wait silently either — block the card so a human sees it.
+        branch = str(mc.get("head_ref_name") or "")
         logger.warning(
             "dispatch_performer.pre_dispatch_held_on_conflict",
-            card_id=card_id, branch=str(mc.get("head_ref_name") or ""),
+            card_id=card_id, branch=branch, escalated=True,
         )
+        verdict = "conflicts with" if raw.upper() == "CONFLICTING" else "is behind"
+        state["phase"] = "blocked"
+        state["slot_queued_since"] = None
+        state["open_questions"] = [
+            f"Branch `{branch or '?'}` still {verdict} main (`{current_main[:8]}`) after the "
+            f"implementer was asked to rebase it at head `{head[:8]}`, and neither has moved "
+            "since. Rebase the branch onto main by hand and push, or leave an instruction on "
+            "the issue, then unblock the card.",
+        ]
         return False
 
     # decision == "request". Source the branch from the PR (head_ref_name), NOT
@@ -1063,6 +1070,11 @@ async def _rebase_guard_classify(state: CoordinareState, card_id: str, github: A
             "dispatch_performer.pre_dispatch_branch_unknown",
             card_id=card_id, mergeable=raw or "?",
         )
+        return True
+    if side_writer_active(state):
+        # 165: a documenter side run may still push to this branch; rewriting
+        # history under it would strand that push. Dispatch as usual, ask later.
+        logger.info("dispatch_performer.pre_dispatch_side_writer_active", card_id=card_id)
         return True
     if not await _live_pr_allows_rebase(state, github, card_id):
         return True  # PR closed or lifecycle unreadable: nothing to ask for
@@ -1224,9 +1236,9 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         # up to date; coordinare itself never rebases. Opt-in, and fails open
         # (proceeds with a normal dispatch) on any error or when it cannot act.
         if not await _pre_dispatch_rebase_guard(state, card_id):
-            # Rerouted to the implementer (dispatches next cycle) or held on a
-            # divergence already handed out for this (main, head). Phase stays
-            # "dispatching" so the next cycle re-evaluates.
+            # Rerouted to the implementer (phase stays "dispatching"; it is
+            # dispatched next cycle), or escalated to "blocked" because this
+            # exact (main, head) was already handed out and nothing moved.
             return state
 
         return await _dispatch_performer_body(state)

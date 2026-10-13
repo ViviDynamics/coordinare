@@ -33,6 +33,9 @@ class _GH:
     async def _current_token(self) -> str:
         return "tok"
 
+    async def get_branch_head_sha(self, branch_name: str = "main") -> str | None:
+        return "main-sha-0"
+
     async def check_mergeability(self, pr_id: str) -> dict:
         self.merge_calls += 1
         return self._verdict
@@ -77,7 +80,7 @@ def _conflicting(head: str = "hX") -> dict:
 
 @pytest.mark.asyncio
 async def test_disabled_never_classifies_and_proceeds() -> None:
-    """555 FR-008: default-off — a conflicting branch dispatches normally."""
+    """555 FR-008: `enabled: false` — a conflicting branch dispatches normally."""
     st = _state(_conflicting(), enabled=False)
     assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
     assert st["github_service"].merge_calls == 0
@@ -85,11 +88,12 @@ async def test_disabled_never_classifies_and_proceeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_config_without_the_key_is_disabled() -> None:
+async def test_config_without_the_key_follows_the_default_on() -> None:
     st = _state(_conflicting())
     st["config"] = SimpleNamespace(github_org="acme", project_name="repo")
     assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
-    assert st["github_service"].merge_calls == 0
+    assert st["github_service"].merge_calls == 1
+    assert st["last_rebase_attempt"]["outcome"] == "delegated"
 
 
 @pytest.mark.asyncio
@@ -145,34 +149,47 @@ async def test_mergeability_lookup_error_proceeds() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("token", ["", None])
-async def test_main_unknown_without_credentials_proceeds(token) -> None:
-    """The garden shape: no usable credential, main never learned → dispatch."""
+@pytest.mark.parametrize("answer", [None, "", RuntimeError("app auth down")])
+async def test_main_unknown_proceeds_without_classifying(answer) -> None:
+    """No anti-thrash anchor: main was never learned and the API cannot say."""
     st = _state(_conflicting())
     st["last_known_main_sha"] = None
-    st["github_service"]._current_token = AsyncMock(return_value=token)
-    with patch(_FETCH, new=AsyncMock()) as fetch:
-        assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
-    fetch.assert_not_called()
+    reader = AsyncMock(side_effect=answer) if isinstance(answer, Exception) else AsyncMock(return_value=answer)
+    st["github_service"].get_branch_head_sha = reader
+    assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
     assert st["github_service"].merge_calls == 0
+    assert not st.get("relay_feedback")
 
 
 @pytest.mark.asyncio
-async def test_main_unreadable_proceeds() -> None:
+async def test_main_fetch_helper_error_proceeds() -> None:
     st = _state(_conflicting())
     st["last_known_main_sha"] = None
-    with patch("coordinare.services.rebase.repo_url_from_config", return_value="https://github.com/acme/repo.git"), \
-         patch(_FETCH, new=AsyncMock(side_effect=RuntimeError("no .netrc"))):
+    with patch(_FETCH, new=AsyncMock(side_effect=RuntimeError("boom"))):
         assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
     assert not st.get("relay_feedback")
 
 
 @pytest.mark.asyncio
-async def test_token_lookup_error_proceeds() -> None:
+async def test_main_learned_on_demand_then_classifies() -> None:
     st = _state(_conflicting())
     st["last_known_main_sha"] = None
-    st["github_service"]._current_token = AsyncMock(side_effect=RuntimeError("app auth down"))
     assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
+    assert st["last_known_main_sha"] == "main-sha-0"
+    assert st["last_rebase_attempt"]["main_sha"] == "main-sha-0"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", [{"status": "running"}, {"status": "done", "writer_active": True}])
+async def test_documenter_side_run_defers_the_request_but_not_the_dispatch(side) -> None:
+    """165: never rewrite history under a side run that may still push."""
+    st = _state(_conflicting())
+    st["documenting_side"] = side
+    assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
+    assert not st.get("relay_feedback") and "last_rebase_attempt" not in st
+    st["documenting_side"] = {"status": "done"}
+    assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
+    assert st["last_rebase_attempt"]["outcome"] == "delegated"
 
 
 @pytest.mark.asyncio
@@ -202,6 +219,9 @@ async def test_conflicting_implementer_stage_dispatches_now_with_instruction() -
     body = st["relay_feedback"][0]["body"]
     assert "Branch out of date with main" in body and _BRANCH in body
     assert "conflicts with `main`" in body
+    entry = st["relay_feedback"][0]
+    assert entry["kind"] == "branch_divergence" and entry["expected_head_sha"] == "hX"
+    assert entry["main_sha"] == "main-sha-0"
     assert st["performer_stage"] == "implementing" and st["phase"] == "dispatching"
     assert st["last_rebase_attempt"] == {
         "main_sha": "main-sha-0", "head_sha": "hX", "outcome": "delegated",
@@ -240,7 +260,9 @@ async def test_divergence_is_bounded_to_one_request_per_main_and_head() -> None:
 
     assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is False  # same pair: held
     assert not st["relay_feedback"]
+    assert st["phase"] == "blocked"  # and escalated, not a silent wait
 
+    st["phase"] = "dispatching"  # a human unblocked after the branch moved
     st["github_service"]._verdict = _conflicting(head="hY")  # implementer pushed
     assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is True
     assert st["last_rebase_attempt"]["head_sha"] == "hY"
@@ -248,11 +270,52 @@ async def test_divergence_is_bounded_to_one_request_per_main_and_head() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["blocked", "failed", "delegated"])
-async def test_blocked_thrash_holds_including_pre_555_markers(outcome) -> None:
-    st = _state(_conflicting(head="hX"),
+async def test_blocked_thrash_escalates_to_blocked_including_pre_555_markers(outcome) -> None:
+    """FR-013: the hold is surfaced to a human, never a quiet wait in dispatching."""
+    import structlog.testing
+
+    st = _state(_conflicting(head="hX"), stage="reviewing",
                 marker={"main_sha": "main-sha-0", "head_sha": "hX", "outcome": outcome})
-    assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is False
+    st["slot_queued_since"] = "earlier"
+    with structlog.testing.capture_logs() as logs:
+        assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is False
     assert not st.get("relay_feedback")
+    assert st["phase"] == "blocked" and st["slot_queued_since"] is None
+    assert st["performer_stage"] == "reviewing"  # not rerouted
+    (question,) = st["open_questions"]
+    assert _BRANCH in question and "conflicts with main" in question
+    assert "main-sha" in question and "hX" in question and "unblock" in question
+    held = next(e for e in logs if e["event"] == "dispatch_performer.pre_dispatch_held_on_conflict")
+    assert held["escalated"] is True
+
+
+@pytest.mark.asyncio
+async def test_blocked_thrash_names_a_behind_branch() -> None:
+    st = _state({"mergeable_raw": "MERGEABLE", "merge_state_status": "BEHIND",
+                 "head_ref_oid": "hB", "head_ref_name": _BRANCH},
+                marker={"main_sha": "main-sha-0", "head_sha": "hB", "outcome": "delegated"})
+    assert await _pre_dispatch_rebase_guard(st, "ITEM_2") is False
+    assert "is behind main" in st["open_questions"][0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_node_routes_an_escalated_hold_to_blocked() -> None:
+    """End to end through the node: the body is not run and the phase is blocked."""
+    from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+    from coordinare.graph.routing import route_from_dispatch
+    from tests.unit.graph.nodes.test_dispatch_performer import _base_state
+
+    base = dict(_base_state(performer_stage="implementing"))
+    held = _state(_conflicting(head="hX"),
+                  marker={"main_sha": "main-sha-0", "head_sha": "hX", "outcome": "delegated"})
+    base["current_card"] = {**(base.get("current_card") or {}), **held["current_card"], "id": (base.get("current_card") or {}).get("id", "ITEM_2")}
+    for key in ("config", "github_service", "last_known_main_sha", "last_rebase_attempt"):
+        base[key] = held[key]
+    with patch("coordinare.graph.nodes.dispatch_performer._dispatch_performer_body", new=AsyncMock()) as body:
+        result = await dispatch_performer(base)
+    body.assert_not_called()
+    assert result["phase"] == "blocked"
+    assert route_from_dispatch(result) == "blocked"
 
 
 @pytest.mark.asyncio

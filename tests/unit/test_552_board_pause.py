@@ -353,7 +353,6 @@ async def test_board_maintenance_sweeps_only_unpaused_siblings(monkeypatch):
     daemon._state["active_sessions"]["sibling"] = sibling
     daemon._state["last_known_main_sha"] = "old-main"
     github = SimpleNamespace(_current_token=AsyncMock(return_value="test-token"))
-    monkeypatch.setattr(check_board_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(rebase, "fetch_main_sha", AsyncMock(return_value="new-main"))
     sweep = AsyncMock()
     monkeypatch.setattr(check_board_module, "_request_rebase_for_diverged_branches", sweep)
@@ -386,7 +385,6 @@ async def test_actual_daemon_preflight_cannot_reroute_paused_or_newly_paused_car
     daemon._state["github_service"] = github
     daemon._state["config"] = SimpleNamespace(implementer_rebase=SimpleNamespace(enabled=True))
     daemon._state["last_known_main_sha"] = "old-main"
-    monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
     request = MagicMock()
     monkeypatch.setattr(rebase, "request_implementer_rebase", request)
@@ -430,7 +428,6 @@ async def test_actual_preflight_records_main_and_touches_no_session(monkeypatch)
     github.check_mergeability = AsyncMock(return_value={"mergeable_raw": "CONFLICTING", "head_ref_oid": "head"})
     daemon._state["config"] = SimpleNamespace(implementer_rebase=SimpleNamespace(enabled=True))
     daemon._state["last_known_main_sha"] = "old-main"
-    monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
     sibling_before = dict(sibling)
     await daemon_module._preflight_poll_board(daemon._state, github, daemon._state["active_sessions"])

@@ -845,11 +845,12 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # --- Implementer-Side Rebase (555) ---
 # Coordinare never clones, rebases or pushes a branch. When enabled, it reads
 # GitHub's mergeability verdict for in-flight PRs and routes a CONFLICTING or
-# BEHIND branch to the implementer, who merges main inside its own container.
-# Default off: no classification runs and nothing brings a diverged branch up
+# BEHIND branch to the implementer, who rebases it onto main inside its own
+# container and publishes it with a force-with-lease. On by default. Set
+# enabled: false to stop classifying; nothing then brings a diverged branch up
 # to date automatically.
 # implementer_rebase:
-#   enabled: false
+#   enabled: true
 
 # --- Stuck Card Alerts ---
 # stuck_alerts:
