@@ -939,8 +939,13 @@ class TestStaleBranchCleanupConfig:
     def test_defaults_parse_correctly(self) -> None:
         cfg = self._base_cfg()
         assert cfg.stale_branch_cleanup is True
-        assert cfg.branch_collision_strategy == BranchCollisionStrategy.delete
+        # 105: the daemon never deletes a colliding branch unless told to.
+        assert cfg.branch_collision_strategy == BranchCollisionStrategy.suffix
         assert cfg.max_closed_pr_attempts_per_issue == 0
+
+    def test_branch_collision_strategy_delete_is_an_explicit_opt_in(self) -> None:
+        cfg = self._base_cfg(branch_collision_strategy="delete")
+        assert cfg.branch_collision_strategy == BranchCollisionStrategy.delete
 
     def test_stale_branch_cleanup_false_disables_feature(self) -> None:
         cfg = self._base_cfg(stale_branch_cleanup=False)

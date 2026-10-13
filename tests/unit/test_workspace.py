@@ -5,7 +5,9 @@ tests/integration/test_workspace_integration.py.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,7 +64,7 @@ def _make_config(
     workspace_root: Path | None = None,
     agent_transport: str = "subprocess",
     stale_branch_cleanup: bool = True,
-    branch_collision_strategy: str = "delete",
+    branch_collision_strategy: str = "suffix",
 ) -> MagicMock:
     """Return a minimal ProjectConfiguration mock."""
     from coordinare.config import BranchCollisionStrategy
@@ -783,8 +785,8 @@ async def test_suffix_skips_taken_candidates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_suffix_exhausted_falls_back_to_delete() -> None:
-    """T017c: all suffixes taken → falls back to delete + warning."""
+async def test_suffix_exhausted_uses_a_unique_suffix_and_never_deletes() -> None:
+    """T017c / #105: all numbered suffixes taken → a random suffix, no delete."""
     card = {"id": "89", "title": "add auth"}
     cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="suffix")
     # original exists; -2 through -9 all exist
@@ -792,8 +794,32 @@ async def test_suffix_exhausted_falls_back_to_delete() -> None:
     mgr = WorkspaceManager(cfg, github_service=github_svc)
 
     branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
-    github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
-    assert branch == "coordinare/89/add-auth"
+    github_svc.delete_branch.assert_not_awaited()
+    assert re.fullmatch(r"coordinare/89/add-auth-[0-9a-f]{8}", branch)
+
+
+@pytest.mark.asyncio
+async def test_default_strategy_never_deletes_a_colliding_branch() -> None:
+    """#105: with no strategy configured the daemon steps around the branch."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True)
+    github_svc = _make_github_service(exists_responses=[True, False])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    assert await mgr._resolve_branch("coordinare/89/add-auth", card) == "coordinare/89/add-auth-2"
+    github_svc.delete_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_config_without_the_strategy_attribute_never_deletes() -> None:
+    """#105: an absent attribute must fall back to suffix, not to delete."""
+    card = {"id": "89", "title": "add auth"}
+    github_svc = _make_github_service(exists_responses=[True, False])
+    mgr = WorkspaceManager.__new__(WorkspaceManager)
+    mgr._config, mgr._github_service = SimpleNamespace(stale_branch_cleanup=True), github_svc
+
+    assert await mgr._resolve_branch("coordinare/89/add-auth", card) == "coordinare/89/add-auth-2"
+    github_svc.delete_branch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
