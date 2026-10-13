@@ -17,11 +17,11 @@ _HEAD = "b" * 40
 
 @pytest.mark.parametrize("raw,mss", [("UNKNOWN", ""), ("", "CLEAN"), ("UNKNOWN", "BEHIND")])
 def test_unknown_mergeability_defers(raw, mss) -> None:
-    assert classify_pre_dispatch(raw, mss, _HEAD, {}, _MAIN) == "defer"
+    assert classify_pre_dispatch(raw, mss, _HEAD, {}, _MAIN) == "unknown"
 
 
 def test_empty_head_defers() -> None:
-    assert classify_pre_dispatch("CONFLICTING", "DIRTY", "", {}, _MAIN) == "defer"
+    assert classify_pre_dispatch("CONFLICTING", "DIRTY", "", {}, _MAIN) == "unknown"
 
 
 @pytest.mark.parametrize("raw,mss", [("MERGEABLE", "CLEAN"), ("MERGEABLE", "BLOCKED")])
@@ -31,11 +31,11 @@ def test_current_branch_proceeds(raw, mss) -> None:
 
 
 def test_conflicting_no_marker_rebases() -> None:
-    assert classify_pre_dispatch("CONFLICTING", "DIRTY", _HEAD, {}, _MAIN) == "rebase"
+    assert classify_pre_dispatch("CONFLICTING", "DIRTY", _HEAD, {}, _MAIN) == "request"
 
 
 def test_behind_no_marker_rebases() -> None:
-    assert classify_pre_dispatch("MERGEABLE", "BEHIND", _HEAD, {}, _MAIN) == "rebase"
+    assert classify_pre_dispatch("MERGEABLE", "BEHIND", _HEAD, {}, _MAIN) == "request"
 
 
 def test_conflicting_blocked_same_main_head_is_thrash_guarded() -> None:
@@ -47,4 +47,4 @@ def test_conflicting_blocked_same_main_head_is_thrash_guarded() -> None:
 def test_conflicting_blocked_but_head_changed_rebases_again() -> None:
     sess = {"last_rebase_attempt": {"main_sha": _MAIN, "head_sha": _HEAD,
                                     "outcome": RebaseOutcome.BLOCKED.value}}
-    assert classify_pre_dispatch("CONFLICTING", "DIRTY", "c" * 40, sess, _MAIN) == "rebase"
+    assert classify_pre_dispatch("CONFLICTING", "DIRTY", "c" * 40, sess, _MAIN) == "request"

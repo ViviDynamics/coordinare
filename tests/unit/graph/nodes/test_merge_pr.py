@@ -340,8 +340,9 @@ class _GitHubWithToken:
 
 
 @pytest.mark.asyncio
-async def test_merge_pr_triggers_rebase_round_for_other_sessions() -> None:
-    """After merge, run_rebase_round is invoked for other active sessions."""
+async def test_merge_pr_records_main_and_touches_no_other_branch() -> None:
+    """555: after merge the new main SHA is recorded and no git command runs for
+    the other in-flight sessions (047's post-merge rebase round is gone)."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
     state = initial_state()
@@ -352,26 +353,21 @@ async def test_merge_pr_triggers_rebase_round_for_other_sessions() -> None:
         "status": "IN_REVIEW",
         "pr_url": "https://github.com/org/repo/pull/42",
     }
-    state["active_sessions"] = {
-        "ITEM_2": {"session_id": "s2", "branch": "feat/card-2"},
-    }
-    config = MagicMock()
-    state["config"] = config
+    other = {"session_id": "s2", "branch": "feat/card-2", "phase": "monitoring_pr",
+             "workspace_branch": "coordinare/ITEM_2/feat",
+             "current_card": {"id": "ITEM_2", "pr_url": "https://github.com/org/repo/pull/43"}}
+    state["active_sessions"] = {"ITEM_2": dict(other)}
+    state["config"] = MagicMock()
 
-    mock_rr = MagicMock()
-    mock_rr.to_dict.return_value = {"summary": "1 rebased"}
-    mock_rr.jobs = []
-    mock_rr.summary = "1 rebased"
-
-    with (
-        patch("coordinare.graph.nodes.merge_pr.repo_url_from_config", return_value="https://github.com/org/repo.git"),
-        patch("coordinare.services.rebase.run_rebase_round", AsyncMock(return_value=mock_rr)),
-    ):
+    with patch("coordinare.services.rebase._run_git", AsyncMock()) as git:
         result = await merge_pr(state)
 
     assert result["phase"] == "idle"
     assert result["current_card"]["status"] == "DONE"
-    assert "last_rebase_round" in result
+    assert result["last_known_main_sha"] == "abc1234def5678"
+    assert result["last_rebase_round"] is None
+    assert result["active_sessions"]["ITEM_2"] == other
+    git.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

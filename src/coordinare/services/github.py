@@ -2064,8 +2064,8 @@ class GitHubService(CardIdentityMap):
             # 096: branch head OID, used by the auto-rebase anti-thrash marker to
             # tell "performer pushed new work" from "nothing changed".
             "head_ref_oid": str(node.get("headRefOid", "")),
-            # 097: branch name, so the pre-dispatch rebase guard can rebase the
-            # branch directly without depending on a (possibly unset) workspace_branch.
+            # 097/555: branch name, so the pre-dispatch divergence guard can name the
+            # branch without depending on a (possibly unset) workspace_branch.
             "head_ref_name": str(node.get("headRefName", "")),
             "head_repo_name_with_owner": str((node.get("headRepository") or {}).get("nameWithOwner") or ""),
         }

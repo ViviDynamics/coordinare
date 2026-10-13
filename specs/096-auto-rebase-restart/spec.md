@@ -5,6 +5,8 @@
 **Status**: Draft  
 **Input**: User description: "Auto-rebase restart resilience — rebase stranded in-flight branches that went stale while coordinare was down or across a restart. Continues the spec-047 auto-rebase line and the spec-094 restart-reconciliation line."
 
+> **Superseded in part by [spec 555](../555-implementer-side-rebase/spec.md) (2026-10-13).** The persisted main baseline and the anti-thrash marker from this spec are kept. The daemon no longer rebases: the proactive sweep now hands a conflicting or behind branch to the implementer.
+
 ## Overview
 
 Spec 047 (auto-rebase-on-merge) keeps every in-flight pull-request branch rebased onto the latest main, so the next card to merge does not pile up conflicts. But its rebase is **edge-triggered**: it fires only when the coordinare, *while continuously running*, notices that main has moved since the value it last saw. That "last seen" value is held only in memory and is reset on the first cycle after the coordinare starts.

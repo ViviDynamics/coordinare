@@ -838,94 +838,40 @@ async def _maybe_rebase_on_main_change(
                     state["_main_sha_cache"] = current_main  # type: ignore[typeddict-unknown-key]
             if current_main:
                 prev_main = state.get("last_known_main_sha")
-                # 096: the edge rebases ALL in-flight branches only when main
-                # actually moved since the last reconciled baseline (the baseline
-                # is now persisted, so this also fires on cross-restart drift).
-                edge_rebased = prev_main is not None and current_main != prev_main
+                # 096/555: record main movement (the baseline is persisted, so
+                # this also catches cross-restart drift). Movement itself triggers
+                # nothing: coordinare never rebases.
                 if prev_main is None:
-                    # First cycle / post-upgrade — initialize the baseline. NOT a
-                    # no-op for stranded branches: the proactive sweep below still
-                    # heals any branch already conflicting against this main.
+                    # First cycle / post-upgrade — initialize the baseline.
                     state["last_known_main_sha"] = current_main
-                elif edge_rebased:
+                elif current_main != prev_main:
                     logger.info(
                         "check_board.main_head_changed",
                         old_sha=prev_main[:8] if prev_main else "?",
                         new_sha=current_main[:8],
                     )
                     state["last_known_main_sha"] = current_main
-                    await _run_edge_rebase_round(state, github, active_sessions, current_main, prev_main, repo_url, token)
-                # 096 US2 (FR-003): proactively rebase any in-flight branch the
-                # platform reports CONFLICTING/BEHIND, independent of the edge —
-                # covers branches stranded from before the baseline (the live
-                # incident) or a missed edge. Skipped when the edge above already
-                # rebased every branch this cycle.
-                if not edge_rebased:
-                    await _proactive_rebase_stale_branches(state, github, active_sessions, current_main, prev_main, repo_url, token)
+                # 096 US2 / 555: hand any in-flight branch the platform reports
+                # CONFLICTING/BEHIND to the implementer. Read-only here; opt-in.
+                from coordinare.services.rebase import implementer_rebase_enabled
+                if implementer_rebase_enabled(config):
+                    try:
+                        await _request_rebase_for_diverged_branches(state, github, active_sessions, current_main, prev_main)
+                    except Exception as exc:
+                        logger.warning("check_board.rebase_round_failed", error=str(exc))
 
 
-async def _run_edge_rebase_round(
-    state: CoordinareState, github: GitHubServiceProtocol, active_sessions: dict[str, Any], current_main: str, prev_main: str | None, repo_url: str, token: str,
+async def _request_rebase_for_diverged_branches(
+    state: CoordinareState, github: GitHubServiceProtocol, active_sessions: dict[str, Any], current_main: str, prev_main: str | None,
 ) -> None:
-    from coordinare.services.rebase import run_rebase_round
-    try:
-        notification_svc = state.get("notification_service")
-        rr = await run_rebase_round(
-            active_sessions, current_main, repo_url, token,
-            notification_service=notification_svc,
-            github=github,
-            human_reviewers=state.get("human_reviewers"),
-        )
-        state["last_rebase_round"] = rr.to_dict()
-        # US2: attempt performer conflict resolution for
-        # the first BLOCKED job (same as merge_pr path).
-        from coordinare.models.rebase import RebaseOutcome
-        from coordinare.services.rebase import prepare_conflict_resolution
-        for _job in rr.jobs:
-            # 096 US3: distinct, secret-free observability per card.
-            logger.info(
-                "rebase.triggered", reason="main_moved",
-                card_id=_job.card_id, branch=_job.branch,
-                prev_main_sha=prev_main, current_main_sha=current_main,
-                outcome=_job.outcome.value,
-            )
-            _sess = active_sessions.get(_job.card_id)
-            if not isinstance(_sess, dict) or _job.outcome == RebaseOutcome.DEFERRED:
-                continue
-            # 096 FR-007: record the anti-thrash marker for EVERY
-            # edge-rebased card (not just BLOCKED) so the next
-            # cycle's proactive sweep doesn't re-attempt a
-            # just-BLOCKED branch. head_sha = the pre-rebase head
-            # (a BLOCKED rebase doesn't push, so it stays current).
-            # Per-job try/except keeps one card's failure from
-            # skipping the others (FR-006).
-            try:
-                _sess["last_rebase_attempt"] = {
-                    "main_sha": current_main,
-                    "head_sha": _job.pre_rebase_sha or "",
-                    "outcome": _job.outcome.value,
-                }
-                if _job.outcome == RebaseOutcome.BLOCKED:
-                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
-            except Exception as exc:  # per-card isolation (FR-006)
-                logger.warning(
-                    "check_board.edge_rebase_postprocess_failed",
-                    card_id=_job.card_id, error=str(exc),
-                )
-    except Exception as exc:
-        logger.warning("check_board.rebase_round_failed", error=str(exc))
-
-
-async def _proactive_rebase_stale_branches(
-    state: CoordinareState, github: GitHubServiceProtocol, active_sessions: dict[str, Any], current_main: str, prev_main: str | None, repo_url: str, token: str,
-) -> None:
-    from coordinare.models.rebase import RebaseOutcome
+    from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
     from coordinare.services.rebase import (
+        _live_pr_allows_rebase,
         detect_stale_branches,
-        prepare_conflict_resolution,
-        run_rebase_round,
+        request_implementer_rebase,
         should_attempt_rebase,
     )
+    rr = RebaseRound(trigger_sha=current_main)
     for _cand in detect_stale_branches(active_sessions, current_main):
         if _cand.get("skipped"):
             continue  # active performer (047 FR-006)
@@ -948,48 +894,41 @@ async def _proactive_rebase_stale_branches(
         _mss = (_mc.get("merge_state_status") or "").upper()
         _head = _mc.get("head_ref_oid") or ""
         if _raw in ("", "UNKNOWN") or not _head:
-            # Defer: mergeability not yet computed, or the head OID
-            # is missing. Without a reliable head the anti-thrash
-            # guard can't tell "performer pushed work" from "no
-            # change", so we re-check next cycle rather than rebase.
+            # Mergeability not yet computed, or the head OID is missing.
+            # Without a reliable head the anti-thrash guard can't tell
+            # "performer pushed work" from "no change", so re-check next cycle.
             continue
         if not (_raw == "CONFLICTING" or _mss == "BEHIND"):
-            continue  # current/clean → no rebase, no churn
+            continue  # current/clean → nothing to ask for, no churn
         if not should_attempt_rebase(_sess, current_main, _head):
             continue  # anti-thrash (FR-007)
         try:
-            _rr = await run_rebase_round(
-                {_cid: _sess}, current_main, repo_url, token,
-                notification_service=state.get("notification_service"),
-                github=github,
-                human_reviewers=state.get("human_reviewers"),
+            if not await _live_pr_allows_rebase(_sess, github, _cid):
+                # No request was issued; retry the lifecycle read next cycle.
+                rr.jobs.append(RebaseJob(
+                    card_id=_cid, branch=_cand.get("branch", ""), pr_number=_cand.get("pr_number", 0),
+                    target_main_sha=current_main, outcome=RebaseOutcome.DEFERRED,
+                ))
+                continue
+            request_implementer_rebase(
+                _sess, card_id=_cid, branch=_cand.get("branch", ""),
+                main_sha=current_main, head_sha=_head,
+                conflicting=_raw == "CONFLICTING", reason="proactive_conflict",
+                prev_main_sha=prev_main,
             )
-            state["last_rebase_round"] = _rr.to_dict()
-            for _job in _rr.jobs:
-                if _job.outcome == RebaseOutcome.DEFERRED:
-                    continue  # No rebase attempt occurred; retry the lifecycle read.
-                # _head is guaranteed non-empty here (deferred
-                # above otherwise), so the marker head matches what
-                # the guard reads next cycle — no asymmetry.
-                _sess["last_rebase_attempt"] = {
-                    "main_sha": current_main,
-                    "head_sha": _head,
-                    "outcome": _job.outcome.value,
-                }
-                logger.info(
-                    "rebase.triggered", reason="proactive_conflict",
-                    card_id=_cid, branch=_cand.get("branch", ""),
-                    prev_main_sha=prev_main, current_main_sha=current_main,
-                    outcome=_job.outcome.value,
-                )
-                if _job.outcome == RebaseOutcome.BLOCKED:
-                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
+            rr.jobs.append(RebaseJob(
+                card_id=_cid, branch=_cand.get("branch", ""), pr_number=_cand.get("pr_number", 0),
+                pre_rebase_sha=_head, target_main_sha=current_main,
+                outcome=RebaseOutcome.DELEGATED,
+            ))
         except Exception as exc:  # per-card isolation (FR-006)
             logger.warning(
                 "check_board.proactive_rebase_failed",
                 card_id=_cid, error=str(exc),
             )
             continue
+    if rr.jobs:
+        state["last_rebase_round"] = rr.to_dict()
 
 
 def _refresh_current_card_metadata(

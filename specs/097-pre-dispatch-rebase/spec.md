@@ -5,6 +5,8 @@
 **Status**: Draft  
 **Input**: User description: "Pre-dispatch rebase guard — rebase a conflicting/behind in-flight branch BEFORE (re)dispatching a performer to it, so the spec-096 auto-rebase heal is not starved by perpetual performer re-dispatch."
 
+> **Superseded in part by [spec 555](../555-implementer-side-rebase/spec.md) (2026-10-13).** Coordinare is an orchestrator and must not touch the code. The rebase this spec placed inside the daemon was a mistake: it made dispatch depend on the daemon holding git credentials, and a failing rebase held the card in the dispatching phase indefinitely (the garden cluster incident). Spec 555 removes the daemon-side rebase, keeps this spec's read-only classification and anti-thrash rule, and hands a diverged branch to the implementer instead. FR-001, FR-002 and FR-005 below no longer describe the system: the daemon never rebases, and unknown mergeability no longer defers a dispatch. The rest of this document is kept as written for history.
+
 ## Overview
 
 Spec 096 added a proactive rebase that heals in-flight branches the hosting platform reports as conflicting with (or behind) main. But — inheriting spec-047's rule that you never rebase a branch while a performer is actively working it (rebasing under a live performer would clobber its work) — 096 *skips* any branch that has an active performer.

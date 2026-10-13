@@ -96,8 +96,8 @@ class GitHubServiceProtocol(Protocol):
     async def initialize(self) -> None: ...
     async def aclose(self) -> None: ...
     async def current_token(self) -> str: ...
-    # Private but reached via hasattr() for the rebase token path (merge_pr,
-    # check_board, dispatch_performer) — part of the contract the fake must meet.
+    # Private but reached via hasattr() for the main-SHA ls-remote (daemon
+    # preflight, check_board, dispatch_performer) — part of the contract the fake must meet.
     async def _current_token(self) -> str: ...
 
 
@@ -417,8 +417,8 @@ class CoordinareState(TypedDict, total=False):
     local_fix_counter: dict[str, int]
     review_empty_retry_count: int
     env_health_hold_reason: str | None
-    # 047: Auto-rebase — track main HEAD SHA to detect external merges, and
-    # store the last rebase round for dashboard display.
+    # 047/555: track main HEAD SHA to detect external merges, and store the
+    # last divergence sweep for dashboard display. Coordinare never rebases.
     last_known_main_sha: str | None
     last_rebase_round: dict[str, Any] | None
     # 048: Per-role performer slot manager.  Typed as Any because LangGraph's

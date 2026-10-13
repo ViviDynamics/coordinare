@@ -1047,6 +1047,26 @@ class OrphanPrConfig(BaseModel):
     sweep: bool = False
 
 
+# ---------------------------------------------------------------------------
+# 555 — Implementer-side rebase (opt-in; default-off)
+# ---------------------------------------------------------------------------
+
+
+class ImplementerRebaseConfig(BaseModel):
+    """555: hand a diverged in-flight PR branch to the implementer.
+
+    Coordinare never clones, rebases or pushes. When ``enabled``, it reads the
+    platform's mergeability verdict for in-flight PRs and routes a CONFLICTING
+    or BEHIND branch to the implementer with a divergence instruction on the
+    relay-feedback channel. Default-off: no classification runs and dispatch is
+    independent of mergeability.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1188,6 +1208,8 @@ class ProjectConfiguration(BaseSettings):
     # (merge path and 553 orphan path). Opt-in; default-off means
     # byte-identical behavior to a pre-89 build. Per-symphony via ``overrides``.
     delete_defunct_branches: bool = False
+    # 555 — Implementer-side rebase (opt-in; default-off; see specs/555-...).
+    implementer_rebase: ImplementerRebaseConfig = Field(default_factory=ImplementerRebaseConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)

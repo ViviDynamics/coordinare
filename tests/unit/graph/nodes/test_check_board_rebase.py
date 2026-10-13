@@ -1,9 +1,11 @@
-"""096 — auto-rebase restart resilience: trigger tests for check_board.
+"""096/555 — check_board main-baseline tracking and the divergence sweep.
 
-US1 (P1): once last_known_main_sha is RESTORED from the snapshot (persistence,
-Phase 2), the existing edge (`current_main != prev_main`) fires on the first
-post-restart cycle when main advanced while the daemon was down — and does NOT
-fire spuriously when nothing changed.
+096 US1: once last_known_main_sha is RESTORED from the snapshot, a main advance
+that happened while the daemon was down is noticed on the first cycle.
+
+555: noticing is all the daemon does. It records the new main and, when
+`implementer_rebase.enabled`, hands any CONFLICTING/BEHIND in-flight branch to
+the implementer. It never rebases.
 """
 from __future__ import annotations
 
@@ -14,10 +16,18 @@ import pytest
 
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.state import initial_state
-from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
+
+_FETCH = "coordinare.services.rebase.fetch_main_sha"
 
 
-class _GitHubWithToken:
+class _GitHub:
+    """check_mergeability returns a configured verdict (and records call order)."""
+
+    def __init__(self, verdicts: dict[str, dict] | None = None, *, pr_state: str = "OPEN") -> None:
+        self._verdicts = verdicts or {}
+        self._pr_state = pr_state
+        self.checked: list[str] = []
+
     async def poll_board(self):
         return {
             "snapshot": {"IN_REVIEW": ["ITEM_2"]},
@@ -31,104 +41,28 @@ class _GitHubWithToken:
     async def _current_token(self):
         return "test-token"
 
-
-def _state_with_inflight_pr(last_known_main: str | None) -> dict:
-    state = initial_state()
-    state["github_service"] = _GitHubWithToken()
-    state["config"] = SimpleNamespace(
-        github_org="acme", project_name="repo",
-        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
-        github_api_url="",
-    )
-    state["active_sessions"] = {
-        "ITEM_2": {
-            "current_card": {"id": "ITEM_2", "pr_url": "https://github.com/acme/repo/pull/20"},
-            "workspace_branch": "coordinare/item-2",
-            "phase": "monitoring_performer",
-        },
-    }
-    state["last_known_main_sha"] = last_known_main
-    return state
-
-
-@pytest.mark.asyncio
-async def test_restored_baseline_drift_triggers_rebase() -> None:
-    """US1 (FR-001/002, SC-001): a restored OLD baseline + an advanced live main
-    (the cross-restart-drift case) fires run_rebase_round and updates the baseline."""
-    rr = RebaseRound(
-        trigger_sha="new-sha-222",
-        jobs=[RebaseJob(card_id="ITEM_2", branch="coordinare/item-2", outcome=RebaseOutcome.CLEAN)],
-    )
-    state = _state_with_inflight_pr("old-sha-restored")
-    mock_rebase = AsyncMock(return_value=rr)
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-222")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        result = await check_board(state)
-
-    mock_rebase.assert_called_once()
-    assert result.get("last_known_main_sha") == "new-sha-222"
-
-
-@pytest.mark.asyncio
-async def test_restored_baseline_no_drift_does_not_rebase() -> None:
-    """US1 edge (SC-003): a restored baseline that EQUALS the live main (restart
-    with no intervening merge) must NOT trigger a rebase — no spurious churn."""
-    state = _state_with_inflight_pr("same-sha-999")
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha-999")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-
-    mock_rebase.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_no_baseline_first_run_initializes_without_rebase() -> None:
-    """US1 (FR-001, first run / post-upgrade): with no prior baseline (None), the
-    cycle initializes last_known_main_sha to live main and does not edge-rebase."""
-    state = _state_with_inflight_pr(None)
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="fresh-sha-000")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        result = await check_board(state)
-
-    mock_rebase.assert_not_called()
-    assert result.get("last_known_main_sha") == "fresh-sha-000"
-
-
-# --------------------------------------------------------------------------- #
-# US2 (P2): proactive conflicting/behind-branch rebase, independent of the edge
-# --------------------------------------------------------------------------- #
-
-
-class _GitHubWithMergeability(_GitHubWithToken):
-    """check_mergeability returns a configured verdict (and records call order)."""
-
-    def __init__(self, verdicts: dict[str, dict]) -> None:
-        self._verdicts = verdicts
-        self.checked: list[str] = []
-
     async def check_mergeability(self, pr_id: str) -> dict:
         self.checked.append(pr_id)
-        return self._verdicts.get(pr_id, {})
+        verdict = self._verdicts.get(pr_id, {})
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+
+    async def get_pr_review_context(self, pr_id: str) -> dict:
+        return {"state": self._pr_state}
 
 
-def _proactive_state(github, sessions: dict, baseline: str = "same-sha") -> dict:
+def _state(github, sessions: dict, *, baseline: str | None = "same-sha", enabled: bool = True) -> dict:
     state = initial_state()
     state["github_service"] = github
     state["config"] = SimpleNamespace(
         github_org="acme", project_name="repo",
         max_concurrent_cards=3, priority=SimpleNamespace(field_name=""),
         github_api_url="",
+        implementer_rebase=SimpleNamespace(enabled=enabled),
     )
     state["active_sessions"] = sessions
-    state["last_known_main_sha"] = baseline  # == live main → no edge, only proactive
+    state["last_known_main_sha"] = baseline
     return state
 
 
@@ -141,187 +75,165 @@ def _session(num: int, *, phase: str = "monitoring_pr", node: str | None = None)
         },
         "workspace_branch": f"coordinare/item-{num}",
         "phase": phase,
+        "performer_stage": "reviewing",
     }
 
 
-def _rr_for(card_id: str, outcome: RebaseOutcome):
-    return RebaseRound(
-        trigger_sha="same-sha",
-        jobs=[RebaseJob(card_id=card_id, branch=f"coordinare/{card_id}",
-                        pre_rebase_sha="head1", outcome=outcome)],
-    )
+_CONFLICT = {"mergeable_raw": "CONFLICTING", "head_ref_oid": "headX"}
+
+
+async def _run(state, main: str = "same-sha"):
+    with patch(_FETCH, new=AsyncMock(return_value=main)):
+        return await check_board(state)
+
+
+# --- 096 US1: baseline tracking ----------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_proactive_conflicting_branch_triggers_rebase() -> None:
-    """US2 (FR-003, SC-002): baseline == live main, but a PR is CONFLICTING →
-    a rebase is initiated for that card with no main-moved edge."""
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "CONFLICTING",
-                                                "head_ref_oid": "headX"}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock(return_value=_rr_for("ITEM_2", RebaseOutcome.CLEAN))
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        result = await check_board(state)
-
-    mock_rebase.assert_called_once()
-    marker = state["active_sessions"]["ITEM_2"]["last_rebase_attempt"]
-    assert marker["main_sha"] == "same-sha" and marker["outcome"] == "clean"
-    assert result.get("last_rebase_round") is not None
+async def test_restored_baseline_drift_updates_baseline() -> None:
+    state = _state(_GitHub(), {"ITEM_2": _session(2)}, baseline="old-sha-111")
+    await _run(state, "new-sha-222")
+    assert state["last_known_main_sha"] == "new-sha-222"
 
 
 @pytest.mark.asyncio
-async def test_proactive_behind_branch_triggers_rebase() -> None:
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "MERGEABLE",
-                                                "merge_state_status": "BEHIND",
-                                                "head_ref_oid": "headX"}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock(return_value=_rr_for("ITEM_2", RebaseOutcome.CLEAN))
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-    mock_rebase.assert_called_once()
+async def test_no_baseline_first_run_initializes() -> None:
+    state = _state(_GitHub(), {"ITEM_2": _session(2)}, baseline=None)
+    await _run(state, "first-sha")
+    assert state["last_known_main_sha"] == "first-sha"
 
 
 @pytest.mark.asyncio
-async def test_proactive_current_branch_no_rebase() -> None:
-    """SC-003: a MERGEABLE/CLEAN branch is never rebased (no churn)."""
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "MERGEABLE",
-                                                "merge_state_status": "CLEAN",
-                                                "head_ref_oid": "headX"}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-    mock_rebase.assert_not_called()
+async def test_main_movement_alone_requests_nothing() -> None:
+    """555: 047's edge rebased every branch on a main move. Now a move with no
+    platform-reported divergence leaves every session alone."""
+    gh = _GitHub({"PR_NODE_2": {"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN",
+                                "head_ref_oid": "headX"}})
+    state = _state(gh, {"ITEM_2": _session(2)}, baseline="old-sha")
+    await _run(state, "new-sha")
+    sess = state["active_sessions"]["ITEM_2"]
+    assert sess["phase"] == "monitoring_pr" and not sess.get("relay_feedback")
+    assert "last_rebase_attempt" not in sess
+
+
+# --- 555: divergence sweep ---------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_proactive_unknown_mergeability_defers() -> None:
-    """Defer on UNKNOWN — never rebase on an uncomputed mergeability signal."""
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "UNKNOWN",
-                                                "head_ref_oid": "headX"}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-    mock_rebase.assert_not_called()
+async def test_disabled_runs_no_classification() -> None:
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    state = _state(gh, {"ITEM_2": _session(2)}, enabled=False)
+    await _run(state)
+    assert gh.checked == []
+    assert not state["active_sessions"]["ITEM_2"].get("relay_feedback")
 
 
 @pytest.mark.asyncio
-async def test_proactive_thrash_guard_skips_repeat_blocked() -> None:
-    """FR-007: a card BLOCKED against the same (main, head) is not re-attempted."""
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "CONFLICTING",
-                                                "head_ref_oid": "headX"}})
+@pytest.mark.parametrize("main", ["same-sha", "moved-sha"])
+async def test_conflicting_branch_is_handed_to_implementer(main) -> None:
+    """With or without a main-moved edge, a CONFLICTING PR is routed."""
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    state = _state(gh, {"ITEM_2": _session(2)})
+    result = await _run(state, main)
+
+    sess = state["active_sessions"]["ITEM_2"]
+    assert sess["last_rebase_attempt"] == {"main_sha": main, "head_sha": "headX", "outcome": "delegated"}
+    assert sess["performer_stage"] == "implementing" and sess["phase"] == "dispatching"
+    assert "coordinare/item-2" in sess["relay_feedback"][0]["body"]
+    job = result["last_rebase_round"]["jobs"][0]
+    assert job["card_id"] == "ITEM_2" and job["outcome"] == "delegated"
+
+
+@pytest.mark.asyncio
+async def test_behind_branch_is_handed_to_implementer() -> None:
+    gh = _GitHub({"PR_NODE_2": {"mergeable_raw": "MERGEABLE", "merge_state_status": "BEHIND",
+                                "head_ref_oid": "headB"}})
+    state = _state(gh, {"ITEM_2": _session(2)})
+    await _run(state)
+    assert "is behind `main`" in state["active_sessions"]["ITEM_2"]["relay_feedback"][0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_existing_feedback_is_kept_behind_the_instruction() -> None:
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
     sess = _session(2)
-    sess["last_rebase_attempt"] = {"main_sha": "same-sha", "head_sha": "headX", "outcome": "blocked"}
-    state = _proactive_state(gh, {"ITEM_2": sess})
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-    mock_rebase.assert_not_called()
+    sess["relay_feedback"] = [{"body": "reviewer note"}]
+    state = _state(gh, {"ITEM_2": sess})
+    await _run(state)
+    bodies = [item["body"] for item in sess["relay_feedback"]]
+    assert len(bodies) == 2 and bodies[1] == "reviewer note"
 
 
 @pytest.mark.asyncio
-async def test_proactive_per_card_isolation() -> None:
-    """FR-006/SC-004: one card's rebase failure does not block the others."""
-    gh = _GitHubWithMergeability({
-        "PR_NODE_2": {"mergeable_raw": "CONFLICTING", "head_ref_oid": "h2"},
-        "PR_NODE_3": {"mergeable_raw": "CONFLICTING", "head_ref_oid": "h3"},
-    })
-    state = _proactive_state(gh, {"ITEM_2": _session(2), "ITEM_3": _session(3)})
-
-    calls: list[str] = []
-
-    async def _flaky(sessions, main, repo, token, **kw):
-        cid = next(iter(sessions))
-        calls.append(cid)
-        if cid == "ITEM_2":
-            raise RuntimeError("transient git error")
-        return _rr_for(cid, RebaseOutcome.CLEAN)
-
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=_flaky),
-    ):
-        await check_board(state)
-
-    # both cards were attempted despite ITEM_2 raising
-    assert set(calls) == {"ITEM_2", "ITEM_3"}
+@pytest.mark.parametrize("verdict", [
+    {"mergeable_raw": "MERGEABLE", "merge_state_status": "CLEAN", "head_ref_oid": "h"},
+    {"mergeable_raw": "UNKNOWN", "head_ref_oid": "h"},
+    {"mergeable_raw": "CONFLICTING", "head_ref_oid": ""},
+])
+async def test_current_unknown_or_headless_branch_is_left_alone(verdict) -> None:
+    gh = _GitHub({"PR_NODE_2": verdict})
+    state = _state(gh, {"ITEM_2": _session(2)})
+    await _run(state)
+    sess = state["active_sessions"]["ITEM_2"]
+    assert not sess.get("relay_feedback") and "last_rebase_attempt" not in sess
 
 
 @pytest.mark.asyncio
-async def test_proactive_rebase_emits_secret_free_observability(caplog) -> None:
-    """US3 (T014/FR-008/009): a triggered rebase emits rebase.triggered with the
-    id/branch/sha/outcome fields and no secret values."""
+async def test_active_performer_is_never_rerouted() -> None:
+    """047 FR-006: a card being worked is not even looked up."""
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    state = _state(gh, {"ITEM_2": _session(2, phase="monitoring_performer")})
+    await _run(state)
+    assert gh.checked == []
+    assert state["active_sessions"]["ITEM_2"]["phase"] == "monitoring_performer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["blocked", "failed", "delegated"])
+async def test_thrash_guard_skips_repeat_request(outcome) -> None:
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    sess = _session(2)
+    sess["last_rebase_attempt"] = {"main_sha": "same-sha", "head_sha": "headX", "outcome": outcome}
+    state = _state(gh, {"ITEM_2": sess})
+    await _run(state)
+    assert not sess.get("relay_feedback") and sess["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_closed_pr_is_deferred_without_marker() -> None:
+    gh = _GitHub({"PR_NODE_2": _CONFLICT}, pr_state="CLOSED")
+    state = _state(gh, {"ITEM_2": _session(2)})
+    result = await _run(state)
+    sess = state["active_sessions"]["ITEM_2"]
+    assert not sess.get("relay_feedback") and "last_rebase_attempt" not in sess
+    assert result["last_rebase_round"]["jobs"][0]["outcome"] == "deferred"
+
+
+@pytest.mark.asyncio
+async def test_per_card_isolation() -> None:
+    """One card's lookup failure does not stop the sweep reaching the next."""
+    gh = _GitHub({"PR_NODE_2": RuntimeError("boom"), "PR_NODE_3": _CONFLICT})
+    state = _state(gh, {"ITEM_2": _session(2), "ITEM_3": _session(3)})
+    await _run(state)
+    assert set(gh.checked) == {"PR_NODE_2", "PR_NODE_3"}
+    assert state["active_sessions"]["ITEM_3"]["last_rebase_attempt"]["outcome"] == "delegated"
+    assert not state["active_sessions"]["ITEM_2"].get("relay_feedback")
+
+
+@pytest.mark.asyncio
+async def test_sweep_emits_secret_free_observability() -> None:
     import structlog.testing
 
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "CONFLICTING",
-                                                "head_ref_oid": "headX"}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock(return_value=_rr_for("ITEM_2", RebaseOutcome.CLEAN))
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-        structlog.testing.capture_logs() as logs,
-    ):
-        await check_board(state)
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    state = _state(gh, {"ITEM_2": _session(2)})
+    with structlog.testing.capture_logs() as logs:
+        await _run(state)
 
     rec = next(e for e in logs if e["event"] == "rebase.triggered")
     assert rec["reason"] == "proactive_conflict"
     assert rec["card_id"] == "ITEM_2"
     assert rec["current_main_sha"] == "same-sha"
-    assert rec["outcome"] == "clean"
+    assert rec["outcome"] == "delegated"
     blob = " ".join(str(v) for v in rec.values()).lower()
     assert "token" not in blob and "secret" not in blob and "password" not in blob
-
-
-@pytest.mark.asyncio
-async def test_edge_rebase_writes_anti_thrash_marker() -> None:
-    """096 (review fix, FR-007): the EDGE path must record last_rebase_attempt for
-    every rebased card — otherwise a just-BLOCKED branch is re-attempted by the
-    next cycle's proactive sweep (no marker → should_attempt_rebase returns True)."""
-    rr = RebaseRound(
-        trigger_sha="new-sha-222",
-        jobs=[RebaseJob(card_id="ITEM_2", branch="coordinare/item-2",
-                        pre_rebase_sha="headBLOCK", outcome=RebaseOutcome.BLOCKED)],
-    )
-    state = _state_with_inflight_pr("old-sha-restored")
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-222")),
-        patch("coordinare.services.rebase.run_rebase_round", new=AsyncMock(return_value=rr)),
-        patch("coordinare.services.rebase.prepare_conflict_resolution", new=lambda *a, **k: None),
-    ):
-        await check_board(state)
-
-    marker = state["active_sessions"]["ITEM_2"]["last_rebase_attempt"]
-    assert marker == {"main_sha": "new-sha-222", "head_sha": "headBLOCK", "outcome": "blocked"}
-
-
-@pytest.mark.asyncio
-async def test_proactive_missing_head_oid_defers() -> None:
-    """096 (review fix): a CONFLICTING PR with an empty head_ref_oid is deferred
-    (not rebased) — without a reliable head the anti-thrash guard is unsound."""
-    gh = _GitHubWithMergeability({"PR_NODE_2": {"mergeable_raw": "CONFLICTING",
-                                                "head_ref_oid": ""}})
-    state = _proactive_state(gh, {"ITEM_2": _session(2)})
-    mock_rebase = AsyncMock()
-    with (
-        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="same-sha")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
-    ):
-        await check_board(state)
-    mock_rebase.assert_not_called()

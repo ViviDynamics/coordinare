@@ -5,6 +5,8 @@
 **Status**: Draft  
 **Input**: When a PR merges to main, coordinare rebases every other in-flight PR branch onto the new main. Clean rebase → force-push-with-lease. On conflict → performer attempts resolution before falling back to blocking the card.
 
+> **Superseded in part by [spec 555](../555-implementer-side-rebase/spec.md) (2026-10-13).** The daemon no longer clones, rebases or force-pushes any branch. Divergence is detected read-only and the implementer brings the branch up to date in its own container.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 — Clean rebase after a sibling PR merges (Priority: P1)

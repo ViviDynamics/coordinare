@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -341,7 +341,7 @@ async def test_todo_pause_transition_survives_restart_and_still_requires_resume(
 
 
 @pytest.mark.asyncio
-async def test_board_maintenance_rebases_only_unpaused_siblings(monkeypatch):
+async def test_board_maintenance_sweeps_only_unpaused_siblings(monkeypatch):
     import importlib
 
     from coordinare.services import rebase
@@ -355,18 +355,18 @@ async def test_board_maintenance_rebases_only_unpaused_siblings(monkeypatch):
     github = SimpleNamespace(_current_token=AsyncMock(return_value="test-token"))
     monkeypatch.setattr(check_board_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(rebase, "fetch_main_sha", AsyncMock(return_value="new-main"))
-    run_edge = AsyncMock()
-    monkeypatch.setattr(check_board_module, "_run_edge_rebase_round", run_edge)
-    await check_board_module._maybe_rebase_on_main_change(daemon._state, github, SimpleNamespace(), 2)
-    assert run_edge.await_args.args[2] == {"sibling": sibling}
+    sweep = AsyncMock()
+    monkeypatch.setattr(check_board_module, "_request_rebase_for_diverged_branches", sweep)
+    config = SimpleNamespace(implementer_rebase=SimpleNamespace(enabled=True))
+    await check_board_module._maybe_rebase_on_main_change(daemon._state, github, config, 2)
+    assert sweep.await_args.args[2] == {"sibling": sibling}
     assert session["board_paused"] is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("already_paused,column", [(True, "BACKLOG"), (False, "BACKLOG"), (False, "TODO")])
-async def test_actual_daemon_preflight_cannot_rebase_paused_or_newly_paused_cards(monkeypatch, already_paused, column):
+async def test_actual_daemon_preflight_cannot_reroute_paused_or_newly_paused_cards(monkeypatch, already_paused, column):
     import coordinare.daemon as daemon_module
-    from coordinare.models.rebase import RebaseJob, RebaseOutcome
     from coordinare.services import rebase
 
     daemon, session, _ = daemon_with_worker(column)
@@ -384,14 +384,14 @@ async def test_actual_daemon_preflight_cannot_rebase_paused_or_newly_paused_card
         _current_token=AsyncMock(return_value="test-token"),
     )
     daemon._state["github_service"] = github
-    daemon._state["config"] = SimpleNamespace()
+    daemon._state["config"] = SimpleNamespace(implementer_rebase=SimpleNamespace(enabled=True))
     daemon._state["last_known_main_sha"] = "old-main"
     monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
-    rebase_branch = AsyncMock(return_value=RebaseJob(card_id="card", branch="coordinare/card/work", target_main_sha="new-main", outcome=RebaseOutcome.BLOCKED, conflicted_files=["file.py"]))
-    monkeypatch.setattr(rebase, "rebase_branch", rebase_branch)
+    request = MagicMock()
+    monkeypatch.setattr(rebase, "request_implementer_rebase", request)
     await daemon_module._preflight_poll_board(daemon._state, github, daemon._state["active_sessions"])
-    rebase_branch.assert_not_awaited()
+    request.assert_not_called()
     assert session["phase"] == "blocked"
     assert session["agent_dispatch"] == before
     assert session["relay_feedback"] == [{"message": "Human instruction survives"}]
@@ -399,25 +399,26 @@ async def test_actual_daemon_preflight_cannot_rebase_paused_or_newly_paused_card
 
 
 @pytest.mark.asyncio
-async def test_shared_rebase_round_ignores_paused_card_without_board_snapshot(monkeypatch):
+async def test_divergence_sweep_ignores_paused_card_without_board_snapshot():
+    from coordinare.graph.nodes.check_board import _request_rebase_for_diverged_branches
     from coordinare.services import rebase
 
     _, session, _ = daemon_with_worker("BACKLOG")
     session.update(board_paused=True, phase="blocked", workspace_branch="coordinare/card/work")
     session["current_card"]["pr_url"] = "https://github.com/example/repository/pull/123"
-    rebasing = AsyncMock()
-    monkeypatch.setattr(rebase, "rebase_branch", rebasing)
+    before = dict(session)
     assert rebase.detect_stale_branches({"card": session}, "new-main") == []
-    round_result = await rebase.run_rebase_round({"card": session}, "new-main", "https://github.com/example/repository", "test-token")
-    assert round_result.jobs == []
-    rebasing.assert_not_awaited()
+    github = SimpleNamespace(check_mergeability=AsyncMock(), get_pr_review_context=AsyncMock())
+    state: dict = {}
+    await _request_rebase_for_diverged_branches(state, github, {"card": session}, "new-main", None)
+    assert "last_rebase_round" not in state
+    github.check_mergeability.assert_not_awaited()
+    assert session == before
 
 
 @pytest.mark.asyncio
-async def test_actual_preflight_rebases_active_sibling_only(monkeypatch):
+async def test_actual_preflight_records_main_and_touches_no_session(monkeypatch):
     import coordinare.daemon as daemon_module
-    from coordinare.models.rebase import RebaseJob, RebaseOutcome
-    from coordinare.services import rebase
 
     daemon, paused, _ = daemon_with_worker("BACKLOG")
     await daemon._reconcile_board_pauses()
@@ -426,14 +427,18 @@ async def test_actual_preflight_rebases_active_sibling_only(monkeypatch):
     sibling = {"phase": "monitoring_pr", "workspace_branch": "coordinare/sibling/work", "current_card": {"id": "sibling", "pr_node_id": "PR456", "pr_url": "https://github.com/example/repository/pull/456"}}
     daemon._state["active_sessions"]["sibling"] = sibling
     github = SimpleNamespace(poll_board=AsyncMock(return_value={"snapshot": {"BACKLOG": ["card"], "IN_REVIEW": ["sibling"]}}), _current_token=AsyncMock(return_value="test-token"), get_pr_review_context=AsyncMock(return_value={"state": "OPEN"}))
-    daemon._state["config"] = SimpleNamespace()
+    github.check_mergeability = AsyncMock(return_value={"mergeable_raw": "CONFLICTING", "head_ref_oid": "head"})
+    daemon._state["config"] = SimpleNamespace(implementer_rebase=SimpleNamespace(enabled=True))
     daemon._state["last_known_main_sha"] = "old-main"
     monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/example/repository")
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
-    rebasing = AsyncMock(return_value=RebaseJob(card_id="sibling", branch="coordinare/sibling/work", target_main_sha="new-main", outcome=RebaseOutcome.SKIPPED))
-    monkeypatch.setattr(rebase, "rebase_branch", rebasing)
+    sibling_before = dict(sibling)
     await daemon_module._preflight_poll_board(daemon._state, github, daemon._state["active_sessions"])
-    rebasing.assert_awaited_once_with("https://github.com/example/repository", "coordinare/sibling/work", "new-main", "test-token")
+    # 555: the preflight only records the main advance. The per-session
+    # check_board sweep owns divergence requests; nothing is rebased anywhere.
+    assert daemon._state["last_known_main_sha"] == "new-main"
+    github.check_mergeability.assert_not_awaited()
+    assert sibling == sibling_before
     assert paused["board_paused"] is True
 
 
