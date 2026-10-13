@@ -170,6 +170,8 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
         mascot: str | None = None
         inside_header = False
         inside_navigation = False
+        inside_toggle = False
+        toggle_mascot = False
         header_image: str | None = None
         header_status = False
 
@@ -178,6 +180,10 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
             if values.get('id') == 'nav-sse-dot':
                 assert not self.inside_navigation, 'system status belongs in the header'
                 self.header_status = self.inside_header
+            if tag == 'button' and values.get('id') == 'navbar-hamburger':
+                self.inside_toggle = True
+            if tag == 'img' and self.inside_toggle:
+                self.toggle_mascot = True
             if tag == 'header':
                 self.inside_header = True
             if tag == 'nav':
@@ -191,6 +197,8 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
                 assert values.get('width') and values.get('height'), 'reserve image space before load'
 
         def handle_endtag(self, tag: str) -> None:
+            if tag == 'button':
+                self.inside_toggle = False
             if tag == 'header':
                 self.inside_header = False
             if tag == 'nav':
@@ -202,6 +210,7 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
     assert parser.mascot == '/static/coordinare-conductor.webp'
     assert parser.header_image is None
     assert parser.header_status
+    assert parser.toggle_mascot, 'the mascot is the drawer button'
 
 
 def test_drawer_remembers_desktop_width_without_changing_mobile_navigation(tmp_path: Path) -> None:

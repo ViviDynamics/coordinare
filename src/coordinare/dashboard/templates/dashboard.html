@@ -50,17 +50,19 @@
   var desktop = window.matchMedia('(min-width: 900px)');
   var collapsed = false, mobileOpen = false;
   try { collapsed = window.localStorage.getItem(key) === 'true'; } catch (_) {}
-  document.documentElement.dataset.navigationCollapsed = String(collapsed);
   function sync() {
     document.documentElement.dataset.navigationCollapsed = String(collapsed);
+    var expanded = desktop.matches ? !collapsed : mobileOpen;
+    document.documentElement.dataset.navigationExpanded = String(expanded);
     var menu = document.getElementById('navbar-menu'), button = document.getElementById('navbar-hamburger');
     if (!menu || !button) return;
     menu.classList.toggle('open', !desktop.matches && mobileOpen);
-    button.setAttribute('aria-expanded', String(desktop.matches ? !collapsed : mobileOpen));
-    button.setAttribute('aria-label', desktop.matches
+    button.setAttribute('aria-expanded', String(expanded));
+    var label = desktop.matches
       ? (collapsed ? 'Expand navigation' : 'Collapse navigation')
-      : (mobileOpen ? 'Close navigation' : 'Open navigation'));
-    button.textContent = desktop.matches ? (collapsed ? '\u203a' : '\u2039') : '\u2630';
+      : (mobileOpen ? 'Close navigation' : 'Open navigation');
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
   }
   window.toggleNavMenu = function () {
     if (desktop.matches) {
@@ -71,6 +73,7 @@
   };
   window.closeMobileNav = function () { mobileOpen = false; sync(); };
   desktop.addEventListener('change', function () { mobileOpen = false; sync(); });
+  sync();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync);
   else sync();
 })();
@@ -347,63 +350,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .perf-list-row:hover { border-color: var(--color-accent-blue); }
 .perf-list-chevron { margin-left: auto; color: var(--color-text-muted); font-size: 14px; }
 .perf-back-btn { background: none; border: none; color: var(--color-accent-blue); cursor: pointer; font-size: 13px; font-family: var(--font-ui); padding: 0; margin-bottom: 10px; display: flex; align-items: center; gap: 4px; }
-/* 554: the shared shell and appearance controls. */
-#navbar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); display: flex; flex-direction: column; align-items: stretch; gap: var(--space-5); padding: var(--space-5) var(--space-4); overflow-y: auto; background: var(--color-bg-surface); border-right: 1px solid var(--color-border); z-index: 100; }
-#navbar .nav-brand { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-family: var(--font-display); font-size: 20px; line-height: 1.1; color: var(--color-brand-ink); }
-.nav-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.nav-mascot { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; }
-.nav-icon { width: 18px; height: 18px; flex-shrink: 0; }
-.nav-link-label { min-width: 0; }
-#navbar-menu { display: flex; flex-direction: column; gap: var(--space-1); }
-#navbar a.nav-link { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); color: var(--color-text-muted); text-decoration: none; border-radius: var(--radius-control); border-left: 3px solid transparent; }
-#navbar a.nav-link:hover { background: var(--color-bg-row-hover); color: var(--color-text-primary); }
-#navbar a.nav-link.nav-active { background: var(--color-bg-row-selected); color: var(--color-brand-ink); font-weight: 600; border-left-color: var(--color-brass); }
-.nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: var(--space-2); }
-.nav-status-dot.disconnected { background: var(--color-accent-red); }
-#navbar-hamburger { display: block; width: 28px; height: 32px; flex-shrink: 0; font-size: 24px; line-height: 1; color: var(--color-text-primary); }
-@media (min-width: 900px) {
-  html[data-navigation-collapsed="true"] { --sidebar-width: 80px; }
-  html[data-navigation-collapsed="true"] #navbar { padding-inline: var(--space-3); }
-  html[data-navigation-collapsed="true"] .nav-header { flex-direction: column; }
-  html[data-navigation-collapsed="true"] .nav-brand-name,
-  html[data-navigation-collapsed="true"] .nav-link-label,
-  html[data-navigation-collapsed="true"] #project-link { display: none; }
-  html[data-navigation-collapsed="true"] #navbar a.nav-link { justify-content: center; padding-inline: var(--space-3); }
-}
-.workspace-shell { margin-left: var(--sidebar-width); padding: var(--space-6); max-width: 1900px; }
-.workspace-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); margin-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
-.workspace-header > div:first-child { flex: 1; min-width: 0; }
-.header-controls { display: flex; align-items: center; gap: var(--space-4); }
-#connection-status { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
-.appearance-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--color-border); border-radius: var(--radius-control); }
-.appearance-control button { width: 36px; height: 36px; display: grid; place-items: center; background: transparent; border: 0; color: var(--color-text-muted); }
-.appearance-control button:hover { background: var(--color-bg-row-hover); }
-.appearance-control button[aria-pressed="true"] { background: var(--color-bg-row-selected); color: var(--color-brand-ink); }
-.appearance-control svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-#main-content { min-width: 0; }
-#workflow-card summary { font-weight: 600; }
-#workflow-card details[open] summary { margin-bottom: var(--space-5); }
-@media (max-width: 899px) {
-  #navbar { position: sticky; inset: auto; top: 0; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-4); border-right: none; border-bottom: 1px solid var(--color-border); }
-  .nav-header { width: 100%; }
-  #navbar-hamburger { margin-left: auto; width: 36px; height: 36px; }
-  #navbar-menu { display: none; width: 100%; }
-  #navbar-menu.open { display: flex; }
-  .workspace-shell { margin-left: 0; padding: var(--space-5); }
-}
-@media (max-width: 599px) {
-  .workspace-shell { padding: var(--space-4); }
-  .workspace-header { align-items: center; gap: var(--space-2); }
-  .header-controls { gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
-  h1 { font-size: 28px; overflow-wrap: anywhere; }
-  .card { padding: var(--space-4); }
-  .swimlane-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .swimlane-col { min-height: 150px; }
-  .metric-row { gap: var(--space-4); }
-  #performers-page-list-view { overflow-x: auto; }
-  #performers-page-list-view table { min-width: 520px; }
-}
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
 /* 049: Active-performer tiles */
 #active-performers { margin-bottom: 4px; }
 .ap-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; }
@@ -442,14 +389,14 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .role-idle { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .perf-page-events { max-height: 120px; overflow-y: auto; font-size: 11px; color: var(--color-text-muted); }
 </style>
+<link rel="stylesheet" href="/static/shell.css">
 </head>
 <body>
 <div id="disconnected-banner">&#9888; Disconnected — reconnecting...</div>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <nav id="navbar" aria-label="Main navigation">
   <div class="nav-header">
-    <span class="nav-brand"><img class="nav-mascot" src="/static/coordinare-conductor.webp" width="48" height="48" alt=""><span class="nav-brand-name">Coordiñare</span></span>
-    <button id="navbar-hamburger" onclick="toggleNavMenu()" aria-label="Collapse navigation" aria-controls="navbar-menu" aria-expanded="true">&#8249;</button>
+    <span class="nav-brand"><button id="navbar-hamburger" type="button" onclick="toggleNavMenu()" aria-label="Collapse navigation" title="Collapse navigation" aria-controls="navbar-menu" aria-expanded="true"><span class="mascot-art" aria-hidden="true"><img class="nav-mascot mascot-body" src="/static/coordinare-conductor.webp" width="48" height="48" alt=""><img class="nav-mascot mascot-baton" src="/static/coordinare-conductor.webp" width="48" height="48" alt=""></span></button><span class="nav-brand-name">Coordiñare</span></span>
   </div>
   <div id="navbar-menu">
     <a href="/" class="nav-link" onclick="navigate(event,'/')" aria-label="Dashboard" title="Dashboard"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="nav-link-label">Dashboard</span></a>

@@ -64,6 +64,13 @@ return to an explicit signed-out page. Preserve local logout API compatibility.
 FR-17: Provide light/dark desktop and mobile screenshots for every operator page,
 configuration tab, drilldown view, account menu, and signed-out view.
 
+FR-18: Use the mascot as the only navigation toggle, with a baton pivot tied to
+expanded/collapsed state. Preserve the original artwork, keyboard/button semantics,
+action labels and saved desktop preference; honor reduced-motion preferences.
+FR-19: With OIDC enabled, unauthenticated page visits reach a basic branded sign-in
+landing page. Start SSO only on explicit Sign in. Keep APIs/SSE protected and
+expose only the public authentication pages and original branding resources.
+
 ## Edge cases
 
 Storage can throw; saved values can be invalid; OS preference can change;

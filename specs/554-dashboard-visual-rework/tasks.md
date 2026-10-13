@@ -59,3 +59,20 @@ API responses; direct localhost navigation remains unavailable. All captured
 views have no page-level horizontal overflow. The mobile account panel fits,
 Escape closes it, and focus returns to the account button. Full native keyboard/
 screen-reader review and Jason's final visual acceptance remain pending.
+
+
+## Mascot drawer and unauthenticated landing
+
+- [x] T024 Replace the separate drawer control with the mascot button; animate its
+  baton using the original unchanged image, and preserve reduced-motion behavior.
+- [x] T025 Add a public OIDC sign-in landing page with explicit Sign in; test that
+  APIs, SSE, and the operator shell remain protected.
+- [x] T026 Verify desktop/mobile state, artwork preservation, pre-paint pose, title,
+  keyboard semantics, and the packaged shared stylesheet.
+- [x] T027 Refresh all screenshot views: 88 captures across 22 views, and record
+  the baton motion for PR review from mobile.
+
+Latest `make test-all`: 10,939 passed, 58 skipped, 107 deselected. Lint and strict
+mypy pass; the wheel packages shell.css and the common public-auth template.
+All refreshed captures fit their viewports, and the native T3 recording captures
+actual baton transitions with the artwork enlarged for review.

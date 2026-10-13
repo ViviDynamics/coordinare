@@ -57,7 +57,9 @@ def _app(flow: OidcFlow, **overrides) -> object:
 def _login_redirect(client: TestClient) -> str:
     first = client.get("/", follow_redirects=False)
     assert first.status_code == 302, first.text
-    assert urlparse(first.headers["location"]).path == "/oidc/login"
+    assert urlparse(first.headers["location"]).path == "/login"
+    landing = client.get("/login", follow_redirects=False)
+    assert landing.status_code == 200 and 'href="/oidc/login"' in landing.text
     second = client.get("/oidc/login", follow_redirects=False)
     assert second.status_code == 302, second.text
     return second.headers["location"]
@@ -69,7 +71,7 @@ def _state_cookie(client: TestClient) -> str:
     return state
 
 
-def test_unauthenticated_page_load_redirects_to_provider():
+def test_explicit_sign_in_from_landing_redirects_to_provider():
     double = ProviderDouble()
     with TestClient(_app(_flow(double)), base_url=BASE) as client:
         location = _login_redirect(client)

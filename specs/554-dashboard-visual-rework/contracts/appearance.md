@@ -48,3 +48,22 @@ provider session may remain. Existing same-origin checks still apply.
 
 GET /oidc/signed-out is public and uncached, with an explicit Sign in link.
 Browser identity is deliberately excluded from the agent MCP operator surface.
+
+
+## Mascot control and public sign-in
+
+The original mascot is the navigation button on desktop and mobile. Two clipped
+copies of the unchanged image isolate the baton. Its grip stays fixed as the
+baton pivots through 16 degrees when navigation state changes. The root's derived
+navigationExpanded attribute drives the pose before first paint; aria-expanded,
+title, and the action label stay synchronized. Reduced motion removes the
+transition while preserving distinct poses. The original separate chevron and
+mobile hamburger glyph are removed.
+
+When OIDC is enabled, unauthenticated HTML visits redirect to GET /login. This
+public, uncached page shares appearance bootstrapping with the signed-out page,
+shows original branding and a single link to /oidc/login, and does not start a
+provider round trip itself. Public brand image paths are explicitly allowlisted.
+Dashboard/API/SSE protection, Host/Origin guards, shared-token behavior, and the
+loopback default remain. The common dashboard styles are served as no-cache
+/static/shell.css to preserve the existing HTML size budget.

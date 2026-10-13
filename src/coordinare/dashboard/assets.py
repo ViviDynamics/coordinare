@@ -22,6 +22,8 @@ _DASHBOARD_BRAND_ETAGS = {
     for name, (content, _) in _DASHBOARD_BRAND_ASSETS.items()
 }
 
+_DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf-8")
+
 _DASHBOARD_JS_FILES = ("helpers", "config", "performers", "workflow", "account")
 
 def _load_dashboard_js() -> tuple[dict[str, str], dict[str, str]]:
@@ -58,11 +60,28 @@ def _page_html(enabled: bool) -> str:
     return _DASHBOARD_HTML.replace(marker, _ASSISTANT_FRAGMENT + marker, 1)
 
 
-def _signed_out_html(*, local_only: bool = False) -> str:
-    """Reuse first-paint preference resolution without exposing authenticated pages."""
+def _auth_page_html(*, title: str, heading: str, message: str, mascot: bool = False) -> str:
+    """Share a small branded shell and first-paint appearance across public auth pages."""
     bootstrap = _DASHBOARD_HTML_RAW.split('<script data-appearance-bootstrap>', 1)[1].split('</script>', 1)[0]
     page = (_TEMPLATE_DIR / 'signed_out.html').read_text(encoding='utf-8')
+    identity = (
+        '<img class="auth-mascot" src="/static/coordinare-conductor.webp" width="128" height="128" alt="">'
+        if mascot else ''
+    )
+    return (page.replace('<!--appearance-bootstrap-->', bootstrap)
+            .replace('<!--auth-title-->', title).replace('<!--auth-heading-->', heading)
+            .replace('<!--auth-identity-->', identity).replace('<!--logout-message-->', message))
+
+
+def _sign_in_html() -> str:
+    return _auth_page_html(
+        title='Sign in · Coordinare', heading='Coordiñare',
+        message='Sign in to your dashboard.', mascot=True,
+    )
+
+
+def _signed_out_html(*, local_only: bool = False) -> str:
     message = 'Your dashboard session has ended.'
     if local_only:
         message += ' Your identity provider may still have you signed in.'
-    return page.replace('<!--appearance-bootstrap-->', bootstrap).replace('<!--logout-message-->', message)
+    return _auth_page_html(title='Signed out · Coordinare', heading="You're signed out", message=message)

@@ -82,3 +82,29 @@ def test_foreign_origin_cannot_log_out_signed_in_user() -> None:
         response = client.post('/oidc/logout?redirect=1', headers={'Origin': 'https://foreign.test'}, follow_redirects=False)
         assert response.status_code == 403
         assert client.get('/api/account').status_code == 200
+
+
+def test_unauthenticated_visits_get_a_public_landing_page_without_starting_sso() -> None:
+    provider = ProfileProvider()
+    with TestClient(_app(provider), base_url=BASE) as client:
+        response = client.get('/', follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers['location'] == '/login'
+        landing = client.get('/login', follow_redirects=False)
+        assert landing.status_code == 200
+        assert 'Sign in to your dashboard' in landing.text
+        assert 'href="/oidc/login"' in landing.text
+        assert '/static/coordinare-conductor.webp' in landing.text
+        assert landing.headers['cache-control'] == 'no-store'
+        assert 'EventSource' not in landing.text
+        assert client.cookies.get('oidc_state') is None
+        assert client.get('/static/coordinare-mark.svg').status_code == 200
+        assert client.get('/static/coordinare-conductor.webp').status_code == 200
+        assert client.get('/api/state').status_code == 401
+        assert client.get('/api/account').status_code == 401
+        assert client.get('/events', follow_redirects=False).status_code == 401
+        # The operator shell is still protected; only branding is public.
+        assert client.get('/static/shell.css', follow_redirects=False).status_code == 302
+        _log_in(client, provider)
+        dashboard = client.get('/', follow_redirects=False)
+        assert dashboard.status_code == 200 and 'id="main-content"' in dashboard.text

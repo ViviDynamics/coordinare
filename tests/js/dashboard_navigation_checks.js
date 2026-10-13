@@ -6,7 +6,9 @@ function boot(saved, desktop = true, denied = false) {
   const root = {dataset: {}};
   const storage = new Map(saved == null ? [] : [['coordinare.navigationCollapsed', saved]]);
   const menu = {classList: {toggle: (name, on) => {if (on) classes.add(name); else classes.delete(name);}}};
-  const button = {setAttribute: (key, value) => {attrs[key] = value;}, textContent: ''};
+  let mascotPresent = true;
+  const button = {setAttribute: (key, value) => {attrs[key] = value;},
+    set textContent(value) { mascotPresent = false; }};
   const media = {matches: desktop, addEventListener: (key, fn) => {mediaEvents[key] = fn;}};
   const window = {matchMedia: () => media, addEventListener: (key, fn) => {callbacks[key] = fn;}, localStorage: {
     getItem: key => {if (denied) throw Error('denied'); return storage.get(key) || null;},
@@ -18,16 +20,21 @@ function boot(saved, desktop = true, denied = false) {
   const beforeReady = root.dataset.navigationCollapsed;
   callbacks.DOMContentLoaded();
   return {window, root, beforeReady, attrs, classes, storage,
+    mascotPresent: () => mascotPresent,
     resize: desktop => {media.matches = desktop; mediaEvents.change();}};
 }
 let b = boot(null);
 assert.equal(b.beforeReady, 'false');
 assert.equal(b.attrs['aria-expanded'], 'true');
 assert.equal(b.attrs['aria-label'], 'Collapse navigation');
+assert.equal(b.mascotPresent(), true, 'bootstrap must preserve the mascot inside the toggle');
+assert.equal(b.attrs.title, 'Collapse navigation');
 b.window.toggleNavMenu();
 assert.equal(b.root.dataset.navigationCollapsed, 'true');
 assert.equal(b.attrs['aria-expanded'], 'false');
 assert.equal(b.attrs['aria-label'], 'Expand navigation');
+assert.equal(b.mascotPresent(), true, 'state changes must preserve the mascot artwork');
+assert.equal(b.attrs.title, 'Expand navigation');
 assert.equal(b.storage.get('coordinare.navigationCollapsed'), 'true');
 b.window.closeMobileNav();
 assert.equal(b.root.dataset.navigationCollapsed, 'true', 'desktop choice survives navigation');

@@ -37,6 +37,7 @@ DEFERRED_REST_PREFIXES = (
 #: Human dashboard page paths (HTML), deferred like the static assets.
 DEFERRED_PAGE_PATHS = (
     "/",
+    "/login",
     "/performers",
     "/personas",
     "/history",

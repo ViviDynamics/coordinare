@@ -72,3 +72,13 @@ locally and the signed-out page explains that the provider session may remain.
 The existing `POST /oidc/logout` API retains its 204 response for local-only
 logout. `/api/account` exposes profile fields with `Cache-Control: no-store`;
 ID tokens and client credentials are never returned in that profile response.
+
+
+### Public sign-in page
+
+When OIDC is configured, unauthenticated browser page loads redirect to `/login`.
+This basic branded page does not contact the identity provider until the visitor
+chooses Sign in. API requests and SSE still receive 401 while unauthenticated.
+Only the login/confirmation routes and the original mark/mascot image resources
+are public; the operator shell and other static assets remain protected. Shared-
+token-only access and anonymous loopback access retain their existing behavior.

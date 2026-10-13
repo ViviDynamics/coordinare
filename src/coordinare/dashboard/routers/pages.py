@@ -13,6 +13,7 @@ from coordinare.dashboard.assets import (
     _DASHBOARD_BRAND_ASSETS,
     _DASHBOARD_BRAND_ETAGS,
     _DASHBOARD_JS_SOURCES,
+    _DASHBOARD_SHELL_CSS,
     _page_html,
 )
 
@@ -40,6 +41,8 @@ def _register_dashboard_static_script(app: FastAPI, ctx: DashboardContext) -> No
             this can be cached as immutable: a redeploy that changes a file
             changes the URL and no browser renders a stale script.
             """
+            if filename == "shell.css":
+                return Response(_DASHBOARD_SHELL_CSS, media_type="text/css", headers={"Cache-Control": "no-cache"})
             brand = _DASHBOARD_BRAND_ASSETS.get(filename)
             if brand is not None:
                 content, media_type = brand

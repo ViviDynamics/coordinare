@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 
     from coordinare.dashboard_oidc import OidcFlow
 
-_OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout", "/oidc/signed-out"})
+_OIDC_PUBLIC_PATHS = frozenset({
+    "/login", "/oidc/login", "/oidc/callback", "/oidc/logout", "/oidc/signed-out",
+    "/static/coordinare-mark.svg", "/static/coordinare-conductor.webp",
+})
 _ORIGIN_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 
@@ -76,7 +79,7 @@ class DashboardAuthentication:
     """Protect every route, including SSE, without buffering requests/responses.
 
     Spec 497: when an OIDC flow is configured, an unauthenticated *page load* is
-    redirected to the provider instead of getting 401, and a valid session
+    redirected to the branded sign-in page instead of getting 401. A valid session
     cookie authenticates exactly like the bearer token would. Token auth
     short-circuits; the session store is only consulted when the header carries
     no valid credential, so authenticated paths do no provider I/O.
@@ -132,6 +135,7 @@ class DashboardAuthentication:
             await self.app(scope, receive, send)
             return
         if self._oidc is not None and path in _OIDC_PUBLIC_PATHS:
+            # Login/confirmation pages and original brand images are public.
             # OIDC routes carry their own integrity checks (state/nonce pairing);
             # the localhost guard above still applies in full. Logout mutates
             # session state while public, so it keeps the middleware's
@@ -155,7 +159,7 @@ class DashboardAuthentication:
             or self._session_authenticated(request)
         ):
             if self._oidc is not None and self._is_page_load(request):
-                redirect_response = RedirectResponse("/oidc/login", status_code=302)
+                redirect_response = RedirectResponse("/login", status_code=302)
                 await redirect_response(scope, receive, send)
                 return
             unauthorized_response = JSONResponse(

@@ -1,0 +1,62 @@
+/* 554: the shared shell and appearance controls. */
+#navbar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-width); display: flex; flex-direction: column; align-items: stretch; gap: var(--space-5); padding: var(--space-5) var(--space-4); overflow-y: auto; background: var(--color-bg-surface); border-right: 1px solid var(--color-border); z-index: 100; }
+#navbar .nav-brand { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-family: var(--font-display); font-size: 20px; line-height: 1.1; color: var(--color-brand-ink); }
+.nav-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.mascot-art { position: relative; display: block; width: 48px; height: 48px; }
+.nav-mascot { position: absolute; inset: 0; width: 48px; height: 48px; object-fit: contain; }
+/* The two complementary clips isolate the original baton at its grip. */
+.mascot-body { clip-path: polygon(0 0,33% 0,18% 27.5%,22% 29%,40% 0,100% 0,100% 100%,0 100%); }
+.mascot-baton { clip-path: polygon(33% 0,40% 0,22% 29%,18% 27.5%); transform-origin: 21% 29%; transition: transform 280ms cubic-bezier(.2,.8,.2,1); }
+html[data-navigation-expanded="false"] .mascot-baton { transform: rotate(-16deg); }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; }
+.nav-link-label { min-width: 0; }
+#navbar-menu { display: flex; flex-direction: column; gap: var(--space-1); }
+#navbar a.nav-link { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); color: var(--color-text-muted); text-decoration: none; border-radius: var(--radius-control); border-left: 3px solid transparent; }
+#navbar a.nav-link:hover { background: var(--color-bg-row-hover); color: var(--color-text-primary); }
+#navbar a.nav-link.nav-active { background: var(--color-bg-row-selected); color: var(--color-brand-ink); font-weight: 600; border-left-color: var(--color-brass); }
+.nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: var(--space-2); }
+.nav-status-dot.disconnected { background: var(--color-accent-red); }
+#navbar-hamburger { display: block; width: 56px; height: 56px; padding: 4px; flex-shrink: 0; border: 0; background: transparent; border-radius: var(--radius-control); }
+#navbar-hamburger:hover { background: var(--color-bg-row-hover); }
+@media (min-width: 900px) {
+  html[data-navigation-collapsed="true"] { --sidebar-width: 80px; }
+  html[data-navigation-collapsed="true"] #navbar { padding-inline: var(--space-3); }
+  html[data-navigation-collapsed="true"] .nav-header { flex-direction: column; }
+  html[data-navigation-collapsed="true"] .nav-brand-name,
+  html[data-navigation-collapsed="true"] .nav-link-label,
+  html[data-navigation-collapsed="true"] #project-link { display: none; }
+  html[data-navigation-collapsed="true"] #navbar a.nav-link { justify-content: center; padding-inline: var(--space-3); }
+}
+.workspace-shell { margin-left: var(--sidebar-width); padding: var(--space-6); max-width: 1900px; }
+.workspace-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); margin-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
+.workspace-header > div:first-child { flex: 1; min-width: 0; }
+.header-controls { display: flex; align-items: center; gap: var(--space-4); }
+#connection-status { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
+.appearance-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--color-border); border-radius: var(--radius-control); }
+.appearance-control button { width: 36px; height: 36px; display: grid; place-items: center; background: transparent; border: 0; color: var(--color-text-muted); }
+.appearance-control button:hover { background: var(--color-bg-row-hover); }
+.appearance-control button[aria-pressed="true"] { background: var(--color-bg-row-selected); color: var(--color-brand-ink); }
+.appearance-control svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#main-content { min-width: 0; }
+#workflow-card summary { font-weight: 600; }
+#workflow-card details[open] summary { margin-bottom: var(--space-5); }
+@media (max-width: 899px) {
+  #navbar { position: sticky; inset: auto; top: 0; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-4); border-right: none; border-bottom: 1px solid var(--color-border); }
+  .nav-header { width: 100%; }
+  #navbar-menu { display: none; width: 100%; }
+  #navbar-menu.open { display: flex; }
+  .workspace-shell { margin-left: 0; padding: var(--space-5); }
+}
+@media (max-width: 599px) {
+  .workspace-shell { padding: var(--space-4); }
+  .workspace-header { align-items: center; gap: var(--space-2); }
+  .header-controls { gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+  h1 { font-size: 28px; overflow-wrap: anywhere; }
+  .card { padding: var(--space-4); }
+  .swimlane-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .swimlane-col { min-height: 150px; }
+  .metric-row { gap: var(--space-4); }
+  #performers-page-list-view { overflow-x: auto; }
+  #performers-page-list-view table { min-width: 520px; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

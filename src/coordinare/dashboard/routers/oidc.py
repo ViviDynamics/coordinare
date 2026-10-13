@@ -1,7 +1,7 @@
 """OIDC login routes (497): /oidc/login, /oidc/callback, /oidc/logout.
 
 These routes are exempt from :class:`~coordinare.dashboard_auth.DashboardAuthentication`
-(the middleware skips the three exact paths) but the localhost guard still
+(the middleware skips exact public authentication/branding paths) but the localhost guard still
 applies in full, so POST /oidc/logout keeps its same-origin check. Every
 failure response is a fixed diagnostic; provider response bodies and
 configuration secrets are never reflected.
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from coordinare.dashboard_oidc import OidcFlow
 
-from coordinare.dashboard.assets import _signed_out_html
+from coordinare.dashboard.assets import _sign_in_html, _signed_out_html
 
 _log = structlog.get_logger(__name__)
 
@@ -39,6 +39,10 @@ _UNAVAILABLE_BODY = "OIDC provider unavailable. Check the daemon logs for detail
 
 def register_oidc_routes(app: FastAPI, flow: OidcFlow) -> None:
     secure = urlparse(flow.config.redirect_url).scheme == "https"
+
+    @app.get("/login")
+    async def sign_in_page() -> Response:
+        return HTMLResponse(_sign_in_html(), headers={"Cache-Control": "no-store"})
 
     @app.get("/oidc/login")
     async def oidc_login() -> Response:

@@ -129,3 +129,23 @@ collapsed navigation, account popup, assistant, and signed-out page. PNGs and a
 ZIP remain under the ignored preview state directory. Captures use the branch's
 rendered HTML/JavaScript and synthetic API data in T3 Browser. The Config tab
 strip now scrolls within its panel instead of widening mobile pages.
+
+
+### Mascot drawer control and unauthenticated landing
+
+Jason requested removal of the chevron and use of the mascot as the drawer
+control, with baton movement as a state cue. The same original image is split by
+complementary CSS clips, so only the baton moves and its grip stays at the hand.
+The mascot is a 56px button on desktop and mobile, with visible focus, action
+labels/tooltips, saved width, and a reduced-motion fallback. Original files stay
+byte-identical. Shared styles moved into a no-cache stylesheet within the
+existing HTML budget.
+
+Jason also requested a basic landing for unauthenticated visits. In OIDC mode,
+visitors now see /login with the original mascot, wordmark, and explicit Sign in.
+It shares the signed-out shell and appearance preference, includes no operator
+state, and starts no provider request until Sign in is selected. APIs, SSE, and
+the dashboard shell remain behind authentication.
+
+The refresh adds the sign-in landing to all four screenshot sets, now 88 captures
+across 22 views, and a GIF of native recorded baton movement enlarged for review.
