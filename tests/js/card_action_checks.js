@@ -75,7 +75,7 @@ var menu = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, sta
 has("menu offers cancel", menu, 'data-card-action="cancel"');
 has("menu offers skip", menu, 'data-card-action="skip"');
 has("menu offers restart", menu, 'data-card-action="restart"');
-has("every button carries the card id", menu.split('data-card-id="' + NODE + '"').length === 4, "true");
+check("the menu and each of its three buttons carry the card id", menu.split('data-card-id="' + NODE + '"').length - 1, 4);
 has("restart lists the lifecycle stages by display name", menu, '<option value="implementing">Implement</option>');
 has("the menu has an accessible name", menu, 'aria-label="Card actions"');
 has("the menu has a live status region", menu, 'role="status"');
@@ -87,6 +87,33 @@ has("no restart control when the lifecycle is unknown",
   cardActionsHtml({ card_id: NODE, phase: "dispatching" }, {}), 'data-card-action="restart"', false);
 has("card ids are escaped in the markup",
   cardActionsHtml({ card_id: '"><img>', phase: "dispatching" }, state), "<img>", false);
+
+// --- results survive a re-render (review of #145) -----------------------------
+// The page replaces the menu's DOM on every state update. The result and the
+// open state are kept per card and the markup is rebuilt from them.
+var T0 = 1000000;
+setCardActionResult(NODE, "Card cancelled.", null, T0);
+var rerendered = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, state, T0 + 5000);
+has("a re-render after the action still shows its result", rerendered, ">Card cancelled.</div>");
+has("and keeps the menu open so it can be read", rerendered, '<details class="card-actions" data-card-id="' + NODE + '" open>');
+var expired = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, state, T0 + CARD_ACTION_RESULT_MS + 1);
+has("the result clears after a minute", expired, "Card cancelled.", false);
+has("and the menu closes again", expired, " open>", false);
+setCardActionResult(NODE, "A check is in progress. Try again in a moment.", { kind: "restart", stage: "reviewing" }, T0);
+var retryHtml = cardActionMsgHtml(NODE, T0 + 1);
+has("retry carries its own action", retryHtml, 'data-card-action="restart"');
+has("retry carries its own stage, so it works after a re-render", retryHtml, 'data-card-stage="reviewing"');
+has("retry carries the card", retryHtml, 'data-card-id="' + NODE + '"');
+has("retry is marked so it does not ask to confirm twice", retryHtml, 'data-card-retry="1"');
+setCardActionResult("other", "<img src=x onerror=alert(1)>", null, T0);
+has("result text is escaped", cardActionMsgHtml("other", T0), "<img", false);
+check("a card with no result has an empty status line", cardActionMsgHtml("never", T0), "");
+check("results are kept per card", cardActionResult("never", T0), null);
+_cardActionOpen["open-card"] = true;
+has("a menu the operator opened stays open across re-renders",
+  cardActionsHtml({ card_id: "open-card", phase: "dispatching" }, state, T0), " open>");
+has("the cancel refusal explains the other-symphony case",
+  cardActionOutcome("cancel", 409, { status: "not_active_card" }).text, "another symphony");
 
 // --- pending chip ------------------------------------------------------------
 check("pending skip", pendingControlText({ action: "skip" }), "Skip pending");

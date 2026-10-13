@@ -105,3 +105,78 @@ def test_a_queued_control_shows_as_a_pending_chip(page: Page, live_server_url: s
     expect(page.locator("#active-performers .card-action-pending")).to_have_text(
         "Restart from Review pending", timeout=_WAIT_LIVE,
     )
+
+
+@pytest.mark.e2e
+def test_result_survives_a_state_update_that_arrives_before_the_response(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """Review of #145: the tiles are re-rendered on every state update, which
+    used to detach the message node, so the operator never saw the outcome."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(store)
+    held: list[Route] = []
+    page.route("**/api/skip-role**", lambda route: held.append(route))
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    tile = page.locator("#active-performers .ap-tile")
+    tile.locator(".card-actions > summary").click(timeout=_WAIT_LIVE)
+    tile.get_by_role("button", name="Skip current stage").click()
+    expect(tile.locator(".card-action-msg")).to_have_text("Working…", timeout=_WAIT_LIVE)
+
+    # A normal state update lands while the request is still in flight.
+    _broadcast(store, card_tokens_total=1234)
+    expect(page.locator("#card-tokens-total")).to_have_text("1,234", timeout=_WAIT_LIVE)
+    assert held, "the request was never sent"
+    held[0].fulfill(status=200, content_type="application/json",
+                    body=json.dumps({"status": "override_queued", "action": "skip"}))
+
+    message = page.locator("#active-performers .ap-tile .card-action-msg")
+    expect(message).to_have_text("Queued. It takes effect on the next check.", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performers .ap-tile .card-actions")).to_have_attribute("open", "")
+
+    # And it is still there after another re-render.
+    _broadcast(store, card_tokens_total=5678)
+    expect(page.locator("#card-tokens-total")).to_have_text("5,678", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performers .ap-tile .card-action-msg")).to_have_text(
+        "Queued. It takes effect on the next check.",
+    )
+
+
+@pytest.mark.e2e
+def test_retry_after_a_rerender_repeats_the_same_restart(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(store)
+    urls: list[str] = []
+    answers = [
+        (409, {"error": "A cycle is in progress", "status": "cycle_in_progress"}),
+        (200, {"status": "override_queued", "action": "restart", "target_stage": "reviewing"}),
+    ]
+
+    def fulfil(route: Route) -> None:
+        urls.append(route.request.url.split("/api/", 1)[1])
+        status, body = answers[len(urls) - 1]
+        route.fulfill(status=status, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/api/restart-from/**", fulfil)
+    dialogs: list[str] = []
+    page.on("dialog", lambda dialog: (dialogs.append(dialog.message), dialog.accept()))
+
+    tile = page.locator("#active-performers .ap-tile")
+    tile.locator(".card-actions > summary").click(timeout=_WAIT_LIVE)
+    tile.locator(".card-action-restart select").select_option("reviewing")
+    tile.get_by_role("button", name="Restart from stage").click()
+    expect(tile.locator(".card-action-msg")).to_contain_text("A check is in progress", timeout=_WAIT_LIVE)
+
+    _broadcast(store, card_tokens_total=42)          # re-render resets the select
+    expect(page.locator("#card-tokens-total")).to_have_text("42", timeout=_WAIT_LIVE)
+    page.locator("#active-performers .ap-tile .card-action-msg").get_by_role("button", name="Retry").click()
+    expect(page.locator("#active-performers .ap-tile .card-action-msg")).to_have_text(
+        "Queued. It takes effect on the next check.", timeout=_WAIT_LIVE,
+    )
+    assert urls == [f"restart-from/reviewing?card_id={_CARD}"] * 2
+    assert len(dialogs) == 1  # the retry does not ask to confirm again

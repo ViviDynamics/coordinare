@@ -30,7 +30,7 @@ function cardActionOutcome(kind, status, body) {
     return { text: 'A check is in progress. Try again in a moment.', retry: true };
   }
   if (status === 409 && body.status === 'not_active_card') {
-    return { text: 'Only the active card can be cancelled, and this is not it. Nothing was cancelled.', retry: false };
+    return { text: 'Cancel works only for the card the conductor is working on right now, and this is not it (a card held by another symphony cannot be cancelled from here). Nothing was cancelled.', retry: false };
   }
   if (status === 409) return { text: String(body.error || 'Another control is already pending for this card.'), retry: false };
   if (status >= 400) return { text: String(body.error || 'The request was refused.'), retry: false };
@@ -55,10 +55,45 @@ function pendingControlHtml(sess) {
   return text ? '<span class="ap-pill card-action-pending" title="Queued by an operator; applied on the next check">' + esc(text) + '</span>' : '';
 }
 
+// The page re-renders its tiles on every state update, which replaces the
+// menu's DOM. What an action reported, and whether the operator has the menu
+// open, therefore live here, keyed by card id, and the markup is rebuilt from
+// them. A result is shown for a minute.
+var CARD_ACTION_RESULT_MS = 60000;
+var _cardActionResults = {};
+var _cardActionOpen = {};
+
+function setCardActionResult(cardId, text, retry, now) {
+  _cardActionResults[cardId] = { text: text, retry: retry || null, at: now == null ? Date.now() : now };
+}
+
+function cardActionResult(cardId, now) {
+  var entry = Object.prototype.hasOwnProperty.call(_cardActionResults, cardId) ? _cardActionResults[cardId] : null;
+  if (!entry) return null;
+  if ((now == null ? Date.now() : now) - entry.at > CARD_ACTION_RESULT_MS) {
+    delete _cardActionResults[cardId];
+    return null;
+  }
+  return entry;
+}
+
+// The status line for a card: the last result, plus a Retry that carries its
+// own action and stage so it works after any re-render.
+function cardActionMsgHtml(cardId, now) {
+  var entry = cardActionResult(cardId, now);
+  if (!entry) return '';
+  var retry = entry.retry
+    ? ' <button type="button" class="card-action-btn" data-card-retry="1" data-card-action="' + esc(entry.retry.kind) +
+      '" data-card-id="' + esc(cardId) + '" data-card-stage="' + esc(entry.retry.stage || '') + '">Retry</button>'
+    : '';
+  return esc(entry.text) + retry;
+}
+
 // The actions menu for a card, or '' when the card has nothing to act on.
-function cardActionsHtml(sess, s) {
+function cardActionsHtml(sess, s, now) {
   if (!sess || !sess.card_id || !CARD_ACTION_PHASES[sess.phase]) return '';
-  var id = esc(sess.card_id);
+  var cardId = String(sess.card_id);
+  var id = esc(cardId);
   var stages = Array.isArray(s && s.lifecycle_sequence) ? s.lifecycle_sequence : [];
   var options = stages.map(function(stage) {
     return '<option value="' + esc(stage) + '">' + stageLabel(stage) + '</option>';
@@ -67,45 +102,56 @@ function cardActionsHtml(sess, s) {
     ? '<span class="card-action-restart"><select aria-label="Stage to restart from">' + options + '</select>' +
       '<button type="button" class="card-action-btn" data-card-action="restart" data-card-id="' + id + '">Restart from stage</button></span>'
     : '';
-  return '<details class="card-actions">' +
+  var msg = cardActionMsgHtml(cardId, now);
+  var open = msg || _cardActionOpen[cardId] === true ? ' open' : '';
+  return '<details class="card-actions" data-card-id="' + id + '"' + open + '>' +
     '<summary aria-label="Card actions" title="Card actions">&#8943;</summary>' +
     '<div class="card-actions-menu">' +
       '<button type="button" class="card-action-btn card-action-danger" data-card-action="cancel" data-card-id="' + id + '">Cancel card</button>' +
       '<button type="button" class="card-action-btn" data-card-action="skip" data-card-id="' + id + '">Skip current stage</button>' +
       restart +
-      '<div class="card-action-msg" role="status" aria-live="polite"></div>' +
+      '<div class="card-action-msg" role="status" aria-live="polite">' + msg + '</div>' +
     '</div></details>';
+}
+
+// Write a card's current status line into every menu for it on the page.
+function paintCardActionResult(cardId) {
+  if (typeof document === 'undefined' || !document.querySelectorAll) return;
+  var menus = document.querySelectorAll('.card-actions');
+  for (var i = 0; i < menus.length; i++) {
+    if (menus[i].getAttribute('data-card-id') !== cardId) continue;
+    var msg = menus[i].querySelector('.card-action-msg');
+    if (msg) msg.innerHTML = cardActionMsgHtml(cardId);
+  }
 }
 
 function runCardAction(button) {
   var kind = button.getAttribute('data-card-action');
-  var cardId = button.getAttribute('data-card-id');
-  var menu = button.closest('.card-actions-menu');
+  var cardId = button.getAttribute('data-card-id') || '';
+  var isRetry = button.getAttribute('data-card-retry') === '1';
+  var menu = button.closest ? button.closest('.card-actions-menu') : null;
   var select = menu ? menu.querySelector('select') : null;
-  var stage = kind === 'restart' && select ? select.value : '';
-  var msg = menu ? menu.querySelector('.card-action-msg') : null;
-  if (!window.confirm(cardActionEffect(kind, stage))) return;
+  // A retry carries the stage it was first asked for; a first click reads the select.
+  var stage = kind === 'restart' ? (isRetry ? (button.getAttribute('data-card-stage') || '') : (select ? select.value : '')) : '';
+  if (kind === 'restart' && !stage) return;
+  // The operator already confirmed the action a retry repeats.
+  if (!isRetry && !window.confirm(cardActionEffect(kind, stage))) return;
   var request = cardActionRequest(kind, cardId, stage);
   if (!request) return;
-  if (msg) msg.textContent = 'Working…';
+  setCardActionResult(cardId, 'Working…', null);
+  paintCardActionResult(cardId);
   fetch(request.url, { method: request.method })
     .then(function(res) {
       return res.json().catch(function() { return {}; }).then(function(body) {
         var outcome = cardActionOutcome(kind, res.status, body);
-        if (!msg) return;
-        msg.textContent = outcome.text;
-        if (outcome.retry) {
-          var again = document.createElement('button');
-          again.type = 'button';
-          again.className = 'card-action-btn';
-          again.textContent = 'Retry';
-          again.addEventListener('click', function() { runCardAction(button); });
-          msg.appendChild(document.createTextNode(' '));
-          msg.appendChild(again);
-        }
+        setCardActionResult(cardId, outcome.text, outcome.retry ? { kind: kind, stage: stage } : null);
+        paintCardActionResult(cardId);
       });
     })
-    .catch(function() { if (msg) msg.textContent = 'Could not reach the server.'; });
+    .catch(function() {
+      setCardActionResult(cardId, 'Could not reach the server.', { kind: kind, stage: stage });
+      paintCardActionResult(cardId);
+    });
 }
 
 if (typeof document !== 'undefined' && document.addEventListener) {
@@ -113,4 +159,11 @@ if (typeof document !== 'undefined' && document.addEventListener) {
     var button = event.target && event.target.closest ? event.target.closest('[data-card-action]') : null;
     if (button) { event.preventDefault(); event.stopPropagation(); runCardAction(button); }
   });
+  // Remember which card's menu the operator has open, across re-renders.
+  document.addEventListener('toggle', function(event) {
+    var details = event.target;
+    if (!details || !details.classList || !details.classList.contains('card-actions')) return;
+    var cardId = details.getAttribute('data-card-id');
+    if (cardId) _cardActionOpen[cardId] = !!details.open;
+  }, true);
 }

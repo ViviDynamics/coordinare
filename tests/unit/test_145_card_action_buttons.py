@@ -174,6 +174,7 @@ def test_actions_script_is_shipped_and_wired() -> None:
     assert performers.count("pendingControlHtml(sess)") == 2
     actions = _DASHBOARD_JS_SOURCES["actions"]
     assert "window.confirm(cardActionEffect(kind, stage))" in actions
+    assert "performers" in _DASHBOARD_JS_FILES and _DASHBOARD_JS_FILES.index("actions") > _DASHBOARD_JS_FILES.index("helpers")
 
 
 def test_card_action_client_js(tmp_path: Path) -> None:
@@ -192,4 +193,4 @@ def test_card_action_client_js(tmp_path: Path) -> None:
     summary = re.search(r"^SUMMARY (\d+) (\d+)$", result.stdout, re.MULTILINE)
     assert summary is not None, f"no summary line:\n{report}"
     assert int(summary.group(2)) == 0, report
-    assert int(summary.group(1)) >= 35, f"only {summary.group(1)} checks ran:\n{report}"
+    assert int(summary.group(1)) >= 48, f"only {summary.group(1)} checks ran:\n{report}"
