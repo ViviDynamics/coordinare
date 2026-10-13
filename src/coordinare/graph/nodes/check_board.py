@@ -48,6 +48,7 @@ from coordinare.services.card_ownership import (
 from coordinare.services.closed_pr import is_closed_pr_block, matches_closed_pr_identity
 from coordinare.services.dependency import (
     build_graph,
+    resolve_comment_dependencies,
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
@@ -1738,6 +1739,14 @@ async def _dep_filter_cards(
         if org and project:
 
             repo_slug = f"{org}/{project}"
+
+    # 091: Parse dependency syntax out of issue comments on TODO candidates.
+
+    # Runs before resolve_off_board_dependencies so off-board blockers
+
+    # declared only in a comment get the same closed-check upgrade path.
+
+    await resolve_comment_dependencies(dep_graph, board, github, eligible_todo)
 
     await resolve_off_board_dependencies(dep_graph, github, repo_slug)
 

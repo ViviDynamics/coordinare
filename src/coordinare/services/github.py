@@ -123,6 +123,18 @@ query PollBoard($projectId: ID!, $after: String) {
                   name
                 }
               }
+              # Native blocked-by relationship (#91): structured issue
+              # dependencies, read in the same query so building the
+              # dependency graph costs zero extra requests.
+              blockedBy(first: 10) {
+                nodes {
+                  number
+                  state
+                  repository {
+                    nameWithOwner
+                  }
+                }
+              }
               assignees(first: 10) {
                 nodes {
                   login
@@ -976,6 +988,9 @@ class GitHubService(CardIdentityMap):
         issue_urls: dict[str, str] = {}
         item_labels: dict[str, list[str]] = {}
         item_assignees: dict[str, list[str]] = {}
+        # item_id → [{"number": int, "state": "open"|"closed", "repo": "owner/name"}]
+        # GitHub's native blocked-by relationship (issue dependencies, #91).
+        native_blockers: dict[str, list[dict[str, Any]]] = {}
         # Maps project item ID (PVTI_…) → underlying issue/PR node ID (I_… / PR_…)
         # Required for API calls that target issues/PRs (addComment, addLabels, etc.)
         content_node_ids: dict[str, str] = {}
@@ -1028,6 +1043,23 @@ class GitHubService(CardIdentityMap):
                     for n in (assignee_nodes.get("nodes", []) if isinstance(assignee_nodes, dict) else [])
                     if isinstance(n, dict) and n.get("login")
                 ]
+                blockers_nodes = content.get("blockedBy", {})
+                if isinstance(blockers_nodes, dict):
+                    parsed_blockers: list[dict[str, Any]] = []
+                    for b in blockers_nodes.get("nodes", []) if isinstance(blockers_nodes.get("nodes", []), list) else []:
+                        if not isinstance(b, dict):
+                            continue
+                        b_num = b.get("number")
+                        if not isinstance(b_num, int) or b_num <= 0:
+                            continue
+                        repo_node = b.get("repository") or {}
+                        parsed_blockers.append({
+                            "number": b_num,
+                            "state": str(b.get("state", "OPEN")).upper(),
+                            "repo": str(repo_node.get("nameWithOwner", "")) if isinstance(repo_node, dict) else "",
+                        })
+                    if parsed_blockers:
+                        native_blockers[item_id] = parsed_blockers
                 timeline = content.get("timelineItems", {})
                 if isinstance(timeline, dict):
                     nodes = timeline.get("nodes", [])
@@ -1074,6 +1106,7 @@ class GitHubService(CardIdentityMap):
             "item_assignees": item_assignees,
             "content_node_ids": content_node_ids,
             "pr_urls": pr_urls,
+            "native_blockers": native_blockers,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:

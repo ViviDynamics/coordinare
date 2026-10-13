@@ -108,6 +108,10 @@ def build_graph(
     Parses every card's description for explicit dependency syntax and
     resolves each dependency's status against the board columns.
 
+    Also folds GitHub's native blocked-by relationship (issue dependencies,
+    #91) in as ``NATIVE_RELATIONSHIP`` edges when the board snapshot carries
+    them under ``native_blockers``.
+
     ``self_issue_numbers`` is the ``board["issue_numbers"]`` map (item_id →
     issue_number).  If not provided, it's read from ``board``.
     """
@@ -140,8 +144,146 @@ def build_graph(
             graph.by_dependent.setdefault(item_id, []).append(dep)
             graph.by_blocker.setdefault(blocker_num, []).append(dep)
 
+    _add_native_edges(graph, board, self_issue_numbers)
+
     graph.cycles = detect_cycles(graph, issue_to_item)
     return graph
+
+
+def _add_native_edges(
+    graph: DependencyGraph,
+    board: dict[str, Any],
+    self_issue_numbers: dict[str, int],
+) -> None:
+    """Fold ``board["native_blockers"]`` into the graph (NATIVE_RELATIONSHIP edges).
+
+    The native relationship is authoritative about the blocker's existence, so
+    an open off-board blocker is PENDING (not UNRESOLVABLE) and a closed one is
+    SATISFIED — no extra API check needed.  An open on-board blocker resolves
+    through its column like an EXPLICIT edge (DONE → SATISFIED).
+
+    Pairs already detected as EXPLICIT are skipped (description wins); a pair
+    can't yet be COMMENT here because comments are resolved asynchronously.
+    """
+    native_blockers: dict[str, list[dict[str, Any]]] = board.get("native_blockers", {})
+    if not native_blockers:
+        return
+    for item_id, blockers in native_blockers.items():
+        own_issue = self_issue_numbers.get(item_id, 0)
+        already = graph.by_dependent.get(item_id, [])
+        for blocker in blockers:
+            blocker_num = int(blocker.get("number", 0))
+            if blocker_num <= 0 or blocker_num == own_issue:
+                continue
+            if any(d.blocker_issue_number == blocker_num for d in already):
+                continue  # EXPLICIT wins for this pair
+            state = str(blocker.get("state", "OPEN")).upper()
+            if state == "CLOSED":
+                status = DependencyStatus.SATISFIED
+            else:
+                column = graph.issue_to_column.get(blocker_num)
+                status = DependencyStatus.SATISFIED if column == "DONE" else DependencyStatus.PENDING
+            dep = CardDependency(
+                dependent_item_id=item_id,
+                blocker_issue_number=blocker_num,
+                source=DependencySource.NATIVE_RELATIONSHIP,
+                status=status,
+            )
+            graph.dependencies.append(dep)
+            graph.by_dependent.setdefault(item_id, []).append(dep)
+            graph.by_blocker.setdefault(blocker_num, []).append(dep)
+
+
+async def resolve_comment_dependencies(
+    graph: DependencyGraph,
+    board: dict[str, Any],
+    github: Any,
+    candidate_item_ids: list[str] | None = None,
+) -> None:
+    """Add COMMENT-sourced edges from 046 dependency syntax in issue comments (#91).
+
+    For each candidate card, fetches its issue's comments (one REST call per
+    candidate via ``github.get_issue_comments``) and parses the same syntax as
+    :func:`parse_dependencies`.  Edges are deduplicated by (dependent, blocker)
+    pair with precedence EXPLICIT > COMMENT > NATIVE_RELATIONSHIP: an existing
+    EXPLICIT edge is never replaced, and a COMMENT edge replaces an existing
+    NATIVE_RELATIONSHIP edge for the same pair.
+
+    Call BEFORE :func:`resolve_off_board_dependencies` so off-board comment
+    blockers go through the same closed-check / transient-error upgrade path
+    as body-declared ones.
+
+    Skips silently when ``github`` is None or exposes no
+    ``get_issue_comments``.  ``candidate_item_ids`` defaults to every card on
+    the board that carries an issue number.
+    """
+    if github is None:
+        return
+    fetch = getattr(github, "get_issue_comments", None)
+    if fetch is None:
+        return
+    issue_numbers: dict[str, int] = board.get("issue_numbers", {})
+    items = (
+        list(candidate_item_ids)
+        if candidate_item_ids is not None
+        else [iid for iid, num in issue_numbers.items() if num > 0]
+    )
+    explicit_pairs = {
+        (d.dependent_item_id, d.blocker_issue_number)
+        for d in graph.dependencies
+        if d.source == DependencySource.EXPLICIT
+    }
+    incoming: list[CardDependency] = []
+    for item_id in items:
+        own_issue = issue_numbers.get(item_id, 0)
+        if not own_issue:
+            continue
+        try:
+            comments = await fetch(own_issue)
+        except Exception as exc:
+            logger.warning(
+                "dependency.comment_fetch_failed",
+                item_id=item_id,
+                issue=own_issue,
+                error_type=type(exc).__name__,
+            )
+            continue
+        seen_in_card: set[int] = set()
+        for comment in comments if isinstance(comments, list) else []:
+            body = str(comment.get("body", "")) if isinstance(comment, dict) else ""
+            for blocker_num in parse_dependencies(body):
+                if blocker_num == own_issue or blocker_num in seen_in_card:
+                    continue
+                seen_in_card.add(blocker_num)
+                if (item_id, blocker_num) in explicit_pairs:
+                    continue
+                incoming.append(
+                    CardDependency(
+                        dependent_item_id=item_id,
+                        blocker_issue_number=blocker_num,
+                        source=DependencySource.COMMENT,
+                        status=_resolve_status(blocker_num, graph.issue_to_column),
+                    ),
+                )
+    if not incoming:
+        return
+    # Merge with precedence: COMMENT replaces NATIVE_RELATIONSHIP for the same
+    # pair; EXPLICIT (already skipped above) and existing COMMENT edges win.
+    merged: dict[tuple[str, int], CardDependency] = {
+        (d.dependent_item_id, d.blocker_issue_number): d
+        for d in graph.dependencies
+    }
+    for dep in incoming:
+        key = (dep.dependent_item_id, dep.blocker_issue_number)
+        current = merged.get(key)
+        if current is None or current.source == DependencySource.NATIVE_RELATIONSHIP:
+            merged[key] = dep
+    graph.dependencies = list(merged.values())
+    graph.by_dependent.clear()
+    graph.by_blocker.clear()
+    for dep in graph.dependencies:
+        graph.by_dependent.setdefault(dep.dependent_item_id, []).append(dep)
+        graph.by_blocker.setdefault(dep.blocker_issue_number, []).append(dep)
 
 
 def detect_cycles(

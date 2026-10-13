@@ -18,10 +18,16 @@ class DependencyStatus(StrEnum):
 
 
 class DependencySource(StrEnum):
-    """How the dependency was detected."""
+    """How the dependency was detected.
+
+    Precedence when the same (dependent, blocker) pair is detected by more
+    than one source: EXPLICIT > COMMENT > NATIVE_RELATIONSHIP.
+    """
 
     EXPLICIT = "explicit"   # Parsed from card description ("Depends on #N", etc.)
     ASSESSOR = "assessor"   # Flagged by the assessor role's semantic analysis
+    COMMENT = "comment"     # Parsed from an issue comment (same syntax as EXPLICIT)
+    NATIVE_RELATIONSHIP = "native_relationship"  # GitHub's native blocked-by relationship
 
 
 @dataclass(frozen=True)
