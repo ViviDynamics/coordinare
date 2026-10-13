@@ -669,7 +669,8 @@ performers:
 # Range: 1–20. Default: 1.
 max_concurrent_cards: 1
 
-# Maximum reviewer → implementer feedback cycles before blocking for human review.
+# Maximum revision rounds per PR (reviewer feedback going back to the implementer)
+# before blocking for human review.
 # Each "changes requested" that routes back to the implementer counts as one cycle.
 # Set 0 to disable (not recommended — a flaky reviewer can loop indefinitely).
 # Range: 0–50. Default: 5.

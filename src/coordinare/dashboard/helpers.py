@@ -32,14 +32,15 @@ def _json_default(o: Any) -> Any:
 
 
 def format_phase_label(phase: str) -> str:
-    """Convert a raw phase string to a human-readable label.
+    """The display label for a conductor phase, from the shared glossary (#136).
 
     Examples:
-        "monitoring_agent" -> "Monitoring Agent"
-        "relay_feedback"   -> "Relay Feedback"
+        "monitoring_agent" -> "Watching an agent"
         "idle"             -> "Idle"
     """
-    return phase.replace("_", " ").title()
+    from coordinare import vocabulary
+
+    return vocabulary.phase_label(phase)
 
 
 def is_session_stale(agent_dispatch_at_iso: str | None, threshold_minutes: int = 30) -> bool:

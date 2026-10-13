@@ -443,7 +443,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <div id="phase-desc" class="phase-desc"></div>
   <div id="session-age" class="session-age" style="display:none"></div>
   <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"
-    aria-label="Trigger immediate board poll">Check Board Now</button>
+    aria-label="Check for work now">Check now</button>
+  <span id="last-checked" class="muted" style="font-size:12px;margin-left:8px"></span>
   <div id="force-poll-msg" class="action-msg"></div>
 </div>
 
@@ -473,11 +474,10 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <div id="activity-feed-card" class="card full">
   <h2>Activity</h2>
   <div class="af-controls">
-    <label for="af-filter">Card</label>
     <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
       <option value="">All cards</option>
     </select>
-    <span id="af-liveness" class="af-liveness" role="status" aria-live="polite">Live</span>
+    <span id="af-liveness" class="af-liveness" role="status" aria-live="polite"></span>
   </div>
   <div id="af-stale-note" class="af-stale-note" style="display:none">
     Stream not live &mdash; entries below may be out of date.
@@ -504,11 +504,11 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <div class="metric-row">
     <div class="metric">
       <span class="metric-value" id="cycles-completed">—</span>
-      <span class="metric-label">Cycles Completed</span>
+      <span class="metric-label">Checks completed</span>
     </div>
     <div class="metric">
       <span class="metric-value" id="last-duration">—</span>
-      <span class="metric-label">Last Cycle Duration</span>
+      <span class="metric-label">Last check duration</span>
     </div>
     <div class="metric">
       <span class="metric-value" id="error-count">—</span>
@@ -518,7 +518,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <div class="metric-row" style="margin-top:8px">
     <div class="metric">
       <span class="metric-value" id="card-tokens-total">0</span>
-      <span class="metric-label">Card Tokens</span>
+      <span class="metric-label" id="card-tokens-label">Tokens</span>
     </div>
     <div class="metric">
       <span class="metric-value" id="card-cost-estimate">$0.00</span>
@@ -539,7 +539,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 </div>
 
 <div class="card" id="recent-cycles-card">
-  <h2>Recent cycles</h2>
+  <h2>Recent checks</h2>
   <div id="history-section"><span class="empty-state">Loading...</span></div>
 </div>
 
@@ -564,7 +564,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <h2 style="margin-bottom:12px">Performers</h2>
     <div id="performers-page-list-view">
       <table>
-        <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active / Idle / Max</th></tr></thead>
+        <thead><tr><th>Stage · Agent</th><th>Status</th><th>Card</th><th>Busy</th></tr></thead>
         <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -677,7 +677,7 @@ function renderCycleHistoryInto(container, cycleHistory, opts) {
   opts = opts || {};
   var history = Array.isArray(cycleHistory) ? cycleHistory : [];
   if (history.length === 0) {
-    container.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
+    container.innerHTML = '<span class="empty-state">No checks completed yet</span>';
     return;
   }
   var rows = opts.collapse ? collapseCycleRows(history) : history.map(function(e) {
@@ -689,7 +689,7 @@ function renderCycleHistoryInto(container, cycleHistory, opts) {
     rows = rows.slice(0, opts.limit);
   }
   container.innerHTML = '<div class="cycle-history' + (opts.limit ? ' cycle-history-compact' : '') + '"><table><thead><tr>' +
-    '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
+    '<th>Time</th><th>Status</th><th>Duration</th><th>Outcome</th>' +
     '</tr></thead><tbody>' +
     rows.map(function(r) {
       var many = r.count > 1;
@@ -724,13 +724,13 @@ function renderState(s) {
   var effectivePhase = activeSess ? activeSess.phase : s.phase;
   var effectiveDispatchAt = activeSess ? activeSess.agent_dispatch_at : s.agent_dispatch_at;
   var phaseEl = document.getElementById('phase');
-  phaseEl.textContent = activeSess
-    ? (formatPhaseLabel(activeSess.phase) || s.phase_label || s.phase)
-    : (s.phase_label || s.phase);
+  // 138: a plain sentence; the conductor's internal state stays in the tooltip.
+  phaseEl.textContent = conductorHeadline(s, activeSess);
+  phaseEl.title = 'Conductor state: ' + String(effectivePhase || '');
   phaseEl.className = 'phase ' + phaseClass(effectivePhase);
   var phaseDescriptions = {
     'idle':             'Waiting for a card to enter the TODO column on the GitHub Project board.',
-    'running':          'Processing a work cycle.',
+    'running':          'Running a check.',
     'blocked':          'Work is paused — review the Open Questions below and take action.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
     'monitoring_agent': 'Performer agent is actively working on the card.',
@@ -738,7 +738,7 @@ function renderState(s) {
     'monitoring_pr':    'Waiting for PR review approval.',
     'merging':          'Merging the approved pull request.',
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
-    'recovery':         'A cycle error occurred; the daemon is recovering before retrying.',
+    'recovery':         'A check failed; the daemon is recovering before retrying.',
   };
   document.getElementById('phase-desc').textContent = phaseDescriptions[effectivePhase] || '';
 
@@ -783,9 +783,9 @@ function renderState(s) {
               '<td style="padding:4px 0"><strong>' + idleTotal + '</strong>' + idleFilter + '</td></tr>' +
           '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">In progress</td>' +
               '<td style="padding:4px 0"><strong>' + idleInProg + '</strong></td></tr>' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Last poll</td>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Last checked</td>' +
               '<td style="padding:4px 0"><strong>' + idlePoll + '</strong></td></tr>' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Cycles completed</td>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Checks completed</td>' +
               '<td style="padding:4px 0"><strong>' + idleCycles + '</strong></td></tr>' +
         '</table>';
     } else {
@@ -843,7 +843,7 @@ function renderState(s) {
     utilCard.id = 'role-utilization-card';
     utilCard.className = 'card';
     utilCard.style.display = 'none';
-    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Role</th><th>Active / Idle / Max</th></tr></thead><tbody></tbody></table>';
+    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Stage · Agent</th><th>Busy</th></tr></thead><tbody></tbody></table>';
     var utilizationAnchor = document.getElementById('recent-cycles-card');
     if (utilizationAnchor && utilizationAnchor.parentNode) { utilizationAnchor.parentNode.insertBefore(utilCard, utilizationAnchor); }
   }
@@ -1007,7 +1007,21 @@ function renderState(s) {
   }
   var costEstimate = estimateCost(costSource, s);
   var costEl = document.getElementById('card-cost-estimate');
-  costEl.textContent = tokenView.pending ? '—' : '$' + costEstimate.value.toFixed(2);
+  costEl.textContent = tokenView.pending ? '—' : fmtCost(costEstimate.value);
+  // 144: say which card the figure is for.
+  var tokenCardRef = cardRefText(activeSess || s);
+  document.getElementById('card-tokens-label').textContent = 'Tokens' + (tokenCardRef && /^#/.test(tokenCardRef) ? ' · ' + tokenCardRef : '');
+  // 144: "Check now" sits beside when the board was last checked.
+  var lastCheckedEl = document.getElementById('last-checked');
+  if (s.last_poll_at) {
+    lastCheckedEl.setAttribute('data-elapsed-since', s.last_poll_at);
+    lastCheckedEl.setAttribute('data-elapsed-prefix', 'Last checked ');
+    lastCheckedEl.setAttribute('data-elapsed-suffix', ' ago');
+    lastCheckedEl.textContent = 'Last checked ' + (fmtAge(s.last_poll_at) || '—') + ' ago';
+  } else {
+    lastCheckedEl.removeAttribute('data-elapsed-since');
+    lastCheckedEl.textContent = '';
+  }
   costEl.title = tokenView.pending ? tokenView.title : costEstimate.basis;
 
   // Agent session
@@ -1185,7 +1199,7 @@ function renderSymphoniesPage(s) {
       + '</tr>';
   }).join('');
   el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
-    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th><th style="text-align:left">Env</th>'
+    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Checks</th><th style="text-align:left">Errors</th><th style="text-align:left">Last checked</th><th style="text-align:left">Env</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
@@ -1240,7 +1254,7 @@ async function loadSymphonyDetail(name, el) {
     ['Cycles', st.cycle_count != null ? st.cycle_count : '—'],
     ['Errors', st.error_count != null ? st.error_count : '—'],
     ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—'],
-    ['Last poll', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
+    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
     ['Last error', st.last_error ? esc(st.last_error) : '—'],
   ].map(function(r) {
     return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
@@ -1378,7 +1392,7 @@ async function loadSymphonyDetail(name, el) {
         var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/env-bootstrap', {method: 'POST'});
         var d = await r.json();
         if (r.ok) {
-          msg.textContent = 'Accepted — bootstrap will fire on the next cycle';
+          msg.textContent = 'Accepted. Bootstrap will start on the next check';
           msg.style.color = 'var(--color-accent-green)';
           setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
         } else {
@@ -1630,7 +1644,7 @@ async function forcePoll() {
   try {
     var res = await fetch('/api/force-poll', { method: 'POST' });
     if (res.status === 409) {
-      msg.textContent = 'Cycle already running';
+      msg.textContent = 'A check is already running';
       btn.disabled = false;
     }
     // 202: stay disabled until SSE delivers cycle_active=false
@@ -1913,7 +1927,8 @@ function afSetLive(live) {
   _afLive = live;
   var el = document.getElementById('af-liveness');
   if (el) {
-    el.textContent = live ? 'Live' : 'Not live';
+    // 144: the header carries the one "Live" indicator; this one speaks up only when the feed is not live.
+    el.textContent = live ? '' : 'Not live';
     if (live) el.classList.remove('af-not-live'); else el.classList.add('af-not-live');
   }
   // Keep retained entries visible on disconnect (FR-027).

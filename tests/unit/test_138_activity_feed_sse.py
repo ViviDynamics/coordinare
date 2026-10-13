@@ -137,6 +137,7 @@ def test_state_update_shape_additive_only() -> None:
         "activity_run_id",
         "activity_quiet_threshold_seconds",
         "cost_per_million_tokens",
+        "poll_interval_seconds",
         "include_unassigned",
         "ownership_hint",
         "stall_timeout_seconds",

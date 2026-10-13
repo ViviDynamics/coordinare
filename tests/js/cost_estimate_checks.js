@@ -56,8 +56,14 @@ check("basis without a rate still says it is an estimate",
 
 // Rendered form carries the tooltip and the requested precision.
 check("costHtml renders value and tooltip",
-  costHtml({ card_tokens_total: 1000000 }, top, 4),
-  '<span title="Estimate at $3.00 per million tokens (one flat rate for all models and token types)">$3.0000</span>');
+  costHtml({ card_tokens_total: 1000000 }, top),
+  '<span title="Estimate at $3.00 per million tokens (one flat rate for all models and token types)">$3.00</span>');
+
+// 144: one format everywhere: two decimals, three when under a cent.
+check("ordinary amounts use two decimals", fmtCost(1.149), "$1.15");
+check("amounts under a cent use three decimals", fmtCost(0.0042), "$0.004");
+check("exactly a cent uses two decimals", fmtCost(0.01), "$0.01");
+check("zero, negative and junk render as $0.00", [fmtCost(0), fmtCost(-1), fmtCost("x"), fmtCost(undefined)], ["$0.00", "$0.00", "$0.00", "$0.00"]);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

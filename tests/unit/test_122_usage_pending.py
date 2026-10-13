@@ -28,7 +28,7 @@ def _sliced_js() -> str:
     note = re.search(r"var USAGE_PENDING_NOTE = .*?;", _PERFORMERS)
     assert note is not None
     return "\n\n".join(
-        [_fn(_HELPERS, "esc"), note.group(0)]
+        [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtCost"), note.group(0)]
         + [_fn(_PERFORMERS, name) for name in (
             "parseTokenCount", "derivePerformerTokenTotal", "estimateCost",
             "isStageRunning", "tokenReadout", "costHtml",
@@ -54,7 +54,7 @@ def test_usage_pending_client_js(tmp_path: Path) -> None:
 def test_metrics_card_uses_the_pending_readout() -> None:
     assert "tokenReadout(cardTokensTotal, !!activeSess)" in _DASHBOARD_HTML
     assert "cardTokensTotal.toLocaleString();" not in _DASHBOARD_HTML
-    assert "tokenView.pending ? '—' : '$' + costEstimate.value.toFixed(2)" in _DASHBOARD_HTML
+    assert "tokenView.pending ? '—' : fmtCost(costEstimate.value)" in _DASHBOARD_HTML
 
 
 def test_performer_detail_uses_the_pending_readout() -> None:
