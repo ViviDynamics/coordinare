@@ -413,7 +413,8 @@ function renderCardDetailContent(sess, s) {
           '</div>';
       }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No progress checks yet.</div>';
-  return '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
+  return '<div class="card-detail-actions">' + cardActionsHtml(sess, s) + pendingControlHtml(sess) + '</div>' +
+    '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
@@ -504,11 +505,13 @@ function renderActivePerformers(s) {
       '<div class="ap-tile-header">' +
         '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
         '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
+        cardActionsHtml(sess, s) +
       '</div>' +
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
       '<div class="ap-tile-meta">' +
         '<span class="ap-pill ap-tile-elapsed">&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
         cardRefHtml(sess) +
+        pendingControlHtml(sess) +
         // 138 FR-032: quiet marker — observation only, never a phase change.
         // .af-kind carries no colours of its own, so .ev-quiet is not overridden
         // by .ap-pill (equal specificity, later in the sheet).

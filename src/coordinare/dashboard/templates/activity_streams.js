@@ -7,7 +7,9 @@ var AF_SUMMARIES = {
   stream_truncated: 'Output was truncated (stream too long).',
   workflow_step: 'Workflow step started.',
   // 429: the verdict verb and reason are in the entry text itself.
-  observer_verdict: 'Observer reported a verdict.'
+  observer_verdict: 'Observer reported a verdict.',
+  // 145: the entry text says which control the operator used.
+  operator_action: 'An operator took an action.'
 };
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
 // 353: collapsed group lines lead with the newest entry's own text instead of

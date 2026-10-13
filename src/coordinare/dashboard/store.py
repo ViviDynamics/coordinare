@@ -41,6 +41,16 @@ def _cost_rate(config: Any) -> float:
     return float(CostTrackingConfig().cost_per_million_tokens)
 
 
+def _pending_control(raw: Any) -> dict[str, str] | None:
+    """145: the queued, not yet applied operator control for a card, if any."""
+    if not isinstance(raw, dict) or not raw or raw.get("applied"):
+        return None
+    action = str(raw.get("action") or "")
+    if not action:
+        return None
+    return {"action": action, "target_stage": str(raw.get("target_stage") or "")}
+
+
 def _poll_interval(config: Any) -> int | None:
     """138: seconds between board checks, or None when it is not known."""
     value = getattr(config, "poll_interval_seconds", None)
@@ -497,6 +507,8 @@ class DashboardStore:
             "performer_logs": DashboardStore._session_performer_logs(daemon, _sess_stage, sid),
             "card_id": sid,
             "card_title": str(sess_card.get("title", "")),
+            # 145: a control the operator queued that the graph has not applied yet.
+            "pending_control": _pending_control(sess.get("pending_override")),
             "issue_number": sess_card.get("issue_number"),
             "issue_url": str(sess_card.get("issue_url", "")) or None,
             "pr_url": str(sess_card.get("pr_url", "")) or None,

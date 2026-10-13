@@ -68,13 +68,18 @@ def _register_force_poll(app: FastAPI, ctx: DashboardContext) -> None:
 
 def _register_cancel_card(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
+        store = ctx.store
 
         @app.post("/api/cancel")
-        async def cancel_card() -> JSONResponse:
+        async def cancel_card(card_id: str | None = None) -> JSONResponse:
             """Cancel the currently active card (026-card-cancellation).
 
             Stops the performer, cleans up workspace, moves card to TODO.
             Returns 200 with cancellation result. Returns 409 if a cycle is active.
+
+            #145: ``card_id`` is the card the operator clicked. Cancel acts on
+            the active card only, so when the two differ nothing is cancelled:
+            a button on one card must never stop another.
             """
             if daemon._cycle_active:
                 return JSONResponse(
@@ -82,9 +87,23 @@ def _register_cancel_card(app: FastAPI, ctx: DashboardContext) -> None:
                         status_code=409,
                     )
 
-            from coordinare.cancel import cancel_active_card
+            from coordinare.cancel import cancel_active_card, resolve_active_card
+            from coordinare.dashboard.routers.controls import record_operator_action
 
+            active_id, active_title = resolve_active_card(daemon.state)
+            if card_id is not None and card_id != active_id:
+                return JSONResponse(
+                    {"error": "Cancel works only for the card the conductor is working on right now; this card was not cancelled", "status": "not_active_card"},
+                    status_code=409,
+                )
+            card = daemon.state.get("current_card")
+            target = {
+                "current_card": card if isinstance(card, dict) else {"id": active_id, "title": active_title},
+                "performer_stage": daemon.state.get("performer_stage"),
+            }
             result = await cancel_active_card(daemon.state)
+            if result.get("status") == "cancelled":
+                record_operator_action(store, target, "Operator cancelled the card.")
             return JSONResponse(result)
 
 
