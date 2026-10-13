@@ -204,6 +204,11 @@ def _inject_driver_secrets(
 
 
 class HTTPPerformerService:
+    # 107: a containerized performer clones the repository for itself (the
+    # dispatch payload carries only repo_url and branch), so the daemon has no
+    # reason to clone on its behalf.
+    clones_own_workspace = True
+
     """AgentService-compatible adapter for ephemeral / persistent performers."""
 
     def __init__(
