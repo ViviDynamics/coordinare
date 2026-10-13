@@ -185,6 +185,9 @@ function freshnessText(label, lastMessageAt, hasMessage, s, now) {
 }
 
 // Called once a second. Reads the page's own connection bookkeeping.
+// When the last state update arrived; set by the state_update listener.
+var _lastStateAt = 0;
+
 function refreshFreshness() {
   var detail = document.getElementById('connection-detail');
   var labelEl = document.getElementById('connection-label');
@@ -193,7 +196,7 @@ function refreshFreshness() {
   // "updated Ns ago" is the age of the data on screen: the last state update,
   // not the last heartbeat. Heartbeats arrive every few seconds and only show
   // that the stream is open; they are what the Live label is for.
-  var stateAt = typeof _lastStateAt !== 'undefined' ? Number(_lastStateAt) || 0 : 0;
+  var stateAt = Number(_lastStateAt) || 0;
   var has = stateAt > 0;
   var last = stateAt;
   var state = typeof _lastState !== 'undefined' ? _lastState : null;
