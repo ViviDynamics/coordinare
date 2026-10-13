@@ -736,11 +736,11 @@ class ClaudeCodeBackend:
         and when the reader exits. Writing once per message keeps the per-message
         records summable without double counting.
         """
-        pending = self._transcript_pending_usage
+        held = self._transcript_pending_usage
         self._transcript_pending_usage = None
-        if pending is None:
+        if held is None:
             return
-        _message_id, usage, _model = pending
+        _message_id, usage, _model = held
         transcript.emit("usage", text="message usage (last chunk)", usage=usage, scope="message")
 
     @transcript.best_effort
