@@ -61,7 +61,7 @@ def test_invalid_token_on_page_load_redirects_to_login():
             follow_redirects=False,
         )
         assert response.status_code == 302
-        assert urlparse(response.headers["location"]).path == "/oidc/login"
+        assert urlparse(response.headers["location"]).path == "/login"
 
 
 def test_invalid_token_on_api_returns_401():

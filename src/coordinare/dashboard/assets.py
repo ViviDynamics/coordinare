@@ -8,7 +8,23 @@ DASHBOARD_HTML_BUDGET_BYTES = 112 * 1024
 
 _DASHBOARD_JS_DIR = Path(__file__).resolve().parent / "dashboard_static"
 
-_DASHBOARD_JS_FILES = ("helpers", "config", "performers")
+# Original landing identity assets, shipped with the dashboard package.
+_BRAND_MEDIA_TYPES = {
+    "coordinare-mark.svg": "image/svg+xml",
+    "coordinare-conductor.webp": "image/webp",
+}
+_DASHBOARD_BRAND_ASSETS = {
+    name: ((_DASHBOARD_JS_DIR / name).read_bytes(), media_type)
+    for name, media_type in _BRAND_MEDIA_TYPES.items()
+}
+_DASHBOARD_BRAND_ETAGS = {
+    name: '"' + hashlib.sha256(content).hexdigest() + '"'
+    for name, (content, _) in _DASHBOARD_BRAND_ASSETS.items()
+}
+
+_DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf-8")
+
+_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "workflow", "account")
 
 def _load_dashboard_js() -> tuple[dict[str, str], dict[str, str]]:
     sources: dict[str, str] = {}
@@ -40,4 +56,32 @@ def _page_html(enabled: bool) -> str:
     """The dashboard page, with the assistant spliced in when it is switched on."""
     if not enabled:
         return _DASHBOARD_HTML
-    return _DASHBOARD_HTML.replace("</body>", _ASSISTANT_FRAGMENT + "</body>", 1)
+    marker = "</div><!-- /#main-content -->"
+    return _DASHBOARD_HTML.replace(marker, _ASSISTANT_FRAGMENT + marker, 1)
+
+
+def _auth_page_html(*, title: str, heading: str, message: str, mascot: bool = False) -> str:
+    """Share a small branded shell and first-paint appearance across public auth pages."""
+    bootstrap = _DASHBOARD_HTML_RAW.split('<script data-appearance-bootstrap>', 1)[1].split('</script>', 1)[0]
+    page = (_TEMPLATE_DIR / 'signed_out.html').read_text(encoding='utf-8')
+    identity = (
+        '<img class="auth-mascot" src="/static/coordinare-conductor.webp" width="128" height="128" alt="">'
+        if mascot else ''
+    )
+    return (page.replace('<!--appearance-bootstrap-->', bootstrap)
+            .replace('<!--auth-title-->', title).replace('<!--auth-heading-->', heading)
+            .replace('<!--auth-identity-->', identity).replace('<!--logout-message-->', message))
+
+
+def _sign_in_html() -> str:
+    return _auth_page_html(
+        title='Sign in · Coordinare', heading='Coordiñare',
+        message='Sign in to your dashboard.', mascot=True,
+    )
+
+
+def _signed_out_html(*, local_only: bool = False) -> str:
+    message = 'Your dashboard session has ended.'
+    if local_only:
+        message += ' Your identity provider may still have you signed in.'
+    return _auth_page_html(title='Signed out · Coordinare', heading="You're signed out", message=message)

@@ -1,7 +1,7 @@
 """OIDC login routes (497): /oidc/login, /oidc/callback, /oidc/logout.
 
 These routes are exempt from :class:`~coordinare.dashboard_auth.DashboardAuthentication`
-(the middleware skips the three exact paths) but the localhost guard still
+(the middleware skips exact public authentication/branding paths) but the localhost guard still
 applies in full, so POST /oidc/logout keeps its same-origin check. Every
 failure response is a fixed diagnostic; provider response bodies and
 configuration secrets are never reflected.
@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import Request, Response
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from coordinare.dashboard_oidc import (
     NONCE_COOKIE,
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
     from coordinare.dashboard_oidc import OidcFlow
 
+from coordinare.dashboard.assets import _sign_in_html, _signed_out_html
+
 _log = structlog.get_logger(__name__)
 
 _REFUSED_BODY = "Login refused. Check the daemon logs for details."
@@ -37,6 +39,10 @@ _UNAVAILABLE_BODY = "OIDC provider unavailable. Check the daemon logs for detail
 
 def register_oidc_routes(app: FastAPI, flow: OidcFlow) -> None:
     secure = urlparse(flow.config.redirect_url).scheme == "https"
+
+    @app.get("/login")
+    async def sign_in_page() -> Response:
+        return HTMLResponse(_sign_in_html(), headers={"Cache-Control": "no-store"})
 
     @app.get("/oidc/login")
     async def oidc_login() -> Response:
@@ -63,10 +69,10 @@ def register_oidc_routes(app: FastAPI, flow: OidcFlow) -> None:
         if not secrets.compare_digest(cookie_nonce, nonce):
             return _refused("login nonce cookie mismatch")
         try:
-            subject = await flow.exchange(request.query_params.get("code", ""), nonce)
+            identity = await flow.exchange(request.query_params.get("code", ""), nonce)
         except OidcLoginError as exc:
             return _diagnostic(exc)
-        value, lifetime = flow.start_session(subject)
+        value, lifetime = flow.start_session(identity)
         response = RedirectResponse("/", status_code=302)
         response.set_cookie(
             SESSION_COOKIE, value, max_age=lifetime, httponly=True,
@@ -74,18 +80,51 @@ def register_oidc_routes(app: FastAPI, flow: OidcFlow) -> None:
         )
         response.delete_cookie(STATE_COOKIE, path="/oidc")
         response.delete_cookie(NONCE_COOKIE, path="/oidc")
-        _log.info("dashboard_oidc.login_established", subject=subject)
+        _log.info("dashboard_oidc.login_established", subject=identity.subject)
         return response
 
     @app.post("/oidc/logout")
     async def oidc_logout(request: Request) -> Response:
         value = request.cookies.get(SESSION_COOKIE, "")
-        if value:
-            flow.sessions.revoke(value)
-        response = Response(status_code=204)
-        response.delete_cookie(SESSION_COOKIE, path="/")
+        identity = flow.sessions.identity(value)
+        flow.sessions.revoke(value)
+        if request.query_params.get("redirect") == "1":
+            target = flow.logout_redirect(identity) or "/oidc/signed-out?local=1"
+            response: Response = RedirectResponse(target, status_code=303)
+        else:
+            response = Response(status_code=204)
+        response.headers.update({"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=secure, httponly=True, samesite="lax")
+        response.delete_cookie(STATE_COOKIE, path="/oidc", secure=secure)
+        response.delete_cookie(NONCE_COOKIE, path="/oidc", secure=secure)
         _log.info("dashboard_oidc.logout")
         return response
+
+    @app.get("/oidc/signed-out")
+    async def oidc_signed_out(request: Request) -> Response:
+        return HTMLResponse(
+            _signed_out_html(local_only=request.query_params.get("local") == "1"),
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+
+
+def register_account_route(app: FastAPI, flow: OidcFlow | None, *, token_enabled: bool) -> None:
+    @app.get("/api/account")
+    async def account(request: Request) -> Response:
+        identity = flow.sessions.identity(request.cookies.get(SESSION_COOKIE, "")) if flow else None
+        if identity is not None:
+            profile = {
+                "authentication": "oidc", "subject": identity.subject,
+                "name": identity.name or identity.email or identity.subject,
+                "email": identity.email,
+            }
+        else:
+            profile = {
+                "authentication": "token" if token_enabled else "local",
+                "name": "Shared operator" if token_enabled else "Local operator",
+                "email": "",
+            }
+        return JSONResponse(profile, headers={"Cache-Control": "no-store"})
 
 
 def _plant(
