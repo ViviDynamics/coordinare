@@ -1777,12 +1777,27 @@ async def _announce_unresolvable_deps(
         deps = dep_graph.by_dependent.get(item_id, [])
         for d in deps:
             if d.status != DependencyStatus.SATISFIED:
-                blocker_item = dep_graph.issue_to_item.get(d.blocker_issue_number)
-                raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                # Foreign-repo blockers have no local board metadata —
+                # lookups by number alone would collide with an unrelated
+                # same-numbered local issue (Copilot round 3), so link by
+                # repo slug instead and skip title/column.
+                foreign = bool(d.blocker_repo)
+                blocker_item = (
+                    None if foreign else dep_graph.issue_to_item.get(d.blocker_issue_number)
+                )
+                if foreign:
+                    raw_url = f"https://{allowed_host}/{d.blocker_repo}/issues/{d.blocker_issue_number}"
+                    title: str | None = None
+                    column: str | None = None
+                else:
+                    raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                    title = titles_map.get(blocker_item, "") if blocker_item else None
+                    column = dep_graph.issue_to_column.get(d.blocker_issue_number)
                 blocked_deps_for_state.append({
                     "issue_number": d.blocker_issue_number,
-                    "title": titles_map.get(blocker_item, "") if blocker_item else None,
-                    "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
+                    "blocker_repo": d.blocker_repo or None,
+                    "title": title,
+                    "column": column,
                     "issue_url": _safe_issue_url(raw_url, allowed_host),
                     "source": d.source.value,
                 })

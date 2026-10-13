@@ -2864,3 +2864,40 @@ async def test_check_board_per_session_in_progress_preserves_monitoring_pr() -> 
         "instead of re-dispatching every cycle"
     )
     assert result["current_card"]["id"] == "ITEM_P1"
+
+
+@pytest.mark.asyncio
+async def test_blocked_by_payload_links_foreign_blockers_by_repo() -> None:
+    """Copilot round 3: foreign-repo blockers must not borrow local board
+    metadata for a colliding issue number — the payload links by repo slug
+    and skips title/column instead."""
+    from coordinare.graph.nodes.check_board import _announce_unresolvable_deps
+    from coordinare.services.dependency import build_graph
+
+    board = {
+        "titles": {"A": "local title", "B": "decoy"},
+        "issue_urls": {
+            "A": "https://github.com/o/r/issues/1",
+            "B": "https://github.com/o/r/issues/2",
+        },
+        "content_node_ids": {},
+        "descriptions": {"A": "", "B": ""},
+        "issue_numbers": {"A": 1, "B": 2},
+        "native_blockers": {"A": [{"number": 2, "state": "OPEN", "repo": "other/repo"}]},
+    }
+    dep_graph = build_graph(board, repo="o/r")
+    state = initial_state()
+    state["github_service"] = None
+
+    await _announce_unresolvable_deps(state, board, dep_graph, ["A"], None)
+
+    assert state["blocked_by_dependencies"] == [
+        {
+            "issue_number": 2,
+            "blocker_repo": "other/repo",
+            "title": None,
+            "column": None,
+            "issue_url": "https://github.com/other/repo/issues/2",
+            "source": "native_relationship",
+        },
+    ]
