@@ -111,3 +111,21 @@ Issue/PR links use the theme's brass text shade to maintain 4.5:1 contrast on th
 workspace, panels, and PR pills. The relocated status indicator names the stream
 state and reports the last received message time on hover. It becomes Live only
 after receiving a message and announces status changes rather than heartbeats.
+
+
+### Account and screenshot review
+
+The header now includes verified user name/initials and an account popup with
+email and an OIDC Sign out form. Logout first ends the dashboard session, then
+uses provider discovery for RP-initiated logout. The signed-out page does not
+automatically restart login. Shared-token and local accounts are labelled
+separately. Provider post-logout redirect registration is documented in
+`docs/security/dashboard-auth.md`.
+
+The local review gallery at `http://localhost:18094/review/index.html` contains
+84 viewport screenshots covering 21 views in desktop/mobile light/dark variants,
+including all seven Config tabs, card/performer/symphony details, expanded/
+collapsed navigation, account popup, assistant, and signed-out page. PNGs and a
+ZIP remain under the ignored preview state directory. Captures use the branch's
+rendered HTML/JavaScript and synthetic API data in T3 Browser. The Config tab
+strip now scrolls within its panel instead of widening mobile pages.

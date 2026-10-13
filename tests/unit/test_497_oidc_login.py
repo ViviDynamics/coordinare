@@ -79,7 +79,7 @@ def test_unauthenticated_page_load_redirects_to_provider():
         query = parse_qs(parsed.query)
         assert query["response_type"] == ["code"]
         assert query["client_id"] == [CLIENT_ID]
-        assert query["scope"] == ["openid"]
+        assert set(query["scope"][0].split()) == {"openid", "profile", "email"}
         assert query["redirect_uri"] == ["https://dashboard.example/oidc/callback"]
         assert query["state"] and query["state"][0]
         assert query["nonce"] and query["nonce"][0]

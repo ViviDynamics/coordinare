@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import FastAPI, Request
 
-from coordinare.dashboard.routers.oidc import register_oidc_routes
+from coordinare.dashboard.routers.oidc import register_account_route, register_oidc_routes
 from coordinare.localhost_guard import (
     PermittedOrigins,
     build_permitted,
@@ -72,6 +72,8 @@ def create_dashboard_app(
         )
         if oidc is not None:
             register_oidc_routes(app, oidc)
+
+    register_account_route(app, oidc, token_enabled=auth_token is not None)
 
     # Spec 144 (#198). Installed BEFORE the request logger deliberately.
     # FastAPI middleware is outermost-last, so the logger added below wraps this

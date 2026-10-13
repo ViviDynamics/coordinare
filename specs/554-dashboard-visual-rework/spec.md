@@ -55,6 +55,15 @@ Remember desktop collapse locally and apply it before paint; mobile navigation
 opens independently and retains the desktop preference across viewport changes.
 FR-14: Remove added promotional taglines and the redundant workspace kicker.
 
+FR-15: Add a top-right user account menu showing verified OIDC profile claims,
+with a labelled avatar and Sign out action. Label local/shared-token access
+accurately and keep tokens out of the profile API.
+FR-16: Browser logout revokes the dashboard session and clears cookies before
+OIDC provider logout. Use a validated HTTPS discovery endpoint and ID-token hint;
+return to an explicit signed-out page. Preserve local logout API compatibility.
+FR-17: Provide light/dark desktop and mobile screenshots for every operator page,
+configuration tab, drilldown view, account menu, and signed-out view.
+
 ## Edge cases
 
 Storage can throw; saved values can be invalid; OS preference can change;

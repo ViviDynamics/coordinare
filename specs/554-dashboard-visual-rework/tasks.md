@@ -13,7 +13,7 @@
 - [x] T008 Retheme workflow and dynamic component states (FR-07).
 
 ## Review and validation
-- [ ] T009 Verify HTML budget, affected tests, repository suite, lint/type checks (SC-01, SC-04, SC-05, SC-06).
+- [x] T009 Verify HTML budget, affected tests, repository suite, lint/type checks (SC-01, SC-04, SC-05, SC-06).
 - [ ] T010 Browser review of both themes at 375/768/1440px, routes, focus and controls (FR-04, FR-07, FR-09, SC-01, SC-02, SC-03).
 - [ ] T011 Present preview and iterate until Jason accepts the design (FR-10, FR-11, SC-07).
 - [ ] T012 Final review and repository shipping checks after visual acceptance.
@@ -41,3 +41,21 @@ acceptance.
   preserve persistence, OS changes, and cross-tab selection.
 - [x] T018 Style clickable issue/PR links in readable brass shades.
 - [x] T019 Move stream status to the header with text states and last-message time.
+
+
+## Account and complete screenshot review
+
+- [x] T020 Add verified profile API and accessible top-right account menu (FR-15).
+- [x] T021 Implement/test provider logout with local revocation, origin rejection,
+  cookie clearing, validated discovery URL, and signed-out page (FR-16).
+- [x] T022 Capture 84 viewport screenshots across 21 views at 1440x900 and 390x844
+  in both themes; provide filterable gallery and downloadable bundle (FR-17).
+- [x] T023 Fix mobile configuration-tab overflow and recapture affected views.
+
+The latest full `make test-all` run passes 10,937 tests, with 58 skipped and 107
+deselected. Lint, strict type checking, and wheel build pass. The wheel includes
+account.js and the signed-out template. Native T3 renders the source with sample
+API responses; direct localhost navigation remains unavailable. All captured
+views have no page-level horizontal overflow. The mobile account panel fits,
+Escape closes it, and focus returns to the account button. Full native keyboard/
+screen-reader review and Jason's final visual acceptance remain pending.

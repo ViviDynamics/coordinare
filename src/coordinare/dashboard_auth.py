@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from coordinare.dashboard_oidc import OidcFlow
 
-_OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout"})
+_OIDC_PUBLIC_PATHS = frozenset({"/oidc/login", "/oidc/callback", "/oidc/logout", "/oidc/signed-out"})
 _ORIGIN_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 

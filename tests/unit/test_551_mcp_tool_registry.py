@@ -192,7 +192,7 @@ def _is_deferred(path: str) -> bool:
     )
 
 
-@pytest.mark.parametrize("deferred_path", ["/oidc/login", "/static/app.js", "/events", "/api/assistant/status"])
+@pytest.mark.parametrize("deferred_path", ["/oidc/login", "/static/app.js", "/events", "/api/assistant/status", "/api/account"])
 def test_defer_list_asserted(deferred_path: str) -> None:
     from coordinare.mcp.tools import is_deferred
 

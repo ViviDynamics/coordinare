@@ -50,3 +50,25 @@ Docker deployments binding `0.0.0.0` must pass the token through the container's
 environment and reference it in config. Helm references
 `${COORDINARE_DASHBOARD_AUTH_TOKEN}` from its configured Secret automatically and
 keeps the dashboard Service as ClusterIP; ingress stays opt-in.
+
+
+## Dashboard accounts and OIDC logout
+
+With `dashboard_oidc` enabled, the header account menu shows the name and email
+from the verified ID token. Login requests `openid profile email`; providers
+that omit profile claims fall back to the subject. Shared-token and anonymous
+loopback access are labelled separately and do not pretend to be OIDC accounts.
+
+**Sign out** posts to `/oidc/logout?redirect=1`. Coordinare revokes the local
+session and clears its cookies before redirecting to the provider's discovered
+HTTPS `end_session_endpoint`, with the server-held ID token as `id_token_hint`.
+Register `https://<dashboard-host>/oidc/signed-out` as a permitted post-logout
+redirect URI on your OIDC client. The origin, including any non-default port,
+comes from `dashboard_oidc.redirect_url`. This public signed-out page offers an
+explicit Sign in link rather than immediately starting another login.
+
+When the provider omits a usable logout endpoint, the dashboard still logs out
+locally and the signed-out page explains that the provider session may remain.
+The existing `POST /oidc/logout` API retains its 204 response for local-only
+logout. `/api/account` exposes profile fields with `Cache-Control: no-store`;
+ID tokens and client credentials are never returned in that profile response.

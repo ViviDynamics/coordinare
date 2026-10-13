@@ -29,3 +29,22 @@ Live, Reconnecting, or Updates quiet. Live requires a received SSE message;
 stream opening alone does not imply fresh data. Its tooltip reports the last
 received message time. The status text announces transitions, rather than every
 heartbeat. Issue and PR links use contrast-tested brass text shades in each theme.
+
+
+## Account and logout
+
+GET /api/account is protected by the existing dashboard authentication and Host
+guard. Returns authentication, name, email, and (for OIDC) subject; Cache-Control:
+no-store. It never returns ID/access tokens or client secrets. The top-right
+account menu exposes a POST form to /oidc/logout?redirect=1 for OIDC users only.
+
+POST /oidc/logout remains 204 for existing API callers. With redirect=1 it first
+revokes the local session and clears session/state/nonce cookies, then returns
+303 to validated provider end_session_endpoint with id_token_hint, client_id,
+and post_logout_redirect_uri. That return URI is the configured callback origin
+plus /oidc/signed-out and must be registered with the provider. Missing/invalid
+provider logout metadata falls back to a local signed-out page that explains the
+provider session may remain. Existing same-origin checks still apply.
+
+GET /oidc/signed-out is public and uncached, with an explicit Sign in link.
+Browser identity is deliberately excluded from the agent MCP operator surface.

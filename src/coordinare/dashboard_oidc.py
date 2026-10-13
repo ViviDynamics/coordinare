@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 import jwt
@@ -79,6 +79,16 @@ def validate_dashboard_oidc(
         raise ValueError(msg)
 
 
+@dataclass(frozen=True)
+class OidcIdentity:
+    """Verified profile claims and a server-only hint for provider logout."""
+
+    subject: str
+    name: str = ""
+    email: str = ""
+    id_token: str = field(default="", repr=False)
+
+
 class OidcSessionStore:
     """In-memory browser sessions. Restarting the daemon ends every session."""
 
@@ -86,26 +96,31 @@ class OidcSessionStore:
         self, *, clock: Callable[[], float] = time.time,
         capacity: int = SESSION_CAPACITY,
     ) -> None:
-        self._sessions: dict[str, tuple[str, float]] = {}
+        self._sessions: dict[str, tuple[OidcIdentity, float]] = {}
         self._clock = clock
         self._capacity = capacity
 
-    def create(self, subject: str, *, lifetime_seconds: int) -> str:
+    def create(self, subject: str | OidcIdentity, *, lifetime_seconds: int) -> str:
         while len(self._sessions) >= self._capacity:
             self._sessions.pop(next(iter(self._sessions)))
         value = secrets.token_urlsafe(32)
-        self._sessions[value] = (subject, self._clock() + lifetime_seconds)
+        identity = OidcIdentity(subject) if isinstance(subject, str) else subject
+        self._sessions[value] = (identity, self._clock() + lifetime_seconds)
         return value
 
     def lookup(self, value: str) -> str | None:
+        identity = self.identity(value)
+        return identity.subject if identity is not None else None
+
+    def identity(self, value: str) -> OidcIdentity | None:
         entry = self._sessions.get(value)
         if entry is None:
             return None
-        subject, expires_at = entry
+        identity, expires_at = entry
         if self._clock() >= expires_at:
             self._sessions.pop(value, None)
             return None
-        return subject
+        return identity
 
     def revoke(self, value: str) -> None:
         self._sessions.pop(value, None)
@@ -170,6 +185,9 @@ class OidcFlow:
                 msg = "OIDC provider discovery document has an invalid " + key
                 raise OidcLoginError(msg, provider_unreachable=True)
             endpoints[key] = value.strip()
+        logout = document.get("end_session_endpoint")
+        if isinstance(logout, str) and _safe_logout_endpoint(logout):
+            endpoints["end_session_endpoint"] = logout
         return endpoints
 
 
@@ -193,7 +211,7 @@ class OidcFlow:
             "response_type": "code",
             "client_id": self.config.client_id,
             "redirect_uri": self.config.redirect_url,
-            "scope": "openid",
+            "scope": "openid profile email",
             "state": state,
             "nonce": nonce,
         }
@@ -208,8 +226,8 @@ class OidcFlow:
             return None
         return entry.nonce
 
-    async def exchange(self, code: str, expected_nonce: str) -> str:
-        """Exchange the code, verify the ID token, and return the subject."""
+    async def exchange(self, code: str, expected_nonce: str) -> OidcIdentity:
+        """Exchange the code and return only verified ID-token profile claims."""
         discovery = await self._discovery_document()
         try:
             response = await self._http().post(
@@ -241,7 +259,7 @@ class OidcFlow:
 
     async def _verify_id_token(
         self, token: str, expected_nonce: str, discovery: dict[str, str],
-    ) -> str:
+    ) -> OidcIdentity:
         key = await self._signing_key(token, discovery)
         try:
             claims = jwt.decode(
@@ -256,10 +274,15 @@ class OidcFlow:
             msg = "OIDC ID token nonce mismatch"
             raise OidcLoginError(msg)
         subject = claims.get("sub")
-        if not subject:
+        if not isinstance(subject, str) or not subject:
             msg = "OIDC ID token missing sub claim"
             raise OidcLoginError(msg)
-        return str(subject)
+        name = claims.get("name") or claims.get("preferred_username")
+        email = claims.get("email")
+        return OidcIdentity(
+            subject=subject, name=name if isinstance(name, str) else "",
+            email=email if isinstance(email, str) else "", id_token=token,
+        )
 
     async def _signing_key(self, token: str, discovery: dict[str, str]) -> Any:
         try:
@@ -292,10 +315,39 @@ class OidcFlow:
         msg = "no JWKS key matches the ID token key id"
         raise OidcLoginError(msg)
 
-    def start_session(self, subject: str) -> tuple[str, int]:
+    def start_session(self, subject: str | OidcIdentity) -> tuple[str, int]:
         """Create a browser session; returns (cookie_value, lifetime_seconds)."""
         lifetime = self.config.session_hours * 3600
         return self.sessions.create(subject, lifetime_seconds=lifetime), lifetime
+
+    def logout_redirect(self, identity: OidcIdentity | None) -> str | None:
+        """Use validated discovery from login; never block local logout on I/O."""
+        endpoint = (self._discovery or {}).get("end_session_endpoint")
+        if identity is None or not identity.id_token or not endpoint:
+            return None
+        return_url = urlparse(self.config.redirect_url)._replace(
+            path="/oidc/signed-out", params="", query="", fragment="",
+        ).geturl()
+        parsed = urlparse(endpoint)
+        params = dict(parse_qsl(parsed.query))
+        params.update({
+            "id_token_hint": identity.id_token, "client_id": self.config.client_id,
+            "post_logout_redirect_uri": return_url,
+        })
+        return parsed._replace(query=urlencode(params)).geturl()
+
+
+def _safe_logout_endpoint(value: str) -> bool:
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+        return False
+    try:
+        parsed = urlparse(value)
+        _ = parsed.port
+        return bool(parsed.scheme == "https" and parsed.hostname and not (
+            parsed.username or parsed.password or parsed.fragment
+        ))
+    except ValueError:
+        return False
 
 
 def _json_body(response: httpx.Response, label: str) -> dict[str, Any]:
