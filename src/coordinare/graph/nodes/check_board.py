@@ -825,7 +825,7 @@ async def _maybe_rebase_on_main_change(
         else:
             current_main = await fetch_main_sha(github)
             if current_main and max_cards > 1:
-                state["_main_sha_cache"] = current_main  # type: ignore[typeddict-unknown-key]
+                cast("dict[str, Any]", state)["_main_sha_cache"] = current_main
         if current_main:
             prev_main = state.get("last_known_main_sha")
             # 096/555: record main movement (the baseline is persisted, so

@@ -45,7 +45,7 @@ def test_config_rejects_unknown_keys() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        ImplementerRebaseConfig(enabled=True, daemon_side=True)  # type: ignore[call-arg]
+        ImplementerRebaseConfig.model_validate({"enabled": True, "daemon_side": True})
 
 
 @pytest.mark.parametrize(("config", "expected"), [
@@ -107,12 +107,12 @@ async def test_github_service_reads_branch_head_over_rest(monkeypatch) -> None:
     monkeypatch.setattr("coordinare.services.github.httpx.AsyncClient", _Client)
     svc = GitHubService.__new__(GitHubService)
     svc._org, svc._project_name = "acme", "repo"
-    svc._rest_api_base = lambda: "https://api.github.com"  # type: ignore[method-assign]
-    svc._current_token = AsyncMock(return_value="tok")  # type: ignore[method-assign]
+    svc._rest_api_base = lambda: "https://api.github.com"
+    svc._current_token = AsyncMock(return_value="tok")
     assert await svc.get_branch_head_sha("main") == _MAIN
     assert seen["url"] == "https://api.github.com/repos/acme/repo/git/ref/heads/main"
 
-    svc._current_token = AsyncMock(side_effect=RuntimeError("app auth down"))  # type: ignore[method-assign]
+    svc._current_token = AsyncMock(side_effect=RuntimeError("app auth down"))
     assert await svc.get_branch_head_sha("main") is None
 
 
