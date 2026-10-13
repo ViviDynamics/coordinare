@@ -2164,6 +2164,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         github, board, getattr(config, "orphan_pr", None),
         active_card_ids=set((state.get("active_sessions") or {}).keys()),
         cycle_token=state.get("orphan_sweep_cycle_token"),
+        delete_branches=bool(getattr(config, "delete_defunct_branches", False)),
     )
 
     snapshot = board.get("snapshot")

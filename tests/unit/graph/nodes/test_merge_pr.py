@@ -372,3 +372,110 @@ async def test_merge_pr_triggers_rebase_round_for_other_sessions() -> None:
     assert result["phase"] == "idle"
     assert result["current_card"]["status"] == "DONE"
     assert "last_rebase_round" in result
+
+
+# ---------------------------------------------------------------------------
+# 89 — defunct branch cleanup after a successful merge (opt-in)
+# ---------------------------------------------------------------------------
+
+
+class _GitHubDeletable:
+    def __init__(self, mergeability: dict | None = None) -> None:
+        self._mergeability = mergeability if mergeability is not None else {"mergeable": True}
+        self.deleted: list[str] = []
+
+    async def check_mergeability(self, pr_id: str):
+        _ = pr_id
+        return dict(self._mergeability)
+
+    async def squash_merge(self, pr_id: str):
+        _ = pr_id
+        return {
+            "merged": True,
+            "id": "PR_1",
+            "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "Merge card (#42)"},
+        }
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+    async def delete_branch(self, branch_name: str) -> None:
+        self.deleted.append(branch_name)
+
+
+def _config_with_delete(flag: object):
+    from types import SimpleNamespace
+    return SimpleNamespace(delete_defunct_branches=flag)
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_deletes_head_branch_when_enabled() -> None:
+    """89: with delete_defunct_branches on, the merged head branch from
+    check_mergeability's head_ref_name is deleted after the merge."""
+    github = _GitHubDeletable({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(True)
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"]["status"] == "DONE"
+    assert github.deleted == ["coordinare/PVTI_1/x"]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_branch_resolution_falls_back_to_pushed_branch() -> None:
+    """89: when head_ref_name is absent (doubles/older fakes), the card's
+    pushed_branch artefact is the fallback candidate."""
+    github = _GitHubDeletable({"mergeable": True})
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(True)
+    state["current_card"] = {
+        "id": "ITEM_1",
+        "pr_node_id": "PR_1",
+        "status": "IN_REVIEW",
+        "pushed_branch": "coordinare/PVTI_1/pushed",
+    }
+
+    await merge_pr(state)
+
+    assert github.deleted == ["coordinare/PVTI_1/pushed"]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_branch_delete_when_disabled() -> None:
+    """89: default-off must leave behavior byte-identical (SC-003)."""
+    github = _GitHubDeletable({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(False)
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_branch_delete_when_not_merged() -> None:
+    """89: a shape-surprise merged=False never deletes the branch."""
+    github = _GitHubDeletable({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
+
+    async def _not_merged(pr_id: str):
+        _ = pr_id
+        return {"merged": False}
+
+    github.squash_merge = _not_merged  # type: ignore[method-assign]
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(True)
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert github.deleted == []
+    assert result["current_card"]["status"] == "DONE"

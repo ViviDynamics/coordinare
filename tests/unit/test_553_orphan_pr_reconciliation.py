@@ -528,7 +528,8 @@ async def test_check_board_calls_sweep_with_fresh_board(monkeypatch: pytest.Monk
     class StopSweepError(Exception):
         pass
 
-    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None) -> list[Any]:
+    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None,
+                   delete_branches: Any = False) -> list[Any]:
         seen.append((g, board, cfg, active_card_ids))
         raise StopSweepError
 
@@ -942,7 +943,8 @@ async def test_per_cycle_sweep_dedupes_concurrent_ticks(
     max_inflight = 0
     seen = 0
 
-    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None) -> list[Any]:
+    async def _spy(g: Any, board: Any, cfg: Any, active_card_ids: Any = None,
+                   delete_branches: Any = False) -> list[Any]:
         nonlocal inflight, max_inflight, seen
         seen += 1
         inflight += 1
@@ -992,6 +994,92 @@ def test_resolve_rejects_body_referencing_multiple_cards() -> None:
 
 
 def test_resolve_allows_repeated_references_to_same_card() -> None:
+    cards = {
+        "PVTI_19": {
+            "id": "PVTI_19", "status": "DONE", "issue_number": 19, "title": "done",
+            "issue_url": "https://github.com/acme/repo/issues/19",
+        },
+    }
+    pr = {
+        "id": "PR_1", "number": 21, "url": "https://github.com/acme/repo/pull/21",
+        "head_ref": "feature/misc", "body": "Related #19 (acme/repo#19)",
+    }
+    attribution = resolve_pr_to_card(pr, cards, expected_qualifier="acme/repo")
+    assert attribution.card_item_id == "PVTI_19"
+    assert attribution.method == "body_reference"
+
+
+# ---------------------------------------------------------------------------
+# 89 — defunct branch cleanup after a successful orphan close (opt-in)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orphan_close_deletes_branch_when_enabled(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/superseded")
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse", "pr_url": None,
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    decisions = await close_superseded_prs(fake, card, open_prs, delete_branches=True)
+    assert [d.outcome for d in decisions] == ["closed"]
+    deleted = [e["branch"] for e in fake.events if e["kind"] == "delete_branch"]
+    assert deleted == ["coordinare/PVTI_1/superseded"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_close_skips_branch_delete_when_disabled(tmp_path) -> None:
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    winner = fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/add-collapse")
+    fake._prs[winner]["merged"] = True
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/superseded")
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse", "pr_url": None,
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+    decisions = await close_superseded_prs(fake, card, open_prs)
+    assert [d.outcome for d in decisions] == ["closed"]
+    assert [e for e in fake.events if e["kind"] == "delete_branch"] == []
+
+
+@pytest.mark.asyncio
+async def test_orphan_close_failure_never_deletes_branch(tmp_path) -> None:
+    """A PR that could not be closed keeps its branch: only closed PRs are
+    defunct."""
+    from unittest.mock import patch
+
+    fake = _fake_repo(tmp_path)
+    fake.seed_card(
+        "PVTI_1", status="DONE", title="add collapse", body="do it",
+        issue_number=19, issue_node_id="I_1",
+    )
+    fake.open_pr(issue_item_id="PVTI_1", head_ref="coordinare/PVTI_1/superseded")
+    card = {
+        "id": "PVTI_1", "status": "DONE", "issue_number": 19,
+        "content_node_id": "I_1", "title": "add collapse", "pr_url": None,
+    }
+    open_prs = await fake.list_open_pull_requests("acme", "repo")
+
+    async def _decline(pr_id: str) -> dict[str, Any]:
+        return {"closed": False, "id": pr_id}
+
+    with patch.object(fake, "close_pull_request", _decline):
+        decisions = await close_superseded_prs(fake, card, open_prs, delete_branches=True)
+    assert [d.outcome for d in decisions] == ["close-failed"]
+    assert [e for e in fake.events if e["kind"] == "delete_branch"] == []
     cards = {
         "PVTI_19": {
             "id": "PVTI_19", "status": "DONE", "issue_number": 19, "title": "done",
