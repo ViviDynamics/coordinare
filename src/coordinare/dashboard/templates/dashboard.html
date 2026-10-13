@@ -239,8 +239,9 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .swimlane-card { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: var(--space-3); }
 .swimlane-card[tabindex]:hover { background: var(--color-bg-row-hover); border-color: var(--color-accent-blue); }
 .swimlane-empty { color: var(--color-text-muted); font-style: italic; font-size: 12px; padding: 4px 6px; }
-.swimlane-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; }
-.swimlane-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+/* 127: board tabs scroll inside their own container instead of wrapping or widening the page. */
+.swimlane-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
+.swimlane-tab { flex: 0 0 auto; white-space: nowrap; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
 .swimlane-tab:hover { color: var(--color-text-primary); }
 .swimlane-tab.active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
 .swimlane-tab-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; margin-left: 4px; color: var(--color-text-primary); }
@@ -363,6 +364,15 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .ap-tile-meta { display: flex; gap: 8px; flex-wrap: wrap; }
 .ap-pill { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-pill); }
 .ap-pill strong { color: var(--color-text-primary); font-weight: 600; }
+/* 124/127: a pill never pushes its tile wider than the viewport. */
+.ap-pill { max-width: 100%; min-width: 0; }
+.ap-pill strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ap-tile { min-width: 0; }
+/* 128: the Dashboard's recent-checks panel has a fixed maximum height. */
+.cycle-history { overflow-x: auto; }
+.cycle-history-compact { max-height: 240px; overflow-y: auto; }
+.cycle-count { color: var(--color-text-muted); font-size: 11px; }
+.cycle-history-more { color: var(--color-text-muted); font-size: 11px; margin-top: 6px; }
 .ap-tile-elapsed { color: var(--color-accent-blue); }
 .ap-idle { background: var(--color-bg-base); border: 1px dashed var(--color-border); border-radius: 6px; padding: 12px; }
 .ap-idle-title { color: var(--color-text-primary); font-size: 13px; font-weight: bold; margin-bottom: 8px; }
@@ -657,25 +667,38 @@ function isIdle(s) {
   return sessions.length === 0 && s.phase === 'idle';
 }
 
-function renderCycleHistoryInto(container, cycleHistory) {
+// 128: the Dashboard panel shows collapsed rows and a fixed number of them
+// (opts.collapse, opts.limit); the History page keeps the full list.
+function renderCycleHistoryInto(container, cycleHistory, opts) {
   if (!container) return;
+  opts = opts || {};
   var history = Array.isArray(cycleHistory) ? cycleHistory : [];
   if (history.length === 0) {
     container.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
     return;
   }
-  container.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
+  var rows = opts.collapse ? collapseCycleRows(history) : history.map(function(e) {
+    return { phase: e.phase, outcome: e.outcome || 'success', count: 1, timestamp: e.timestamp, duration_seconds: e.duration_seconds };
+  });
+  var hidden = 0;
+  if (opts.limit && rows.length > opts.limit) {
+    hidden = rows.length - opts.limit;
+    rows = rows.slice(0, opts.limit);
+  }
+  container.innerHTML = '<div class="cycle-history' + (opts.limit ? ' cycle-history-compact' : '') + '"><table><thead><tr>' +
     '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
     '</tr></thead><tbody>' +
-    history.map(function(e) {
+    rows.map(function(r) {
+      var many = r.count > 1;
       return '<tr>' +
-        '<td>' + fmtTime(e.timestamp) + '</td>' +
-        '<td>' + humanPhase(e.phase) + '</td>' +
-        '<td>' + fmtDuration(e.duration_seconds) + '</td>' +
-        '<td><span class="badge badge-' + esc(e.outcome || 'success') + '">' + esc(e.outcome || 'success') + '</span></td>' +
+        '<td>' + fmtTime(r.timestamp) + '</td>' +
+        '<td>' + humanPhase(r.phase) + (many ? ' <span class="cycle-count" title="' + r.count + ' consecutive checks with the same result">' + r.count + ' checks</span>' : '') + '</td>' +
+        '<td>' + (many ? 'avg ' : '') + fmtDuration(r.duration_seconds) + '</td>' +
+        '<td><span class="badge badge-' + esc(r.outcome) + '">' + (many ? 'all ' : '') + esc(r.outcome) + '</span></td>' +
         '</tr>';
     }).join('') +
-    '</tbody></table></div>';
+    '</tbody></table></div>' +
+    (hidden > 0 ? '<div class="cycle-history-more">' + hidden + ' older ' + (hidden === 1 ? 'row' : 'rows') + ' on the History page</div>' : '');
 }
 
 function findActivePerformerSession(s) {
@@ -720,9 +743,14 @@ function renderState(s) {
   var ageEl = document.getElementById('session-age');
   if (activeSess && effectiveDispatchAt) {
     ageEl.style.display = '';
-    ageEl.textContent = 'Agent running for: ' + (fmtAge(effectiveDispatchAt) || '—');
+    // 125: same start point and same refresh timer as the performer tile.
+    ageEl.setAttribute('data-elapsed-since', effectiveDispatchAt);
+    ageEl.setAttribute('data-elapsed-prefix', 'Stage running for: ');
+    ageEl.title = 'Time since this stage run was dispatched';
+    ageEl.textContent = 'Stage running for: ' + (fmtAge(effectiveDispatchAt) || '—');
   } else {
     ageEl.style.display = 'none';
+    ageEl.removeAttribute('data-elapsed-since');
   }
 
   // Flowchart (async)
@@ -819,12 +847,7 @@ function renderState(s) {
   var utilTbody = utilCard.querySelector('tbody');
   if (s.role_utilization && s.role_utilization.length > 0) {
     utilCard.style.display = '';
-    utilTbody.innerHTML = s.role_utilization.map(function(r) {
-      var pct = r.max > 0 ? Math.min(100, Math.round(r.active / r.max * 100)) : 0;
-      var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? 'var(--color-bar-full)' : 'var(--color-bar-fill)') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
-      var idle = Math.max(0, r.max - r.active);
-      return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + idle + ' / ' + r.max + '</td></tr>';
-    }).join('');
+    utilTbody.innerHTML = s.role_utilization.map(utilizationRowHtml).join('');
   } else {
     utilCard.style.display = 'none';
   }
@@ -1035,7 +1058,7 @@ function renderState(s) {
     if (!shouldDisable) fpMsg.textContent = '';
   }
 
-  renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history);
+  renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history, { collapse: true, limit: 5 });
 }
 
 // esc + fmtBytes: /static/helpers.js (#349)
@@ -1587,16 +1610,8 @@ function loadPersonasPage(force) {
 
 // resetPersonaPage wired inline via event delegation in loadPersonasPage()
 
-setInterval(function() {
-  if (!_lastState) return;
-  var activeSess = findActivePerformerSession(_lastState);
-  var dispatchAt = activeSess ? activeSess.agent_dispatch_at : null;
-  if (dispatchAt) {
-    var age = fmtAge(dispatchAt) || '—';
-    var ageEl = document.getElementById('session-age');
-    if (ageEl) ageEl.textContent = 'Agent running for: ' + age;
-  }
-}, 10000);
+// 125: one timer refreshes every elapsed readout from its own start point.
+setInterval(function() { refreshElapsedReadouts(document); }, 1000);
 
 async function forcePoll() {
   var btn = document.getElementById('force-poll-btn');

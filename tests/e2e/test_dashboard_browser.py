@@ -2147,3 +2147,101 @@ def test_pipeline_queue_is_distinct_from_dispatching(page, live_server_url, stor
         session_skip_reasons={"queued-card": {"reason": "pipeline_capacity"}},
     ))
     expect(page.locator("#swimlane-section")).to_contain_text("Queued — issue limit reached")
+
+
+@pytest.mark.e2e
+def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """#124/#127: at 375px a performer tile for a card with a long ProjectV2
+    item id shows the issue number instead, and the page does not scroll
+    horizontally."""
+    page.set_viewport_size({"width": 375, "height": 800})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    node_id = "PVTI_lADOBjmjsc4Bkx5YzhANaH0"
+    session = {
+        **_active_session(node_id, "A card with a deliberately long title that has to wrap on a phone", "implementing"),
+        "issue_number": 57,
+        "issue_url": "https://github.com/org/repo/issues/57",
+        "pr_url": "https://github.com/org/repo/pull/81",
+        "agent_dispatch_at": "2026-10-13T12:00:00+00:00",
+    }
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer", phase_label="Monitoring Performer",
+            active_sessions=[session],
+            role_utilization=[{"role": "implementer", "active": 1, "max": 1, "queued": 0}],
+        ),
+    )
+    tiles = page.locator("#active-performers")
+    expect(tiles).to_contain_text("#57", timeout=_WAIT_LIVE)
+    expect(tiles).to_contain_text("PR #81")
+    assert "PVTI_" not in tiles.inner_text()
+    expect(tiles.locator(".ap-pill-card")).to_have_attribute("title", f"Board item {node_id}")
+
+    metrics = page.evaluate("""() => {
+      const pill = document.querySelector('#active-performers .ap-pill-card').getBoundingClientRect();
+      const tile = document.querySelector('#active-performers .ap-tile').getBoundingClientRect();
+      return {scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth,
+              pillRight: pill.right, tileRight: tile.right};
+    }""")
+    assert metrics["scrollWidth"] <= metrics["viewport"]
+    assert metrics["pillRight"] <= metrics["tileRight"] + 1
+
+    # #125: the conductor card and the tile count from the same start point.
+    readouts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-elapsed-since]'))
+        .filter(el => el.offsetParent !== null).map(el => el.getAttribute('data-elapsed-since'))""")
+    assert len(readouts) >= 2 and len(set(readouts)) == 1
+
+
+@pytest.mark.e2e
+def test_busy_role_bar_is_not_red_and_queued_role_is_highlighted(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """#123"""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(
+        _full_snapshot(role_utilization=[
+            {"role": "implementer", "active": 1, "max": 1, "queued": 0},
+            {"role": "qa", "active": 1, "max": 1, "queued": 2},
+        ]),
+    )
+    rows = page.locator("#role-utilization-table tbody tr")
+    expect(rows).to_have_count(2, timeout=_WAIT_LIVE)
+    colours = page.evaluate("""() => {
+      const style = getComputedStyle(document.documentElement);
+      const fills = Array.from(document.querySelectorAll('#role-utilization-table tbody tr'))
+        .map(tr => getComputedStyle(tr.querySelector('div > div')).backgroundColor);
+      const probe = document.createElement('div');
+      document.body.appendChild(probe);
+      const resolve = name => { probe.style.backgroundColor = 'var(' + name + ')'; return getComputedStyle(probe).backgroundColor; };
+      const out = {fills, full: resolve('--color-bar-full'), fill: resolve('--color-bar-fill'), yellow: resolve('--color-accent-yellow')};
+      probe.remove();
+      return out;
+    }""")
+    assert colours["fills"][0] == colours["fill"] != colours["full"]
+    assert colours["fills"][1] == colours["yellow"]
+    expect(rows.nth(1)).to_contain_text("2 queued")
+    assert "queued" not in rows.nth(0).inner_text()
+
+
+@pytest.mark.e2e
+def test_recent_checks_panel_collapses_identical_rows(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """#128"""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    history = [
+        {"timestamp": f"2026-10-13T12:{i:02d}:00+00:00", "phase": "monitoring_performer",
+         "duration_seconds": 5.0, "outcome": "success"}
+        for i in range(12)
+    ]
+    store.broadcaster.broadcast(_full_snapshot(cycle_history=history))
+    rows = page.locator("#history-section tbody tr")
+    expect(rows).to_have_count(1, timeout=_WAIT_LIVE)
+    expect(rows.first).to_contain_text("12 checks")
+    expect(rows.first).to_contain_text("avg 5.00s")

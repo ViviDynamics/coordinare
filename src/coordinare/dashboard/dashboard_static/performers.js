@@ -35,6 +35,85 @@ function derivePerformerTokenTotal(s) {
   return null;
 }
 
+// 123: a busy role is not an error. A role at capacity keeps the normal bar
+// colour; the bar is highlighted only when work is queued behind it.
+function utilizationBarColor(r) {
+  return Number(r && r.queued) > 0 ? 'var(--color-accent-yellow)' : 'var(--color-bar-fill)';
+}
+
+function utilizationRowHtml(r) {
+  var max = Number(r.max) || 0;
+  var active = Number(r.active) || 0;
+  var queued = Number(r.queued) || 0;
+  var pct = max > 0 ? Math.min(100, Math.round(active / max * 100)) : 0;
+  var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
+  var idle = Math.max(0, max - active);
+  var queuedHtml = queued > 0
+    ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + esc(r.role) + ' slot">· ' + queued + ' queued</span>'
+    : '';
+  return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + active + ' / ' + idle + ' / ' + max + queuedHtml + '</td></tr>';
+}
+
+// 124: users see the issue number, never the raw ProjectV2 item id. The node
+// id stays reachable on hover for anyone who needs to quote it.
+function cardRefHtml(sess) {
+  sess = sess || {};
+  var nodeId = String(sess.card_id || '');
+  var number = sess.issue_number;
+  var label = number ? '#' + String(number) : 'Card';
+  var safeUrl = sess.issue_url && /^https?:\/\//i.test(sess.issue_url);
+  var inner = safeUrl
+    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
+    : esc(label);
+  var html = '<span class="ap-pill ap-pill-card" title="' + esc(nodeId ? 'Board item ' + nodeId : '') + '"><strong>' + inner + '</strong></span>';
+  if (sess.pr_url && /^https?:\/\//i.test(sess.pr_url)) {
+    var prNumber = (String(sess.pr_url).match(/\/pull\/(\d+)/) || [])[1];
+    html += '<span class="ap-pill ap-pill-pr"><strong><a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">PR' + (prNumber ? ' #' + esc(prNumber) : '') + '</a></strong></span>';
+  }
+  return html;
+}
+
+// 125: every elapsed readout for a stage run counts from the same moment (the
+// dispatch of that run) and is refreshed by one timer, so two readouts for the
+// same run can never disagree. The element carries its start point.
+function elapsedSinceHtml(iso) {
+  if (!iso) return '<strong>—</strong>';
+  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || '—') + '</strong>';
+}
+
+function refreshElapsedReadouts(root) {
+  var nodes = (root || document).querySelectorAll('[data-elapsed-since]');
+  for (var i = 0; i < nodes.length; i++) {
+    var prefix = nodes[i].getAttribute('data-elapsed-prefix') || '';
+    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—');
+  }
+}
+
+// 128: consecutive checks with the same phase and outcome are one row.
+function collapseCycleRows(history) {
+  var rows = [];
+  (Array.isArray(history) ? history : []).forEach(function(e) {
+    var outcome = e.outcome || 'success';
+    var last = rows[rows.length - 1];
+    var duration = typeof e.duration_seconds === 'number' && isFinite(e.duration_seconds) ? e.duration_seconds : null;
+    if (last && last.phase === e.phase && last.outcome === outcome) {
+      last.count += 1;
+      last.last_timestamp = e.timestamp;
+      if (duration != null) { last.duration_total += duration; last.duration_count += 1; }
+      return;
+    }
+    rows.push({
+      phase: e.phase, outcome: outcome, count: 1,
+      timestamp: e.timestamp, last_timestamp: e.timestamp,
+      duration_total: duration != null ? duration : 0, duration_count: duration != null ? 1 : 0,
+    });
+  });
+  rows.forEach(function(r) {
+    r.duration_seconds = r.duration_count > 0 ? r.duration_total / r.duration_count : null;
+  });
+  return rows;
+}
+
 // 121: one cost estimate for every place that shows one (Metrics, board row,
 // card detail). The daemon's own figure wins when it has one. In shared-pool
 // mode the figure lives on the session, not the top-level state, and it is
@@ -396,9 +475,7 @@ function renderActivePerformers(s) {
     var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '—';
     var title = sess.card_title || sess.card_id || '—';
     var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
-    var elapsed = dispatchAt ? (fmtAge(dispatchAt) || '—') : '—';
     var phaseLabel = formatPhaseLabel(sess.phase || 'active');
-    var cardId = sess.card_id || '—';
     html += '<div class="ap-tile">' +
       '<div class="ap-tile-header">' +
         '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
@@ -406,8 +483,8 @@ function renderActivePerformers(s) {
       '</div>' +
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
       '<div class="ap-tile-meta">' +
-        '<span class="ap-pill ap-tile-elapsed">&#9201; <strong>' + esc(elapsed) + '</strong></span>' +
-        '<span class="ap-pill">Card: <strong>' + esc(cardId) + '</strong></span>' +
+        '<span class="ap-pill ap-tile-elapsed">&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
+        cardRefHtml(sess) +
         // 138 FR-032: quiet marker — observation only, never a phase change.
         // .af-kind carries no colours of its own, so .ev-quiet is not overridden
         // by .ap-pill (equal specificity, later in the sheet).
