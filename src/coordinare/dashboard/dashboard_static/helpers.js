@@ -21,8 +21,33 @@ function fmtAge(iso) {
   return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
 }
 
+// 136: every display label for an internal code comes from the glossary
+// (/static/vocabulary.js, generated from coordinare/vocabulary.py). A code
+// with no entry is shown as it is, so a missing label is visible, not
+// papered over by title-casing.
+function vocabularyLabel(code) {
+  var key = String(code || '');
+  var known = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY.labels) || {};
+  return Object.prototype.hasOwnProperty.call(known, key) ? known[key] : key;
+}
+
 function humanPhase(phase) {
-  return esc(String(phase || '').replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); }));
+  return esc(vocabularyLabel(phase));
+}
+
+// 136: the Glossary page, rendered from the same data.
+function renderGlossaryPage() {
+  var el = document.getElementById('glossary-section');
+  if (!el) return;
+  var v = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY) || {};
+  function table(title, terms) {
+    if (!Array.isArray(terms) || terms.length === 0) return '';
+    return '<h3>' + esc(title) + '</h3><table><tbody>' + terms.map(function(t) {
+      return '<tr><td style="white-space:nowrap"><strong>' + esc(t.label) + '</strong></td><td>' + esc(t.description) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+  }
+  el.innerHTML = table('Concepts', v.concepts) + table('Stages', v.stages) + table('Agents', v.agents) +
+    table('Conductor status', v.phases) + table('Check outcomes', v.outcomes);
 }
 var formatPhaseLabel = humanPhase;
 

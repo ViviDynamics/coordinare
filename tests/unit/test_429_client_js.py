@@ -45,6 +45,11 @@ def _extract_detail_js() -> str:
     fmt = re.search(r"function humanPhase\(phase\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if fmt is None:
         raise AssertionError("the shared humanPhase() helper is no longer in helpers.js")
+    # 136: humanPhase is a lookup into the generated glossary.
+    lookup = re.search(r"function vocabularyLabel\(code\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
+    if lookup is None:
+        raise AssertionError("the shared vocabularyLabel() helper is no longer in helpers.js")
+    glossary = _DASHBOARD_JS_SOURCES["vocabulary"] + "\n" + lookup.group(0)
     alias = "var formatPhaseLabel = humanPhase;"
     if alias not in _HELPERS_JS:
         raise AssertionError("the formatPhaseLabel alias is no longer in helpers.js")
@@ -59,7 +64,7 @@ def _extract_detail_js() -> str:
         if helper is None:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
         cost_helpers.append(helper.group(0))
-    return "\n".join([esc.group(0), fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
+    return "\n".join([esc.group(0), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
 
 
 def test_detail_js_slice_is_complete() -> None:
