@@ -192,6 +192,7 @@ function versionErrorText(status, body) {
 }
 var _cfgVersion = null;
 var _cfgRoutingHash = null;     // optimistic-concurrency baseline (routing.yaml, spec-078)
+var _cfgOverrides = {};         // 126: global field key -> symphonies overriding it
 var _cfgRoutingAvail = false;   // whether a routing table is mounted+present on this host
 var CFG_WIRE = ['openai', 'anthropic'];
 var CFG_STRATEGY = ['normalize', 'reroute'];
@@ -577,7 +578,36 @@ async function loadRoutingEntries() {
   }
 }
 
-function cfgFieldRow(s) {
+// 126: say which symphonies set their own value for a global field, and link
+// to each, so a reader can tell which value is in effect where.
+function cfgOverrideNote(key) {
+  var list = (_cfgOverrides && Object.prototype.hasOwnProperty.call(_cfgOverrides, key)) ? _cfgOverrides[key] : null;
+  if (!Array.isArray(list) || list.length === 0) return '';
+  var links = list.map(function(o) {
+    var name = String(o.symphony || '');
+    return '<a href="/symphonies/' + encodeURIComponent(name) + '">' + esc(name) + '</a>'
+      + (o.value ? ' (' + esc(String(o.value)) + ')' : '');
+  }).join(', ');
+  return '<div data-override-note style="' + CFG_HINT + ';color:var(--color-accent-yellow)">'
+    + 'Overridden by ' + (list.length === 1 ? 'symphony ' : 'symphonies ') + links
+    + '. The value here applies only to a symphony that does not set its own.</div>';
+}
+
+// 126: the status line in plain words, not a bare version number and a flag.
+function cfgStatusLine(data) {
+  var reloads = Number(data.config_version) || 0;
+  var loaded = reloads === 0
+    ? 'Loaded when the daemon started; not reloaded since.'
+    : 'Reloaded ' + reloads + (reloads === 1 ? ' time' : ' times') + ' since the daemon started.';
+  var routing = data.routing_available
+    ? 'A model routing table is mounted and can be edited under Routing.'
+    : (data.routing_mounted
+      ? 'A performer endpoint mounts a routing table, but its file is missing on this host, so model routing uses defaults.'
+      : 'No routing table is mounted on this host, so model routing uses defaults.');
+  return loaded + ' ' + routing;
+}
+
+function cfgFieldRow(s, showOverrides) {
   var meta = [];
   meta.push(cfgBadge(s.type, 'var(--color-border)'));
   if (s.secret) meta.push(cfgBadge('secret', 'var(--color-accent-orange,#d29922)'));
@@ -619,12 +649,13 @@ function cfgFieldRow(s) {
   var ch = constraint ? '<div style="' + CFG_HINT + '">' + constraint + '</div>' : '';
   var def = (s.default !== null && s.default !== undefined)
     ? '<div style="' + CFG_HINT + '">default: ' + cfgFmtValue(s.default) + '</div>' : '';
+  var over = showOverrides ? cfgOverrideNote(s.key) : '';
   return '<div data-fieldrow style="padding:8px 0;border-bottom:1px solid var(--color-bg-elevated)">'
     + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">'
     + '<label style="font-size:12px;color:var(--color-text-primary);font-weight:600">' + esc(s.label || s.key) + '</label>'
     + '<div style="text-align:right">' + meta.join('') + '</div></div>'
     + '<div style="margin-top:3px">' + control + '</div>'
-    + help + ch + def
+    + help + ch + def + over
     + '<div data-err style="display:none;font-size:11px;color:var(--color-accent-red);margin-top:3px"></div>'
     + '</div>';
 }
@@ -697,7 +728,8 @@ function cfgSectionBlock(sec) {
   if (sec.id === 'routing') return cfgRoutingSection(sec, banner);
   var body, footer = '';
   if (sec.kind === 'scalar_group') {
-    body = (sec.settings || []).map(cfgFieldRow).join('') || '<div class="empty-state">No settings.</div>';
+    // 126: only the global group can be overridden by a symphony.
+    body = (sec.settings || []).map(function(s) { return cfgFieldRow(s, true); }).join('') || '<div class="empty-state">No settings.</div>';
     if (editable) {
       footer = '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'
         + '<button type="button" class="cfg-btn" onclick="cfgSaveSection(this, &quot;' + esc(sec.id) + '&quot;)">Save changes</button>'
@@ -797,9 +829,10 @@ async function loadConfigPage() {
   _cfgVersion = data.config_version;
   _cfgRoutingAvail = !!data.routing_available;
   _cfgOptions = cfgBuildOptions(data.sections);
-  var header = '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:12px">'
-    + 'Config version ' + esc(String(data.config_version))
-    + (data.routing_available ? ' · routing available' : ' · routing unavailable')
+  _cfgOverrides = data.symphony_overrides || {};
+  var header = '<div id="cfg-status-line" style="font-size:11px;color:var(--color-text-muted);margin-bottom:12px">'
+    + esc(cfgStatusLine(data))
+    + ' <a href="https://github.com/ViviDynamics/coordinare/blob/main/docs/onboarding/05-configuration.md" target="_blank" rel="noopener">How configuration is resolved</a>'
     + '</div>';
   var sections = data.sections || [];
   var hash = (location.hash || '').replace(/^#/, '');
