@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import unicodedata
@@ -448,7 +449,6 @@ class WorkspaceManager:
         explicit operator opt-in (``branch_collision_strategy: delete``), and a
         suffix search that runs out no longer falls back to a delete.
         """
-        import secrets
 
         from coordinare.config import BranchCollisionStrategy
 

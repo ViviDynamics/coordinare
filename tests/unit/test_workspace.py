@@ -5,7 +5,9 @@ tests/integration/test_workspace_integration.py.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -785,8 +787,6 @@ async def test_suffix_skips_taken_candidates() -> None:
 @pytest.mark.asyncio
 async def test_suffix_exhausted_uses_a_unique_suffix_and_never_deletes() -> None:
     """T017c / #105: all numbered suffixes taken → a random suffix, no delete."""
-    import re
-
     card = {"id": "89", "title": "add auth"}
     cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="suffix")
     # original exists; -2 through -9 all exist
@@ -813,8 +813,6 @@ async def test_default_strategy_never_deletes_a_colliding_branch() -> None:
 @pytest.mark.asyncio
 async def test_config_without_the_strategy_attribute_never_deletes() -> None:
     """#105: an absent attribute must fall back to suffix, not to delete."""
-    from types import SimpleNamespace
-
     card = {"id": "89", "title": "add auth"}
     github_svc = _make_github_service(exists_responses=[True, False])
     mgr = WorkspaceManager.__new__(WorkspaceManager)
