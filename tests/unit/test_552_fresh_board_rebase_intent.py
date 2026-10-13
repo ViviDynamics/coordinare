@@ -9,7 +9,6 @@ import pytest
 import coordinare.daemon as daemon_module
 import coordinare.graph.nodes.check_board as check_board_module
 from coordinare.graph.state import initial_state
-from coordinare.models.rebase import RebaseJob, RebaseOutcome
 from coordinare.services import rebase
 
 
@@ -35,27 +34,18 @@ def setup(monkeypatch, column, edge):
         get_pr_review_context=AsyncMock(return_value={"state": "OPEN"}),
         check_mergeability=AsyncMock(return_value={"mergeable_raw": "CONFLICTING", "head_ref_oid": "head"}),
     )
-    config = SimpleNamespace(max_concurrent_cards=1)
+    config = SimpleNamespace(max_concurrent_cards=1, implementer_rebase=SimpleNamespace(enabled=True))
     state.update(github_service=github, config=config)
-    monkeypatch.setattr(check_board_module, "repo_url_from_config", lambda _: "https://github.com/acme/repo")
-    monkeypatch.setattr(daemon_module, "repo_url_from_config", lambda _: "https://github.com/acme/repo")
     monkeypatch.setattr(rebase, "fetch_main_sha", AsyncMock(return_value="new-main"))
     monkeypatch.setattr(daemon_module, "fetch_main_sha", AsyncMock(return_value="new-main"))
-
-    async def rebase_branch(repo, branch, sha, token):
-        return RebaseJob(card_id=branch.split("/")[1], branch=branch,
-                         target_main_sha=sha, outcome=RebaseOutcome.SKIPPED)
-
-    rebasing = AsyncMock(side_effect=rebase_branch)
-    monkeypatch.setattr(rebase, "rebase_branch", rebasing)
-    return state, github, parked, rebasing
+    return state, github, parked, sibling
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("column", ["TODO", "BACKLOG", "DONE", "BLOCKED"])
 @pytest.mark.parametrize("edge", [True, False])
-async def test_actual_single_card_poll_filters_fresh_board_before_rebase(monkeypatch, column, edge):
-    state, github, parked, rebasing = setup(monkeypatch, column, edge)
+async def test_actual_single_card_poll_filters_fresh_board_before_divergence_request(monkeypatch, column, edge):
+    state, github, parked, sibling = setup(monkeypatch, column, edge)
     before = deepcopy(parked)
 
     # Stop after the real board poll and rebase path, before unrelated admission.
@@ -70,17 +60,23 @@ async def test_actual_single_card_poll_filters_fresh_board_before_rebase(monkeyp
         await check_board_module.check_board(state)
     github.poll_board.assert_awaited_once()
     assert state["board_snapshot"] == {column: ["parked"], "IN_REVIEW": ["sibling"]}
-    rebasing.assert_awaited_once_with("https://github.com/acme/repo", "coordinare/sibling/work", "new-main", "test-token")
+    # Only the unparked sibling is classified and handed to the implementer.
+    github.check_mergeability.assert_awaited_once_with("PR-sibling")
+    assert sibling["last_rebase_attempt"] == {"main_sha": "new-main", "head_sha": "head", "outcome": "delegated"}
     assert parked == before
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("column", ["DONE", "BLOCKED"])
 async def test_actual_daemon_preflight_protects_terminal_board_before_reconcile(monkeypatch, column):
-    state, github, parked, rebasing = setup(monkeypatch, column, True)
+    state, github, parked, sibling = setup(monkeypatch, column, True)
     before = deepcopy(parked)
+    sibling_before = deepcopy(sibling)
     await daemon_module._preflight_poll_board(state, github, state["active_sessions"])
-    rebasing.assert_awaited_once_with("https://github.com/acme/repo", "coordinare/sibling/work", "new-main", "test-token")
+    # 555: the preflight records the main advance and reroutes no one.
+    assert state["last_known_main_sha"] == "new-main"
+    github.check_mergeability.assert_not_awaited()
+    assert sibling == sibling_before
     assert parked == before
 
 

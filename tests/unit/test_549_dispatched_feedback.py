@@ -263,7 +263,7 @@ async def test_restored_feedback_bypasses_thrash_guard_only_for_own_stage(feedba
     session_to_state(restored, state)
     github = SimpleNamespace(_current_token=AsyncMock(return_value='token'),
                              check_mergeability=AsyncMock(return_value={'mergeable_raw': 'CONFLICTING', 'merge_state_status': 'DIRTY', 'head_ref_oid': 'head'}))
-    state.update(current_card=card, github_service=github, config=SimpleNamespace(github_org='acme', project_name='repo'), last_known_main_sha='main')
+    state.update(current_card=card, github_service=github, config=SimpleNamespace(github_org='acme', project_name='repo', implementer_rebase=SimpleNamespace(enabled=True)), last_known_main_sha='main')
     assert await _pre_dispatch_rebase_guard(state, 'card') is (feedback_stage == 'implementing')
     assert github.check_mergeability.await_count == int(feedback_stage != 'implementing')
     assert state['dispatched_feedback']['items'] == [{'body': 'Resolve this requested conflict'}]

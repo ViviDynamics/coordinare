@@ -49,7 +49,7 @@ from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import has_live_side_writer
-from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
+from coordinare.services.rebase import fetch_main_sha
 from coordinare.services.reconciliation import (
     reconcile_board_state,
     recover_documenting_side_session,
@@ -1447,25 +1447,14 @@ def stuck_dedup_key(card_id: str, phase: str, phase_entered: Any) -> str:
 async def _preflight_seed_main_sha_cache(
     state: CoordinareState, github: Any, active_sessions: dict[str, Any],
 ) -> None:
-    """Pre-seed _main_sha_cache so concurrent sessions share one ls-remote
-    result instead of each making an independent call, then run the
-    main-advance detection + rebase round once for the whole cycle.
+    """Pre-seed _main_sha_cache so concurrent sessions share one main-SHA
+    read instead of each making an independent call, then record a main
+    advance once for the whole cycle. 555: nothing is rebased here.
     """
-    _config = state.get("config")
-    if _config is None or not hasattr(github, "_current_token"):
-        return
-    # suppress is scoped only to _current_token() — fetch_main_sha
-    # and rebase failures are logged explicitly so they're visible.
-    _token = ""
-    with contextlib.suppress(Exception):
-        _token = await github._current_token()
-    if not _token:
-        return
-    _repo_url = repo_url_from_config(_config)
-    if not _repo_url:
+    if state.get("config") is None or github is None:
         return
     try:
-        _sha = await fetch_main_sha(_repo_url, _token)
+        _sha = await fetch_main_sha(github)
     except Exception:
         logger.warning(
             "multi_session.preflight.sha_fetch_failed", exc_info=True,
@@ -1475,9 +1464,7 @@ async def _preflight_seed_main_sha_cache(
         state["_main_sha_cache"] = _sha  # type: ignore[typeddict-unknown-key]
         # Run main-advance detection once in preflight so
         # every per-session check_board copy inherits the
-        # updated last_known_main_sha and skips its own
-        # run_rebase_round — preventing N parallel rebase
-        # rounds when main advances with N active sessions.
+        # updated last_known_main_sha.
         _prev_sha = state.get("last_known_main_sha")
         if _prev_sha is None:
             state["last_known_main_sha"] = _sha
@@ -1488,45 +1475,6 @@ async def _preflight_seed_main_sha_cache(
                 new_sha=_sha[:8],
             )
             state["last_known_main_sha"] = _sha
-            try:
-                _rr = await run_rebase_round(
-                    active_sessions,
-                    _sha,
-                    _repo_url,
-                    _token,
-                    notification_service=state.get(
-                        "notification_service",
-                    ),
-                    github=github,
-                    human_reviewers=state.get("human_reviewers"),
-                    board_snapshot=state.get("board_snapshot"),
-                )
-                state["last_rebase_round"] = _rr.to_dict()
-                # Mirror check_board's conflict-resolution
-                # handoff: route the first BLOCKED job back
-                # to implementing so relay_feedback fires.
-                from coordinare.models.rebase import RebaseOutcome
-                from coordinare.services.rebase import (
-                    prepare_conflict_resolution,
-                )
-
-                for _job in _rr.jobs:
-                    if _job.outcome == RebaseOutcome.BLOCKED:
-                        _sess = active_sessions.get(_job.card_id)
-                        if isinstance(_sess, dict):
-                            prepare_conflict_resolution(
-                                _job,
-                                _sess,
-                                human_reviewers=state.get(
-                                    "human_reviewers",
-                                ),
-                            )
-                        break
-            except Exception:
-                logger.warning(
-                    "multi_session.preflight.rebase_round_failed",
-                    exc_info=True,
-                )
 
 
 def _mirror_board_metadata(state: CoordinareState, board: dict[str, Any]) -> None:
@@ -1833,7 +1781,7 @@ def _prepare_session_state(
     session_state["active_card_id"] = card_id
     _rederive_current_card(session_state)
     # Snapshot sibling sessions before ainvoke.  Graph nodes such
-    # as prepare_conflict_resolution can mutate session dicts
+    # as request_implementer_rebase can mutate session dicts
     # in-place; capturing shallow copies here lets us detect
     # real mutations post-ainvoke by value comparison.
     pre_fanout_siblings: dict[str, dict[str, Any]] = {
@@ -1858,7 +1806,7 @@ def _collect_session_updates(
     updated_session = state_to_session(updated)
     # Merge in any mutations that nodes made directly to
     # updated["active_sessions"][card_id] without mirroring them
-    # back onto the flat state fields (e.g. prepare_conflict_resolution
+    # back onto the flat state fields (e.g. request_implementer_rebase
     # routing a BLOCKED card by writing phase/performer_stage directly
     # into the session dict).  Only apply an in-place value when the
     # flat field was NOT independently updated — flat mutations take
@@ -1882,7 +1830,7 @@ def _collect_session_updates(
     new_sessions = {
         k: v for k, v in updated_sessions.items() if k not in ctx.active_sessions
     }
-    # Capture mutations to other existing sessions (e.g. prepare_conflict_resolution
+    # Capture mutations to other existing sessions (e.g. request_implementer_rebase
     # routing a BLOCKED session back to dispatching).  Only include sessions
     # that actually changed vs the pre-fanout snapshot so that an unmodified
     # deep-copy of a sibling can't clobber a real mutation applied by another
@@ -2238,7 +2186,7 @@ async def _merge_fanout_results(
 
     # Apply cross-session mutations as a baseline before direct results so
     # each session's own tick result takes precedence over mutations from a
-    # sibling session's graph run (e.g. prepare_conflict_resolution targeting
+    # sibling session's graph run (e.g. request_implementer_rebase targeting
     # a BLOCKED session that was skipped this cycle).
     for cid, mutated_sess in cross_mutations.items():
         if cid in active_sessions:

@@ -223,22 +223,16 @@ async def test_git_auth_can_be_disabled_without_changing_real_mode_default(
     assert await fake._current_token() == expected
 
 
-async def test_fake_pr_lifecycle_context_permits_benchmark_rebase_and_reports_merge(bench_repo: Path, tmp_path: Path, monkeypatch) -> None:
-    from unittest.mock import AsyncMock
-
-    from coordinare.models.rebase import RebaseJob, RebaseOutcome
-    from coordinare.services.rebase import run_rebase_round
+async def test_fake_pr_lifecycle_context_permits_divergence_request_and_reports_merge(bench_repo: Path, tmp_path: Path) -> None:
+    from coordinare.services.rebase import _live_pr_allows_rebase
 
     fake = _fake(bench_repo, tmp_path, approver=lambda _: True)
     fake.seed_card("card", title="t", body="b", status="IN_REVIEW", issue_number=1)
     pr_id = fake.open_pr(issue_item_id="card", head_ref="feat/ok")
     assert (await fake.get_pr_review_context(pr_id))["state"] == "OPEN"
-    branch = "coordinare/card/implementing"
-    rebase = AsyncMock(return_value=RebaseJob(card_id="card", branch=branch, target_main_sha="main-new", outcome=RebaseOutcome.SKIPPED))
-    monkeypatch.setattr("coordinare.services.rebase.rebase_branch", rebase)
-    await run_rebase_round({"card": {"phase": "monitoring_pr", "workspace_branch": branch,
-                                   "current_card": {"pr_node_id": pr_id, "pr_url": "https://fake/o/r/pull/1"}}},
-                          "main-new", "https://fake/o/r.git", "test", github=fake)
-    rebase.assert_awaited_once()
+    session = {"phase": "monitoring_pr", "workspace_branch": "coordinare/card/implementing",
+               "current_card": {"pr_node_id": pr_id, "pr_url": "https://fake/o/r/pull/1"}}
+    assert await _live_pr_allows_rebase(session, fake, "card") is True
     assert (await fake.squash_merge(pr_id))["merged"]
     assert (await fake.get_pr_review_context(pr_id))["state"] == "MERGED"
+    assert await _live_pr_allows_rebase(session, fake, "card") is False

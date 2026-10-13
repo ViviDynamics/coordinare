@@ -1047,6 +1047,28 @@ class OrphanPrConfig(BaseModel):
     sweep: bool = False
 
 
+# ---------------------------------------------------------------------------
+# 555 — Implementer-side rebase (default-on; set enabled: false to opt out)
+# ---------------------------------------------------------------------------
+
+
+class ImplementerRebaseConfig(BaseModel):
+    """555: hand a diverged in-flight PR branch to the implementer.
+
+    Coordinare never clones, rebases or pushes. When ``enabled``, it reads the
+    platform's mergeability verdict for in-flight PRs and routes a CONFLICTING
+    or BEHIND branch to the implementer with a divergence instruction on the
+    relay-feedback channel. On by default (owner decision, 2026-10-13): it
+    replaces the daemon-side rebase that 047/096/097 ran unconditionally, and
+    the guard fails open, so it cannot wedge dispatch. With ``enabled: false``
+    no classification runs and dispatch is independent of mergeability.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1063,7 +1085,7 @@ class ProjectConfiguration(BaseSettings):
     # 151 — bench: configurable git host for clone/push. Default is real GitHub;
     # the board-sim real bench overrides it to a loopback git daemon
     # (git://127.0.0.1:<port>). This is the HOST-facing base — WorkspaceManager's
-    # host clone + the rebase service's fetch_main_sha reach it directly.
+    # host clone reaches it directly.
     git_base_url: str = "https://github.com"
 
     # 151 — bench: the CONTAINER-facing git base handed to the performer as its
@@ -1188,6 +1210,8 @@ class ProjectConfiguration(BaseSettings):
     # (merge path and 553 orphan path). Opt-in; default-off means
     # byte-identical behavior to a pre-89 build. Per-symphony via ``overrides``.
     delete_defunct_branches: bool = False
+    # 555 — Implementer-side rebase (default-on; see specs/555-...).
+    implementer_rebase: ImplementerRebaseConfig = Field(default_factory=ImplementerRebaseConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)

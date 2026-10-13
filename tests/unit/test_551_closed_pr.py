@@ -186,28 +186,25 @@ async def test_another_cards_closed_pr_reason_does_not_suppress_comment_poll(mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("live_state", ["CLOSED", "OPEN", "MERGED", "", "ERROR"])
-async def test_edge_rebase_reads_live_pr_state_before_conflict_dispatch(monkeypatch, live_state):
-    from coordinare.graph.nodes.check_board import _run_edge_rebase_round
-    from coordinare.models.rebase import RebaseJob, RebaseOutcome
+async def test_divergence_sweep_reads_live_pr_state_before_implementer_dispatch(live_state):
+    from coordinare.graph.nodes.check_board import _request_rebase_for_diverged_branches
 
     state, github = make_state(live_state)
     session = state["active_sessions"]["card"]
     session["phase"] = "monitoring_pr"
     session["workspace_branch"] = "coordinare/card/implementing"
-    job = RebaseJob(card_id="card", branch=session["workspace_branch"],
-                    target_main_sha="main-new", outcome=RebaseOutcome.BLOCKED,
-                    conflicted_files=["src/app.py"])
-    rebase = AsyncMock(return_value=job)
-    monkeypatch.setattr("coordinare.services.rebase.rebase_branch", rebase)
+    github.check_mergeability.return_value = {
+        "mergeable_raw": "CONFLICTING", "merge_state_status": "DIRTY", "head_ref_oid": "head",
+    }
     if live_state == "ERROR":
         github.get_pr_review_context.side_effect = RuntimeError("GitHub unavailable")
-    await _run_edge_rebase_round(state, github, state["active_sessions"], "main-new", "main-old", "https://github.com/acme/repo.git", "test")
+    await _request_rebase_for_diverged_branches(state, github, state["active_sessions"], "main-new", "main-old")
     github.get_pr_review_context.assert_awaited_once_with("PR1")
-    if live_state in {"OPEN", "MERGED"}:
-        rebase.assert_awaited_once()
+    if live_state == "OPEN":
         assert session["phase"] == "dispatching"
+        assert session["performer_stage"] == "implementing"
+        assert session["last_rebase_attempt"]["outcome"] == "delegated"
     else:
-        rebase.assert_not_awaited()
         assert session["phase"] == "monitoring_pr"
         assert state["last_rebase_round"]["jobs"][0]["outcome"] == "deferred"
         assert session["last_rebase_attempt"] is None
