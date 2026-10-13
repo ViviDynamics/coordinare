@@ -258,6 +258,63 @@ async def _run_git_stdout(
     return proc.returncode, stdout_bytes.decode(errors="replace")
 
 
+# 555: relay_feedback ``kind`` coordinare uses to hand over a diverged branch.
+_DIVERGENCE_FEEDBACK_KIND = "branch_divergence"
+
+
+def _rebase_request(score: Score | None) -> dict | None:
+    """The coordinare's request to rebase this branch onto its base, or None.
+
+    555: coordinare never rebases. It classifies the PR branch as conflicting
+    or behind and sends the implementer one relay_feedback entry carrying the
+    head it classified (``expected_head_sha``) and the base revision it saw
+    (``main_sha``). Only the implementer honours it, and only when both SHAs
+    are present: they are what the force-with-lease push is pinned to.
+    """
+    if score is None or score.role != "implementing":
+        return None
+    for item in score.relay_feedback or []:
+        if (
+            isinstance(item, dict)
+            and item.get("kind") == _DIVERGENCE_FEEDBACK_KIND
+            and item.get("expected_head_sha")
+            and item.get("main_sha")
+        ):
+            return item
+    return None
+
+
+async def _rebase_onto_base(stand_path: Path, env: dict[str, str], score: Score, request: dict) -> None:
+    """555: try the requested rebase before the agent starts.
+
+    A clean rebase needs no model: do it here so a merely-behind branch is
+    brought up to date deterministically. A conflict is aborted and left for
+    the agent, whose instruction is the same relay_feedback entry. Best effort
+    throughout: nothing here may fail the workspace setup.
+    """
+    base = str(request.get("base_branch") or score.base_branch or "main")
+    expected = str(request["expected_head_sha"])
+    head_rc, head_out = await _run_git_stdout(["git", "rev-parse", "HEAD"], cwd=stand_path, env=env)
+    if head_rc != 0 or head_out.strip() != expected:
+        # Someone pushed after coordinare classified the branch. The lease
+        # would be stale, so leave history alone; coordinare re-classifies.
+        log.info("workspace.rebase.skipped_head_moved", branch=score.branch)
+        return
+    shallow_rc, shallow = await _run_git_stdout(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=stand_path, env=env,
+    )
+    if shallow_rc != 0 or shallow.strip() != "false":
+        # The unshallow fetch failed: without full history a rebase is not trustworthy.
+        log.info("workspace.rebase.skipped_shallow", branch=score.branch)
+        return
+    rc, stderr = await _run_git(["git", "rebase", f"origin/{base}"], cwd=stand_path, env=env)
+    if rc == 0:
+        log.info("workspace.rebase.clean", branch=score.branch, base=base)
+        return
+    await _run_git(["git", "rebase", "--abort"], cwd=stand_path, env=env)
+    log.warning("workspace.rebase.conflict", branch=score.branch, base=base, error=(stderr or "")[:300])
+
+
 async def clone_repository(score: Score) -> Stand:
     """Clone *score.repo_url* into a fresh temp directory and return a Stand.
 
@@ -343,6 +400,14 @@ async def clone_repository(score: Score) -> Stand:
 
     # 131 US1: prevent agents from committing their own tool-config dirs.
     _write_agent_ignore(stand_path)
+
+    # 555: coordinare asked for this existing branch to be rebased onto its base.
+    rebase_request = _rebase_request(score)
+    if rebase_request is not None and fetch_rc == 0:
+        try:
+            await _rebase_onto_base(stand_path, env, score, rebase_request)
+        except (OSError, WorkspaceSetupError) as exc:
+            log.warning("workspace.rebase.failed", branch=score.branch, error=str(exc)[:300])
 
     log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
@@ -1250,6 +1315,9 @@ async def push_branch(stand: Stand, score: Score) -> None:
     2. If it exists: fetch it, rebase only if its head is not our ancestor, then push WITHOUT
        ``--force``. A rebase conflict aborts the rebase and raises
        ``WorkspaceSetupError`` naming ``rebase_conflict``; nothing is pushed.
+       One exception (555): when coordinare asked the implementer to rebase the
+       branch onto its base, the rewritten branch is published with a
+       ``--force-with-lease`` pinned to the exact head coordinare classified.
     3. If it does not exist yet (first push): plain push, and only then the
        ``--force`` fallback the first-push case has always needed.
 
@@ -1341,6 +1409,100 @@ async def _push_if_remote_ancestor(git_run, git_out, remote: str, branch: str) -
     return True
 
 
+_COMMIT_IDENTITY_FORMAT = "--format=%ae%x00%at%x00%s"
+
+
+async def _commits_missing_after_rewrite(git_out, *, old_head: str) -> list[str] | None:
+    """Identities of commits on *old_head* that the rewritten HEAD no longer has.
+
+    A rebase keeps each commit's author, author date and subject, so those
+    three identify "the same commit, replayed". Merge commits are ignored (a
+    rebase flattens them). Returns None when history cannot be read, which the
+    caller treats as "do not force".
+    """
+    base_rc, base = await git_out(["merge-base", old_head, "HEAD"], "rebase check")
+    if base_rc != 0 or not base.strip():
+        return None
+    old_rc, old = await git_out(
+        ["log", "--no-merges", _COMMIT_IDENTITY_FORMAT, f"{base.strip()}..{old_head}"], "rebase check",
+    )
+    new_rc, new = await git_out(
+        ["log", "--no-merges", _COMMIT_IDENTITY_FORMAT, f"{base.strip()}..HEAD"], "rebase check",
+    )
+    if old_rc != 0 or new_rc != 0:
+        return None
+    kept = set(new.splitlines())
+    return [line for line in old.splitlines() if line and line not in kept]
+
+
+async def _push_requested_rebase(git_run, git_out, *, remote: str, branch: str, request: dict | None) -> bool:
+    """555: publish a branch coordinare asked to have rebased onto its base.
+
+    The single place a performer overwrites an existing remote branch. It is
+    only reached when the remote head is NOT an ancestor of HEAD (history was
+    rewritten), and it forces only when every one of these holds:
+
+    - no rebase is still in progress and the tracked tree is clean;
+    - the remote head is exactly the head coordinare classified, so nobody
+      else's commits can be overwritten (165 FR-013 is preserved);
+    - the base revision coordinare saw is an ancestor of HEAD, i.e. the rewrite
+      really is the requested rebase;
+    - every commit the branch had is still represented in HEAD (same author,
+      author date and subject, which a rebase preserves), so a branch rebuilt
+      from the base without the earlier work is never forced over it.
+
+    Returns False when the rewrite is not recognisably the requested rebase, so
+    the caller falls back to the ordinary no-force path. Raises when the lease
+    cannot be honoured: nothing is pushed and coordinare re-classifies.
+    """
+    if request is None:
+        return False
+    expected = str(request["expected_head_sha"])
+    # The state directories, not REBASE_HEAD: that ref can outlive a finished rebase.
+    dir_rc, git_dir = await git_out(["rev-parse", "--absolute-git-dir"], "rebase state")
+    if dir_rc != 0 or any((Path(git_dir.strip()) / name).exists() for name in ("rebase-merge", "rebase-apply")):
+        msg = "push_branch.rebase_in_progress: a rebase was left unfinished; nothing was pushed"
+        raise WorkspaceSetupError(msg)
+    base_rc, _ = await git_run(
+        ["merge-base", "--is-ancestor", str(request["main_sha"]), "HEAD"], "rebase check",
+    )
+    if base_rc != 0:
+        return False
+    remote_rc, remote_head = await git_out(["rev-parse", "FETCH_HEAD"], "remote head")
+    if remote_rc != 0 or remote_head.strip() != expected:
+        log.warning("push_branch.rebase_lease_stale", branch=branch)
+        msg = (
+            "push_branch.rebase_lease_stale: the remote branch moved after the rebase was "
+            "requested, so it was not overwritten; nothing was pushed"
+        )
+        raise WorkspaceSetupError(msg)
+    dirty = await _uncommitted_paths(git_out, tracked_only=True)
+    if dirty:
+        msg = (
+            "push_branch.uncommitted_changes: nothing was pushed; "
+            f"unfinished workspace paths: {', '.join(dirty[:10])}"
+        )
+        raise WorkspaceSetupError(msg)
+    dropped = await _commits_missing_after_rewrite(git_out, old_head=expected)
+    if dropped is None or dropped:
+        log.warning("push_branch.rebase_dropped_commits", branch=branch, count=len(dropped or []))
+        msg = (
+            "push_branch.rebase_dropped_commits: the rewritten branch no longer carries "
+            f"{len(dropped) if dropped else 'some'} commit(s) the remote branch has, so it was "
+            "not overwritten; nothing was pushed"
+        )
+        raise WorkspaceSetupError(msg)
+    push_rc, push_err = await git_run(
+        ["push", f"--force-with-lease={branch}:{expected}", remote, f"HEAD:{branch}"], "push",
+    )
+    if push_rc != 0:
+        log.warning("push_branch.rebase_lease_rejected", branch=branch, error=push_err[:200])
+        msg = f"push_branch.rebase_lease_rejected: {_summarise_git_push_error(push_err)}"
+        raise WorkspaceSetupError(msg)
+    log.info("push_branch.rebased_onto_base", branch=branch)
+    return True
+
+
 async def _push_head_without_clobbering(
     git_run, git_out, *, remote: str, branch: str, score: Score | None,
 ) -> None:
@@ -1371,7 +1533,14 @@ async def _push_head_without_clobbering(
             )
         if tree is not None:
             await _enforce_documenter_tree(git_out, "FETCH_HEAD", tree, branch)
-        if await _push_if_remote_ancestor(git_run, git_out, remote, branch):
+        # 555: when the remote head is not our ancestor, history was rewritten.
+        # If coordinare asked for exactly that (a rebase onto the base), publish
+        # it under a lease instead of replaying the rewritten commits onto the
+        # old branch. Never for a documenter side run (tree guard active).
+        rebase_request = _rebase_request(score) if tree is None else None
+        if await _push_if_remote_ancestor(git_run, git_out, remote, branch) or await _push_requested_rebase(
+            git_run, git_out, remote=remote, branch=branch, request=rebase_request,
+        ):
             return
         rebase_rc, rebase_err = await git_run(["rebase", "FETCH_HEAD"], "rebase")
         if rebase_rc != 0:

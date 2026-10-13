@@ -671,7 +671,7 @@ class DashboardStore:
             # 046: Dependency state for the current card — list of blocker dicts
             # consumed by the dashboard JS to render "Blocked by #N (COLUMN)" badges.
             "blocked_by_dependencies": list(daemon.state.get("blocked_by_dependencies") or []),
-            # 047: Last rebase round for per-card rebase status display.
+            # 047/555: Last divergence sweep for per-card status display.
             "last_rebase_round": daemon.state.get("last_rebase_round"),
             # 048: Per-role performer utilization for scaling visibility.
             "role_utilization": self._build_role_utilization(daemon),

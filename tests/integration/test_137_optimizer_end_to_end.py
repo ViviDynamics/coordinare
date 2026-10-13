@@ -8,7 +8,6 @@ Deterministic and free — stubbed performers, judging disabled.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import yaml
 from scripts.board_optimize import main as optimize_main
@@ -45,9 +44,13 @@ def _space(tmp_path: Path):
 
 class TestOptimizerEndToEnd:
     async def test_stub_search_reconciles_and_reports(self, tmp_path: Path, monkeypatch) -> None:
-        fetch = AsyncMock(side_effect=AssertionError("stub benchmark attempted live git access"))
-        monkeypatch.setattr("coordinare.daemon.fetch_main_sha", fetch)
-        monkeypatch.setattr("coordinare.services.rebase.fetch_main_sha", fetch)
+        # 555: fetch_main_sha no longer runs git (it reads the branch head through
+        # the GitHub service), so the stub benchmark may call it. What must stay
+        # true is that the divergence service spawns no process at all.
+        import coordinare.services.rebase as rebase_module
+
+        assert not hasattr(rebase_module, "_run_git")
+        assert not hasattr(rebase_module, "asyncio")
         loaded = _space(tmp_path)
         session = tmp_path / "session"
         evaluate = real_evaluator(loaded, [tiny_fixture()], session)
@@ -56,7 +59,6 @@ class TestOptimizerEndToEnd:
             evaluator_kind="stub",
         )
 
-        fetch.assert_not_awaited()
         assert (session / "optimizer.json").exists()
         assert (session / "optimizer-report.md").exists()
         assert OptimizerArtifact.load(session / "optimizer.json") == artifact

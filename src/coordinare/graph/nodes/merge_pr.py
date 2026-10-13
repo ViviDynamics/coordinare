@@ -14,7 +14,6 @@ from coordinare.services.defunct_branch import (
 )
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.orphan_pr import close_guard, reconcile_completed_card
-from coordinare.services.rebase import repo_url_from_config
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -135,69 +134,11 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         async with close_guard():
             await reconcile_completed_card(github, state.get("config"), card)
 
-    # 047: Trigger rebase round for all other in-flight branches after merge.
-    # The new main HEAD is the merge commit OID we just received.
-    merge_sha = ""
-    if isinstance(merge_commit, dict):
-        merge_sha = str(merge_commit.get("oid", ""))
-    if merge_sha:
-        state["last_known_main_sha"] = merge_sha
-        all_sessions = state.get("active_sessions") or {}
-        # Exclude the just-merged card so we don't rebase/force-push its
-        # (now-merged) branch or fail on a deleted branch ref.
-        merged_card_id = str(card.get("id", ""))
-        active_sessions = {k: v for k, v in all_sessions.items() if k != merged_card_id}
-        config = state.get("config")
-        if active_sessions and config is not None:
-            try:
-                from coordinare.services.rebase import run_rebase_round
-                repo_url = repo_url_from_config(config)
-                # Get token from github_service (which owns the auth)
-                import contextlib
-                token = ""
-                if github is not None and hasattr(github, "_current_token"):
-                    with contextlib.suppress(Exception):
-                        token = await github._current_token()
-                if repo_url and token:
-                    import contextlib
-                    pr_number = 0
-                    pr_url = str(card.get("pr_url") or "")
-                    if pr_url and "/" in pr_url:
-                        with contextlib.suppress(ValueError, IndexError):
-                            pr_number = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
-                    notification_svc = state.get("notification_service")
-                    rr = await run_rebase_round(
-                        active_sessions, merge_sha, repo_url, token,
-                        trigger_pr_number=pr_number,
-                        notification_service=notification_svc,
-                        github=github,
-                        human_reviewers=state.get("human_reviewers"),
-                    )
-                    state["last_rebase_round"] = rr.to_dict()
-                    # US2: For any BLOCKED jobs (conflicts), set up the
-                    # first one for performer-driven resolution.  The
-                    # coordinare's normal dispatch_performer → monitor_performer
-                    # pipeline handles the rest asynchronously.
-                    from coordinare.models.rebase import RebaseOutcome
-                    from coordinare.services.rebase import prepare_conflict_resolution
-                    for job in rr.jobs:
-                        if job.outcome == RebaseOutcome.BLOCKED:
-                            # Route the BLOCKED card's session to the
-                            # implementer with conflict details in relay_feedback.
-                            session = active_sessions.get(job.card_id)
-                            if isinstance(session, dict):
-                                prepare_conflict_resolution(
-                                    job, session,
-                                    human_reviewers=state.get("human_reviewers"),
-                                )
-                            break  # one at a time — next round handles the rest
-                    logger.info(
-                        "merge_pr.rebase_round_complete",
-                        summary=rr.summary,
-                        job_count=len(rr.jobs),
-                    )
-            except Exception as exc:
-                logger.warning("merge_pr.rebase_round_failed", error=str(exc))
+    # 047/555: the new main HEAD is the merge commit OID we just received.
+    # Record it; coordinare never rebases the other in-flight branches. The
+    # check_board divergence sweep hands any that now conflict to the implementer.
+    if isinstance(merge_commit, dict) and merge_commit.get("oid"):
+        state["last_known_main_sha"] = str(merge_commit["oid"])
 
     symphony = state.get("symphony_name", "__default__")
     METRICS.cards_outcome_total.labels(symphony=symphony, outcome="merged").inc()

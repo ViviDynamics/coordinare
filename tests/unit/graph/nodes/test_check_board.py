@@ -2054,151 +2054,100 @@ async def test_check_board_session_skip_reasons_empty_by_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 054: rebase dispatch targeting / failure isolation (T016, T017)
+# 054/555: divergence sweep targeting / failure isolation (T016, T017)
 # ---------------------------------------------------------------------------
 
+_SWEEP = "coordinare.graph.nodes.check_board._request_rebase_for_diverged_branches"
 
-@pytest.mark.asyncio
-async def test_check_board_rebase_not_dispatched_when_no_active_sessions() -> None:
-    """054 T017: When there are no active sessions, run_rebase_round is never called
-    even if the main SHA changes."""
+
+class _SweepGitHub:
+    def __init__(self, column: str, item: str) -> None:
+        self._column, self._item = column, item
+
+    async def poll_board(self):
+        return {
+            "snapshot": {self._column: [self._item]},
+            "titles": {self._item: "Card"},
+            "descriptions": {self._item: ""},
+            "issue_numbers": {self._item: 10},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+    async def _current_token(self):
+        return "test-token"
+
+
+def _sweep_state(github, sessions: dict, baseline: str):
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock, patch
-
-    class _GitHubWithToken:
-        async def poll_board(self):
-            return {
-                "snapshot": {"TODO": ["ITEM_1"]},
-                "titles": {"ITEM_1": "Pending"},
-                "descriptions": {"ITEM_1": ""},
-                "issue_numbers": {"ITEM_1": 10},
-                "issue_urls": {},
-                "content_node_ids": {},
-            }
-
-        async def _current_token(self):
-            return "test-token"
 
     state = initial_state()
-    state["github_service"] = _GitHubWithToken()
+    state["github_service"] = github
     state["config"] = SimpleNamespace(
         github_org="acme", project_name="repo",
         max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
         github_api_url="",
+        implementer_rebase=SimpleNamespace(enabled=True),
     )
-    # No active sessions → rebase block is skipped entirely
-    state["active_sessions"] = {}
-    state["last_known_main_sha"] = "old-sha-000"
+    state["active_sessions"] = sessions
+    state["last_known_main_sha"] = baseline
+    return state
 
-    with patch("coordinare.services.rebase.run_rebase_round", new=AsyncMock()) as mock_rebase:
+
+def _sweep_session(item: str, num: int) -> dict:
+    return {
+        "current_card": {"id": item, "pr_url": f"https://github.com/acme/repo/pull/{num}"},
+        "workspace_branch": f"coordinare/item-{num}",
+        "phase": "monitoring_performer",
+    }
+
+
+@pytest.mark.asyncio
+async def test_check_board_divergence_sweep_not_run_when_no_active_sessions() -> None:
+    """054 T017: with no active sessions the sweep never runs, even if main moved."""
+    from unittest.mock import AsyncMock, patch
+
+    state = _sweep_state(_SweepGitHub("TODO", "ITEM_1"), {}, "old-sha-000")
+    with patch(_SWEEP, new=AsyncMock()) as sweep:
         await check_board(state)
 
-    mock_rebase.assert_not_called()
+    sweep.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_check_board_rebase_dispatched_for_open_pr_sessions() -> None:
-    """054 T016: When an active session has an open PR and main SHA changes,
-    run_rebase_round is called and its result is stored."""
-    from types import SimpleNamespace
+async def test_check_board_divergence_sweep_runs_for_open_pr_sessions() -> None:
+    """054 T016 / 555: an active session with an open PR and a moved main records
+    the new main and runs the read-only sweep once. Nothing is rebased."""
     from unittest.mock import AsyncMock, patch
 
-    class _GitHubWithToken:
-        async def poll_board(self):
-            return {
-                "snapshot": {"IN_REVIEW": ["ITEM_2"]},
-                "titles": {"ITEM_2": "Reviewed"},
-                "descriptions": {"ITEM_2": ""},
-                "issue_numbers": {"ITEM_2": 20},
-                "issue_urls": {},
-                "content_node_ids": {},
-            }
-
-        async def _current_token(self):
-            return "test-token"
-
-    from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
-
-    rr = RebaseRound(
-        trigger_sha="new-sha-222",
-        jobs=[RebaseJob(card_id="ITEM_2", branch="feat/item-2", outcome=RebaseOutcome.SKIPPED)],
-    )
-
-    state = initial_state()
-    state["github_service"] = _GitHubWithToken()
-    state["config"] = SimpleNamespace(
-        github_org="acme", project_name="repo",
-        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
-        github_api_url="",
-    )
-    state["active_sessions"] = {
-        "ITEM_2": {
-            "current_card": {"id": "ITEM_2", "pr_url": "https://github.com/acme/repo/pull/20"},
-            "workspace_branch": "coordinare/item-2",
-            "phase": "monitoring_performer",
-        },
-    }
-    state["last_known_main_sha"] = "old-sha-111"
-
-    mock_rebase = AsyncMock(return_value=rr)
+    state = _sweep_state(_SweepGitHub("IN_REVIEW", "ITEM_2"), {"ITEM_2": _sweep_session("ITEM_2", 20)}, "old-sha-111")
     with (
         patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-222")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
+        patch(_SWEEP, new=AsyncMock()) as sweep,
     ):
         result = await check_board(state)
 
     assert result.get("last_known_main_sha") == "new-sha-222"
-    mock_rebase.assert_called_once()
-    assert result.get("last_rebase_round") is not None
+    sweep.assert_called_once()
+    assert sweep.call_args.args[3:] == ("new-sha-222", "old-sha-111")
 
 
 @pytest.mark.asyncio
-async def test_check_board_rebase_exception_does_not_abort_cycle() -> None:
-    """054 T016: If run_rebase_round raises, check_board logs and continues normally."""
-    from types import SimpleNamespace
+async def test_check_board_divergence_sweep_exception_does_not_abort_cycle() -> None:
+    """054 T016: if the sweep raises, check_board logs and continues normally."""
     from unittest.mock import AsyncMock, patch
 
-    class _GitHubWithToken:
-        async def poll_board(self):
-            return {
-                "snapshot": {"IN_REVIEW": ["ITEM_3"]},
-                "titles": {"ITEM_3": "Card"},
-                "descriptions": {"ITEM_3": ""},
-                "issue_numbers": {"ITEM_3": 30},
-                "issue_urls": {},
-                "content_node_ids": {},
-            }
-
-        async def _current_token(self):
-            return "test-token"
-
-    state = initial_state()
-    state["github_service"] = _GitHubWithToken()
-    state["config"] = SimpleNamespace(
-        github_org="acme", project_name="repo",
-        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
-        github_api_url="",
-    )
-    state["active_sessions"] = {
-        "ITEM_3": {
-            "current_card": {"id": "ITEM_3", "pr_url": "https://github.com/acme/repo/pull/30"},
-            "workspace_branch": "coordinare/item-3",
-            "phase": "monitoring_performer",
-        },
-    }
-    state["last_known_main_sha"] = "old-sha-aaa"
-
-    mock_rebase = AsyncMock(side_effect=RuntimeError("network failure"))
+    state = _sweep_state(_SweepGitHub("IN_REVIEW", "ITEM_3"), {"ITEM_3": _sweep_session("ITEM_3", 30)}, "old-sha-aaa")
+    sweep = AsyncMock(side_effect=RuntimeError("network failure"))
     with (
         patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-bbb")),
-        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
+        patch(_SWEEP, new=sweep),
     ):
         result = await check_board(state)
 
     # Should not raise; last_known_main_sha updated even on exception
     assert result.get("last_known_main_sha") == "new-sha-bbb"
-    # run_rebase_round must have been attempted (session is now detectable as stale)
-    mock_rebase.assert_called_once()
+    sweep.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

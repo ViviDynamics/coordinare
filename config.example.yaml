@@ -842,6 +842,16 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   cost_per_million_tokens: 3.0        # dollars per million tokens; used for estimates
 #   cost_budget_per_card: null          # alert when a card exceeds this dollar budget; null = no limit
 
+# --- Implementer-Side Rebase (555) ---
+# Coordinare never clones, rebases or pushes a branch. When enabled, it reads
+# GitHub's mergeability verdict for in-flight PRs and routes a CONFLICTING or
+# BEHIND branch to the implementer, who rebases it onto main inside its own
+# container and publishes it with a force-with-lease. On by default. Set
+# enabled: false to stop classifying; nothing then brings a diverged branch up
+# to date automatically.
+# implementer_rebase:
+#   enabled: true
+
 # --- Stuck Card Alerts ---
 # stuck_alerts:
 #   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled
