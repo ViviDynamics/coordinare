@@ -37,6 +37,7 @@ PROVIDER_TIMEOUT_SECONDS = 10.0
 PENDING_CAPACITY = 1024
 _HTTP_OK = 200
 SESSION_CAPACITY = 4096
+_URL_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 SESSION_COOKIE = "coordinare_session"
 STATE_COOKIE = "oidc_state"
@@ -338,7 +339,7 @@ class OidcFlow:
 
 
 def _safe_logout_endpoint(value: str) -> bool:
-    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value):
+    if any(char.isspace() or char in _URL_CONTROL_CHARACTERS for char in value):
         return False
     try:
         parsed = urlparse(value)
