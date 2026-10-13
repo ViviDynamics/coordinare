@@ -120,6 +120,10 @@ ignore = [
 # 437: daemon decomposition helpers take the context they need; the arg count
 # is the price of keeping each extracted phase helper <= 100 lines.
 "src/coordinare/daemon.py" = ["PLR0913"]
+# 89: delete_defunct_branch carries the close-path context (card, source,
+# opt-in flag) plus the review-guard identity pair (head repo vs configured
+# repo); keyword-only keeps the call sites self-documenting.
+"src/coordinare/services/defunct_branch.py" = ["PLR0913"]
 # 440: eval scenarios drive the harness with fixture tokens (like "t"), never
 # real credentials; the scenario files are standalone CLI entry points whose
 # scenario reports are stdout output. Their git fixture setup passes static,

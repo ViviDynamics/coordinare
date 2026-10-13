@@ -1184,6 +1184,10 @@ class ProjectConfiguration(BaseSettings):
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
     # 553 — Orphaned PR reconciliation (opt-in; default-off; see specs/553-...).
     orphan_pr: OrphanPrConfig = Field(default_factory=OrphanPrConfig)
+    # 89 — delete defunct head branches after the conductor closes their PR
+    # (merge path and 553 orphan path). Opt-in; default-off means
+    # byte-identical behavior to a pre-89 build. Per-symphony via ``overrides``.
+    delete_defunct_branches: bool = False
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)

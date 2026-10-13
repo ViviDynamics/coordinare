@@ -646,6 +646,7 @@ class FakeGitHubService(CardIdentityMap):
                 "number": pr["pr_number"],
                 "url": pr["url"],
                 "head_ref": pr["head_ref"],
+                "head_repo": f"{self._org}/{self._project_name}",
                 "body": pr.get("body", ""),
             }
             for pr in self._prs.values()

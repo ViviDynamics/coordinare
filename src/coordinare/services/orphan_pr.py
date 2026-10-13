@@ -24,6 +24,11 @@ from urllib.parse import urlsplit
 
 import structlog
 
+from coordinare.services.defunct_branch import (
+    configured_repo_of,
+    delete_defunct_branch,
+)
+
 if TYPE_CHECKING:
     from coordinare.config import OrphanPrConfig
     from coordinare.graph.state import GitHubServiceProtocol
@@ -225,6 +230,7 @@ async def run_orphan_pr_sweep(
     board: dict[str, Any],
     orphan_cfg: OrphanPrConfig | None,
     active_card_ids: set[str] | None = None,
+    delete_branches: bool = False,
 ) -> list[OrphanPrDecision]:
     """Per-cycle janitor (US-2): close open PRs of terminal-card work.
 
@@ -258,7 +264,9 @@ async def run_orphan_pr_sweep(
                 _log_decision(_decision(pr, attribution.card_item_id, attribution.method, "skipped-active")),
             )
             continue
-        decisions.extend(await close_superseded_prs(github, card, [pr], expected_qualifier=qualifier))
+        decisions.extend(await close_superseded_prs(
+            github, card, [pr], expected_qualifier=qualifier, delete_branches=delete_branches,
+        ))
     return decisions
 
 
@@ -317,6 +325,7 @@ async def close_superseded_prs(
     card: dict[str, Any],
     open_prs: list[dict[str, Any]],
     expected_qualifier: str | None = None,
+    delete_branches: bool = False,
 ) -> list[OrphanPrDecision]:
     """Close every open PR attributable to a completed *card*.
 
@@ -364,6 +373,18 @@ async def close_superseded_prs(
         closed_ok = bool(result.get("closed", False))
         if not closed_ok:
             logger.warning("orphan_pr.close_failed", pr_number=pr.get("number"))
+        else:
+            # 89 — a closed (not merged) orphan PR's head branch is defunct;
+            # delete it when the operator opted in. Non-raising, and it keeps
+            # its own decision log line (defunct_branch.deleted). The
+            # head-repo identity check refuses fork PRs; branch_has_open_pr
+            # preserves a branch that still backs another live PR.
+            await delete_defunct_branch(
+                github, str(pr.get("head_ref") or ""),
+                card_id=card_id, source="orphan", enabled=delete_branches,
+                head_repo=str(pr.get("head_repo") or ""),
+                expected_repo=configured_repo_of(github),
+            )
         decisions.append(
             _log_decision(
                 replace(
@@ -386,7 +407,7 @@ _last_sweep_token: int | None = None
 async def run_per_cycle_sweep(
     github: GitHubServiceProtocol,
     board: dict[str, Any],
-    orphan_cfg: OrphanPrConfig | None,
+    config: Any,
     active_card_ids: set[str] | None,
     cycle_token: int | None,
 ) -> list[OrphanPrDecision]:
@@ -403,13 +424,16 @@ async def run_per_cycle_sweep(
     global _last_sweep_token
     if cycle_token is None:
         return []
+    orphan_cfg = getattr(config, "orphan_pr", None)
     if orphan_cfg is None or not (orphan_cfg.enabled and orphan_cfg.sweep):
         return []
+    delete_branches = bool(getattr(config, "delete_defunct_branches", False))
     async with close_guard():
         if _last_sweep_token == cycle_token:
             return []
         decisions = await run_orphan_pr_sweep(
             github, board, orphan_cfg, active_card_ids=active_card_ids,
+            delete_branches=delete_branches,
         )
         _last_sweep_token = cycle_token
         return decisions
@@ -439,4 +463,5 @@ async def reconcile_completed_card(
     open_prs = await github.list_open_pull_requests(owner, repo)
     return await close_superseded_prs(
         github, card, open_prs, expected_qualifier=f"{owner}/{repo}",
+        delete_branches=bool(getattr(config, "delete_defunct_branches", False)),
     )

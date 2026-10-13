@@ -7,6 +7,11 @@ import structlog
 from coordinare.graph.state import _set_current_card
 from coordinare.metrics import METRICS
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.defunct_branch import (
+    configured_repo_of,
+    delete_defunct_branch,
+    resolve_branch,
+)
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.orphan_pr import close_guard, reconcile_completed_card
 from coordinare.services.rebase import repo_url_from_config
@@ -108,6 +113,25 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     # GitHub reads. The close guard serializes against the concurrent
     # per-session sweeps.
     if merge_result.get("merged", True) and move_ok:
+        # 89 — the merged PR's head branch is defunct now. Delete it when the
+        # operator opted in; resolution prefers the live head_ref_name from
+        # check_mergeability and falls back to the session's pushed_branch
+        # artefact. Non-raising, decision-logged (defunct_branch.deleted).
+        # The head-repo identity check refuses fork PRs; branch_has_open_pr
+        # preserves a branch that still backs another live PR.
+        if bool(getattr(state.get("config"), "delete_defunct_branches", False)):
+            await delete_defunct_branch(
+                github,
+                resolve_branch(
+                    mergeability.get("head_ref_name"),
+                    card.get("pushed_branch"),
+                ),
+                card_id=str(card.get("id", "")),
+                source="merge",
+                enabled=True,
+                head_repo=str(mergeability.get("head_repo_name_with_owner") or ""),
+                expected_repo=configured_repo_of(github),
+            )
         async with close_guard():
             await reconcile_completed_card(github, state.get("config"), card)
 
