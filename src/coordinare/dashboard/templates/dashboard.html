@@ -424,7 +424,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <header class="workspace-header">
   <div><h1 id="workspace-title">Dashboard</h1><span id="project-link" class="muted" style="font-size:12px"></span></div>
   <div class="header-controls">
-    <span id="connection-status" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span></span>
+    <span id="connection-status" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span><span id="connection-detail"></span></span>
     <div class="appearance-control" role="group" aria-label="Appearance">
       <button type="button" data-appearance="system" aria-label="System appearance" title="System" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4m-4 0h8"/></svg></button>
       <button type="button" data-appearance="light" aria-label="Light appearance" title="Light" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
@@ -1634,7 +1634,7 @@ function loadPersonasPage(force) {
 // resetPersonaPage wired inline via event delegation in loadPersonasPage()
 
 // 125: one timer refreshes every elapsed readout from its own start point.
-setInterval(function() { refreshElapsedReadouts(document); }, 1000);
+setInterval(function() { refreshElapsedReadouts(document); refreshFreshness(); }, 1000);
 
 async function forcePoll() {
   var btn = document.getElementById('force-poll-btn');
