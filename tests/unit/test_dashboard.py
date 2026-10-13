@@ -260,18 +260,20 @@ def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
     ("phase", "expected"),
     [
         # Standard snake_case phases
-        ("monitoring_agent", "Monitoring Agent"),
-        ("relay_feedback", "Relay Feedback"),
+        # 136/138: labels come from the shared glossary, in plain words.
+        ("monitoring_agent", "Watching an agent"),
+        ("relay_feedback", "Sending feedback"),
         ("idle", "Idle"),
-        ("dispatching", "Dispatching"),
+        ("dispatching", "Starting an agent"),
         ("blocked", "Blocked"),
         ("merging", "Merging"),
-        ("unknown_future_phase", "Unknown Future Phase"),
+        # A code with no glossary entry is shown as it is, never prettified.
+        ("unknown_future_phase", "unknown_future_phase"),
         # Edge cases
         ("", ""),
-        ("singleword", "Singleword"),
+        ("singleword", "singleword"),
         ("Already Title", "Already Title"),
-        ("mixed-separator_phase", "Mixed-Separator Phase"),
+        ("mixed-separator_phase", "mixed-separator_phase"),
     ],
 )
 def test_format_phase_label(phase: str, expected: str) -> None:
@@ -614,7 +616,7 @@ def test_build_snapshot_active_card() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
     assert snap["active_card_title"] == "Fix timeout"
     assert snap["pr_url"] == "https://github.com/org/repo/pull/42"
-    assert snap["phase_label"] == "Monitoring Agent"
+    assert snap["phase_label"] == "Watching an agent"
 
 
 def test_build_snapshot_performer_stage_none_coerces_to_empty_string() -> None:
@@ -1474,7 +1476,7 @@ def test_dashboard_html_includes_token_elements() -> None:
     assert res.status_code == 200
     assert "card-tokens-total" in res.text
     assert "card-cost-estimate" in res.text
-    assert "Card Tokens" in res.text
+    assert 'id="card-tokens-label">Tokens<' in res.text
     assert "Estimated Cost" in res.text
 
 

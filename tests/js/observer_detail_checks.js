@@ -64,11 +64,11 @@ check('escapes evidence values',
 
 const empty = renderCardDetailContent({ ...SESSION, observer_verdicts: [] }, {});
 check('a session with no verdicts renders the placeholder',
-  empty.includes('No observer verdicts'), true);
+  empty.includes('No progress checks yet'), true);
 
 const absent = renderCardDetailContent({ ...SESSION, observer_verdicts: undefined }, {});
 check('a session without the field renders the placeholder',
-  absent.includes('No observer verdicts'), true);
+  absent.includes('No progress checks yet'), true);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 if (failed > 0) process.exit(1);

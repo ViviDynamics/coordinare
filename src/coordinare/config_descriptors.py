@@ -54,6 +54,12 @@ SectionKind = Literal["scalar_group", "collection"]
 
 SECRET_MASK = "••••••"  # display mask, not a credential
 
+# 140: fields whose key uses a word the dashboard no longer uses for that
+# idea. The key stays (it is the config contract); the label says what it is.
+_FIELD_LABELS: dict[str, str] = {
+    "max_feedback_cycles": "Max revision rounds per PR (max_feedback_cycles)",
+}
+
 
 class ConfigSetting(BaseModel):
     """Atomic UI-renderable descriptor for a single config field (data-model E1)."""
@@ -350,7 +356,7 @@ def setting_from_field(
 
     return ConfigSetting(
         key=dotted,
-        label=key,
+        label=_FIELD_LABELS.get(key, key),
         help=field_info.description,
         type=setting_type,
         current_value=display,

@@ -10,8 +10,8 @@ served as ``/static/vocabulary.js`` and as ``/api/vocabulary``), and a guard
 test fails when a conductor phase, card stage, agent role or outcome exists
 in the code without an entry here.
 
-Conductor phases still carry the labels the dashboard showed before this
-module existed. Stages and agents were renamed by #137: a stage says what is
+Conductor phases read as plain status words (#138). Stages and agents were
+renamed by #137: a stage says what is
 happening ("Implement"), an agent says who does it ("Implementer"), and the
 same code can be both (``security`` is the Security stage and the Security
 reviewer agent), so a label is always looked up by kind.
@@ -39,19 +39,21 @@ def _terms(*rows: tuple[str, str, str, str]) -> dict[str, Term]:
     return {code: Term(code, label, plural, description) for code, label, plural, description in rows}
 
 
-#: What the conductor itself is doing (``graph.state.DaemonPhase``).
+#: What the conductor itself is doing (``graph.state.DaemonPhase``), in plain
+#: words (#138). These are the conductor's loop states, not a card's stage;
+#: the dashboard shows them as a status and keeps the code in a tooltip.
 PHASES: dict[str, Term] = _terms(
     ("idle", "Idle", "Idle", "The conductor has nothing to do for this card until the next check."),
-    ("dispatching", "Dispatching", "Dispatching", "The conductor is starting an agent for the card's next stage."),
-    ("monitoring_agent", "Monitoring Agent", "Monitoring Agent", "The conductor is watching a running agent."),
-    ("monitoring_performer", "Monitoring Performer", "Monitoring Performer", "The conductor is watching a running agent."),
-    ("monitoring_pr", "Monitoring Pr", "Monitoring Pr", "The card's pull request is waiting on checks or a human review."),
+    ("dispatching", "Starting an agent", "Starting an agent", "The conductor is starting an agent for the card's next stage."),
+    ("monitoring_agent", "Watching an agent", "Watching an agent", "The conductor is watching a running agent."),
+    ("monitoring_performer", "Watching an agent", "Watching an agent", "The conductor is watching a running agent."),
+    ("monitoring_pr", "Waiting on review", "Waiting on review", "The card's pull request is waiting on checks or a human review."),
     ("merging", "Merging", "Merging", "The conductor is merging the card's pull request."),
-    ("relay_feedback", "Relay Feedback", "Relay Feedback", "The conductor is passing review feedback back to an agent."),
+    ("relay_feedback", "Sending feedback", "Sending feedback", "The conductor is passing review feedback back to an agent."),
     ("blocked", "Blocked", "Blocked", "The card is stopped until a person acts."),
-    ("recovery", "Recovery", "Recovery", "The conductor is recovering this card after a restart."),
-    ("system_error", "System Error", "System Errors", "The conductor hit an error on this card and will retry within its budget."),
-    ("active", "Active", "Active", "A session whose exact state is not known yet."),
+    ("recovery", "Recovering", "Recovering", "The conductor is recovering this card after a failed check."),
+    ("system_error", "Error, will retry", "Errors, will retry", "The conductor hit an error on this card and will retry within its budget."),
+    ("active", "Active", "Active", "A run whose exact state is not known yet."),
 )
 
 #: Where a card is in its pipeline: what is happening (#137). Keys are the
@@ -107,6 +109,8 @@ CONCEPTS: dict[str, Term] = _terms(
     ("agent", "Agent", "Agents", "The persona that does the work of a stage, such as the implementer."),
     ("run", "Run", "Runs", "One agent working on one stage of one card, from dispatch to result."),
     ("check", "Check", "Checks", "One pass of the conductor over the board to see what needs doing."),
+    ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
+    ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),
 )
 
 GROUPS: dict[str, dict[str, Term]] = {

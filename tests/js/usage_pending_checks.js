@@ -52,11 +52,11 @@ check("missing session is not running", isStageRunning(undefined), false);
 
 // Cost follows the same rule.
 check("cost for a running stage with no usage is pending",
-  costHtml({ phase: "monitoring_performer", card_tokens_total: 0 }, top, 4), '<span title="' + NOTE + '">—</span>');
+  costHtml({ phase: "monitoring_performer", card_tokens_total: 0 }, top), '<span title="' + NOTE + '">—</span>');
 check("cost for a running stage with usage is priced",
-  costHtml({ phase: "monitoring_performer", card_tokens_total: 1000000 }, top, 4).indexOf("$3.0000") !== -1, true);
+  costHtml({ phase: "monitoring_performer", card_tokens_total: 1000000 }, top).indexOf("$3.00<") !== -1, true);
 check("cost for a stage that is not running shows a real zero",
-  costHtml({ phase: "monitoring_pr", card_tokens_total: 0 }, top, 4).indexOf("$0.0000") !== -1, true);
+  costHtml({ phase: "monitoring_pr", card_tokens_total: 0 }, top).indexOf("$0.00<") !== -1, true);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

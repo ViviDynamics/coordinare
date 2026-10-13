@@ -40,7 +40,7 @@ check("queued work is highlighted",
 var busyRow = utilizationRowHtml({ role: "implementer", active: 1, max: 1, queued: 0 });
 has("busy row never uses the full/red colour", busyRow, "color-bar-full", false);
 has("busy row shows no queued count", busyRow, "queued", false);
-has("busy row keeps active / idle / max", busyRow, " 1 / 0 / 1");
+has("busy row says how many are busy", busyRow, " 1 of 1 busy");
 var queuedRow = utilizationRowHtml({ role: "qa", active: 1, max: 1, queued: 3 });
 has("queued row shows the queued count", queuedRow, "3 queued");
 has("queued row is highlighted", queuedRow, "var(--color-accent-yellow)");

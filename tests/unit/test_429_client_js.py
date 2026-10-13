@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import label_helpers_js
+from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "observer_detail_checks.js"
 
@@ -62,6 +62,7 @@ def _extract_detail_js() -> str:
     if pending_note is None:
         raise AssertionError("USAGE_PENDING_NOTE is no longer in performers.js")
     cost_helpers.append(pending_note.group(0))
+    cost_helpers.append(shipped_function("helpers", "fmtCost"))
     for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "isStageRunning", "costHtml"):
         helper = re.search(rf"function {name}\(.*?\n\}}", performers, re.DOTALL)
         if helper is None:

@@ -129,7 +129,9 @@ class TestDashboardHtmlButton:
         assert 'id="force-poll-btn"' in _DASHBOARD_HTML
 
     def test_force_poll_button_has_aria_label(self) -> None:
-        assert 'aria-label="Trigger immediate board poll"' in _DASHBOARD_HTML
+        assert 'aria-label="Check for work now"' in _DASHBOARD_HTML
+        # 144: "Check now" sits beside when the board was last checked.
+        assert ">Check now</button>" in _DASHBOARD_HTML and 'id="last-checked"' in _DASHBOARD_HTML
 
     def test_force_poll_message_element_present(self) -> None:
         assert 'id="force-poll-msg"' in _DASHBOARD_HTML
@@ -148,7 +150,7 @@ class TestDashboardHtmlJs:
         assert "fetch('/api/force-poll'" in _DASHBOARD_HTML
 
     def test_force_poll_handles_409(self) -> None:
-        assert "Cycle already running" in _DASHBOARD_HTML
+        assert "A check is already running" in _DASHBOARD_HTML
 
     def test_force_poll_handles_network_error(self) -> None:
         assert "Could not reach server" in _DASHBOARD_HTML
