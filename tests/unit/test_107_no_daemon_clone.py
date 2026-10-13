@@ -16,6 +16,7 @@ import pytest
 import structlog.testing
 
 from coordinare.graph.nodes.dispatch_performer import (
+    _STAGE_TO_ROLE,
     _daemon_clone_needed,
     _performer_clones_own_workspace,
     _setup_workspace,
@@ -67,9 +68,22 @@ def test_only_an_explicit_true_counts(service) -> None:
 # --- when the daemon still needs the tree ------------------------------------ #
 
 
-@pytest.mark.parametrize("stage", ["implementing", "reviewing", "qa", "documenting", "closing"])
+_NON_SECURITY_STAGES = sorted(stage for stage in _STAGE_TO_ROLE if stage != "security")
+
+
+def test_stage_list_is_the_real_one() -> None:
+    """Guard the parametrisation below against a stage name that maps to no role."""
+    assert "closing_review" in _NON_SECURITY_STAGES and "security" in _STAGE_TO_ROLE
+    assert all(_STAGE_TO_ROLE[stage] for stage in _NON_SECURITY_STAGES)
+
+
+@pytest.mark.parametrize("stage", _NON_SECURITY_STAGES)
 def test_self_cloning_performer_needs_no_daemon_clone(stage) -> None:
     assert _daemon_clone_needed(_state(), stage, _http_service()) is False
+
+
+def test_http_service_keeps_its_docstring() -> None:
+    assert HTTPPerformerService.__doc__ and "adapter" in HTTPPerformerService.__doc__
 
 
 @pytest.mark.parametrize("stage", ["implementing", "security"])

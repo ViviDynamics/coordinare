@@ -66,7 +66,7 @@ When there is no daemon clone, the classifier reads the same two files through t
 
 - A performer service wrapped by the resilience layer: the "clones for itself" property is found through the wrapper.
 - A test double or third-party service that answers every attribute: only an explicit true value counts, so it keeps the clone.
-- The clone used to double as an early credential and reachability check. Without it, a bad credential or missing repository surfaces from the performer instead.
+- The clone used to double as an early credential and reachability check: a failure blocked the card at dispatch, before any performer started. Without it, a bad credential or missing repository surfaces from the performer as a failed job after the card has moved to in-progress, and is handled by the monitor's ordinary error path. This is how the Kubernetes transport has always behaved.
 - The PR head is unknown: the classifier reads the default branch.
 
 ## Requirements *(mandatory)*
