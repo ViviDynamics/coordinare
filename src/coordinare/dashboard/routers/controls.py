@@ -11,6 +11,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
+from coordinare import vocabulary
 from coordinare.dashboard.helpers import _ACTIVE_PHASES
 
 if TYPE_CHECKING:
@@ -112,8 +113,30 @@ def _queue_override(target: dict[str, Any], override: dict[str, Any]) -> JSONRes
     return None
 
 
+def record_operator_action(store: Any, target: Any, text: str) -> None:
+    """#145: put an operator's control action in the activity feed.
+
+    Best effort: a feed that cannot be written to must never fail the action.
+    """
+    try:
+        card = target.get("current_card") if isinstance(target, dict) else None
+        card = card if isinstance(card, dict) else {}
+        number = card.get("issue_number")
+        store.activity_log.record(
+            activity_type="operator_action",
+            card_id=str(card.get("id") or ""),
+            card_number=number if isinstance(number, int) and not isinstance(number, bool) else None,
+            card_title=str(card.get("title") or ""),
+            stage=str(target.get("performer_stage") or "") if isinstance(target, dict) else "",
+            text=text,
+        )
+    except Exception as exc:
+        _log.warning("dashboard.operator_action_not_recorded", error_type=type(exc).__name__)
+
+
 def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
+        store = ctx.store
 
         @app.post("/api/skip-role")
         async def skip_role(card_id: str | None = None) -> JSONResponse:
@@ -124,11 +147,13 @@ def _register_skip_role(app: FastAPI, ctx: DashboardContext) -> None:
             conflict = _queue_override(target, {"action": "skip"})
             if conflict is not None:
                 return conflict
+            record_operator_action(store, target, "Operator asked to skip the current stage.")
             return JSONResponse({"status": "override_queued", "action": "skip"})
 
 
 def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
+        store = ctx.store
 
         @app.post("/api/restart-from/{role}")
         async def restart_from(role: str, card_id: str | None = None) -> JSONResponse:
@@ -152,6 +177,9 @@ def _register_restart_from(app: FastAPI, ctx: DashboardContext) -> None:
             conflict = _queue_override(target, {"action": "restart", "target_stage": resolved})
             if conflict is not None:
                 return conflict
+            record_operator_action(
+                store, target, f"Operator asked to restart from {vocabulary.stage_label(resolved)}.",
+            )
             return JSONResponse({"status": "override_queued", "action": "restart", "target_stage": resolved})
 
 
