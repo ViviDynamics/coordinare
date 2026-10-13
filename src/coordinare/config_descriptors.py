@@ -98,6 +98,15 @@ class ConfigSection(BaseModel):
     invalid_banner: str | None = None
 
 
+class SymphonyOverride(BaseModel):
+    """#126: one symphony that sets its own value for a global field."""
+
+    symphony: str
+    # Shown only for fields that are safe and useful to show (the GitHub
+    # project number). Never an arbitrary override value: those can be secrets.
+    value: str | None = None
+
+
 class ConfigSnapshot(BaseModel):
     """The full editable surface returned by ``GET /api/config/all`` (data-model E5)."""
 
@@ -105,6 +114,11 @@ class ConfigSnapshot(BaseModel):
     content_hashes: dict[str, str | None] = Field(default_factory=dict)
     config_version: int = 0
     routing_available: bool = False
+    # 126: lets the page say *why* routing is unavailable in plain words.
+    routing_mounted: bool = False
+    # 126: global field key -> the symphonies that override it, so the page can
+    # say which value is actually in effect and link to the symphony.
+    symphony_overrides: dict[str, list[SymphonyOverride]] = Field(default_factory=dict)
 
 
 # --- T007: secret masking + ${VAR} preservation (research D3) ------------------
@@ -671,7 +685,34 @@ def build_snapshot(
         content_hashes=content_hashes or {},
         config_version=config_version,
         routing_available=routing_available,
+        routing_mounted=routing_mounted,
+        symphony_overrides=symphony_overrides(config),
     )
+
+
+def symphony_overrides(config: Any) -> dict[str, list[SymphonyOverride]]:
+    """#126: which symphonies set their own value for each global field.
+
+    Every symphony carries its own ``github_project_number`` (the global one is
+    only a legacy single-project default), and may list any other global field
+    under ``overrides``. Only the project number's value is returned; override
+    values are not, because any of them can be a secret. Never raises.
+    """
+    out: dict[str, list[SymphonyOverride]] = {}
+    for symphony in getattr(config, "symphonies", None) or []:
+        name = str(getattr(symphony, "name", "") or "")
+        if not name:
+            continue
+        number = getattr(symphony, "github_project_number", None)
+        if isinstance(number, int) and not isinstance(number, bool):
+            out.setdefault("github_project_number", []).append(
+                SymphonyOverride(symphony=name, value=f"#{number}"),
+            )
+        overrides = getattr(symphony, "overrides", None)
+        for key in sorted(overrides) if isinstance(overrides, dict) else []:
+            if key != "github_project_number":
+                out.setdefault(str(key), []).append(SymphonyOverride(symphony=name))
+    return out
 
 
 def build_section(
