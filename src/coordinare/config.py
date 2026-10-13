@@ -1257,7 +1257,9 @@ class ProjectConfiguration(BaseSettings):
 
     # 052 — Stale Branch Cleanup
     stale_branch_cleanup: bool = True
-    branch_collision_strategy: BranchCollisionStrategy = BranchCollisionStrategy.delete
+    # #105: default is suffix. The daemon steps around a colliding branch; it
+    # deletes one only when an operator explicitly sets "delete".
+    branch_collision_strategy: BranchCollisionStrategy = BranchCollisionStrategy.suffix
 
     # 053 — PR churn guard
     # Maximum number of CLOSED (unmerged) PRs linked to a card's issue before

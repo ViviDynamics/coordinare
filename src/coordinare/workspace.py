@@ -437,12 +437,19 @@ class WorkspaceManager:
         return branch
 
     async def _resolve_branch(self, branch: str, card: dict[str, Any]) -> str:
-        """Apply stale branch cleanup or suffix strategy before workspace creation.
+        """Pick a branch name that does not collide with an existing remote branch.
 
         Returns the final branch name to use (may differ from the input when
-        suffix strategy finds the original branch taken).  Silently skips when
-        github_service is not set (test/health paths) or cleanup is disabled.
+        the original is taken).  Silently skips when github_service is not set
+        (test/health paths) or cleanup is disabled.
+
+        #105: coordinare is an orchestrator, so by default (``suffix``) it never
+        deletes a remote branch here; it steps around it. Deleting is an
+        explicit operator opt-in (``branch_collision_strategy: delete``), and a
+        suffix search that runs out no longer falls back to a delete.
         """
+        import secrets
+
         from coordinare.config import BranchCollisionStrategy
 
         cleanup_enabled = getattr(self._config, "stale_branch_cleanup", True)
@@ -450,7 +457,7 @@ class WorkspaceManager:
             return branch
 
         card_id = str(card.get("id", ""))
-        strategy = getattr(self._config, "branch_collision_strategy", BranchCollisionStrategy.delete)
+        strategy = getattr(self._config, "branch_collision_strategy", BranchCollisionStrategy.suffix)
 
         if not await self._github_service.branch_exists(branch):
             return branch
@@ -495,12 +502,15 @@ class WorkspaceManager:
                         card_id=card_id,
                     )
                     return candidate
-            # All suffixes taken — fall back to delete
-            logger.warning("workspace.suffix_exhausted_delete_attempted", branch=branch, card_id=card_id)
-            await self._github_service.delete_branch(branch)
-            return branch
+            # All numbered suffixes taken — a random one, never a delete.
+            candidate = f"{branch}-{secrets.token_hex(4)}"
+            logger.warning(
+                "workspace.suffix_exhausted_unique_applied",
+                original_branch=branch, final_branch=candidate, card_id=card_id,
+            )
+            return candidate
 
-        # Default: delete strategy
+        # Explicit operator opt-in: delete the colliding branch and reuse the name.
         await self._github_service.delete_branch(branch)
         logger.info("workspace.stale_branch_delete_attempted", branch=branch, card_id=card_id)
         return branch
