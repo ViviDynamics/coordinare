@@ -712,6 +712,7 @@ class CodexBackend:
     # BackendEvent summaries. Does not alter any BackendEvent or status.
     # ------------------------------------------------------------------
 
+    @transcript.best_effort
     def _transcribe_notification(self, method: str, params: dict[str, Any]) -> None:
         if method == "item/started":
             item = params.get("item") or {}
@@ -739,6 +740,7 @@ class CodexBackend:
             error_msg = (params.get("error") or {}).get("message", str(params))
             transcript.emit("error", text=str(error_msg))
 
+    @transcript.best_effort
     def _transcribe_item_completed(self, item: dict[str, Any]) -> None:
         item_type = str(item.get("type", ""))
         if item_type == "agentMessage":
@@ -772,6 +774,7 @@ class CodexBackend:
                 is_error=_transcript_tool_error(item),
             )
 
+    @transcript.best_effort
     def _transcribe_turn_end(
         self,
         status: str,
@@ -800,6 +803,7 @@ class CodexBackend:
                     "a run total, not a per-call count"
                 ),
                 usage=_transcript_usage(total),
+                scope="run",
             )
         transcript.emit(
             "result",
@@ -838,6 +842,7 @@ def _transcript_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+@transcript.best_effort
 def _transcript_usage(total: dict[str, Any]) -> transcript.TranscriptUsage:
     return transcript.TranscriptUsage(
         input_tokens=_transcript_int(total.get("inputTokens")),

@@ -106,6 +106,7 @@ class OpenCodeTranscriptTap:
         self._emitted_text: dict[str, str] = {}
         self._tool_stages: dict[str, set[str]] = {}
 
+    @transcript.best_effort
     def begin(self, task_text: str, *, session: dict[str, Any], model: str | None) -> None:
         """Run start: the single capability record, the session, then the prompt."""
         transcript.emit(
@@ -119,14 +120,17 @@ class OpenCodeTranscriptTap:
         transcript.emit("system", text="opencode session created", input_data={"session": session, "model": model})
         transcript.emit("user", text=task_text)
 
+    @transcript.best_effort
     def follow_up(self, feedback: str) -> None:
         """A relayed feedback turn sent to the running session."""
         transcript.emit("user", text=feedback)
 
+    @transcript.best_effort
     def error(self, message: str) -> None:
         """A reader-side failure (SSE stream error)."""
         transcript.emit("error", text=message)
 
+    @transcript.best_effort
     def observe(self, event_type: str, props: Any) -> None:
         """Record the raw content of one SSE event. Never raises."""
         if not isinstance(props, dict):
@@ -146,6 +150,7 @@ class OpenCodeTranscriptTap:
             if not time_info.get("idle") and failure:
                 transcript.emit("error", text=_error_text(failure, "unknown error"))
 
+    @transcript.best_effort
     def finish(
         self,
         state: str,
@@ -169,6 +174,7 @@ class OpenCodeTranscriptTap:
             is_error=is_error,
         )
 
+    @transcript.best_effort
     def _observe_part(self, part: dict[str, Any]) -> None:
         ptype = part.get("type", "")
         if ptype == "text":
@@ -195,6 +201,7 @@ class OpenCodeTranscriptTap:
         elif ptype == "tool":
             self._observe_tool(part)
 
+    @transcript.best_effort
     def _observe_tool(self, part: dict[str, Any]) -> None:
         """A ``tool`` part is one object updated through pending → running →
         completed/error. Emit the call once it runs and the result once it ends."""
@@ -225,6 +232,7 @@ class OpenCodeTranscriptTap:
                 is_error=is_error,
             )
 
+    @transcript.best_effort
     def _flush_text(self) -> None:
         for key, text in self._pending_text.items():
             if self._emitted_text.get(key) != text:

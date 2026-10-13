@@ -1,6 +1,6 @@
 # Plan: Persist a full transcript for every performer run
 
-Implements `spec.md`. This file records the design and the decisions behind it.
+Implements `spec.md`. This file records the design, the decisions behind it, and the revisions made after adversarial review.
 
 ## Architecture
 
@@ -8,160 +8,184 @@ Two packages, one contract. The performer runs in a container or pod that is del
 
 ```
 backend (claude_code, codex, ...)
-   |  transcript.emit(type, text=..., input_data=..., ...)      performer/transcript.py
+   |  transcript.emit(type, text=..., input_data=..., scope=...)   performer/transcript.py  (best effort)
    v
-TranscriptBuffer (per job, in the job runner)                      seq-numbered, byte-capped, redacted
+TranscriptBuffer (per job, in the job runner)                       seq-numbered, byte-capped, redacted
    ^
    |  GET /jobs/{id}?transcript_after=N&transcript_limit=L
-   |  -> JobStatus.transcript (records seq > N), JobStatus.transcript_last_seq
+   |  -> JobStatus.transcript (records seq > N, <= 8 MiB), JobStatus.transcript_last_seq
    |
-HTTPPerformerService.check_status (daemon)                          coordinare/services/http_performer_service.py
-   |  RunTranscriptWriter.append_batch (dedupe by seq, cap, redact)  coordinare/services/run_transcript.py
+HTTPPerformerService (daemon)                                       coordinare/services/http_performer_service.py
+   |  RunTranscriptWriter.append_batch(records, last_seq)            coordinare/services/run_transcript.py (never raises)
+   |     seq window, size bounds, redaction, O_NOFOLLOW
    v
-<performer_log_dir>/transcripts/<symphony>/<card>/<run_id>.jsonl
+<state dir>/transcripts/<symphony>/<card>/<run_id>.jsonl            (default root, see D5)
 ```
 
-The performer never imports coordinare, and coordinare never imports the performer. The two record models mirror each other by field name. This is the same arrangement the wire protocol already uses (`performer/protocol.py` mirrored in `coordinare/protocol.py`).
+The performer never imports coordinare, and coordinare never imports the performer. The record models and the redaction module are mirrored by copy. Mirroring is enforced by tests.
 
 ## Decisions
 
 ### D1. Full-fidelity channel separate from `BackendEvent`
 
-`BackendEvent.text` is capped at 200 characters and `drain_events()` feeds the activity log, which is bounded on purpose. Transcripts must not reuse it. Each backend emits transcript records at its raw parse site (the decoded JSON, the stream delta, the stdout buffer) and leaves its existing `_emit` calls alone. The existing activity log behaves exactly as before.
+`BackendEvent.text` is capped at 200 characters and `drain_events()` feeds the activity log. Transcripts must not reuse that channel. Each backend emits transcript records at its raw parse site and leaves its existing `_emit` calls unchanged.
 
 ### D2. Run identity is the existing coordinare session id
 
-`_dispatch_card_locked` already allocates `session_id = uuid4()` before the container starts, and uses it as the Docker label and the `_active_jobs` key. The job payload previously received a second, unrelated uuid as `job_id`. The daemon now copies the session id into the payload's `job_id` (`payload.model_copy(update={"job_id": session_id, ...})`). In persistent mode the two were already equal. So:
+`_dispatch_card_locked` allocates `session_id = uuid4()` before the container starts. The job payload's `job_id` is set to that value, so the performer's record `run_id`, the file name and the daemon's run identity agree. In persistent mode they were already equal. The daemon overwrites `run_id` on write.
 
-- the performer's record `run_id` is the session id,
-- the file name is the session id,
-- no second identifier is introduced.
+### D3. Delivery: pull by cursor, drain before every teardown
 
-The daemon also overwrites `run_id` on write, so the file is self-consistent even if a future performer changes its job id.
+Rejected alternative: push from the performer. The daemon already polls, and a push would need a new inbound endpoint.
 
-### D3. Delivery: pull by cursor, drain before teardown
+- Request: `GET /jobs/{id}?transcript_after=N&transcript_limit=L`. The query is sent only when transcripts are enabled.
+- Response (additive): `transcript` and `transcript_last_seq`.
+- Batch bounds: the performer returns at most `L` records (route clamp 1 to 500) and at most 8 MiB serialized, always at least one record. The daemon accepts at most 32 MiB per batch and at most 16 MiB per record (D10).
+- Cursor: the highest seq written, recovered from the file on writer creation. No separate store, no schema change.
+- Teardown drains (review revision, MEDIUM 6): before the terminal cleanup, a 30 second drain runs. Before `release_session`, `stop_session_confirmed` and the transport-error cleanup, a 5 second best-effort drain runs. Both use `asyncio.timeout`, so the bound is wall-clock, not a round count. The 5000-round limit remains as a second guard.
+- Loss window: records pulled on the last poll are safe. A pod that dies on its own between polls loses up to one poll interval (spec, "Known loss window").
 
-Rejected alternative: have the performer push records to the daemon. The daemon already polls, and a push would need a new inbound endpoint and retry logic.
+### D4. Redaction (review revision, HIGH 4)
 
-Chosen protocol (pull, piggybacked on the existing status poll):
+One module, `transcript_redaction.py`, copied byte-identically to `lib/transcript_redaction.py` (daemon) and `performer/transcript_redaction.py` (performer). A test fails if the copies differ, and another checks that the pattern lists match.
 
-- Request: `GET /jobs/{id}?transcript_after=N&transcript_limit=L`. The daemon sends the query only when transcripts are enabled, so disabled runs add nothing to the wire.
-- Response (additive fields on `JobStatus`): `transcript` (list of records with `seq > N`, ascending) and `transcript_last_seq` (the performer's highest seq, `null` when the job has no buffer).
-- Batch bound: the daemon asks for 200 per ordinary poll and 500 per drain request. The route clamps `transcript_limit` to 1 through 500 (FastAPI `Query(ge=1, le=500)` rejects larger values with 422). A single status response is therefore bounded to 500 records.
-- Cursor: the daemon's cursor for a run is the highest seq in its file. It is recovered from the file when the writer is created, so a restarted daemon resumes without a separate store and without a schema change.
-- Dedupe: `append_batch` skips any record whose seq is at or below the cursor. A re-delivered batch writes nothing.
-- Terminal drain: the ephemeral container is torn down right after a terminal status poll, and the performer's buffer dies with it. So on a terminal poll the daemon loops `GET ... transcript_after=cursor` until `cursor >= transcript_last_seq`, before the cleanup and before the persistent-mode reset. The loop is bounded (5000 rounds) and logs `run_transcript.drain_stalled` or `run_transcript.drain_failed` instead of looping forever.
+Rules, in order, on each string:
 
-Failure modes, stated plainly: records the daemon never pulled are lost if the pod dies before the next poll. Polls happen every cycle, so the window is one poll interval. The file itself is never lost once written.
+1. exact values from the secret provider, longest first, minimum length 8;
+2. value shapes (`VALUE_PATTERNS`), including `gh[pousr]_`, `sk-ant-`, `sk-litellm-`, `sk-proj-`, generic `sk-`, `AKIA`, Bearer and Slack;
+3. the `Authorization:` header value, to end of line;
+4. `NAME=value`, `NAME: value` and `"NAME": "value"` where NAME matches the stems `token(?!s)`, `secret`, `passw(or)d`, `api[_-]key`, `authorization`, `credential`, `private[_-]key`, `cookie` (case-insensitive substring).
 
-### D4. Redaction runs twice, at the producer and at the writer
+Structured values: a dict value under a stem-matching key is replaced whole. Dict keys are also redacted as text. A string that parses as a JSON object or array is redacted inside and re-encoded. `token(?!s)` keeps counts such as `input_tokens` and `max_tokens`.
 
-- Performer (`TranscriptBuffer.append`): `_redact_secrets` (the performer's token patterns) on every string, and masking of sensitive keys (`token`, `password`, `secret`, `api_key`, `authorization`, ...) in `input` and `output`. Records are redacted before they are stored, so they are never held unredacted in memory.
-- Daemon (`RunTranscriptWriter._prepare` and `_to_line`): `redact_value` (the shared `coordinare.lib.redaction` key and value rules) on the record structure, then `redact_secrets` on the serialized line. The line-level pass catches anything the structure pass cannot see, such as a secret inside a JSON key.
+Placement: the performer redacts in `TranscriptBuffer.append`, using the job's secret values (`secrets` provider, read per record so mid-run refreshes apply) and the performer process's credential-named environment variables, read once at buffer creation. The daemon redacts in `RunTranscriptWriter._prepare` with the same rules (exact values from the dispatch payload, refreshed tokens, and the daemon process's credential-named environment), then runs `redact_text` on each serialized line as a last pass.
 
-Two passes are cheap and protect against a performer image that predates this change or a backend that forgets to call the helper.
+Known limit: the daemon does not hold its minted GitHub App installation token in an environment variable. Exact-value redaction of that token covers only the values the daemon sent at dispatch and the refreshed values the monitor passes on each poll.
 
-### D5. Where files go
+### D5. Location (review revision, HIGH 1)
 
-- With `performer_log_dir` set: `<performer_log_dir>/transcripts/`. The daemon already mounts `performer_log_dir` into ephemeral containers at `/var/log/performer`, so the layout sits next to the attempt logs.
-- With it unset: `<config directory>/logs/transcripts`, the same base the attempt log uses (`_resolve_attempt_log_dir`). If that path is not writable (a read-only ConfigMap, issue 493), the root falls back to `<state directory>/logs/transcripts`.
+Default root: `<state directory>/transcripts`, beside the state store. Not `performer_log_dir`.
 
-Path safety: `symphony`, `card_id` and `run_id` pass through `sanitize_segment`, which keeps `[A-Za-z0-9._-]`, replaces everything else with `_`, strips leading and trailing dots and underscores, caps length at 120, and maps an empty result to `unattributed`. `transcript_path` then verifies the resolved path is inside the resolved root and raises `ValueError` otherwise.
+Why not the issue's literal path: `performer_log_dir` is bind-mounted read-write into every ephemeral container at `/var/log/performer` (`__main__.py`, `performer_lifecycle.py`). A root inside it would let one container read and rewrite another card's transcript.
 
-### D6. Symphony and card attribution
+Override: `transcripts.dir` (YAML key `dir`). A relative value is taken from the config directory.
 
-The monitor knows the symphony (`state["current_symphony"]`) and the card id. It passes `transcript_target: {symphony, card_id}` in the status payload on every poll: in `phase_458` (the normal poll) and in the observer stall probe. The service remembers the target per run. A poll that carries no target (for example a bootstrap poll from `daemon.py`) writes to `unattributed/unattributed/<run_id>.jsonl` rather than losing records. Such a file is complete but filed under the wrong folder. This is a known, deliberate gap.
+Startup check (`make_collector`): the root is refused if it lies inside, or contains, any directory in `_performer_mount_hosts(config)`: `performer_log_dir` plus each performer endpoint's `volumes[].host_path`. On a match, transcription is disabled for the process and `run_transcript.root_mounted_into_performer` is logged at error level. The daemon keeps running, because transcripts are diagnostics and refusing to start would stop the orchestrator.
 
-### D7. Size cap
+Kubernetes (verified by reading `services/kubernetes_runtime.py`, lines 230 to 270): pods mount only the `config.volumes` entries whose container path is under the devenv root, as subpaths of the devenv cache PVC. The log dir and the state dir are not mounted. The `VolumeMount` for the log dir exists in config for Kubernetes too, but the runtime drops it, because `/var/log/performer` is outside the devenv root. The startup check still applies, because the same config drives both runtimes.
 
-The cap is enforced in two places, with the same rule:
+Path safety (see D11): segments are sanitized, and the writer refuses symlinks.
 
-- the performer buffer (`max_bytes` is sent in the job payload as `transcript_max_bytes`),
-- the daemon writer (`max_bytes_per_run`).
+### D6. Symlink and file-system hardening (review revision, HIGH 2)
 
-When the next content record would exceed the cap, the record is replaced by one `truncated` marker (its seq is the dropped record's seq, so the cursor logic is unchanged) and every later content record is counted, not written. A `truncated` record already in the file is never repeated, and the daemon detects that state after a restart by scanning the file.
+- `transcript_path` is a lexical join. It no longer calls `resolve()`, so a planted link is seen by the writer rather than silently followed or turned into a `ValueError`.
+- The root is resolved once when the collector is built, and is trusted.
+- Each directory below the root is checked with `os.lstat` before use. A symlink or non-directory is refused.
+- The run file is opened with `O_NOFOLLOW` (`O_WRONLY|O_APPEND|O_CREAT` for writes, `O_RDWR` for the cursor read and torn-line truncation), and its `fstat` must show a regular file.
+- A refusal raises an internal error that `append_batch` catches. It marks the run failed, logs once, and returns 0.
 
-Dropped counts (`dropped_records`, `dropped_bytes`) are kept in memory and logged once in `run_transcript.run_truncated` when the writer is released. They are not written into the marker, because the marker is written at the moment the cap is hit, before the drop count is known. The on-disk marker therefore reports `max_bytes` and `written_bytes` only.
+### D7. Best-effort capture (review revision, HIGH 3)
 
-The performer buffer is memory-bounded by the same cap, so a run cannot grow the job runner without limit.
+Every boundary catches broadly, logs once per run or once per site, and continues:
 
-### D8. Retention
+- Performer: `emit()` and every backend transcript helper are decorated with `@best_effort`. The decorator logs `transcript.capture_failed` once per call site and returns None. Helpers that also drive backend state (`_fail_start`, `_fail_spawn`, the reader loop itself) are deliberately not decorated, because a decorator would swallow real errors.
+- Daemon: `writer_for` and `RunTranscriptWriter` never raise (the constructor and `append_batch` contain their own failures). `_absorb_transcript`, `_drain_transcript`, `_transcript_writer` and `_teardown_drain` catch and call `_transcript_failed`, which marks the writer failed and logs once per run.
+- Collector construction in `__main__` catches and returns None. The retention loop catches everything and keeps running.
+- Cleanup order: the terminal drain is contained, so `_cleanup_ephemeral_job_by_id` always runs after it.
 
-- `retention_days: 0` keeps forever. The default is 30 days.
-- A sweep runs once at daemon start and then every 24 hours (`_transcript_retention_loop`). It runs `prune_expired` through `asyncio.to_thread`, so the cycle loop is never blocked. The task is stored on the daemon and cancelled in `stop()`.
-- `prune_expired` walks the root with `os.walk(followlinks=False)`, removes only regular files named `*.jsonl` whose resolved path is inside the resolved root, skips symlinks entirely, and then removes folders left empty (never the root itself).
-- Age is the file's mtime. An active run's file is appended to, so its mtime stays current and it is not pruned mid-run.
-- Retention still runs when `enabled: false`, so old files are cleaned up after an operator turns collection off.
+### D8. Seq validation and size bounds (review revision, MEDIUM 5)
 
-### D9. Disabled mode
+For one batch, with `base` the cursor at the start and `window_end = base + len(batch)`:
 
-`transcripts.enabled: false`:
+- a record is skipped if `seq <= cursor` (a re-delivery);
+- otherwise it is rejected unless `base < seq <= window_end` and `seq <= transcript_last_seq`;
+- seq must strictly increase within the batch;
+- a rejected record is logged (`run_transcript.seq_rejected`) and does not move the cursor.
 
-- the job payload carries `transcript_max_bytes: null`, so the performer creates no buffer and `emit` is a no-op (`transcript_enabled()` is false),
-- the status request carries no `transcript_after` parameter (`get_job` omits it),
-- no writer is created and no file is written.
+Size: a record over 16 MiB, as written, is replaced by a `truncated` marker, following the single-marker rule. A batch stops once 32 MiB is accepted, and the rest is re-requested. The first record of a batch is always accepted, so progress is guaranteed.
 
-### D10. Schema shape
+Response size: the daemon's HTTP client reads the whole response before the writer sees it, so the bound is on what the daemon writes and on the performer's own output (8 MiB per batch, plus at most one record). The daemon does not stream-parse the body.
 
-One record type for all backends. The issue's fields are kept (`ts`, `run_id`, `seq`, `type`, `tool_name`, `input`, `output`, `is_error`, `usage`). Two are added:
+### D9. Usage scope (review revision, MEDIUM 7)
 
-- `text`: the prose body (assistant text, thinking, user prompt, error message, capability reason, result summary). Keeping prose out of `output` makes the file readable with `jq`.
-- `call_id`: correlates a `tool_call` with its `tool_result`. Needed because parallel tool calls can complete out of order.
+- `scope` is a field on every record: `"message"` or `"run"`, or absent when the backend's contract does not say.
+- Claude Code: the assistant event's usage is the message usage. Each message id keeps the last usage seen, which replaces earlier chunks. The record is written when the message ends: when a different message id arrives, at the result event, or when the reader exits. The result event's totals are written with `scope: "run"`. Test: the first chunk reports 5 output tokens and the last reports 40; the record must carry 40, and the run total is separate.
+- Codex: the thread's cumulative total at each turn end is `scope: "run"`.
+- Junie: the result file's totals are `scope: "run"`.
+- Pi: per-call counts are `scope: "message"`.
+- Driver: the result line's totals are `scope: "run"`. Cost events do not say which, so their scope is absent.
 
-`usage` is an object with `input_tokens`, `output_tokens`, `cache_read`, `cache_write`, `model`. Unknown fields are `null`. A backend never fabricates a count.
+Verification by reading: the repo's Claude fixtures show usage on assistant events, and `claude_code.py` passes `--include-partial-messages`, whose `stream_event` payloads carry `message_delta` usage. The repo has no captured fixture that shows a later assistant chunk with a higher output count. The last-chunk rule is safe either way: it never undercounts, and a later higher count wins.
 
-### D11. Where the configuration lives
+### D10. Stream events and unknown types (review revision, LOW 11)
 
-`TranscriptsConfig` is a top-level block (`transcripts:`) on `ProjectConfiguration`, next to `performer_log_dir`, with `extra="forbid"` as the newer blocks do. It is not per symphony, because the file layout already separates symphonies.
+`claude_code.py` passes `--include-partial-messages`, so `stream_event` records really arrive. Every event type not handled by name is recorded as a `system` record with the text `unhandled stream event type: <type>` and the raw event as `input`. Nothing is dropped.
+
+### D11. Paths and identifiers
+
+`sanitize_segment` keeps `[A-Za-z0-9._-]`, replaces everything else with `_`, strips leading and trailing `._`, caps the length at 120, and maps an empty result to `unattributed`. `transcript_path` joins those segments lexically.
+
+### D12. Symphony and card attribution
+
+The monitor passes `transcript_target: {symphony, card_id}` in the status payload on every poll: in `phase_458` and in the observer stall probe. The service remembers the target for the run. A poll with no target writes to `unattributed/unattributed/<run_id>.jsonl`.
+
+### D13. Disabled mode (review revision, LOW 8)
+
+With `enabled: false`: no buffer, no cap in the payload, no query parameters on the status request, no writer, no directory, no probe, and no retention sweep. `make_collector` does not touch the disk. `resolve_transcripts_root` is pure.
+
+### D14. Config (review revisions, LOW 9)
+
+`TranscriptsConfig` (`extra="forbid"`, `populate_by_name=True`): `enabled` (default true), `dir` (alias of `directory`, default none), `retention_days` (default 30, 0 to 3650), `max_bytes_per_run` (default 50 MiB, 1 KiB to 1 GiB).
 
 ## Wire and contract changes
 
 | Surface | Change | Compatibility |
 |---|---|---|
-| Performer `JobInitPayload` (`server/models.py`) | `transcript_max_bytes: int \| None = None` | older performers ignore unknown fields (`extra="ignore"`) |
-| Coordinare `JobInitPayload` (`models/performer_endpoint.py`) | same field, `exclude_none` on the wire | `None` is omitted |
-| Performer `JobStatus` (`server/models.py`) | `transcript: list`, `transcript_last_seq: int \| None` | defaults empty |
-| Coordinare `JobStatus` (`models/performer_endpoint.py`) | same two fields | defaults empty |
+| Performer `JobInitPayload` | `transcript_max_bytes: int \| None = None` | older performers ignore unknown fields |
+| Coordinare `JobInitPayload` | same field, omitted when `None` | `None` is omitted from the wire |
+| Performer and coordinare `JobStatus` | `transcript: list`, `transcript_last_seq: int \| None` | defaults empty |
 | `GET /jobs/{id}` | optional `transcript_after` (ge 0), `transcript_limit` (1 to 500) | absent params keep today's response |
-| Coordinare `PerformerHTTPClient.get_job` | optional keyword arguments | default call unchanged |
+| `PerformerHTTPClient.get_job` | optional keyword arguments | default call unchanged |
 
-The `protocol.py` mirrors (`ProtocolResponse`, `ProtocolMessage`) are not changed. Transcript data travels on the job status, not on the protocol response.
+The `protocol.py` mirrors are not changed. The stdio status path forwards the observer probe's `transcript_target` payload key unchanged (test `test_129_redaction_parity.py`, LOW 13).
 
 ## Per-backend capability table
 
-"Provided" means the backend's own output carries the information. "Unavailable" is what goes into the `capability` record. Each row was checked by reading the parse code named, and by a unit test that drives that code with captured or constructed events (see Verification).
+"Provided" means the backend's own output carries the information. "Unavailable" is what goes into the `capability` record. Each row was checked by reading the parse code and by tests that drive it. None of the non-Claude backends was run against a live binary.
 
-| Backend (file) | Records emitted, and from where | Declared unavailable (in `capability`) | How it was established |
-|---|---|---|---|
-| `claude_code` (`backends/claude_code.py`) | `system` (init and other subtypes, full event), `user` (prompt; relayed feedback), `assistant_text`, `thinking`, `tool_call` (full input), `tool_result` (full content, `is_error`, correlated by `tool_use_id`), `usage` (per assistant message, deduplicated by message id; run total from `result`), `result`, `error` | none. `thinking` appears only when the model emits thinking blocks | `_transcribe_event` and helpers, fed from `_handle_event` for every parsed stream-json event. Tested in `test_129_claude_code.py` |
-| `codex` (`backends/codex.py`) | `system` (thread start response), `user` (`turn/start` input; relay), `tool_call` and `tool_result` from `commandExecution`, `fileChange`, `mcpToolCall`, `dynamicToolCall`, `webSearch` items (correlated on item id), `assistant_text` (completed `agentMessage` item), `thinking` (reasoning item, assembled from `item/reasoning/textDelta`), `usage` (cumulative token totals at turn end), `result`, `error` | none. Thinking appears only when the model streams reasoning. Usage is cumulative per thread, so a relayed turn adds a later cumulative record and the last one is the run total | `_transcribe_notification`, `_transcribe_item_completed`, `_transcribe_turn_end`, from `_handle_notification`. Item shapes come from the generated app-server schema in the installed codex CLI (0.162.1), not from a live run |
-| `pi` (`backends/pi.py`) | `system` (session, agent start), `user` (prompt; relay), `assistant_text`, `thinking`, `usage` (provider dependent; skipped when all four counts are missing), `tool_call` and `tool_result` (paired on `toolCallId`), `result` (agent end), `error` | none. Partial `tool_execution_update` output is not recorded, and this is stated in the capability text | `_transcribe_event`, `_transcribe_assistant_message`, `_transcribe_agent_end`, from the stdout reader. Event shapes follow the published `pi-coding-agent` JSON mode docs. pi is not installed in this environment, so no live run |
-| `opencode` (`backends/opencode.py`) | `system` (session and model), `user`, `assistant_text` (flushed before tool records and at turn end, from cumulative text parts), `tool_call` and `tool_result` (tool parts), `error`, `result` | `thinking`, `usage` (no reasoning or token fields are read by this adapter) | `OpenCodeTranscriptTap.observe` fed from `_handle_event`, reading the same parts the adapter already reads. Tested in `test_129_opencode.py` |
-| `opencode_compat` (`backends/opencode_compat.py`) | same as `opencode`, through the same tap | `thinking`, `usage` | same tap, imported from `opencode.py`. Tested in `test_129_opencode_compat.py`. Its `result.output` is `null`, because this adapter does not keep assembled output (mirrors existing behaviour) |
-| `driver` (`backends/driver.py`) | `capability`, `user`, `tool_call` (one per activity event, `call_id` null), `thinking`, `usage` (from cost events), `error`, `system` (non-delta progress and unknown event types), `assistant_text` (delta progress flushed on the next non-delta line), `result` | `tool_result`. The driver contract defines one `tool_use` event per activity with no output field | `_transcribe` from `_handle_line`, plus `_record_outcome`. Tested in `test_129_driver.py`. Unconfirmed: that driver sets `is_delta` on progress lines in practice |
-| `prime_agent` (`backends/prime_agent.py`) | `system` (session header, agent start), `user`, `assistant_text` (from `text_delta`, flushed at message end, tool start, agent end and EOF), `tool_call` and `tool_result` (`tool_execution_start` and `_end`), `error`, `result` (once at EOF) | `thinking`, `usage`. The parser reads only `text_delta` from message updates | `_transcribe` from `_read_loop`. Tested in `test_129_prime_agent.py`. Event field names come from the shared Pi/Prime vocabulary in the module docstring, not from a captured fixture |
-| `hermes` (`backends/hermes.py`) | `capability`, `system` (launch configuration, once per launch), `user` (full briefing, plus the `-q` pointer when offloaded), `assistant_text` (raw stdout after exit), `result` (rc, output), `error` (missing env, spawn failure, non-zero exit, reader exception) | `tool_call`, `tool_result`, `thinking`, `usage`. The adapter reads stdout only after exit, `--quiet` hides tool previews, and the `tokens` key it parses is model-written JSON rather than a usage count | `_record_capability_once`, `_record_launch`, `_record_outcome`, `_fail_start`, `_fail_spawn`, from the existing launch and reader code. Tested in `test_129_hermes.py` |
-| `openclaw` (`backends/openclaw.py`) | `capability`, `system`, `user`, `assistant_text` (one per non-empty `payloads` entry, or the `meta` final text), `result`, `error` (non-zero exit, malformed output, unclean stop, reader exception) | `tool_call`, `tool_result`, `thinking`, `usage`. Output is one JSON object printed at exit | `_record_success`, `_record_failure`, `_record_capability_once`, from the one-shot stdout parse. Tested in `test_129_openclaw.py` |
-| `junie` (`backends/junie.py`) | `capability`, `system` and `user` (per launch, so relay launches record their feedback), `usage` (only when the JSON result file holds integer token fields), `assistant_text` and `result` (from the result outcome), `error` (non-zero exit, spawn failure, reader exception) | `tool_call`, `tool_result`, `thinking` | `_record_launch`, `_record_outcome`, `_record_capability_once`. The JSON result key names are copied from the existing parser, whose comment says the schema is not public. Tested in `test_129_junie.py` |
+| Backend | Records emitted | Declared unavailable | Usage scope | How it was established |
+|---|---|---|---|---|
+| `claude_code` | `system` (init, other subtypes, `stream_event`, unknown types), `user`, `assistant_text`, `thinking`, `tool_call`, `tool_result` (paired by `tool_use_id`), `usage` (message and run), `result`, `error` | none. `thinking` only when the model emits it | `message` (last chunk), `run` | `_transcribe_event` and helpers; `test_129_claude_code.py` |
+| `codex` | `system`, `user`, `tool_call` and `tool_result` (commandExecution, fileChange, mcpToolCall, dynamicToolCall, webSearch), `assistant_text`, `thinking`, `usage` at turn end, `result`, `error` | none. Thinking only when streamed | `run` (cumulative) | `_transcribe_*` from `_handle_notification`; item shapes from the generated schema of codex-cli 0.162.1, not a live run |
+| `pi` | `system`, `user`, `assistant_text`, `thinking`, `usage`, `tool_call` and `tool_result` (paired on `toolCallId`), `result`, `error` | none. Partial tool output not recorded | `message` | `_transcribe_event` and helpers; event shapes from the published docs; pi not installed here |
+| `opencode` | `system`, `user`, `assistant_text`, `tool_call`, `tool_result`, `error`, `result` | `thinking`, `usage` | n/a | `OpenCodeTranscriptTap` (best-effort methods); `test_129_opencode.py` |
+| `opencode_compat` | as `opencode`, through the same tap; `result.output` is null | `thinking`, `usage` | n/a | `test_129_opencode_compat.py` |
+| `driver` | `capability`, `user`, `tool_call` (call_id null), `thinking`, `usage` (cost events and result line), `error`, `system`, `assistant_text`, `result` | `tool_result` (the contract has no output field) | cost events: absent. result line: `run` | `_transcribe`, `_emit_usage`; `test_129_driver.py` |
+| `prime_agent` | `system`, `user`, `assistant_text`, `tool_call`, `tool_result`, `error`, `result` | `thinking`, `usage` | n/a | `_transcribe`; `test_129_prime_agent.py`; field names from the shared Pi/Prime vocabulary |
+| `hermes` | `capability`, `system` (launch configuration), `user`, `assistant_text` (raw stdout), `result`, `error` | `tool_call`, `tool_result`, `thinking`, `usage` | n/a | `_record_*`, `_fail_start`, `_fail_spawn`; `test_129_hermes.py` |
+| `openclaw` | `capability`, `system`, `user`, `assistant_text` (per payload), `result`, `error` | `tool_call`, `tool_result`, `thinking`, `usage` | n/a | `_record_success`, `_record_failure`; `test_129_openclaw.py` |
+| `junie` | `capability`, `system`, `user`, `usage` (result file counts only), `assistant_text`, `result`, `error` | `tool_call`, `tool_result`, `thinking` | `run` | `_record_launch`, `_record_outcome`; `test_129_junie.py` |
 
-Every backend emits exactly one `capability` record per run. Claude Code emits it at `start()`, and the other backends emit it from their first launch or failure path. Claude Code's record lists nothing as unavailable and says so.
+Every backend emits exactly one `capability` record per run, except where noted in the code. Claude Code declares nothing unavailable.
 
 ## Verification
 
-Run in this worktree (`/Users/jasonberry/Workspaces/ViviDynamics/coordinare/.claude/worktrees/agent-af27aeee616922a59`, branch `129-run-transcripts`). The results are in the final report.
+Run in this worktree. Results are in the final report.
 
-- Daemon writer, dedupe, restart, torn line, redaction, byte cap, path safety, retention, collector, HTTP delivery (incremental, re-delivery, drain, disabled, older performer): `tests/unit/test_129_run_transcript.py`.
-- Performer buffer, redaction, byte cap, runner delivery: `agent/performer/tests/unit/test_129_transcript.py`.
+- Daemon writer, dedupe, restart, torn line, seq validation, size bounds, redaction on the bytes, symlink refusal, failure containment, root placement, disabled mode, retention, collector, HTTP delivery (incremental, re-delivery, drain, teardown bound, wall-clock drain bound, disabled, older performer), and stdio payload: `tests/unit/test_129_run_transcript.py`, `tests/unit/test_129_redaction_parity.py`.
+- Performer buffer, redaction and secret provider, best-effort capture, batch bound, scope: `agent/performer/tests/unit/test_129_transcript.py` and `test_129_transcript_guards.py`.
 - Performer job route, cursor paging, the 500 bound, disabled job: `agent/performer/tests/unit/test_129_transcript_route.py`.
-- Per-backend mappings: `agent/performer/tests/unit/test_129_<backend>.py`.
+- Per-backend mappings: `agent/performer/tests/unit/test_129_<backend>.py`, and Claude Code's message-usage and `stream_event` cases in `test_129_claude_code.py`.
+
+Tests that fail without their fix: each review fix has a test written against the behaviour it changes. The writer's constructor signature and the root default changed, so the pre-fix code cannot run these tests unmodified. The claim is established by reading each test against the code it replaced, not by reverting the code and running the suite.
 
 ## Known gaps
 
-- **Subprocess transport.** The development-only subprocess transport (`AgentService`, `agent_transport: subprocess`) does not go through `HTTPPerformerService` and writes no transcript. The issue is about performer runs, so this is out of scope for this change.
-- **Container-visible transcripts.** `performer_log_dir` is mounted read-write into ephemeral containers at `/var/log/performer`. The `transcripts/` folder sits under that mount, so an agent running in a container can read, and in principle alter, other runs' transcript files. The attempt logs already have the same exposure. This is pre-existing in kind. It deserves a follow-up that moves transcripts outside the mount.
-- **Relaunch and the start path in Claude Code.** The `capability` and `user` records emitted from `ClaudeCodeBackend.start()` and `relay_feedback()` are not unit-tested. The mapping of stream-json events is.
-- **Live verification.** No backend binary was run against a live model in this environment. The mappings for codex, pi, opencode, prime_agent, driver, hermes, openclaw and junie were derived from code and captured or constructed events. Field names the code does not confirm are listed in the per-backend notes above.
-- **Unattributed runs.** A status poll without a transcript target writes to the `unattributed` folder (D6).
-- **Cap accounting.** The performer and the daemon count bytes slightly differently (different serializers). The cap is approximate to within a record.
-- **Dropped counts.** The on-disk marker does not carry the final dropped count (D7).
-- **Pre-existing code observed, not changed.** `driver.py` `relay_feedback()` calls `self._cancel_reader()` without `await`. The codex `turn/completed` fallback looks for `type == "message"` items, which the v2 schema does not define. Both are outside this issue.
+- **Loss window.** Records pulled at the last poll are safe. A pod deleted by the platform without warning loses up to one poll interval (spec).
+- **Subprocess transport.** The development-only subprocess transport (`AgentService`) writes no transcript.
+- **Unattributed runs.** A poll with no target writes to `unattributed/unattributed` (D12).
+- **Cap accounting.** The performer and the daemon count bytes with different serializers, so the cap is accurate to about one record.
+- **Dropped counts.** The on-disk marker does not carry the final dropped count, which is logged at release.
+- **Live verification.** No backend binary was run against a live model here. Claude Code's mapping is covered by fixtures built from the stream-json shapes the handler reads.
+- **Daemon GitHub App token.** Not held in the daemon environment, so only dispatch-time and refreshed values are redacted exactly (D4).
+- **Pre-existing code observed, not changed.** `driver.py` `relay_feedback()` calls `self._cancel_reader()` without `await`. The codex `turn/completed` fallback looks for `type == "message"` items, which the v2 schema does not define.

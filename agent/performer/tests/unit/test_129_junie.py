@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,11 +34,16 @@ def _types(records: list[dict]) -> list[str]:
     return [r["type"] for r in records]
 
 
-def _writing_proc(backend: JunieBackend, result: object | None, *,
-                  stdout: bytes = b"", stderr: bytes = b"", rc: int = 0,
-                  block: asyncio.Event | None = None) -> MagicMock:
+def _writing_proc(backend: JunieBackend, result: object | None, **options: Any) -> MagicMock:
     """Fake junie process. On exit it writes ``result`` to the JSON output file,
-    the way junie does, so the real reader parses it."""
+    the way junie does, so the real reader parses it.
+
+    Options: ``stdout``, ``stderr`` (bytes), ``rc`` (int), ``block`` (asyncio.Event).
+    """
+    stdout: bytes = options.get("stdout", b"")
+    stderr: bytes = options.get("stderr", b"")
+    rc: int = options.get("rc", 0)
+    block: asyncio.Event | None = options.get("block")
 
     async def _communicate() -> tuple[bytes, bytes]:
         if block is not None:

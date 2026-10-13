@@ -14,24 +14,36 @@ Design rules:
 * Nothing is truncated here. ``text``, ``input`` and ``output`` carry the full
   value. The 200-character ``BackendEvent.text`` summary is a separate channel
   and must never be used as a transcript source.
-* Redaction runs before a record is stored (``_redact_secrets`` on every
-  string, sensitive keys masked). The daemon redacts again at write time.
+* Redaction runs before a record is stored, with the shared rules in
+  ``performer.transcript_redaction``: credential-named keys, ``NAME=value``
+  lines, embedded JSON, token shapes, and the exact secret values the job was
+  handed (``secrets`` provider). The daemon redacts again at write time.
+* Capture is best effort. :func:`emit` and every backend helper decorated with
+  :func:`best_effort` swallow and log their own failures, so transcript code can
+  never break a backend's reader loop.
 * When no buffer is active (transcripts disabled, or a unit test that never
   starts a job) :func:`emit` is a no-op. Disabled runs pay one ContextVar read.
 * The buffer enforces ``max_bytes``. The first record that would exceed the cap
-  is replaced by exactly one ``truncated`` marker; later content records are
-  counted and dropped.
+  is replaced by one ``truncated`` marker; later content records are counted and
+  dropped. :meth:`TranscriptBuffer.after` returns at most ``MAX_BATCH_BYTES`` per
+  delivery (always at least one record).
 """
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
+import os
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from typing import Any, Literal, TypedDict, Unpack, get_args
+from typing import Any, Literal, TypedDict, TypeVar, Unpack, cast, get_args
 
+import structlog
 from pydantic import BaseModel, ConfigDict
 
-from performer.models import _redact_secrets
+from performer.transcript_redaction import redact_text, redact_value, secret_values_from_env
+
+_logger = structlog.get_logger(__name__)
 
 TranscriptType = Literal[
     "system",
@@ -47,25 +59,21 @@ TranscriptType = Literal[
     "truncated",
 ]
 
+TranscriptScope = Literal["message", "run"]
+
 TRANSCRIPT_TYPES: frozenset[str] = frozenset(get_args(TranscriptType))
 
-# Same key list as coordinare.lib.redaction.SENSITIVE_KEYS. Values under these
-# keys are masked wherever they appear in a record's input or output.
-_SENSITIVE_KEYS: frozenset[str] = frozenset({
-    "token",
-    "password",
-    "secret",
-    "secrets",
-    "api_key",
-    "webhook_url",
-    "authorization",
-    "auth_token",
-})
-_MASK = "***REDACTED***"
+# Upper bound on the serialized size of one delivery batch. A single record
+# larger than this is still delivered alone, so the stream always makes progress.
+MAX_BATCH_BYTES = 8 * 1024 * 1024
+
+SecretProvider = Callable[[], Iterable[str]]
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class TranscriptUsage(BaseModel):
-    """Token accounting for one model turn (or a cumulative total, see ``text``)."""
+    """Token accounting for one model turn or one run total (see ``scope`` on the record)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -86,6 +94,9 @@ class RecordFields(TypedDict, total=False):
     output_data: Any
     is_error: bool | None
     usage: TranscriptUsage | None
+    # "message": usage of one model message. "run": a run or cumulative total.
+    # A consumer summing usage must count only one scope.
+    scope: TranscriptScope | None
 
 
 class TranscriptRecord(BaseModel):
@@ -106,19 +117,7 @@ class TranscriptRecord(BaseModel):
     output: Any = None
     is_error: bool | None = None
     usage: TranscriptUsage | None = None
-
-
-def _redact_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return _redact_secrets(value)
-    if isinstance(value, dict):
-        return {
-            str(k): (_MASK if str(k).lower() in _SENSITIVE_KEYS else _redact_value(v))
-            for k, v in value.items()
-        }
-    if isinstance(value, list | tuple):
-        return [_redact_value(item) for item in value]
-    return value
+    scope: TranscriptScope | None = None
 
 
 def _jsonable(value: Any) -> Any:
@@ -128,6 +127,39 @@ def _jsonable(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+def _line_bytes(record: TranscriptRecord) -> int:
+    return len(record.model_dump_json(exclude_none=True).encode()) + 1
+
+
+_failure_sites_logged: set[str] = set()
+
+
+def best_effort(func: F) -> F:
+    """Run a transcript helper so that its exceptions never reach the caller.
+
+    The first failure per call site is logged as ``transcript.capture_failed``.
+    Later failures at the same site are swallowed silently, so a broken helper
+    cannot flood the log.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            site = func.__qualname__
+            if site not in _failure_sites_logged:
+                _failure_sites_logged.add(site)
+                _logger.warning(
+                    "transcript.capture_failed",
+                    site=site,
+                    exc_type=type(exc).__name__,
+                )
+            return None
+
+    return cast(F, wrapper)
+
+
 class TranscriptBuffer:
     """Seq-numbered, byte-capped, in-memory record store for one job.
 
@@ -135,9 +167,22 @@ class TranscriptBuffer:
     ``seq - 1``. The daemon's cursor is the highest seq it has written.
     """
 
-    def __init__(self, run_id: str, *, max_bytes: int) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        max_bytes: int,
+        secrets: SecretProvider | None = None,
+        max_batch_bytes: int = MAX_BATCH_BYTES,
+    ) -> None:
         self._run_id = run_id
         self._max_bytes = max_bytes
+        self._max_batch_bytes = max_batch_bytes
+        self._secrets = secrets
+        # Environment credentials are read once, at job start. Exact-value
+        # redaction of job secrets comes from the provider on every record, so a
+        # token refreshed mid-run is covered from its first use.
+        self._env_secrets = secret_values_from_env(os.environ)
         self._records: list[TranscriptRecord] = []
         self._bytes = 0
         self._truncated = False
@@ -156,21 +201,31 @@ class TranscriptBuffer:
     def dropped_records(self) -> int:
         return self._dropped_records
 
+    def _secret_values(self) -> list[str]:
+        values = list(self._env_secrets)
+        if self._secrets is not None:
+            values.extend(str(v) for v in self._secrets())
+        return values
+
     def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
         seq = self.last_seq + 1
+        secrets = self._secret_values()
         text = fields.get("text")
+        tool_name = fields.get("tool_name")
+        call_id = fields.get("call_id")
         record = TranscriptRecord(
             ts=datetime.now(UTC).isoformat(),
             run_id=self._run_id,
             seq=seq,
             type=record_type,
-            text=_redact_value(text) if text is not None else None,
-            tool_name=fields.get("tool_name"),
-            call_id=fields.get("call_id"),
-            input=_redact_value(_jsonable(fields.get("input_data"))),
-            output=_redact_value(_jsonable(fields.get("output_data"))),
+            text=redact_text(text, secrets) if text is not None else None,
+            tool_name=redact_text(tool_name, secrets) if tool_name is not None else None,
+            call_id=redact_text(call_id, secrets) if call_id is not None else None,
+            input=redact_value(_jsonable(fields.get("input_data")), secrets),
+            output=redact_value(_jsonable(fields.get("output_data")), secrets),
             is_error=fields.get("is_error"),
             usage=fields.get("usage"),
+            scope=fields.get("scope"),
         )
         size = _line_bytes(record)
         if self._truncated or self._bytes + size > self._max_bytes:
@@ -201,15 +256,22 @@ class TranscriptBuffer:
         self._dropped_bytes += size
 
     def after(self, seq: int, limit: int) -> list[dict[str, Any]]:
-        """Records with ``seq > seq`` in ascending order, at most ``limit`` of them."""
+        """Records with ``seq > seq`` in ascending order.
+
+        Returns at most ``limit`` records and at most ``max_batch_bytes`` of
+        serialized output. The first record is always returned, so a single
+        large record cannot stall delivery.
+        """
         start = max(seq, 0)
-        return [
-            r.model_dump(exclude_none=True) for r in self._records[start:start + limit]
-        ]
-
-
-def _line_bytes(record: TranscriptRecord) -> int:
-    return len(record.model_dump_json(exclude_none=True).encode()) + 1
+        batch: list[dict[str, Any]] = []
+        total = 0
+        for record in self._records[start:start + limit]:
+            size = _line_bytes(record)
+            if batch and total + size > self._max_batch_bytes:
+                break
+            batch.append(record.model_dump(exclude_none=True))
+            total += size
+        return batch
 
 
 _transcript_var: contextvars.ContextVar[TranscriptBuffer | None] = contextvars.ContextVar(
@@ -228,10 +290,12 @@ def transcript_enabled() -> bool:
     return _transcript_var.get() is not None
 
 
+@best_effort
 def emit(record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
     """Append one record to the active job's transcript. No-op when disabled.
 
-    Keyword fields: text, tool_name, call_id, input_data, output_data, is_error, usage.
+    Keyword fields: text, tool_name, call_id, input_data, output_data, is_error,
+    usage, scope. Never raises: a capture failure is logged and dropped.
     """
     buffer = _transcript_var.get()
     if buffer is None:
@@ -240,11 +304,14 @@ def emit(record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
 
 
 __all__ = [
+    "MAX_BATCH_BYTES",
     "TRANSCRIPT_TYPES",
     "TranscriptBuffer",
     "TranscriptRecord",
+    "TranscriptScope",
     "TranscriptType",
     "TranscriptUsage",
+    "best_effort",
     "emit",
     "set_active_buffer",
     "transcript_enabled",

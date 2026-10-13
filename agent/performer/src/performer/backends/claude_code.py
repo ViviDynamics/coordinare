@@ -91,7 +91,10 @@ class ClaudeCodeBackend:
         # name it answers; message ids already billed, because a multi-block
         # assistant message repeats its usage on every block event.
         self._transcript_tool_names: dict[str, str] = {}
-        self._transcript_usage_ids: set[str] = set()
+        # The usage of the message currently streaming: (message id, usage, model).
+        # Each chunk replaces it, so the record written when the message ends is
+        # the last usage seen for that message, not the first.
+        self._transcript_pending_usage: tuple[str, TranscriptUsage, str | None] | None = None
         self._git_env: dict[str, str] = {}
         self._cache_env: dict[str, str] = {}
         self._tool_env: dict[str, str] = {}
@@ -643,6 +646,8 @@ class ClaudeCodeBackend:
             self._status = BackendStatus(state="error", error_reason=str(exc))
         finally:
             self._close_stdout_capture()
+            # 129: a run that ends without a result event still gets its last message's usage.
+            self._flush_pending_usage()
             status_before_finally = self._status
             if self._status.state == "working" and self._proc is not None:
                 try:
@@ -688,11 +693,14 @@ class ClaudeCodeBackend:
             if self._status is not status_before_finally and self._status.state == "error":
                 transcript.emit("error", text=self._status.error_reason or "claude run failed")
 
+    @transcript.best_effort
     def _transcribe_event(self, event: dict[str, Any]) -> None:
         """129: full-fidelity transcript records for one stream-json event.
 
         Reads the untruncated payload. The 200-character BackendEvent summaries
         in ``_handle_event`` are a separate channel and are never a source here.
+        Every event type is recorded: a type this mapping does not know is kept
+        as a ``system`` record with its raw type name, never dropped.
         """
         if not transcript.transcript_enabled():
             return
@@ -712,7 +720,30 @@ class ClaudeCodeBackend:
             self._transcribe_tool_result(event)
         elif event_type == "result":
             self._transcribe_result(event)
+        else:
+            # stream_event (from --include-partial-messages), or a type a future
+            # CLI adds. Recorded raw so nothing the model produced is silently lost.
+            transcript.emit(
+                "system",
+                text=f"unhandled stream event type: {event_type or '(none)'}",
+                input_data=event,
+            )
 
+    def _flush_pending_usage(self) -> None:
+        """Write the usage of the message that just ended, if any (129).
+
+        Called when a different message id starts, when the run total arrives,
+        and when the reader exits. Writing once per message keeps the per-message
+        records summable without double counting.
+        """
+        pending = self._transcript_pending_usage
+        self._transcript_pending_usage = None
+        if pending is None:
+            return
+        _message_id, usage, _model = pending
+        transcript.emit("usage", text="message usage (last chunk)", usage=usage, scope="message")
+
+    @transcript.best_effort
     def _transcribe_assistant(self, event: dict[str, Any]) -> None:
         message = event.get("message")
         if not isinstance(message, dict):
@@ -720,12 +751,25 @@ class ClaudeCodeBackend:
         model = message.get("model")
         message_id = message.get("id")
         usage = message.get("usage")
-        if isinstance(usage, dict) and (
-            message_id is None or str(message_id) not in self._transcript_usage_ids
-        ):
-            if message_id is not None:
-                self._transcript_usage_ids.add(str(message_id))
-            transcript.emit("usage", usage=_usage_from_claude(usage, model))
+        if isinstance(usage, dict):
+            if message_id is None:
+                transcript.emit(
+                    "usage",
+                    text="message usage",
+                    usage=_usage_from_claude(usage, model),
+                    scope="message",
+                )
+            else:
+                current = self._transcript_pending_usage
+                if current is not None and current[0] != str(message_id):
+                    self._flush_pending_usage()
+                # Replace, do not keep the first: a later chunk of the same
+                # message can carry higher output token counts.
+                self._transcript_pending_usage = (
+                    str(message_id),
+                    _usage_from_claude(usage, model),
+                    model if isinstance(model, str) else None,
+                )
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue
@@ -746,6 +790,7 @@ class ClaudeCodeBackend:
                     input_data=block.get("input"),
                 )
 
+    @transcript.best_effort
     def _transcribe_user_content(self, content: object) -> None:
         if isinstance(content, str):
             transcript.emit("user", text=content)
@@ -761,6 +806,7 @@ class ClaudeCodeBackend:
             elif block_type == "text":
                 transcript.emit("user", text=str(block.get("text", "")))
 
+    @transcript.best_effort
     def _transcribe_tool_result(self, block: dict[str, Any]) -> None:
         call_id = str(block.get("tool_use_id", "")) or None
         tool_name = self._transcript_tool_names.get(call_id or "")
@@ -772,6 +818,7 @@ class ClaudeCodeBackend:
             is_error=bool(block.get("is_error", False)),
         )
 
+    @transcript.best_effort
     def _transcribe_result(self, event: dict[str, Any]) -> None:
         subtype = str(event.get("subtype", ""))
         usage = event.get("usage")
@@ -781,11 +828,13 @@ class ClaudeCodeBackend:
             if isinstance(model_usage, dict) and len(model_usage) == 1
             else None
         )
+        self._flush_pending_usage()
         if isinstance(usage, dict):
             transcript.emit(
                 "usage",
                 text="run total from the result event",
                 usage=_usage_from_claude(usage, model),
+                scope="run",
             )
         result_text = event.get("result")
         transcript.emit(

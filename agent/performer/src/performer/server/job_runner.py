@@ -166,8 +166,24 @@ class JobRunner:
             )
             self._live_events = []
             self._live_metrics = None
+            # 129: exact-value redaction covers every secret this job was handed,
+            # including values PATCHed in mid-run (read through the same dict).
+            refreshed = self._refreshed_secrets
+
+            def job_secret_values(
+                _payload: JobInitPayload = payload,
+                _refreshed: dict[str, str] = refreshed,
+            ) -> list[str]:
+                values = [s.get_secret_value() for s in _payload.secrets.values()]
+                values.extend(_refreshed.values())
+                return values
+
             self._transcript = (
-                TranscriptBuffer(payload.job_id, max_bytes=payload.transcript_max_bytes)
+                TranscriptBuffer(
+                    payload.job_id,
+                    max_bytes=payload.transcript_max_bytes,
+                    secrets=job_secret_values,
+                )
                 if payload.transcript_max_bytes is not None
                 else None
             )

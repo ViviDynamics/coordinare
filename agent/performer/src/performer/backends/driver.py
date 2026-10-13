@@ -285,6 +285,7 @@ class DriverBackend:
     # Transcript (spec 129). Records only; never changes status or events.
     # ------------------------------------------------------------------
 
+    @transcript.best_effort
     def _transcribe(self, event: dict[str, Any]) -> None:
         """Record one non-result line with its full text, before the 200-char cut."""
         raw_type = str(event.get("type", ""))
@@ -307,6 +308,7 @@ class DriverBackend:
             self._emit_usage(
                 event.get("usage"),
                 "driver cost event; the contract does not say whether this is a per-turn or a run total",
+                None,
             )
         elif raw_type == "error":
             transcript.emit("error", text=text, input_data=event)
@@ -315,17 +317,19 @@ class DriverBackend:
             # lines, not model text; they keep their raw payload as system records.
             transcript.emit("system", text=text, input_data=event)
 
+    @transcript.best_effort
     def _flush_stream(self) -> None:
         for text in self._pending_stream.values():
             transcript.emit("assistant_text", text=text)
         self._pending_stream.clear()
 
+    @transcript.best_effort
     def _record_outcome(self, raw: dict[str, Any] | None) -> None:
         """The final result record. ``raw`` is the result line, or None when the
         process ended without one."""
         self._flush_stream()
         if raw is not None:
-            self._emit_usage(raw.get("usage"), "run total from the driver result line")
+            self._emit_usage(raw.get("usage"), "run total from the driver result line", "run")
         state = self._status.state
         is_error = state == "error"
         input_data: dict[str, Any] = raw if raw is not None else {
@@ -341,7 +345,13 @@ class DriverBackend:
             is_error=is_error,
         )
 
-    def _emit_usage(self, usage: object, note: str) -> None:
+    @transcript.best_effort
+    def _emit_usage(
+        self,
+        usage: object,
+        note: str,
+        scope: transcript.TranscriptScope | None,
+    ) -> None:
         if not isinstance(usage, dict):
             return
         input_tokens = _count(usage.get("input_tokens"))
@@ -353,6 +363,7 @@ class DriverBackend:
             text=note,
             input_data=usage,
             usage=transcript.TranscriptUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+            scope=scope,
         )
 
     def _handle_event(self, event: dict[str, object]) -> None:

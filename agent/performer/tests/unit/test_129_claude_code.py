@@ -25,7 +25,7 @@ def _feed(backend: ClaudeCodeBackend, events: list[dict]) -> None:
         backend._handle_event(event)
 
 
-def _assistant(message_id: str, content: list[dict]) -> dict:
+def _assistant(message_id: str, content: list[dict], output_tokens: int = 5) -> dict:
     return {
         "type": "assistant",
         "message": {
@@ -34,7 +34,7 @@ def _assistant(message_id: str, content: list[dict]) -> dict:
             "content": content,
             "usage": {
                 "input_tokens": 10,
-                "output_tokens": 5,
+                "output_tokens": output_tokens,
                 "cache_read_input_tokens": 100,
                 "cache_creation_input_tokens": 7,
             },
@@ -52,7 +52,8 @@ def test_full_run_is_recorded_in_order(buffer: transcript.TranscriptBuffer) -> N
             {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls -la"}},
         ]),
         # Second content block of the same message: usage must not be counted twice.
-        _assistant("m1", [{"type": "text", "text": "Listing done."}]),
+        # Later chunk of the same message, with the grown output count.
+        _assistant("m1", [{"type": "text", "text": "Listing done."}], output_tokens=40),
         {
             "type": "user",
             "message": {"content": [
@@ -78,12 +79,12 @@ def test_full_run_is_recorded_in_order(buffer: transcript.TranscriptBuffer) -> N
     types = [r["type"] for r in records]
     assert types == [
         "system",
-        "usage",
         "thinking",
         "assistant_text",
         "tool_call",
         "assistant_text",
         "tool_result",
+        "usage",
         "usage",
         "result",
     ]
@@ -100,14 +101,18 @@ def test_full_run_is_recorded_in_order(buffer: transcript.TranscriptBuffer) -> N
     assert result_rec["output"] == LONG_OUTPUT
     assert result_rec["is_error"] is False
 
-    per_message = [r for r in records if r["type"] == "usage"][0]
+    # One message-scope record per message id, holding the LAST chunk's usage.
+    # The first chunk reported output_tokens=5; keeping it would undercount to 5.
+    per_message, run_total = [r for r in records if r["type"] == "usage"]
+    assert per_message["scope"] == "message"
     assert per_message["usage"] == {
         "input_tokens": 10,
-        "output_tokens": 5,
+        "output_tokens": 40,
         "cache_read": 100,
         "cache_write": 7,
         "model": "claude-sonnet-test",
     }
+    assert run_total["scope"] == "run"
 
     final = records[-1]
     assert final["output"]["result"] == "final answer"
@@ -150,3 +155,16 @@ def test_no_buffer_means_no_records_and_normal_events_still_work() -> None:
     ])
     assert backend.get_status().state == "done"
     assert backend.get_status().output == "done"
+
+
+def test_stream_event_and_unknown_types_are_kept_not_dropped(
+    buffer: transcript.TranscriptBuffer,
+) -> None:
+    backend = ClaudeCodeBackend()
+    raw = {"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 9}}}
+    _feed(backend, [raw, {"type": "future_kind", "payload": "x"}])
+    records = buffer.after(0, 10)
+    assert [r["type"] for r in records] == ["system", "system"]
+    assert records[0]["input"] == raw
+    assert "stream_event" in str(records[0]["text"])
+    assert "future_kind" in str(records[1]["text"])

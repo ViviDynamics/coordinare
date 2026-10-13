@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-_MODEL = "spark/qwen3.6:35b"
+_MODEL = "example-provider/test-model"
 _LONG_OUTPUT = "PASSED test_case_line\n" * 300  # far beyond the 200-char summary
 _LONG_THINKING = "Plan: read the parser, then patch the off-by-one. " * 30
 _LONG_TEXT = "Patched the off-by-one in parse_line; the suite is green. " * 30

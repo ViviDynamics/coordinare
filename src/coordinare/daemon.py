@@ -2952,7 +2952,12 @@ class CoordinareDaemon:
 
     def _start_transcript_retention(self) -> asyncio.Task[None] | None:
         collector = self._state.get("transcript_collector")
-        if not isinstance(collector, TranscriptCollector) or collector.retention_days <= 0:
+        # Disabled means nothing touches disk, retention included.
+        if (
+            not isinstance(collector, TranscriptCollector)
+            or not collector.enabled
+            or collector.retention_days <= 0
+        ):
             return None
         return asyncio.create_task(
             self._transcript_retention_loop(collector),
@@ -2971,10 +2976,11 @@ class CoordinareDaemon:
                     collector.root,
                     retention_days=collector.retention_days,
                 )
-            except OSError as exc:
+            except Exception as exc:  # best effort: retention must never end the loop
                 logger.warning(
                     "run_transcript.retention_failed",
                     exc_type=type(exc).__name__,
+                    error=str(exc),
                     root=str(collector.root),
                 )
             await asyncio.sleep(_TRANSCRIPT_RETENTION_INTERVAL_S)

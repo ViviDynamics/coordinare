@@ -382,6 +382,7 @@ class JunieBackend:
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
 
+    @transcript.best_effort
     def _record_launch(self, prompt: str, effective_model: str | None) -> None:
         """Spec 129: capability once per run, then this launch's config and prompt.
 
@@ -411,6 +412,7 @@ class JunieBackend:
         )
         transcript.emit("user", text=prompt)
 
+    @transcript.best_effort
     def _record_outcome(
         self, parsed: dict | None, rc: int | None, stdout_text: str, stderr_text: str,
     ) -> None:
@@ -444,6 +446,7 @@ class JunieBackend:
                 usage=transcript.TranscriptUsage(
                     input_tokens=input_tokens, output_tokens=output_tokens,
                 ),
+                scope="run",
             )
         err = parsed.get("error") or parsed.get("error_message")
         summary = parsed.get("summary") or parsed.get("result") or parsed.get("message")

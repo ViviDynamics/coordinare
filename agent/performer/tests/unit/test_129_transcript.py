@@ -68,7 +68,7 @@ def test_secrets_are_redacted_before_storage() -> None:
     assert BEARER not in blob
     assert "abc123" not in blob
     assert "[REDACTED]" in blob
-    assert records[0]["input"]["api_key"] == "***REDACTED***"
+    assert records[0]["input"]["api_key"] == "[REDACTED]"
 
 
 def test_byte_cap_writes_one_truncated_marker_then_drops() -> None:

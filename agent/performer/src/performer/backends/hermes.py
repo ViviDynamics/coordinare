@@ -537,6 +537,7 @@ class HermesBackend:
             BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
+    @transcript.best_effort
     def _record_capability_once(self) -> None:
         """Spec 129: one capability record per backend instance (one run)."""
         if self._transcript_capability_recorded:
@@ -551,6 +552,7 @@ class HermesBackend:
             },
         )
 
+    @transcript.best_effort
     def _record_launch(
         self, *, full_prompt: str, sent_message: str, provider: str, model: str,
     ) -> None:
@@ -574,6 +576,7 @@ class HermesBackend:
         user_input = {"sent_message": sent_message} if sent_message != full_prompt else None
         transcript.emit("user", text=full_prompt, input_data=user_input)
 
+    @transcript.best_effort
     def _record_outcome(
         self,
         *,

@@ -67,6 +67,7 @@ from coordinare.services.notification_config import (
 )
 from coordinare.services.run_transcript import (
     TranscriptCollector,
+    make_collector,
     resolve_transcripts_root,
 )
 from coordinare.state_store import StateStore
@@ -885,26 +886,55 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
+def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
+    """Every host directory a performer container can see (129 HIGH 1).
+
+    The performer log dir is bind-mounted into ephemeral containers, and each
+    endpoint can declare more volumes. A transcript root inside any of these
+    would be readable and writable by performers, so the collector checks it.
+    """
+    hosts: list[Path] = []
+    log_dir = getattr(config, "performer_log_dir", None)
+    if log_dir is not None:
+        hosts.append(Path(log_dir))
+    for endpoint in config.performer_endpoints:
+        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
+    return hosts
+
+
 def _build_transcript_collector(
     config: ProjectConfiguration,
     config_path: Path | None,
-) -> TranscriptCollector:
-    """129: the transcripts root and its settings. Root follows the attempt-log base."""
-    _state_base = config.state_file_path.resolve().parent
-    _attempt_base = (
-        config_path.resolve().parent if config_path is not None else _state_base
-    )
-    root = resolve_transcripts_root(
-        getattr(config, "performer_log_dir", None),
-        attempt_base=_attempt_base,
-        state_base=_state_base,
-    )
-    return TranscriptCollector(
-        root,
-        enabled=config.transcripts.enabled,
-        max_bytes_per_run=config.transcripts.max_bytes_per_run,
-        retention_days=config.transcripts.retention_days,
-    )
+) -> TranscriptCollector | None:
+    """129: the transcripts collector. Touches nothing on disk (see ``make_collector``).
+
+    Returns None if the collector cannot be built at all. Transcription is best
+    effort, so that never stops the daemon from starting.
+    """
+    try:
+        state_dir = config.state_file_path.resolve().parent
+        config_dir = config_path.resolve().parent if config_path is not None else state_dir
+        root = resolve_transcripts_root(
+            config.transcripts.directory,
+            config_dir=config_dir,
+            state_dir=state_dir,
+        )
+        collector = make_collector(
+            enabled=config.transcripts.enabled,
+            root=root,
+            max_bytes_per_run=config.transcripts.max_bytes_per_run,
+            retention_days=config.transcripts.retention_days,
+            performer_mounts=_performer_mount_hosts(config),
+        )
+        collector.add_ambient_secrets(os.environ)
+        return collector
+    except Exception as exc:  # best effort: transcripts must never stop the daemon
+        logger.exception(
+            "run_transcript.collector_unavailable",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return None
 
 
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:

@@ -370,6 +370,7 @@ class PrimeAgentBackend:
     # Transcript (spec 129). Records only; never changes status or events.
     # ------------------------------------------------------------------
 
+    @transcript.best_effort
     def _transcribe(self, event: dict[str, Any]) -> None:
         """Record one parsed event with its full content, before any 200-char cut."""
         etype = str(event.get("type", ""))
@@ -427,6 +428,7 @@ class PrimeAgentBackend:
             msg = msg or str(event.get("message") or "") or etype
             transcript.emit("error", text=msg, input_data=event)
 
+    @transcript.best_effort
     def _flush_text(self) -> None:
         if not self._pending_text:
             return
@@ -435,6 +437,7 @@ class PrimeAgentBackend:
         if text:
             transcript.emit("assistant_text", text=text)
 
+    @transcript.best_effort
     def _record_outcome(self) -> None:
         """The final result record, written once when the stream ends."""
         self._flush_text()

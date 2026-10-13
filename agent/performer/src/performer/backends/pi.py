@@ -365,6 +365,7 @@ class PiBackend:
     # the 200-char BackendEvent summary. Does not alter status or events.
     # ------------------------------------------------------------------
 
+    @transcript.best_effort
     def _transcribe_event(self, etype: str, event: dict[str, Any]) -> None:
         if etype in ("session", "agent_start"):
             transcript.emit("system", text=f"pi {etype} event", input_data=event)
@@ -402,6 +403,7 @@ class PiBackend:
             if not event.get("willRetry", False):
                 transcript.emit("result", text=message, is_error=True)
 
+    @transcript.best_effort
     def _transcribe_assistant_message(self, message: dict[str, Any]) -> None:
         content = message.get("content")
         blocks: list[Any]
@@ -442,12 +444,14 @@ class PiBackend:
                     "usage",
                     text="token counts for one model call (one assistant message)",
                     usage=counts,
+                    scope="message",
                 )
         stop = str(message.get("stopReason") or "")
         if stop in _FAILED_STOP_REASONS:
             failure = str(message.get("errorMessage") or stop)
             transcript.emit("error", text=failure, input_data={"stop_reason": stop})
 
+    @transcript.best_effort
     def _transcribe_agent_end(self, event: dict[str, Any]) -> None:
         messages = event.get("messages")
         final = _extract_final_assistant_text(messages) or "".join(self._output_accumulator)

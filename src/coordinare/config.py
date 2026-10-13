@@ -1077,18 +1077,22 @@ class ImplementerRebaseConfig(BaseModel):
 class TranscriptsConfig(BaseModel):
     """129: a full, untruncated JSONL transcript per performer run.
 
-    Written to ``<performer_log_dir>/transcripts/<symphony>/<card>/<run_id>.jsonl``
+    Written to ``<state directory>/transcripts/<symphony>/<card>/<run_id>.jsonl``
+    (``transcripts.dir`` overrides the root; it must lie outside every performer mount)
     (see ``coordinare.services.run_transcript``). ``enabled: false`` means no
     transcript collection on the wire and no files. ``retention_days: 0`` keeps
     transcripts forever. ``max_bytes_per_run`` caps one run's file; when reached,
     one ``truncated`` marker is written and later content records are dropped.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     enabled: bool = True
-    retention_days: int = Field(default=30, ge=0)
-    max_bytes_per_run: int = Field(default=50 * 1024 * 1024, ge=1024)
+    # Optional root override. Default: <state directory>/transcripts. Must not be
+    # inside a directory mounted into a performer (checked at startup).
+    directory: Path | None = Field(default=None, alias="dir")
+    retention_days: int = Field(default=30, ge=0, le=3650)
+    max_bytes_per_run: int = Field(default=50 * 1024 * 1024, ge=1024, le=1024 * 1024 * 1024)
 
 
 class ProjectConfiguration(BaseSettings):

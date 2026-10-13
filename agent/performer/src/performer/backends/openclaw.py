@@ -507,6 +507,7 @@ class OpenClawBackend:
             BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
+    @transcript.best_effort
     def _record_capability_once(self) -> None:
         """Spec 129: one capability record per backend instance (one run)."""
         if self._transcript_capability_recorded:
@@ -609,6 +610,7 @@ class OpenClawBackend:
             transcript.emit("error", text=f"openclaw reader error: {exc}")
             self._terminal = True
 
+    @transcript.best_effort
     def _record_failure(
         self,
         *,
@@ -631,6 +633,7 @@ class OpenClawBackend:
             input_data=result_input,
         )
 
+    @transcript.best_effort
     def _record_success(
         self, *, parsed: dict, meta: dict, output_text: str,
     ) -> None:
