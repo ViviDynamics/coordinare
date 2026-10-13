@@ -1716,29 +1716,14 @@ def _select_eligible_todo(
 async def _dep_filter_cards(
     state: CoordinareState, board: dict[str, Any], eligible_todo: list[str],
 ) -> tuple[list[str], list[str], DependencyGraph]:
-    dep_graph = build_graph(board)
-
-    # 046: Resolve off-board dependencies by checking GitHub issue state.
-
-    # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
-
-    # were removed from the project board after completion.
-
-    github = state.get("github_service")
-
     config = state.get("config")
-
     repo_slug = ""
-
     if config is not None:
-
         org = getattr(config, "github_org", "")
-
         project = getattr(config, "project_name", "")
-
         if org and project:
-
             repo_slug = f"{org}/{project}"
+    dep_graph = build_graph(board, repo=repo_slug)
 
     # 091: Parse dependency syntax out of issue comments on TODO candidates.
 
@@ -1746,7 +1731,20 @@ async def _dep_filter_cards(
 
     # declared only in a comment get the same closed-check upgrade path.
 
-    await resolve_comment_dependencies(dep_graph, board, github, eligible_todo)
+    # Candidates whose comments could not be read are unknown, not
+
+    # dependency-free — keep them out of dispatch for this cycle.
+
+    github = state.get("github_service")
+    unknown_fetch = await resolve_comment_dependencies(dep_graph, board, github, eligible_todo)
+    if unknown_fetch:
+        eligible_todo = [iid for iid in eligible_todo if iid not in unknown_fetch]
+
+    # 046: Resolve off-board dependencies by checking GitHub issue state.
+
+    # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
+
+    # were removed from the project board after completion.
 
     await resolve_off_board_dependencies(dep_graph, github, repo_slug)
 

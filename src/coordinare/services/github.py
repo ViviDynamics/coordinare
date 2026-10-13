@@ -125,8 +125,13 @@ query PollBoard($projectId: ID!, $after: String) {
               }
               # Native blocked-by relationship (#91): structured issue
               # dependencies, read in the same query so building the
-              # dependency graph costs zero extra requests.
-              blockedBy(first: 10) {
+              # dependency graph costs zero extra requests.  Truncation is
+              # visible: poll_board warns when hasNextPage is set.
+              blockedBy(first: 50) {
+                totalCount
+                pageInfo {
+                  hasNextPage
+                }
                 nodes {
                   number
                   state
@@ -1045,6 +1050,13 @@ class GitHubService(CardIdentityMap):
                 ]
                 blockers_nodes = content.get("blockedBy", {})
                 if isinstance(blockers_nodes, dict):
+                    blockers_page = blockers_nodes.get("pageInfo", {})
+                    if isinstance(blockers_page, dict) and blockers_page.get("hasNextPage"):
+                        logger.warning(
+                            "poll_board.native_blockers_truncated",
+                            item_id=item_id,
+                            total=int(blockers_nodes.get("totalCount", 0) or 0),
+                        )
                     parsed_blockers: list[dict[str, Any]] = []
                     for b in blockers_nodes.get("nodes", []) if isinstance(blockers_nodes.get("nodes", []), list) else []:
                         if not isinstance(b, dict):
@@ -1173,14 +1185,22 @@ class GitHubService(CardIdentityMap):
         self,
         issue_number: int,
         since_id: int | None = None,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
         """Fetch comments on a GitHub issue, optionally after a known comment ID.
 
         Returns a list of dicts with keys: id, author, body, created_at.
         Returns [] on any error (logs warning).
+
+        With ``strict=True`` errors are raised instead of returning [] — for
+        callers that must distinguish "no comments" from "comments unreadable"
+        (the 091 comment-dependency resolver).  Default False preserves the
+        055-era lenient contract.
         """
         if not self._project_name:
             logger.warning("get_issue_comments.no_project_name", issue_number=issue_number)
+            if strict:
+                raise GitHubError(f"issue comments fetch not configured: no project name (#{issue_number})")
             return []
         url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/issues/{issue_number}/comments"
         params: dict[str, str | int] = {"per_page": 100}
@@ -1188,6 +1208,8 @@ class GitHubService(CardIdentityMap):
             token = await self._current_token()
         except Exception as exc:
             logger.warning("get_issue_comments.auth_failed", issue_number=issue_number, error=str(exc))
+            if strict:
+                raise
             return []
         headers = {
             "Authorization": f"Bearer {token}",
@@ -1205,6 +1227,8 @@ class GitHubService(CardIdentityMap):
                             issue_number=issue_number,
                             status_code=resp.status_code,
                         )
+                        if strict:
+                            raise GitHubError(f"issue comments fetch failed: HTTP {resp.status_code} (#{issue_number})")
                         return []
                     page: list[dict[str, Any]] = resp.json()
                     for c in page:
@@ -1231,6 +1255,8 @@ class GitHubService(CardIdentityMap):
             return comments
         except Exception as exc:
             logger.warning("get_issue_comments.request_failed", issue_number=issue_number, error=str(exc))
+            if strict:
+                raise
             return []
 
     async def get_pr_conversation_comments(

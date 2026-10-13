@@ -384,21 +384,70 @@ class TestNativeBlockers:
         graph = build_graph(board)
         assert filter_eligible_todo(["A", "B"], graph) == ["B"]
 
+    def test_cross_repo_native_blocker_no_column_collision(self) -> None:
+        """Copilot round 1: issue numbers are repository-local.  A foreign
+        open blocker #2 must not be satisfied by an unrelated same-repo #2
+        sitting in DONE."""
+        board = _board({"A": {"number": 1, "description": ""}})
+        board["snapshot"]["DONE"].append("B")
+        board["issue_numbers"]["B"] = 2
+        board["native_blockers"] = {"A": [{"number": 2, "state": "OPEN", "repo": "other/repo"}]}
+        graph = build_graph(board, repo="o/r")
+        assert graph.dependencies[0].status == DependencyStatus.PENDING
+
+    def test_cross_repo_closed_blocker_satisfied(self) -> None:
+        board = _board({"A": {"number": 1, "description": ""}})
+        board["native_blockers"] = {"A": [{"number": 2, "state": "CLOSED", "repo": "other/repo"}]}
+        graph = build_graph(board, repo="o/r")
+        assert graph.dependencies[0].status == DependencyStatus.SATISFIED
+
+    def test_same_repo_native_column_lookup_still_works(self) -> None:
+        board = _board({"A": {"number": 1, "description": ""}})
+        board["snapshot"]["DONE"].append("B")
+        board["issue_numbers"]["B"] = 2
+        board["native_blockers"] = {"A": [{"number": 2, "state": "OPEN", "repo": "o/r"}]}
+        graph = build_graph(board, repo="o/r")
+        assert graph.dependencies[0].status == DependencyStatus.SATISFIED
+
+    def test_no_repo_slug_falls_back_to_number_lookup(self) -> None:
+        """Without a known repo slug, by-number resolution is the legacy
+        best-effort behavior (no crash, no false SATISFIED beyond it)."""
+        board = _board({"A": {"number": 1, "description": ""}})
+        board["snapshot"]["DONE"].append("B")
+        board["issue_numbers"]["B"] = 2
+        board["native_blockers"] = {"A": [{"number": 2, "state": "OPEN", "repo": "other/repo"}]}
+        graph = build_graph(board)
+        assert graph.dependencies[0].status == DependencyStatus.SATISFIED
+
 
 class _FakeGithub:
     def __init__(
         self,
         comments: dict[int, list[dict]] | None = None,
         issue_states: dict[int, str] | None = None,
+        fail_issue_numbers: set[int] | None = None,
     ) -> None:
         self._comments = comments or {}
         self._issue_states = issue_states or {}
+        self._fail_issue_numbers = fail_issue_numbers or set()
 
-    async def get_issue_comments(self, issue_number: int, since_id: int | None = None) -> list[dict]:
+    async def get_issue_comments(self, issue_number: int, since_id: int | None = None, strict: bool = False) -> list[dict]:
+        if issue_number in self._fail_issue_numbers:
+            raise RuntimeError(f"fetch failed for #{issue_number}")
         return self._comments.get(issue_number, [])
 
     async def check_issue_state(self, repo: str, issue_number: int) -> str:
         return self._issue_states.get(issue_number, "not_found")
+
+
+class _LenientGithub:
+    """Mirrors GitHubService's production contract: swallows errors, returns []."""
+
+    def __init__(self, comments: dict[int, list[dict]] | None = None) -> None:
+        self._comments = comments or {}
+
+    async def get_issue_comments(self, issue_number: int, since_id: int | None = None) -> list[dict]:
+        return self._comments.get(issue_number, [])
 
 
 class TestCommentDependencies:
@@ -494,3 +543,81 @@ class TestCommentDependencies:
         assert graph.dependencies[0].status == DependencyStatus.UNRESOLVABLE
         await resolve_off_board_dependencies(graph, github, "o/r")
         assert graph.dependencies[0].status == DependencyStatus.SATISFIED
+
+    @pytest.mark.asyncio
+    async def test_comment_replace_keeps_native_pending(self) -> None:
+        """Copilot round 1: replacing a native edge must not downgrade its
+        authoritative PENDING (open off-board blocker) to UNRESOLVABLE."""
+        board = _board({"A": {"number": 1, "description": ""}})
+        board["native_blockers"] = {"A": [{"number": 999, "state": "OPEN", "repo": "o/r"}]}
+        github = _FakeGithub(comments={1: [{"id": 9, "body": "Blocked by #999"}]})
+        graph = build_graph(board)
+        await resolve_comment_dependencies(graph, board, github, ["A"])
+        assert graph.dependencies[0].status == DependencyStatus.PENDING
+        assert graph.dependencies[0].source == DependencySource.COMMENT
+        # resolve_off_board_dependencies must not park the card as UNRESOLVABLE.
+        await resolve_off_board_dependencies(graph, github, "o/r")
+        assert graph.dependencies[0].status == DependencyStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_comment_declared_cycle_detected(self) -> None:
+        """Copilot round 1: cycles must be recomputed after comment edges
+        are merged, or comment-only cycles stay invisible."""
+        board = _board({
+            "A": {"number": 1, "description": ""},
+            "B": {"number": 2, "description": ""},
+        })
+        github = _FakeGithub(comments={
+            1: [{"id": 9, "body": "Depends on #2"}],
+            2: [{"id": 10, "body": "Depends on #1"}],
+        })
+        graph = build_graph(board)
+        assert graph.cycles == []
+        await resolve_comment_dependencies(graph, board, github, ["A", "B"])
+        assert len(graph.cycles) == 1
+        assert set(graph.cycles[0]) == {"A", "B"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_marks_candidate_unknown(self) -> None:
+        """Copilot round 1: unreadable comments mean unknown, not
+        dependency-free — the candidate is returned for conservative skip."""
+        board = _board({
+            "A": {"number": 1, "description": ""},
+            "B": {"number": 2, "description": ""},
+        })
+        github = _FakeGithub(
+            comments={2: [{"id": 9, "body": "nothing here"}]},
+            fail_issue_numbers={1},
+        )
+        graph = build_graph(board)
+        unknown = await resolve_comment_dependencies(graph, board, github, ["A", "B"])
+        assert unknown == {"A"}
+        assert filter_eligible_todo(["A", "B"], graph) == ["A", "B"]  # no fake edges for A
+
+    @pytest.mark.asyncio
+    async def test_lenient_contract_no_unknowns_on_success(self) -> None:
+        board = _board({"A": {"number": 1, "description": ""}})
+        github = _LenientGithub(comments={1: [{"id": 9, "body": "Blocked by #2"}]})
+        graph = build_graph(board)
+        unknown = await resolve_comment_dependencies(graph, board, github, ["A"])
+        assert unknown == set()
+        assert len(graph.dependencies) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_candidates_all_processed(self) -> None:
+        """Bounded concurrency must still produce edges for every candidate."""
+        board = _board({
+            "A": {"number": 1, "description": ""},
+            "B": {"number": 2, "description": ""},
+            "C": {"number": 3, "description": ""},
+            "D": {"number": 4, "description": ""},
+        })
+        github = _FakeGithub(comments={
+            1: [{"id": 9, "body": "Depends on #3"}],
+            2: [{"id": 10, "body": "Blocked by #4"}],
+        })
+        graph = build_graph(board)
+        await resolve_comment_dependencies(graph, board, github, ["A", "B", "C", "D"])
+        assert len(graph.dependencies) == 2
+        assert graph.by_dependent["A"][0].blocker_issue_number == 3
+        assert graph.by_dependent["B"][0].blocker_issue_number == 4

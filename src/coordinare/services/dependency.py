@@ -9,6 +9,8 @@ Stateless — the graph is rebuilt from scratch on every poll cycle.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import re
 from collections import defaultdict, deque
 from typing import Any
@@ -23,6 +25,10 @@ from coordinare.models.dependency import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# Concurrent issue-comment fetches per cycle (one REST call each).  Bounds
+# worst-case cycle latency when many TODO candidates are pending.
+_COMMENT_FETCH_CONCURRENCY = 5
 
 # Matches "Depends on #N", "Blocked by #N", "After #N", "Requires #N"
 # Case-insensitive, captures the issue number.
@@ -102,6 +108,7 @@ def build_graph(
     board: dict[str, Any],
     *,
     self_issue_numbers: dict[str, int] | None = None,
+    repo: str = "",
 ) -> DependencyGraph:
     """Build the dependency graph from the current board snapshot.
 
@@ -114,6 +121,11 @@ def build_graph(
 
     ``self_issue_numbers`` is the ``board["issue_numbers"]`` map (item_id →
     issue_number).  If not provided, it's read from ``board``.
+
+    ``repo`` is the ``owner/name`` slug of the board's repository.  When
+    given, native blockers living in a different repository are resolved by
+    their own issue state alone — issue numbers are repository-local, so a
+    cross-repo ``other#2`` must never collide with an on-board ``#2``.
     """
     descriptions: dict[str, str] = board.get("descriptions", {})
     if self_issue_numbers is None:
@@ -144,7 +156,7 @@ def build_graph(
             graph.by_dependent.setdefault(item_id, []).append(dep)
             graph.by_blocker.setdefault(blocker_num, []).append(dep)
 
-    _add_native_edges(graph, board, self_issue_numbers)
+    _add_native_edges(graph, board, self_issue_numbers, repo)
 
     graph.cycles = detect_cycles(graph, issue_to_item)
     return graph
@@ -154,6 +166,7 @@ def _add_native_edges(
     graph: DependencyGraph,
     board: dict[str, Any],
     self_issue_numbers: dict[str, int],
+    repo: str = "",
 ) -> None:
     """Fold ``board["native_blockers"]`` into the graph (NATIVE_RELATIONSHIP edges).
 
@@ -161,6 +174,11 @@ def _add_native_edges(
     an open off-board blocker is PENDING (not UNRESOLVABLE) and a closed one is
     SATISFIED — no extra API check needed.  An open on-board blocker resolves
     through its column like an EXPLICIT edge (DONE → SATISFIED).
+
+    Blockers in a *different* repository (repo mismatch and both slugs known)
+    are resolved by their own state alone, never through the column lookup:
+    issue numbers are repository-local, so a cross-repo blocker's number can
+    collide with an unrelated same-repo issue.
 
     Pairs already detected as EXPLICIT are skipped (description wins); a pair
     can't yet be COMMENT here because comments are resolved asynchronously.
@@ -177,9 +195,14 @@ def _add_native_edges(
                 continue
             if any(d.blocker_issue_number == blocker_num for d in already):
                 continue  # EXPLICIT wins for this pair
+            blocker_repo = str(blocker.get("repo", ""))
+            cross_repo = bool(blocker_repo) and bool(repo) and blocker_repo != repo
             state = str(blocker.get("state", "OPEN")).upper()
             if state == "CLOSED":
                 status = DependencyStatus.SATISFIED
+            elif cross_repo:
+                # Verifiably open elsewhere: authoritative, no board lookup.
+                status = DependencyStatus.PENDING
             else:
                 column = graph.issue_to_column.get(blocker_num)
                 status = DependencyStatus.SATISFIED if column == "DONE" else DependencyStatus.PENDING
@@ -199,56 +222,65 @@ async def resolve_comment_dependencies(
     board: dict[str, Any],
     github: Any,
     candidate_item_ids: list[str] | None = None,
-) -> None:
+) -> set[str]:
     """Add COMMENT-sourced edges from 046 dependency syntax in issue comments (#91).
 
     For each candidate card, fetches its issue's comments (one REST call per
-    candidate via ``github.get_issue_comments``) and parses the same syntax as
-    :func:`parse_dependencies`.  Edges are deduplicated by (dependent, blocker)
-    pair with precedence EXPLICIT > COMMENT > NATIVE_RELATIONSHIP: an existing
-    EXPLICIT edge is never replaced, and a COMMENT edge replaces an existing
-    NATIVE_RELATIONSHIP edge for the same pair.
+    candidate via ``github.get_issue_comments``, bounded concurrency) and
+    parses the same syntax as :func:`parse_dependencies`.  Edges are
+    deduplicated by (dependent, blocker) pair with precedence
+    EXPLICIT > COMMENT > NATIVE_RELATIONSHIP: an existing EXPLICIT edge is
+    never replaced, and a COMMENT edge replaces an existing
+    NATIVE_RELATIONSHIP edge for the same pair while keeping the more
+    optimistic of the two statuses (native PENDING must not degrade to
+    UNRESOLVABLE — the relationship already proved the blocker exists).
 
     Call BEFORE :func:`resolve_off_board_dependencies` so off-board comment
     blockers go through the same closed-check / transient-error upgrade path
     as body-declared ones.
+
+    Returns the set of candidate item_ids whose comments could **not** be
+    read (fetch failure).  The caller should keep those cards out of dispatch
+    for this cycle — unreadable comments are unknown, not dependency-free.
+    Candidates with an *unreadable* fetch (the service contract swallows
+    errors and returns ``[]``) are best-effort: pass ``strict=True`` through
+    when the implementation supports it so failures raise instead.
 
     Skips silently when ``github`` is None or exposes no
     ``get_issue_comments``.  ``candidate_item_ids`` defaults to every card on
     the board that carries an issue number.
     """
     if github is None:
-        return
+        return set()
     fetch = getattr(github, "get_issue_comments", None)
     if fetch is None:
-        return
+        return set()
+    accepts_strict = "strict" in inspect.signature(fetch).parameters
     issue_numbers: dict[str, int] = board.get("issue_numbers", {})
     items = (
         list(candidate_item_ids)
         if candidate_item_ids is not None
         else [iid for iid, num in issue_numbers.items() if num > 0]
     )
-    explicit_pairs = {
-        (d.dependent_item_id, d.blocker_issue_number)
-        for d in graph.dependencies
-        if d.source == DependencySource.EXPLICIT
-    }
-    incoming: list[CardDependency] = []
-    for item_id in items:
+
+    semaphore = asyncio.Semaphore(_COMMENT_FETCH_CONCURRENCY)
+
+    async def _collect(item_id: str) -> list[CardDependency]:
         own_issue = issue_numbers.get(item_id, 0)
         if not own_issue:
-            continue
-        try:
-            comments = await fetch(own_issue)
-        except Exception as exc:
-            logger.warning(
-                "dependency.comment_fetch_failed",
-                item_id=item_id,
-                issue=own_issue,
-                error_type=type(exc).__name__,
-            )
-            continue
+            return []
+        async with semaphore:
+            if accepts_strict:
+                comments = await fetch(own_issue, strict=True)
+            else:
+                comments = await fetch(own_issue)
+        explicit_pairs = {
+            (d.dependent_item_id, d.blocker_issue_number)
+            for d in graph.dependencies
+            if d.source == DependencySource.EXPLICIT
+        }
         seen_in_card: set[int] = set()
+        edges: list[CardDependency] = []
         for comment in comments if isinstance(comments, list) else []:
             body = str(comment.get("body", "")) if isinstance(comment, dict) else ""
             for blocker_num in parse_dependencies(body):
@@ -257,7 +289,7 @@ async def resolve_comment_dependencies(
                 seen_in_card.add(blocker_num)
                 if (item_id, blocker_num) in explicit_pairs:
                     continue
-                incoming.append(
+                edges.append(
                     CardDependency(
                         dependent_item_id=item_id,
                         blocker_issue_number=blocker_num,
@@ -265,8 +297,28 @@ async def resolve_comment_dependencies(
                         status=_resolve_status(blocker_num, graph.issue_to_column),
                     ),
                 )
+        return edges
+
+    results = await asyncio.gather(
+        *(_collect(iid) for iid in items),
+        return_exceptions=True,
+    )
+    incoming: list[CardDependency] = []
+    unknown: set[str] = set()
+    for item_id, result in zip(items, results, strict=True):
+        if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            logger.warning(
+                "dependency.comment_fetch_failed",
+                item_id=item_id,
+                error_type=type(result).__name__,
+            )
+            unknown.add(item_id)
+            continue
+        incoming.extend(result)
     if not incoming:
-        return
+        return unknown
     # Merge with precedence: COMMENT replaces NATIVE_RELATIONSHIP for the same
     # pair; EXPLICIT (already skipped above) and existing COMMENT edges win.
     merged: dict[tuple[str, int], CardDependency] = {
@@ -276,14 +328,33 @@ async def resolve_comment_dependencies(
     for dep in incoming:
         key = (dep.dependent_item_id, dep.blocker_issue_number)
         current = merged.get(key)
-        if current is None or current.source == DependencySource.NATIVE_RELATIONSHIP:
+        if current is None:
             merged[key] = dep
+        elif current.source == DependencySource.NATIVE_RELATIONSHIP:
+            merged[key] = CardDependency(
+                dependent_item_id=dep.dependent_item_id,
+                blocker_issue_number=dep.blocker_issue_number,
+                source=DependencySource.COMMENT,
+                status=_merge_status(dep.status, current.status),
+            )
     graph.dependencies = list(merged.values())
     graph.by_dependent.clear()
     graph.by_blocker.clear()
     for dep in graph.dependencies:
         graph.by_dependent.setdefault(dep.dependent_item_id, []).append(dep)
         graph.by_blocker.setdefault(dep.blocker_issue_number, []).append(dep)
+    # Comment edges can close cycles that build_graph couldn't see yet.
+    graph.cycles = detect_cycles(graph, graph.issue_to_item)
+    return unknown
+
+
+def _merge_status(a: DependencyStatus, b: DependencyStatus) -> DependencyStatus:
+    """Most-optimistic of two statuses (SATISFIED > PENDING > UNRESOLVABLE)."""
+    if DependencyStatus.SATISFIED in (a, b):
+        return DependencyStatus.SATISFIED
+    if DependencyStatus.PENDING in (a, b):
+        return DependencyStatus.PENDING
+    return a
 
 
 def detect_cycles(
