@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from coordinare import vocabulary
+
 DASHBOARD_HTML_BUDGET_BYTES = 112 * 1024
 
 _DASHBOARD_JS_DIR = Path(__file__).resolve().parent / "dashboard_static"
@@ -26,13 +28,18 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 
 _DASHBOARD_JS_FILES = ("helpers", "config", "performers", "workflow", "account")
 
+# 136: the glossary is generated from coordinare.vocabulary, not read from
+# disk, and loads first so every other script can look labels up in it.
+_VOCABULARY_JS = "vocabulary"
+_DASHBOARD_JS_ORDER = (_VOCABULARY_JS, *_DASHBOARD_JS_FILES)
+
 def _load_dashboard_js() -> tuple[dict[str, str], dict[str, str]]:
-    sources: dict[str, str] = {}
-    revisions: dict[str, str] = {}
+    sources: dict[str, str] = {_VOCABULARY_JS: vocabulary.javascript()}
     for name in _DASHBOARD_JS_FILES:
-        text = (_DASHBOARD_JS_DIR / f"{name}.js").read_text(encoding="utf-8")
-        sources[name] = text
-        revisions[name] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        sources[name] = (_DASHBOARD_JS_DIR / f"{name}.js").read_text(encoding="utf-8")
+    revisions = {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()[:12] for name, text in sources.items()
+    }
     return sources, revisions
 
 _DASHBOARD_JS_SOURCES, _DASHBOARD_JS_REVISIONS = _load_dashboard_js()
@@ -47,7 +54,7 @@ _DASHBOARD_HTML = _DASHBOARD_HTML_RAW.replace(
     "<!--349-static-js-->",
     "".join(
         f'<script src="/static/{name}.js?v={_DASHBOARD_JS_REVISIONS[name]}"></script>\n'
-        for name in _DASHBOARD_JS_FILES
+        for name in _DASHBOARD_JS_ORDER
     ),
 )
 

@@ -45,10 +45,15 @@ def _extract_queued_js() -> str:
     fmt = re.search(r"function humanPhase\(phase\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if fmt is None:
         raise AssertionError("the shared humanPhase() helper is no longer in helpers.js")
+    # 136: humanPhase is a lookup into the generated glossary.
+    lookup = re.search(r"function vocabularyLabel\(code\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
+    if lookup is None:
+        raise AssertionError("the shared vocabularyLabel() helper is no longer in helpers.js")
+    glossary = _DASHBOARD_JS_SOURCES["vocabulary"] + "\n" + lookup.group(0)
     alias = "var formatPhaseLabel = humanPhase;"
     if alias not in _HELPERS_JS:
         raise AssertionError("the formatPhaseLabel alias is no longer in helpers.js")
-    return esc.group(0) + "\n\n" + fmt.group(0) + "\n\n" + alias + "\n\n" + queued_js
+    return esc.group(0) + "\n\n" + glossary + "\n\n" + fmt.group(0) + "\n\n" + alias + "\n\n" + queued_js
 
 
 def test_queued_js_slice_is_complete() -> None:

@@ -2245,3 +2245,16 @@ def test_recent_checks_panel_collapses_identical_rows(
     expect(rows).to_have_count(1, timeout=_WAIT_LIVE)
     expect(rows.first).to_contain_text("12 checks")
     expect(rows.first).to_contain_text("avg 5.00s")
+
+
+@pytest.mark.e2e
+def test_glossary_page_explains_the_vocabulary(page: Page, live_server_url: str) -> None:
+    """#136: the Glossary page renders from the generated vocabulary."""
+    page.goto(f"{live_server_url}/glossary")
+    section = page.locator("#glossary-section")
+    for noun in ("Symphony", "Stage", "Agent", "Run", "Check"):
+        expect(section.locator("strong", has_text=re.compile(rf"^{noun}$"))).to_have_count(1, timeout=_WAIT_LIVE)
+    expect(section).to_contain_text("One agent working on one stage of one card")
+    expect(page.locator(".nav-link.nav-active")).to_have_attribute("href", "/glossary")
+    labels = page.evaluate("() => [humanPhase('monitoring_performer'), humanPhase('never_seen_code')]")
+    assert labels == ["Monitoring Performer", "never_seen_code"]

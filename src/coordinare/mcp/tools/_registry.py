@@ -29,6 +29,7 @@ DEFERRED_REST_PREFIXES = (
     "/events",
     "/webhook",
     "/api/assistant",
+    "/api/vocabulary",  # 136: display labels for the human dashboard, static data.
     "/health",
     "/live",
     "/ready",
@@ -41,6 +42,7 @@ DEFERRED_PAGE_PATHS = (
     "/performers",
     "/personas",
     "/history",
+    "/glossary",
     "/symphonies",
     "/symphonies/{name}",
     "/admin/config",

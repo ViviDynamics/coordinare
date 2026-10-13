@@ -6,15 +6,16 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from coordinare import vocabulary
 from coordinare.dashboard.assets import (
-    _ACTIVITY_STREAM_JS,
-    _DASHBOARD_BRAND_ASSETS,
-    _DASHBOARD_BRAND_ETAGS,
-    _DASHBOARD_JS_SOURCES,
-    _DASHBOARD_SHELL_CSS,
-    _page_html,
+        _ACTIVITY_STREAM_JS,
+        _DASHBOARD_BRAND_ASSETS,
+        _DASHBOARD_BRAND_ETAGS,
+        _DASHBOARD_JS_SOURCES,
+        _DASHBOARD_SHELL_CSS,
+        _page_html,
 )
 
 if TYPE_CHECKING:
@@ -97,6 +98,19 @@ def _register_dashboard_history(app: FastAPI, ctx: DashboardContext) -> None:
             return HTMLResponse(_page_html(_assistant_on))
 
 
+def _register_dashboard_glossary(app: FastAPI, ctx: DashboardContext) -> None:
+        _assistant_on = ctx.assistant_on
+
+        @app.get("/glossary", response_class=HTMLResponse)
+        async def dashboard_glossary() -> HTMLResponse:
+            return HTMLResponse(_page_html(_assistant_on))
+
+        @app.get("/api/vocabulary")
+        async def dashboard_vocabulary() -> JSONResponse:
+            """136: the glossary every display label comes from."""
+            return JSONResponse(vocabulary.payload())
+
+
 def _register_dashboard_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
         _assistant_on = ctx.assistant_on
 
@@ -140,6 +154,7 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_dashboard_performers(app, ctx)
     _register_dashboard_personas(app, ctx)
     _register_dashboard_history(app, ctx)
+    _register_dashboard_glossary(app, ctx)
     _register_dashboard_symphonies(app, ctx)
     _register_dashboard_symphony_detail(app, ctx)
     _register_dashboard_admin_config(app, ctx)
