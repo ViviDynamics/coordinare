@@ -65,6 +65,10 @@ from coordinare.services.notification_config import (
     describe_notification_posture,
     sanitize_notifications,
 )
+from coordinare.services.run_transcript import (
+    TranscriptCollector,
+    resolve_transcripts_root,
+)
 from coordinare.state_store import StateStore
 from coordinare.transport.subprocess_transport import SubprocessTransport
 from coordinare.workspace import WorkspaceManager
@@ -661,6 +665,8 @@ def _build_performer_services(
 
 def _build_http_performer_services(
     config: ProjectConfiguration,
+    *,
+    transcripts: TranscriptCollector | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
@@ -718,7 +724,11 @@ def _build_http_performer_services(
             new_env = dict(cfg.env)
             new_env.setdefault("PERFORMER_LOG_DIR", "/var/log/performer")
             cfg = cfg.model_copy(update={"volumes": existing_volumes, "env": new_env})
-        service = HTTPPerformerService(cfg, runtime=_build_performer_runtime(config))
+        service = HTTPPerformerService(
+            cfg,
+            runtime=_build_performer_runtime(config),
+            transcripts=transcripts,
+        )
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
             if stage is None:
@@ -875,6 +885,28 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
+def _build_transcript_collector(
+    config: ProjectConfiguration,
+    config_path: Path | None,
+) -> TranscriptCollector:
+    """129: the transcripts root and its settings. Root follows the attempt-log base."""
+    _state_base = config.state_file_path.resolve().parent
+    _attempt_base = (
+        config_path.resolve().parent if config_path is not None else _state_base
+    )
+    root = resolve_transcripts_root(
+        getattr(config, "performer_log_dir", None),
+        attempt_base=_attempt_base,
+        state_base=_state_base,
+    )
+    return TranscriptCollector(
+        root,
+        enabled=config.transcripts.enabled,
+        max_bytes_per_run=config.transcripts.max_bytes_per_run,
+        retention_days=config.transcripts.retention_days,
+    )
+
+
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
@@ -1003,7 +1035,11 @@ async def _bootstrap_services(
                 count=orphan_count,
                 hint="performers left by a previous coordinare crash",
             )
-    http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(config)
+    transcript_collector = _build_transcript_collector(config, config_path)
+    http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(
+        config,
+        transcripts=transcript_collector,
+    )
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
         service_lists=service_lists,
@@ -1076,6 +1112,7 @@ async def _bootstrap_services(
         "activity_log": activity_log,
         # 141: attempt telemetry singleton
         "attempt_log": attempt_log,
+        "transcript_collector": transcript_collector,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,

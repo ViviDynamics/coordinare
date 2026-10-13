@@ -46,6 +46,7 @@ import structlog
 from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
+from performer.backends.opencode import OpenCodeTranscriptTap
 from performer.backends._lcd_helpers import (
     redact_request_body as _redact_request_body,
     strip_base_url_credentials as _strip_base_url_creds_local,
@@ -261,6 +262,8 @@ class OpenCodeCompatAdapter:
         # Last upstream HTTP error seen by _post_chat_completions, surfaced via
         # PerformerResponse.metrics.upstream_http_error by the orchestration layer.
         self.last_upstream_http_error: dict | None = None
+        # spec 129: full-content transcript channel (records only, no status effect)
+        self._tap = OpenCodeTranscriptTap()
 
     @property
     def base_url(self) -> str | None:
@@ -334,7 +337,8 @@ class OpenCodeCompatAdapter:
             session_body["maxTokens"] = max_tokens
         resp = await self._client.post("/session", json=session_body or None)
         resp.raise_for_status()
-        self._session_id = resp.json()["id"]
+        session_info = resp.json()
+        self._session_id = session_info["id"]
         log.info(
             "backend.session_created",
             backend=self._adapter_name,
@@ -343,6 +347,7 @@ class OpenCodeCompatAdapter:
         )
 
         task_text = _build_task_prompt(score, stand_path=Path(stand.path))
+        self._tap.begin(task_text, session=session_info, model=model)
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": task_text}]},
@@ -369,6 +374,7 @@ class OpenCodeCompatAdapter:
         if self._client is None or self._session_id is None:
             log.warning("relay_feedback called but session not active")
             return
+        self._tap.follow_up(feedback)
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": feedback}]},
@@ -576,9 +582,17 @@ class OpenCodeCompatAdapter:
         except Exception as exc:
             log.warning("event reader error", error=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
+            self._tap.error(str(exc))
         finally:
             if self._status.state == "working":
                 await self._resolve_final_status()
+            if self._status.state != "working":
+                self._tap.finish(
+                    self._status.state,
+                    output=self._status.output,
+                    error_reason=self._status.error_reason,
+                    questions=list(self._status.questions),
+                )
 
     async def _resolve_final_status(self) -> None:
         if self._client is None or self._session_id is None:
@@ -602,6 +616,7 @@ class OpenCodeCompatAdapter:
         payload = event.get("payload", event)
         event_type = payload.get("type", "")
         props = payload.get("properties", {})
+        self._tap.observe(event_type, props)
 
         if event_type == "session.updated":
             session = props.get("session", props)

@@ -24,9 +24,12 @@ import tempfile
 import uuid
 from collections import deque
 from dataclasses import replace as _dc_replace
+from typing import Any
 
 import psutil
 import structlog
+
+from performer import transcript
 
 from performer.backends._clarifications import clarification_prompt_section
 from performer.backends._relay_feedback import relay_feedback_prompt_section
@@ -60,6 +63,21 @@ _RESULT_FIELDS = (
     "contract", "driver", "output", "error",
 )
 
+_DRIVER_CAPABILITY = (
+    "driver --jsonl carries full text on each event line, but it has one tool_use "
+    "event per tool activity and no tool output field (contract C5), so tool_result "
+    "is unavailable and tool_call holds the event text and raw line. assistant_text "
+    "comes only from progress lines marked is_delta; usage comes from cost events "
+    "and the result line."
+)
+
+
+def _count(value: object) -> int | None:
+    """A non-negative token count as the provider reported it, else None."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
 
 class DriverBackend:
     """Backend adapter that drives ``driver run`` in JSONL contract mode."""
@@ -75,6 +93,9 @@ class DriverBackend:
         self._session_path: pathlib.Path | None = None
         self._saw_result = False
         self._tuning: dict[str, str | int | float | None] = {}
+        # spec 129: streamed model text (is_delta progress), per stream id,
+        # held until the stream reaches a non-delta line or the result.
+        self._pending_stream: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -104,7 +125,17 @@ class DriverBackend:
         }
         self._session_path = pathlib.Path(tempfile.gettempdir()) / f"driver-{uuid.uuid4().hex}.json"
         cmd = self._build_command(score, resume=False)
-        cmd.append(_build_task_prompt(score, stand_path=pathlib.Path(stand.path)))
+        task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
+        cmd.append(task_text)
+        transcript.emit(
+            "capability",
+            text=_DRIVER_CAPABILITY,
+            input_data={
+                "unavailable": ["tool_result"],
+                "provided": ["user", "system", "assistant_text", "tool_call", "thinking", "usage", "error", "result"],
+            },
+        )
+        transcript.emit("user", text=task_text)
         await self._spawn(cmd)
 
     def get_status(self) -> BackendStatus:
@@ -131,6 +162,7 @@ class DriverBackend:
         await self._terminate()
         cmd = self._build_command(None, resume=True)
         cmd.append(feedback)
+        transcript.emit("user", text=feedback)
         self._tuning = {}  # the session keeps its original config on resume
         self._saw_result = False
         self._status = BackendStatus(state="working")
@@ -220,6 +252,8 @@ class DriverBackend:
             log.warning("driver reader error", error=str(exc))
             if self._status.state == "working":
                 self._status = BackendStatus(state="error", error_reason=str(exc))
+            if not self._saw_result:
+                self._record_outcome(None)
             return
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
@@ -227,6 +261,7 @@ class DriverBackend:
             pass
         if not self._saw_result:
             self._handle_exit(self._proc.returncode or 0)
+            self._record_outcome(None)
 
     def _handle_line(self, line: str) -> None:
         """Translate one JSONL line into events / status (C5, C6)."""
@@ -234,13 +269,91 @@ class DriverBackend:
             parsed = json.loads(line)
         except json.JSONDecodeError:
             self._log_buffer.append(line[:_MAX_TEXT])
+            self._flush_stream()
+            transcript.emit("system", text=line, input_data={"raw_line": line})
             return
         if not isinstance(parsed, dict):
             return
         if parsed.get("type") == "result":
             self._handle_result(parsed)
+            self._record_outcome(parsed)
             return
+        self._transcribe(parsed)
         self._handle_event(parsed)
+
+    # ------------------------------------------------------------------
+    # Transcript (spec 129). Records only; never changes status or events.
+    # ------------------------------------------------------------------
+
+    def _transcribe(self, event: dict[str, Any]) -> None:
+        """Record one non-result line with its full text, before the 200-char cut."""
+        raw_type = str(event.get("type", ""))
+        text = str(event.get("text", ""))
+        if raw_type == "progress" and event.get("is_delta") is True:
+            stream = str(event.get("stream_id", ""))
+            self._pending_stream[stream] = self._pending_stream.get(stream, "") + text
+            return
+        self._flush_stream()
+        if raw_type == "tool_use":
+            transcript.emit(
+                "tool_call",
+                text=text,
+                tool_name=str(event.get("detail", "")) or "tool",
+                input_data=event,
+            )
+        elif raw_type == "thinking":
+            transcript.emit("thinking", text=text, input_data=event)
+        elif raw_type == "cost":
+            self._emit_usage(
+                event.get("usage"),
+                "driver cost event; the contract does not say whether this is a per-turn or a run total",
+            )
+        elif raw_type == "error":
+            transcript.emit("error", text=text, input_data=event)
+        else:
+            # Non-delta progress, output, and unrecognised types are status or raw
+            # lines, not model text; they keep their raw payload as system records.
+            transcript.emit("system", text=text, input_data=event)
+
+    def _flush_stream(self) -> None:
+        for text in self._pending_stream.values():
+            transcript.emit("assistant_text", text=text)
+        self._pending_stream.clear()
+
+    def _record_outcome(self, raw: dict[str, Any] | None) -> None:
+        """The final result record. ``raw`` is the result line, or None when the
+        process ended without one."""
+        self._flush_stream()
+        if raw is not None:
+            self._emit_usage(raw.get("usage"), "run total from the driver result line")
+        state = self._status.state
+        is_error = state == "error"
+        input_data: dict[str, Any] = raw if raw is not None else {
+            "source": "process exited without a result line",
+            "state": state,
+            "stop_reason": self._status.stop_reason,
+        }
+        transcript.emit(
+            "result",
+            text=self._status.error_reason if is_error else None,
+            output_data=self._status.output,
+            input_data=input_data,
+            is_error=is_error,
+        )
+
+    def _emit_usage(self, usage: object, note: str) -> None:
+        if not isinstance(usage, dict):
+            return
+        input_tokens = _count(usage.get("input_tokens"))
+        output_tokens = _count(usage.get("output_tokens"))
+        if input_tokens is None and output_tokens is None:
+            return
+        transcript.emit(
+            "usage",
+            text=note,
+            input_data=usage,
+            usage=transcript.TranscriptUsage(input_tokens=input_tokens, output_tokens=output_tokens),
+        )
 
     def _handle_event(self, event: dict[str, object]) -> None:
         """C5: ``BackendEvent`` passthrough; unrecognized → progress-equivalent."""

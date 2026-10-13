@@ -253,6 +253,9 @@ class JobInitPayload(BaseModel):
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+    # 129: per-run transcript byte cap. None means transcripts are disabled, so
+    # the performer records nothing for this job.
+    transcript_max_bytes: int | None = None
 
     @field_validator("repo_url")
     @classmethod
@@ -303,6 +306,9 @@ class JobStatus(BaseModel):
     result: JobResult | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     metrics: dict[str, Any] | None = None
+    # 129: transcript delivery (see the performer's GET /jobs/{id} contract).
+    transcript: list[dict[str, Any]] = Field(default_factory=list)
+    transcript_last_seq: int | None = None
 
     @field_validator("progress_pct")
     @classmethod

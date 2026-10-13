@@ -482,6 +482,8 @@ class CoordinareState(TypedDict, total=False):
     # 141: AttemptLog singleton.  Typed Any so LangGraph's runtime annotation
     # resolver never imports attempt_log at graph-build time.
     attempt_log: Any
+    # 129: the run-transcript collector (None when transcripts are not wired).
+    transcript_collector: Any
 
     # 064: Closer PR-checks gate — per-card cache of last poll for tick fast-path.
     # Keyed by card_id; resets when PR HEAD SHA changes.

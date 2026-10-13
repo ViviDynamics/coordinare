@@ -41,6 +41,7 @@ from performer.backends._clarifications import clarification_prompt_section
 from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
+from performer import transcript
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
@@ -49,6 +50,12 @@ from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Sc
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+# assistant stopReason values that mean the model turn did not complete.
+_FAILED_STOP_REASONS = ("error", "aborted")
+
+
+def _transcript_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 class PiBackend:
@@ -66,6 +73,8 @@ class PiBackend:
         self._model: str | None = None
         self._provider: str | None = None
         self._saw_terminal: bool = False
+        # Transcript (spec 129): last completed assistant text from message_end.
+        self._transcript_last_text: str = ""
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -82,6 +91,22 @@ class PiBackend:
         max_tokens: int | None = None,
     ) -> None:
         """Write provider config and launch ``pi -p --mode json``."""
+        transcript.emit(
+            "capability",
+            text=(
+                "Pi --mode json streams complete message_end messages (full assistant text and "
+                "thinking blocks, usage per model call) and tool_execution_start/end (full "
+                "arguments and result); thinking and usage appear only when the provider "
+                "returns them, and tool_execution_update partial results are not recorded."
+            ),
+            input_data={
+                "unavailable": [],
+                "provided": [
+                    "system", "user", "assistant_text", "thinking", "tool_call",
+                    "tool_result", "usage", "result", "error",
+                ],
+            },
+        )
         # 088 B1 shared env policy: pi-tui uses the `v` (unicodeSets) regex
         # flag, which crashes on Node < 20 — the CLI must launch on the
         # IMAGE's node (22), never the env-cache's project-pinned node (e.g.
@@ -118,6 +143,7 @@ class PiBackend:
 
         task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
         cmd.append(task_text)
+        transcript.emit("user", text=task_text)
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -149,8 +175,10 @@ class PiBackend:
         if self._model:
             cmd += ["--model", self._model]
         cmd.append(feedback)
+        transcript.emit("user", text=feedback)
         self._saw_terminal = False
         self._output_accumulator.clear()
+        self._transcript_last_text = ""
         self._status = BackendStatus(state="working")
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -258,6 +286,7 @@ class PiBackend:
             raise
         except Exception as exc:  # noqa: BLE001 — defensive; surface as error
             log.warning("pi reader error", error=str(exc))
+            transcript.emit("error", text=str(exc))
             if self._status.state == "working":
                 self._status = BackendStatus(state="error", error_reason=str(exc))
             return
@@ -271,6 +300,12 @@ class PiBackend:
         if not self._saw_terminal and self._status.state == "working":
             rc = self._proc.returncode
             output = "".join(self._output_accumulator) or None
+            transcript.emit(
+                "result",
+                text=output or self._transcript_last_text or None,
+                input_data={"stop_reason": None, "inferred_from_exit_code": rc},
+                is_error=rc != 0,
+            )
             if rc == 0:
                 self._status = BackendStatus(state="done", output=output)
             else:
@@ -282,6 +317,7 @@ class PiBackend:
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         etype = str(event.get("type", ""))
+        self._transcribe_event(etype, event)
 
         if etype == "message_start":
             self._message_seq = getattr(self, "_message_seq", 0) + 1
@@ -323,6 +359,110 @@ class PiBackend:
               is_delta: bool = False, stream_id: str = "") -> None:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
                                                is_delta=is_delta, stream_id=stream_id))
+
+    # ------------------------------------------------------------------
+    # Internal: run transcript (spec 129). Reads the raw stream event, never
+    # the 200-char BackendEvent summary. Does not alter status or events.
+    # ------------------------------------------------------------------
+
+    def _transcribe_event(self, etype: str, event: dict[str, Any]) -> None:
+        if etype in ("session", "agent_start"):
+            transcript.emit("system", text=f"pi {etype} event", input_data=event)
+        elif etype == "message_end":
+            message = event.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                self._transcribe_assistant_message(message)
+        elif etype == "tool_execution_start":
+            transcript.emit(
+                "tool_call",
+                tool_name=str(event.get("toolName", "tool")),
+                call_id=str(event.get("toolCallId", "")) or None,
+                input_data=event.get("args"),
+            )
+        elif etype == "tool_execution_end":
+            transcript.emit(
+                "tool_result",
+                tool_name=str(event.get("toolName", "tool")),
+                call_id=str(event.get("toolCallId", "")) or None,
+                output_data=event.get("result"),
+                is_error=bool(event.get("isError", False)),
+            )
+        elif etype == "auto_retry_start":
+            message = str(event.get("errorMessage") or etype)
+            transcript.emit("error", text=message, input_data=event)
+        elif etype == "agent_end":
+            self._transcribe_agent_end(event)
+        elif etype == "error":
+            err = event.get("error")
+            message = ""
+            if isinstance(err, dict):
+                message = str(err.get("message", ""))
+            message = message or str(event.get("message", "")) or etype
+            transcript.emit("error", text=message, input_data=event)
+            if not event.get("willRetry", False):
+                transcript.emit("result", text=message, is_error=True)
+
+    def _transcribe_assistant_message(self, message: dict[str, Any]) -> None:
+        content = message.get("content")
+        blocks: list[Any]
+        if isinstance(content, str):
+            blocks = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            blocks = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text = str(block.get("text", ""))
+                if text:
+                    self._transcript_last_text = text
+                    transcript.emit("assistant_text", text=text)
+            elif block.get("type") == "thinking":
+                thinking = str(block.get("thinking", ""))
+                if thinking:
+                    transcript.emit("thinking", text=thinking)
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            counts = transcript.TranscriptUsage(
+                input_tokens=_transcript_int(usage.get("input")),
+                output_tokens=_transcript_int(usage.get("output")),
+                cache_read=_transcript_int(usage.get("cacheRead")),
+                cache_write=_transcript_int(usage.get("cacheWrite")),
+                model=str(message.get("model") or "") or None,
+            )
+            if any(
+                value is not None for value in (
+                    counts.input_tokens, counts.output_tokens,
+                    counts.cache_read, counts.cache_write,
+                )
+            ):
+                transcript.emit(
+                    "usage",
+                    text="token counts for one model call (one assistant message)",
+                    usage=counts,
+                )
+        stop = str(message.get("stopReason") or "")
+        if stop in _FAILED_STOP_REASONS:
+            failure = str(message.get("errorMessage") or stop)
+            transcript.emit("error", text=failure, input_data={"stop_reason": stop})
+
+    def _transcribe_agent_end(self, event: dict[str, Any]) -> None:
+        messages = event.get("messages")
+        final = _extract_final_assistant_text(messages) or "".join(self._output_accumulator)
+        stop: str | None = None
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    stop = str(msg.get("stopReason") or "") or None
+                    break
+        transcript.emit(
+            "result",
+            text=final or None,
+            input_data={"stop_reason": stop},
+            is_error=(stop in _FAILED_STOP_REASONS) if stop is not None else None,
+        )
 
 
 def _extract_final_assistant_text(messages: Any) -> str:

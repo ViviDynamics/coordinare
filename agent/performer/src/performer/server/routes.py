@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -85,9 +85,18 @@ def register_routes(app: FastAPI) -> None:
         )
 
     @app.get("/jobs/{job_id}", response_model=JobStatus)
-    async def get_job(job_id: str, request: Request) -> JobStatus:
+    async def get_job(
+        job_id: str,
+        request: Request,
+        transcript_after: int | None = Query(default=None, ge=0),
+        transcript_limit: int = Query(default=200, ge=1, le=500),
+    ) -> JobStatus:
         try:
-            return _runner(request).get(job_id)
+            return _runner(request).get(
+                job_id,
+                transcript_after=transcript_after,
+                transcript_limit=transcript_limit,
+            )
         except JobNotFoundError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
 

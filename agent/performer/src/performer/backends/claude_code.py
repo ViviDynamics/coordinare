@@ -28,7 +28,7 @@ import tempfile
 import time
 from collections import deque
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 import psutil
 import structlog
@@ -36,10 +36,12 @@ import structlog
 from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
+from performer import transcript
 from performer.backends.base import BackendStatus
 from performer.backends.claude_code_shim import ClaudeCodeShim
 from performer.config import Settings, get_settings
 from performer.io_utils import iter_lines_chunked
+from performer.transcript import TranscriptUsage
 from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
@@ -85,6 +87,11 @@ class ClaudeCodeBackend:
         self._event_buffer: deque[BackendEvent] = deque(maxlen=200)
         self._stand: Stand | None = None
         self._session_id: str | None = None  # captured from system/init event
+        # 129: tool_use id -> tool name, so a tool_result record can carry the
+        # name it answers; message ids already billed, because a multi-block
+        # assistant message repeats its usage on every block event.
+        self._transcript_tool_names: dict[str, str] = {}
+        self._transcript_usage_ids: set[str] = set()
         self._git_env: dict[str, str] = {}
         self._cache_env: dict[str, str] = {}
         self._tool_env: dict[str, str] = {}
@@ -214,6 +221,16 @@ class ClaudeCodeBackend:
                 f"relay feedback in prompt: {len(reviews)} review(s), "
                 f"{inline} inline comment(s)",
             )
+        transcript.emit(
+            "capability",
+            text="every transcript record type is available from the claude stream-json "
+            "output; thinking records appear only when the model emits thinking blocks",
+            input_data={"unavailable": [], "provided": [
+                "system", "user", "assistant_text", "thinking", "tool_call",
+                "tool_result", "usage", "result", "error",
+            ]},
+        )
+        transcript.emit("user", text=prompt)
         await self._launch(prompt)
 
     def get_status(self) -> BackendStatus:
@@ -280,6 +297,7 @@ class ClaudeCodeBackend:
         await self.stop()
         if self._stand is None:
             return
+        transcript.emit("user", text=feedback)
         await self._launch(feedback, resume_session_id=self._session_id)
         self._status = BackendStatus(state="working")
 
@@ -611,20 +629,21 @@ class ClaudeCodeBackend:
                     output=output_text,
                 )
             else:
-                self._status = BackendStatus(
-                    state="error",
-                    error_reason=(
-                        f"claude CLI idle for {int(idle_timeout)}s "
-                        "with no terminal event"
-                    ),
+                idle_reason = (
+                    f"claude CLI idle for {int(idle_timeout)}s "
+                    "with no terminal event"
                 )
+                transcript.emit("error", text=idle_reason)
+                self._status = BackendStatus(state="error", error_reason=idle_reason)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("claude code reader error", error=str(exc))
+            transcript.emit("error", text=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
         finally:
             self._close_stdout_capture()
+            status_before_finally = self._status
             if self._status.state == "working" and self._proc is not None:
                 try:
                     if self._proc.returncode is None:
@@ -666,6 +685,127 @@ class ClaudeCodeBackend:
                         )
                 except Exception as exc:  # pragma: no cover
                     self._status = BackendStatus(state="error", error_reason=str(exc))
+            if self._status is not status_before_finally and self._status.state == "error":
+                transcript.emit("error", text=self._status.error_reason or "claude run failed")
+
+    def _transcribe_event(self, event: dict[str, Any]) -> None:
+        """129: full-fidelity transcript records for one stream-json event.
+
+        Reads the untruncated payload. The 200-character BackendEvent summaries
+        in ``_handle_event`` are a separate channel and are never a source here.
+        """
+        if not transcript.transcript_enabled():
+            return
+        event_type = event.get("type", "")
+        if event_type == "system":
+            subtype = str(event.get("subtype", ""))
+            if subtype == "api_retry":
+                err = str(event.get("error", "")) or "api_retry"
+                transcript.emit("error", text=f"upstream api_retry ({err})", output_data=event)
+            else:
+                transcript.emit("system", text=subtype or "system", input_data=event)
+        elif event_type == "assistant":
+            self._transcribe_assistant(event)
+        elif event_type == "user":
+            self._transcribe_user_content((event.get("message") or {}).get("content"))
+        elif event_type == "tool_result":
+            self._transcribe_tool_result(event)
+        elif event_type == "result":
+            self._transcribe_result(event)
+
+    def _transcribe_assistant(self, event: dict[str, Any]) -> None:
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        model = message.get("model")
+        message_id = message.get("id")
+        usage = message.get("usage")
+        if isinstance(usage, dict) and (
+            message_id is None or str(message_id) not in self._transcript_usage_ids
+        ):
+            if message_id is not None:
+                self._transcript_usage_ids.add(str(message_id))
+            transcript.emit("usage", usage=_usage_from_claude(usage, model))
+        for block in message.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type == "text":
+                transcript.emit("assistant_text", text=str(block.get("text", "")))
+            elif block_type == "thinking":
+                transcript.emit("thinking", text=str(block.get("thinking", "")))
+            elif block_type == "tool_use":
+                call_id = str(block.get("id", ""))
+                name = str(block.get("name", "tool"))
+                if call_id:
+                    self._transcript_tool_names[call_id] = name
+                transcript.emit(
+                    "tool_call",
+                    tool_name=name,
+                    call_id=call_id or None,
+                    input_data=block.get("input"),
+                )
+
+    def _transcribe_user_content(self, content: object) -> None:
+        if isinstance(content, str):
+            transcript.emit("user", text=content)
+            return
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type == "tool_result":
+                self._transcribe_tool_result(block)
+            elif block_type == "text":
+                transcript.emit("user", text=str(block.get("text", "")))
+
+    def _transcribe_tool_result(self, block: dict[str, Any]) -> None:
+        call_id = str(block.get("tool_use_id", "")) or None
+        tool_name = self._transcript_tool_names.get(call_id or "")
+        transcript.emit(
+            "tool_result",
+            tool_name=tool_name,
+            call_id=call_id,
+            output_data=block.get("content", ""),
+            is_error=bool(block.get("is_error", False)),
+        )
+
+    def _transcribe_result(self, event: dict[str, Any]) -> None:
+        subtype = str(event.get("subtype", ""))
+        usage = event.get("usage")
+        model_usage = event.get("modelUsage")
+        model = (
+            next(iter(model_usage))
+            if isinstance(model_usage, dict) and len(model_usage) == 1
+            else None
+        )
+        if isinstance(usage, dict):
+            transcript.emit(
+                "usage",
+                text="run total from the result event",
+                usage=_usage_from_claude(usage, model),
+            )
+        result_text = event.get("result")
+        transcript.emit(
+            "result",
+            text=subtype or "result",
+            output_data={
+                "result": result_text if isinstance(result_text, str) else None,
+                "stop_reason": event.get("stop_reason"),
+                "num_turns": event.get("num_turns"),
+                "total_cost_usd": event.get("total_cost_usd", event.get("cost_usd")),
+                "session_id": event.get("session_id"),
+            },
+            is_error=bool(event.get("is_error", False)) or subtype != "success",
+        )
+        if subtype in ("error", "interrupted"):
+            transcript.emit(
+                "error",
+                text=str(event.get("error", subtype)),
+                output_data=event,
+            )
 
     def _handle_event(self, event: dict) -> bool:  # type: ignore[type-arg]
         """Translate a Claude Code stream-json event into BackendStatus + BackendEvent.
@@ -676,6 +816,7 @@ class ClaudeCodeBackend:
         so a stalled CLI stuck in retries can't keep the idle watchdog alive
         indefinitely.
         """
+        self._transcribe_event(event)
         event_type = event.get("type", "")
 
         if event_type == "system":
@@ -833,6 +974,24 @@ _RESULT_TOKEN_FIELDS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+
+
+def _token_field(value: object) -> int | None:
+    """A real token count, or None. Booleans and floats never count as tokens."""
+    if _is_token_count(value) and isinstance(value, int):
+        return value
+    return None
+
+
+def _usage_from_claude(usage: dict[str, Any], model: object) -> TranscriptUsage:
+    """Map a Claude usage object to the transcript usage fields (129)."""
+    return TranscriptUsage(
+        input_tokens=_token_field(usage.get("input_tokens")),
+        output_tokens=_token_field(usage.get("output_tokens")),
+        cache_read=_token_field(usage.get("cache_read_input_tokens")),
+        cache_write=_token_field(usage.get("cache_creation_input_tokens")),
+        model=model if isinstance(model, str) and model else None,
+    )
 
 
 def _is_token_count(value: object) -> bool:

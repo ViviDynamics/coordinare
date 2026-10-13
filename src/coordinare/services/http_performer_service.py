@@ -36,6 +36,7 @@ from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
+from coordinare.services.run_transcript import UNATTRIBUTED
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
@@ -48,16 +49,24 @@ if TYPE_CHECKING:
     from coordinare.models.performer_endpoint import (
         JobAcceptResponse,
         JobInitPayload,
+        JobStatus,
         PerformerEndpointConfig,
         VolumeMount,
     )
     from coordinare.services.performer_runtime import PerformerRuntime
+    from coordinare.services.run_transcript import RunTranscriptWriter, TranscriptCollector
     from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
 
 
 _TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
+
+# 129: records requested per transcript delivery. Ordinary status polls take
+# one batch; the terminal drain loops until the performer's last seq is written.
+_TRANSCRIPT_BATCH_LIMIT = 200
+_TRANSCRIPT_DRAIN_LIMIT = 500
+_TRANSCRIPT_DRAIN_MAX_ROUNDS = 5000
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -217,9 +226,15 @@ class HTTPPerformerService:
         *,
         client: PerformerHTTPClient | None = None,
         runtime: PerformerRuntime | None = None,
+        transcripts: TranscriptCollector | None = None,
     ) -> None:
         self._config = config
         self._injected_client = client
+        # 129: where the per-run transcript records go. None (the default) keeps
+        # the wire and the disk exactly as before.
+        self._transcripts = transcripts
+        self._transcript_targets: dict[str, tuple[str, str]] = {}
+        self._transcript_unsupported_runs: set[str] = set()
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -476,6 +491,13 @@ class HTTPPerformerService:
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             return {"status": "error", "reason": str(exc)}
+        # 129: the coordinare session id is the run identity. Using it as the job
+        # id means the performer's transcript run id and the daemon's transcript
+        # file name agree without a second id. Persistent mode already set
+        # session_id = job_id, so this is the same value there.
+        payload = payload.model_copy(
+            update={"job_id": session_id, "transcript_max_bytes": self._transcript_max_bytes()},
+        )
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
@@ -621,8 +643,9 @@ class HTTPPerformerService:
                             session_id=session_id,
                             exc_type=type(exc).__name__,
                         )
+        writer = self._transcript_writer(session_id, payload)
         try:
-            status = await client.get_job(url_job_id)
+            status = await self._get_job_status(client, url_job_id, session_id, writer)
         except TransportTimeoutError:
             # A bare status-poll timeout is NOT evidence the container is dead:
             # during a CPU-heavy build (e.g. a long Ruby native-gem compile) the
@@ -641,6 +664,13 @@ class HTTPPerformerService:
                 await self._cleanup_ephemeral_job_by_id(session_id)
             raise
         is_terminal = status.state in _TERMINAL_JOB_STATES
+        if is_terminal and writer is not None:
+            # 129: the job is about to be torn down. Take every remaining record
+            # first, because the performer's transcript dies with the container.
+            await self._drain_transcript(client, url_job_id, session_id, writer, status)
+            self._transcript_targets.pop(session_id, None)
+            if self._transcripts is not None:
+                self._transcripts.release(session_id)
         if is_terminal:
             error_reason: str | None = None
             if (
@@ -728,6 +758,115 @@ class HTTPPerformerService:
             "job_id": session_id,
             "state": status.state,
         }
+
+    def _transcript_max_bytes(self) -> int | None:
+        """129: the per-run cap sent in the job payload, or None when transcripts are off."""
+        if self._transcripts is None or not self._transcripts.enabled:
+            return None
+        return self._transcripts.max_bytes_per_run
+
+    def _transcript_writer(
+        self,
+        session_id: str,
+        payload: dict[str, Any] | None,
+    ) -> RunTranscriptWriter | None:
+        """129: the run's writer, or None when transcripts are off.
+
+        The monitor passes ``transcript_target`` (symphony and card id) on every
+        poll. A target seen once is remembered for the run, so polls that do not
+        carry one (observer probes, bootstrap polls) still write to the same file.
+        """
+        if self._transcripts is None or not self._transcripts.enabled:
+            return None
+        target = payload.get("transcript_target") if payload else None
+        if isinstance(target, dict):
+            self._transcript_targets[session_id] = (
+                str(target.get("symphony") or ""),
+                str(target.get("card_id") or ""),
+            )
+        symphony, card_id = self._transcript_targets.get(session_id, (UNATTRIBUTED, ""))
+        return self._transcripts.writer_for(
+            run_id=session_id, symphony=symphony, card_id=card_id,
+        )
+
+    async def _get_job_status(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        session_id: str,
+        writer: RunTranscriptWriter | None,
+    ) -> JobStatus:
+        """Poll the job. With a transcript writer, the same request carries the cursor."""
+        if writer is None:
+            return await client.get_job(job_id)
+        status = await client.get_job(
+            job_id, transcript_after=writer.cursor, transcript_limit=_TRANSCRIPT_BATCH_LIMIT,
+        )
+        self._absorb_transcript(writer, status, session_id)
+        return status
+
+    def _absorb_transcript(
+        self,
+        writer: RunTranscriptWriter,
+        status: JobStatus,
+        session_id: str,
+    ) -> None:
+        if status.transcript_last_seq is None:
+            # Transcripts are on but the performer returned no transcript fields:
+            # an image that predates spec 129. Say so once per run, write nothing.
+            if session_id not in self._transcript_unsupported_runs:
+                self._transcript_unsupported_runs.add(session_id)
+                logger.warning(
+                    "run_transcript.performer_unsupported",
+                    performer_id=self._config.id,
+                    session_id=session_id,
+                )
+            return
+        if status.transcript:
+            writer.append_batch(status.transcript)
+
+    async def _drain_transcript(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        session_id: str,
+        writer: RunTranscriptWriter,
+        status: JobStatus,
+    ) -> None:
+        """Fetch until the performer's last seq is on disk, or give up loudly."""
+        for _ in range(_TRANSCRIPT_DRAIN_MAX_ROUNDS):
+            last_seq = status.transcript_last_seq
+            if last_seq is None or writer.cursor >= last_seq:
+                return
+            try:
+                status = await client.get_job(
+                    job_id,
+                    transcript_after=writer.cursor,
+                    transcript_limit=_TRANSCRIPT_DRAIN_LIMIT,
+                )
+            except TransportError as exc:
+                logger.warning(
+                    "run_transcript.drain_failed",
+                    session_id=session_id,
+                    exc_type=type(exc).__name__,
+                    written_through_seq=writer.cursor,
+                    last_seq=last_seq,
+                )
+                return
+            if not status.transcript:
+                logger.warning(
+                    "run_transcript.drain_stalled",
+                    session_id=session_id,
+                    written_through_seq=writer.cursor,
+                    last_seq=last_seq,
+                )
+                return
+            self._absorb_transcript(writer, status, session_id)
+        logger.warning(
+            "run_transcript.drain_round_limit",
+            session_id=session_id,
+            written_through_seq=writer.cursor,
+        )
 
     def _log_upstream_http_error(self, response: dict[str, Any]) -> None:
         """Emit verbatim upstream-body log line when the performer reports a

@@ -20,12 +20,14 @@ import os
 import signal
 import socket
 from collections import deque
+from typing import Any
 
 import httpx
 import psutil
 import structlog
 from pathlib import Path
 
+from performer import transcript
 from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
@@ -59,6 +61,178 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+_TOOL_STARTED = frozenset({"running", "completed", "error"})
+_TOOL_FINISHED = frozenset({"completed", "error"})
+
+_OPENCODE_CAPABILITY = (
+    "opencode serve streams whole text parts and tool parts over SSE; the run "
+    "transcript records assistant text per flush point, tool calls and results "
+    "from tool parts (state.input / state.output), errors, and the final result. "
+    "The adapter never reads reasoning parts or token counts from the stream, so "
+    "thinking and usage are not recorded."
+)
+
+
+def _error_text(value: Any, fallback: str) -> str:
+    """Full error message from an opencode error value, with a fallback."""
+    if isinstance(value, dict) and value.get("message"):
+        return str(value["message"])
+    if value is None or value == "":
+        return fallback
+    return str(value)
+
+
+def _tool_call_id(part: dict[str, Any]) -> str | None:
+    """Correlation id for a tool part: its ``callID``, else the part id."""
+    cid = part.get("callID") or part.get("id")
+    return str(cid) if cid else None
+
+
+class OpenCodeTranscriptTap:
+    """Full-content transcript channel for the opencode SSE stream (spec 129).
+
+    ``OpenCodeAdapter._handle_event`` cuts text to ``_MAX_TEXT`` for the
+    BackendEvent buffer. This tap sees the same raw events untruncated and
+    writes transcript records only. It never changes status or the event
+    buffer. ``opencode_compat`` shares it.
+
+    Assistant text is cumulative per part id, so it is held and emitted as one
+    record per part when the stream reaches a flush point: before any tool
+    record, and at the end of the turn.
+    """
+
+    def __init__(self) -> None:
+        self._pending_text: dict[str, str] = {}
+        self._emitted_text: dict[str, str] = {}
+        self._tool_stages: dict[str, set[str]] = {}
+
+    def begin(self, task_text: str, *, session: dict[str, Any], model: str | None) -> None:
+        """Run start: the single capability record, the session, then the prompt."""
+        transcript.emit(
+            "capability",
+            text=_OPENCODE_CAPABILITY,
+            input_data={
+                "unavailable": ["thinking", "usage"],
+                "provided": ["system", "user", "assistant_text", "tool_call", "tool_result", "result", "error"],
+            },
+        )
+        transcript.emit("system", text="opencode session created", input_data={"session": session, "model": model})
+        transcript.emit("user", text=task_text)
+
+    def follow_up(self, feedback: str) -> None:
+        """A relayed feedback turn sent to the running session."""
+        transcript.emit("user", text=feedback)
+
+    def error(self, message: str) -> None:
+        """A reader-side failure (SSE stream error)."""
+        transcript.emit("error", text=message)
+
+    def observe(self, event_type: str, props: Any) -> None:
+        """Record the raw content of one SSE event. Never raises."""
+        if not isinstance(props, dict):
+            return
+        if event_type == "message.part.updated":
+            part = props.get("part")
+            if isinstance(part, dict):
+                self._observe_part(part)
+        elif event_type == "session.error":
+            transcript.emit("error", text=_error_text(props.get("error"), str(props)))
+        elif event_type == "session.updated":
+            session = props.get("session", props)
+            if not isinstance(session, dict):
+                return
+            time_info = session.get("time") or {}
+            failure = session.get("error") or time_info.get("error")
+            if not time_info.get("idle") and failure:
+                transcript.emit("error", text=_error_text(failure, "unknown error"))
+
+    def finish(
+        self,
+        state: str,
+        *,
+        output: str | None,
+        error_reason: str | None,
+        questions: list[str],
+    ) -> None:
+        """End of a turn: flush held text, then the final result."""
+        self._flush_text()
+        is_error = state == "error"
+        transcript.emit(
+            "result",
+            text=error_reason if is_error else None,
+            output_data=output,
+            input_data={
+                "status": state,
+                "error_reason": error_reason,
+                "questions": questions,
+            },
+            is_error=is_error,
+        )
+
+    def _observe_part(self, part: dict[str, Any]) -> None:
+        ptype = part.get("type", "")
+        if ptype == "text":
+            full_text = str(part.get("text", ""))
+            if full_text:
+                key = str(part.get("id") or part.get("messageID") or "default")
+                self._pending_text[key] = full_text
+        elif ptype in ("tool-input", "tool_input"):
+            self._flush_text()
+            transcript.emit(
+                "tool_call",
+                tool_name=str(part.get("toolName", part.get("tool_name", "tool"))),
+                call_id=_tool_call_id(part),
+                input_data=part.get("input"),
+            )
+        elif ptype in ("tool-output", "tool_output"):
+            self._flush_text()
+            transcript.emit(
+                "tool_result",
+                tool_name=str(part.get("toolName", part.get("tool_name", "tool"))),
+                call_id=_tool_call_id(part),
+                output_data=part.get("output"),
+            )
+        elif ptype == "tool":
+            self._observe_tool(part)
+
+    def _observe_tool(self, part: dict[str, Any]) -> None:
+        """A ``tool`` part is one object updated through pending → running →
+        completed/error. Emit the call once it runs and the result once it ends."""
+        state = part.get("state")
+        status = str(state.get("status", "")) if isinstance(state, dict) else ""
+        call_id = _tool_call_id(part)
+        stages = self._tool_stages.setdefault(call_id or "", set())
+        tool_name = str(part.get("tool", "tool"))
+        if status in _TOOL_STARTED and "call" not in stages:
+            stages.add("call")
+            self._flush_text()
+            transcript.emit(
+                "tool_call",
+                tool_name=tool_name,
+                call_id=call_id,
+                input_data=state.get("input") if isinstance(state, dict) else None,
+            )
+        if status in _TOOL_FINISHED and "result" not in stages and isinstance(state, dict):
+            stages.add("result")
+            self._flush_text()
+            is_error = status == "error"
+            output = state.get("error", state.get("output")) if is_error else state.get("output")
+            transcript.emit(
+                "tool_result",
+                tool_name=tool_name,
+                call_id=call_id,
+                output_data=output,
+                is_error=is_error,
+            )
+
+    def _flush_text(self) -> None:
+        for key, text in self._pending_text.items():
+            if self._emitted_text.get(key) != text:
+                self._emitted_text[key] = text
+                transcript.emit("assistant_text", text=text)
+        self._pending_text.clear()
+
+
 class OpenCodeAdapter:
     """Backend adapter that drives an OpenCode-compatible ``serve`` HTTP API.
 
@@ -90,6 +264,8 @@ class OpenCodeAdapter:
         # empty .output — opencode only ever set `progress` (truncated). message.part.updated
         # carries the part's CURRENT full text, so last-write-wins per id is correct.
         self._text_parts: dict[str, str] = {}
+        # spec 129: full-content transcript channel (records only, no status effect)
+        self._tap = OpenCodeTranscriptTap()
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -172,7 +348,8 @@ class OpenCodeAdapter:
             session_body["maxTokens"] = max_tokens
         resp = await self._client.post("/session", json=session_body or None)
         resp.raise_for_status()
-        self._session_id = resp.json()["id"]
+        session_info = resp.json()
+        self._session_id = session_info["id"]
         log.info(
             "backend.session_created",
             backend=self._adapter_name,
@@ -182,6 +359,7 @@ class OpenCodeAdapter:
 
         # Send initial task message (fire-and-forget — server processes asynchronously)
         task_text = _build_task_prompt(score, stand_path=Path(stand.path))
+        self._tap.begin(task_text, session=session_info, model=effective_model)
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": task_text}]},
@@ -265,6 +443,7 @@ class OpenCodeAdapter:
         if self._client is None or self._session_id is None:
             log.warning("relay_feedback called but session not active")
             return
+        self._tap.follow_up(feedback)
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": feedback}]},
@@ -383,9 +562,17 @@ class OpenCodeAdapter:
         except Exception as exc:
             log.warning("event reader error", error=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
+            self._tap.error(str(exc))
         finally:
             if self._status.state == "working":
                 await self._resolve_final_status()
+            if self._status.state != "working":
+                self._tap.finish(
+                    self._status.state,
+                    output=self._status.output,
+                    error_reason=self._status.error_reason,
+                    questions=list(self._status.questions),
+                )
 
     async def _resolve_final_status(self) -> None:
         """Query session state when the SSE stream ends unexpectedly."""
@@ -422,6 +609,7 @@ class OpenCodeAdapter:
         payload = event.get("payload", event)
         event_type = payload.get("type", "")
         props = payload.get("properties", {})
+        self._tap.observe(event_type, props)
 
         if event_type == "session.updated":
             session = props.get("session", props)

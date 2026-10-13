@@ -867,6 +867,16 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # implementer_rebase:
 #   enabled: true
 
+# --- Run Transcripts (129) ---
+# A full, untruncated JSONL record of every performer run, written by the
+# daemon to <performer_log_dir>/transcripts/<symphony>/<card>/<run_id>.jsonl
+# (or <config dir>/logs/transcripts when performer_log_dir is unset). On by
+# default. enabled: false means no transcript traffic and no files.
+# transcripts:
+#   enabled: true
+#   retention_days: 30                  # delete transcripts older than this; 0 = keep forever
+#   max_bytes_per_run: 52428800         # 50 MiB per run; at the cap one "truncated" marker is written
+
 # --- Stuck Card Alerts ---
 # stuck_alerts:
 #   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled

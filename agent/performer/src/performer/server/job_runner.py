@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from performer.models import _redact_secrets
+from performer.transcript import TranscriptBuffer, set_active_buffer
 from performer.server.models import (
     CancelResponse,
     JobAcceptResponse,
@@ -38,6 +39,11 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 JobExecutor = Callable[[JobInitPayload], Awaitable[JobResult]]
+
+# 129: default and ceiling for one transcript delivery batch. The caller asks
+# for a limit; the runner clamps it so a single status response stays bounded.
+TRANSCRIPT_DEFAULT_LIMIT = 200
+TRANSCRIPT_MAX_LIMIT = 500
 
 # Contextvar that holds the active runner's push_progress callback during job execution.
 # Set by JobRunner._run() so _perform_job can push intermediate events without a
@@ -82,6 +88,9 @@ class JobRunner:
         self._update_event = asyncio.Event()
         self._live_events: list[dict[str, Any]] = []
         self._live_metrics: dict[str, Any] | None = None
+        # 129: full-fidelity transcript buffer for the current job. None when the
+        # job was submitted with transcripts disabled.
+        self._transcript: TranscriptBuffer | None = None
         # Mutable, shared with the running job task via _refreshed_secrets_var.
         # PATCH /jobs/{id}/secrets writes here; the _perform_job loop reads.
         self._refreshed_secrets: dict[str, str] = {}
@@ -157,6 +166,11 @@ class JobRunner:
             )
             self._live_events = []
             self._live_metrics = None
+            self._transcript = (
+                TranscriptBuffer(payload.job_id, max_bytes=payload.transcript_max_bytes)
+                if payload.transcript_max_bytes is not None
+                else None
+            )
             self._update_event = asyncio.Event()
             self._task = asyncio.create_task(self._run(payload))
             return JobAcceptResponse(job_id=payload.job_id, started_at=started)
@@ -202,6 +216,8 @@ class JobRunner:
         self._status = self._status.model_copy(update={"state": "running"})
         self._signal_update()
         _progress_cb_var.set(self.push_progress)
+        # 129: backends emit transcript records into this job's buffer.
+        set_active_buffer(self._transcript)
         # Publish the runner's mutable refreshed-secrets dict so the in-job
         # loop can read fresh values without a back-reference to the runner.
         _refreshed_secrets_var.set(self._refreshed_secrets)
@@ -254,13 +270,25 @@ class JobRunner:
         self._update_event.set()
         self._update_event = asyncio.Event()
 
-    def get(self, job_id: str) -> JobStatus:
+    def get(
+        self,
+        job_id: str,
+        *,
+        transcript_after: int | None = None,
+        transcript_limit: int = TRANSCRIPT_DEFAULT_LIMIT,
+    ) -> JobStatus:
         if self._status is None or self._status.job_id != job_id:
             raise JobNotFoundError(job_id)
+        update: dict[str, Any] = {}
         if self._live_events or self._live_metrics is not None:
-            return self._status.model_copy(
-                update={"events": list(self._live_events), "metrics": self._live_metrics},
-            )
+            update.update(events=list(self._live_events), metrics=self._live_metrics)
+        if self._transcript is not None:
+            update["transcript_last_seq"] = self._transcript.last_seq
+            if transcript_after is not None:
+                limit = min(max(transcript_limit, 1), TRANSCRIPT_MAX_LIMIT)
+                update["transcript"] = self._transcript.after(transcript_after, limit)
+        if update:
+            return self._status.model_copy(update=update)
         return self._status
 
     async def stream(self, job_id: str) -> AsyncIterator[JobStatus]:
