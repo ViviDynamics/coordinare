@@ -101,21 +101,14 @@ def test_a_code_is_never_both_a_phase_and_a_stage_or_agent() -> None:
     assert not clash, f"{sorted(clash)} are both a conductor phase and a stage or agent"
 
 
-def _legacy_title_case(code: str) -> str:
-    return re.sub(r"\b\w", lambda m: m.group(0).upper(), code.replace("_", " "))
-
-
-def test_conductor_phase_labels_are_unchanged_by_the_glossary() -> None:
-    """#136 delivered phases with the labels the page already showed; #138 renames them."""
-    for code, term in vocabulary.PHASES.items():
-        assert term.label == _legacy_title_case(code), code
+def test_check_outcomes_are_shown_as_their_code() -> None:
     for code, term in vocabulary.OUTCOMES.items():
-        assert term.label == code  # outcomes were always shown as their code
+        assert term.label == code
 
 
 def test_label_lookup() -> None:
-    assert vocabulary.label("monitoring_performer") == "Monitoring Performer"
-    assert vocabulary.phase_label("monitoring_performer") == "Monitoring Performer"
+    assert vocabulary.label("monitoring_performer") == "Watching an agent"
+    assert vocabulary.phase_label("monitoring_pr") == "Waiting on review"
     assert vocabulary.label("not_a_code") == "not_a_code"
     assert vocabulary.label(None) == "" and vocabulary.label("") == ""
     assert vocabulary.labels()["success"] == "success"

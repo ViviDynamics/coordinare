@@ -47,11 +47,10 @@ function utilizationRowHtml(r) {
   var queued = Number(r.queued) || 0;
   var pct = max > 0 ? Math.min(100, Math.round(active / max * 100)) : 0;
   var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
-  var idle = Math.max(0, max - active);
   var queuedHtml = queued > 0
     ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + roleOrStageLabel(r.role) + ' slot">· ' + queued + ' queued</span>'
     : '';
-  return '<tr><td>' + roleOrStageLabel(r.role) + '</td><td>' + bar + ' ' + active + ' / ' + idle + ' / ' + max + queuedHtml + '</td></tr>';
+  return '<tr><td>' + roleOrStageLabel(r.role) + '</td><td>' + bar + ' ' + active + ' of ' + max + ' busy' + queuedHtml + '</td></tr>';
 }
 
 // 124: users see the issue number, never the raw ProjectV2 item id. The node
@@ -85,7 +84,8 @@ function refreshElapsedReadouts(root) {
   var nodes = (root || document).querySelectorAll('[data-elapsed-since]');
   for (var i = 0; i < nodes.length; i++) {
     var prefix = nodes[i].getAttribute('data-elapsed-prefix') || '';
-    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—');
+    var suffix = nodes[i].getAttribute('data-elapsed-suffix') || '';
+    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—') + suffix;
   }
 }
 
@@ -157,12 +157,12 @@ function tokenReadout(tokens, running) {
   return { text: '0', title: '', pending: false };
 }
 
-function costHtml(sess, s, digits) {
+function costHtml(sess, s) {
   var est = estimateCost(sess, s);
   if (!(est.value > 0) && isStageRunning(sess)) {
     return '<span title="' + esc(USAGE_PENDING_NOTE) + '">—</span>';
   }
-  return '<span title="' + esc(est.basis) + '">$' + est.value.toFixed(digits) + '</span>';
+  return '<span title="' + esc(est.basis) + '">' + fmtCost(est.value) + '</span>';
 }
 
 // 354: queued-for-slot board-row presentation. A card whose role pool is
@@ -345,7 +345,7 @@ function renderActiveWorkPanels(s) {
           ? '<span style="color:var(--color-accent-yellow)">' + esc(elapsed) + '</span>'
           : (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed)))
         : '';
-      var costStr = sess.agent_dispatch_at ? costHtml(sess, s, 4) : '—';
+      var costStr = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
       var parts = [phaseLabel];
       if (!queuedLabel && stage) parts.push('<code>' + stage + '</code>');
       if (elapsedHtml) parts.push(elapsedHtml);
@@ -389,7 +389,7 @@ function renderCardDetailContent(sess, s) {
   var elapsedHtml = stale
     ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
     : esc(rawElapsed);
-  var cost = sess.agent_dispatch_at ? costHtml(sess, s, 4) : '—';
+  var cost = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
   // 348 (closes TODO(054)): logs come from the service holding this card's slot.
   var logs = Array.isArray(sess.performer_logs) ? sess.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
@@ -410,16 +410,16 @@ function renderCardDetailContent(sess, s) {
           '<div class="ov-meta">' + esc(pairs) + '<span class="ov-time">' + esc(String(v.at || '')) + '</span></div></span>' +
           '</div>';
       }).join('')
-    : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No observer verdicts yet.</div>';
+    : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No progress checks yet.</div>';
   return '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
-    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Phase</td><td style="padding:3px 0">' + phaseLabel + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + cost + '</td></tr>' +
     '</table>' +
     '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' +
     '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>' +
-    '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Observer Verdicts (recent)</div>' +
+    '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Progress checks (recent)</div>' +
     '<div class="ov-list">' + verdictsHtml + '</div>';
 }
 
@@ -476,9 +476,9 @@ function renderActivePerformers(s) {
         '<div class="ap-idle-title">No active performers</div>' +
         '<div class="ap-idle-rows">' +
           '<div class="ap-idle-row">' +
-            '<span class="ap-pill">Phase: <strong>' + esc(phase) + '</strong></span>' +
-            '<span class="ap-pill">Cycles: <strong>' + esc(String(cycleCount)) + '</strong></span>' +
-            '<span class="ap-pill">Last poll: <strong>' + pollHint + '</strong></span>' +
+            '<span class="ap-pill">Status: <strong>' + esc(phase) + '</strong></span>' +
+            '<span class="ap-pill">Checks: <strong>' + esc(String(cycleCount)) + '</strong></span>' +
+            '<span class="ap-pill">Last checked: <strong>' + pollHint + '</strong></span>' +
             (filterHint ? '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span>' : '') +
           '</div>' +
           '<div class="ap-idle-row">' +
@@ -576,9 +576,8 @@ function renderPerformersPage(s) {
     }).join('<br>') || '<span class="empty-state">—</span>';
     var maxVal = r.max > 0 ? r.max : 1;
     var activeVal = isActive ? (r.active || 1) : 0;
-    var idleVal = Math.max(0, maxVal - activeVal);
-    var utilStr = activeVal + ' / ' + idleVal + ' / ' + maxVal;
-    var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">(+' + r.queued + ' queued)</span>' : '';
+    var utilStr = esc(busyText(activeVal, maxVal, 0));
+    var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">· ' + r.queued + ' queued</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
       '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
   }).join('');
@@ -682,7 +681,7 @@ function renderPerformersPage(s) {
 
   detailEl.innerHTML =
     '<div><strong>' + roleOrStageLabel(selectedRole) + '</strong>' + statusBadge + '</div>' +
-    '<div class="muted" style="margin-top:4px">Active / Idle / Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(Math.max(0, (row.max != null ? row.max : 0) - (row.active != null ? row.active : 0))) + ' / ' + String(row.max != null ? row.max : 0) + '</div>' +
+    '<div class="muted" style="margin-top:4px">' + esc(busyText(row.active, row.max, row.queued)) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +

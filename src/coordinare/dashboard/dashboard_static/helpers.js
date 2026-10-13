@@ -95,6 +95,63 @@ function roleOrStageLabel(code) {
   return agentLabel(key);
 }
 
+// 144: one cost format everywhere: two decimals, three when under a cent.
+function fmtCost(value) {
+  var n = Number(value);
+  if (!isFinite(n) || n <= 0) return '$0.00';
+  return '$' + (n < 0.01 ? n.toFixed(3) : n.toFixed(2));
+}
+
+// 144: "1 of 1 busy", plus the queue when there is one. Idle was only ever
+// max minus active, so it is not shown.
+function busyText(active, max, queued) {
+  var a = Number(active) || 0;
+  var m = Number(max) || 0;
+  var q = Number(queued) || 0;
+  return a + ' of ' + m + ' busy' + (q > 0 ? ' · ' + q + ' queued' : '');
+}
+
+// 138: the conductor headline as a plain sentence. `s` is the dashboard
+// state; `activeSess` is the session an agent is running for, if any.
+function cardRefText(sess) {
+  if (!sess) return '';
+  if (sess.issue_number) return '#' + sess.issue_number;
+  return String(sess.card_title || '');
+}
+
+function conductorHeadline(s, activeSess) {
+  s = s || {};
+  if (activeSess) {
+    var who = vocabularyKindLabel('agent_labels', agentForStage(activeSess.performer_stage)) || 'an agent';
+    var on = cardRefText(activeSess);
+    return 'Watching ' + who + (on ? ' on ' + on : '');
+  }
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  for (var i = 0; i < sessions.length; i++) {
+    if (sessions[i].phase === 'dispatching') {
+      var agent = vocabularyKindLabel('agent_labels', agentForStage(sessions[i].performer_stage));
+      var card = cardRefText(sessions[i]);
+      return 'Dispatching' + (card ? ' ' + card : '') + (agent ? ' to ' + agent : '');
+    }
+  }
+  var phase = String(s.phase || 'idle');
+  if (phase === 'idle') {
+    var wait = nextCheckSeconds(s);
+    return wait == null ? 'Idle: waiting for the next check' : 'Idle: next check in ' + wait + 's';
+  }
+  // The server's label is the glossary label for this state; fall back to a
+  // local lookup when a snapshot carries none.
+  return String(s.phase_label || vocabularyLabel(phase));
+}
+
+// Seconds until the next board check, or null when it cannot be known.
+function nextCheckSeconds(s) {
+  var interval = Number(s && s.poll_interval_seconds);
+  var last = s && s.last_poll_at ? new Date(s.last_poll_at).getTime() : NaN;
+  if (!isFinite(interval) || interval <= 0 || !isFinite(last)) return null;
+  return Math.max(0, Math.ceil((last + interval * 1000 - Date.now()) / 1000));
+}
+
 // 136: the Glossary page, rendered from the same data.
 function renderGlossaryPage() {
   var el = document.getElementById('glossary-section');

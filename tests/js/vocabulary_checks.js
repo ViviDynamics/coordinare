@@ -31,9 +31,9 @@ var document = { getElementById: function(id) { return id === "glossary-section"
 eval(src);
 
 // Labels come from the glossary, for every kind of code.
-check("conductor phase", humanPhase("monitoring_performer"), "Monitoring Performer");
+check("conductor phase", humanPhase("monitoring_performer"), "Watching an agent");
 check("check outcome", humanPhase("success"), "success");
-check("the alias reads the same glossary", formatPhaseLabel("monitoring_pr"), "Monitoring Pr");
+check("the alias reads the same glossary", formatPhaseLabel("monitoring_pr"), "Waiting on review");
 
 // Every label the page needs is in the data, not derived.
 var labels = COORDINARE_VOCABULARY.labels;

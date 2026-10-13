@@ -196,14 +196,14 @@ def test_all_section_ids_present(page: Page, live_server_url: str) -> None:
 def test_initial_phase_label_is_idle(page: Page, live_server_url: str) -> None:
     """First SSE event must render 'Idle' in the phase element."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
 
 @pytest.mark.e2e
 def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
     """Empty-state message must appear in the card section when no card is active."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#swimlane-section")).to_contain_text("No cards in the TODO column")
 
 
@@ -211,7 +211,7 @@ def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
 def test_disconnected_banner_hidden_on_load(page: Page, live_server_url: str) -> None:
     """Disconnected banner must be hidden while the SSE connection is healthy."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#disconnected-banner")).to_be_hidden()
 
 
@@ -219,15 +219,15 @@ def test_disconnected_banner_hidden_on_load(page: Page, live_server_url: str) ->
 def test_empty_history_shows_placeholder(page: Page, live_server_url: str) -> None:
     """Before any cycles run, the history section shows the empty-state message."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#history-section")).to_contain_text("No cycles completed yet")
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#history-section")).to_contain_text("No checks completed yet")
 
 
 @pytest.mark.e2e
 def test_subsystem_health_table_renders(page: Page, live_server_url: str) -> None:
     """The subsystem health table must show the registered 'github' probe."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#subsystems-section")).to_contain_text("github")
 
 
@@ -242,7 +242,7 @@ def test_phase_updates_on_broadcast(
 ) -> None:
     """Scenario 2/7: A broadcast must update the phase label within 5 s."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(_full_snapshot(phase="dispatching", phase_label="Dispatching"))
 
@@ -255,7 +255,7 @@ def test_active_card_details_render(
 ) -> None:
     """Scenario 2: Card title and issue link must appear in active-work panel after broadcast."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     session = {**_active_session("PVTI_1", "Fix timeout bug", "implementing"), "issue_url": "https://github.com/org/repo/issues/42"}
     store.broadcaster.broadcast(
@@ -278,7 +278,7 @@ def test_open_questions_visible_when_blocked(
 ) -> None:
     """Scenario 3: Questions card must become visible and list questions when blocked."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -300,11 +300,11 @@ def test_open_questions_hidden_when_not_blocked(
 ) -> None:
     """Questions card must be hidden when there are no open questions."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(_full_snapshot(phase="idle", phase_label="Idle", open_questions=[]))
 
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_LIVE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_LIVE)
     expect(page.locator("#questions-card")).to_be_hidden()
 
 
@@ -314,7 +314,7 @@ def test_cycle_history_table_renders(
 ) -> None:
     """Scenario 5: History table must show success and error entries after broadcast."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -338,7 +338,7 @@ def test_metrics_bar_updates(
 ) -> None:
     """Metrics bar values must update when a broadcast arrives."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(cycles_completed=42, last_cycle_duration_seconds=1.23, consecutive_error_count=2),
@@ -357,7 +357,7 @@ def test_metrics_bar_updates(
 def test_force_poll_button_present(page: Page, live_server_url: str) -> None:
     """Button with id force-poll-btn must be visible in the rendered page."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#force-poll-btn")).to_be_visible()
 
 
@@ -367,7 +367,7 @@ def test_force_poll_button_enabled_when_idle(
 ) -> None:
     """Button must be enabled after SSE delivers cycle_active=False, daemon_running=True."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=True))
     expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=_WAIT_LIVE)
 
@@ -378,7 +378,7 @@ def test_force_poll_button_disabled_when_cycle_active(
 ) -> None:
     """Button must be disabled after SSE delivers cycle_active=True."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycle_active=True, daemon_running=True))
     expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
 
@@ -389,7 +389,7 @@ def test_force_poll_button_disabled_when_daemon_stopped(
 ) -> None:
     """Button must be disabled when daemon_running=False even if cycle is not active."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=False))
     expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
 
@@ -400,7 +400,7 @@ def test_force_poll_button_re_enables_after_cycle(
 ) -> None:
     """Button must re-enable once cycle_active returns to False."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycle_active=True, daemon_running=True))
     expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
     store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=True))
@@ -411,7 +411,7 @@ def test_force_poll_button_re_enables_after_cycle(
 def test_force_poll_click_fires_post_request(page: Page, live_server_url: str) -> None:
     """Clicking the button must fire a POST to /api/force-poll."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=_WAIT_LIVE)
     with page.expect_request("**/api/force-poll") as req_info:
         page.locator("#force-poll-btn").click()
@@ -426,9 +426,9 @@ def test_force_poll_409_shows_cycle_already_running(page: Page, live_server_url:
         lambda route: route.fulfill(status=409, content_type="application/json", body='{"status":"cycle_in_progress"}'),
     )
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     page.locator("#force-poll-btn").click()
-    expect(page.locator("#force-poll-msg")).to_have_text("Cycle already running", timeout=2000)
+    expect(page.locator("#force-poll-msg")).to_have_text("A check is already running", timeout=2000)
     expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=2000)
 
 
@@ -450,7 +450,7 @@ def test_force_poll_button_disabled_when_sse_disconnected(page: Page, live_serve
 def test_navbar_dashboard_link_is_active_on_home(page: Page, live_server_url: str) -> None:
     """Dashboard nav link must have the active class on /."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#navbar a[href='/']")).to_have_class("nav-link nav-active")
 
 
@@ -458,7 +458,7 @@ def test_navbar_dashboard_link_is_active_on_home(page: Page, live_server_url: st
 def test_navigate_to_performers_updates_url_and_title(page: Page, live_server_url: str) -> None:
     """Clicking Performers nav link must update URL to /performers and title."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     page.locator("#navbar a[href='/performers']").click()
 
@@ -471,7 +471,7 @@ def test_navigate_to_performers_updates_url_and_title(page: Page, live_server_ur
 def test_navigate_to_personas_shows_personas_page(page: Page, live_server_url: str) -> None:
     """Clicking Personas nav link must show /personas page content."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     page.locator("#navbar a[href='/personas']").click()
 
@@ -485,13 +485,13 @@ def test_navigate_to_personas_shows_personas_page(page: Page, live_server_url: s
 def test_navigate_to_history_shows_live_empty_state(page: Page, live_server_url: str) -> None:
     """Clicking History nav link must show the real history container empty-state."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     page.locator("#navbar a[href='/history']").click()
 
     expect(page).to_have_url(f"{live_server_url}/history", timeout=_WAIT_NAV)
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#history-page")).to_contain_text("No cycles completed yet", timeout=_WAIT_NAV)
+    expect(page.locator("#history-page")).to_contain_text("No checks completed yet", timeout=_WAIT_NAV)
 
 
 @pytest.mark.e2e
@@ -501,7 +501,7 @@ def test_history_page_renders_cycle_rows_from_sse(
     """053: /history must render cycle rows and live-update from SSE."""
     page.goto(f"{live_server_url}/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#history-page-section")).to_contain_text("No cycles completed yet", timeout=_WAIT_NAV)
+    expect(page.locator("#history-page-section")).to_contain_text("No checks completed yet", timeout=_WAIT_NAV)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -513,7 +513,7 @@ def test_history_page_renders_cycle_rows_from_sse(
     )
 
     expect(page.locator("#history-page-section table")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#history-page-section")).to_contain_text("Monitoring Pr", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section")).to_contain_text("Waiting on review", timeout=_WAIT_LIVE)
     expect(page.locator("#history-page-section")).to_contain_text("error", timeout=_WAIT_LIVE)
 
 
@@ -521,7 +521,7 @@ def test_history_page_renders_cycle_rows_from_sse(
 def test_browser_back_returns_to_home(page: Page, live_server_url: str) -> None:
     """Browser back button must return to / after navigating to /performers."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     page.locator("#navbar a[href='/performers']").click()
     expect(page).to_have_url(f"{live_server_url}/performers", timeout=_WAIT_NAV)
@@ -556,7 +556,7 @@ def test_sse_stays_connected_across_navigation(
 ) -> None:
     """SSE EventSource must stay connected when navigating between pages."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     # Navigate to performers
     page.locator("#navbar a[href='/performers']").click()
@@ -582,7 +582,7 @@ def test_active_performer_tiles_show_on_home(
 ) -> None:
     """Active performer tiles must appear on the main dashboard when sessions are active."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -606,7 +606,7 @@ def test_idle_state_shows_no_active_performers_message(
 ) -> None:
     """When no sessions are active, the active-performers section shows an idle message."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -622,7 +622,7 @@ def test_idle_state_shows_no_active_performers_message(
     )
     expect(page.locator("#active-performer-tiles")).to_contain_text("TODO 3", timeout=_WAIT_LIVE)
     expect(page.locator("#active-performer-tiles")).to_contain_text("IN_PROGRESS 1", timeout=_WAIT_LIVE)
-    expect(page.locator("#active-performer-tiles")).to_contain_text("Last poll:", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles")).to_contain_text("Last checked:", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -631,7 +631,7 @@ def test_idle_state_shows_assignee_filter_hint(
 ) -> None:
     """050: when assignee_filter is set, idle tile shows 'Filter: <login>'."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(active_sessions=[], assignee_filter="coordinare-bot"),
@@ -648,7 +648,7 @@ def test_idle_state_no_filter_hint_when_unset(
 ) -> None:
     """050: when assignee_filter is None, idle tile does not show a filter hint."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(active_sessions=[], assignee_filter=None),
@@ -665,7 +665,7 @@ def test_active_work_row_click_opens_detail_and_back_returns_list(
 ) -> None:
     """059: clicking an Active Work table row opens the card detail view; back button restores the list."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -695,7 +695,7 @@ def test_active_work_row_keyboard_opens_detail(
 ) -> None:
     """059: Enter key on a focused Active Work row must open the card detail view."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -719,7 +719,7 @@ def test_active_work_row_keyboard_opens_detail(
 def test_workflow_diagram_expands_and_collapses_from_summary(page: Page, live_server_url: str) -> None:
     """554: Secondary workflow detail opens on demand, including by keyboard."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     fc = page.locator("#flow-chart")
     summary = page.locator('#workflow-card summary')
     expect(summary).to_be_visible()
@@ -738,7 +738,7 @@ def test_desktop_layout_gives_active_performers_twice_the_conductor_width(
     """554: Performers share a desktop row with the conductor, then stack on mobile."""
     page.set_viewport_size({"width": 1200, "height": 900})
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -785,7 +785,7 @@ def test_desktop_layout_clarifications_and_recent_cycles_span_the_workspace(
     """554: Historical detail spans the workspace beneath compact operational cards."""
     page.set_viewport_size({"width": 1200, "height": 900})
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -837,7 +837,7 @@ def test_performers_page_shows_role_table(
 ) -> None:
     """The /performers page must show a table with role utilization data."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -861,7 +861,7 @@ def test_performers_page_shows_active_badge(
 ) -> None:
     """An active role must show the 'active' badge on the performers page."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1070,7 +1070,7 @@ def test_a_performer_with_no_workflow_step_renders_no_trail(
 def test_personas_not_on_main_dashboard(page: Page, live_server_url: str) -> None:
     """The personas editor must NOT appear on the main dashboard page (moved to /personas)."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     # #personas-main-card is hidden on the main dashboard
     expect(page.locator("#personas-main-card")).to_be_hidden()
 
@@ -1315,7 +1315,7 @@ def test_awaiting_review_card_hidden_when_phase_is_idle(
     """Awaiting review card is hidden when phase is idle."""
     store.broadcaster.broadcast(_full_snapshot(phase="idle", phase_label="Idle"))
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#awaiting-review-card")).to_be_hidden()
 
 
@@ -1325,7 +1325,7 @@ def test_awaiting_review_card_appears_when_in_review_phase(
 ) -> None:
     """Awaiting review card appears when cycle is in review phase."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             phase="awaiting_review",
@@ -1388,7 +1388,7 @@ def test_hamburger_menu_hides_on_navigation(page: Page, live_server_url: str) ->
 def test_idle_panel_shows_when_idle(page: Page, live_server_url: str, store: DashboardStore) -> None:
     """Idle panel appears when daemon is in idle phase."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#idle-panel")).to_be_visible()
 
 
@@ -1398,7 +1398,7 @@ def test_assignee_filter_hint_shows_when_set(
 ) -> None:
     """Idle panel displays assignee filter hint when filter is set."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(phase="idle", phase_label="Idle", assignee_filter="@alice"),
     )
@@ -1419,7 +1419,7 @@ def test_cycle_history_shows_cycles(
 ) -> None:
     """Cycle history section displays completed cycles with durations."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1506,7 +1506,7 @@ def test_clarifications_card_hidden_when_empty(
 ) -> None:
     """Clarifications card is hidden when list is empty."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#clarifications-card")).to_be_hidden()
 
 
@@ -1521,7 +1521,7 @@ def test_questions_card_shows_questions(
 ) -> None:
     """Questions card displays open questions when phase is blocked."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1542,7 +1542,7 @@ def test_questions_card_hidden_when_not_blocked(
 ) -> None:
     """Questions card is hidden when phase is not blocked."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#questions-card")).to_be_hidden()
 
 
@@ -1557,7 +1557,7 @@ def test_workflow_diagram_renders_mermaid_graph(
 ) -> None:
     """The expanded workflow renders an SVG and highlights the live phase."""
     page.goto(live_server_url)
-    expect(page.locator('#phase')).to_have_text('Idle', timeout=_WAIT_SSE)
+    expect(page.locator('#phase')).to_contain_text('Idle', timeout=_WAIT_SSE)
     page.locator('#workflow-card summary').click()
     expect(page.locator("#flow-chart")).to_be_visible()
     store.broadcaster.broadcast(_full_snapshot(phase='monitoring_performer', phase_label='Monitoring Performer'))
@@ -1576,7 +1576,7 @@ def test_subsystems_table_shows_health_status(
 ) -> None:
     """Subsystems table displays health status badges."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             subsystems=[
@@ -1597,7 +1597,7 @@ def test_subsystem_unavailable_status_renders(
 ) -> None:
     """Unavailable subsystem status displays correctly."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             subsystems=[
@@ -1620,7 +1620,7 @@ def test_active_card_title_and_link_visible(
 ) -> None:
     """Active card section shows title and PR link."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             phase="monitoring_agent",
@@ -1640,7 +1640,7 @@ def test_card_tokens_and_cost_display(
 ) -> None:
     """Card token count and cost estimate display correctly."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             card_tokens_total=42,
@@ -1662,7 +1662,7 @@ def test_error_count_displays(
 ) -> None:
     """Consecutive error count displays in metrics."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(consecutive_error_count=3))
     expect(page.locator("#error-count")).to_contain_text("3", timeout=_WAIT_LIVE)
 
@@ -1673,7 +1673,7 @@ def test_last_cycle_duration_displays(
 ) -> None:
     """Last cycle duration displays in metrics."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(last_cycle_duration_seconds=180))
     expect(page.locator("#last-duration")).to_contain_text("180", timeout=_WAIT_LIVE)
 
@@ -1689,7 +1689,7 @@ def test_phase_label_color_idle(
 ) -> None:
     """Idle phase has muted color."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     # Initial SSE snapshot is idle; assert class membership (element has "phase phase-idle")
     expect(page.locator("#phase")).to_have_class(re.compile(r"phase-idle"))
 
@@ -1700,7 +1700,7 @@ def test_phase_label_color_dispatching(
 ) -> None:
     """Dispatching phase has blue color."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(phase="dispatching_agent", phase_label="Dispatching Agent"),
     )
@@ -1753,7 +1753,7 @@ def test_board_summary_displays_column_counts(
 ) -> None:
     """Board summary section shows column counts in the idle panel."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             cycles_completed=7,
@@ -1794,7 +1794,7 @@ def test_agent_session_info_visible_when_active(
 ) -> None:
     """Agent session info displays when agent is running."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1819,7 +1819,7 @@ def test_active_work_row_shows_cost(
     from datetime import UTC, datetime, timedelta
 
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     dispatch_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     session = {
@@ -1837,7 +1837,7 @@ def test_active_work_row_shows_cost(
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
-    expect(row).to_contain_text("0.0123", timeout=_WAIT_LIVE)
+    expect(row).to_contain_text("$0.01", timeout=_WAIT_LIVE)
 
     # Without dispatch_at, cost column should show em-dash
     session_no_dispatch = {**_active_session("PVTI_nodispatch", "No dispatch yet", "initialising")}
@@ -1861,7 +1861,7 @@ def test_active_work_row_stale_session_shows_warning(
     from datetime import UTC, datetime, timedelta
 
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     stale_dispatch = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
     session = {
@@ -1891,7 +1891,7 @@ def test_card_detail_auto_closes_when_session_ends(
     from datetime import UTC, datetime, timedelta
 
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     dispatch_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     session = {
@@ -1924,10 +1924,10 @@ def test_idle_panel_shows_cycles_completed_label(
 ) -> None:
     """Idle panel shows 'Cycles completed' (not 'Cycles today') and the correct count."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycles_completed=42))
     idle = page.locator("#idle-panel-content")
-    expect(idle).to_contain_text("Cycles completed", timeout=_WAIT_LIVE)
+    expect(idle).to_contain_text("Checks completed", timeout=_WAIT_LIVE)
     expect(idle).to_contain_text("42", timeout=_WAIT_LIVE)
 
 
@@ -1959,7 +1959,7 @@ def test_subsystem_details_closed_when_healthy(
 ) -> None:
     """Healthy subsystem rows render as collapsed <details> (no open attribute)."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             subsystems=[
@@ -1979,7 +1979,7 @@ def test_subsystem_details_open_when_degraded(
 ) -> None:
     """Degraded subsystem rows auto-expand (<details open>) so the error is visible."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             subsystems=[
@@ -2067,7 +2067,7 @@ def test_active_performers_updates_when_one_card_kicked_back_to_todo(
     must show *only* the surviving session with its *new* stage. The bug is
     that the panel keeps rendering the removed card and/or the prior stage."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     # Initial: both A and B are active and being implemented.
     store.broadcaster.broadcast(
@@ -2117,7 +2117,7 @@ def test_active_performers_renders_two_concurrent_sessions(
     dashboard ever silently collapses N sessions into one tile, this catches
     it."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -2139,7 +2139,7 @@ def test_active_performers_renders_two_concurrent_sessions(
 @pytest.mark.e2e
 def test_pipeline_queue_is_distinct_from_dispatching(page, live_server_url, store):
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     session = _active_session("queued-card", "Queued work", "implementing")
     session["phase"] = "dispatching"
     store.broadcaster.broadcast(_full_snapshot(
@@ -2158,7 +2158,7 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     horizontally."""
     page.set_viewport_size({"width": 375, "height": 800})
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
     node_id = "PVTI_lADOBjmjsc4Bkx5YzhANaH0"
     session = {
@@ -2202,7 +2202,7 @@ def test_busy_role_bar_is_not_red_and_queued_role_is_highlighted(
 ) -> None:
     """#123"""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(role_utilization=[
             {"role": "implementer", "active": 1, "max": 1, "queued": 0},
@@ -2234,7 +2234,7 @@ def test_recent_checks_panel_collapses_identical_rows(
 ) -> None:
     """#128"""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     history = [
         {"timestamp": f"2026-10-13T12:{i:02d}:00+00:00", "phase": "monitoring_performer",
          "duration_seconds": 5.0, "outcome": "success"}
@@ -2257,4 +2257,4 @@ def test_glossary_page_explains_the_vocabulary(page: Page, live_server_url: str)
     expect(section).to_contain_text("One agent working on one stage of one card")
     expect(page.locator(".nav-link.nav-active")).to_have_attribute("href", "/glossary")
     labels = page.evaluate("() => [humanPhase('monitoring_performer'), humanPhase('never_seen_code')]")
-    assert labels == ["Monitoring Performer", "never_seen_code"]
+    assert labels == ["Watching an agent", "never_seen_code"]

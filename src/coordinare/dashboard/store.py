@@ -41,6 +41,12 @@ def _cost_rate(config: Any) -> float:
     return float(CostTrackingConfig().cost_per_million_tokens)
 
 
+def _poll_interval(config: Any) -> int | None:
+    """138: seconds between board checks, or None when it is not known."""
+    value = getattr(config, "poll_interval_seconds", None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 def _daemon_started_at_iso() -> str | None:
     """#119: the daemon's start time as an ISO-8601 string the browser can parse.
 
@@ -683,6 +689,8 @@ class DashboardStore:
             "last_cycle_duration_seconds": self.last_cycle_duration,
             "consecutive_error_count": error_count,
             "daemon_start_time": started_at,
+            # 138: lets the conductor headline say "next check in 18s".
+            "poll_interval_seconds": _poll_interval(daemon.state.get("config")),
             # 121: the flat rate the cost estimate uses, so the browser can name
             # the pricing basis and estimate for a session that reports tokens
             # before its own estimate has been computed.

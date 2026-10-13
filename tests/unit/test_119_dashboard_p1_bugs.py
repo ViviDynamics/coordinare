@@ -134,7 +134,7 @@ def _cost_js() -> str:
         return match.group(0)
 
     return "\n\n".join([
-        fn(helpers, "esc"), fn(performers, "parseTokenCount"),
+        fn(helpers, "esc"), fn(helpers, "fmtCost"), fn(performers, "parseTokenCount"),
         fn(performers, "derivePerformerTokenTotal"), fn(performers, "estimateCost"),
         fn(performers, "costHtml"),
     ])
@@ -167,5 +167,5 @@ def test_every_cost_readout_goes_through_the_shared_estimate() -> None:
     shipped = _DASHBOARD_HTML + "".join(_DASHBOARD_JS_SOURCES.values())
     direct = re.findall(r"card_cost_estimate\s*\|\|\s*0\)\.toFixed", shipped)
     assert direct == []
-    assert shipped.count("costHtml(sess, s, 4)") == 2
+    assert shipped.count("? costHtml(sess, s) :") == 2
     assert "estimateCost(costSource, s)" in shipped
