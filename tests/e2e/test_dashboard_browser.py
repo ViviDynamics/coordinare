@@ -2247,6 +2247,7 @@ def test_recent_checks_panel_collapses_identical_rows(
     expect(rows.first).to_contain_text("avg 5.00s")
 
 
+@pytest.mark.e2e
 def test_glossary_page_explains_the_vocabulary(page: Page, live_server_url: str) -> None:
     """#136: the Glossary page renders from the generated vocabulary."""
     page.goto(f"{live_server_url}/glossary")
