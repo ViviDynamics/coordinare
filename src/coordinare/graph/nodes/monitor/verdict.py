@@ -612,72 +612,6 @@ def _feedback_block_message(
     return "\n".join(lines)
 
 
-def _ci_lint_gate(
-    state: CoordinareState, card: dict[str, Any],
-) -> dict[str, Any] | None:
-    """043: CI lint gate — defence-in-depth before transitioning to
-    monitoring_pr.
-
-    Runs the detected lint command on the workspace if it's still available
-    (performer may have already torn it down).  If lint fails, returns the
-    re-dispatch updates routing back to the implementer; on pass or if the
-    gate cannot run, returns None to proceed to monitoring_pr.  Note:
-    _advance_stage is a sync function, so we use subprocess.run.
-    """
-    workspace_path = state.get("workspace_path")
-    if workspace_path is not None:
-        from pathlib import Path as _Path
-
-        ws = _Path(workspace_path) if not isinstance(workspace_path, _Path) else workspace_path
-        if ws.is_dir():
-            from coordinare.services.ci_detection import detect
-
-            ci_result = detect(ws)
-            if ci_result.lint_command:
-                import shlex
-                import subprocess
-
-                try:
-                    proc = subprocess.run(
-                        shlex.split(ci_result.lint_command),
-                        cwd=str(ws),
-                        capture_output=True,
-                        timeout=60,
-                    )
-                    if proc.returncode != 0:
-                        lint_output = ((proc.stderr or b"") + (proc.stdout or b"")).decode("utf-8", errors="replace")[:2000]
-                        # 065 US5 FR-021 — structured ci-failed log with the
-                        # full {card_id, performer_stage, ci_command,
-                        # exit_code, output_excerpt} field set.
-                        logger.warning(
-                            "performer.ci_failed",
-                            card_id=str((state.get("current_card") or {}).get("id", "")),
-                            performer_stage=str(state.get("performer_stage", "")),
-                            ci_command=ci_result.lint_command,
-                            exit_code=proc.returncode,
-                            output_excerpt=lint_output[:500],
-                        )
-                        return {
-                            "performer_stage": "implementing",
-                            "phase": "dispatching",
-                            "agent_dispatch": {},
-                            "agent_dispatch_at": None,
-                            "current_card": card,
-                            "relay_feedback": [{"body": f"CI lint gate failed:\n```\n{lint_output}\n```", "author_login": "coordinare"}],
-                        }
-                    logger.info("performer.ci_passed", ci_command=ci_result.lint_command)
-                except (subprocess.TimeoutExpired, OSError) as exc:
-                    logger.warning("ci_gate.lint_error", command=ci_result.lint_command, error=str(exc))
-                    # Don't block on gate execution errors — proceed to monitoring_pr
-            else:
-                logger.info("ci_gate.no_lint_detected", stack=ci_result.stack)
-        else:
-            logger.info("ci_gate.workspace_gone", workspace_path=str(workspace_path))
-    else:
-        logger.info("ci_gate.no_workspace_path")
-    return None
-
-
 def _carry_dispatched_feedback(state: CoordinareState, updates: dict[str, Any]) -> None:
     """Retarget unfinished requests with a gate bounce's new repair feedback."""
     batch = state.get("dispatched_feedback") or {}
@@ -797,14 +731,9 @@ def _advance_stage(
         else dict(state.get("current_card") or {})
     )
 
-    # 043: CI lint gate — route back to the implementer on lint failure,
-    # else fall through to the monitoring_pr transition.
-    lint_updates = _ci_lint_gate(state, card)
-    if lint_updates is not None:
-        # A final reviewer can bounce to implementation. Carry the original
-        # request across that stage change until the replacement accepts it.
-        _carry_dispatched_feedback(state, lint_updates)
-        return lint_updates
+    # #106: no lint gate here. Coordinare never executes a repo-derived
+    # command; lint runs in the performer's own workspace (043 pre-commit
+    # check, 089 local test gate) and CI is read through the PR checks gate.
 
     if status is not None and acknowledge_final_feedback:
         state["dispatched_feedback"] = {}

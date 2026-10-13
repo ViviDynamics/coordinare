@@ -149,52 +149,6 @@ async def test_ci_hold_then_pass_acknowledges_completed_feedback(monkeypatch) ->
     assert not state.get("dispatched_feedback")
 
 
-@pytest.mark.parametrize("deferred", [False, True])
-@pytest.mark.asyncio
-async def test_lint_bounce_retains_feedback_for_replacement(deferred, monkeypatch) -> None:
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
-    from coordinare.graph.nodes.monitor.body import _build_monitor_ctx, _phase_ephemeral_gate
-    from coordinare.graph.nodes.monitor.verdict import _advance_stage
-
-    state = initial_state()
-    batch = {"stage": "implementing", "items": [{"body": "Keep this request"}]}
-    state.update(current_card={"id": "card", "pr_url": "https://github.com/example/sample/pull/1", "pr_node_id": "PR1"},
-                 performer_stage="implementing", lifecycle_sequence=["implementing"],
-                 phase="monitoring_performer", dispatched_feedback=batch)
-    monkeypatch.setattr("coordinare.graph.nodes.monitor.verdict._ci_lint_gate", lambda *_: {
-        "phase": "dispatching", "performer_stage": "implementing",
-        "relay_feedback": [{"body": "Lint failed"}],
-    })
-    if deferred:
-        monkeypatch.setattr("coordinare.graph.nodes.monitor.body._implementer_session_gone", lambda _: True)
-        monkeypatch.setattr("coordinare.graph.nodes.monitor.body._get_ci_gate_config", lambda _: SimpleNamespace(enabled=True))
-        monkeypatch.setattr("coordinare.graph.nodes.monitor.body._evaluate_ci_gate", AsyncMock(return_value=({}, False)))
-        await _phase_ephemeral_gate(state, _build_monitor_ctx(state))
-    else:
-        state.update(_advance_stage(state, {"status": "done"}))
-    assert state["phase"] == "dispatching"
-    payload, _ = _base_card_context(state, state["current_card"], "card", "implementing")
-    assert batch["items"][0] in payload["relay_feedback"]
-
-
-def test_final_reviewer_lint_bounce_relays_original_request_to_implementer(monkeypatch) -> None:
-    from coordinare.graph.nodes.monitor.verdict import _advance_stage
-
-    state = initial_state()
-    request = {"id": "style-request", "body": "Fix naming in the new helper"}
-    state.update(performer_stage="reviewing", lifecycle_sequence=["implementing", "reviewing"],
-                 dispatched_feedback={"stage": "reviewing", "items": [request]})
-    monkeypatch.setattr("coordinare.graph.nodes.monitor.verdict._ci_lint_gate", lambda *_: {
-        "phase": "dispatching", "performer_stage": "implementing",
-        "relay_feedback": [{"body": "Lint failed"}],
-    })
-    state.update(_advance_stage(state, {"status": "done"}))
-    payload, _ = _base_card_context(state, {}, "card", "implementing")
-    assert request in payload["relay_feedback"]
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["implementing", "reviewing"])
 @pytest.mark.parametrize("verdict", ["hold", "bounce", "pass", "missing_pr"])
@@ -222,7 +176,6 @@ async def test_final_stage_feedback_waits_for_pr_checks_gate(stage, verdict, mon
         "bounce": {"phase": "dispatching", "performer_stage": "implementing", "relay_feedback": [{"body": "CI failed"}]},
         "pass": {}, "missing_pr": {},
     }[verdict]
-    monkeypatch.setattr("coordinare.graph.nodes.monitor.verdict._ci_lint_gate", lambda *_: None)
     gate = AsyncMock(return_value=(gate_updates, verdict in {"hold", "bounce"}))
     monkeypatch.setattr("coordinare.graph.nodes.monitor.body._evaluate_pr_checks_gate", gate)
     await _phase_terminal_success_s3(state, ctx)
@@ -277,7 +230,6 @@ async def test_deferred_ephemeral_final_feedback_waits_for_pr_checks(verdict, mo
     monkeypatch.setattr("coordinare.graph.nodes.monitor.body._implementer_session_gone", lambda _: True)
     monkeypatch.setattr("coordinare.graph.nodes.monitor.body._get_ci_gate_config", lambda _: SimpleNamespace(enabled=True))
     monkeypatch.setattr("coordinare.graph.nodes.monitor.body._evaluate_ci_gate", AsyncMock(return_value=({}, False)))
-    monkeypatch.setattr("coordinare.graph.nodes.monitor.verdict._ci_lint_gate", lambda *_: None)
     gate_updates = ({"phase": "dispatching", "performer_stage": "implementing", "relay_feedback": [{"body": "CI failed"}]}
                     if verdict == "bounce" else {"phase": "monitoring_performer"} if verdict == "hold" else {})
     gate = AsyncMock(return_value=(gate_updates, verdict != "pass"))
