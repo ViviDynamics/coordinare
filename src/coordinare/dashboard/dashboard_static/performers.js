@@ -35,6 +35,35 @@ function derivePerformerTokenTotal(s) {
   return null;
 }
 
+// 121: one cost estimate for every place that shows one (Metrics, board row,
+// card detail). The daemon's own figure wins when it has one. In shared-pool
+// mode the figure lives on the session, not the top-level state, and it is
+// only computed when a stage reports, so a session that already shows tokens
+// can still carry 0. In that case estimate from the same token count the
+// page displays, at the same flat rate the daemon uses.
+// Returns {value, basis}; value is null when there is nothing to estimate.
+function estimateCost(sess, s) {
+  sess = sess || {};
+  s = s || {};
+  var rate = Number(s.cost_per_million_tokens);
+  var hasRate = isFinite(rate) && rate >= 0;
+  var basis = hasRate
+    ? 'Estimate at $' + rate.toFixed(2) + ' per million tokens (one flat rate for all models and token types)'
+    : 'Estimate at the configured flat rate per million tokens';
+  var reported = Number(sess.card_cost_estimate);
+  if (isFinite(reported) && reported > 0) return { value: reported, basis: basis };
+  var tokens = derivePerformerTokenTotal(sess);
+  if (tokens != null && tokens > 0 && hasRate && rate > 0) {
+    return { value: tokens / 1000000 * rate, basis: basis };
+  }
+  return { value: isFinite(reported) ? reported : 0, basis: basis };
+}
+
+function costHtml(sess, s, digits) {
+  var est = estimateCost(sess, s);
+  return '<span title="' + esc(est.basis) + '">$' + est.value.toFixed(digits) + '</span>';
+}
+
 // 354: queued-for-slot board-row presentation. A card whose role pool is
 // saturated sits in phase 'dispatching' with no slot; it renders as
 // "Queued for <stage>" with a real wait (from the persisted
@@ -215,13 +244,11 @@ function renderActiveWorkPanels(s) {
           ? '<span style="color:var(--color-accent-yellow)">' + esc(elapsed) + '</span>'
           : (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed)))
         : '';
-      var costStr = sess.agent_dispatch_at
-        ? '$' + (Number(sess.card_cost_estimate) || 0).toFixed(4)
-        : '—';
+      var costStr = sess.agent_dispatch_at ? costHtml(sess, s, 4) : '—';
       var parts = [phaseLabel];
       if (!queuedLabel && stage) parts.push('<code>' + stage + '</code>');
       if (elapsedHtml) parts.push(elapsedHtml);
-      parts.push(esc(costStr));
+      parts.push(costStr);
       liveLine = '<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px">' + parts.join(' · ') + '</div>';
     }
 
@@ -261,8 +288,7 @@ function renderCardDetailContent(sess, s) {
   var elapsedHtml = stale
     ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
     : esc(rawElapsed);
-  var cost = sess.agent_dispatch_at
-    ? '$' + (sess.card_cost_estimate || 0).toFixed(4) : '—';
+  var cost = sess.agent_dispatch_at ? costHtml(sess, s, 4) : '—';
   // 348 (closes TODO(054)): logs come from the service holding this card's slot.
   var logs = Array.isArray(sess.performer_logs) ? sess.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
@@ -288,7 +314,7 @@ function renderCardDetailContent(sess, s) {
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Phase</td><td style="padding:3px 0">' + phaseLabel + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
-    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + esc(cost) + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + cost + '</td></tr>' +
     '</table>' +
     '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' +
     '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>' +

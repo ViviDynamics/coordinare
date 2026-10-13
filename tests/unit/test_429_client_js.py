@@ -52,7 +52,14 @@ def _extract_detail_js() -> str:
     if fmt_age is None:
         raise AssertionError("the shared fmtAge() helper is no longer in helpers.js")
     stubs = "var STALE_THRESHOLD_MS = 30 * 60 * 1000;"
-    return "\n".join([esc.group(0), fmt.group(0), alias, fmt_age.group(0), stubs, detail_js])
+    # 121: the detail renderer prices the card through the shared estimate.
+    cost_helpers = []
+    for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "costHtml"):
+        helper = re.search(rf"function {name}\(.*?\n\}}", performers, re.DOTALL)
+        if helper is None:
+            raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
+        cost_helpers.append(helper.group(0))
+    return "\n".join([esc.group(0), fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
 
 
 def test_detail_js_slice_is_complete() -> None:

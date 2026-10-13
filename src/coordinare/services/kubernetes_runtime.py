@@ -67,6 +67,37 @@ _UNOWNED_PREDECESSOR = "cannot replace performer pod without proof of deployment
 #: alphanumeric, at most 63 characters.
 _MAX_NAME = 63
 _INVALID = re.compile(r"[^a-z0-9-]+")
+# 120: CSI and OSC terminal escapes, stripped from live log lines.
+_ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+_BYTES_REPR = re.compile(r"""^b(['"]).*\1$""", re.DOTALL)
+
+
+def _decode_pod_log(raw: Any) -> str:
+    """120: turn whatever ``read_namespaced_pod_log`` returned into real text.
+
+    The call is declared to return ``str``, but the kubernetes client builds
+    that by calling ``str()`` on the response body when it is not JSON, so a
+    plain-text log comes back as the *repr* of a bytes object: one line that
+    starts ``b'`` and carries literal ``\\n`` and ``\\xe2`` sequences. Accept
+    every shape the client can hand over (a response object with ``.data``,
+    bytes, a proper string, or that repr) and decode as UTF-8.
+    """
+    import ast
+
+    data = getattr(raw, "data", raw)
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data).decode("utf-8", "replace")
+    if not isinstance(data, str):
+        return ""
+    if _BYTES_REPR.match(data):
+        try:
+            literal = ast.literal_eval(data)
+        except (ValueError, SyntaxError):
+            return data
+        if isinstance(literal, bytes):
+            return literal.decode("utf-8", "replace")
+    return data
+
 
 
 def pod_name_for(performer_id: str) -> str:
@@ -629,9 +660,9 @@ class KubernetesRuntime:
         from kubernetes.client.rest import ApiException
 
         try:
-            logs = await asyncio.to_thread(
+            logs = _decode_pod_log(await asyncio.to_thread(
                 self._api.read_namespaced_pod_log, name=pod_name, namespace=self._namespace,
-            )
+            ))
         except ApiException as exc:
             _log.warning("kubernetes_runtime.logs_unavailable", pod=pod_name, status=exc.status)
             return
@@ -664,7 +695,7 @@ class KubernetesRuntime:
                 status=exc.status,
             )
             return []
-        return (raw or "").splitlines()[-lines:]
+        return [_ANSI_ESCAPE.sub("", line) for line in _decode_pod_log(raw).splitlines()[-lines:]]
 
     async def cleanup_orphaned(self, performer_id: str | None = None) -> int:
         """Delete Pods left by a previous coordinare.
