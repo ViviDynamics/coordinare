@@ -108,6 +108,23 @@ def _latest_reviews_per_author(
     ]
 
 
+_VERDICT_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+def _withdrawn_approvals(reviews: list[dict[str, object]]) -> set[int]:
+    """#96: approvals their own author has since replaced with another verdict.
+
+    This reads *every* review on the PR, including ones already relayed. The
+    batch the closer acts on drops relayed reviews, so a change request that
+    was handed to the implementer would otherwise vanish and leave the same
+    reviewer's older approval looking like their last word. Only verdicts
+    count: a later plain comment does not withdraw an approval here.
+    """
+    verdicts = [r for r in reviews if str(r.get("state", "")) in _VERDICT_STATES]
+    standing = set(map(id, _latest_reviews_per_author(verdicts)))
+    return {id(r) for r in verdicts if r.get("state") == "APPROVED" and id(r) not in standing}
+
+
 def _approval_is_current(
     review: dict[str, object], cutoff: datetime | None, head_oid: str,
 ) -> bool:
@@ -613,6 +630,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     # a reviewer's own later APPROVED supersedes their earlier change request
     # and vice versa. Cross-reviewer states never supersede each other.
     effective = _latest_reviews_per_author(filtered)
+    withdrawn = _withdrawn_approvals(reviews)
 
     # Conversation requests are independent items: a later submitted approval
     # or another same-author comment must never supersede them.
@@ -635,6 +653,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
+        and id(r) not in withdrawn
         and _approval_is_current(r, cutoff, _pr_head_oid)
     ]
     # #100: approvals that exist but no longer stand, for the decision log.
@@ -643,7 +662,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
-        and not _approval_is_current(r, cutoff, _pr_head_oid)
+        and (id(r) in withdrawn or not _approval_is_current(r, cutoff, _pr_head_oid))
     ]
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
@@ -767,6 +786,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             logger.warning("stale_review.handler_failed", error=str(exc))
         if approval_review is not None:
             _wait_reason = "pr_comments_not_fully_read"
+        elif any(id(r) in withdrawn for r in stale_approvals):
+            # The reviewer who approved has since requested changes.
+            _wait_reason = "approval_withdrawn_by_reviewer"
         elif stale_approvals:
             # The approval was given on a commit that is no longer the head.
             _wait_reason = "approval_predates_head"

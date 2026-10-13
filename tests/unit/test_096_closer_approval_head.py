@@ -212,3 +212,45 @@ def test_checks_gate_forward_log_carries_its_reason() -> None:
     source = inspect.getsource(gates)
     forward = source[source.index('action="FORWARD",'):]
     assert "reason=decision.reason," in forward[:400]
+
+
+def _change_request(at: str, login: str = "jason") -> dict[str, Any]:
+    return {"id": f"RVW_CR_{login}", "author_login": login, "state": "CHANGES_REQUESTED",
+            "commit_oid": _HEAD, "submitted_at": at, "body": "Please fix the empty input case.", "comments": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["", "CHANGES_REQUESTED"])
+async def test_an_approval_its_author_replaced_with_a_change_request_does_not_merge(decision: str) -> None:
+    """Approve, then request changes on the same commit. The change request was
+    already relayed, so the batch no longer holds it; the approval must not
+    come back as the reviewer's last word, whatever the aggregate state says."""
+    change_request = _change_request("2026-10-12T23:30:00Z")
+    state = _state(_GitHub([_approval(), change_request], decision=decision), completed_at="2026-10-12T23:40:00Z")
+    state["processed_review_ids"] = {change_request["id"]}
+    with structlog.testing.capture_logs() as logs:
+        result = await monitor_pr(state)
+    assert result["phase"] == "monitoring_pr"
+    if not decision:
+        assert _decisions(logs)[-1]["reason"] == "approval_withdrawn_by_reviewer"
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_approval_after_a_relayed_change_request_merges() -> None:
+    change_request = _change_request("2026-10-12T23:00:00Z")
+    state = _state(_GitHub([change_request, _approval()]))
+    state["processed_review_ids"] = {change_request["id"]}
+    result = await monitor_pr(state)
+    assert result["phase"] == "merging"
+
+
+@pytest.mark.asyncio
+async def test_another_reviewers_change_request_does_not_withdraw_this_approval() -> None:
+    """Withdrawal is per reviewer. GitHub's aggregate review state is what holds
+    a merge for someone else's open change request (covered above)."""
+    other = _change_request("2026-10-12T23:30:00Z", login="sam")
+    state = _state(_GitHub([_approval(), other], decision=""))
+    state["human_reviewers"] = ["jason", "sam"]
+    state["processed_review_ids"] = {other["id"]}
+    result = await monitor_pr(state)
+    assert result["phase"] == "merging"
