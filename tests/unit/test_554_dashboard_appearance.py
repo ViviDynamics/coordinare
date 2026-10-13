@@ -59,6 +59,8 @@ def test_text_status_and_focus_remain_readable_in_each_theme(theme: str) -> None
             pairs.append((f'--color-bg-{surface}', f'--color-text-{text}'))
     for bg, fg in pairs:
         assert contrast_ratio(tokens[bg], tokens[fg]) >= 4.5, f'{theme}: {fg} on {bg}'
+    for surface in ['base', 'surface', 'elevated', 'pill']:
+        assert contrast_ratio(tokens[f'--color-bg-{surface}'], tokens['--color-brass-ink']) >= 4.5
     for surface in ['base', 'surface', 'elevated']:
         assert contrast_ratio(tokens[f'--color-bg-{surface}'], tokens['--color-focus']) >= 3
 
@@ -169,9 +171,13 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
         inside_header = False
         inside_navigation = False
         header_image: str | None = None
+        header_status = False
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             values = dict(attrs)
+            if values.get('id') == 'nav-sse-dot':
+                assert not self.inside_navigation, 'system status belongs in the header'
+                self.header_status = self.inside_header
             if tag == 'header':
                 self.inside_header = True
             if tag == 'nav':
@@ -195,6 +201,7 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
     assert parser.favicon == '/static/coordinare-mark.svg'
     assert parser.mascot == '/static/coordinare-conductor.webp'
     assert parser.header_image is None
+    assert parser.header_status
 
 
 def test_drawer_remembers_desktop_width_without_changing_mobile_navigation(tmp_path: Path) -> None:

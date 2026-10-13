@@ -10,6 +10,8 @@ const elements = {
   'disconnected-banner': {style: {}},
   'nav-sse-dot': {classList: {add() {}, remove() {}}, title: ''},
   'force-poll-btn': {disabled: false},
+  'connection-status': {title: ''},
+  'connection-label': {textContent: ''},
 };
 class Source {
   static CONNECTING = 0;
@@ -45,7 +47,10 @@ const cases = {
   native() {
     streams[0].open(); streams[0].error(Source.CONNECTING);
     assert.equal(timers.size, 0, 'Native reconnect must not create a competing retry');
+    assert.equal(elements['connection-label'].textContent, 'Reconnecting');
+    assert.match(elements['connection-status'].title, /none received yet/);
     streams[0].open(); assert.equal(streams.length, 1);
+    assert.equal(elements['connection-label'].textContent, 'Waiting for updates');
     assert.equal(elements['disconnected-banner'].style.display, 'none');
   },
   closed() {

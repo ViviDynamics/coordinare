@@ -101,3 +101,13 @@ keeping only the mark favicon, and removing promotional copy. This feedback is
 implemented. The desktop drawer now retains icons when narrowed to 80px and
 shows icons with labels when expanded to 224px. Collapse is saved locally;
 mobile opening is independent.
+
+### Header and link refinement
+
+Jason requested System / Light / Dark iconography, brass issue/PR links, and a
+more useful system-status indicator in the header. The controls use a monitor,
+sun, and moon with a selected background, accessible labels, and tooltips.
+Issue/PR links use the theme's brass text shade to maintain 4.5:1 contrast on the
+workspace, panels, and PR pills. The relocated status indicator names the stream
+state and reports the last received message time on hover. It becomes Live only
+after receiving a message and announces status changes rather than heartbeats.

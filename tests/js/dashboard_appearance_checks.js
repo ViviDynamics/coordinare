@@ -5,10 +5,14 @@ const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
 
 function boot(saved, dark = false, denied = false) {
-  const events = {}, mediaEvents = {}, domEvents = {}, selectionEvents = {};
+  const events = {}, mediaEvents = {}, domEvents = {};
   const storage = new Map(saved == null ? [] : [['coordinare.appearance', saved]]);
   const root = {dataset: {}, style: {}};
-  const select = {value: '', addEventListener: (k, fn) => { selectionEvents[k] = fn; }};
+  const buttons = ['system', 'light', 'dark'].map(value => ({
+    dataset: {appearance: value}, attributes: {}, events: {},
+    setAttribute(k, v) { this.attributes[k] = v; },
+    addEventListener(k, fn) { this.events[k] = fn; },
+  }));
   const media = {matches: dark, addEventListener: (k, fn) => { mediaEvents[k] = fn; }};
   const window = {addEventListener: (k, fn) => { events[k] = fn; }, dispatchEvent: () => {},
     matchMedia: () => media, localStorage: {
@@ -17,10 +21,12 @@ function boot(saved, dark = false, denied = false) {
     }};
   const document = {documentElement: root, readyState: 'loading',
     addEventListener: (k, fn) => { domEvents[k] = fn; },
-    getElementById: id => id === 'appearance-select' ? select : null};
+    getElementById: () => null,
+    querySelectorAll: selector => selector === '[data-appearance]' ? buttons : []};
   vm.runInNewContext(source, {window, document, CustomEvent: class {constructor(type) {this.type = type;}}});
-  return {root, select, storage, media, loaded: () => domEvents.DOMContentLoaded(),
-    choose: value => { select.value = value; selectionEvents.change(); },
+  return {root, buttons, storage, media, loaded: () => domEvents.DOMContentLoaded(),
+    choose: value => { buttons.find(b => b.dataset.appearance === value).events.click(); },
+    selected: () => buttons.filter(b => b.attributes['aria-pressed'] === 'true').map(b => b.dataset.appearance),
     os: dark => {media.matches = dark; mediaEvents.change();},
     crossTab: value => events.storage({key: 'coordinare.appearance', newValue: value}),
     clear: () => events.storage({key: null, newValue: null})};
@@ -33,22 +39,24 @@ for (const [saved, osDark, want] of [[null,false,'light'],[null,true,'dark'],['l
 }
 let b = boot(null, true);
 b.loaded();
-assert.equal(b.select.value, 'system');
+assert.deepEqual(b.selected(), ['system']);
 b.choose('light');
+assert.deepEqual(b.selected(), ['light']);
 assert.equal(b.root.dataset.theme, 'light');
 assert.equal(b.storage.get('coordinare.appearance'), 'light');
 b.os(true);
 assert.equal(b.root.dataset.theme, 'light', 'OS changes cannot override explicit choice');
 b.choose('system');
+assert.deepEqual(b.selected(), ['system']);
 assert.equal(b.root.dataset.theme, 'dark');
 b.os(false);
 assert.equal(b.root.dataset.theme, 'light');
 b.crossTab('dark');
 assert.equal(b.root.dataset.theme, 'dark');
-assert.equal(b.select.value, 'dark');
+assert.deepEqual(b.selected(), ['dark']);
 b.clear();
 assert.equal(b.root.dataset.theme, 'light');
-assert.equal(b.select.value, 'system');
+assert.deepEqual(b.selected(), ['system']);
 b = boot('dark', false, true);
 b.loaded();
 assert.equal(b.root.dataset.theme, 'light', 'denied storage falls back to system');

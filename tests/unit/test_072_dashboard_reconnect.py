@@ -1,6 +1,7 @@
 """Exercise the shipped stream bootstrap with deterministic browser primitives."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,7 +17,12 @@ def test_dashboard_stream_recovery(tmp_path: Path, case: str) -> None:
     end = "document.addEventListener('DOMContentLoaded', function() {"
     assert _DASHBOARD_HTML.count(start) == _DASHBOARD_HTML.count(end) == 1
     bootstrap = tmp_path / "bootstrap.js"
-    bootstrap.write_text(start + _DASHBOARD_HTML.split(start, 1)[1].split(end, 1)[0])
+    status = re.search(r'function updateConnectionStatus\(label\) \{.*?\n\}', _DASHBOARD_HTML, re.DOTALL)
+    assert status is not None
+    bootstrap.write_text(
+        'var _afHasMessage = false, _afLastMsgAt = 0;\n' + status.group(0) + '\n' +
+        start + _DASHBOARD_HTML.split(start, 1)[1].split(end, 1)[0],
+    )
     node = shutil.which("node")
     assert node is not None, "Node is required for the dashboard browser checks"
     checks = Path(__file__).resolve().parents[1] / "js" / "dashboard_reconnect_checks.js"

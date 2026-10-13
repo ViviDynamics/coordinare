@@ -189,12 +189,12 @@ function renderActiveWorkPanels(s) {
 
     var label = num ? ('#' + num + ' ' + title) : (title || iid);
     var titleHtml = issueUrl && /^https?:\/\//i.test(issueUrl)
-      ? '<a href="' + esc(issueUrl) + '" target="_blank" rel="noopener" style="color:var(--color-accent-blue);text-decoration:none">' + esc(label) + ' &#8599;</a>'
+      ? '<a href="' + esc(issueUrl) + '" target="_blank" rel="noopener" style="text-decoration:none">' + esc(label) + ' &#8599;</a>'
       : esc(label);
 
     var prBadge = '';
     if (prUrl && /^https?:\/\//i.test(prUrl)) {
-      prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;color:var(--color-accent-blue);text-decoration:none">PR &#8599;</a>';
+      prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;text-decoration:none">PR &#8599;</a>';
     }
 
     var liveLine = '';

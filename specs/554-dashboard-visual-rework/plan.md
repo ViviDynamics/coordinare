@@ -13,7 +13,7 @@ The approved layout changes the presentation of existing pages, not state flow.
 - dashboard/routers/pages.py: serve original SVG/WebP assets with correct MIME
   types, ETag validation, and revalidation caching.
 - dashboard_static/workflow.js: extracted content-hashed workflow renderer; read computed semantic colors and rerender on theme changes.
-- tests/unit/test_094_dashboard_appearance.py and tests/js/dashboard_appearance_checks.js:
+- tests/unit/test_554_dashboard_appearance.py and tests/js/dashboard_appearance_checks.js:
   execute the shipped theme logic, check theme contrast and HTML budget.
 
 ## Data and contracts
@@ -25,7 +25,7 @@ SSE state and control endpoints keep their schemas and behavior.
 ## Phases
 
 1. Spec analysis and tests first. Tests name preference and contrast regressions.
-2. Add head bootstrap, selector, and theme-aware workflow rendering.
+2. Add head bootstrap, icon buttons, and theme-aware workflow rendering.
 3. Reshape the shell and components with shared tokens and brand typography.
 4. Browser review at 375/768/1440px in both appearances; validate routes, focus,
    board detail, menu, persisted selection, and console output.

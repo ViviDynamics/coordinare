@@ -78,7 +78,7 @@ class El {
 
 const els = {};
 for (const id of ['activity-feed', 'af-empty', 'af-filter', 'af-liveness',
-                  'af-stale-note', 'nav-sse-dot', 'disconnected-banner']) {
+                  'af-stale-note', 'nav-sse-dot', 'disconnected-banner', 'connection-status', 'connection-label']) {
   els[id] = new El(id);
 }
 global.document = { getElementById: (id) => (id in els ? els[id] : null) };
@@ -190,6 +190,8 @@ section('C3 (timer logic) / C4 — silence timer and not-live rendering');
 afNoteMessage();
 afTick();
 check('live while messages are arriving', _afLive === true);
+check('header describes live dashboard updates', els['connection-label'].textContent === 'Live');
+check('header reports the last message time', els['connection-status'].title.includes(new Date(_afLastMsgAt).toLocaleTimeString()));
 _afLastMsgAt = Date.now() - 39000;
 afTick();
 check('still live at 39 s — one dropped keepalive cannot trip it', _afLive === true);
@@ -197,12 +199,14 @@ _afLastMsgAt = Date.now() - 41000;
 afTick();
 check('not live past 40 s', _afLive === false);
 check('liveness label flipped', els['af-liveness'].textContent === 'Not live');
+check('header identifies silent updates', els['connection-label'].textContent === 'Updates quiet');
 check('C4: retained rows are NOT cleared on disconnect (FR-027)', feed.childElementCount === 4);
 check('possibly-out-of-date note shown', els['af-stale-note'].style.display === '');
-check('reuses the existing nav dot rather than a second indicator',
+check('updates the relocated header dot',
       els['nav-sse-dot'].classList.contains('disconnected'));
 afNoteMessage();
 check('C5: returns to live on the next message', _afLive === true);
+check('header recovers on the next message', els['connection-label'].textContent === 'Live');
 check('stale note hidden again', els['af-stale-note'].style.display === 'none');
 
 // ---------------------------------------------------------------------------

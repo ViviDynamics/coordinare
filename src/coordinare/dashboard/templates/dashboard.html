@@ -18,8 +18,9 @@
     var changed = root.dataset.theme !== theme;
     root.dataset.theme = theme;
     root.style.colorScheme = theme;
-    var select = document.getElementById('appearance-select');
-    if (select) select.value = preference;
+    document.querySelectorAll('[data-appearance]').forEach(function (button) {
+      button.setAttribute('aria-pressed', String(button.dataset.appearance === preference));
+    });
     if (changed && notify) window.dispatchEvent(new CustomEvent('coordinare:appearance'));
   }
   apply(false);
@@ -30,14 +31,14 @@
     apply(true);
   });
   function bind() {
-    var select = document.getElementById('appearance-select');
-    if (!select) return;
-    select.value = preference;
-    select.addEventListener('change', function () {
-      preference = valid(select.value);
-      try { window.localStorage.setItem(key, preference); } catch (_) {}
-      apply(true);
+    document.querySelectorAll('[data-appearance]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        preference = valid(button.dataset.appearance);
+        try { window.localStorage.setItem(key, preference); } catch (_) {}
+        apply(true);
+      });
     });
+    apply(false);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
@@ -220,6 +221,7 @@ h2 { font-size: 15px; font-weight: 600; color: var(--color-text-primary); margin
 .label { color: var(--color-text-muted); margin-right: 6px; }
 a { color: var(--color-accent-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
+a[href*="/issues/"], a[href*="/pull/"] { color: var(--color-brass-ink); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; color: var(--color-text-muted); padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--color-border); }
 td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--color-bg-elevated); }
@@ -356,9 +358,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 #navbar a.nav-link { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); color: var(--color-text-muted); text-decoration: none; border-radius: var(--radius-control); border-left: 3px solid transparent; }
 #navbar a.nav-link:hover { background: var(--color-bg-row-hover); color: var(--color-text-primary); }
 #navbar a.nav-link.nav-active { background: var(--color-bg-row-selected); color: var(--color-brand-ink); font-weight: 600; border-left-color: var(--color-brass); }
-#navbar .nav-spacer { flex: 1; }
-#navbar .nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: var(--space-2); }
-#navbar .nav-status-dot.disconnected { background: var(--color-accent-red); }
+.nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: var(--space-2); }
+.nav-status-dot.disconnected { background: var(--color-accent-red); }
 #navbar-hamburger { display: block; width: 28px; height: 32px; flex-shrink: 0; font-size: 24px; line-height: 1; color: var(--color-text-primary); }
 @media (min-width: 900px) {
   html[data-navigation-collapsed="true"] { --sidebar-width: 80px; }
@@ -372,8 +373,13 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .workspace-shell { margin-left: var(--sidebar-width); padding: var(--space-6); max-width: 1900px; }
 .workspace-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); margin-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
 .workspace-header > div:first-child { flex: 1; min-width: 0; }
-.appearance-control { display: flex; align-items: center; gap: var(--space-3); font-size: 12px; color: var(--color-text-muted); }
-#appearance-select { min-width: 100px; }
+.header-controls { display: flex; align-items: center; gap: var(--space-4); }
+#connection-status { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
+.appearance-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--color-border); border-radius: var(--radius-control); }
+.appearance-control button { width: 36px; height: 36px; display: grid; place-items: center; background: transparent; border: 0; color: var(--color-text-muted); }
+.appearance-control button:hover { background: var(--color-bg-row-hover); }
+.appearance-control button[aria-pressed="true"] { background: var(--color-bg-row-selected); color: var(--color-brand-ink); }
+.appearance-control svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #main-content { min-width: 0; }
 #workflow-card summary { font-weight: 600; }
 #workflow-card details[open] summary { margin-bottom: var(--space-5); }
@@ -383,12 +389,12 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   #navbar-hamburger { margin-left: auto; width: 36px; height: 36px; }
   #navbar-menu { display: none; width: 100%; }
   #navbar-menu.open { display: flex; }
-  #navbar .nav-spacer,   .workspace-shell { margin-left: 0; padding: var(--space-5); }
+  .workspace-shell { margin-left: 0; padding: var(--space-5); }
 }
 @media (max-width: 599px) {
   .workspace-shell { padding: var(--space-4); }
   .workspace-header { align-items: center; gap: var(--space-2); }
-    .appearance-control { flex-direction: column; align-items: flex-end; gap: var(--space-1); }
+  .header-controls { gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
   h1 { font-size: 28px; overflow-wrap: anywhere; }
   .card { padding: var(--space-4); }
   .swimlane-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -455,14 +461,17 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <a href="/config" class="nav-link" onclick="navigate(event,'/config')" aria-label="Config" title="Config"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3v7m0 4v7m7-18v3m0 4v11m7-18v11m0 4v3"/><circle cx="5" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="19" cy="16" r="2"/></svg><span class="nav-link-label">Config</span></a>
     <a href="/assistant" id="nav-assistant" class="nav-link" style="display:none" onclick="navigate(event,'/assistant')" aria-label="Assistant" title="Assistant"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3zM7 8h10M7 12h7"/></svg><span class="nav-link-label">Assistant</span></a>
   </div>
-  <span class="nav-spacer"></span>
-  <span role="status" aria-live="polite"><span id="nav-sse-dot" class="nav-status-dot" title="SSE connected"></span><span id="project-link" style="font-size:12px;color:var(--color-text-muted)"></span></span>
 </nav>
 <div class="workspace-shell">
 <header class="workspace-header">
-  <div><h1 id="workspace-title">Dashboard</h1></div>
-  <div class="appearance-control"><label for="appearance-select">Appearance</label>
-    <select id="appearance-select"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select>
+  <div><h1 id="workspace-title">Dashboard</h1><span id="project-link" class="muted" style="font-size:12px"></span></div>
+  <div class="header-controls">
+    <span id="connection-status" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span></span>
+    <div class="appearance-control" role="group" aria-label="Appearance">
+      <button type="button" data-appearance="system" aria-label="System appearance" title="System" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4m-4 0h8"/></svg></button>
+      <button type="button" data-appearance="light" aria-label="Light appearance" title="Light" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
+      <button type="button" data-appearance="dark" aria-label="Dark appearance" title="Dark" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14a9 9 0 0 1-10.5-10.5A9 9 0 1 0 20.5 14z"/></svg></button>
+    </div>
   </div>
 </header>
 <div id="main-content" tabindex="-1">
@@ -996,12 +1005,11 @@ function renderState(s) {
     a.href = s.project_board_url;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.style.cssText = 'color:var(--color-accent-blue);text-decoration:none';
+    a.style.cssText = 'text-decoration:none';
     a.textContent = s.project_name + ' Board';
     linkEl.appendChild(a);
   }
-  // 348/305: prefer the monitored session; top-level is empty in shared-pool
-  // mode, which is why live usage displayed a flat zero.
+  // Shared-pool usage lives on the monitored session.
   var tokenSource = activeSess || s;
   var cardTokensTotal = (tokenSource.card_tokens_total || s.card_tokens_total || 0);
   if (!(cardTokensTotal > 0)) {
@@ -1789,6 +1797,7 @@ var _afRunId = null;
 var _afFilter = '';
 var _afLastMsgAt = Date.now();
 var _afLive = true;
+var _afHasMessage = false;
 var _afQuietCards = {};     // card_id -> true while that card is in a quiet episode
 
 function afSyncRun(runId) {
@@ -1905,6 +1914,17 @@ function onActivityFilterChange() {
   afRender();
 }
 
+function updateConnectionStatus(label) {
+  var status = document.getElementById('connection-status');
+  if (!status) return;
+  var text = document.getElementById('connection-label');
+  if (text && text.textContent !== label) text.textContent = label;
+  status.title = 'Dashboard updates: ' + label + '. Last message: ' +
+    (_afHasMessage ? new Date(_afLastMsgAt).toLocaleTimeString() : 'none received yet');
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) { if (label === 'Live') dot.classList.remove('disconnected'); else dot.classList.add('disconnected'); }
+}
+
 function afSetLive(live) {
   if (live === _afLive) return;
   _afLive = live;
@@ -1913,23 +1933,19 @@ function afSetLive(live) {
     el.textContent = live ? 'Live' : 'Not live';
     if (live) el.classList.remove('af-not-live'); else el.classList.add('af-not-live');
   }
-  // Retained entries stay visible and are marked possibly out of date; the
-  // feed is never cleared on disconnect (FR-027).
+  // Keep retained entries visible on disconnect (FR-027).
   var note = document.getElementById('af-stale-note');
   if (note) note.style.display = live ? 'none' : '';
-  // Reuse the existing connection indicators rather than adding a second one.
-  var dot = document.getElementById('nav-sse-dot');
-  if (dot) {
-    if (live) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
-    else { dot.classList.add('disconnected'); dot.title = 'SSE silent — no messages'; }
-  }
+  if (!live) updateConnectionStatus('Updates quiet');
   var bnr = document.getElementById('disconnected-banner');
   if (bnr && !live) bnr.style.display = 'block';
 }
 
 function afNoteMessage() {
   _afLastMsgAt = Date.now();
+  _afHasMessage = true;
   afSetLive(true);
+  updateConnectionStatus('Live');
 }
 
 function afQuietTick() {
@@ -2033,8 +2049,7 @@ function connectEventStream() {
   source.onerror = function() {
     if (es !== source) return;
     banner.style.display = 'block';
-    var dot = document.getElementById('nav-sse-dot');
-    if (dot) { dot.classList.add('disconnected'); dot.title = 'SSE disconnected — reconnecting'; }
+    updateConnectionStatus('Reconnecting');
     var fpBtn = document.getElementById('force-poll-btn');
     if (fpBtn) fpBtn.disabled = true;
     // Native EventSource retries CONNECTING, but HTTP failures can close it permanently.
@@ -2056,8 +2071,7 @@ function connectEventStream() {
     }
     _sseRetryDelay = 1000;
     banner.style.display = 'none';
-    var dot = document.getElementById('nav-sse-dot');
-    if (dot) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
+    updateConnectionStatus('Waiting for updates');
   };
 }
 connectEventStream();

@@ -4,7 +4,7 @@ Preference: light | dark | system. Default system, including invalid saved value
 Effective appearance: light | dark, derived from preference and OS media query.
 Storage key: coordinare.appearance. No secrets, server persistence, or API fields.
 Apply effective appearance to document.documentElement.dataset.theme and
-style.colorScheme. Preference selection is synchronized to the appearance select.
+style.colorScheme. Preference selection is synchronized to the icon buttons via aria-pressed.
 Dispatch coordinare:appearance when effective appearance changes after bootstrap.
 Observe OS changes only in System, and storage events to synchronize browser tabs.
 

@@ -7,7 +7,7 @@
 
 ## Behavior and appearance
 - [x] T004 Write and run failing shipped-JS preference tests (FR-05, FR-06).
-- [x] T005 Implement inline appearance lifecycle and accessible selector (FR-05, FR-06).
+- [x] T005 Implement inline appearance lifecycle and accessible icon buttons (FR-05, FR-06).
 - [x] T006 Add contrast checks for both themes; implement semantic brand palettes (FR-01, FR-02, FR-07, FR-09).
 - [x] T007 Implement approved shell, workspace, typography, responsive navigation (FR-03, FR-04, FR-08).
 - [x] T008 Retheme workflow and dynamic component states (FR-07).
@@ -36,3 +36,8 @@ acceptance.
 ## Drawer and copy feedback
 - [x] T015 Implement/test persistent desktop icon rail and expanded icons/labels; preserve mobile menu behavior (FR-13).
 - [x] T016 Move mascot into navigation, retain mark favicon, and remove promotional copy and redundant kicker (FR-12, FR-14).
+
+- [x] T017 Replace appearance select with System / Light / Dark icon buttons;
+  preserve persistence, OS changes, and cross-tab selection.
+- [x] T018 Style clickable issue/PR links in readable brass shades.
+- [x] T019 Move stream status to the header with text states and last-message time.
