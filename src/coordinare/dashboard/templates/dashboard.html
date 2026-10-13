@@ -416,6 +416,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')" aria-label="Symphonies" title="Symphonies"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13"/><circle cx="3" cy="5" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="19" r="1"/></svg><span class="nav-link-label">Symphonies</span></a>
     <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')" aria-label="Global Config" title="Global Config"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg><span class="nav-link-label">Global Config</span></a>
     <a href="/config" class="nav-link" onclick="navigate(event,'/config')" aria-label="Config" title="Config"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3v7m0 4v7m7-18v3m0 4v11m7-18v11m0 4v3"/><circle cx="5" cy="12" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="19" cy="16" r="2"/></svg><span class="nav-link-label">Config</span></a>
+    <a href="/glossary" class="nav-link" onclick="navigate(event,'/glossary')" aria-label="Glossary" title="Glossary"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM9 9h6"/></svg><span class="nav-link-label">Glossary</span></a>
     <a href="/assistant" id="nav-assistant" class="nav-link" style="display:none" onclick="navigate(event,'/assistant')" aria-label="Assistant" title="Assistant"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a3 3 0 0 1-3 3H8l-5 3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3zM7 8h10M7 12h7"/></svg><span class="nav-link-label">Assistant</span></a>
   </div>
 </nav>
@@ -589,6 +590,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <div id="history-page-section"><span class="empty-state">Loading...</span></div>
   </div>
 </div>
+
+<div id="glossary-page" style="display:none"><div class="card"><h2>Glossary</h2><div id="glossary-section"></div></div></div>
 
 <!-- 057: Symphonies page -->
 <div id="symphonies-page" style="display:none">
@@ -1080,7 +1083,7 @@ var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page','config-page','assistant-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','admin-config-page','config-page','assistant-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -1100,7 +1103,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   document.getElementById('workspace-title').textContent = activeLink ? activeLink.textContent.trim() : 'Dashboard';
   document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
@@ -1521,6 +1524,9 @@ function router() {
   } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
     showPage('symphonies-page');
     if (_lastState) renderSymphoniesPage(_lastState);
+  } else if (path === '/glossary') {
+    showPage('glossary-page');
+    renderGlossaryPage();
   } else if (path === '/admin/config') {
     showPage('admin-config-page');
     loadGlobalConfigPage();
