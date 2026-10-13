@@ -610,7 +610,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
     "closer": (
         "## Role\n"
         "Lightweight thread-resolution verifier. The card has already been "
-        "through implementer, reviewer, security, qa, and tech_writer — the "
+        "through implementer, reviewer, security, qa, and documenter — the "
         "substantive review is DONE. Your ONLY job is to confirm two things "
         "before the PR goes to a human: (1) every open reviewer thread has "
         "been resolved, and (2) CI is passing. You do NOT re-review the "

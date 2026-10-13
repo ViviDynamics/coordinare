@@ -110,7 +110,9 @@ function afRowHtml(e, group) {
   var latest = entries[entries.length - 1];
   e = afRepresentative(entries);
   var who = e.card_number ? ('#' + e.card_number) : (e.card_title || e.card_id || '');
-  var where = who + (e.stage ? ' ' + e.stage : '');
+  // 137: the stage's one display name, when the glossary is loaded.
+  var stageName = e.stage && typeof vocabularyKindLabel === 'function' ? vocabularyKindLabel('stage_labels', e.stage) : e.stage;
+  var where = who + (stageName ? ' ' + stageName : '');
   var count = entries.length;
   var key = group ? group.key : e.seq;
   var preview = afPreview(entries) || afSummary(e);

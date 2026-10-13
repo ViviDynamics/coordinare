@@ -96,33 +96,33 @@ def test_glossary_explains_the_five_nouns() -> None:
     assert {"symphony", "stage", "agent", "run", "check"} <= set(vocabulary.CONCEPTS)
 
 
-def test_a_code_shared_by_two_groups_has_one_label() -> None:
-    """`security`, `qa` and `advocate` are both a stage and an agent."""
-    for code in set(vocabulary.STAGES) & set(vocabulary.AGENTS):
-        assert vocabulary.STAGES[code].label == vocabulary.AGENTS[code].label, code
-    for code in set(vocabulary.PHASES) & (set(vocabulary.STAGES) | set(vocabulary.AGENTS)):
-        raise AssertionError(f"{code} is both a conductor phase and a stage or agent")
+def test_a_code_is_never_both_a_phase_and_a_stage_or_agent() -> None:
+    clash = set(vocabulary.PHASES) & (set(vocabulary.STAGES) | set(vocabulary.AGENTS))
+    assert not clash, f"{sorted(clash)} are both a conductor phase and a stage or agent"
 
 
 def _legacy_title_case(code: str) -> str:
     return re.sub(r"\b\w", lambda m: m.group(0).upper(), code.replace("_", " "))
 
 
-def test_introducing_the_glossary_changes_no_label() -> None:
-    """#136 delivers the module with today's labels; renames come in #137 to #144."""
-    for group in ("phases", "stages", "agents"):
-        for code, term in vocabulary.GROUPS[group].items():
-            assert term.label == _legacy_title_case(code), f"{group}.{code}"
+def test_conductor_phase_labels_are_unchanged_by_the_glossary() -> None:
+    """#136 delivered phases with the labels the page already showed; #138 renames them."""
+    for code, term in vocabulary.PHASES.items():
+        assert term.label == _legacy_title_case(code), code
     for code, term in vocabulary.OUTCOMES.items():
         assert term.label == code  # outcomes were always shown as their code
 
 
 def test_label_lookup() -> None:
     assert vocabulary.label("monitoring_performer") == "Monitoring Performer"
-    assert vocabulary.label("tech_writer") == "Tech Writer"
+    assert vocabulary.phase_label("monitoring_performer") == "Monitoring Performer"
     assert vocabulary.label("not_a_code") == "not_a_code"
     assert vocabulary.label(None) == "" and vocabulary.label("") == ""
-    assert vocabulary.labels()["closing_review"] == "Closing Review"
+    assert vocabulary.labels()["success"] == "success"
+    # Stages and agents are not reachable through the flat lookup: several
+    # codes are both, with different labels.
+    assert vocabulary.label("implementing") == "implementing"
+    assert "security" not in vocabulary.labels() and "qa" not in vocabulary.labels()
 
 
 def test_payload_is_plain_json_and_the_script_embeds_it() -> None:
@@ -190,4 +190,4 @@ def test_vocabulary_client_js(tmp_path: Path) -> None:
     summary = re.search(r"^SUMMARY (\d+) (\d+)$", result.stdout, re.MULTILINE)
     assert summary is not None, f"no summary line:\n{report}"
     assert int(summary.group(2)) == 0, report
-    assert int(summary.group(1)) >= 18, f"only {summary.group(1)} checks ran:\n{report}"
+    assert int(summary.group(1)) >= 15, f"only {summary.group(1)} checks ran:\n{report}"

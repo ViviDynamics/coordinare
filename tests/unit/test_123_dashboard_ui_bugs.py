@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import label_helpers_js
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "dashboard_ui_bug_checks.js"
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
@@ -28,7 +29,7 @@ def _fn(source: str, name: str) -> str:
 
 def _sliced_js() -> str:
     return "\n\n".join(
-        [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtAge")]
+        [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtAge"), label_helpers_js()]
         + [_fn(_PERFORMERS, name) for name in (
             "utilizationBarColor", "utilizationRowHtml", "cardRefHtml",
             "elapsedSinceHtml", "refreshElapsedReadouts", "collapseCycleRows",

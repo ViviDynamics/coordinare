@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import label_helpers_js
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "observer_detail_checks.js"
 
@@ -45,11 +46,8 @@ def _extract_detail_js() -> str:
     fmt = re.search(r"function humanPhase\(phase\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if fmt is None:
         raise AssertionError("the shared humanPhase() helper is no longer in helpers.js")
-    # 136: humanPhase is a lookup into the generated glossary.
-    lookup = re.search(r"function vocabularyLabel\(code\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
-    if lookup is None:
-        raise AssertionError("the shared vocabularyLabel() helper is no longer in helpers.js")
-    glossary = _DASHBOARD_JS_SOURCES["vocabulary"] + "\n" + lookup.group(0)
+    # 136/137: labels are lookups into the generated glossary.
+    glossary = label_helpers_js()
     alias = "var formatPhaseLabel = humanPhase;"
     if alias not in _HELPERS_JS:
         raise AssertionError("the formatPhaseLabel alias is no longer in helpers.js")

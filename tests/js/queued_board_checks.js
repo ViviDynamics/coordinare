@@ -32,14 +32,14 @@ eval(src);
 check(
   "queued dispatching card renders queued label",
   queuedPhaseLabel({ phase: "dispatching", performer_stage: "implementing", slot_queued_since: "2026-09-23T11:48:00Z" }),
-  "Queued for Implementing",
+  "Queued for Implementer",
 );
 
 // Stage label is title-cased through the shared formatter (assessing, etc).
 check(
   "queued label uses the formatted stage name",
   queuedPhaseLabel({ phase: "dispatching", performer_stage: "assessing", slot_queued_since: "2026-09-23T11:48:00Z" }),
-  "Queued for Assessing",
+  "Queued for Assessor",
 );
 
 // A card with no marker is NOT queued — it keeps its ordinary label path.
