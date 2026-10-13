@@ -132,8 +132,8 @@ async def _run_ci_check(
         from coordinare_ci_detection import detect
     except ImportError:
         # Performer may be deployed without the coordinare package installed
-        # (standalone mode).  Fall back gracefully — the coordinare-side gate
-        # provides the backstop.
+        # (standalone mode).  Fall back gracefully. There is no coordinare-side
+        # backstop any more (#106): the PR's own CI checks are the gate.
         log.info("ci_check.coordinare_not_available", label=label)
         return True, ""
 

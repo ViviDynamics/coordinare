@@ -155,20 +155,6 @@ def test_completed_continuation_does_not_skip_current_stages_on_later_feedback()
     assert _advance_stage(state)["performer_stage"] == "qa"
 
 
-def test_final_lint_bounce_keeps_unfinished_continuation(monkeypatch):
-    from coordinare.graph.nodes.monitor import verdict
-
-    state = {"performer_stage": "reviewing", "lifecycle_sequence": ["implementing", "qa"],
-             "lifecycle_continuation": ["implementing", "reviewing"],
-             "current_card": {"id": "existing", "status": "IN_PROGRESS"}}
-    monkeypatch.setattr(verdict, "_ci_lint_gate", lambda state, card: {"phase": "dispatching", "performer_stage": "implementing"})
-    update = verdict._advance_stage(state)
-    state.update(update)
-    assert state["phase"] == "dispatching"
-    assert state["lifecycle_continuation"] == ["implementing", "reviewing"]
-    assert "lifecycle_completed_at" not in update
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("saved_continuation", [[], ["assessing", "implementing", "reviewing"]])
 async def test_unfinished_idle_todo_keeps_removed_role_continuation_across_restart(saved_continuation):

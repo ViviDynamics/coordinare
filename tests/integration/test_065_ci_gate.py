@@ -1,23 +1,22 @@
-"""065 US5 — integration tests for the coordinare-side CI gate (FR-021, FR-022).
+"""065 US5 / #106 — where the lint gate lives.
 
 Background
 ----------
-Spec 043 (Performer CI Ownership) is subsumed into 065 US5.  The defence-in-
-depth gate lives in ``_advance_stage`` (``monitor_performer.py``): when the
-lifecycle completes, the coordinare runs the workspace's auto-detected lint
-command before transitioning to ``monitoring_pr``.  On failure the card is
-routed back to ``implementing`` with the lint output captured as relay
-feedback; on success a single info-level log records the pass.
+Spec 043 (Performer CI Ownership) was subsumed into 065 US5, which added a
+"defence-in-depth" gate to ``_advance_stage``: at the end of the lifecycle the
+daemon ran the workspace's auto-detected lint command itself.
+
+#106 removed that. Coordinare is an orchestrator and never executes a
+repo-derived command. The gate also checked the wrong tree for container
+performers (the daemon's clone does not contain the performer's commits) and
+did nothing on Kubernetes (no daemon clone). Lint is owned by the performer
+(043 pre-commit check, 089 local test gate) and CI is read through the PR
+checks gate.
 
 What these tests assert
 -----------------------
-- FR-021: failure emits ``performer.ci_failed`` carrying
-  ``{card_id, performer_stage, ci_command, exit_code, output_excerpt}``.
-- FR-022(b): the gate's failure path returns ``performer_stage="implementing"``
-  and ``phase="dispatching"`` with the lint output in ``relay_feedback``.
-- FR-022(c): the happy path is silent except for a single info-level log
-  (``performer.ci_passed``) — no extra warning noise, no extra latency
-  records.
+- #106: completing the lifecycle executes nothing in the daemon, even with a
+  lintable workspace on disk, and transitions to ``monitoring_pr``.
 - FR-022(d): rendered reviewer / closer personas contain the explicit lint
   ownership directive.
 """
@@ -43,128 +42,44 @@ def _state_at_last_stage(workspace: Path) -> dict[str, Any]:
     }
 
 
-class _FakeProc:
-    def __init__(self, returncode: int, stdout: bytes = b"", stderr: bytes = b"") -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 # ---------------------------------------------------------------------------
-# FR-022(b) + FR-021 — failure path routes back and emits the structured log
+# #106 — the gate is gone from the daemon: nothing repo-derived is executed
 # ---------------------------------------------------------------------------
 
 
-def test_ci_gate_routes_failing_session_back_to_implementer(tmp_path: Path) -> None:
-    """Failing CI must NOT advance to ``monitoring_pr``.  The session is
-    rewound to ``performer_stage="implementing"`` with the lint output
-    captured as relay feedback so the implementer sees what broke."""
-    # Create a minimal Python workspace so detect() returns ruff.
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.ruff]\nline-length = 100\n', encoding="utf-8",
-    )
-    state = _state_at_last_stage(tmp_path)
-
-    from coordinare.services.ci_detection import CIDetectionResult
-    fake_detect = CIDetectionResult(
-        lint_command="ruff check .",
-        test_command="pytest",
-        stack="python",
-        detected_from="pyproject.toml",
-    )
-    with patch(
-        "coordinare.services.ci_detection.detect", return_value=fake_detect,
-    ), patch(
-        "subprocess.run",
-        return_value=_FakeProc(1, stdout=b"E501 line too long", stderr=b""),
-    ):
-        updates = _advance_stage(state, status={})
-
-    assert updates["performer_stage"] == "implementing", (
-        f"CI gate did not rewind: stage={updates['performer_stage']!r}"
-    )
-    assert updates["phase"] == "dispatching"
-    assert updates.get("relay_feedback"), "CI failure not captured as relay feedback"
-    feedback_body = updates["relay_feedback"][0]["body"]
-    assert "E501" in feedback_body, (
-        f"lint output not propagated to implementer: {feedback_body!r}"
-    )
+def _lintable_workspace(tmp_path: Path) -> Path:
+    """A workspace ci_detection would have found a lint command for."""
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
+    (tmp_path / "package.json").write_text('{"scripts": {"lint": "eslint ."}}\n')
+    return tmp_path
 
 
-def test_ci_gate_emits_performer_ci_failed_log(tmp_path: Path) -> None:
-    """FR-021: failure log MUST be ``performer.ci_failed`` and MUST carry
-    ``{card_id, performer_stage, ci_command, exit_code, output_excerpt}``."""
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.ruff]\n', encoding="utf-8",
-    )
-    state = _state_at_last_stage(tmp_path)
+def test_last_stage_advances_without_executing_anything(tmp_path: Path) -> None:
+    """Coordinare is an orchestrator: with a workspace on disk that carries a
+    detectable lint command, completing the lifecycle spawns no process and
+    goes straight to ``monitoring_pr``."""
+    state = _state_at_last_stage(_lintable_workspace(tmp_path))
 
-    from coordinare.services.ci_detection import CIDetectionResult
-    fake_detect = CIDetectionResult(
-        lint_command="ruff check .",
-        test_command=None,
-        stack="python",
-        detected_from="pyproject.toml",
-    )
-    with patch(
-        "coordinare.services.ci_detection.detect", return_value=fake_detect,
-    ), patch(
-        "subprocess.run",
-        return_value=_FakeProc(2, stdout=b"lint offense detail", stderr=b""),
-    ), structlog.testing.capture_logs() as logs:
-        _advance_stage(state, status={})
+    with patch("subprocess.run", side_effect=AssertionError("daemon executed a command")), \
+         patch("subprocess.Popen", side_effect=AssertionError("daemon spawned a process")), \
+         structlog.testing.capture_logs() as logs:
+        updates = _advance_stage(state)
 
-    matches = [r for r in logs if r.get("event") == "performer.ci_failed"]
-    assert matches, (
-        f"FR-021: performer.ci_failed not emitted; got events: "
-        f"{[r.get('event') for r in logs]}"
-    )
-    record = matches[0]
-    assert record.get("card_id") == "PVTI_X"
-    assert record.get("performer_stage") == "implementing"
-    assert record.get("ci_command") == "ruff check ."
-    assert record.get("exit_code") == 2
-    assert "lint offense detail" in str(record.get("output_excerpt", ""))
+    assert updates["phase"] == "monitoring_pr"
+    assert updates["current_card"]["status"] == "IN_REVIEW"
+    assert "relay_feedback" not in updates
+    events = {r.get("event") for r in logs}
+    assert not events & {"performer.ci_failed", "performer.ci_passed", "ci_gate.lint_error"}
 
 
-# ---------------------------------------------------------------------------
-# FR-022(c) — happy path is silent (one info-level pass log, nothing else)
-# ---------------------------------------------------------------------------
+def test_daemon_no_longer_exposes_the_lint_gate() -> None:
+    from coordinare.graph.nodes.monitor import verdict
 
+    assert not hasattr(verdict, "_ci_lint_gate")
+    import inspect
 
-def test_ci_gate_happy_path_emits_single_pass_log(tmp_path: Path) -> None:
-    """Happy path: lint passes → transition to ``monitoring_pr``.  Only a
-    single info-level ``performer.ci_passed`` record should land; no
-    warning-level noise on the green path."""
-    (tmp_path / "pyproject.toml").write_text('[tool.ruff]\n', encoding="utf-8")
-    state = _state_at_last_stage(tmp_path)
-
-    from coordinare.services.ci_detection import CIDetectionResult
-    fake_detect = CIDetectionResult(
-        lint_command="ruff check .",
-        test_command=None,
-        stack="python",
-        detected_from="pyproject.toml",
-    )
-    with patch(
-        "coordinare.services.ci_detection.detect", return_value=fake_detect,
-    ), patch(
-        "subprocess.run", return_value=_FakeProc(0, stdout=b"", stderr=b""),
-    ), structlog.testing.capture_logs() as logs:
-        updates = _advance_stage(state, status={})
-
-    assert updates["phase"] == "monitoring_pr", (
-        "happy CI path did not transition to monitoring_pr"
-    )
-    failure_logs = [r for r in logs if r.get("event") == "performer.ci_failed"]
-    assert not failure_logs, (
-        f"happy path emitted failure log: {failure_logs!r}"
-    )
-    pass_logs = [r for r in logs if r.get("event") == "performer.ci_passed"]
-    assert pass_logs, (
-        f"happy path did not emit performer.ci_passed; events: "
-        f"{[r.get('event') for r in logs]}"
-    )
+    source = inspect.getsource(verdict)
+    assert "subprocess" not in source and "shlex" not in source
 
 
 # ---------------------------------------------------------------------------
