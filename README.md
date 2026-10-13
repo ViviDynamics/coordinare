@@ -253,6 +253,8 @@ Coordinare uses [LangGraph](https://github.com/langchain-ai/langgraph) to orches
 
 The coordinare and performer communicate via a transport layer (subprocess, SSH, or Kubernetes) and share no in-memory state. Each performer session is ephemeral — the performer clones the repo, does its work, and exits.
 
+The `subprocess` transport is the default because it needs no container runtime, which makes it the shortest path through the Quick Start. It is for development and single-host use only: the performer runs as a child of the daemon, on the daemon's host, in the daemon's own clone of the repository. For a deployment, run performers in containers (`performer_endpoints`) or on Kubernetes (`agent_transport: kubernetes`), so the orchestrator and the code work are separate processes with separate filesystems and credentials.
+
 ## License
 
 Coordinare is **source-available** software, licensed under the

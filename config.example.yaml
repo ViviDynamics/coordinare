@@ -76,7 +76,13 @@ github_org: "your-org"   # Required. The GitHub org/user that owns the repos.
 # Controls how coordinare spawns the performer process.
 #
 # Modes:
-#   subprocess  — run performer as a local child process (default; simplest setup)
+#   subprocess  — run performer as a local child process (default; simplest setup).
+#                 Development and single-host use only: the performer runs on the
+#                 daemon's host, as its child, in the daemon's own clone of the
+#                 repository, so nothing separates the orchestrator from the code
+#                 work. The daemon logs transport.subprocess_no_isolation at
+#                 startup. For a deployment use performer_endpoints (containers)
+#                 or kubernetes.
 #   ssh         — connect to a remote host and run performer there
 #   kubernetes  — dispatch to a Kubernetes job (uses performer_image)
 #
