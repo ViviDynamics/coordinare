@@ -2031,6 +2031,7 @@ function connectEventStream() {
   source.addEventListener('state_update', function(e) {
     if (es !== source) return;
     afNoteMessage();
+    window._lastStateAt = Date.now();
     try {
       _lastState = JSON.parse(e.data);
       // state_update precedes backfill on every stream connection.

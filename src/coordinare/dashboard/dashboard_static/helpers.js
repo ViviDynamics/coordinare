@@ -190,8 +190,12 @@ function refreshFreshness() {
   var labelEl = document.getElementById('connection-label');
   if (!detail || !labelEl) return;
   var label = labelEl.textContent;
-  var has = typeof _afHasMessage !== 'undefined' && _afHasMessage;
-  var last = typeof _afLastMsgAt !== 'undefined' ? _afLastMsgAt : 0;
+  // "updated Ns ago" is the age of the data on screen: the last state update,
+  // not the last heartbeat. Heartbeats arrive every few seconds and only show
+  // that the stream is open; they are what the Live label is for.
+  var stateAt = typeof _lastStateAt !== 'undefined' ? Number(_lastStateAt) || 0 : 0;
+  var has = stateAt > 0;
+  var last = stateAt;
   var state = typeof _lastState !== 'undefined' ? _lastState : null;
   detail.textContent = freshnessText(label, last, has, state, Date.now());
   var status = document.getElementById('connection-status');

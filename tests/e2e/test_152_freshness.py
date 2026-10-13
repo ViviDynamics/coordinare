@@ -34,6 +34,20 @@ def test_header_turns_amber_and_says_how_long_when_the_stream_goes_quiet(
 ) -> None:
     page.goto(live_server_url)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
-    page.evaluate("() => { updateConnectionStatus('Reconnecting'); _afLastMsgAt = Date.now() - 125000; refreshFreshness(); }")
+    page.evaluate("() => { updateConnectionStatus('Reconnecting'); window._lastStateAt = Date.now() - 125000; refreshFreshness(); }")
     expect(page.locator("#connection-detail")).to_have_text(" · no update for 2m: reconnecting…")
     expect(page.locator("#connection-status")).to_have_class(re.compile(r"conn-stale"))
+
+
+@pytest.mark.e2e
+def test_age_is_of_the_data_not_of_the_last_heartbeat(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """Review of #152: heartbeats keep the stream Live but must not reset the age."""
+    page.goto(live_server_url)
+    expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(_full_snapshot())
+    expect(page.locator("#connection-detail")).to_have_text(re.compile(r"updated \d+s ago"), timeout=_WAIT_LIVE)
+    page.evaluate("() => { window._lastStateAt = Date.now() - 40000; afNoteMessage(); refreshFreshness(); }")
+    expect(page.locator("#connection-detail")).to_have_text(re.compile(r"updated (40|41)s ago"))
+    expect(page.locator("#connection-label")).to_have_text("Live")

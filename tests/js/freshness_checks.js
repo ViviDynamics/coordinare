@@ -67,19 +67,27 @@ var labelEl = { textContent: "Live" };
 var document = { getElementById: function(id) {
   return { "connection-detail": detail, "connection-label": labelEl, "connection-status": statusEl }[id] || null;
 } };
-var _afHasMessage = true;
-var _afLastMsgAt = Date.now() - 4000;
-var _lastState = null;
+var _lastStateAt = Date.now() - 4000;
 refreshFreshness();
 check("refresh writes the live text", /^ · updated [45]s ago$/.test(detail.textContent), true);
 check("a live stream is not flagged stale", classes["conn-stale"], false);
+
+// Review of #152: the age is that of the data, not of the last heartbeat. A
+// heartbeat one second ago must not make 40 second old data read as fresh.
+var _afLastMsgAt = Date.now() - 1000;
+var _afHasMessage = true;
+_lastStateAt = Date.now() - 40000;
+refreshFreshness();
+check("a recent heartbeat does not reset the data age", /updated (40|41)s ago/.test(detail.textContent), true);
+
 labelEl.textContent = "Reconnecting";
+_lastStateAt = Date.now() - 4000;
 refreshFreshness();
 check("refresh writes the stale text", /no update for [45]s: reconnecting…$/.test(detail.textContent), true);
 check("a reconnecting stream is flagged stale", classes["conn-stale"], true);
-_afHasMessage = false;
+_lastStateAt = 0;
 refreshFreshness();
-check("no message yet clears the text and the flag", [detail.textContent, classes["conn-stale"]], ["", false]);
+check("no state received yet clears the text and the flag", [detail.textContent, classes["conn-stale"]], ["", false]);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
