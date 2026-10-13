@@ -222,6 +222,10 @@ async def _pr_checks_decision(
         logger.info(
             "closer.pr_checks.decision",
             action="FORWARD",
+            # 100: FORWARD means only that the checks gate is satisfied. Whether
+            # the PR then merges is decided, and logged with its own reason, by
+            # monitor_pr.merge_decision.
+            reason=decision.reason,
             pr=pr_num,
             head=rollup.head_sha[:7],
             elapsed=round(decision.elapsed_seconds, 1),
