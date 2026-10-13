@@ -156,7 +156,7 @@ class WorkspaceInfo:
 
 
 class WorkspaceManagerProtocol(Protocol):
-    async def prepare(self, card: dict[str, Any]) -> WorkspaceInfo: ...
+    async def prepare(self, card: dict[str, Any], *, local_clone: bool = True) -> WorkspaceInfo: ...
     async def teardown(self, path: Path) -> None: ...
 
 
@@ -289,13 +289,15 @@ class WorkspaceManager:
             return self._github_token.get_secret_value()
         raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
 
-    async def prepare(self, card: dict[str, Any]) -> WorkspaceInfo:
-        """Clone the target repo, create a card-specific branch, configure credentials.
+    async def prepare(self, card: dict[str, Any], *, local_clone: bool = True) -> WorkspaceInfo:
+        """Resolve the card's branch and credential; clone only when the daemon must.
 
-        For the Kubernetes transport: returns ``WorkspaceInfo(path=None, ...)``
+        For the Kubernetes transport, and whenever the caller passes
+        ``local_clone=False`` (#107: the performer clones for itself and nothing
+        in the daemon needs the tree): returns ``WorkspaceInfo(path=None, ...)``
         without performing any git operations — the performer container handles
-        its own git setup, but still receives a GitHub credential (injected into
-        the pod secret env) for its own GitHub API calls.
+        its own git setup, but still receives a GitHub credential for its own
+        GitHub API calls.
 
         Raises:
             WorkspaceSetupError: if any git operation fails or no GitHub token
@@ -319,7 +321,7 @@ class WorkspaceManager:
         # GitHub API calls (issue reads, PR creation, checks) and cannot run
         # without a credential — resolve the same token the local-clone path
         # would use; http_performer_service injects it into the pod secret env.
-        if self._agent_transport == "kubernetes":
+        if self._agent_transport == "kubernetes" or not local_clone:
             token = await self._resolve_github_token()
             return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
 

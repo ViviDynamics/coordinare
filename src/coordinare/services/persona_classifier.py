@@ -250,6 +250,31 @@ def _read_project_context(workspace_path: Path | None) -> dict[str, str]:
     return out
 
 
+async def _fetch_project_context(
+    github_service: Any, owner: str, repo: str, head_sha: str,
+) -> dict[str, str]:
+    """107: the API twin of ``_read_project_context`` for cards with no daemon clone.
+
+    Reads the first ``PROJECT_CONTEXT_BYTES`` of CLAUDE.md and AGENTS.md at the
+    PR head (or the default branch when the head is unknown). Best effort: a
+    missing file, a service without the method, or any error yields "".
+    """
+    out = {"claude_md_head": "", "agents_md_head": ""}
+    reader = getattr(github_service, "get_file_content", None)
+    if reader is None:
+        return out
+    ref = head_sha or "HEAD"
+    for key, name in (("claude_md_head", "CLAUDE.md"), ("agents_md_head", "AGENTS.md")):
+        try:
+            text = await reader(owner, repo, name, ref)
+        except Exception as exc:
+            logger.debug("persona_scope.classifier.project_context_read_failed", error=str(exc))
+            continue
+        if isinstance(text, str):
+            out[key] = text[:PROJECT_CONTEXT_BYTES]
+    return out
+
+
 def _build_files_summary(
     pr_files: list[dict[str, Any]],
     path_classes: dict[str, list[str]],
@@ -525,7 +550,12 @@ async def classify(
             card_id=card_id,
             file_count=len(files_summary),
         )
-    project_context = _read_project_context(workspace_path)
+    if workspace_path is not None:
+        project_context = _read_project_context(workspace_path)
+    else:
+        # 107: no daemon-side clone for this card; read the same two files
+        # through the platform API at the PR head.
+        project_context = await _fetch_project_context(github_service, owner, repo, head_sha)
     expected_personas = list(CLASSIFIER_PERSONAS)
 
     input_json = _render_input(
