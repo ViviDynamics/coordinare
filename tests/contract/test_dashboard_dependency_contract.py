@@ -91,3 +91,39 @@ def test_missing_issue_number_fails() -> None:
     }
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(data, schema)
+
+
+def test_comment_source_validates() -> None:
+    """091: comment-parsed source passes the extended enum."""
+    schema = _load_schema()
+    data = {
+        "blocked_by_dependencies": [
+            {
+                "issue_number": 7,
+                "title": "Upstream fix",
+                "column": "TODO",
+                "issue_url": "https://github.com/o/r/issues/7",
+                "source": "comment",
+            },
+        ],
+    }
+    jsonschema.validate(data, schema)
+
+
+def test_native_relationship_foreign_blocker_validates() -> None:
+    """091: foreign-repo native blockers carry blocker_repo with no local
+    title/column — the payload links by repo slug instead."""
+    schema = _load_schema()
+    data = {
+        "blocked_by_dependencies": [
+            {
+                "issue_number": 2,
+                "blocker_repo": "other/repo",
+                "title": None,
+                "column": None,
+                "issue_url": "https://github.com/other/repo/issues/2",
+                "source": "native_relationship",
+            },
+        ],
+    }
+    jsonschema.validate(data, schema)

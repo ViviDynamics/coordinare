@@ -48,6 +48,7 @@ from coordinare.services.card_ownership import (
 from coordinare.services.closed_pr import is_closed_pr_block, matches_closed_pr_identity
 from coordinare.services.dependency import (
     build_graph,
+    resolve_comment_dependencies,
     resolve_off_board_dependencies,
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
@@ -1715,29 +1716,35 @@ def _select_eligible_todo(
 async def _dep_filter_cards(
     state: CoordinareState, board: dict[str, Any], eligible_todo: list[str],
 ) -> tuple[list[str], list[str], DependencyGraph]:
-    dep_graph = build_graph(board)
+    config = state.get("config")
+    repo_slug = ""
+    if config is not None:
+        org = getattr(config, "github_org", "")
+        project = getattr(config, "project_name", "")
+        if org and project:
+            repo_slug = f"{org}/{project}"
+    dep_graph = build_graph(board, repo=repo_slug)
+
+    # 091: Parse dependency syntax out of issue comments on TODO candidates.
+
+    # Runs before resolve_off_board_dependencies so off-board blockers
+
+    # declared only in a comment get the same closed-check upgrade path.
+
+    # Candidates whose comments could not be read are unknown, not
+
+    # dependency-free — keep them out of dispatch for this cycle.
+
+    github = state.get("github_service")
+    unknown_fetch = await resolve_comment_dependencies(dep_graph, board, github, eligible_todo)
+    if unknown_fetch:
+        eligible_todo = [iid for iid in eligible_todo if iid not in unknown_fetch]
 
     # 046: Resolve off-board dependencies by checking GitHub issue state.
 
     # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
 
     # were removed from the project board after completion.
-
-    github = state.get("github_service")
-
-    config = state.get("config")
-
-    repo_slug = ""
-
-    if config is not None:
-
-        org = getattr(config, "github_org", "")
-
-        project = getattr(config, "project_name", "")
-
-        if org and project:
-
-            repo_slug = f"{org}/{project}"
 
     await resolve_off_board_dependencies(dep_graph, github, repo_slug)
 
@@ -1770,12 +1777,27 @@ async def _announce_unresolvable_deps(
         deps = dep_graph.by_dependent.get(item_id, [])
         for d in deps:
             if d.status != DependencyStatus.SATISFIED:
-                blocker_item = dep_graph.issue_to_item.get(d.blocker_issue_number)
-                raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                # Foreign-repo blockers have no local board metadata —
+                # lookups by number alone would collide with an unrelated
+                # same-numbered local issue (Copilot round 3), so link by
+                # repo slug instead and skip title/column.
+                foreign = bool(d.blocker_repo)
+                blocker_item = (
+                    None if foreign else dep_graph.issue_to_item.get(d.blocker_issue_number)
+                )
+                if foreign:
+                    raw_url = f"https://{allowed_host}/{d.blocker_repo}/issues/{d.blocker_issue_number}"
+                    title: str | None = None
+                    column: str | None = None
+                else:
+                    raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                    title = titles_map.get(blocker_item, "") if blocker_item else None
+                    column = dep_graph.issue_to_column.get(d.blocker_issue_number)
                 blocked_deps_for_state.append({
                     "issue_number": d.blocker_issue_number,
-                    "title": titles_map.get(blocker_item, "") if blocker_item else None,
-                    "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
+                    "blocker_repo": d.blocker_repo or None,
+                    "title": title,
+                    "column": column,
                     "issue_url": _safe_issue_url(raw_url, allowed_host),
                     "source": d.source.value,
                 })
