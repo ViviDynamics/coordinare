@@ -515,7 +515,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     </div>
   </div>
   <div class="daemon-start">
-    Daemon started: <strong id="daemon-start-time">—</strong>
+    Daemon: <strong id="daemon-start-time">—</strong>
   </div>
   <div id="agent-session" style="margin-top:8px;display:none">
     <span class="label">Agent Session:</span><span id="agent-session-id"></span>
@@ -944,7 +944,11 @@ function renderState(s) {
   document.getElementById('cycles-completed').textContent = s.cycles_completed;
   document.getElementById('last-duration').textContent = fmtDuration(s.last_cycle_duration_seconds);
   document.getElementById('error-count').textContent = s.consecutive_error_count;
-  document.getElementById('daemon-start-time').textContent = fmtTime(s.daemon_start_time);
+  // 119: uptime at a glance, the exact start time on hover.
+  var daemonStartEl = document.getElementById('daemon-start-time');
+  var daemonUptime = fmtAge(s.daemon_start_time);
+  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : '—';
+  daemonStartEl.title = s.daemon_start_time ? 'Started ' + fmtTime(s.daemon_start_time) : '';
   if (s.project_board_url && s.project_name) {
     var linkEl = document.getElementById('project-link');
     linkEl.textContent = '— ';
@@ -966,8 +970,16 @@ function renderState(s) {
   }
   document.getElementById('card-tokens-total').textContent =
     cardTokensTotal.toLocaleString();
-  document.getElementById('card-cost-estimate').textContent =
-    '$' + (s.card_cost_estimate || 0).toFixed(2);
+  // 121: cost reads the same source as the tokens beside it, and falls back to
+  // the displayed token count when the daemon has not priced the session yet.
+  var costSource = tokenSource;
+  if (!(cardTokensTotal > 0) || estimateCost(costSource, s).value <= 0) {
+    costSource = { card_cost_estimate: s.card_cost_estimate, card_tokens_total: cardTokensTotal };
+  }
+  var costEstimate = estimateCost(costSource, s);
+  var costEl = document.getElementById('card-cost-estimate');
+  costEl.textContent = '$' + costEstimate.value.toFixed(2);
+  costEl.title = costEstimate.basis;
 
   // Agent session
   var agentEl = document.getElementById('agent-session');

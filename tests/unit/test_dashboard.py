@@ -485,7 +485,12 @@ def test_build_snapshot_metrics_fields() -> None:
     assert snap["cycles_completed"] == 17
     assert snap["last_cycle_duration_seconds"] == 1.23
     assert snap["consecutive_error_count"] == 2
-    assert snap["daemon_start_time"] == "2026-03-02T09:30:00+00:00"
+    # 119: the start time is the daemon's own record, not a metrics label.
+    from coordinare.daemon import get_daemon_started_at
+
+    started = datetime.fromisoformat(snap["daemon_start_time"])
+    assert started.tzinfo is not None
+    assert started.strftime("%Y%m%dT%H%M%SZ") == get_daemon_started_at()
 
 
 def test_build_snapshot_includes_board_summary_and_last_poll() -> None:
@@ -1142,7 +1147,8 @@ def test_build_snapshot_started_at_falls_back_to_none_on_exception() -> None:
     bad_metrics.build_info.labels.side_effect = RuntimeError("metrics exploded")
 
     snapshot = store.build_snapshot(daemon, bad_metrics, health)
-    assert snapshot.get("daemon_start_time") is None
+    # 119: a broken metrics registry no longer costs the dashboard its start time.
+    assert snapshot.get("daemon_start_time")
 
 
 # ---------------------------------------------------------------------------
