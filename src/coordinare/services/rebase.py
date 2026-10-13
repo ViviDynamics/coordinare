@@ -282,7 +282,12 @@ def request_implementer_rebase(
     divergence, the normal monitor_performer error/blocked path escalates.
     """
     entry = build_divergence_feedback(branch, main_sha, head_sha, conflicting=conflicting)
-    queued = [item for item in (session.get("relay_feedback") or []) if item != entry]
+    # One divergence instruction at a time: a newer (main, head) supersedes an
+    # older one, so the performer never receives two leases.
+    queued = [
+        item for item in (session.get("relay_feedback") or [])
+        if not (isinstance(item, dict) and item.get("kind") == DIVERGENCE_FEEDBACK_KIND)
+    ]
     session["relay_feedback"] = [entry, *queued]
     session["performer_stage"] = "implementing"
     session["phase"] = "dispatching"

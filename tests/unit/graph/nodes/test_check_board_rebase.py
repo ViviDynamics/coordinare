@@ -255,3 +255,18 @@ async def test_documenter_side_run_is_never_rebased_under(side) -> None:
     await _run(state)
     assert sess["last_rebase_attempt"]["outcome"] == "delegated"
     assert sess["relay_feedback"][0]["expected_head_sha"] == "headX"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["blocked", "merging", "system_error", "dispatching", "idle"])
+async def test_sweep_only_reroutes_cards_waiting_on_their_pr(phase) -> None:
+    """Review of #104: a human hold (blocked), a merge in progress or an errored
+    card is never yanked to the implementer by the sweep; a dispatching card is
+    the pre-dispatch guard's to handle."""
+    gh = _GitHub({"PR_NODE_2": _CONFLICT})
+    sess = _session(2, phase=phase)
+    state = _state(gh, {"ITEM_2": sess})
+    await _run(state)
+    assert gh.checked == []
+    assert sess["phase"] == phase and sess["performer_stage"] == "reviewing"
+    assert not sess.get("relay_feedback") and "last_rebase_attempt" not in sess

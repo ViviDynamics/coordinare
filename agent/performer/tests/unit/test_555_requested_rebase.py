@@ -249,3 +249,60 @@ async def test_uncommitted_tracked_changes_block_the_lease_push(tmp_path) -> Non
     with pytest.raises(WorkspaceSetupError, match="uncommitted_changes"):
         await repo.push(score)
     assert repo.remote_head() == repo.branch_head
+
+
+# --- the rewrite must still carry the branch's own work (review of #104) ------ #
+
+
+@pytest.mark.asyncio
+async def test_a_branch_rebuilt_from_the_base_is_never_forced_over_the_old_work(tmp_path) -> None:
+    """The request is live and the remote is exactly the expected head, but the
+    agent threw the branch away and started again from main. Publishing that
+    would destroy the implementer's earlier commit, so it is refused."""
+    repo = _Repo(tmp_path)
+    _git(repo.stand, "checkout", "-q", "-B", _BRANCH, "origin/main")
+    _commit(repo.stand, "other.txt", "different work\n", "something else entirely")
+
+    with pytest.raises(WorkspaceSetupError, match="rebase_dropped_commits"):
+        await repo.push(repo.score())
+    assert repo.remote_head() == repo.branch_head
+
+
+@pytest.mark.asyncio
+async def test_a_rebase_that_drops_one_of_several_commits_is_refused(tmp_path) -> None:
+    repo = _Repo(tmp_path)
+    _git(repo.seed, "checkout", "-q", _BRANCH)
+    second = _commit(repo.seed, "second.txt", "second\n", "second commit")
+    _git(repo.seed, "push", "-q", "origin", _BRANCH)
+    _git(repo.stand, "pull", "-q", "--ff-only", "origin", _BRANCH)
+    score = repo.score(feedback=[repo.request(expected_head_sha=second)])
+
+    # Rebase only the first commit onto main, leaving the second behind.
+    _git(repo.stand, "reset", "-q", "--hard", repo.branch_head)
+    _git(repo.stand, "rebase", "-q", "origin/main")
+    with pytest.raises(WorkspaceSetupError, match="rebase_dropped_commits"):
+        await repo.push(score)
+    assert repo.remote_head() == second
+
+
+@pytest.mark.asyncio
+async def test_extra_commits_on_top_of_the_rebase_are_published(tmp_path) -> None:
+    """The implementer rebases, then does the rest of its turn's work."""
+    repo = _Repo(tmp_path)
+    score = repo.score()
+    await repo.setup_rebase(score)
+    head = _commit(repo.stand, "more.txt", "more\n", "follow-up work")
+    await repo.push(score)
+    assert repo.remote_head() == head
+
+
+@pytest.mark.asyncio
+async def test_setup_rebase_is_skipped_in_a_shallow_clone(tmp_path) -> None:
+    repo = _Repo(tmp_path)
+    shallow = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth=1", f"file://{repo.remote}", str(shallow))
+    _git(shallow, "fetch", "-q", "--depth=1", "origin", f"{_BRANCH}:{_BRANCH}")
+    _git(shallow, "checkout", "-q", _BRANCH)
+    score = repo.score()
+    await workspace._rebase_onto_base(shallow, _ENV, score, workspace._rebase_request(score))
+    assert _git(shallow, "rev-parse", "HEAD") == repo.branch_head

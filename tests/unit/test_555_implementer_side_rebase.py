@@ -309,3 +309,14 @@ def test_former_call_sites_reference_no_removed_entry_point(module_name) -> None
     source = inspect.getsource(importlib.import_module(module_name))
     for name in _REMOVED:
         assert name not in source, f"{module_name} still references {name}"
+
+
+def test_a_newer_divergence_supersedes_the_older_instruction() -> None:
+    """Review of #104: the performer must never receive two leases."""
+    session = {"relay_feedback": [{"body": "reviewer note"}]}
+    _request(session)
+    _request(session, head_sha="c" * 40, main_sha="d" * 40)
+    kinds = [item.get("kind") for item in session["relay_feedback"]]
+    assert kinds == ["branch_divergence", None]
+    assert session["relay_feedback"][0]["expected_head_sha"] == "c" * 40
+    assert session["relay_feedback"][1] == {"body": "reviewer note"}

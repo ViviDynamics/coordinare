@@ -868,7 +868,11 @@ async def _request_rebase_for_diverged_branches(
             continue  # active performer (047 FR-006)
         _cid = _cand["card_id"]
         _sess = active_sessions.get(_cid)
-        if not isinstance(_sess, dict):
+        if not isinstance(_sess, dict) or _sess.get("phase") != "monitoring_pr":
+            # Only a card passively waiting on its PR is rerouted from here. A
+            # blocked, merging or errored card keeps its state (a human hold is
+            # never overridden); a dispatching card is handled by the
+            # pre-dispatch guard at the moment it is dispatched.
             continue
         _pr_node = (_sess.get("current_card") or {}).get("pr_node_id")
         if not _pr_node or side_writer_active(_sess):

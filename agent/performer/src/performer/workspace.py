@@ -300,6 +300,13 @@ async def _rebase_onto_base(stand_path: Path, env: dict[str, str], score: Score,
         # would be stale, so leave history alone; coordinare re-classifies.
         log.info("workspace.rebase.skipped_head_moved", branch=score.branch)
         return
+    shallow_rc, shallow = await _run_git_stdout(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=stand_path, env=env,
+    )
+    if shallow_rc != 0 or shallow.strip() != "false":
+        # The unshallow fetch failed: without full history a rebase is not trustworthy.
+        log.info("workspace.rebase.skipped_shallow", branch=score.branch)
+        return
     rc, stderr = await _run_git(["git", "rebase", f"origin/{base}"], cwd=stand_path, env=env)
     if rc == 0:
         log.info("workspace.rebase.clean", branch=score.branch, base=base)
@@ -1402,6 +1409,32 @@ async def _push_if_remote_ancestor(git_run, git_out, remote: str, branch: str) -
     return True
 
 
+_COMMIT_IDENTITY_FORMAT = "--format=%ae%x00%at%x00%s"
+
+
+async def _commits_missing_after_rewrite(git_out, *, old_head: str) -> list[str] | None:
+    """Identities of commits on *old_head* that the rewritten HEAD no longer has.
+
+    A rebase keeps each commit's author, author date and subject, so those
+    three identify "the same commit, replayed". Merge commits are ignored (a
+    rebase flattens them). Returns None when history cannot be read, which the
+    caller treats as "do not force".
+    """
+    base_rc, base = await git_out(["merge-base", old_head, "HEAD"], "rebase check")
+    if base_rc != 0 or not base.strip():
+        return None
+    old_rc, old = await git_out(
+        ["log", "--no-merges", _COMMIT_IDENTITY_FORMAT, f"{base.strip()}..{old_head}"], "rebase check",
+    )
+    new_rc, new = await git_out(
+        ["log", "--no-merges", _COMMIT_IDENTITY_FORMAT, f"{base.strip()}..HEAD"], "rebase check",
+    )
+    if old_rc != 0 or new_rc != 0:
+        return None
+    kept = set(new.splitlines())
+    return [line for line in old.splitlines() if line and line not in kept]
+
+
 async def _push_requested_rebase(git_run, git_out, *, remote: str, branch: str, request: dict | None) -> bool:
     """555: publish a branch coordinare asked to have rebased onto its base.
 
@@ -1413,7 +1446,10 @@ async def _push_requested_rebase(git_run, git_out, *, remote: str, branch: str, 
     - the remote head is exactly the head coordinare classified, so nobody
       else's commits can be overwritten (165 FR-013 is preserved);
     - the base revision coordinare saw is an ancestor of HEAD, i.e. the rewrite
-      really is the requested rebase.
+      really is the requested rebase;
+    - every commit the branch had is still represented in HEAD (same author,
+      author date and subject, which a rebase preserves), so a branch rebuilt
+      from the base without the earlier work is never forced over it.
 
     Returns False when the rewrite is not recognisably the requested rebase, so
     the caller falls back to the ordinary no-force path. Raises when the lease
@@ -1445,6 +1481,15 @@ async def _push_requested_rebase(git_run, git_out, *, remote: str, branch: str, 
         msg = (
             "push_branch.uncommitted_changes: nothing was pushed; "
             f"unfinished workspace paths: {', '.join(dirty[:10])}"
+        )
+        raise WorkspaceSetupError(msg)
+    dropped = await _commits_missing_after_rewrite(git_out, old_head=expected)
+    if dropped is None or dropped:
+        log.warning("push_branch.rebase_dropped_commits", branch=branch, count=len(dropped or []))
+        msg = (
+            "push_branch.rebase_dropped_commits: the rewritten branch no longer carries "
+            f"{len(dropped) if dropped else 'some'} commit(s) the remote branch has, so it was "
+            "not overwritten; nothing was pushed"
         )
         raise WorkspaceSetupError(msg)
     push_rc, push_err = await git_run(
