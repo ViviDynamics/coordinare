@@ -144,6 +144,17 @@ function conductorHeadline(s, activeSess) {
   return String(s.phase_label || vocabularyLabel(phase));
 }
 
+// The headline carries a countdown ("next check in 18s"), and state arrives
+// only once per check, so the page's one-second timer re-renders it.
+function refreshConductorHeadline() {
+  var el = document.getElementById('phase');
+  var state = typeof _lastState !== 'undefined' ? _lastState : null;
+  if (!el || !state) return;
+  var active = typeof findActivePerformerSession === 'function' ? findActivePerformerSession(state) : null;
+  var text = conductorHeadline(state, active);
+  if (el.textContent !== text) el.textContent = text;
+}
+
 // Seconds until the next board check, or null when it cannot be known.
 function nextCheckSeconds(s) {
   var interval = Number(s && s.poll_interval_seconds);

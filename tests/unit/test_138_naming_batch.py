@@ -111,7 +111,8 @@ def test_naming_batch_client_js(tmp_path: Path) -> None:
         "\n\n".join(
             [shipped_function("helpers", "esc"), label_helpers_js()]
             + [shipped_function("helpers", name) for name in (
-                "fmtCost", "busyText", "cardRefText", "conductorHeadline", "nextCheckSeconds",
+                "fmtCost", "busyText", "cardRefText", "conductorHeadline", "refreshConductorHeadline",
+                "nextCheckSeconds",
             )],
         ),
         encoding="utf-8",

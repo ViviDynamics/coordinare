@@ -87,6 +87,8 @@ function refreshElapsedReadouts(root) {
     var suffix = nodes[i].getAttribute('data-elapsed-suffix') || '';
     nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—') + suffix;
   }
+  // 138: the same tick keeps the headline's "next check in Ns" counting down.
+  if (typeof refreshConductorHeadline === 'function') refreshConductorHeadline();
 }
 
 // 128: consecutive checks with the same phase and outcome are one row.

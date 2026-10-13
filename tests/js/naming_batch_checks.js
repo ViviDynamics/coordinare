@@ -23,6 +23,9 @@ function check(name, actual, expected) {
   }
 }
 
+var _lastState = null;
+var document;
+
 eval(src);
 
 // --- 138: the conductor headline is a plain sentence -------------------------
@@ -50,6 +53,25 @@ check("the server's label wins when the snapshot carries one",
 check("no internal code leaks into the headline",
   /monitoring_|_performer|_agent/.test(conductorHeadline({ phase: "monitoring_performer" }, { performer_stage: "reviewing", issue_number: 1 })), false);
 check("missing state does not throw", conductorHeadline(undefined, null), "Idle: waiting for the next check");
+
+// The countdown ticks between state updates (review of #164): the headline is
+// re-rendered from the last state by the page's one-second timer.
+(function() {
+  var el = { textContent: "stale" };
+  var saved = { doc: typeof document === "undefined" ? undefined : document };
+  document = { getElementById: function(id) { return id === "phase" ? el : null; } };
+  _lastState = { phase: "idle", poll_interval_seconds: 30, last_poll_at: new Date(Date.now() - 12000).toISOString() };
+  refreshConductorHeadline();
+  check("refresh renders the countdown from the last state", el.textContent, "Idle: next check in 18s");
+  _lastState.last_poll_at = new Date(Date.now() - 20000).toISOString();
+  refreshConductorHeadline();
+  check("a later tick shows less time left", el.textContent, "Idle: next check in 10s");
+  _lastState = null;
+  el.textContent = "kept";
+  refreshConductorHeadline();
+  check("no state yet leaves the headline alone", el.textContent, "kept");
+  document = saved.doc;
+})();
 
 check("next check: unknown interval", nextCheckSeconds({ last_poll_at: soon }), null);
 check("next check: zero interval", nextCheckSeconds({ poll_interval_seconds: 0, last_poll_at: soon }), null);
