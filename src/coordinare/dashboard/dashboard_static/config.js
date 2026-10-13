@@ -735,7 +735,7 @@ function cfgTabBar(sections, active) {
       + ' onkeydown="cfgTabKey(event, &quot;' + esc(sec.id) + '&quot;)">'
       + esc(sec.title) + '</button>';
   }).join('');
-  return '<div class="swimlane-tabs" role="tablist" aria-label="Configuration sections">'
+  return '<div class="swimlane-tabs" role="tablist" aria-label="Configuration sections" style="overflow-x:auto">'
     + tabs + '</div>';
 }
 

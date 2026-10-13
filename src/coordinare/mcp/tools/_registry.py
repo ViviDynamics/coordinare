@@ -24,6 +24,7 @@ RESTCall = tuple[str, str]
 #: REST surfaces deliberately NOT proxied in phase 1 (contracts/mcp-tools.md).
 DEFERRED_REST_PREFIXES = (
     "/oidc",
+    "/api/account",  # Human browser identity, not an agent operator capability.
     "/static",
     "/events",
     "/webhook",
@@ -36,6 +37,7 @@ DEFERRED_REST_PREFIXES = (
 #: Human dashboard page paths (HTML), deferred like the static assets.
 DEFERRED_PAGE_PATHS = (
     "/",
+    "/login",
     "/performers",
     "/personas",
     "/history",

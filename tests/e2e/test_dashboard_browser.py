@@ -716,20 +716,26 @@ def test_active_work_row_keyboard_opens_detail(
 
 
 @pytest.mark.e2e
-def test_workflow_diagram_visible_without_expand_toggle(page: Page, live_server_url: str) -> None:
-    """053: Workflow should be readable without expand/collapse controls."""
+def test_workflow_diagram_expands_and_collapses_from_summary(page: Page, live_server_url: str) -> None:
+    """554: Secondary workflow detail opens on demand, including by keyboard."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
     fc = page.locator("#flow-chart")
+    summary = page.locator('#workflow-card summary')
+    expect(summary).to_be_visible()
+    expect(fc).to_be_hidden()
+    summary.click()
     expect(fc).to_be_visible()
+    summary.press('Enter')
+    expect(fc).to_be_hidden()
     expect(page.locator("#flow-chart-toggle")).to_have_count(0)
 
 
 @pytest.mark.e2e
-def test_desktop_layout_active_performers_is_single_column(
+def test_desktop_layout_gives_active_performers_twice_the_conductor_width(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """053: Active Performers card should be a single-column grid item (not full-width)."""
+    """554: Performers share a desktop row with the conductor, then stack on mobile."""
     page.set_viewport_size({"width": 1200, "height": 900})
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
@@ -749,18 +755,34 @@ def test_desktop_layout_active_performers_is_single_column(
           const phaseCard = document.getElementById('phase').closest('.card');
           const ap = apCard.getBoundingClientRect();
           const ph = phaseCard.getBoundingClientRect();
-          return {apWidth: ap.width, phWidth: ph.width, viewportWidth: window.innerWidth};
+          const grid = document.querySelector('.dashboard-grid');
+          return {
+            apWidth: ap.width, phWidth: ph.width, apTop: ap.top, phTop: ph.top,
+            gridWidth: grid.getBoundingClientRect().width,
+            gap: parseFloat(getComputedStyle(grid).columnGap),
+          };
         }""",
     )
-    assert layout["apWidth"] < layout["viewportWidth"] * 0.75
-    assert abs(layout["apWidth"] - layout["phWidth"]) < 120
+    assert abs(layout['apTop'] - layout['phTop']) < 1
+    assert abs(layout['apWidth'] - (2 * layout['phWidth'] + layout['gap'])) < 1
+    assert abs(layout['apWidth'] + layout['phWidth'] + layout['gap'] - layout['gridWidth']) < 1
+    page.set_viewport_size({'width': 390, 'height': 844})
+    mobile = page.evaluate("""() => {
+      const ap = document.getElementById('active-performers').getBoundingClientRect();
+      const ph = document.getElementById('phase-card').getBoundingClientRect();
+      return {apWidth: ap.width, phWidth: ph.width, apTop: ap.top, phBottom: ph.bottom,
+              scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth};
+    }""")
+    assert abs(mobile['apWidth'] - mobile['phWidth']) < 1
+    assert mobile['apTop'] >= mobile['phBottom']
+    assert mobile['scrollWidth'] <= mobile['viewport']
 
 
 @pytest.mark.e2e
-def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
+def test_desktop_layout_clarifications_and_recent_cycles_span_the_workspace(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """053: Clarification History and Recent Cycles should be single-column grid cards."""
+    """554: Historical detail spans the workspace beneath compact operational cards."""
     page.set_viewport_size({"width": 1200, "height": 900})
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
@@ -785,22 +807,23 @@ def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
         """() => {
           const clCard = document.getElementById('clarifications-card');
           const historyCard = document.getElementById('history-section').closest('.card');
-          const metricsCard = document.getElementById('cycles-completed').closest('.card');
+          const grid = document.querySelector('.dashboard-grid').getBoundingClientRect();
           const cl = clCard.getBoundingClientRect();
           const hs = historyCard.getBoundingClientRect();
-          const mt = metricsCard.getBoundingClientRect();
           return {
             clWidth: cl.width,
             hsWidth: hs.width,
-            mtWidth: mt.width,
-            viewportWidth: window.innerWidth,
+            clLeft: cl.left,
+            hsLeft: hs.left,
+            gridWidth: grid.width,
+            gridLeft: grid.left,
           };
         }""",
     )
-    assert layout["clWidth"] < layout["viewportWidth"] * 0.75
-    assert layout["hsWidth"] < layout["viewportWidth"] * 0.75
-    assert abs(layout["clWidth"] - layout["mtWidth"]) < 120
-    assert abs(layout["hsWidth"] - layout["mtWidth"]) < 120
+    assert abs(layout['clWidth'] - layout['gridWidth']) < 1
+    assert abs(layout['hsWidth'] - layout['gridWidth']) < 1
+    assert abs(layout['clLeft'] - layout['gridLeft']) < 1
+    assert abs(layout['hsLeft'] - layout['gridLeft']) < 1
 
 
 # ---------------------------------------------------------------------------
@@ -1532,10 +1555,14 @@ def test_questions_card_hidden_when_not_blocked(
 def test_workflow_diagram_renders_mermaid_graph(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """Workflow diagram section renders when performer stage is set."""
+    """The expanded workflow renders an SVG and highlights the live phase."""
     page.goto(live_server_url)
-    # Workflow diagram is always rendered (it's part of the static layout)
+    expect(page.locator('#phase')).to_have_text('Idle', timeout=_WAIT_SSE)
+    page.locator('#workflow-card summary').click()
     expect(page.locator("#flow-chart")).to_be_visible()
+    store.broadcaster.broadcast(_full_snapshot(phase='monitoring_performer', phase_label='Monitoring Performer'))
+    expect(page.locator('#flow-chart svg')).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator('#flow-chart svg .node.active')).to_contain_text('monitor_agent', timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
