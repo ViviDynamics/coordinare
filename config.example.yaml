@@ -683,6 +683,11 @@ branch_collision_strategy: "delete"   # "delete" | "suffix"
 # Whether to delete stale feature branches after merging.
 stale_branch_cleanup: true
 
+# Delete a card's head branch when the conductor closes its PR — after a
+# successful merge, and when orphan-PR reconciliation (553) closes a
+# superseded PR. Opt-in; default false leaves behavior unchanged.
+# delete_defunct_branches: false
+
 # What to do when card requirements change while a performer is in flight.
 #   ignore      — continue with original requirements
 #   warn        — log a warning and notify, but continue
