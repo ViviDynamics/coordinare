@@ -6,6 +6,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "dashboard-desktop-light.png"
   },
   {
@@ -15,6 +27,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "dashboard-desktop-dark.png"
   },
   {
@@ -24,6 +48,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "dashboard-mobile-light.png"
   },
   {
@@ -33,6 +69,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "dashboard-mobile-dark.png"
   },
   {
@@ -42,6 +90,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1566,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "dashboard-rail-desktop-light.png"
   },
   {
@@ -51,6 +111,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1566,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "dashboard-rail-desktop-dark.png"
   },
   {
@@ -60,6 +132,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "dashboard-rail-mobile-light.png"
   },
   {
@@ -69,6 +153,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "dashboard-rail-mobile-dark.png"
   },
   {
@@ -78,6 +174,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "card-detail-desktop-light.png"
   },
   {
@@ -87,6 +195,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "card-detail-desktop-dark.png"
   },
   {
@@ -96,6 +216,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2411,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "card-detail-mobile-light.png"
   },
   {
@@ -105,6 +237,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2411,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "card-detail-mobile-dark.png"
   },
   {
@@ -114,6 +258,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Performers",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "performers-desktop-light.png"
   },
   {
@@ -123,6 +279,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Performers",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "performers-desktop-dark.png"
   },
   {
@@ -132,6 +300,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Performers",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "performers-mobile-light.png"
   },
   {
@@ -141,6 +321,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Performers",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "performers-mobile-dark.png"
   },
   {
@@ -150,6 +342,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Performers",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "performer-detail-desktop-light.png"
   },
   {
@@ -159,6 +363,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Performers",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "performer-detail-desktop-dark.png"
   },
   {
@@ -168,6 +384,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Performers",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "performer-detail-mobile-light.png"
   },
   {
@@ -177,6 +405,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Performers",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "performer-detail-mobile-dark.png"
   },
   {
@@ -186,6 +426,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Personas",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "personas-desktop-light.png"
   },
   {
@@ -195,6 +447,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Personas",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "personas-desktop-dark.png"
   },
   {
@@ -204,6 +468,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 963,
+      "scrollWidth": 375,
+      "title": "Personas",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "personas-mobile-light.png"
   },
   {
@@ -213,6 +489,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 963,
+      "scrollWidth": 375,
+      "title": "Personas",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "personas-mobile-dark.png"
   },
   {
@@ -222,6 +510,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "History",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "history-desktop-light.png"
   },
   {
@@ -231,6 +531,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "History",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "history-desktop-dark.png"
   },
   {
@@ -240,6 +552,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "History",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "history-mobile-light.png"
   },
   {
@@ -249,6 +573,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "History",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "history-mobile-dark.png"
   },
   {
@@ -258,6 +594,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "symphonies-desktop-light.png"
   },
   {
@@ -267,6 +615,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "symphonies-desktop-dark.png"
   },
   {
@@ -276,6 +636,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "symphonies-mobile-light.png"
   },
   {
@@ -285,6 +657,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "symphonies-mobile-dark.png"
   },
   {
@@ -294,6 +678,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1988,
+      "scrollWidth": 1425,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "symphony-detail-desktop-light.png"
   },
   {
@@ -303,6 +699,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1988,
+      "scrollWidth": 1425,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "symphony-detail-desktop-dark.png"
   },
   {
@@ -312,6 +720,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2087,
+      "scrollWidth": 375,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "symphony-detail-mobile-light.png"
   },
   {
@@ -321,6 +741,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2087,
+      "scrollWidth": 375,
+      "title": "Symphonies",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "symphony-detail-mobile-dark.png"
   },
   {
@@ -330,6 +762,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1181,
+      "scrollWidth": 1425,
+      "title": "Global Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "global-config-desktop-light.png"
   },
   {
@@ -339,6 +783,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1181,
+      "scrollWidth": 1425,
+      "title": "Global Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "global-config-desktop-dark.png"
   },
   {
@@ -348,6 +804,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1262,
+      "scrollWidth": 375,
+      "title": "Global Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "global-config-mobile-light.png"
   },
   {
@@ -357,6 +825,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1262,
+      "scrollWidth": 375,
+      "title": "Global Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "global-config-mobile-dark.png"
   },
   {
@@ -366,6 +846,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 5815,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-global-desktop-light.png"
   },
   {
@@ -375,6 +867,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 5815,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-global-desktop-dark.png"
   },
   {
@@ -384,6 +888,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 5961,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-global-mobile-light.png"
   },
   {
@@ -393,6 +909,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 5961,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-global-mobile-dark.png"
   },
   {
@@ -402,6 +930,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2179,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-personas-desktop-light.png"
   },
   {
@@ -411,6 +951,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2179,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-personas-desktop-dark.png"
   },
   {
@@ -420,6 +972,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2294,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-personas-mobile-light.png"
   },
   {
@@ -429,6 +993,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2294,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-personas-mobile-dark.png"
   },
   {
@@ -438,6 +1014,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2025,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-symphonies-desktop-light.png"
   },
   {
@@ -447,6 +1035,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2025,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-symphonies-desktop-dark.png"
   },
   {
@@ -456,6 +1056,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2201,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-symphonies-mobile-light.png"
   },
   {
@@ -465,6 +1077,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2201,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-symphonies-mobile-dark.png"
   },
   {
@@ -474,6 +1098,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-endpoints-desktop-light.png"
   },
   {
@@ -483,6 +1119,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-endpoints-desktop-dark.png"
   },
   {
@@ -492,6 +1140,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 965,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-endpoints-mobile-light.png"
   },
   {
@@ -501,6 +1161,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 965,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-endpoints-mobile-dark.png"
   },
   {
@@ -510,6 +1182,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1637,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-model-endpoints-desktop-light.png"
   },
   {
@@ -519,6 +1203,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1637,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-model-endpoints-desktop-dark.png"
   },
   {
@@ -528,6 +1224,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1751,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-model-endpoints-mobile-light.png"
   },
   {
@@ -537,6 +1245,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1751,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-model-endpoints-mobile-dark.png"
   },
   {
@@ -546,6 +1266,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 3437,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-modes-desktop-light.png"
   },
   {
@@ -555,6 +1287,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 3437,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-modes-desktop-dark.png"
   },
   {
@@ -564,6 +1308,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 3572,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-modes-mobile-light.png"
   },
   {
@@ -573,6 +1329,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 3572,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-modes-mobile-dark.png"
   },
   {
@@ -582,6 +1350,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 977,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-routing-desktop-light.png"
   },
   {
@@ -591,6 +1371,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 977,
+      "scrollWidth": 1425,
+      "title": "Config",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "config-routing-desktop-dark.png"
   },
   {
@@ -600,6 +1392,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1091,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-routing-mobile-light.png"
   },
   {
@@ -609,6 +1413,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 1091,
+      "scrollWidth": 375,
+      "title": "Config",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "config-routing-mobile-dark.png"
   },
   {
@@ -618,6 +1434,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Assistant",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "assistant-desktop-light.png"
   },
   {
@@ -627,6 +1455,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 900,
+      "scrollWidth": 1440,
+      "title": "Assistant",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "assistant-desktop-dark.png"
   },
   {
@@ -636,6 +1476,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Assistant",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "assistant-mobile-light.png"
   },
   {
@@ -645,6 +1497,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 844,
+      "scrollWidth": 390,
+      "title": "Assistant",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "assistant-mobile-dark.png"
   },
   {
@@ -654,6 +1518,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "account-menu-desktop-light.png"
   },
   {
@@ -663,6 +1539,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "account-menu-desktop-dark.png"
   },
   {
@@ -672,6 +1560,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "account-menu-mobile-light.png"
   },
   {
@@ -681,6 +1581,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "matrix(0.961262, -0.275637, 0.275637, 0.961262, 0, 0)",
+      "buttonImages": 2,
+      "expanded": "false",
+      "scrollHeight": 2451,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "account-menu-mobile-dark.png"
   },
   {
@@ -690,6 +1602,18 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "navigation-open-desktop-light.png"
   },
   {
@@ -699,6 +1623,18 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 1619,
+      "scrollWidth": 1425,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 900,
+        "width": 1440
+      }
+    },
     "filename": "navigation-open-desktop-dark.png"
   },
   {
@@ -708,6 +1644,18 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2857,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "navigation-open-mobile-light.png"
   },
   {
@@ -717,6 +1665,18 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "baton": "none",
+      "buttonImages": 2,
+      "expanded": "true",
+      "scrollHeight": 2857,
+      "scrollWidth": 375,
+      "title": "Dashboard",
+      "viewport": {
+        "height": 844,
+        "width": 390
+      }
+    },
     "filename": "navigation-open-mobile-dark.png"
   },
   {
@@ -726,6 +1686,14 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": 0,
+      "textAlign": "center",
+      "theme": "light",
+      "viewport": 1440,
+      "width": 1440
+    },
     "filename": "sign-in-desktop-light.png"
   },
   {
@@ -735,6 +1703,14 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": 0,
+      "textAlign": "center",
+      "theme": "dark",
+      "viewport": 1440,
+      "width": 1440
+    },
     "filename": "sign-in-desktop-dark.png"
   },
   {
@@ -744,6 +1720,14 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": 0,
+      "textAlign": "center",
+      "theme": "light",
+      "viewport": 390,
+      "width": 390
+    },
     "filename": "sign-in-mobile-light.png"
   },
   {
@@ -753,6 +1737,14 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": 0,
+      "textAlign": "center",
+      "theme": "dark",
+      "viewport": 390,
+      "width": 390
+    },
     "filename": "sign-in-mobile-dark.png"
   },
   {
@@ -762,6 +1754,14 @@
     "theme": "light",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": null,
+      "textAlign": "center",
+      "theme": "light",
+      "viewport": 1440,
+      "width": 1440
+    },
     "filename": "signed-out-desktop-light.png"
   },
   {
@@ -771,6 +1771,14 @@
     "theme": "dark",
     "width": 1440,
     "height": 900,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": null,
+      "textAlign": "center",
+      "theme": "dark",
+      "viewport": 1440,
+      "width": 1440
+    },
     "filename": "signed-out-desktop-dark.png"
   },
   {
@@ -780,6 +1788,14 @@
     "theme": "light",
     "width": 390,
     "height": 844,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": null,
+      "textAlign": "center",
+      "theme": "light",
+      "viewport": 390,
+      "width": 390
+    },
     "filename": "signed-out-mobile-light.png"
   },
   {
@@ -789,6 +1805,14 @@
     "theme": "dark",
     "width": 390,
     "height": 844,
+    "layout": {
+      "buttonDelta": 0,
+      "mascotDelta": null,
+      "textAlign": "center",
+      "theme": "dark",
+      "viewport": 390,
+      "width": 390
+    },
     "filename": "signed-out-mobile-dark.png"
   }
 ]
