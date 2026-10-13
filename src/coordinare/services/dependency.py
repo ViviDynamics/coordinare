@@ -319,8 +319,26 @@ async def resolve_comment_dependencies(
         incoming.extend(result)
     if not incoming:
         return unknown
-    # Merge with precedence: COMMENT replaces NATIVE_RELATIONSHIP for the same
-    # pair; EXPLICIT (already skipped above) and existing COMMENT edges win.
+    _merge_comment_edges(graph, incoming)
+    return unknown
+
+
+def _merge_status(a: DependencyStatus, b: DependencyStatus) -> DependencyStatus:
+    """Most-optimistic of two statuses (SATISFIED > PENDING > UNRESOLVABLE)."""
+    if DependencyStatus.SATISFIED in (a, b):
+        return DependencyStatus.SATISFIED
+    if DependencyStatus.PENDING in (a, b):
+        return DependencyStatus.PENDING
+    return a
+
+
+def _merge_comment_edges(graph: DependencyGraph, incoming: list[CardDependency]) -> None:
+    """Fold COMMENT edges into the graph and reindex + recompute cycles.
+
+    Precedence: COMMENT replaces NATIVE_RELATIONSHIP for the same pair,
+    keeping the more optimistic of the two statuses; EXPLICIT and existing
+    COMMENT edges win.
+    """
     merged: dict[tuple[str, int], CardDependency] = {
         (d.dependent_item_id, d.blocker_issue_number): d
         for d in graph.dependencies
@@ -345,16 +363,6 @@ async def resolve_comment_dependencies(
         graph.by_blocker.setdefault(dep.blocker_issue_number, []).append(dep)
     # Comment edges can close cycles that build_graph couldn't see yet.
     graph.cycles = detect_cycles(graph, graph.issue_to_item)
-    return unknown
-
-
-def _merge_status(a: DependencyStatus, b: DependencyStatus) -> DependencyStatus:
-    """Most-optimistic of two statuses (SATISFIED > PENDING > UNRESOLVABLE)."""
-    if DependencyStatus.SATISFIED in (a, b):
-        return DependencyStatus.SATISFIED
-    if DependencyStatus.PENDING in (a, b):
-        return DependencyStatus.PENDING
-    return a
 
 
 def detect_cycles(

@@ -21,6 +21,8 @@ logger = structlog.get_logger(__name__)
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
 _PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
+_ISSUE_COMMENTS_NOT_CONFIGURED = 'Issue comments fetch not configured'
+_ISSUE_COMMENTS_FETCH_FAILED = 'Issue comments fetch failed'
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T008)
@@ -612,6 +614,44 @@ def _decode_git_quoted_path(payload: str, *, keep_line_escapes: bool = True) -> 
     return data.decode("utf-8", "replace")
 
 
+def _append_issue_comment_page(
+    comments: list[dict[str, Any]],
+    page: Any,
+    since_id: int | None,
+) -> None:
+    """Parse one page of the issue-comments REST payload into ``comments``.
+
+    Module-level helper keeps branch-heavy parsing out of the caller
+    (PLR0912) — the fetch loop stays a straight line.
+    """
+    if not isinstance(page, list):
+        return
+    for c in page:
+        if not isinstance(c, dict):
+            continue
+        cid = int(c.get("id", 0))
+        if since_id is not None and cid <= since_id:
+            continue
+        author = c.get("user", {})
+        comments.append({
+            "id": cid,
+            "author": str(author.get("login", "")) if isinstance(author, dict) else "",
+            "body": str(c.get("body", "")),
+            "created_at": str(c.get("created_at", "")),
+        })
+
+
+def _next_comment_page_url(resp: httpx.Response) -> str | None:
+    """Return the next page URL from a Link header, if any."""
+    link: str = resp.headers.get("link", "")
+    if 'rel="next"' not in link:
+        return None
+    for part in link.split(","):
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
+
+
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -1200,7 +1240,7 @@ class GitHubService(CardIdentityMap):
         if not self._project_name:
             logger.warning("get_issue_comments.no_project_name", issue_number=issue_number)
             if strict:
-                raise GitHubError(f"issue comments fetch not configured: no project name (#{issue_number})")
+                raise GitHubError(_ISSUE_COMMENTS_NOT_CONFIGURED)
             return []
         url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/issues/{issue_number}/comments"
         params: dict[str, str | int] = {"per_page": 100}
@@ -1215,6 +1255,7 @@ class GitHubService(CardIdentityMap):
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         }
+        strict_error: GitHubError | None = None
         try:
             comments: list[dict[str, Any]] = []
             next_url: str | None = url
@@ -1228,36 +1269,20 @@ class GitHubService(CardIdentityMap):
                             status_code=resp.status_code,
                         )
                         if strict:
-                            raise GitHubError(f"issue comments fetch failed: HTTP {resp.status_code} (#{issue_number})")
+                            strict_error = GitHubError(_ISSUE_COMMENTS_FETCH_FAILED)
+                            break
                         return []
-                    page: list[dict[str, Any]] = resp.json()
-                    for c in page:
-                        if not isinstance(c, dict):
-                            continue
-                        cid = int(c.get("id", 0))
-                        if since_id is not None and cid <= since_id:
-                            continue
-                        author = c.get("user", {})
-                        comments.append({
-                            "id": cid,
-                            "author": str(author.get("login", "")) if isinstance(author, dict) else "",
-                            "body": str(c.get("body", "")),
-                            "created_at": str(c.get("created_at", "")),
-                        })
-                    link = resp.headers.get("link", "")
-                    next_url = None
-                    if 'rel="next"' in link:
-                        for part in link.split(","):
-                            if 'rel="next"' in part:
-                                next_url = part.split(";")[0].strip().strip("<>")
-                                break
+                    _append_issue_comment_page(comments, resp.json(), since_id)
+                    next_url = _next_comment_page_url(resp)
                     params = {}
-            return comments
         except Exception as exc:
             logger.warning("get_issue_comments.request_failed", issue_number=issue_number, error=str(exc))
             if strict:
                 raise
             return []
+        if strict_error is not None:
+            raise strict_error
+        return comments
 
     async def get_pr_conversation_comments(
         self, pr_number: int, *, since: str | None = None,
