@@ -16,6 +16,7 @@ from coordinare.graph.nodes.classify_human_feedback import (
     _human_requested_changes,
     classify_human_feedback,
 )
+from coordinare.graph.nodes.monitor_pr import _latest_reviews_per_author
 from coordinare.graph.state import initial_state
 
 _LIFECYCLE = ["assessing", "architecting", "implementing", "reviewing", "security", "qa", "documenting", "closing_review"]
@@ -95,3 +96,38 @@ async def test_lifecycle_without_an_implementer_is_left_to_the_classifier() -> N
 ])
 def test_human_requested_changes(reviews, expected) -> None:
     assert _human_requested_changes(reviews) is expected
+
+
+def _dated(state: str, at: str, review_id: str, body: str = _CASEFOLD) -> dict[str, Any]:
+    return {**_review(state, "HUMAN", body, review_id), "submitted_at": at}
+
+
+def test_a_later_plain_comment_does_not_drop_the_change_request() -> None:
+    """Request changes, then add a comment review: both reach the implementer."""
+    request = _dated("CHANGES_REQUESTED", "2026-10-12T23:00:00Z", "RVW_CR", "Please fix the crash on empty input.")
+    comment = _dated("COMMENTED", "2026-10-12T23:05:00Z", "RVW_C", "Also the test name is unclear.")
+    assert _latest_reviews_per_author([request, comment]) == [request, comment]
+
+
+def test_a_later_approval_still_takes_the_change_request_back() -> None:
+    request = _dated("CHANGES_REQUESTED", "2026-10-12T23:00:00Z", "RVW_CR")
+    approval = _dated("APPROVED", "2026-10-12T23:05:00Z", "RVW_A")
+    comment = _dated("COMMENTED", "2026-10-12T23:10:00Z", "RVW_C")
+    assert _latest_reviews_per_author([request, approval]) == [approval]
+    assert _latest_reviews_per_author([request, approval, comment]) == [comment]
+
+
+def test_only_the_latest_change_request_is_kept_beside_the_comment() -> None:
+    first = _dated("CHANGES_REQUESTED", "2026-10-12T22:00:00Z", "RVW_CR1")
+    second = _dated("CHANGES_REQUESTED", "2026-10-12T23:00:00Z", "RVW_CR2")
+    comment = _dated("COMMENTED", "2026-10-12T23:05:00Z", "RVW_C")
+    assert _latest_reviews_per_author([first, second, comment]) == [second, comment]
+
+
+@pytest.mark.asyncio
+async def test_change_request_followed_by_a_comment_routes_to_the_implementer() -> None:
+    request = _dated("CHANGES_REQUESTED", "2026-10-12T23:00:00Z", "RVW_CR")
+    comment = _dated("COMMENTED", "2026-10-12T23:05:00Z", "RVW_C", "Also the test name is unclear.")
+    stage, logs = await _route(_latest_reviews_per_author([request, comment]))
+    assert stage == "implementing"
+    assert logs[0]["human_changes_requested"] is True
