@@ -720,6 +720,42 @@
     "filename": "navigation-open-mobile-dark.png"
   },
   {
+    "view": "sign-in",
+    "title": "Sign-in landing",
+    "device": "desktop",
+    "theme": "light",
+    "width": 1440,
+    "height": 900,
+    "filename": "sign-in-desktop-light.png"
+  },
+  {
+    "view": "sign-in",
+    "title": "Sign-in landing",
+    "device": "desktop",
+    "theme": "dark",
+    "width": 1440,
+    "height": 900,
+    "filename": "sign-in-desktop-dark.png"
+  },
+  {
+    "view": "sign-in",
+    "title": "Sign-in landing",
+    "device": "mobile",
+    "theme": "light",
+    "width": 390,
+    "height": 844,
+    "filename": "sign-in-mobile-light.png"
+  },
+  {
+    "view": "sign-in",
+    "title": "Sign-in landing",
+    "device": "mobile",
+    "theme": "dark",
+    "width": 390,
+    "height": 844,
+    "filename": "sign-in-mobile-dark.png"
+  },
+  {
     "view": "signed-out",
     "title": "Signed out",
     "device": "desktop",

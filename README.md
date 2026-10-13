@@ -1,10 +1,16 @@
 # Dashboard design review screenshots
 
-84 screenshots covering 21 views in light and dark mode at desktop 1440x900 and mobile 390x844. The images use synthetic operator and account data. They are viewport captures rendered from the review branch HTML and JavaScript in T3 Browser. Long pages continue below the captured area.
+88 screenshots covering 22 views in light and dark mode at desktop 1440x900 and mobile 390x844. The images use synthetic operator and account data. They are viewport captures rendered from the review branch HTML and JavaScript in T3 Browser. Long pages continue below the captured area.
 
-Application branch: `554-dashboard-visual-rework`, source commit `f16039d`.
+Application branch: `554-dashboard-visual-rework`, source commit `856845c`.
 
 This separate asset branch hosts review images for PR comments. It is not intended to merge into the application.
+
+## Mascot drawer control
+
+A native recording of the baton motion, enlarged for review:
+
+![Baton drawer toggle](images/mascot-baton-toggle.gif)
 
 ## Desktop light
 
@@ -30,6 +36,7 @@ This separate asset branch hosts review images for PR comments. It is not intend
 - [Config Assistant](images/assistant-desktop-light.png)
 - [Account menu](images/account-menu-desktop-light.png)
 - [Navigation drawer](images/navigation-open-desktop-light.png)
+- [Sign-in landing](images/sign-in-desktop-light.png)
 - [Signed out](images/signed-out-desktop-light.png)
 
 ## Desktop dark
@@ -56,6 +63,7 @@ This separate asset branch hosts review images for PR comments. It is not intend
 - [Config Assistant](images/assistant-desktop-dark.png)
 - [Account menu](images/account-menu-desktop-dark.png)
 - [Navigation drawer](images/navigation-open-desktop-dark.png)
+- [Sign-in landing](images/sign-in-desktop-dark.png)
 - [Signed out](images/signed-out-desktop-dark.png)
 
 ## Mobile light
@@ -82,6 +90,7 @@ This separate asset branch hosts review images for PR comments. It is not intend
 - [Config Assistant](images/assistant-mobile-light.png)
 - [Account menu](images/account-menu-mobile-light.png)
 - [Navigation drawer](images/navigation-open-mobile-light.png)
+- [Sign-in landing](images/sign-in-mobile-light.png)
 - [Signed out](images/signed-out-mobile-light.png)
 
 ## Mobile dark
@@ -108,5 +117,6 @@ This separate asset branch hosts review images for PR comments. It is not intend
 - [Config Assistant](images/assistant-mobile-dark.png)
 - [Account menu](images/account-menu-mobile-dark.png)
 - [Navigation drawer](images/navigation-open-mobile-dark.png)
+- [Sign-in landing](images/sign-in-mobile-dark.png)
 - [Signed out](images/signed-out-mobile-dark.png)
 
