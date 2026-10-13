@@ -400,10 +400,9 @@ _last_sweep_token: int | None = None
 async def run_per_cycle_sweep(
     github: GitHubServiceProtocol,
     board: dict[str, Any],
-    orphan_cfg: OrphanPrConfig | None,
+    config: Any,
     active_card_ids: set[str] | None,
     cycle_token: int | None,
-    delete_branches: bool = False,
 ) -> list[OrphanPrDecision]:
     """Once-per-cycle wrapper around the sweep (US-2, SC-004).
 
@@ -418,8 +417,10 @@ async def run_per_cycle_sweep(
     global _last_sweep_token
     if cycle_token is None:
         return []
+    orphan_cfg = getattr(config, "orphan_pr", None)
     if orphan_cfg is None or not (orphan_cfg.enabled and orphan_cfg.sweep):
         return []
+    delete_branches = bool(getattr(config, "delete_defunct_branches", False))
     async with close_guard():
         if _last_sweep_token == cycle_token:
             return []

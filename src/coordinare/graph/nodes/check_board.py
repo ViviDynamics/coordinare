@@ -2161,10 +2161,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     # reads at all (SC-003). Cards with a live session are never touched
     # (FR-006), even when the board snapshot shows terminal.
     await run_per_cycle_sweep(
-        github, board, getattr(config, "orphan_pr", None),
+        github, board, config,
         active_card_ids=set((state.get("active_sessions") or {}).keys()),
         cycle_token=state.get("orphan_sweep_cycle_token"),
-        delete_branches=bool(getattr(config, "delete_defunct_branches", False)),
     )
 
     snapshot = board.get("snapshot")

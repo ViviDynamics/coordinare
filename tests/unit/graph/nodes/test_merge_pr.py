@@ -460,16 +460,16 @@ async def test_merge_pr_skips_branch_delete_when_disabled() -> None:
     assert github.deleted == []
 
 
-@pytest.mark.asyncio
-async def test_merge_pr_skips_branch_delete_when_not_merged() -> None:
-    """89: a shape-surprise merged=False never deletes the branch."""
-    github = _GitHubDeletable({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
-
-    async def _not_merged(pr_id: str):
+class _GitHubNotMerged(_GitHubDeletable):
+    async def squash_merge(self, pr_id: str):
         _ = pr_id
         return {"merged": False}
 
-    github.squash_merge = _not_merged  # type: ignore[method-assign]
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_branch_delete_when_not_merged() -> None:
+    """89: a shape-surprise merged=False never deletes the branch."""
+    github = _GitHubNotMerged({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
     state = initial_state()
     state["github_service"] = github
     state["config"] = _config_with_delete(True)
