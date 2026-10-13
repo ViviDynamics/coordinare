@@ -24,7 +24,10 @@ from urllib.parse import urlsplit
 
 import structlog
 
-from coordinare.services.defunct_branch import delete_defunct_branch
+from coordinare.services.defunct_branch import (
+    configured_repo_of,
+    delete_defunct_branch,
+)
 
 if TYPE_CHECKING:
     from coordinare.config import OrphanPrConfig
@@ -373,10 +376,14 @@ async def close_superseded_prs(
         else:
             # 89 — a closed (not merged) orphan PR's head branch is defunct;
             # delete it when the operator opted in. Non-raising, and it keeps
-            # its own decision log line (defunct_branch.deleted).
+            # its own decision log line (defunct_branch.deleted). The
+            # head-repo identity check refuses fork PRs; branch_has_open_pr
+            # preserves a branch that still backs another live PR.
             await delete_defunct_branch(
                 github, str(pr.get("head_ref") or ""),
                 card_id=card_id, source="orphan", enabled=delete_branches,
+                head_repo=str(pr.get("head_repo") or ""),
+                expected_repo=configured_repo_of(github),
             )
         decisions.append(
             _log_decision(

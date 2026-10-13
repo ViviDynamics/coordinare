@@ -381,6 +381,8 @@ async def test_merge_pr_triggers_rebase_round_for_other_sessions() -> None:
 
 class _GitHubDeletable:
     def __init__(self, mergeability: dict | None = None) -> None:
+        self._org = "acme"
+        self._project_name = "repo"
         self._mergeability = mergeability if mergeability is not None else {"mergeable": True}
         self.deleted: list[str] = []
 
@@ -412,7 +414,11 @@ def _config_with_delete(flag: object):
 async def test_merge_pr_deletes_head_branch_when_enabled() -> None:
     """89: with delete_defunct_branches on, the merged head branch from
     check_mergeability's head_ref_name is deleted after the merge."""
-    github = _GitHubDeletable({"mergeable": True, "head_ref_name": "coordinare/PVTI_1/x"})
+    github = _GitHubDeletable({
+        "mergeable": True,
+        "head_ref_name": "coordinare/PVTI_1/x",
+        "head_repo_name_with_owner": "acme/repo",
+    })
     state = initial_state()
     state["github_service"] = github
     state["config"] = _config_with_delete(True)
@@ -429,7 +435,10 @@ async def test_merge_pr_deletes_head_branch_when_enabled() -> None:
 async def test_merge_pr_branch_resolution_falls_back_to_pushed_branch() -> None:
     """89: when head_ref_name is absent (doubles/older fakes), the card's
     pushed_branch artefact is the fallback candidate."""
-    github = _GitHubDeletable({"mergeable": True})
+    github = _GitHubDeletable({
+        "mergeable": True,
+        "head_repo_name_with_owner": "acme/repo",
+    })
     state = initial_state()
     state["github_service"] = github
     state["config"] = _config_with_delete(True)
@@ -443,6 +452,52 @@ async def test_merge_pr_branch_resolution_falls_back_to_pushed_branch() -> None:
     await merge_pr(state)
 
     assert github.deleted == ["coordinare/PVTI_1/pushed"]
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_branch_delete_for_fork_pr() -> None:
+    """89 review fix: a fork PR's head lives in another repository; the base
+    repo must never delete a same-named ref for it."""
+    github = _GitHubDeletable({
+        "mergeable": True,
+        "head_ref_name": "coordinare/PVTI_1/x",
+        "head_repo_name_with_owner": "other/repo",
+    })
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(True)
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    await merge_pr(state)
+
+    assert github.deleted == []
+
+
+class _GitHubSharedBranch(_GitHubDeletable):
+    """89 review fix: reports another live PR on the merged head branch."""
+
+    async def branch_has_open_pr(self, branch: str) -> bool:
+        _ = branch
+        return True
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_skips_branch_delete_when_another_pr_uses_branch() -> None:
+    """89 review fix: a branch can back more than one PR; it is only defunct
+    when no live PR still uses it."""
+    github = _GitHubSharedBranch({
+        "mergeable": True,
+        "head_ref_name": "coordinare/PVTI_1/x",
+        "head_repo_name_with_owner": "acme/repo",
+    })
+    state = initial_state()
+    state["github_service"] = github
+    state["config"] = _config_with_delete(True)
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    await merge_pr(state)
+
+    assert github.deleted == []
 
 
 @pytest.mark.asyncio

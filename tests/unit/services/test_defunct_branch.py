@@ -60,12 +60,30 @@ class _RaisingGitHub:
         raise RuntimeError("ref already gone")
 
 
+class _OpenPRGitHub(_RecordingGitHub):
+    """Double with the branch_has_open_pr capability (like the real service)."""
+
+    def __init__(self, result: bool | None) -> None:
+        super().__init__()
+        self._open_pr_result = result
+        self.open_pr_probes = 0
+
+    async def branch_has_open_pr(self, branch_name: str) -> bool | None:
+        self.open_pr_probes += 1
+        return self._open_pr_result
+
+
+async def _delete(github: object, branch: str = "coordinare/PVTI_1/x") -> bool:
+    return await delete_defunct_branch(
+        github, branch, card_id="PVTI_1", source="merge", enabled=True,
+        head_repo="acme/repo", expected_repo="acme/repo",
+    )
+
+
 @pytest.mark.asyncio
 async def test_delete_enabled_removes_branch() -> None:
     github = _RecordingGitHub()
-    ok = await delete_defunct_branch(
-        github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="merge", enabled=True,
-    )
+    ok = await _delete(github)
     assert ok is True
     assert github.deleted == ["coordinare/PVTI_1/x"]
 
@@ -75,6 +93,7 @@ async def test_delete_disabled_is_noop() -> None:
     github = _RecordingGitHub()
     ok = await delete_defunct_branch(
         github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="merge", enabled=False,
+        head_repo="acme/repo", expected_repo="acme/repo",
     )
     assert ok is False
     assert github.deleted == []
@@ -85,6 +104,7 @@ async def test_delete_empty_branch_is_noop() -> None:
     github = _RecordingGitHub()
     ok = await delete_defunct_branch(
         github, "", card_id="PVTI_1", source="merge", enabled=True,
+        head_repo="acme/repo", expected_repo="acme/repo",
     )
     assert ok is False
     assert github.deleted == []
@@ -95,9 +115,7 @@ async def test_delete_failure_is_swallowed() -> None:
     """delete_branch is contractually non-raising; doubles that raise are
     still swallowed so a cleanup failure never breaks the merge path."""
     github = _RaisingGitHub()
-    ok = await delete_defunct_branch(
-        github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="orphan", enabled=True,
-    )
+    ok = await _delete(github)
     assert ok is False
     assert github.attempts == 1
 
@@ -111,5 +129,75 @@ async def test_delete_without_delete_branch_method_is_noop() -> None:
 
     ok = await delete_defunct_branch(
         _NoDelete(), "coordinare/PVTI_1/x", card_id="PVTI_1", source="merge", enabled=True,
+        head_repo="acme/repo", expected_repo="acme/repo",
     )
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# 89 review fixes — head-repo identity + live-PR preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_fork_head_repo_mismatch_is_skipped() -> None:
+    """A fork PR's head ref lives in another repository; deleting by name in
+    the base repo could remove an unrelated same-named branch."""
+    github = _RecordingGitHub()
+    ok = await delete_defunct_branch(
+        github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="merge", enabled=True,
+        head_repo="other/repo", expected_repo="acme/repo",
+    )
+    assert ok is False
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_head_repo_is_skipped() -> None:
+    """No head-repo identity from the inventory: preserve the branch."""
+    github = _RecordingGitHub()
+    ok = await delete_defunct_branch(
+        github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="orphan", enabled=True,
+        head_repo="", expected_repo="acme/repo",
+    )
+    assert ok is False
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_configured_repo_is_skipped() -> None:
+    """No configured-repo identity: cannot verify, so preserve."""
+    github = _RecordingGitHub()
+    ok = await delete_defunct_branch(
+        github, "coordinare/PVTI_1/x", card_id="PVTI_1", source="orphan", enabled=True,
+        head_repo="acme/repo", expected_repo="",
+    )
+    assert ok is False
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_preserved_when_another_open_pr_uses_branch() -> None:
+    """A branch can back more than one PR: only delete when no live PR uses it."""
+    github = _OpenPRGitHub(True)
+    ok = await _delete(github)
+    assert ok is False
+    assert github.open_pr_probes == 1
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_preserved_when_open_pr_probe_is_unknown() -> None:
+    """An indeterminate open-PR probe (None) preserves the branch too."""
+    github = _OpenPRGitHub(None)
+    ok = await _delete(github)
+    assert ok is False
+    assert github.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_delete_proceeds_when_no_open_pr_uses_branch() -> None:
+    github = _OpenPRGitHub(False)
+    ok = await _delete(github)
+    assert ok is True
+    assert github.deleted == ["coordinare/PVTI_1/x"]

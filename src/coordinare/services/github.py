@@ -308,6 +308,7 @@ query ListOpenPullRequests($owner: String!, $repo: String!, $first: Int!, $after
         number
         url
         headRefName
+        headRepository { nameWithOwner }
         body
       }
       pageInfo {
@@ -2290,8 +2291,9 @@ class GitHubService(CardIdentityMap):
     ) -> list[dict[str, Any]]:
         """553: open-PR inventory for orphan reconciliation (issue #78).
 
-        Returns ``{"id", "number", "url", "head_ref", "body"}`` dicts; empty
-        list on any error (callers treat as "nothing to reconcile"). Uses
+        Returns ``{"id", "number", "url", "head_ref", "head_repo", "body"}``
+        dicts; empty list on any error (callers treat as "nothing to
+        reconcile"). Uses
         GraphQL because the reconciliation needs both the PR node id (for the
         close mutation) and the body (for issue-reference attribution), which
         REST's search-only PR listing does not combine. Pages newest-first to
@@ -2329,6 +2331,9 @@ class GitHubService(CardIdentityMap):
                     "number": node.get("number"),
                     "url": node.get("url"),
                     "head_ref": str(node.get("headRefName", "")),
+                    "head_repo": str(
+                        (node.get("headRepository") or {}).get("nameWithOwner") or "",
+                    ),
                     "body": str(node.get("body", "") or ""),
                 })
             page_info = payload.get("pageInfo") or {}
