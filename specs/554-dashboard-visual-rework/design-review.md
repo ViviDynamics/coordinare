@@ -2,7 +2,7 @@
 
 Issue: https://github.com/ViviDynamics/coordinare/issues/94
 Owner: Codex, with Jason Berry. GitHub assignee: Jason733i.
-Branch: `094-dashboard-visual-rework`, created from main.
+Branch: `554-dashboard-visual-rework`, created from main.
 
 ## Agreed workflow
 
@@ -29,8 +29,9 @@ Source files: `assets/css/tokens.css`, `assets/css/site.css`, `brand.html`.
 | Dark charcoal | #14241E | Green-tinted dark foundation |
 
 Light direction: ivory canvas, paper surfaces, ink text, forest actions.
-Dark direction awaiting feedback: green-tinted charcoal or deep forest canvas,
-forest surfaces, ivory text, muted-on-dark secondary text, restrained brass.
+Dark direction confirmed by Jason: deep forest `#163B2C` canvas for a greener
+appearance, forest `#214E3D` surfaces, ivory `#F6F3EB` text, muted-on-dark
+`#B9CABB` secondary text, and restrained brass `#BC9654` accents.
 The source website is fixed-light; a full dark dashboard theme extends it.
 
 ## Isolated preview
@@ -64,4 +65,39 @@ docker stop coordinare-dashboard-94-preview
 - Issue created and ownership recorded.
 - Dedicated worktree and branch created from main.
 - Container preview created on a verified unique port.
-- Awaiting initial palette feedback before dashboard styling changes.
+- Jason selected the deep-forest dark canvas.
+- Jason approved the proposed board-first layout; first preview implementation is authorized.
+
+## Approved first-preview layout
+
+Rework existing dashboard views without changing their routes or state contracts.
+Use persistent left navigation on desktop, collapsed navigation on small screens,
+and a compact top bar with Light / Dark / System appearance selection.
+
+Prioritize active work: performer status and open questions above a wide board,
+with activity in an adjacent panel. Keep metrics and system health below the
+workspace. Move the detailed workflow diagram out of the primary viewing area
+while keeping it accessible. On small screens, stack board and activity.
+
+Use the landing serif for the Coordinare wordmark, system sans for operator
+controls and reading, and monospace for logs, code, and identifiers. Use the
+confirmed deep-forest/ivory palettes and restrained brass detailing.
+
+Alternative for review: prioritize the activity stream as the main workspace
+and place the board beside it. Recommended direction is board first because
+card ownership, progress, blockers, and review state are easier to scan together.
+
+Validate both appearances, keyboard navigation, responsive layout, contrast,
+and existing dashboard behavior in the isolated container preview.
+
+## Original identity assets
+
+Jason requested the landing mark as favicon and the original conductor mascot
+initially featured in the header; later feedback moved it into navigation.
+Both are now bundled under dashboard_static, using the
+original SVG and WebP bytes. The mascot stays visible in both appearances and at small widths. Jason then
+requested moving it from the workspace header into the top-left navigation,
+keeping only the mark favicon, and removing promotional copy. This feedback is
+implemented. The desktop drawer now retains icons when narrowed to 80px and
+shows icons with labels when expanded to 224px. Collapse is saved locally;
+mobile opening is independent.

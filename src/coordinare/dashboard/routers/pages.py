@@ -5,10 +5,16 @@ import asyncio  # noqa: F401
 from typing import TYPE_CHECKING
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from coordinare.dashboard.assets import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES, _page_html
+from coordinare.dashboard.assets import (
+    _ACTIVITY_STREAM_JS,
+    _DASHBOARD_BRAND_ASSETS,
+    _DASHBOARD_BRAND_ETAGS,
+    _DASHBOARD_JS_SOURCES,
+    _page_html,
+)
 
 if TYPE_CHECKING:
         from coordinare.dashboard.context import DashboardContext
@@ -27,13 +33,25 @@ def _register_activity_stream_script(app: FastAPI, ctx: DashboardContext) -> Non
 def _register_dashboard_static_script(app: FastAPI, ctx: DashboardContext) -> None:
 
         @app.get("/static/{filename}")
-        async def dashboard_static_script(filename: str) -> Response:
+        async def dashboard_static_script(filename: str, request: Request) -> Response:
             """349: content-addressed dashboard JS.
 
             The ``?v=`` query in the page is the sha256 of the served bytes, so
             this can be cached as immutable: a redeploy that changes a file
             changes the URL and no browser renders a stale script.
             """
+            brand = _DASHBOARD_BRAND_ASSETS.get(filename)
+            if brand is not None:
+                content, media_type = brand
+                etag = _DASHBOARD_BRAND_ETAGS[filename]
+                headers = {"Cache-Control": "public, no-cache", "ETag": etag}
+                validators = {
+                    value.strip().removeprefix("W/")
+                    for value in request.headers.get("if-none-match", "").split(",")
+                }
+                if etag in validators or "*" in validators:
+                    return Response(status_code=304, headers=headers)
+                return Response(content, media_type=media_type, headers=headers)
             source = _DASHBOARD_JS_SOURCES.get(filename.removesuffix(".js"))
             if source is None:
                 raise HTTPException(status_code=404)

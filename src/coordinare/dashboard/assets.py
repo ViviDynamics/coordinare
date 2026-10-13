@@ -8,7 +8,21 @@ DASHBOARD_HTML_BUDGET_BYTES = 112 * 1024
 
 _DASHBOARD_JS_DIR = Path(__file__).resolve().parent / "dashboard_static"
 
-_DASHBOARD_JS_FILES = ("helpers", "config", "performers")
+# Original landing identity assets, shipped with the dashboard package.
+_BRAND_MEDIA_TYPES = {
+    "coordinare-mark.svg": "image/svg+xml",
+    "coordinare-conductor.webp": "image/webp",
+}
+_DASHBOARD_BRAND_ASSETS = {
+    name: ((_DASHBOARD_JS_DIR / name).read_bytes(), media_type)
+    for name, media_type in _BRAND_MEDIA_TYPES.items()
+}
+_DASHBOARD_BRAND_ETAGS = {
+    name: '"' + hashlib.sha256(content).hexdigest() + '"'
+    for name, (content, _) in _DASHBOARD_BRAND_ASSETS.items()
+}
+
+_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "workflow")
 
 def _load_dashboard_js() -> tuple[dict[str, str], dict[str, str]]:
     sources: dict[str, str] = {}
@@ -40,4 +54,5 @@ def _page_html(enabled: bool) -> str:
     """The dashboard page, with the assistant spliced in when it is switched on."""
     if not enabled:
         return _DASHBOARD_HTML
-    return _DASHBOARD_HTML.replace("</body>", _ASSISTANT_FRAGMENT + "</body>", 1)
+    marker = "</div><!-- /#main-content -->"
+    return _DASHBOARD_HTML.replace(marker, _ASSISTANT_FRAGMENT + marker, 1)
