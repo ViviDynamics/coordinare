@@ -1572,7 +1572,7 @@ function loadPersonasPage(force) {
   fetch('/api/personas').then(function(r){ _personaCfgHash = r.headers.get('ETag'); return r.json(); }).then(function(data) {
     var html = data.map(function(p, idx) {
       return '<div style="margin-bottom:16px" data-persona-idx="' + idx + '">' +
-        '<label style="font-weight:bold;color:var(--color-text-primary);display:block;margin-bottom:4px">' + esc(p.role) + '</label>' +
+        '<label style="font-weight:bold;color:var(--color-text-primary);display:block;margin-bottom:4px" title="' + esc(p.role) + '">' + agentLabel(p.role) + personaStageNote(p.role) + '</label>' +
         '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
         '<div style="margin-top:4px;display:flex;gap:8px">' +
         '<button class="action-btn persona-save-btn">Save</button>' +
@@ -1667,7 +1667,7 @@ function renderPersonas(personas) {
       : '<span style="font-size:11px;color:var(--color-accent-blue);margin-left:6px">custom</span>';
     return '<div style="margin-bottom:16px;border-bottom:1px solid var(--color-bg-elevated);padding-bottom:14px">' +
       '<div style="display:flex;align-items:center;margin-bottom:6px">' +
-        '<strong style="font-size:13px">' + esc(p.role) + '</strong>' + badge +
+        '<strong style="font-size:13px" title="' + esc(p.role) + '">' + agentLabel(p.role) + personaStageNote(p.role) + '</strong>' + badge +
       '</div>' +
       '<textarea id="persona-ta-' + esc(p.role) + '" rows="4" style="width:100%;box-sizing:border-box;' +
         'background:var(--color-bg-base);border:1px solid var(--color-border);color:var(--color-text-primary);padding:6px;font-family:monospace;' +

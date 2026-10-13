@@ -10,15 +10,19 @@ served as ``/static/vocabulary.js`` and as ``/api/vocabulary``), and a guard
 test fails when a conductor phase, card stage, agent role or outcome exists
 in the code without an entry here.
 
-The labels below are deliberately the ones the dashboard showed before this
-module existed, so introducing it changes no text. Renames land one concept
-at a time in the naming issues that build on it (#137 to #144).
+Conductor phases still carry the labels the dashboard showed before this
+module existed. Stages and agents were renamed by #137: a stage says what is
+happening ("Implement"), an agent says who does it ("Implementer"), and the
+same code can be both (``security`` is the Security stage and the Security
+reviewer agent), so a label is always looked up by kind.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
 from typing import Any
+
+from coordinare.lifecycle import ROLE_TO_STAGE
 
 
 @dataclass(frozen=True)
@@ -50,36 +54,43 @@ PHASES: dict[str, Term] = _terms(
     ("active", "Active", "Active", "A session whose exact state is not known yet."),
 )
 
-#: Where a card is in its pipeline (the values of ``lifecycle.ROLE_TO_STAGE``).
+#: Where a card is in its pipeline: what is happening (#137). Keys are the
+#: stage codes (the values of ``lifecycle.ROLE_TO_STAGE``).
 STAGES: dict[str, Term] = _terms(
-    ("advocate", "Advocate", "Advocate", "Responding to a new issue before any work is planned."),
-    ("assessing", "Assessing", "Assessing", "Deciding whether the card is ready to be worked."),
-    ("architecting", "Architecting", "Architecting", "Planning the change."),
-    ("implementing", "Implementing", "Implementing", "Writing the change and opening the pull request."),
-    ("reviewing", "Reviewing", "Reviewing", "Reviewing the pull request."),
+    ("advocate", "Respond", "Respond", "Responding to a new issue before any work is planned."),
+    ("assessing", "Assess", "Assess", "Deciding whether the card is ready to be worked."),
+    ("architecting", "Plan", "Plan", "Planning the change."),
+    ("implementing", "Implement", "Implement", "Writing the change and opening the pull request."),
+    ("reviewing", "Review", "Review", "Reviewing the pull request."),
     ("security", "Security", "Security", "Checking the change for security problems."),
-    ("qa", "Qa", "Qa", "Testing the change against the card's acceptance criteria."),
-    ("documenting", "Documenting", "Documenting", "Updating the documentation for the change."),
-    ("closing_review", "Closing Review", "Closing Reviews", "Confirming earlier review feedback was addressed."),
-    ("env_bootstrap", "Env Bootstrap", "Env Bootstrap", "Building the cached development environment performers start from."),
+    ("qa", "QA", "QA", "Testing the change against the card's acceptance criteria."),
+    ("documenting", "Docs", "Docs", "Updating the documentation for the change."),
+    ("closing_review", "Close", "Close", "Confirming earlier review feedback was addressed."),
+    ("env_bootstrap", "Environment setup", "Environment setup", "Building the cached development environment performers start from."),
 )
 
-#: Who does the work (the keys of ``lifecycle.ROLE_TO_STAGE`` and the other
-#: roles a performer can be configured for).
+#: Who does the work: the agent (#137). Keys are the role codes (the keys of
+#: ``lifecycle.ROLE_TO_STAGE`` and the other roles a performer can be
+#: configured for). Each agent has exactly one display name.
 AGENTS: dict[str, Term] = _terms(
-    ("advocate", "Advocate", "Advocates", "Responds to new issues."),
+    ("advocate", "Issue responder", "Issue responders", "Responds to new issues."),
     ("assessor", "Assessor", "Assessors", "Decides whether a card is ready to be worked."),
     ("architect", "Architect", "Architects", "Plans the change."),
     ("implementer", "Implementer", "Implementers", "Writes the change and opens the pull request."),
     ("reviewer", "Reviewer", "Reviewers", "Reviews the pull request."),
-    ("security", "Security", "Security", "Checks the change for security problems."),
-    ("qa", "Qa", "Qa", "Tests the change against the card's acceptance criteria."),
-    ("tech_writer", "Tech Writer", "Tech Writers", "Updates the documentation for the change."),
+    ("security", "Security reviewer", "Security reviewers", "Checks the change for security problems."),
+    ("qa", "QA", "QA", "Tests the change against the card's acceptance criteria."),
+    ("tech_writer", "Documenter", "Documenters", "Updates the documentation for the change."),
     ("closer", "Closer", "Closers", "Confirms earlier review feedback was addressed."),
-    ("curator", "Curator", "Curators", "Triages incoming issues."),
-    ("env_bootstrap", "Env Bootstrap", "Env Bootstrap", "Builds the cached development environment performers start from."),
+    ("curator", "Intake (issue triage)", "Intake (issue triage)", "Triages incoming issues. Works outside the card pipeline."),
+    ("env_bootstrap", "Environment builder", "Environment builders", "Builds the cached development environment performers start from."),
     ("diagnostic", "Diagnostic", "Diagnostics", "Runs a free-form probe outside the card pipeline."),
 )
+
+#: Which agent does each stage (#137). The dashboard shows them as a pair,
+#: "Implement · Implementer". Derived from the lifecycle table so the two can
+#: never drift; ``env_bootstrap`` is not a lifecycle role and maps to itself.
+STAGE_AGENT: dict[str, str] = {**{stage: role for role, stage in ROLE_TO_STAGE.items()}, "env_bootstrap": "env_bootstrap"}
 
 #: How one conductor check ended.
 OUTCOMES: dict[str, Term] = _terms(
@@ -106,39 +117,67 @@ GROUPS: dict[str, dict[str, Term]] = {
     "concepts": CONCEPTS,
 }
 
-#: Lookup order for a bare code. A code that names both a stage and an agent
-#: (``security``, ``qa``, ``advocate``) carries the same label in both, which
-#: ``tests/unit/test_136_vocabulary.py`` enforces, so the order never changes
-#: what is shown.
-_LOOKUP_ORDER = ("phases", "stages", "agents", "outcomes")
+def _label(group: dict[str, Term], code: str | None) -> str:
+    key = str(code or "")
+    term = group.get(key)
+    return term.label if term is not None else key
+
+
+def phase_label(code: str | None) -> str:
+    """Display label for a conductor phase, or the code itself when unknown."""
+    return _label(PHASES, code)
+
+
+def stage_label(code: str | None) -> str:
+    """Display label for a card stage ("Implement"), or the code when unknown."""
+    return _label(STAGES, code)
+
+
+def agent_label(code: str | None) -> str:
+    """Display label for an agent role ("Implementer"), or the code when unknown."""
+    return _label(AGENTS, code)
+
+
+def stage_with_agent(stage: str | None) -> str:
+    """A stage shown with the agent that does it: "Implement · Implementer".
+
+    An unknown stage, or one with no agent, is shown alone. An unknown code is
+    shown as it is, not prettified: a label that was never written should look
+    like one.
+    """
+    key = str(stage or "")
+    agent = STAGE_AGENT.get(key)
+    if key not in STAGES or agent is None:
+        return stage_label(key)
+    return f"{stage_label(key)} · {agent_label(agent)}"
 
 
 def label(code: str | None) -> str:
-    """The display label for an internal code, or the code itself when unknown.
+    """Display label for a conductor phase or a check outcome.
 
-    An unknown code is shown as it is, not prettified: a label that was never
-    written should look like one.
+    Stages and agents are deliberately not reachable here: several codes are
+    both, with different labels, so they must be looked up by kind.
     """
     key = str(code or "")
-    for group in _LOOKUP_ORDER:
-        term = GROUPS[group].get(key)
+    for group in (PHASES, OUTCOMES):
+        term = group.get(key)
         if term is not None:
             return term.label
     return key
 
 
 def labels() -> dict[str, str]:
-    """Flat ``code -> label`` map across phases, stages, agents and outcomes."""
-    flat: dict[str, str] = {}
-    for group in reversed(_LOOKUP_ORDER):
-        flat.update({code: term.label for code, term in GROUPS[group].items()})
-    return flat
+    """Flat ``code -> label`` map for conductor phases and check outcomes."""
+    return {**{c: t.label for c, t in OUTCOMES.items()}, **{c: t.label for c, t in PHASES.items()}}
 
 
 def payload() -> dict[str, Any]:
     """The whole glossary as plain data, for ``/api/vocabulary`` and the page."""
     return {
         "labels": labels(),
+        "stage_labels": {code: term.label for code, term in STAGES.items()},
+        "agent_labels": {code: term.label for code, term in AGENTS.items()},
+        "stage_agent": dict(STAGE_AGENT),
         **{name: [asdict(term) for term in terms.values()] for name, terms in GROUPS.items()},
     }
 
