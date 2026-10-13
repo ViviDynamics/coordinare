@@ -21,6 +21,8 @@ logger = structlog.get_logger(__name__)
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
 _PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
+_ISSUE_COMMENTS_NOT_CONFIGURED = 'Issue comments fetch not configured'
+_ISSUE_COMMENTS_FETCH_FAILED = 'Issue comments fetch failed'
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T008)
@@ -121,6 +123,23 @@ query PollBoard($projectId: ID!, $after: String) {
               labels(first: 100) {
                 nodes {
                   name
+                }
+              }
+              # Native blocked-by relationship (#91): structured issue
+              # dependencies, read in the same query so building the
+              # dependency graph costs zero extra requests.  Truncation is
+              # visible: poll_board warns when hasNextPage is set.
+              blockedBy(first: 50) {
+                totalCount
+                pageInfo {
+                  hasNextPage
+                }
+                nodes {
+                  number
+                  state
+                  repository {
+                    nameWithOwner
+                  }
                 }
               }
               assignees(first: 10) {
@@ -595,6 +614,44 @@ def _decode_git_quoted_path(payload: str, *, keep_line_escapes: bool = True) -> 
     return data.decode("utf-8", "replace")
 
 
+def _append_issue_comment_page(
+    comments: list[dict[str, Any]],
+    page: Any,
+    since_id: int | None,
+) -> None:
+    """Parse one page of the issue-comments REST payload into ``comments``.
+
+    Module-level helper keeps branch-heavy parsing out of the caller
+    (PLR0912) — the fetch loop stays a straight line.
+    """
+    if not isinstance(page, list):
+        return
+    for c in page:
+        if not isinstance(c, dict):
+            continue
+        cid = int(c.get("id", 0))
+        if since_id is not None and cid <= since_id:
+            continue
+        author = c.get("user", {})
+        comments.append({
+            "id": cid,
+            "author": str(author.get("login", "")) if isinstance(author, dict) else "",
+            "body": str(c.get("body", "")),
+            "created_at": str(c.get("created_at", "")),
+        })
+
+
+def _next_comment_page_url(resp: httpx.Response) -> str | None:
+    """Return the next page URL from a Link header, if any."""
+    link: str = resp.headers.get("link", "")
+    if 'rel="next"' not in link:
+        return None
+    for part in link.split(","):
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
+
+
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -976,6 +1033,9 @@ class GitHubService(CardIdentityMap):
         issue_urls: dict[str, str] = {}
         item_labels: dict[str, list[str]] = {}
         item_assignees: dict[str, list[str]] = {}
+        # item_id → [{"number": int, "state": "open"|"closed", "repo": "owner/name"}]
+        # GitHub's native blocked-by relationship (issue dependencies, #91).
+        native_blockers: dict[str, list[dict[str, Any]]] = {}
         # Maps project item ID (PVTI_…) → underlying issue/PR node ID (I_… / PR_…)
         # Required for API calls that target issues/PRs (addComment, addLabels, etc.)
         content_node_ids: dict[str, str] = {}
@@ -1028,6 +1088,30 @@ class GitHubService(CardIdentityMap):
                     for n in (assignee_nodes.get("nodes", []) if isinstance(assignee_nodes, dict) else [])
                     if isinstance(n, dict) and n.get("login")
                 ]
+                blockers_nodes = content.get("blockedBy", {})
+                if isinstance(blockers_nodes, dict):
+                    blockers_page = blockers_nodes.get("pageInfo", {})
+                    if isinstance(blockers_page, dict) and blockers_page.get("hasNextPage"):
+                        logger.warning(
+                            "poll_board.native_blockers_truncated",
+                            item_id=item_id,
+                            total=int(blockers_nodes.get("totalCount", 0) or 0),
+                        )
+                    parsed_blockers: list[dict[str, Any]] = []
+                    for b in blockers_nodes.get("nodes", []) if isinstance(blockers_nodes.get("nodes", []), list) else []:
+                        if not isinstance(b, dict):
+                            continue
+                        b_num = b.get("number")
+                        if not isinstance(b_num, int) or b_num <= 0:
+                            continue
+                        repo_node = b.get("repository") or {}
+                        parsed_blockers.append({
+                            "number": b_num,
+                            "state": str(b.get("state", "OPEN")).upper(),
+                            "repo": str(repo_node.get("nameWithOwner", "")) if isinstance(repo_node, dict) else "",
+                        })
+                    if parsed_blockers:
+                        native_blockers[item_id] = parsed_blockers
                 timeline = content.get("timelineItems", {})
                 if isinstance(timeline, dict):
                     nodes = timeline.get("nodes", [])
@@ -1074,6 +1158,7 @@ class GitHubService(CardIdentityMap):
             "item_assignees": item_assignees,
             "content_node_ids": content_node_ids,
             "pr_urls": pr_urls,
+            "native_blockers": native_blockers,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
@@ -1140,14 +1225,22 @@ class GitHubService(CardIdentityMap):
         self,
         issue_number: int,
         since_id: int | None = None,
+        strict: bool = False,
     ) -> list[dict[str, Any]]:
         """Fetch comments on a GitHub issue, optionally after a known comment ID.
 
         Returns a list of dicts with keys: id, author, body, created_at.
         Returns [] on any error (logs warning).
+
+        With ``strict=True`` errors are raised instead of returning [] — for
+        callers that must distinguish "no comments" from "comments unreadable"
+        (the 091 comment-dependency resolver).  Default False preserves the
+        055-era lenient contract.
         """
         if not self._project_name:
             logger.warning("get_issue_comments.no_project_name", issue_number=issue_number)
+            if strict:
+                raise GitHubError(_ISSUE_COMMENTS_NOT_CONFIGURED)
             return []
         url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/issues/{issue_number}/comments"
         params: dict[str, str | int] = {"per_page": 100}
@@ -1155,11 +1248,14 @@ class GitHubService(CardIdentityMap):
             token = await self._current_token()
         except Exception as exc:
             logger.warning("get_issue_comments.auth_failed", issue_number=issue_number, error=str(exc))
+            if strict:
+                raise
             return []
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         }
+        strict_error: GitHubError | None = None
         try:
             comments: list[dict[str, Any]] = []
             next_url: str | None = url
@@ -1172,33 +1268,21 @@ class GitHubService(CardIdentityMap):
                             issue_number=issue_number,
                             status_code=resp.status_code,
                         )
+                        if strict:
+                            strict_error = GitHubError(_ISSUE_COMMENTS_FETCH_FAILED)
+                            break
                         return []
-                    page: list[dict[str, Any]] = resp.json()
-                    for c in page:
-                        if not isinstance(c, dict):
-                            continue
-                        cid = int(c.get("id", 0))
-                        if since_id is not None and cid <= since_id:
-                            continue
-                        author = c.get("user", {})
-                        comments.append({
-                            "id": cid,
-                            "author": str(author.get("login", "")) if isinstance(author, dict) else "",
-                            "body": str(c.get("body", "")),
-                            "created_at": str(c.get("created_at", "")),
-                        })
-                    link = resp.headers.get("link", "")
-                    next_url = None
-                    if 'rel="next"' in link:
-                        for part in link.split(","):
-                            if 'rel="next"' in part:
-                                next_url = part.split(";")[0].strip().strip("<>")
-                                break
+                    _append_issue_comment_page(comments, resp.json(), since_id)
+                    next_url = _next_comment_page_url(resp)
                     params = {}
-            return comments
         except Exception as exc:
             logger.warning("get_issue_comments.request_failed", issue_number=issue_number, error=str(exc))
+            if strict:
+                raise
             return []
+        if strict_error is not None:
+            raise strict_error
+        return comments
 
     async def get_pr_conversation_comments(
         self, pr_number: int, *, since: str | None = None,

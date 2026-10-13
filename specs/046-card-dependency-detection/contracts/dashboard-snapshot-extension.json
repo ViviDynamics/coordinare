@@ -31,10 +31,14 @@
             "format": "uri",
             "description": "GitHub issue URL for the blocker. Null if unavailable."
           },
+          "blocker_repo": {
+            "type": ["string", "null"],
+            "description": "Repository slug ('owner/repo') the blocker issue lives in. Null when the blocker is local to the configured repository; set only for native blocked-by edges that point at a different repository (issue numbers are repo-local)."
+          },
           "source": {
             "type": "string",
-            "enum": ["explicit", "assessor"],
-            "description": "How the dependency was detected: 'explicit' (parsed from issue body) or 'assessor' (flagged by the assessor role)."
+            "enum": ["explicit", "assessor", "comment", "native_relationship"],
+            "description": "How the dependency was detected: 'explicit' (parsed from issue body), 'comment' (parsed from an issue comment, same syntax), 'native_relationship' (GitHub's native blocked-by relationship), or 'assessor' (flagged by the assessor role)."
           }
         }
       },

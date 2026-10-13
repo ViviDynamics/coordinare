@@ -1629,8 +1629,14 @@ def _compute_session_eligibilities(
     dep_graph: DependencyGraph | None = None
     cached_board = state.get("_board_cache")
     if cached_board is not None:
+        config = state.get("config")
+        org = getattr(config, "github_org", "") if config is not None else ""
+        project = getattr(config, "project_name", "") if config is not None else ""
         try:
-            dep_graph = _build_dep_graph(cast("dict[str, Any]", cached_board))
+            dep_graph = _build_dep_graph(
+                cast("dict[str, Any]", cached_board),
+                repo=f"{org}/{project}" if org and project else "",
+            )
         except Exception:
             logger.warning("multi_session.dep_graph_failed", exc_info=True)
 

@@ -18,10 +18,16 @@ class DependencyStatus(StrEnum):
 
 
 class DependencySource(StrEnum):
-    """How the dependency was detected."""
+    """How the dependency was detected.
+
+    Precedence when the same (dependent, blocker) pair is detected by more
+    than one source: EXPLICIT > COMMENT > NATIVE_RELATIONSHIP.
+    """
 
     EXPLICIT = "explicit"   # Parsed from card description ("Depends on #N", etc.)
     ASSESSOR = "assessor"   # Flagged by the assessor role's semantic analysis
+    COMMENT = "comment"     # Parsed from an issue comment (same syntax as EXPLICIT)
+    NATIVE_RELATIONSHIP = "native_relationship"  # GitHub's native blocked-by relationship
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,12 @@ class CardDependency:
     blocker_issue_number: int     # GitHub issue number the card depends on
     source: DependencySource = DependencySource.EXPLICIT
     status: DependencyStatus = DependencyStatus.PENDING
+    # Repository slug the blocker number lives in.  Empty means the
+    # dependent card's own repo (bare #N references are repo-local).
+    # Non-empty only for native blocked-by edges that point at a
+    # different repository — issue numbers are repo-local, so those
+    # edges must never merge with a same-numbered local edge.
+    blocker_repo: str = ""
 
 
 @dataclass
