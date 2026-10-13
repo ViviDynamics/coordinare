@@ -140,8 +140,9 @@ Full detail in **[05 — Configuration Compositions](05-configuration.md)**.
   in-memory + on-disk state (`coordinare.state.json`) so it survives restarts and reconciles
   against the live board.
 - **Performers are containers** — built from `coordinare-performer:{base,full,extra}` images.
-  `ephemeral` performers are spun up per job and torn down; `subprocess`/`persistent` variants
-  exist too. The chosen harness's CLI must be present in the image (`BACKEND` env selects it).
+  `ephemeral` performers are spun up per job and torn down; `persistent` ones stay up. A
+  `subprocess` variant also exists for development: it runs the performer as a child of the
+  daemon on the daemon's host with no isolation, and the daemon warns about it at startup. The chosen harness's CLI must be present in the image (`BACKEND` env selects it).
 - **Env-cache on the host** — `~/.coordinare/env-caches/<symphony>/` is bind-mounted into
   performers at `/devenv` (rw for bootstrap, ro for everyone else).
 

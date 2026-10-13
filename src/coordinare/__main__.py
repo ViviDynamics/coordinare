@@ -417,6 +417,32 @@ def _build_lifecycle_sequence(config: ProjectConfiguration) -> list[str]:
     raise ValueError(msg)
 
 
+# Holds one marker once the #108 warning has been logged for this process.
+_subprocess_isolation_warned: set[str] = set()
+
+
+def _warn_subprocess_transport_once() -> None:
+    """#108: the subprocess transport has no process boundary. Say so once.
+
+    The performer runs as a child of the daemon, on the daemon's host, in the
+    daemon's own clone of the target repository. That is fine for a laptop
+    Quick Start and wrong for a deployment: coordinare is meant to orchestrate,
+    not to host code work. Containerized ``performer_endpoints`` (or
+    ``agent_transport: kubernetes``) put the work in its own container.
+    """
+    if _subprocess_isolation_warned:
+        return
+    _subprocess_isolation_warned.add("warned")
+    logger.warning(
+        "transport.subprocess_no_isolation",
+        detail=(
+            "performers run as child processes of the daemon, in the daemon's clone of the "
+            "repository; development and single-host use only"
+        ),
+        remedy="configure performer_endpoints (containers) or agent_transport: kubernetes",
+    )
+
+
 def _build_transport_for_role(
     role_config: object,
     config: ProjectConfiguration,
@@ -445,6 +471,7 @@ def _build_transport_for_role(
                     "subprocess transport requires an executable — set agent_executable "
                     "in config.yaml or role_config.executable",
                 )
+            _warn_subprocess_transport_once()
             return SubprocessTransport(
                 executable, timeout, config=config, github_token=github_token,
             )
@@ -816,6 +843,7 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
     )
     match config.agent_transport:
         case "subprocess":
+            _warn_subprocess_transport_once()
             return SubprocessTransport(
                 config.agent_executable,
                 config.transport_timeout_seconds,
