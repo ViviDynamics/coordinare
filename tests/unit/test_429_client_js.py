@@ -59,7 +59,12 @@ def _extract_detail_js() -> str:
     stubs = "var STALE_THRESHOLD_MS = 30 * 60 * 1000;"
     # 121: the detail renderer prices the card through the shared estimate.
     cost_helpers = []
-    for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "costHtml"):
+    # 122: and shows a pending state while a stage runs with no usage yet.
+    pending_note = re.search(r"var USAGE_PENDING_NOTE = .*?;", performers)
+    if pending_note is None:
+        raise AssertionError("USAGE_PENDING_NOTE is no longer in performers.js")
+    cost_helpers.append(pending_note.group(0))
+    for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "isStageRunning", "costHtml"):
         helper = re.search(rf"function {name}\(.*?\n\}}", performers, re.DOTALL)
         if helper is None:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")

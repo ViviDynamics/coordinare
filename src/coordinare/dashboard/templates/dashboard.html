@@ -994,8 +994,11 @@ function renderState(s) {
     if (fallbackTokens == null && tokenSource !== s) fallbackTokens = derivePerformerTokenTotal(s);
     if (fallbackTokens != null) cardTokensTotal = fallbackTokens;
   }
-  document.getElementById('card-tokens-total').textContent =
-    cardTokensTotal.toLocaleString();
+  // 122: while a stage runs with nothing reported yet, show pending, not 0.
+  var tokenView = tokenReadout(cardTokensTotal, !!activeSess);
+  var tokensEl = document.getElementById('card-tokens-total');
+  tokensEl.textContent = tokenView.text;
+  tokensEl.title = tokenView.title;
   // 121: cost reads the same source as the tokens beside it, and falls back to
   // the displayed token count when the daemon has not priced the session yet.
   var costSource = tokenSource;
@@ -1004,8 +1007,8 @@ function renderState(s) {
   }
   var costEstimate = estimateCost(costSource, s);
   var costEl = document.getElementById('card-cost-estimate');
-  costEl.textContent = '$' + costEstimate.value.toFixed(2);
-  costEl.title = costEstimate.basis;
+  costEl.textContent = tokenView.pending ? '—' : '$' + costEstimate.value.toFixed(2);
+  costEl.title = tokenView.pending ? tokenView.title : costEstimate.basis;
 
   // Agent session
   var agentEl = document.getElementById('agent-session');

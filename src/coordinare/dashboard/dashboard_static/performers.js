@@ -138,8 +138,30 @@ function estimateCost(sess, s) {
   return { value: isFinite(reported) ? reported : 0, basis: basis };
 }
 
+// 122: a stage that is running has usage the backend has not reported yet.
+// Most backends report tokens only when the stage ends, so a literal 0 during
+// the run is false. Show an explicit pending state instead.
+var USAGE_PENDING_NOTE = 'Reported when the stage ends';
+
+function isStageRunning(sess) {
+  var phase = sess && sess.phase;
+  return phase === 'monitoring_performer' || phase === 'monitoring_agent';
+}
+
+// Returns {text, title, pending}. `tokens` is the count on screen (may be
+// null); `running` says whether a stage run is in progress for it.
+function tokenReadout(tokens, running) {
+  var n = Number(tokens);
+  if (isFinite(n) && n > 0) return { text: Math.floor(n).toLocaleString(), title: '', pending: false };
+  if (running) return { text: '—', title: USAGE_PENDING_NOTE, pending: true };
+  return { text: '0', title: '', pending: false };
+}
+
 function costHtml(sess, s, digits) {
   var est = estimateCost(sess, s);
+  if (!(est.value > 0) && isStageRunning(sess)) {
+    return '<span title="' + esc(USAGE_PENDING_NOTE) + '">—</span>';
+  }
   return '<span title="' + esc(est.basis) + '">$' + est.value.toFixed(digits) + '</span>';
 }
 
@@ -607,15 +629,18 @@ function renderPerformersPage(s) {
     : 'No session stats available yet.';
   var metrics = sel.performer_metrics || {};
   var tokenTotal = derivePerformerTokenTotal(sel);
+  // 122: never a bare 0 while the stage is still running.
+  var tokenView = tokenReadout(tokenTotal, isStageRunning(sel));
+  var tokenText = esc(tokenView.text) + (tokenView.pending ? ' (' + esc(USAGE_PENDING_NOTE.toLowerCase()) + ')' : '');
   var metricsLine = (metrics && metrics.pid != null)
     ? (
       'PID ' + String(metrics.pid) +
       ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : '—') +
       ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
-      ' · Tokens ' + esc(tokenTotal != null ? tokenTotal.toLocaleString() : '—')
+      ' · Tokens ' + tokenText
     )
-    : (tokenTotal != null
-        ? 'Tokens ' + esc(tokenTotal.toLocaleString()) + ' · no process metrics (containerised performer)'
+    : (tokenTotal != null || tokenView.pending
+        ? 'Tokens ' + tokenText + ' · no process metrics (containerised performer)'
         : 'No live metrics available yet.');
   var events = Array.isArray(sel.performer_events) ? sel.performer_events.slice(-12) : [];
   var eventsHtml = events.length
