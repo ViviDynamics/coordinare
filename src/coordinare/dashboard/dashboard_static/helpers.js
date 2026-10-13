@@ -35,6 +35,66 @@ function humanPhase(phase) {
   return esc(vocabularyLabel(phase));
 }
 
+// 137: a stage says what is happening ("Implement"), an agent says who does it
+// ("Implementer"). Several codes are both (security, qa), with different
+// labels, so each is looked up by kind and never through humanPhase.
+function vocabularyKindLabel(kind, code) {
+  var key = String(code || '');
+  var v = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY) || {};
+  var known = v[kind] || {};
+  return Object.prototype.hasOwnProperty.call(known, key) ? known[key] : key;
+}
+
+function stageLabel(stage) {
+  return esc(vocabularyKindLabel('stage_labels', stage));
+}
+
+function agentLabel(role) {
+  return esc(vocabularyKindLabel('agent_labels', role));
+}
+
+// The agent code that does a stage, or '' when the stage has none.
+function agentForStage(stage) {
+  var key = String(stage || '');
+  var v = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY) || {};
+  var map = v.stage_agent || {};
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : '';
+}
+
+// "Implement · Implementer": a stage shown with the agent that does it.
+function stageAgentLabel(stage) {
+  var agent = agentForStage(stage);
+  var known = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY && COORDINARE_VOCABULARY.stage_labels) || {};
+  if (!agent || !Object.prototype.hasOwnProperty.call(known, String(stage || ''))) return stageLabel(stage);
+  return stageLabel(stage) + ' · ' + agentLabel(agent);
+}
+
+// 137: the Personas page says which stage each agent serves.
+function personaStageNote(role) {
+  var v = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY) || {};
+  var map = v.stage_agent || {};
+  for (var stage in map) {
+    if (Object.prototype.hasOwnProperty.call(map, stage) && map[stage] === String(role || '')) {
+      return ' <span class="muted" style="font-weight:normal">· ' + stageLabel(stage) + ' stage</span>';
+    }
+  }
+  return ' <span class="muted" style="font-weight:normal">· no pipeline stage</span>';
+}
+
+// A role code may be written as an agent ("implementer") or as the stage it
+// serves ("implementing"); show the pair either way.
+function roleOrStageLabel(code) {
+  var key = String(code || '');
+  var v = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY) || {};
+  var stages = v.stage_labels || {};
+  if (Object.prototype.hasOwnProperty.call(stages, key)) return stageAgentLabel(key);
+  var map = v.stage_agent || {};
+  for (var stage in map) {
+    if (Object.prototype.hasOwnProperty.call(map, stage) && map[stage] === key) return stageAgentLabel(stage);
+  }
+  return agentLabel(key);
+}
+
 // 136: the Glossary page, rendered from the same data.
 function renderGlossaryPage() {
   var el = document.getElementById('glossary-section');

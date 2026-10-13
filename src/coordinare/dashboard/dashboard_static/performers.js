@@ -49,9 +49,9 @@ function utilizationRowHtml(r) {
   var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
   var idle = Math.max(0, max - active);
   var queuedHtml = queued > 0
-    ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + esc(r.role) + ' slot">· ' + queued + ' queued</span>'
+    ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + roleOrStageLabel(r.role) + ' slot">· ' + queued + ' queued</span>'
     : '';
-  return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + active + ' / ' + idle + ' / ' + max + queuedHtml + '</td></tr>';
+  return '<tr><td>' + roleOrStageLabel(r.role) + '</td><td>' + bar + ' ' + active + ' / ' + idle + ' / ' + max + queuedHtml + '</td></tr>';
 }
 
 // 124: users see the issue number, never the raw ProjectV2 item id. The node
@@ -174,7 +174,7 @@ function costHtml(sess, s, digits) {
 // ordering, so a per-card position would be invented.
 function queuedPhaseLabel(sess) {
   if (!sess || sess.phase !== 'dispatching' || !sess.slot_queued_since) return null;
-  return 'Queued for ' + (sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : 'performer');
+  return 'Queued for ' + (sess.performer_stage ? (agentLabel(agentForStage(sess.performer_stage)) || stageLabel(sess.performer_stage)) : 'performer');
 }
 
 // in-flight work the coordinare is reasoning about.
@@ -334,7 +334,7 @@ function renderActiveWorkPanels(s) {
       var queuedLabel = queuedPhaseLabel(sess);
       var phaseLabel = skip && skip.reason === 'pipeline_capacity'
         ? 'Queued — issue limit reached' : (queuedLabel || formatPhaseLabel(sess.phase || ''));
-      var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '';
+      var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '';
       // Queued wait is measured from the queued stamp; an actively
       // dispatching card measures from when its dispatch began.
       var waitSource = queuedLabel ? sess.slot_queued_since : sess.agent_dispatch_at;
@@ -494,7 +494,7 @@ function renderActivePerformers(s) {
   section.style.display = '';
   var html = '';
   activeSessions.forEach(function(sess) {
-    var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '—';
+    var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '—';
     var title = sess.card_title || sess.card_id || '—';
     var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
     var phaseLabel = formatPhaseLabel(sess.phase || 'active');
@@ -580,7 +580,7 @@ function renderPerformersPage(s) {
     var utilStr = activeVal + ' / ' + idleVal + ' / ' + maxVal;
     var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">(+' + r.queued + ' queued)</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
-      '<td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
+      '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
   }).join('');
 
   tbody.querySelectorAll('tr[data-role]').forEach(function(row) {
@@ -681,7 +681,7 @@ function renderPerformersPage(s) {
     : '';
 
   detailEl.innerHTML =
-    '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
+    '<div><strong>' + roleOrStageLabel(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">Active / Idle / Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(Math.max(0, (row.max != null ? row.max : 0) - (row.active != null ? row.active : 0))) + ' / ' + String(row.max != null ? row.max : 0) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +

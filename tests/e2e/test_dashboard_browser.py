@@ -596,7 +596,7 @@ def test_active_performer_tiles_show_on_home(
     )
 
     expect(page.locator("#active-performers")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#active-performer-tiles")).to_contain_text("Implementing", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles")).to_contain_text("Implement · Implementer", timeout=_WAIT_LIVE)
     expect(page.locator("#active-performer-tiles")).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
 
 
@@ -851,8 +851,8 @@ def test_performers_page_shows_role_table(
 
     page.locator("#navbar a[href='/performers']").click()
     expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#performers-page")).to_contain_text("implementing", timeout=_WAIT_LIVE)
-    expect(page.locator("#performers-page")).to_contain_text("reviewing", timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page")).to_contain_text("Implement · Implementer", timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page")).to_contain_text("Review · Reviewer", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -1088,7 +1088,7 @@ def test_personas_page_loads_editor(page: Page, live_server_url: str) -> None:
     )
     page.goto(f"{live_server_url}/personas")
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#personas-page-section")).to_contain_text("implementer", timeout=2000)
+    expect(page.locator("#personas-page-section")).to_contain_text("Implementer", timeout=2000)
     expect(page.locator("#personas-page-section textarea")).to_contain_text(
         "Write tests first.", timeout=2000,
     )
@@ -1284,7 +1284,7 @@ def test_personas_page_save_button_exists(page: Page, live_server_url: str) -> N
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
     # Save button uses class persona-save-btn (no id)
     expect(page.locator("button.persona-save-btn")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#personas-page-section")).to_contain_text("implementer", timeout=_WAIT_LIVE)
+    expect(page.locator("#personas-page-section")).to_contain_text("Implementer", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -2099,7 +2099,7 @@ def test_active_performers_updates_when_one_card_kicked_back_to_todo(
 
     # Surviving session must render with its new stage.
     expect(tiles).to_contain_text("Add keyboard nav", timeout=_WAIT_LIVE)
-    expect(tiles).to_contain_text("Reviewing", timeout=_WAIT_LIVE)
+    expect(tiles).to_contain_text("Review · Reviewer", timeout=_WAIT_LIVE)
     # Removed session must NOT linger.
     expect(tiles).not_to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
     # Stale stage from the prior snapshot must not bleed through.

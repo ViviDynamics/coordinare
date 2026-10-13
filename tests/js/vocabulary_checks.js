@@ -32,9 +32,8 @@ eval(src);
 
 // Labels come from the glossary, for every kind of code.
 check("conductor phase", humanPhase("monitoring_performer"), "Monitoring Performer");
-check("card stage", humanPhase("closing_review"), "Closing Review");
-check("agent role", humanPhase("tech_writer"), "Tech Writer");
-check("the alias reads the same glossary", formatPhaseLabel("implementing"), "Implementing");
+check("check outcome", humanPhase("success"), "success");
+check("the alias reads the same glossary", formatPhaseLabel("monitoring_pr"), "Monitoring Pr");
 
 // Every label the page needs is in the data, not derived.
 var labels = COORDINARE_VOCABULARY.labels;
@@ -52,7 +51,7 @@ check("toString is not a label", humanPhase("toString"), "toString");
 (function() {
   var saved = COORDINARE_VOCABULARY;
   COORDINARE_VOCABULARY = undefined;
-  check("no glossary loaded shows the raw code", humanPhase("implementing"), "implementing");
+  check("no glossary loaded shows the raw code", humanPhase("monitoring_pr"), "monitoring_pr");
   COORDINARE_VOCABULARY = saved;
 })();
 
