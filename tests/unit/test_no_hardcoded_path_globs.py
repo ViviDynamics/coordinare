@@ -33,9 +33,8 @@ PATHCLASS_HINTS = ("*.md", "*.py", "*.ts", "*.tsx", "*.yml", "*.yaml", "*.json",
 
 # Files allowed to mention globs (config schema doc strings, test fixtures,
 # or the classifier prompt template that documents the wire format).
-# - utils/doc_dedup.py uses ``*.md`` to walk workspace documentation; this is a
-#   doc-dedup utility, not a path-class taxonomy.
-ALLOWLIST_SUFFIXES = ("utils/doc_dedup.py",)
+# Empty since #109 removed utils/doc_dedup.py, the one former entry.
+ALLOWLIST_SUFFIXES: tuple[str, ...] = ()
 
 
 def _iter_py_files() -> list[Path]:
