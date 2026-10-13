@@ -420,7 +420,7 @@ def test_force_poll_click_fires_post_request(page: Page, live_server_url: str) -
 
 @pytest.mark.e2e
 def test_force_poll_409_shows_cycle_already_running(page: Page, live_server_url: str) -> None:
-    """A 409 from /api/force-poll must show 'Cycle already running' in the message span."""
+    """A 409 from /api/force-poll must show 'A check is already running' in the message span."""
     page.route(
         "**/api/force-poll",
         lambda route: route.fulfill(status=409, content_type="application/json", body='{"status":"cycle_in_progress"}'),

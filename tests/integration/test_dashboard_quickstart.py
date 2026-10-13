@@ -228,7 +228,7 @@ def test_s2_active_card_snapshot_fields() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["phase"] == "monitoring_agent"
-    assert snap["phase_label"] == "Monitoring Agent"
+    assert snap["phase_label"] == "Watching an agent"
     assert snap["active_card_title"] == "Implement API Timeout"
     assert snap["active_card_column"] == "In Progress"
     assert snap["pr_url"] == "https://github.com/org/repo/pull/42"
