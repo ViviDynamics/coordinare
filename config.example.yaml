@@ -675,10 +675,12 @@ max_feedback_cycles: 5
 # Set 0 to disable.
 max_closed_pr_attempts_per_issue: 3
 
-# How coordinare handles a branch that collides with an existing remote branch.
-#   delete — delete the existing branch and recreate (default)
-#   suffix — append a short unique suffix to the new branch name
-branch_collision_strategy: "delete"   # "delete" | "suffix"
+# How coordinare handles a new card whose branch name collides with an
+# existing remote branch that has no open PR.
+#   suffix: leave the existing branch alone and append -2, -3, ... (default)
+#   delete: delete the existing branch and reuse the name. Explicit opt-in:
+#           this is the daemon removing a ref, and any commits only on it.
+branch_collision_strategy: "suffix"   # "suffix" | "delete"
 
 # Whether to delete stale feature branches after merging.
 stale_branch_cleanup: true
