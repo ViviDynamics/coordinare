@@ -31,6 +31,33 @@ if TYPE_CHECKING:
 SESSION_EVENT_LIMIT = 40
 
 
+def _cost_rate(config: Any) -> float:
+    """121: dollars per million tokens in effect (config, else the model default)."""
+    from coordinare.config import CostTrackingConfig
+
+    rate = getattr(getattr(config, "cost_tracking", None), "cost_per_million_tokens", None)
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate >= 0:
+        return float(rate)
+    return float(CostTrackingConfig().cost_per_million_tokens)
+
+
+def _daemon_started_at_iso() -> str | None:
+    """#119: the daemon's start time as an ISO-8601 string the browser can parse.
+
+    The old read went through ``metrics.build_info.labels()``, which raises for
+    a label-less ``Info`` metric, so the dashboard always showed a dash. The
+    daemon records its own start (``get_daemon_started_at``) in a K8s-label-safe
+    spelling (``YYYYMMDDTHHMMSSZ``); convert that.
+    """
+    from coordinare.daemon import get_daemon_started_at
+
+    try:
+        started = datetime.strptime(get_daemon_started_at(), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
+    return started.isoformat()
+
+
 @dataclass
 class _PerfTelemetry:
     """Live performer telemetry threaded through the snapshot builders."""
@@ -338,15 +365,7 @@ class DashboardStore:
         except Exception:
             cycles_completed = 0
 
-        # daemon start time stored in build_info label at startup
-        try:
-            build_info = metrics.build_info.labels()._value.get()  # type: ignore[call-overload]
-            started_at: str | None = (
-                build_info.get("started_at") if isinstance(build_info, dict) else None
-            )
-        except Exception:
-            started_at = None
-        return cycles_completed, started_at
+        return cycles_completed, _daemon_started_at_iso()
 
     @staticmethod
     def _performer_state(daemon: CoordinareDaemon) -> _PerfTelemetry:
@@ -664,6 +683,10 @@ class DashboardStore:
             "last_cycle_duration_seconds": self.last_cycle_duration,
             "consecutive_error_count": error_count,
             "daemon_start_time": started_at,
+            # 121: the flat rate the cost estimate uses, so the browser can name
+            # the pricing basis and estimate for a session that reports tokens
+            # before its own estimate has been computed.
+            "cost_per_million_tokens": _cost_rate(daemon.state.get("config")),
             "activity_run_id": self.activity_log.run_id,
             "cycle_history": list(self.history),
             "cycle_active": daemon._cycle_active,

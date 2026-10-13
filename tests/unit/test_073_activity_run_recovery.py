@@ -35,7 +35,8 @@ def test_activity_run_identity_survives_reconnect_without_metrics() -> None:
     assert isinstance(identity, str) and identity, "Snapshot must identify the actual activity producer run"
     assert _snapshot(first)["activity_run_id"] == identity
     assert _snapshot(second)["activity_run_id"] != identity
-    assert original["daemon_start_time"] is None
+    # 119: the start time no longer depends on a metrics registry being passed.
+    assert original["daemon_start_time"]
 
 
 @pytest.mark.parametrize("case", ["restart", "same", "filter", "quiet", "legacy"])
