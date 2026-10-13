@@ -1399,6 +1399,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         workspace_info, terminal = await _setup_workspace(
             state, ctx["card"], ctx["card_id"], ctx["performer_stage"],
             workspace_manager, ctx["board_provider"], _release_slot_on_error,
+            service=service,
         )
         if terminal is not None:
             return terminal
@@ -1831,10 +1832,68 @@ async def _check_service_health(state: CoordinareState, service: Any, performer_
     return None
 
 
-async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str, workspace_manager: Any, board_provider: Any, _release_slot_on_error: Callable[[], None]) -> tuple[Any | None, CoordinareState | None]:
+# How many service wrappers _performer_clones_own_workspace looks through.
+_SERVICE_WRAPPER_DEPTH = 5
+
+
+def _performer_clones_own_workspace(service: Any) -> bool:
+    """107: True when the dispatch target clones the repository itself.
+
+    Looks through service wrappers (``ResilientAgentService`` keeps the real
+    service on ``_inner``). Only an explicit ``True`` counts: an unknown
+    service keeps the daemon clone it has always had.
+    """
+    seen = 0
+    while service is not None and seen < _SERVICE_WRAPPER_DEPTH:
+        marker = getattr(service, "clones_own_workspace", None)
+        if marker is True:
+            return True
+        service = getattr(service, "__dict__", {}).get("_inner")
+        seen += 1
+    return False
+
+
+def _daemon_clone_needed(state: CoordinareState, performer_stage: str, service: Any) -> bool:
+    """107: does anything in the daemon still need a local clone for this dispatch?
+
+    Coordinare is an orchestrator; it clones the target repository only when
+    something on its side cannot work without the tree:
+
+    - the performer does not clone for itself (the subprocess transport works
+      in the daemon's clone);
+    - a security role on the prose path: the 083 dispatch-time scanner floor
+      runs semgrep/bandit over the daemon's clone. ``workflow: security`` runs
+      the scanner in the performer instead and needs no daemon clone.
+    """
+    if not _performer_clones_own_workspace(service):
+        return True
+    role = _persona_role_for_stage(performer_stage)
+    if role == "security" and not _role_runs_workflow(state, role, "security"):
+        logger.warning(
+            "security_floor.daemon_side_scan",
+            card_id=str((state.get("current_card") or {}).get("id", "")),
+            remedy="set performers.security.workflow: security to scan in the performer",
+        )
+        return True
+    return False
+
+
+async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str, workspace_manager: Any, board_provider: Any, _release_slot_on_error: Callable[[], None], service: Any = None) -> tuple[Any | None, CoordinareState | None]:
     """Prepares the workspace; returns (workspace_info, terminal_state)."""
+    import inspect
+
     try:
-        workspace_info = await workspace_manager.prepare(card)
+        # 107: skip the daemon-side clone when the performer clones for itself
+        # and nothing here needs the tree. The keyword is passed only to
+        # managers that accept it (protocol boundary; test doubles may not).
+        prepare_kwargs: dict[str, Any] = {}
+        if (
+            "local_clone" in inspect.signature(workspace_manager.prepare).parameters
+            and not _daemon_clone_needed(state, performer_stage, service)
+        ):
+            prepare_kwargs["local_clone"] = False
+            logger.info("workspace.daemon_clone_skipped", card_id=card_id, performer_stage=performer_stage)
+        workspace_info = await workspace_manager.prepare(card, **prepare_kwargs)
         state["workspace_path"] = workspace_info.path
         state["workspace_branch"] = workspace_info.branch
     except WorkspaceSetupError as exc:
