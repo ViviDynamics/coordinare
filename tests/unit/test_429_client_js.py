@@ -63,6 +63,8 @@ def _extract_detail_js() -> str:
         raise AssertionError("USAGE_PENDING_NOTE is no longer in performers.js")
     cost_helpers.append(pending_note.group(0))
     cost_helpers.append(shipped_function("helpers", "fmtCost"))
+    # 145: the detail renderer offers the card action menu.
+    cost_helpers.append(_DASHBOARD_JS_SOURCES["actions"])
     for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "isStageRunning", "costHtml"):
         helper = re.search(rf"function {name}\(.*?\n\}}", performers, re.DOTALL)
         if helper is None:

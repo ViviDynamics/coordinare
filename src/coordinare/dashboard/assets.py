@@ -26,7 +26,7 @@ _DASHBOARD_BRAND_ETAGS = {
 
 _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf-8")
 
-_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "workflow", "account")
+_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "actions", "workflow", "account")
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from
 # disk, and loads first so every other script can look labels up in it.
