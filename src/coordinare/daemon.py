@@ -1603,9 +1603,27 @@ def _compute_session_eligibilities(
     )
     state["_pipeline_selected"] = selected
     for cid, eligibility in eligibilities.items():
-        if eligibility.eligible and cid not in selected:
+        # #102: a card parked in monitoring_pr launches no performer, so the
+        # budget only decides whether it may dispatch again. It is still ticked
+        # every cycle so its merge evaluation (the closer) runs; otherwise a
+        # running performer that holds the reservation starves it indefinitely.
+        if eligibility.eligible and cid not in selected and active_sessions[cid].get("phase") != "monitoring_pr":
             eligibilities[cid] = SessionEligibility(
                 card_id=cid, eligible=False, reason="pipeline_capacity",
+            )
+    for cid, session in active_sessions.items():
+        if session.get("phase") != "monitoring_pr" or not eligibilities[cid].eligible:
+            continue
+        pr_number = (session.get("current_card") or {}).get("pr_number")
+        if cid in selected:
+            logger.info("session.awaiting_review", card_id=cid, pr_number=pr_number)
+        else:
+            logger.warning(
+                "session.review_starved_by_capacity",
+                card_id=cid,
+                pr_number=pr_number,
+                max_concurrent_cards=max_cards,
+                reserved_by=sorted(selected),
             )
 
     # Record skip reasons for ineligible sessions.

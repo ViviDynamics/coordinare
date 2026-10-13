@@ -748,10 +748,20 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     _sessions = result.get("active_sessions") or {}
     _config = result.get("config")
     _raw_max = getattr(_config, "max_concurrent_cards", 1) if _config else 1
+    # #102: active_session_count counts every tracked session, including cards
+    # parked in review. The cap is enforced on reserved_pipelines (the admitted
+    # set), so report both to keep "over max" from reading as a cap violation.
+    _reserved = result.get("_pipeline_selected")
+    _parked = [
+        _cid for _cid, _s in (_sessions.items() if isinstance(_sessions, dict) else [])
+        if isinstance(_s, dict) and _s.get("phase") == "monitoring_pr"
+    ]
     logger.info(
         "check_board.unified_pickup",
         active_card_id=result.get("active_card_id"),
         active_session_count=len(_sessions) if isinstance(_sessions, dict) else 0,
+        parked_review_sessions=len(_parked),
+        reserved_pipelines=len(_reserved) if _reserved is not None else None,
         phase=result.get("phase"),
         max_concurrent_cards=_raw_max if isinstance(_raw_max, int) else 1,
     )
