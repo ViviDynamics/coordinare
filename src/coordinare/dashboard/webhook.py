@@ -10,6 +10,8 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.services.system_health import SYSTEM_HEALTH
+
 _log = structlog.get_logger(__name__)
 
 
@@ -49,12 +51,15 @@ def register_webhook_route(
         body = await request.body()
         sig_header = request.headers.get("X-Hub-Signature-256")
         if not verify_github_signature(body, secret, sig_header):
+            # 151: a rejected delivery is recorded too, so the card can say deliveries are failing.
+            SYSTEM_HEALTH.record_webhook(accepted=False)
             _log.warning(
                 "webhook_signature_invalid",
                 path=path,
                 sig_header=sig_header,
             )
             return Response(content='{"error":"invalid signature"}', status_code=401, media_type="application/json")
+        SYSTEM_HEALTH.record_webhook(accepted=True)
         trigger.set()
         _log.info("webhook_received", path=path)
         return JSONResponse({"status": "ok"})

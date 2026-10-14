@@ -148,6 +148,8 @@ var SNAPSHOT_FIELD_SCOPE = {
   active_sessions: 'scoped',
   subsystems: 'shared',
   overall_health: 'shared',
+  // 151: the System health card's rows. The daemon's, not a symphony's, so every scope shows them.
+  system_health: 'shared',
   project_name: 'shared',
   project_board_url: 'shared',
   cycles_completed: 'derived',
