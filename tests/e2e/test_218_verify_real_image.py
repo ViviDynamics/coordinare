@@ -13,6 +13,7 @@ import asyncio
 import os
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -50,10 +51,11 @@ def _svc() -> Any:
     return SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image=IMAGE))
 
 
-def _verify(state: dict[str, Any], cache: Path) -> tuple[bool | None, str]:
-    return asyncio.run(
-        verify_env_cache_clean(state, "probe218", _svc(), performer_mounts=[cache.parent]),
-    )
+def _run(coro: Any) -> Any:
+    """Run a coroutine on its own loop in a worker thread. The e2e session may leave a loop running
+    on this thread, so asyncio.run here would fail with 'cannot be called from a running event loop'."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _plant_fake_ruby_deb(debs: Path) -> None:
@@ -72,12 +74,9 @@ def _plant_fake_ruby_deb(debs: Path) -> None:
         check=True,
         timeout=300,
     )
-    # The deb is written by the container as root; the test owns the directory, so it is cleaned
-    # with the same image, not with the host.
 
 
-@pytest.mark.asyncio
-async def test_planted_deb_with_fake_ruby_does_not_pass_the_verify(tmp_path: Path) -> None:
+def test_planted_deb_with_fake_ruby_does_not_pass_the_verify(tmp_path: Path) -> None:
     """Block 1: the image profile (BASH_ENV) would extract debs/*.deb to /usr/bin before the
     daemon's script runs. The verify must not pass on a fake ruby the performer planted."""
     cache = tmp_path / "probe218"
@@ -85,15 +84,12 @@ async def test_planted_deb_with_fake_ruby_does_not_pass_the_verify(tmp_path: Pat
     state = _state(cache)
     _plant_fake_ruby_deb(cache / "debs")
 
-    passed, detail = await verify_env_cache_clean(
-        state, "probe218", _svc(), performer_mounts=[tmp_path],
-    )
+    passed, detail = _run(verify_env_cache_clean(state, "probe218", _svc(), performer_mounts=[tmp_path]))
 
     assert passed is False, detail
 
 
-@pytest.mark.asyncio
-async def test_activate_swap_during_the_verify_never_changes_the_verdict(tmp_path: Path) -> None:
+def test_activate_swap_during_the_verify_never_changes_the_verdict(tmp_path: Path) -> None:
     """Block 2: a writer that flips activate.sh while docker runs must not change the verdict.
     With no toolchain installed, every run must fail; the swapped-in activate.sh is never read."""
     cache = tmp_path / "probe218"
@@ -107,13 +103,19 @@ async def test_activate_swap_during_the_verify_never_changes_the_verdict(tmp_pat
             (cache / "activate.sh").write_text(BAD_ACTIVATE)
             (cache / "activate.sh").write_text(good)
 
+    async def five() -> list[bool | None]:
+        verdicts: list[bool | None] = []
+        for _ in range(5):
+            verdict, _detail = await verify_env_cache_clean(
+                state, "probe218", _svc(), performer_mounts=[tmp_path],
+            )
+            verdicts.append(verdict)
+        return verdicts
+
     writer = threading.Thread(target=toggle, daemon=True)
     writer.start()
     try:
-        verdicts = [
-            (await verify_env_cache_clean(state, "probe218", _svc(), performer_mounts=[tmp_path]))[0]
-            for _ in range(5)
-        ]
+        verdicts = _run(five())
     finally:
         stop.set()
         writer.join(timeout=10)
