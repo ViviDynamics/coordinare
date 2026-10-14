@@ -497,8 +497,11 @@ function updateNavActive(path) {
   setActiveNav(path);
   var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
-  document.getElementById('workspace-title').textContent = activeLink ? activeLink.textContent.trim() : 'Dashboard';
-  document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : 'Coordinare');
+  // 153: the label, not the link's text: a needs-attention badge sits in the link.
+  var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
+  document.getElementById('workspace-title').textContent = activeLabel ? activeLabel.textContent.trim() : 'Dashboard';
+  // 153: setPageTitle keeps the "(N)" attention prefix across navigation.
+  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : 'Coordinare'));
 }
 
 function renderSymphoniesPage(s) {
@@ -1412,6 +1415,8 @@ function connectEventStream() {
       _lastState = JSON.parse(e.data);
       // state_update precedes backfill on every stream connection.
       afSyncRun(_lastState.activity_run_id);
+      // 153: before the render, so the title and favicon follow the data even if renderState throws.
+      updateAttention(_lastState);
       renderState(_lastState);
       // 049: re-render current page with new state
       var path = location.pathname;
