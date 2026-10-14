@@ -280,6 +280,14 @@ jobs:
       - name: Install Playwright browsers
         run: uv run --extra dev playwright install chromium firefox
 
+      - name: Install coordinare and performer packages
+        # The routing write path validates against performer.proxy.routing. Without the performer
+        # package every real routing save is refused, so the E2E job installs it as the Tests job does.
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install -e "agent/performer[dev]"
+
       - name: Run E2E tests
         # Actions mounts /github/home with the host runner UID. Firefox refuses
         # to run as container root with that foreign-owned home directory.

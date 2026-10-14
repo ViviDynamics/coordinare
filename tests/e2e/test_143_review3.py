@@ -57,6 +57,11 @@ def real_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
         {**raw, "github_token": "ghp_fixturetoken"}))
     daemon = MagicMock()
     daemon.state = {"coordinare_config": validated, "config_version": 1}
+    # The same daemon surface the shared E2E mock sets. The live-update stream reads these, and an
+    # unset one is a MagicMock that cannot be serialised into the snapshot.
+    daemon.state_store = MagicMock()
+    daemon.state_store.last_snapshot = None
+    daemon._cycle_active = False
     daemon.running = True
     app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path)
     port = _free_port()
