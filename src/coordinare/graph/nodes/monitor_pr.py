@@ -108,6 +108,81 @@ def _latest_reviews_per_author(
     ]
 
 
+_VERDICT_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+
+
+def _withdrawn_approvals(reviews: list[dict[str, object]]) -> set[int]:
+    """#96: approvals their own author has since replaced with another verdict.
+
+    This reads *every* review on the PR, including ones already relayed. The
+    batch the closer acts on drops relayed reviews, so a change request that
+    was handed to the implementer would otherwise vanish and leave the same
+    reviewer's older approval looking like their last word. Only verdicts
+    count: a later plain comment does not withdraw an approval here.
+    """
+    verdicts = [r for r in reviews if str(r.get("state", "")) in _VERDICT_STATES]
+    standing = set(map(id, _latest_reviews_per_author(verdicts)))
+    return {id(r) for r in verdicts if r.get("state") == "APPROVED" and id(r) not in standing}
+
+
+def _approval_is_current(
+    review: dict[str, object], cutoff: datetime | None, head_oid: str,
+) -> bool:
+    """#96: does this approval still stand for what is on the PR now?
+
+    An approval names the commit it was given on. When both that commit and
+    the PR's current head are known, the approval is current exactly when they
+    match: the reviewer approved the code that would be merged.
+
+    The older rule, "submitted after the lifecycle last completed", is kept
+    only as the fallback for a service that reports neither. Used on its own
+    it wedged the closer: a human approved, the daemon's closing review then
+    ran and finished *after* the approval without pushing anything, and the
+    approval was discarded as predating the lifecycle. The card waited for a
+    second approval of the same commit.
+    """
+    commit = str(review.get("commit_oid") or "").strip()
+    if commit and head_oid:
+        return commit == head_oid
+    if cutoff is None:
+        return True
+    submitted = _parse_submitted_at(review)
+    return submitted is None or submitted > cutoff
+
+
+# #100: how many identical "not merging yet" decisions in a row before the
+# closer says so loudly, and how often it repeats after that. In-memory and
+# per process on purpose: it is a diagnostic, not state the card depends on.
+_WAIT_ESCALATE_AFTER = 20
+_WAIT_REPEAT_EVERY = 100
+_merge_waits: dict[str, tuple[str, int]] = {}
+
+
+def _log_merge_decision(card_id: str, outcome: str, reason: str, **observed: object) -> None:
+    """#100: every closer decision says why, with the values it saw.
+
+    ``outcome`` is ``merge``, ``relay_feedback`` or ``waiting``. A wait that
+    repeats with the same reason and the same observed values escalates to a
+    warning (``monitor_pr.merge_wait_repeated``) so a wedge is visible in the
+    log without cross-referencing GitHub.
+    """
+    logger.info("monitor_pr.merge_decision", card_id=card_id, outcome=outcome, reason=reason, **observed)
+    if outcome != "waiting":
+        _merge_waits.pop(card_id, None)
+        return
+    signature = reason + "|" + "|".join(f"{key}={observed[key]}" for key in sorted(observed))
+    previous, count = _merge_waits.get(card_id, ("", 0))
+    count = count + 1 if previous == signature else 1
+    _merge_waits[card_id] = (signature, count)
+    if count == _WAIT_ESCALATE_AFTER or (
+        count > _WAIT_ESCALATE_AFTER and (count - _WAIT_ESCALATE_AFTER) % _WAIT_REPEAT_EVERY == 0
+    ):
+        logger.warning(
+            "monitor_pr.merge_wait_repeated",
+            card_id=card_id, reason=reason, consecutive_checks=count, **observed,
+        )
+
+
 def _latest_human_change_request(
     reviews: list[dict[str, object]], human_reviewers: list[str],
 ) -> dict[str, object] | None:
@@ -555,6 +630,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     # a reviewer's own later APPROVED supersedes their earlier change request
     # and vice versa. Cross-reviewer states never supersede each other.
     effective = _latest_reviews_per_author(filtered)
+    withdrawn = _withdrawn_approvals(reviews)
 
     # Conversation requests are independent items: a later submitted approval
     # or another same-author comment must never supersede them.
@@ -577,8 +653,24 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
-        and (cutoff is None or (submitted := _parse_submitted_at(r)) is None or submitted > cutoff)
+        and id(r) not in withdrawn
+        and _approval_is_current(r, cutoff, _pr_head_oid)
     ]
+    # #100: approvals that exist but no longer stand, for the decision log.
+    stale_approvals = [
+        r
+        for r in effective
+        if r.get("author_type") == ReviewerType.HUMAN.value
+        and r.get("state") == "APPROVED"
+        and (id(r) in withdrawn or not _approval_is_current(r, cutoff, _pr_head_oid))
+    ]
+    _decision_card = str(card.get("id", ""))
+    _observed: dict[str, object] = {
+        "review_decision": _review_decision or "unknown",
+        "head": _pr_head_oid[:7],
+        "approvals": len(approvals),
+        "stale_approvals": len(stale_approvals),
+    }
     approval_review = (
         max(
             approvals,
@@ -608,6 +700,10 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             count=len(actionable),
             cutoff=cutoff.isoformat() if cutoff else None,
         )
+        _log_merge_decision(
+            _decision_card, "relay_feedback", "actionable_feedback",
+            actionable=len(actionable), **_observed,
+        )
         state["phase"] = "relay_feedback"
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
@@ -624,6 +720,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         if base_stop:
             for key, value in base_updates.items():
                 state[key] = value  # type: ignore[literal-required]
+            _log_merge_decision(_decision_card, "waiting", "base_branch_checks_failing", **_observed)
             return state
         # 510 — refuse to advance to merge while GitHub's aggregate
         # reviewDecision still says CHANGES_REQUESTED. The 064 checks gate
@@ -646,6 +743,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                 pr_url=pr_url,
                 review_decision=_review_decision,
             )
+            _log_merge_decision(_decision_card, "waiting", "changes_requested_outstanding", **_observed)
             state["phase"] = "monitoring_pr"
             # 510 (round 2): surface the stale-review state the same way the
             # no-approval branch does before parking, so an addressed stale
@@ -665,6 +763,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             except Exception as exc:
                 logger.warning("stale_review.handler_failed", error=str(exc))
             return state
+        _log_merge_decision(_decision_card, "merge", "approved", **_observed)
         state["phase"] = "merging"
     else:
         # 128: no fresh-actionable feedback and no approval. If GitHub still
@@ -685,5 +784,17 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             )
         except Exception as exc:
             logger.warning("stale_review.handler_failed", error=str(exc))
+        if approval_review is not None:
+            _wait_reason = "pr_comments_not_fully_read"
+        elif any(id(r) in withdrawn for r in stale_approvals):
+            # The reviewer who approved has since requested changes.
+            _wait_reason = "approval_withdrawn_by_reviewer"
+        elif stale_approvals:
+            # The approval was given on a commit that is no longer the head.
+            _wait_reason = "approval_predates_head"
+            _observed["approved_commit"] = str(stale_approvals[-1].get("commit_oid") or "")[:7] or "unknown"
+        else:
+            _wait_reason = "no_human_approval"
+        _log_merge_decision(_decision_card, "waiting", _wait_reason, **_observed)
         state["phase"] = "monitoring_pr"
     return state
