@@ -15,8 +15,8 @@ This module is the harness-side check. It has three jobs.
    (the commit step only commits declared paths), so they do not fail a verdict.
    Untracked files are never committed, are left on disk, and are information.
 3. A declared new-file path is checked by :func:`declared_path_refusal` before
-   anything is written. A refusal names the path and the reason, and fails the
-   verdict.
+   anything is written. A refused path is never written. The refusal is a note: it
+   is listed in the QA report with its reason and does not change the verdict.
 
 Allowlists are path-exact, not prefixes. Every git call runs with
 ``GIT_LITERAL_PATHSPECS=1``, so a path is never a pattern.
@@ -41,6 +41,15 @@ log = structlog.get_logger(__name__)
 #: Cap on paths carried in a log line or a verdict. The full set is still handled;
 #: only the report of it is bounded.
 MAX_REPORTED_PATHS = 20
+
+#: Longest text one report or log entry may carry. Model text is sanitised to the
+#: allowlist below and capped here (188 review).
+MAX_DISPLAY_CHARACTERS = 200
+NOT_A_PATH = "(not a path)"
+_ELLIPSIS = "..."
+#: The characters a declared path may use, and the only ones a report shows: ASCII
+#: letters, digits, ``. _ / -`` and space, plus non-ASCII letters and digits.
+_PATH_CHARACTER = re.compile(r"[A-Za-z0-9._/ -]")
 
 #: Source extensions a new test file may use. ``.bats`` is named by its own extension.
 TEST_SOURCE_EXTENSIONS = frozenset(
@@ -90,10 +99,48 @@ class DirtyPath:
 
 @dataclass(frozen=True)
 class Refusal:
-    """A declared path the turn may not write, and why."""
+    """A declared path the turn may not write, and why.
+
+    ``path`` and ``reason`` are the text a report or log shows. ``raw`` is the value
+    the turn declared, used only to match executed checks. ``on_disk`` is True when a
+    file already sits at the path, which the agent may have created; it stays
+    untracked and unpublished.
+    """
 
     path: str
     reason: str
+    raw: str = ""
+    on_disk: bool = False
+
+
+@dataclass(frozen=True)
+class TrackedPaths:
+    """The paths tracked at the turn's start commit, with a casefolded index built once."""
+
+    paths: frozenset[str]
+    folded: frozenset[str]
+
+    @classmethod
+    def of(cls, paths: set[str]) -> TrackedPaths:
+        return cls(frozenset(paths), frozenset(path.casefold() for path in paths))
+
+
+def allowed_path_character(char: str) -> bool:
+    return bool(_PATH_CHARACTER.fullmatch(char)) or (not char.isascii() and char.isalnum())
+
+
+def display_path(value: object) -> str:
+    """Text safe to place in a report code span or a log line, capped in length.
+
+    Anything outside the allowlist becomes ``?``. A non-string is reported as
+    ``(not a path)`` and is never converted with str().
+    """
+    if not isinstance(value, str):
+        return NOT_A_PATH
+    cleaned = "".join(char if allowed_path_character(char) else "?" for char in value)
+    if len(cleaned) <= MAX_DISPLAY_CHARACTERS:
+        return cleaned
+    return cleaned[: MAX_DISPLAY_CHARACTERS - len(_ELLIPSIS)] + _ELLIPSIS
 
 
 @dataclass(frozen=True)
@@ -288,7 +335,7 @@ async def enforce_write_scope(
                 "write_scope.committed_out_of_scope",
                 role=role,
                 count=len(committed_out),
-                paths=committed_out[:MAX_REPORTED_PATHS],
+                paths=[display_path(p) for p in committed_out[:MAX_REPORTED_PATHS]],
                 reset_to=head_at_start[:12],
             )
 
@@ -306,7 +353,7 @@ async def enforce_write_scope(
             "write_scope.restored",
             role=role,
             count=len(restored),
-            paths=restored[:MAX_REPORTED_PATHS],
+            paths=[display_path(p) for p in restored[:MAX_REPORTED_PATHS]],
         )
     if staged:
         await _unstage(stand, staged)
@@ -316,7 +363,7 @@ async def enforce_write_scope(
             role=role,
             count=len(left_out),
             staged_unstaged=len(staged),
-            paths=left_out[:MAX_REPORTED_PATHS],
+            paths=[display_path(p) for p in left_out[:MAX_REPORTED_PATHS]],
         )
     return ScopeReport(
         committed_out_of_scope=committed_out,
@@ -337,6 +384,9 @@ def _filesystem_refusal(root: Path, parts: list[str]) -> str | None:
             info = os.lstat(current)
         except FileNotFoundError:
             return None
+        except OSError:
+            # ENAMETOOLONG, or an ancestor that is a file: the path cannot exist in the clone.
+            return "path cannot be created in the clone (name too long, or an ancestor is a file)"
         if stat.S_ISLNK(info.st_mode):
             return "path crosses a symlink (an ancestor or the path itself)"
         if index == len(parts) - 1 and stat.S_ISDIR(info.st_mode):
@@ -344,7 +394,7 @@ def _filesystem_refusal(root: Path, parts: list[str]) -> str | None:
     return None
 
 
-def declared_path_refusal(path: object, *, root: Path, tracked: set[str]) -> str | None:
+def declared_path_refusal(path: object, *, root: Path, tracked: TrackedPaths) -> str | None:
     """Why a QA turn may not create *path*, or None when it may.
 
     The checks run in order and stop at the first failure, so the reason names one
@@ -371,6 +421,8 @@ def _text_refusal(path: str) -> str | None:
         return "contains a backslash"
     if (set(path) & _MAGIC_CHARACTERS) or path.startswith(":"):
         return "contains glob or magic pathspec characters"
+    if not all(allowed_path_character(char) for char in path):
+        return "contains characters outside letters, digits, . _ / - and space"
     return None
 
 
@@ -384,12 +436,26 @@ def _location_refusal(parts: list[str]) -> str | None:
     return None
 
 
-def _tracked_refusal(path: str, tracked: set[str]) -> str | None:
-    if path in tracked:
+def _tracked_refusal(path: str, tracked: TrackedPaths) -> str | None:
+    if path in tracked.paths:
         return "exists at HEAD; existing files are never overwritten"
-    if path.casefold() in {tracked_path.casefold() for tracked_path in tracked}:
+    if path.casefold() in tracked.folded:
         return "case collision with a tracked path"
     return None
+
+
+def exists_on_disk(root: Path, path: str) -> bool:
+    """True when a file or link already sits at *path* in the clone.
+
+    Only a clean relative path is looked at, so nothing outside the clone is touched.
+    """
+    parts = path.split("/")
+    if path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+        return False
+    try:
+        return os.path.lexists(root / path)
+    except (OSError, ValueError):
+        return False
 
 
 def _config_refusal(parts: list[str]) -> str | None:

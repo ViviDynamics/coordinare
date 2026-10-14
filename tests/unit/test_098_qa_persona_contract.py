@@ -23,6 +23,12 @@ def test_qa_persona_forbids_overwriting_existing_files():
     assert "including existing test modules" in qa
 
 
+def test_qa_persona_says_a_refused_declaration_is_a_note_not_a_failure():
+    qa = DEFAULT_INSTRUCTIONS["qa"]
+    assert "is not written and is listed in the QA report" in qa
+    assert "does not fail the run" in qa
+
+
 def test_qa_persona_puts_prose_in_the_report_not_in_test_files():
     qa = DEFAULT_INSTRUCTIONS["qa"]
     assert "never in a test file" in qa
