@@ -19,6 +19,10 @@ def _event(seq, **extra):
 
 def test_stream_groups_english_summary_and_live_expansion(page, live_server_url):
     page.goto(live_server_url)
+    # The first state_update starts a new run (afSyncRun) and clears the feed. Wait
+    # for that run id, so the clear cannot land after the rows are drawn and detach
+    # the summary under the test. #phase is no signal: the server renders it.
+    page.wait_for_function('() => typeof _afRunId === "string" && _afRunId.length > 0', timeout=10_000)
     page.evaluate('entries => afAppend(entries)', [_event(i) for i in range(100)])
     rows = page.locator('#activity-feed > .af-row')
     expect(rows).to_have_count(1)
@@ -163,11 +167,26 @@ def test_usage_reports_stay_with_their_stream(page, live_server_url):
     expect(rows.nth(0).locator('.af-usage summary')).to_have_text('Usage reports (2)')
     expect(rows.nth(0).locator('.af-usage p').last).to_have_text('300 tokens, <script>$0.04</script>')
     assert page.locator('#activity-feed script').count() == 0
+    # A replayed SSE backfill of the whole stream, the update included, cannot inflate the rows.
+    page.evaluate('entries => afAppend(entries)', [*events, update])
+    expect(rows).to_have_count(3)
+    expect(rows.nth(0).locator('.af-usage summary')).to_have_text('Usage reports (2)')
+    expect(rows.nth(0).locator('.af-usage p')).to_have_count(2)
+    # Focus on the usage summary survives a rebuild of its raw text by a new report.
+    # The usage summary sits inside the group, so the group must be open to take focus.
+    rows.nth(0).locator('details > summary').first.click()
+    rows.nth(0).locator('.af-usage summary').focus()
+    page.evaluate('entries => afAppend(entries)', [_usage_event(6, activity_type='cost', text='400 tokens')])
+    expect(rows.nth(0).locator('.af-usage summary')).to_be_focused()
+    expect(rows.nth(0).locator('.af-usage summary')).to_have_text('Usage reports (3)')
 
 
 def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_server_url):
     page.goto(live_server_url)
     boundaries = [
+        # A message, then its usage report: the report stays with the message it followed.
+        _usage_event(0, text='Working on it.', is_delta=True, stream_id='message'),
+        _usage_event(1, activity_type='cost', text='10 tokens'),
         _usage_event(7, activity_type='error'), _usage_event(8, activity_type='cost'),
         _usage_event(9, activity_type='blocked'), _usage_event(10, activity_type='cost'),
         _usage_event(11, activity_type='completed'), _usage_event(12, activity_type='cost'),
@@ -179,7 +198,9 @@ def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_ser
     page.evaluate('entries => afAppend(entries)', boundaries)
     rows = page.locator('#activity-feed > .af-row')
     # Each boundary starts a new row, so no usage report joins across one.
-    expect(rows).to_have_count(10)
+    # The message and its usage report share the oldest row; the other ten are boundaries.
+    expect(rows).to_have_count(11)
+    expect(rows.nth(10).locator('.af-usage summary')).to_have_text('Usage reports (1)')
     for label in ['ERROR', 'BLOCKED', 'COMPLETED']:
         expect(page.locator('#activity-feed .af-kind').filter(has_text=label)).to_have_count(1)
     page.locator('#af-filter').select_option('other')
