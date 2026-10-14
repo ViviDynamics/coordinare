@@ -67,6 +67,7 @@ class TestTestEnvRedaction:
         with structlog.testing.capture_logs() as cap_logs:
             loaded = await resolve_test_env_vars(
                 symphony_name="website",
+                performer_mounts=(),
                 test_env=TestEnvConfig(host_path=str(host_file)),
                 github_org=ORG,
                 repo=REPO,
@@ -82,6 +83,7 @@ class TestTestEnvRedaction:
         with structlog.testing.capture_logs() as cap_logs:
             loaded = await resolve_test_env_vars(
                 symphony_name="website",
+                performer_mounts=(),
                 test_env=TestEnvConfig(repo_path=DISCOVERED_PATH),
                 github_org=ORG,
                 repo=REPO,
@@ -97,6 +99,7 @@ class TestTestEnvRedaction:
         with structlog.testing.capture_logs() as cap_logs:
             loaded = await resolve_test_env_vars(
                 symphony_name="website",
+                performer_mounts=(),
                 test_env=None,
                 github_org=ORG,
                 repo=REPO,
@@ -144,12 +147,14 @@ class TestTestEnvRedaction:
         # baked-in secret; it must reload from the source file.
         state = EnvCacheState(
             symphony_name="website",
+            performer_mounts=(),
             sanitised_name="website",
             cache_dir=Path("/tmp/env-cache/website"),
             test_env_source=DISCOVERED_PATH,
         )
         snapshot = EnvCacheStateSnapshot(
             symphony_name="website",
+            performer_mounts=(),
             sanitised_name="website",
             cache_dir="/tmp/env-cache/website",
             test_env_source=DISCOVERED_PATH,

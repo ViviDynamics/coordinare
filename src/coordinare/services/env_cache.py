@@ -1518,7 +1518,7 @@ class EnvCacheService:
         # so consumers would get no toolchain. Downgrade to failure LOUDLY here
         # rather than letting cache_dir_ready flip True on an empty cache; the
         # failure flows through the normal attempt-counter/exhaust path below.
-        refusal_error = self._cache_refusal_error(symphony_name, cache_state)
+        refusal_error = self._cache_refusal_error(symphony_name, cache_state) if success else None
         if success and refusal_error is not None:
             # 219 review: a refused cache dir is not "wrong location". Say what was refused.
             success = False

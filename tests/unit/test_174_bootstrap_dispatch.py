@@ -11,6 +11,7 @@ from coordinare.config import PerformerRoleConfig, PerformersConfig
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload
 from coordinare.services.http_performer_service import HTTPPerformerService
+from tests.unit.env_mount_stub import mount_global
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -22,7 +23,7 @@ async def test_bootstrap_only_uses_its_own_workflow_and_round_trips_flags(enable
     daemon._state["config"] = SimpleNamespace(
         performers=PerformersConfig(env_bootstrap=role,
                                     implementer=PerformerRoleConfig(backend="codex", workflow="implementer")))
-    daemon._state["coordinare_config"] = SimpleNamespace(bootstrap_max_seconds=60)
+    daemon._state["coordinare_config"] = SimpleNamespace(bootstrap_max_seconds=60, global_config=mount_global())
     service = MagicMock()
     service.dispatch_card = AsyncMock(return_value={"status": "error", "reason": "fixture"})
     payload = BootstrapJobPayload(symphony_name="sym", symphony_org="o", symphony_repo="r",
