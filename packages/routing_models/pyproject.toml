@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coordinare-routing-models"
+version = "0.1.0"
+description = "Spec-078 self-hosted routing-table models (RoutingEntry, RoutingTable, TargetDescriptor). Shared by the coordinare daemon (dashboard routing validation) and the performer (routing load and launch)."
+# Covered by the repository-root LICENSE and NOTICE (Elastic License 2.0).
+# No separate license file here, and no OSI classifier.
+license = "LicenseRef-Elastic-License-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

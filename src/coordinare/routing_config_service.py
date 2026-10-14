@@ -6,8 +6,9 @@ into their containers. There is no in-flight injection: the next performer job
 picks up the edited file at job start (research D2). This module resolves the
 host path from a performer-endpoint config's ``volumes`` + the
 ``SELFHOSTED_ROUTING_CONFIG`` env var, reads/writes it via the shared atomic-write
-primitive, and validates proposed edits against the spec-078 models reused from
-``agent/performer/src/performer/proxy/routing.py`` for validation parity.
+primitive, and validates proposed edits against the spec-078 models in the shared
+``coordinare-routing-models`` package (``packages/routing_models``), which the performer
+also re-exports, for validation parity (issue #228).
 
 Design references (specs/081-config-ui/):
   * research D2 — write the host-side mounted YAML; next job reads it.
@@ -22,7 +23,8 @@ from pathlib import Path  # noqa: TC003 — needed at runtime for pydantic type 
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 import yaml
-from pydantic import BaseModel, Field
+from coordinare_routing_models import RoutingEntry, RoutingTable
+from pydantic import BaseModel, Field, ValidationError
 
 from coordinare.lib.redaction import redact_secrets
 from coordinare.services.config_write_service import FieldError, SaveResult
@@ -220,23 +222,12 @@ def validate_routing_entry(entry: dict[str, Any]) -> None:
 
     Constructs ``RoutingEntry``/``TargetDescriptor`` so the coordinare enforces the
     same rules the performer does (reroute ⇒ empty normalizers; normalize ⇒
-    non-empty, all in ``NORMALIZER_REGISTRY``; ``wire_format`` ∈ {openai,
-    anthropic}; non-empty base_url). Raises ``ValueError`` on failure. (Phase 5,
-    T036)
+    non-empty, all in the registered normalizer keys; ``wire_format`` ∈ {openai,
+    anthropic}; non-empty base_url). The models come from the shared
+    ``coordinare-routing-models`` package, a declared dependency, so the daemon
+    validates without the performer installed (issue #228). Raises ``ValueError``
+    on failure. (Phase 5, T036)
     """
-    try:
-        from performer.proxy.routing import RoutingEntry
-    except ModuleNotFoundError as exc:
-        # The performer package is not a coordinare dependency and is absent from the
-        # daemon image (Dockerfile.daemon copies only ``src`` + ``uv sync``). Convert
-        # to ValueError so callers return a structured ``validation`` result instead
-        # of 500ing the routing endpoint (Copilot round 28).
-        raise ValueError(
-            "Routing validation is unavailable: the performer routing models "
-            "(performer.proxy.routing) are not installed in this environment.",
-        ) from exc
-    from pydantic import ValidationError
-
     try:
         RoutingEntry.model_validate(entry)
     except ValidationError as exc:
@@ -248,17 +239,6 @@ def validate_routing_entry(entry: dict[str, Any]) -> None:
 
 def _validate_table(entries: list[dict[str, Any]]) -> None:
     """Validate the whole proposed routing table via the spec-078 ``RoutingTable``."""
-    try:
-        from performer.proxy.routing import RoutingTable
-    except ModuleNotFoundError as exc:
-        # See ``validate_routing_entry``: a missing performer package becomes a
-        # structured ``validation`` error rather than a 500 (Copilot round 28).
-        raise ValueError(
-            "Routing validation is unavailable: the performer routing models "
-            "(performer.proxy.routing) are not installed in this environment.",
-        ) from exc
-    from pydantic import ValidationError
-
     try:
         RoutingTable.model_validate({"entries": entries})
     except ValidationError as exc:

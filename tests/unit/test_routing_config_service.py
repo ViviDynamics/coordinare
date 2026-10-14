@@ -22,7 +22,9 @@ venv for validation parity.
 from __future__ import annotations
 
 import errno
+import importlib.abc
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -183,55 +185,58 @@ def test_validate_routing_entry_empty_base_url_rejected():
         rcs.validate_routing_entry(_entry(base_url=""))
 
 
-def _block_performer_routing_import(monkeypatch):
-    """Make ``import performer.proxy.routing`` raise ModuleNotFoundError, as it
-    would in the coordinare daemon image (Dockerfile.daemon copies only ``src`` and
-    runs ``uv sync``; the performer package is not a coordinare dependency)."""
-    import builtins
+class _NoPerformerFinder(importlib.abc.MetaPathFinder):
+    """Refuse every ``performer`` import, as the daemon image does (issue #228).
 
-    real_import = builtins.__import__
+    The daemon installs only ``coordinare`` and the shared routing package, so routing
+    validation must not need the performer package at all.
+    """
 
-    def _fake_import(name, *args, **kwargs):
-        if name == "performer.proxy.routing":
-            raise ModuleNotFoundError("No module named 'performer'")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    def find_spec(self, name, path, target=None):
+        if name == "performer" or name.startswith("performer."):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
 
 
-def test_validate_routing_entry_missing_performer_module_raises_valueerror(monkeypatch):
-    """When the performer routing models are not installed (production daemon
-    image), ``validate_routing_entry`` must convert the ModuleNotFoundError into a
-    ValueError so callers return a structured ``validation`` result instead of a
-    500 (Copilot round 28)."""
-    _block_performer_routing_import(monkeypatch)
-    with pytest.raises(ValueError):
-        rcs.validate_routing_entry(_entry())
+def _block_performer_package(monkeypatch):
+    monkeypatch.setattr(sys, "meta_path", [_NoPerformerFinder(), *sys.meta_path])
 
 
-def test_validate_table_missing_performer_module_raises_valueerror(monkeypatch):
-    """``_validate_table`` mirrors ``validate_routing_entry``: a missing performer
-    package becomes a ValueError, not a 500 (Copilot round 28)."""
-    _block_performer_routing_import(monkeypatch)
-    with pytest.raises(ValueError):
-        rcs._validate_table([_entry()])
+def test_validate_routing_entry_without_performer_accepts_valid_entry(monkeypatch):
+    """Issue #228: the production daemon has no performer package, and a valid
+    routing entry must still validate (it used to be refused as "unavailable")."""
+    _block_performer_package(monkeypatch)
+    rcs.validate_routing_entry(_entry())
 
 
-def test_create_routing_entry_missing_performer_module_is_structured_not_500(
-    tmp_path, monkeypatch,
+def test_validate_routing_entry_without_performer_refuses_invalid_with_model_message(
+    monkeypatch,
 ):
-    """End-to-end: with the performer package absent, a routing write returns a
-    structured ``validation`` ``SaveResult`` (no crash) rather than 500ing the
-    routing endpoint (Copilot round 28)."""
+    """Without the performer, an invalid entry is refused by the shared models with
+    their own message, not the old "unavailable" refusal."""
+    _block_performer_package(monkeypatch)
+    with pytest.raises(ValueError, match="bogus_normalizer") as excinfo:
+        rcs.validate_routing_entry(_entry(normalizers=("bogus_normalizer",)))
+    assert "unavailable" not in str(excinfo.value)
+
+
+def test_validate_table_without_performer_accepts_valid_table(monkeypatch):
+    """``_validate_table`` uses the same shared models as the entry check."""
+    _block_performer_package(monkeypatch)
+    rcs._validate_table([_entry()])
+
+
+def test_create_routing_entry_without_performer_saves(tmp_path, monkeypatch):
+    """End-to-end: with the performer package absent, a valid routing write is
+    staged (``ok``), not refused with a validation error."""
     f = tmp_path / "routing.yaml"
     f.write_text("entries: []\n", encoding="utf-8")
     location = rcs.RoutingLocation(
         endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
-    _block_performer_routing_import(monkeypatch)
+    _block_performer_package(monkeypatch)
     result = rcs.create_routing_entry(location, _entry(), compute_content_hash(f))
-    assert result.ok is False
-    assert result.errors[0].code == "validation"
+    assert result.ok is True
+    assert result.applied == "staged_next_job"
 
 
 # --- create / update / delete -------------------------------------------------
