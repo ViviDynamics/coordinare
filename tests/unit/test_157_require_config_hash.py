@@ -129,11 +129,11 @@ class TestThePageNeverSendsAVersionlessWrite:
         from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
         assert "this page did not load a configuration version" in _DASHBOARD_JS_SOURCES["config"]
-        assert "payload.expected_hash = _adminCfgHash;" in _DASHBOARD_JS_SOURCES["config"]
+        assert "base_hash: _cfgHash" in _DASHBOARD_JS_SOURCES["config"]
 
     def test_it_does_not_send_conditionally_any_more(self) -> None:
         """The old `if (_adminCfgHash) payload.expected_hash = ...` sent nothing when
         it had nothing, which is now exactly the refused case."""
         from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "if (_adminCfgHash) payload.expected_hash" not in _DASHBOARD_JS_SOURCES["config"]
+        assert "if (_cfgHash) payload.base_hash" not in _DASHBOARD_JS_SOURCES["config"]

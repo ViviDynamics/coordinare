@@ -1077,8 +1077,8 @@ def test_personas_not_on_main_dashboard(page: Page, live_server_url: str) -> Non
 
 
 @pytest.mark.e2e
-def test_personas_page_loads_editor(page: Page, live_server_url: str) -> None:
-    """The /personas page must show the persona editor (loading from /api/personas)."""
+def test_personas_page_loads_read_only_view(page: Page, live_server_url: str) -> None:
+    """The /personas page shows each persona's text read-only (#143: edits moved to Settings)."""
     page.route(
         "**/api/personas",
         lambda route: route.fulfill(
@@ -1090,9 +1090,8 @@ def test_personas_page_loads_editor(page: Page, live_server_url: str) -> None:
     page.goto(f"{live_server_url}/personas")
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#personas-page-section")).to_contain_text("Implementer", timeout=2000)
-    expect(page.locator("#personas-page-section textarea")).to_contain_text(
-        "Write tests first.", timeout=2000,
-    )
+    expect(page.locator("#personas-page-section")).to_contain_text("Write tests first.", timeout=2000)
+    expect(page.locator("#personas-page-section textarea")).to_have_count(0)
 
 
 # ---------------------------------------------------------------------------
@@ -1248,21 +1247,22 @@ def test_symphonies_page_bootstrap_503_shows_performer_id_error(
 
 
 @pytest.mark.e2e
-def test_navigate_to_admin_config_page(page: Page, live_server_url: str) -> None:
-    """Navigate to /admin/config via navbar."""
+def test_navigate_to_settings_page(page: Page, live_server_url: str) -> None:
+    """Navigate to Settings (/config) via navbar. #143: Global Config is now General in Settings."""
     page.goto(live_server_url)
     expect(page.locator("#navbar")).to_be_visible(timeout=_WAIT_SSE)
-    # Look for admin/config link (may be under hamburger menu on mobile)
-    page.click("a[href='/admin/config']")
-    expect(page.locator("#admin-config-page")).to_be_visible(timeout=_WAIT_NAV)
+    # Look for the Settings link (may be under hamburger menu on mobile)
+    page.click("a[href='/config']")
+    expect(page.locator("#config-page")).to_be_visible(timeout=_WAIT_NAV)
 
 
 @pytest.mark.e2e
-def test_admin_config_page_loads(page: Page, live_server_url: str) -> None:
-    """Admin config page loads and displays form."""
+def test_admin_config_address_redirects_to_settings(page: Page, live_server_url: str) -> None:
+    """The retired /admin/config address lands on Settings, General (#143)."""
     page.goto(f"{live_server_url}/admin/config")
-    expect(page.locator("#admin-config-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#admin-config-page-section")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page).to_have_url(f"{live_server_url}/config#global", timeout=_WAIT_NAV)
+    expect(page.locator("#config-page")).to_be_visible(timeout=_WAIT_NAV)
+    expect(page.locator("#config-page-section")).to_be_visible(timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -1271,8 +1271,8 @@ def test_admin_config_page_loads(page: Page, live_server_url: str) -> None:
 
 
 @pytest.mark.e2e
-def test_personas_page_save_button_exists(page: Page, live_server_url: str) -> None:
-    """Personas editor has save buttons for each persona."""
+def test_personas_page_has_no_save_button(page: Page, live_server_url: str) -> None:
+    """The Personas page is read-only; persona text is saved in Settings, under Agents (#143)."""
     page.route(
         "**/api/personas",
         lambda route: route.fulfill(
@@ -1283,14 +1283,13 @@ def test_personas_page_save_button_exists(page: Page, live_server_url: str) -> N
     )
     page.goto(f"{live_server_url}/personas")
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
-    # Save button uses class persona-save-btn (no id)
-    expect(page.locator("button.persona-save-btn")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#personas-page-section")).to_contain_text("Implementer", timeout=_WAIT_LIVE)
+    expect(page.locator("button.persona-save-btn")).to_have_count(0)
 
 
 @pytest.mark.e2e
-def test_personas_page_reset_button_exists(page: Page, live_server_url: str) -> None:
-    """Personas editor has reset buttons for reverting changes."""
+def test_personas_page_has_no_reset_button(page: Page, live_server_url: str) -> None:
+    """Reset to default is offered in Settings, under Agents, not on the read-only Personas page (#143)."""
     page.route(
         "**/api/personas",
         lambda route: route.fulfill(
@@ -1301,7 +1300,7 @@ def test_personas_page_reset_button_exists(page: Page, live_server_url: str) -> 
     )
     page.goto(f"{live_server_url}/personas")
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("button.persona-reset-btn")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("button.persona-reset-btn")).to_have_count(0)
 
 
 # ---------------------------------------------------------------------------

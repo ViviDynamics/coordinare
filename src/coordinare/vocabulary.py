@@ -118,6 +118,11 @@ CONCEPTS: dict[str, Term] = _terms(
     ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
     ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),
     ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
+    ("settings", "Settings", "Settings", "Where coordinare's configuration is edited, in one tab per kind of setting. Each setting has exactly one editor."),
+    ("model_server", "Model server", "Model servers", "Where model calls go: a self-hosted server at a base URL, or a vendor API. Models name one of these."),
+    ("model", "Model", "Models", "A model name served by one model server. Modes choose their models from this list."),
+    ("mode", "Mode", "Modes", "How a performer role uses models: one model, or a planner and an executor. Each role picks one mode."),
+    ("routing", "Routing", "Routing", "Which base URL and wire format a self-hosted backend is sent to, for a backend and model. Applies to the next performer job."),
 )
 
 #: Why a card in the Blocked column needs a person, when the conductor knows (#142).

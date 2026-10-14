@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from coordinare import vocabulary
 from coordinare.dashboard.assets import (
@@ -139,12 +139,16 @@ def _register_dashboard_symphony_detail(app: FastAPI, ctx: DashboardContext) -> 
 
 
 def _register_dashboard_admin_config(app: FastAPI, ctx: DashboardContext) -> None:
-        _assistant_on = ctx.assistant_on
 
-        @app.get("/admin/config", response_class=HTMLResponse)
-        async def dashboard_admin_config() -> HTMLResponse:
-            """Display the admin configuration page (Task 11)."""
-            return HTMLResponse(_page_html(_assistant_on))
+        @app.get("/admin/config")
+        async def dashboard_admin_config(request: Request) -> RedirectResponse:
+            """143: the Global Config page is now the General tab of Settings.
+
+            The query string is kept. The fragment is never sent to the server, so
+            the redirect names the tab itself.
+            """
+            query = f"?{request.url.query}" if request.url.query else ""
+            return RedirectResponse(url=f"/config{query}#global", status_code=301)
 
 
 def _register_dashboard_config(app: FastAPI, ctx: DashboardContext) -> None:

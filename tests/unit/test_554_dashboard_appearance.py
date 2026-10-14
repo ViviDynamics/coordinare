@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML
+from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from tests.unit.dashboard_js_slices import page_source
 from tests.unit.test_138_contrast import _ev_pairings, contrast_ratio
 
@@ -128,7 +128,8 @@ def test_filled_save_button_has_readable_text(theme: str) -> None:
     """Catch theme text colors reused on a filled action with insufficient contrast."""
     pair = re.search(
         r'background:var\((--color-btn-success)\);[^\n\']*?color:var\((--color-[\w-]+)\)',
-        page_source(),
+        # 143: the Settings review's save button lives in config.js, so the search covers it too.
+        page_source() + _DASHBOARD_JS_SOURCES["config"],
     )
     assert pair, "filled save action must have a testable semantic color pair"
     tokens = _theme_tokens(theme)

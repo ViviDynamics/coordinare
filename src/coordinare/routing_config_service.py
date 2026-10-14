@@ -25,6 +25,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from coordinare.lib.redaction import redact_secrets
+from coordinare.services.config_write_service import FieldError, SaveResult
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     mounted_file_refusal,
@@ -276,7 +277,6 @@ def _routing_conflict(location: RoutingLocation, base_hash: str) -> Any:
     from the same bounded, link-refusing reader as the reads (208), so the baseline a
     write compares against is the content the daemon would have read.
     """
-    from coordinare.services.config_write_service import FieldError, SaveResult
 
     if not base_hash:
         return SaveResult(
@@ -329,7 +329,6 @@ def _readonly_guard(location: RoutingLocation | None) -> Any:
     so the CRUD writers must never create or overwrite a file there. Returns
     ``None`` when the location is writable.
     """
-    from coordinare.services.config_write_service import FieldError, SaveResult
 
     if _is_writable_location(location):
         return None
@@ -359,10 +358,6 @@ def _write_entries(
     landing between the caller's initial baseline check and this write is caught
     instead of clobbered (TOCTOU).
     """
-    from coordinare.services.config_write_service import (
-        FieldError,
-        SaveResult,
-    )
 
     try:
         _validate_table(entries)
@@ -398,6 +393,21 @@ def _write_entries(
     return SaveResult(ok=True, applied="staged_next_job", new_hash=new_hash)
 
 
+def _pair(entry: dict[str, Any]) -> tuple[Any, Any]:
+    return (entry.get("backend"), entry.get("model"))
+
+
+def _duplicate_refusal(others: list[dict[str, Any]], backend: Any, model: Any) -> Any:
+    """143 third check: a (backend, model) pair appears once. Refuse a write that makes a second one."""
+    if any(_pair(e) == (backend, model) for e in others):
+        return SaveResult(ok=False, errors=[FieldError(
+            key="model", code="validation",
+            message=f"A routing entry for backend {backend!r} and model {model!r} already exists; "
+                    "each backend and model pair can appear once.",
+        )])
+    return None
+
+
 def create_routing_entry(
     location: RoutingLocation | None, entry: dict[str, Any], base_hash: str,
 ) -> Any:
@@ -411,8 +421,29 @@ def create_routing_entry(
         return _routing_conflict(location, base_hash)
 
     entries = _read_entries(location)
+    # A stale version is a conflict before anything about the content is judged.
+    stale = _routing_conflict(location, base_hash)
+    if stale is not None:
+        return stale
+    refusal = _duplicate_refusal(entries, entry.get("backend"), entry.get("model"))
+    if refusal is not None:
+        return refusal
     entries.append(entry)
     return _write_entries(location, entries, base_hash)
+
+
+def _update_refusal(
+    location: RoutingLocation, base_hash: str, entries: list[dict[str, Any]], index: int, merged: dict[str, Any],
+) -> Any:
+    """A stale version, or a change that would make a second (backend, model) pair; None otherwise."""
+    stale = _routing_conflict(location, base_hash)
+    if stale is not None:
+        return stale
+    if _pair(merged) == _pair(entries[index]):
+        return None
+    return _duplicate_refusal(
+        [e for i, e in enumerate(entries) if i != index], merged.get("backend"), merged.get("model"),
+    )
 
 
 def update_routing_entry(
@@ -426,7 +457,6 @@ def update_routing_entry(
     ``changes`` may carry a nested ``target`` mapping; it is shallow-merged into
     the existing target so a partial target edit keeps untouched fields.
     """
-    from coordinare.services.config_write_service import FieldError, SaveResult
 
     if not _is_writable_location(location):
         return _readonly_guard(location)
@@ -477,6 +507,9 @@ def update_routing_entry(
         if not isinstance(existing_target, dict):
             existing_target = {}
         merged["target"] = {**existing_target, **target_changes}
+    refusal = _update_refusal(location, base_hash, entries, index, merged)
+    if refusal is not None:
+        return refusal
     entries[index] = merged
     return _write_entries(location, entries, base_hash)
 
@@ -485,7 +518,6 @@ def delete_routing_entry(
     location: RoutingLocation | None, index: int, base_hash: str,
 ) -> Any:
     """Delete the routing entry at ``index`` and re-stage the table (T036)."""
-    from coordinare.services.config_write_service import FieldError, SaveResult
 
     if not _is_writable_location(location):
         return _readonly_guard(location)
@@ -510,3 +542,33 @@ def delete_routing_entry(
 
     del entries[index]
     return _write_entries(location, entries, base_hash)
+
+
+def routing_expected_problem(location: RoutingLocation | None, index: int, expected: Any) -> str | None:
+    """What is wrong with the entry a write names, or None.
+
+    143 third check: an absent ``expected`` is not checked; a present one that is not an object is
+    ``malformed``; an object naming another entry than the one at ``index`` is ``moved``.
+    """
+    if expected is None:
+        return None
+    if not isinstance(expected, dict):
+        return "malformed"
+    return "moved" if routing_entry_moved(location, index, expected) else None
+
+
+def routing_entry_moved(location: RoutingLocation | None, index: int, expected: Any) -> bool:
+    """True when a write names an entry (its backend and model) that is not at ``index`` now.
+
+    143 second review: the table can change between a page's load and its save, so an index
+    may point at a different entry. A write that names no entry is not refused here.
+    """
+    if not isinstance(expected, dict):
+        return False
+    entries = read_routing(location).entries
+    current = entries[index] if 0 <= index < len(entries) else None
+    return not (
+        current is not None
+        and current.get("backend") == expected.get("backend")
+        and current.get("model") == expected.get("model")
+    )
