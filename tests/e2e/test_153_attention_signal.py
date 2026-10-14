@@ -118,6 +118,7 @@ def test_the_banner_lists_each_item_and_links_it(page: Page, live_server_url: st
     banner = page.locator("#attention-panel")
     expect(banner).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#attention-count")).to_have_text("2 need attention")
+    page.locator("#attention-toggle").click()
     rows = page.locator("#attention-list li")
     expect(rows).to_have_count(2)
     expect(rows.nth(0)).to_contain_text("Should we use OAuth2?")
@@ -133,6 +134,8 @@ def test_a_run_item_links_to_the_run_detail_in_the_page(page: Page, live_server_
     snapshot = _blocked([])
     snapshot["active_sessions"][0]["issue_url"] = None
     _broadcast(store, snapshot)
+    expect(page.locator("#attention-toggle")).to_be_visible(timeout=_WAIT_LIVE)
+    page.locator("#attention-toggle").click()
     link = page.locator("#attention-list li").get_by_role("link", name="#153 Add login")
     expect(link).to_have_attribute("href", "/performers/implementing", timeout=_WAIT_LIVE)
     link.click()
@@ -181,6 +184,8 @@ def test_a_hostile_title_and_question_are_shown_as_text_and_run_no_script(
     _open_dashboard(page, live_server_url)
     hostile = "<img src=x onerror=alert(1)>"
     _broadcast(store, _blocked([_question(text=hostile, card_title=hostile)]))
+    expect(page.locator("#attention-toggle")).to_be_visible(timeout=_WAIT_LIVE)
+    page.locator("#attention-toggle").click()
     rows = page.locator("#attention-list li")
     expect(rows).to_have_count(1, timeout=_WAIT_LIVE)
     expect(rows.nth(0)).to_contain_text(hostile)
@@ -197,7 +202,7 @@ def test_a_dismissed_subsystem_stays_dismissed_when_it_is_probed_again(
     down = _blocked([], subsystem_down=True)
     _broadcast(store, down)
     expect(page.locator("#attention-panel")).to_be_visible(timeout=_WAIT_LIVE)
-    page.locator("#attention-panel button").click()
+    page.get_by_role("button", name="Dismiss this needs-attention list").click()
     expect(page.locator("#attention-panel")).to_be_hidden()
     for item in down["subsystems"]:
         item["checked_at"] = "2026-10-13T09:06:00+00:00"

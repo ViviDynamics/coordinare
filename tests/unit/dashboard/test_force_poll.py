@@ -132,7 +132,7 @@ class TestDashboardHtmlButton:
     def test_force_poll_button_has_aria_label(self) -> None:
         assert 'aria-label="Check for work now"' in page_source()
         # 144: "Check now" sits beside when the board was last checked.
-        assert ">Check now</button>" in page_source() and 'id="last-checked"' in page_source()
+        assert ">Check now</button>" in page_source() and 'id="last-checked"' not in page_source()  # 154: removed
 
     def test_force_poll_message_element_present(self) -> None:
         assert 'id="force-poll-msg"' in page_source()

@@ -89,7 +89,7 @@ def test_feedback_loops_are_called_revision_rounds() -> None:
 
 def test_small_labels() -> None:
     assert ">Check Board Now<" not in _SHIPPED and ">Check now</button>" in page_source()
-    assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED
+    assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED  # the Symphonies table's column; 154 removed the header copy
     assert "Active / Idle / Max" not in _SHIPPED
     assert '<label for="af-filter">Card</label>' not in page_source()
     assert 'aria-label="Filter activity by card"' in page_source()

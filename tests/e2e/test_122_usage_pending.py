@@ -57,7 +57,7 @@ def test_running_stage_with_no_usage_shows_pending_then_the_priced_cost(
     # 154: the tokens and cost are on the card's active-run tile.
     tokens = page.locator("#active-performer-tiles .ap-tile-tokens")
     cost = page.locator("#active-performer-tiles .ap-tile-cost")
-    expect(tokens).to_have_text("—", timeout=_WAIT_LIVE)
+    expect(tokens).to_have_text("no usage yet", timeout=_WAIT_LIVE)
     expect(tokens).to_have_attribute("title", "Reported when the stage ends")
     # 134: the pending placeholder is a plain hyphen; the value itself is unchanged.
     expect(cost).to_have_text("-")

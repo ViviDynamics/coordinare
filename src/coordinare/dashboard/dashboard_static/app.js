@@ -104,8 +104,14 @@ function renderState(s) {
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
     'recovery':         'A check failed; the daemon is recovering before retrying.',
   };
-  phaseEl.title = [phaseDescriptions[effectivePhase], 'Conductor state: ' + String(effectivePhase || '')]
-    .filter(Boolean).join('\n');
+  phaseEl.title = 'Conductor state: ' + String(effectivePhase || '');
+  // 154 review: the description is visible text in the strip (truncated, full text on hover).
+  var descEl = document.getElementById('phase-desc');
+  var description = phaseDescriptions[effectivePhase] || '';
+  if (descEl) {
+    descEl.textContent = description;
+    descEl.title = description;
+  }
   phaseEl.className = 'phase ' + phaseClass(effectivePhase);
   renderStatusStrip(s, activeSess);
 
@@ -264,7 +270,7 @@ function renderState(s) {
         attr = esc(round.card_title);
       }
       if (round.stage) attr += ' <span class="muted">(' + esc(round.stage) + ')</span>';
-      var header = 'Round ' + (i + 1) + (attr ? ' — ' + attr : '');
+      var header = 'Round ' + (i + 1) + (attr ? ': ' + attr : '');
       return '<div class="qa-round">' +
         '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">' + header + '</div>' +
         (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
@@ -282,23 +288,11 @@ function renderState(s) {
   // 119: uptime at a glance, the exact start time on hover.
   var daemonStartEl = document.getElementById('daemon-start-time');
   var daemonUptime = fmtAge(s.daemon_start_time);
-  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : '—';
+  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : 'unknown';
   daemonStartEl.title = s.daemon_start_time ? 'Started ' + fmtTime(s.daemon_start_time) : '';
   // 134/154: the card's tokens and cost are on its active-run tile (layout.js); the
   // spend figures are in the status strip.
   renderSpend(s.token_usage);
-  // 144: "Check now" sits beside when the board was last checked, in the active-runs header.
-  var lastCheckedEl = document.getElementById('last-checked');
-  if (s.last_poll_at) {
-    lastCheckedEl.setAttribute('data-elapsed-since', s.last_poll_at);
-    lastCheckedEl.setAttribute('data-elapsed-prefix', 'Last checked ');
-    lastCheckedEl.setAttribute('data-elapsed-suffix', ' ago');
-    lastCheckedEl.textContent = 'Last checked ' + (fmtAge(s.last_poll_at) || '—') + ' ago';
-  } else {
-    lastCheckedEl.removeAttribute('data-elapsed-since');
-    lastCheckedEl.textContent = '';
-  }
-
   // Current run (141: the run's short name, with its full id in the title and a Copy button)
   // 154: a run that an active-run tile already names is not repeated here.
   var agentEl = document.getElementById('agent-session');
@@ -397,7 +391,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/config':'Settings | Coordinare'};
+  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/history':'History | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   // 153: the label, not the link's text: a needs-attention badge sits in the link.
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
@@ -420,10 +414,10 @@ function renderSymphoniesPage(s) {
     if (tbl && sym) {
       var rows = tbl.querySelectorAll('tbody tr');
       function _setTd(row, val) { if (row) { var td = row.querySelector('td'); if (td) td.textContent = val; } }
-      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : '—');
-      _setTd(rows[2], sym.error_count != null ? sym.error_count : '—');
-      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : '—');
-      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : '—');
+      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : 'None');
+      _setTd(rows[2], sym.error_count != null ? sym.error_count : 'None');
+      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : 'None');
+      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : 'None');
       return;
     }
     loadSymphonyDetail(detail, el);
@@ -452,7 +446,7 @@ function renderSymphoniesPage(s) {
   var rows = syms.map(function(sym) {
     var bootBtn = sym.env_bootstrap_performer_id
       ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
-      : '<span style="color:var(--color-text-muted)">—</span>';
+      : '<span style="color:var(--color-text-muted)">None</span>';
     // 077: at-a-glance bootstrap status badge (colored dot + label) so a failing
     // env bootstrap is visible on the overview without opening the symphony.
     var bootStatus = '';
@@ -472,10 +466,10 @@ function renderSymphoniesPage(s) {
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyRepoHtml(sym) + '</td>'
-      + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
-      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
-      + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
-      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
+      + '<td>' + (sym.priority != null ? sym.priority : 'None') + '</td>'
+      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : 'None') + '</td>'
+      + '<td>' + (sym.error_count != null ? sym.error_count : 'None') + '</td>'
+      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : 'None') + '</td>'
       + '<td>' + bootStatus + bootBtn + '</td>'
       + '</tr>';
   }).join('');
@@ -532,12 +526,12 @@ async function loadSymphonyDetail(name, el) {
   ];
   var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
   var statusRows = [
-    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : '—'],
-    ['Cycles', st.cycle_count != null ? st.cycle_count : '—'],
-    ['Errors', st.error_count != null ? st.error_count : '—'],
-    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—'],
-    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
-    ['Last error', st.last_error ? esc(st.last_error) : '—'],
+    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
+    ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
+    ['Errors', st.error_count != null ? st.error_count : 'None'],
+    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
+    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : 'None'],
+    ['Last error', st.last_error ? esc(st.last_error) : 'None'],
   ].map(function(r) {
     return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
   }).join('');
@@ -604,18 +598,18 @@ async function loadSymphonyDetail(name, el) {
           + esc(tryCountText(ec.last_inference_attempts || '?')) + ', '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else {
-        infRow = '—';
+        infRow = 'None';
       }
       ecRows = [
         ['Status', '<span style="color:' + statusColor + '">' + statusText + '</span>'],
         ['Performer', esc(ecBootstrapId)],
-        ['Cache dir', esc(ec.cache_dir || '—')],
+        ['Cache dir', esc(ec.cache_dir || 'None')],
         ['Cache ready', ready ? 'yes' : 'no'],
         ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
-        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : '—'],
-        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : '—'],
+        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : 'None'],
+        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : 'None'],
         ['Service inference', infRow],
-        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : '—'],
+        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : 'None'],
       ].map(function(r) {
         return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
       }).join('');
@@ -708,7 +702,7 @@ async function loadSymphonyDetail(name, el) {
         var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init', {method: 'POST'});
         var d = await r.json();
         if (r.ok) {
-          msg.textContent = 'Accepted — building the wiki, a seed PR will open on completion';
+          msg.textContent = 'Accepted: building the wiki, a seed PR will open on completion';
           msg.style.color = 'var(--color-accent-green)';
           setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
         } else {

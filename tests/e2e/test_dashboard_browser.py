@@ -156,7 +156,7 @@ def test_page_title_on_home(page: Page, live_server_url: str) -> None:
     """Title at / must contain 'Dashboard' (set by router() on DOMContentLoaded)."""
     page.goto(live_server_url)
     # Wait for router to fire and update title
-    expect(page).to_have_title("Dashboard — Coordinare", timeout=_WAIT_SSE)
+    expect(page).to_have_title("Dashboard | Coordinare", timeout=_WAIT_SSE)
 
 
 @pytest.mark.e2e
@@ -470,7 +470,7 @@ def test_navigate_to_performers_updates_url_and_title(page: Page, live_server_ur
     page.locator("#navbar a[href='/performers']").click()
 
     expect(page).to_have_url(f"{live_server_url}/performers", timeout=_WAIT_NAV)
-    expect(page).to_have_title("Performers — Coordinare", timeout=_WAIT_NAV)
+    expect(page).to_have_title("Performers | Coordinare", timeout=_WAIT_NAV)
     expect(page.locator("#navbar a[href='/performers']")).to_have_class("nav-link nav-active")
 
 
@@ -483,7 +483,7 @@ def test_navigate_to_personas_shows_personas_page(page: Page, live_server_url: s
     page.locator("#navbar a[href='/personas']").click()
 
     expect(page).to_have_url(f"{live_server_url}/personas", timeout=_WAIT_NAV)
-    expect(page).to_have_title("Personas — Coordinare", timeout=_WAIT_NAV)
+    expect(page).to_have_title("Personas | Coordinare", timeout=_WAIT_NAV)
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#dashboard-page")).to_be_hidden()
 
@@ -634,7 +634,7 @@ def test_idle_state_shows_no_active_performers_message(
     # not repeated in the idle line.
     expect(page.locator("#active-performer-tiles")).not_to_contain_text("TODO", timeout=_WAIT_LIVE)
     expect(page.locator("#cards-summary")).to_have_text("Total 10 · Done 4 · Backlog 0", timeout=_WAIT_LIVE)
-    expect(page.locator("#last-checked")).to_contain_text("Last checked", timeout=_WAIT_LIVE)
+    expect(page.locator("#connection-detail")).to_contain_text("updated", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -1838,7 +1838,7 @@ def test_active_work_row_shows_cost(
     )
     tile2 = page.locator("#active-performer-tiles .ap-tile[data-card-id='PVTI_nodispatch']")
     expect(tile2).to_be_visible(timeout=_WAIT_LIVE)
-    expect(tile2.locator(".ap-tile-cost")).not_to_contain_text("$", timeout=_WAIT_LIVE)
+    expect(tile2.locator(".ap-tile-cost")).to_have_text("None", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -2182,8 +2182,8 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     # #125: the conductor card and the tile count from the same start point.
     readouts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-elapsed-since]'))
         .filter(el => el.offsetParent !== null).map(el => el.getAttribute('data-elapsed-since'))""")
-    # 154: the tile is the only live readout of a run's elapsed time, so there is one start point.
-    assert len(readouts) >= 1 and len(set(readouts)) == 1
+    # 154: the tile is the only live readout of a run's elapsed time, anchored to the run's dispatch.
+    assert readouts == ["2026-10-13T12:00:00+00:00"], readouts
 
 
 @pytest.mark.e2e

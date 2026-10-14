@@ -73,7 +73,7 @@ function cardRefHtml(sess) {
 // same run can never disagree. The element carries its start point.
 function elapsedSinceHtml(iso) {
   if (!iso) return '<strong>—</strong>';
-  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || '—') + '</strong>';
+  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || 'unknown') + '</strong>';
 }
 
 function refreshElapsedReadouts(root) {
@@ -81,7 +81,7 @@ function refreshElapsedReadouts(root) {
   for (var i = 0; i < nodes.length; i++) {
     var prefix = nodes[i].getAttribute('data-elapsed-prefix') || '';
     var suffix = nodes[i].getAttribute('data-elapsed-suffix') || '';
-    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—') + suffix;
+    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || 'unknown') + suffix;
   }
   // 138: the same tick keeps the headline's "next check in Ns" counting down.
   if (typeof refreshConductorHeadline === 'function') refreshConductorHeadline();
@@ -144,7 +144,7 @@ function isStageRunning(sess) {
 function tokenReadout(tokens, running) {
   var n = Number(tokens);
   if (isFinite(n) && n > 0) return { text: Math.floor(n).toLocaleString(), title: '', pending: false };
-  if (running) return { text: '—', title: USAGE_PENDING_NOTE, pending: true };
+  if (running) return { text: 'no usage yet', title: USAGE_PENDING_NOTE, pending: true };
   return { text: '0', title: '', pending: false };
 }
 
@@ -307,7 +307,7 @@ function renderActiveWorkPanels(s) {
     }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
-      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
+      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column. Add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
       : '<span class="empty-state">Waiting for cards&hellip;</span>';
     if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
     return;
@@ -353,7 +353,7 @@ function renderActiveWorkPanels(s) {
           ? '<span style="color:var(--color-accent-yellow)">' + esc(elapsed) + '</span>'
           : (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed)))
         : '';
-      var costStr = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
+      var costStr = sess.agent_dispatch_at ? costHtml(sess, s) : 'None';
       var parts = [phaseLabel];
       if (!queuedLabel && stage) parts.push('<code>' + stage + '</code>');
       if (elapsedHtml) parts.push(elapsedHtml);
@@ -376,11 +376,11 @@ function renderActiveWorkPanels(s) {
     // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
     var pipelineDots = timelineDotsHtml(cardPipelineOf(s, iid));
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
-      '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
+      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + prBadge + '</div>' +
       pipelineDots +
       waitLine +
       liveLine +
-      viewRunLinkHtml(sess) +
+      (isStageRunning(sess) ? '' : viewRunLinkHtml(sess)) +
       '</div>';
   }
 
@@ -388,7 +388,7 @@ function renderActiveWorkPanels(s) {
   COLUMNS.forEach(function(col) {
     var entries = columnItems[col];
     var body = entries.length === 0
-      ? '<div class="swimlane-empty">&mdash;</div>'
+      ? '<div class="swimlane-empty">None</div>'
       : entries.map(function(entry) { return renderCard(entry, col); }).join('');
     // 149: the To Do header says how full the card slots are and how many cards queue.
     var headerTitle = '';
@@ -413,14 +413,14 @@ function renderCardDetailContent(sess, s) {
     ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
     : formatPhaseLabel(sess.phase || '');
   var cardLink = sess.issue_url && /^https?:\/\//i.test(sess.issue_url)
-    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
-    : esc(sess.card_title || sess.card_id || '—');
-  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || 'unknown') + ' &#8599;</a>'
+    : esc(sess.card_title || sess.card_id || 'unknown');
+  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || 'unknown') : 'None';
   var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
   var elapsedHtml = stale
     ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
     : esc(rawElapsed);
-  var cost = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
+  var cost = sess.agent_dispatch_at ? costHtml(sess, s) : 'None';
   // 348 (closes TODO(054)): logs come from the service holding this card's slot.
   var logs = Array.isArray(sess.performer_logs) ? sess.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
@@ -608,7 +608,7 @@ function renderPerformersPage(s) {
     var badge = '<span class="role-status-badge ' + (isActive ? 'role-active' : 'role-idle') + '">' + (isActive ? 'active' : 'idle') + '</span>';
     var cards = (activeByStage[r.role] || []).map(function(sess) {
       return esc((sess.card_title || sess.card_id || '').substring(0, 40));
-    }).join('<br>') || '<span class="empty-state">—</span>';
+    }).join('<br>') || '<span class="empty-state">None</span>';
     var maxVal = r.max > 0 ? r.max : 1;
     var activeVal = isActive ? (r.active || 1) : 0;
     var utilStr = utilizationBarHtml(r) + ' ' + esc(busyText(activeVal, maxVal, 0));
@@ -654,7 +654,7 @@ function renderPerformersPage(s) {
     : '<div class="muted">No run in progress for this role.</div>';
   // 348: the panels below describe ONE card -- name it.
   var telemetryFor = selectedSessions.length > 1
-    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || '—') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
+    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'unknown') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
     : '';
   // 348: telemetry is per-card, so read the session running this role rather
   // than top-level state (null in shared-pool mode). No fallback: a role with
@@ -678,7 +678,7 @@ function renderPerformersPage(s) {
   var metricsLine = (metrics && metrics.pid != null)
     ? (
       'PID ' + String(metrics.pid) +
-      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : '—') +
+      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : 'unknown') +
       ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
       ' · Tokens ' + tokenText
     )

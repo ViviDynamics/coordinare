@@ -150,25 +150,31 @@ function activeRunTileHtml(sess, s) {
     : formatPhaseLabel(sess.phase || 'active');
   var tokens = activeRunTokens(sess);
   // While the stage runs with nothing reported, the cost is pending too (122), as the Metrics readout was.
-  var costCell = tokens.pending ? '<span title="' + esc(USAGE_PENDING_NOTE) + '">-</span>'
-    : (sess.agent_dispatch_at ? costHtml(sess, s) : '-');
+  // No dispatch time means there is no cost to show; otherwise a run with nothing reported is pending.
+  var costCell = !sess.agent_dispatch_at ? 'None'
+    : (tokens.pending ? '<span title="' + esc(USAGE_PENDING_NOTE) + '">-</span>' : costHtml(sess, s));
   // The stale marker the board card carried for a long run (performers.js, 59 and after).
   var stale = dispatchAt && (Date.now() - new Date(dispatchAt).getTime()) > STALE_THRESHOLD_MS;
   var staleGlyph = stale ? '<span style="color:var(--color-degraded)">&#9888;</span> ' : '';
+  // 154 review: four short rows so a tile is about 120px tall and four sit side by side at 1280.
+  // Row 1: the stage and the card's menu. Row 2: the title. Row 3: the stage tracker and the phase.
+  // Row 4: the facts, as one line of text.
   return '<div class="ap-tile" data-card-id="' + id + '">' +
     '<div class="ap-tile-header">' +
       '<div class="ap-tile-role"><span class="perf-dot perf-running" aria-hidden="true"></span>' + stage + '</div>' +
-      '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
       cardActionsHtml(sess, s) +
-      viewRunLinkHtml(sess) +
     '</div>' +
-    '<div class="ap-tile-title">' + esc(title) + ' ' + cardRefHtml(sess) + '</div>' +
-    timelineDotsHtml(cardPipelineOf(s, sess.card_id)) +
+    '<div class="ap-tile-title" title="' + esc(title) + '">' + esc(title) + ' ' + cardRefHtml(sess) + '</div>' +
+    '<div class="ap-tile-track">' +
+      timelineDotsHtml(cardPipelineOf(s, sess.card_id)) +
+      '<span class="ap-tile-phase">' + phaseLabel + '</span>' +
+    '</div>' +
     '<div class="ap-tile-meta">' +
-      '<span class="ap-pill ap-tile-elapsed">' + staleGlyph + '&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
-      '<span class="ap-pill">Tokens <strong class="ap-tile-tokens" title="' + esc(tokens.title) + '">' + esc(tokens.text) + '</strong></span>' +
-      '<span class="ap-pill">Cost <span class="ap-tile-cost">' + costCell + '</span></span>' +
-      (sess.session_id ? '<span class="ap-pill">' + runIdHtml(sess.session_id, {copy: true}) + '</span>' : '') +
+      '<span class="ap-fact ap-tile-elapsed">' + staleGlyph + '&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
+      '<span class="ap-fact">Tokens <strong class="ap-tile-tokens" title="' + esc(tokens.title) + '">' + esc(tokens.text) + '</strong></span>' +
+      '<span class="ap-fact">Cost <span class="ap-tile-cost">' + costCell + '</span></span>' +
+      (sess.session_id ? '<span class="ap-fact">' + runIdHtml(sess.session_id, {copy: true}) + '</span>' : '') +
+      viewRunLinkHtml(sess) +
       pendingControlHtml(sess) +
       // 138 FR-032: quiet marker, observation only, never a phase change.
       (_afQuietCards[sess.card_id] ? '<span class="af-kind ev-quiet">QUIET</span>' : '') +
