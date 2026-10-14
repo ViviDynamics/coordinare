@@ -80,15 +80,7 @@ def _record_activity_batch(
     with contextlib.suppress(Exception):
         log.record_many([
             {
-                # 343: a step boundary is its own kind of entry, not generic
-                # progress. Classified from the same predicate the latch uses,
-                # so the feed and the trail can never disagree about what
-                # counts as a step.
-                "activity_type": (
-                    "workflow_step"
-                    if is_step_event(ev)
-                    else _ACTIVITY_TYPE_BY_EVENT.get(str(ev.get("type", "")), "progress")
-                ),
+                **_feed_fields(ev),
                 "text": ev.get("text") or ev.get("detail") or "",
                 "is_delta": ev.get("is_delta") is True,
                 "stream_id": ev.get("stream_id", ""),
@@ -98,4 +90,37 @@ def _record_activity_batch(
             for ev in events
             if isinstance(ev, dict)
         ])
+
+
+def _tool_summary(ev: dict[str, Any]) -> str:
+    """148: "Bash · uv run pytest -q" from the performer's tool name and argument.
+
+    A backend that predates the ``tool``/``arg`` fields only has its text,
+    which then stands in as the summary. The log redacts it on ingest.
+    """
+    name = str(ev.get("tool") or ev.get("text") or "tool")
+    arg = str(ev.get("arg") or "")
+    return f"{name} · {arg}" if arg else name
+
+
+def _feed_fields(ev: dict[str, Any]) -> dict[str, str]:
+    """148: the activity type, summary and status one backend event becomes.
+
+    A tool call is ``tool_use`` with a summary. A tool result is ``tool_result``
+    carrying its outcome. Narration stays ``progress``, a step boundary stays
+    ``workflow_step``, and everything else keeps its 138 mapping.
+    """
+    if is_step_event(ev):
+        # 343: a step boundary is its own kind of entry, not generic
+        # progress. Classified from the same predicate the latch uses,
+        # so the feed and the trail can never disagree about what
+        # counts as a step.
+        return {"activity_type": "workflow_step"}
+    event_type = str(ev.get("type", ""))
+    status = str(ev.get("status") or "")
+    if event_type == "tool_use" and status:
+        return {"activity_type": "tool_result", "summary": f"result {status}", "status": status}
+    if event_type == "tool_use":
+        return {"activity_type": "tool_use", "summary": _tool_summary(ev)}
+    return {"activity_type": _ACTIVITY_TYPE_BY_EVENT.get(event_type, "progress")}
 

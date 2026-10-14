@@ -54,7 +54,7 @@ from performer.backends._lcd_helpers import (
 )
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -610,7 +610,7 @@ class OpenCodeCompatAdapter:
         self._status = BackendStatus(state="done")
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
 
     def _handle_event(self, event: dict) -> None:
         payload = event.get("payload", event)

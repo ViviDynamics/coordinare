@@ -43,9 +43,10 @@ from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer import transcript
 from performer.backends._env_policy import build_subprocess_env
+from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -334,7 +335,11 @@ class PiBackend:
 
         elif etype == "tool_execution_start":
             tool = str(event.get("toolName", "tool"))[:_MAX_TEXT]
-            self._emit(BackendEventType.tool_use, tool, detail=tool)
+            # 148: the name and its primary argument, so the feed can say what ran.
+            self._event_buffer.append(BackendEvent(
+                type=BackendEventType.tool_use, text=tool, detail=tool, tool=tool,
+                arg=primary_argument(tool, event.get("args")),
+            ))
 
         elif etype == "agent_end":
             self._saw_terminal = True
@@ -349,7 +354,7 @@ class PiBackend:
             if isinstance(err, dict):
                 msg = str(err.get("message", ""))
             msg = msg or str(event.get("message", "")) or etype
-            self._emit(BackendEventType.error, msg[:_MAX_TEXT])
+            self._emit(BackendEventType.error, msg)
             # Non-retry errors are terminal.
             if etype == "error" and not event.get("willRetry", False):
                 self._saw_terminal = True
@@ -357,7 +362,7 @@ class PiBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
               is_delta: bool = False, stream_id: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail,
                                                is_delta=is_delta, stream_id=stream_id))
 
     # ------------------------------------------------------------------

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from performer.transcript_redaction import redact_text as transcript_redact_text
+
 log = structlog.get_logger(__name__)
 
 
@@ -37,6 +39,137 @@ def _redact_secrets(text: str) -> str:
     return text
 
 
+# 148: the client secrets the transcript redactor (lib/transcript_redaction.py,
+# spec 129) does not cover: a password given as a flag or an argument to a client
+# program, and `pass:` in openssl. They are found by one linear pass over the words
+# of a text. A pattern that scanned from each program name to the end of its line
+# was quadratic on repeated program names. The performer keeps an identical copy;
+# a parity test compares the two.
+_WORD_RE = re.compile(r"\S+")
+_BREAK_CHARS = ";|&"
+_MAX_QUOTED_WORDS = 8
+_OPENSSL_LABEL = "pass:"
+_CLIENTS = {"sshpass": "sshpass", "redis-cli": "redis", "sqlcmd": "sqlcmd", "htpasswd": "htpasswd"}
+# (client, word) pairs whose next word is the secret.
+_SECRET_FLAGS = frozenset({
+    ("docker", "-p"), ("sshpass", "-p"), ("redis", "-a"), ("sqlcmd", "-P"), ("gh", "--body"), ("gh", "-b"),
+})
+_AWS_SECRET_STEMS = ("secret", "token", "password")
+# htpasswd -b FILE USER PASSWORD: the password is the third word after the program.
+_HTPASSWD_PASSWORD_POSITION = 3
+
+
+class _ClientSecrets:
+    """One left-to-right pass over the words of a text (148)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.spans: list[tuple[int, int]] = []
+        self._reset()
+
+    def _reset(self) -> None:
+        self.recent: list[str] = []
+        self.client = ""
+        self.secret_next = False
+        self.batch = False
+        self.positional = 0
+
+    def scan(self) -> list[tuple[int, int]]:
+        words = list(_WORD_RE.finditer(self.text))
+        previous_end = 0
+        index = 0
+        while index < len(words):
+            word = words[index]
+            if "\n" in self.text[previous_end:word.start()]:
+                self._reset()
+            if self.secret_next:
+                index = self._secret(words, index)
+                previous_end = words[index - 1].end()
+                continue
+            previous_end = word.end()
+            self._word(word.group(), word.start(), word.end())
+            if any(char in word.group() for char in _BREAK_CHARS):
+                self._reset()
+            index += 1
+        return self.spans
+
+    def _secret(self, words: list[re.Match[str]], index: int) -> int:
+        """Record the secret at *index* (a quoted run is taken whole); return the next index."""
+        self.secret_next = False
+        first = words[index].group()
+        last = index
+        if first[:1] in ("'", '"') and not (len(first) > 1 and first.endswith(first[0])):
+            for offset in range(index + 1, min(len(words), index + _MAX_QUOTED_WORDS)):
+                if words[offset].group().endswith(first[0]):
+                    last = offset
+                    break
+        self.spans.append((words[index].start(), words[last].end()))
+        return last + 1
+
+    def _word(self, value: str, start: int, end: int) -> None:
+        base = value.rsplit("/", 1)[-1].lower()
+        self.recent = [*self.recent, base][-3:]
+        if value.startswith(_OPENSSL_LABEL):
+            self.spans.append((start + len(_OPENSSL_LABEL), end))
+        elif self.client == "htpasswd":
+            self._htpasswd_word(value, start, end)
+        elif self.recent[-2:] == ["docker", "login"]:
+            self.client = "docker"
+        elif self.recent[-2:] == ["gh", "secret"]:
+            self.client = "gh"
+        elif self.recent[-3:] == ["aws", "configure", "set"]:
+            self.client = "aws"
+        elif base in _CLIENTS:
+            self.client = _CLIENTS[base]
+            self.batch = False
+            self.positional = 0
+        elif (self.client == "aws" and any(stem in base for stem in _AWS_SECRET_STEMS)) or (
+            self.client,
+            value,
+        ) in _SECRET_FLAGS:
+            self.secret_next = True
+
+    def _htpasswd_word(self, value: str, start: int, end: int) -> None:
+        """htpasswd -b FILE USER PASSWORD: the third positional word is the password."""
+        if value.startswith("-"):
+            self.batch = self.batch or value == "-b"
+            return
+        self.positional += 1
+        if self.batch and self.positional == _HTPASSWD_PASSWORD_POSITION:
+            self.spans.append((start, end))
+
+
+def redact_client_forms(text: str) -> str:
+    """Replace each client secret found by ``_ClientSecrets`` (148)."""
+    pieces: list[str] = []
+    last = 0
+    for start, end in _ClientSecrets(text).scan():
+        pieces.append(text[last:start])
+        pieces.append("[REDACTED]")
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+MAX_EVENT_TEXT = 200
+
+
+def clip_event_text(value: str) -> str:
+    """The text of a backend event: redacted first, then clipped (148).
+
+    Every event text goes through here. Clipping before redaction let a token that
+    straddled the cut leave its prefix behind.
+    """
+    return redact_command(value)[:MAX_EVENT_TEXT]
+
+
+def redact_command(text: str) -> str:
+    """Value patterns, the transcript redactor, then the command forms (148, 129). Redact before clipping."""
+    text = _redact_secrets(text)
+    text = transcript_redact_text(text)
+    return redact_client_forms(text)
+
+
 class BackendEventType(str, Enum):
     progress = "progress"  # general working update
     tool_use = "tool_use"  # agent called a tool (file read/write, shell, etc.)
@@ -53,12 +186,19 @@ class BackendEvent(BaseModel):
     detail: str = ""        # optional longer detail (file path, tool args, etc.)
     is_delta: bool = False
     stream_id: str = ""
+    # 148: a tool_use event's name and primary argument (see backends/_tool_summary),
+    # and a tool result's outcome ("ok" | "error"). Empty on every other event.
+    tool: str = ""
+    arg: str = ""
+    status: str = ""
 
     @model_validator(mode="before")
     @classmethod
     def _redact_sensitive_detail(cls, data: object) -> object:
-        if isinstance(data, dict) and "detail" in data:
-            data["detail"] = _redact_secrets(str(data["detail"]))
+        if isinstance(data, dict):
+            for field in ("text", "detail", "arg", "tool"):
+                if field in data:
+                    data[field] = redact_command(str(data[field]))
         return data
 
 if TYPE_CHECKING:

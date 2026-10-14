@@ -50,7 +50,7 @@ from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.backends.opencode import _build_task_prompt
 from performer import transcript
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -504,7 +504,7 @@ class OpenClawBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
+            BackendEvent(type=type, text=clip_event_text(text), detail=detail),
         )
 
     @transcript.best_effort
@@ -599,7 +599,7 @@ class OpenClawBackend:
                 output=output_text or None,
             )
             if output_text:
-                self._emit(BackendEventType.progress, output_text[:_MAX_TEXT])
+                self._emit(BackendEventType.progress, output_text)
             self._record_success(parsed=parsed, meta=meta, output_text=output_text)
             self._terminal = True
         except asyncio.CancelledError:

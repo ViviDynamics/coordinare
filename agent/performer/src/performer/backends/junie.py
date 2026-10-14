@@ -53,7 +53,7 @@ from performer.backends._card_docs import scanner_findings_prompt_section, repai
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer import transcript
-from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -380,7 +380,7 @@ class JunieBackend:
         self._json_output_path = None
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
 
     @transcript.best_effort
     def _record_launch(self, prompt: str, effective_model: str | None) -> None:
@@ -537,7 +537,7 @@ class JunieBackend:
 
         summary = parsed.get("summary") or parsed.get("result") or parsed.get("message")
         if isinstance(summary, str) and summary:
-            self._emit(BackendEventType.progress, summary[:_MAX_TEXT])
+            self._emit(BackendEventType.progress, summary)
 
         self._status = BackendStatus(
             state="done",

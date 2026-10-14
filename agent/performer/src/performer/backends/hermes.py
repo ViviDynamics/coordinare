@@ -44,7 +44,7 @@ from performer.backends._card_docs import scanner_findings_prompt_section, repai
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer import transcript
-from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -534,7 +534,7 @@ class HermesBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
+            BackendEvent(type=type, text=clip_event_text(text), detail=detail),
         )
 
     @transcript.best_effort
@@ -727,7 +727,7 @@ class HermesBackend:
             )
             event_text = summary or (output_text or "")
             if event_text:
-                self._emit(BackendEventType.progress, event_text[:_MAX_TEXT])
+                self._emit(BackendEventType.progress, event_text)
             self._record_outcome(
                 rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
                 reason=None, output_text=output_text,
