@@ -1,7 +1,7 @@
 """Reserve issue slots across performer stages, independently of role capacity."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import time
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
@@ -20,11 +20,16 @@ REVIEW_WAIT_HUMAN: Final = 'human'
 REVIEW_WAIT_AUTOMATION: Final = 'automation'
 REVIEW_SLOT_HOLD_SECONDS_DEFAULT: Final = 900
 REVIEW_WAIT_UNEVALUATED: Final = 'unevaluated'
+_HOLD_PHASES: Final = ('monitoring_pr', 'merging')
 
 
-def utc_now() -> datetime:
-    """The clock for hold bounds. One seam, so a test can cross the bound."""
-    return datetime.now(UTC)
+def hold_clock() -> float:
+    """The clock for hold bounds: monotonic, so a wall-clock jump cannot shorten or stretch a hold.
+
+    Holds are not persisted, so a value is only ever compared with another value from
+    this process. One seam, so a test can cross the bound.
+    """
+    return time.monotonic()
 
 
 def configured_hold_seconds(config: Any) -> int:
@@ -34,31 +39,33 @@ def configured_hold_seconds(config: Any) -> int:
 
 
 def expire_review_holds(sessions: dict[str, Any], *, hold_seconds: int) -> list[str]:
-    """#186: a non-human hold in monitoring_pr that outlives its bound becomes a human wait.
+    """#186: a non-human hold that outlives its bound becomes a human wait.
 
-    A card that is not waiting on a human, and has no live work, may keep its slot
-    only while the daemon is about to act on it. The first sighting stamps
-    ``review_wait_since`` (a card never evaluated, or restored after a restart, is
-    timed from there). Past ``hold_seconds`` the card is recorded as waiting on a
-    human: it releases its slot, still counts toward the review cap, is still ticked
-    every cycle, and regains a slot through the returning path when it needs a
-    performer. Logged once per expiry.
+    Applies to a card in monitoring_pr waiting on checks, the daemon, or not yet
+    evaluated, and to a card in merging whose merge keeps failing. A card with live
+    work is never expired. The clock starts at the first sighting of the hold
+    (``review_wait_since`` is None), so a card restored after a restart is timed
+    from its first sighting. Past ``hold_seconds`` the card is recorded as waiting
+    on a human: it releases its slot, still ticks every cycle, and regains a slot
+    through the returning path when it needs a performer. Logged once per expiry.
     """
-    now = utc_now()
+    now = hold_clock()
     expired: list[str] = []
     for cid, session in sessions.items():
-        if session.get('phase') != 'monitoring_pr' or has_live_work(session):
+        if session.get('phase') not in _HOLD_PHASES or has_live_work(session):
             continue
         if session.get('review_wait') == REVIEW_WAIT_HUMAN:
             continue
         since = session.get('review_wait_since')
-        if not isinstance(since, datetime):
+        if not isinstance(since, float):
             session['review_wait_since'] = now
             continue
-        held = (now - since).total_seconds()
+        held = now - since
         if held <= hold_seconds:
             continue
-        reason = session.get('review_wait_reason') or REVIEW_WAIT_UNEVALUATED
+        reason = session.get('review_wait_reason') or (
+            'merge' if session.get('phase') == 'merging' else REVIEW_WAIT_UNEVALUATED
+        )
         session['review_wait'] = REVIEW_WAIT_HUMAN
         session['review_wait_expired'] = True
         expired.append(cid)
@@ -102,13 +109,26 @@ def is_parked_in_review(session: dict[str, Any]) -> bool:
     max_cards_in_review. It is still ticked every cycle so its merge evaluation
     runs (#102), and it asks for a slot again only when it needs a performer.
     A card waiting on checks or on the daemon, or not evaluated yet, is not
-    parked: it keeps its reservation.
+    parked: it keeps its reservation until the bound.
     """
     card = session.get('current_card') or {}
     return (
         session.get('phase') == 'monitoring_pr'
         and session.get('review_wait') == REVIEW_WAIT_HUMAN
         and card.get('status') not in _RELEASED_STATUSES
+        and not has_live_work(session)
+    )
+
+
+def is_released_merge(session: dict[str, Any]) -> bool:
+    """#186: a merge that has been held past the bound. It holds no slot, and it is still ticked.
+
+    It is not counted toward max_cards_in_review, which counts review waits only. It
+    is still ticked every cycle, so the merge is retried and merges as soon as it can.
+    """
+    return (
+        session.get('phase') == 'merging'
+        and session.get('review_wait') == REVIEW_WAIT_HUMAN
         and not has_live_work(session)
     )
 
@@ -177,8 +197,9 @@ def select_pipelines(
 
     One rule for a slot (#179, #186): a card holds a pipeline slot while it has
     work of ours to do or under way. Paused, idle, blocked and done issues
-    release their reservation, and so does a card waiting on a human in review.
-    A card waiting on checks or on the daemon, or not evaluated yet, keeps it.
+    release their reservation, and so does a card waiting on a human in review or
+    a merge held past its bound. A card waiting on checks or on the daemon, or not
+    evaluated yet, keeps it until the bound.
 
     Admission order is: running work, reservations already held, cards that have
     started and need a performer again, then cards that have not started, each
@@ -205,6 +226,7 @@ def select_pipelines(
             and card.get('status') not in _RELEASED_STATUSES
             and session.get('phase') not in _RELEASED_PHASES
             and not is_parked_in_review(session)
+            and not is_released_merge(session)
         ):
             candidates.append(cid)
     selected = set(running)

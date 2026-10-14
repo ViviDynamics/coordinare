@@ -57,13 +57,21 @@ releases a slot, so that a card on checks keeps its reservation and is not count
 - Liveness has one definition, `has_live_work`: a live performer or agent with a session,
   or a live side writer. Pickup counting in `check_board` and the budget both use it.
 **Bounded holds (#186 follow-up).** A card may keep its slot in `monitoring_pr` for
-`review_slot_hold_seconds` (default 900) while it waits on checks or the daemon. After
-that it is recorded as a wait on a human, and `monitor_pr.slot_hold_expired` is logged
-once with the reason. The clock starts at the first sighting of a non-human hold and
-restarts when the reason or the PR head changes. An expired hold stays a human wait until
-the PR moves on. A red base branch, a comment poll that cannot complete (no PR number), and
-a non-transient `monitor_pr` error are human waits at once. A declined assessment is not
+`review_slot_hold_seconds` (default 900) while it waits on checks or the daemon, and the
+same for a merge that keeps failing in `merging`. After that it is recorded as a wait on a
+human, and `monitor_pr.slot_hold_expired` is logged once with the reason. One clock runs
+per hold episode, on the monotonic clock. It starts when the card enters a non-human hold,
+and it is not restarted by a new head or a new reason, which are logged but do not reset
+it. It ends when the card reaches a human wait, dispatches a performer, or leaves review or
+merge. An expired hold stays a human wait until then. A card with a live side writer or a
+live performer is never released. A released merge is still ticked every cycle, so it is
+retried. A red base branch, a comment poll that cannot complete (no PR number), and a
+non-transient `monitor_pr` error are human waits at once. A declined assessment is not
 "started": a card that comes back to To Do is new work again.
+
+The clock is not persisted. After a daemon restart a card in a non-human hold has no clock,
+so it is timed again from its first sighting in the next cycle, and it is evaluated in the
+first pass like any other card in review.
 
 - In the symphony override editor, "No cap (unlimited)" saves `null` for
   `max_cards_in_review`. An empty input removes the override and inherits the global default.

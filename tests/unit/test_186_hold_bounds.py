@@ -8,7 +8,6 @@ is a fake so the bound can be crossed without sleeping.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -35,20 +34,22 @@ _BOUND = 900
 
 
 class _Clock:
-    def __init__(self) -> None:
-        self.now = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    """The monotonic hold clock, advanced by the test."""
 
-    def __call__(self) -> datetime:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
         return self.now
 
     def advance(self, seconds: float) -> None:
-        self.now += timedelta(seconds=seconds)
+        self.now += seconds
 
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
-    monkeypatch.setattr(pipeline_budget, "utc_now", fake)
+    monkeypatch.setattr(pipeline_budget, "hold_clock", fake)
     return fake
 
 
@@ -342,7 +343,7 @@ def test_an_unevaluated_card_that_never_gets_evaluated_releases_after_the_bound(
 
 
 def test_the_hold_fields_round_trip_and_clear_when_the_card_leaves_monitoring_pr() -> None:
-    since = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
+    since = 1_000.0
     state = initial_state()
     state.update(phase="monitoring_pr", current_card={"id": "x"}, review_wait="automation",
                  review_wait_since=since, review_wait_head=_HEAD, review_wait_reason="checks",

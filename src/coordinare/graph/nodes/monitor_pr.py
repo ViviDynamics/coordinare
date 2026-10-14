@@ -32,7 +32,11 @@ from coordinare.services import pipeline_budget
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
-from coordinare.services.pipeline_budget import REVIEW_WAIT_AUTOMATION, REVIEW_WAIT_HUMAN
+from coordinare.services.pipeline_budget import (
+    REVIEW_WAIT_AUTOMATION,
+    REVIEW_WAIT_HUMAN,
+    has_live_work,
+)
 from coordinare.services.pr_conversation_feedback import (
     conversation_pr_number,
     poll_pr_conversation_feedback,
@@ -220,28 +224,28 @@ def _log_merge_decision(card_id: str, outcome: str, reason: str, **observed: obj
 def _record_review_wait(
     state: CoordinareState, card_id: str, wait: str | None, *, reason: str, head: str,
 ) -> None:
-    """#186: record what the card is waiting on, and when a non-human hold began.
+    """#186: record what the card is waiting on, and the clock of its non-human hold.
 
-    A non-human hold keeps its clock while the reason and the PR head stay the
-    same. Once a hold has expired (``pipeline_budget.expire_review_holds``) it is a
-    human wait until the PR moves on: a new head, or the card leaving review. A
-    human wait releases the card's place in this cycle's selection at once, so a
-    later claimant in the same pass is not refused on its account.
+    One clock per hold episode. An episode starts when the card enters a non-human
+    hold from any other state, and it ends only when the card reaches a human wait,
+    dispatches a performer (wait None), or leaves review. A new head or a new reason
+    does not restart it; both are kept for the log. An expired hold
+    (``pipeline_budget.expire_review_holds``) stays a human wait until the card's
+    wait is cleared, so it cannot be re-armed by a new head.
+
+    A human wait releases the card's place in this cycle's selection at once, so a
+    later claimant in the same pass is not refused on its account. The card is not
+    released while it has live work (a side writer or a performer outlives its stage).
     """
-    previous_head = state.get("review_wait_head")
-    head_moved = previous_head is not None and previous_head != head
-    expired = bool(state.get("review_wait_expired")) and not head_moved
+    expired = bool(state.get("review_wait_expired"))
     if wait == REVIEW_WAIT_AUTOMATION and expired:
         wait = REVIEW_WAIT_HUMAN
     if wait == REVIEW_WAIT_AUTOMATION:
-        continuing = (
-            not head_moved
-            and state.get("review_wait") == REVIEW_WAIT_AUTOMATION
-            and state.get("review_wait_reason") == reason
-            and isinstance(state.get("review_wait_since"), datetime)
+        episode_open = state.get("review_wait") == REVIEW_WAIT_AUTOMATION and isinstance(
+            state.get("review_wait_since"), float,
         )
-        if not continuing:
-            state["review_wait_since"] = pipeline_budget.utc_now()
+        if not episode_open:
+            state["review_wait_since"] = pipeline_budget.hold_clock()
         state["review_wait_expired"] = False
     else:
         state["review_wait_since"] = None
@@ -249,7 +253,7 @@ def _record_review_wait(
     state["review_wait"] = wait
     state["review_wait_reason"] = reason
     state["review_wait_head"] = head
-    if wait == REVIEW_WAIT_HUMAN:
+    if wait == REVIEW_WAIT_HUMAN and not has_live_work(cast("dict[str, Any]", state)):
         selected = state.get("_pipeline_selected")
         if isinstance(selected, set):
             selected.discard(card_id)

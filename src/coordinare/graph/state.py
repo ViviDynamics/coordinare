@@ -324,7 +324,7 @@ class CoordinareState(TypedDict, total=False):
     # not evaluated. Mirrored to the session; see session.CardSession.
     review_wait: str | None
     # 186: the hold bound's clock for a non-human wait (see session.CardSession).
-    review_wait_since: datetime | None
+    review_wait_since: float | None
     review_wait_reason: str | None
     review_wait_head: str | None
     review_wait_expired: bool

@@ -309,7 +309,7 @@ class CardSession(TypedDict, total=False):
     # #186: when the current non-human hold began, the reason and PR head it was
     # recorded against, and whether it expired into a human wait. A new reason or
     # head restarts the clock. All four are dropped when the card leaves review.
-    review_wait_since: datetime | None
+    review_wait_since: float | None
     review_wait_reason: str | None
     review_wait_head: str | None
     review_wait_expired: bool
@@ -624,9 +624,9 @@ def state_to_session(state: CoordinareState) -> CardSession:
     for field in _SESSION_FIELDS:
         if field in state:
             session[field] = state[field]  # type: ignore[literal-required]
-    # 186: a wait describes one monitoring_pr stint. Any other phase has none,
-    # so a card that left review cannot carry an old "human" into its next stint.
-    if state.get("phase") != "monitoring_pr":
+    # 186: a wait and its hold describe one stint in review or in merge. Any other
+    # phase has none, so a card that left them cannot carry an old hold into its next stint.
+    if state.get("phase") not in ("monitoring_pr", "merging"):
         session.pop("review_wait", None)
         session.pop("review_wait_since", None)
         session.pop("review_wait_reason", None)

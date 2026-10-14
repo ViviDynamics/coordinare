@@ -55,6 +55,7 @@ from coordinare.services.pipeline_budget import (
     has_live_side_writer,
     has_started,
     is_parked_in_review,
+    is_released_merge,
     parked_in_review,
     review_cap_allows_new_card,
     review_cap_detail,
@@ -1666,8 +1667,14 @@ def _compute_session_eligibilities(
         session = active_sessions[cid]
         # #102: a card parked in monitoring_pr launches no performer. It holds
         # no slot (#179) and is still ticked every cycle so its merge evaluation
-        # (the closer) runs.
-        if not eligibility.eligible or cid in selected or session.get("phase") == "monitoring_pr":
+        # (the closer) runs. #186: a merge held past its bound is ticked the same
+        # way, so it is retried every cycle without holding a slot.
+        if (
+            not eligibility.eligible
+            or cid in selected
+            or session.get("phase") == "monitoring_pr"
+            or is_released_merge(session)
+        ):
             continue
         # #179: say which limit is holding the card. The review cap only holds
         # back cards that have not started (#186: a started card is returning work).
