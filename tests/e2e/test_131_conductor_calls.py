@@ -2,7 +2,7 @@
 
 The calls are written by the real wrapper (``ConductorCallLog``) into a temporary transcript
 root. The card detail lists them next to its performer runs, and a call's link opens the
-viewer at ``/runs/conductor/<card>/<call>``. A decision that is markup is shown as text.
+viewer at ``/runs/_conductor/<card>/<call>``. A decision that is markup is shown as text.
 """
 
 from __future__ import annotations
@@ -155,7 +155,7 @@ def test_a_conductor_call_opens_in_the_viewer(page: Page, conductor_live: Live, 
     expect(link).to_be_visible(timeout=_WAIT_RUN)
     link.click()
     run_id = _call_id_from_disk(conductor_calls_root, "assess")
-    expect(page).to_have_url(re.compile(rf"/runs/conductor/{CARD}/{run_id}$"), timeout=_WAIT_RUN)
+    expect(page).to_have_url(re.compile(rf"/runs/_conductor/{CARD}/{run_id}$"), timeout=_WAIT_RUN)
     expect(page.locator("#runs-header")).to_contain_text("conductor:assess", timeout=_WAIT_RUN)
     expect(page.locator("#runs-rows")).to_contain_text(ASSESS_DECISION, timeout=_WAIT_RUN)
 
@@ -172,7 +172,7 @@ def _call_id_from_disk(root: Path, kind: str) -> str:
     """The id of the call whose header names ``kind``, read from the file the wrapper wrote."""
     import json
 
-    for path in (root / "conductor" / CARD).glob("*.jsonl"):
+    for path in (root / "_conductor" / CARD).glob("*.jsonl"):
         header: Any = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
         if header.get("conductor", {}).get("kind") == kind:
             return str(path.stem)

@@ -69,11 +69,11 @@ def _since(tracking: dict[str, Any]) -> str | None:
     return (_timestamp(str(raw)) - timedelta(seconds=1)).isoformat().replace('+00:00', 'Z') if raw else None
 
 
-async def _classify(body: str, author: str, backend: Any) -> bool:
+async def _classify(body: str, author: str, backend: Any, card_id: str | None = None) -> bool:
     """Use inference when available; explicit work verbs are the safe fallback."""
     label = None
     if backend is not None:
-        async with conductor_call(backend, kind="pr_comment_classify") as call:
+        async with conductor_call(backend, kind="pr_comment_classify", card_id=card_id) as call:
             try:
                 result = await backend.prompt(_PROMPT.format(body=body, author=author), response_format='json')
                 if isinstance(result, dict):
@@ -137,7 +137,9 @@ async def _process_comment(
     ignored = author_type == ReviewerType.BOT or not body.strip() or bool(_STATUS.search(body))
     ignored = ignored or (author_type == ReviewerType.TRUSTED_BOT and bool(_BOT_STATUS.search(body)))
     classified = not accepted and not ignored
-    request = classified and await _classify(body, author, state.get('conducting_backend'))
+    current = state.get('current_card')
+    card_id = str(current.get('id', '')) if isinstance(current, dict) else ''
+    request = classified and await _classify(body, author, state.get('conducting_backend'), card_id or None)
     if not request:
         tracking['versions'][cid] = digest
         return None, True, classified

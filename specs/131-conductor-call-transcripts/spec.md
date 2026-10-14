@@ -53,20 +53,26 @@ One wrapper, `services/conductor_calls.py`, owns every conductor model call.
   `parameters`), `prompt.rendered` and `prompt.system`. Then `assistant_text`, `tool_call`,
   `usage` (scope `message`, carries `stage: conductor:<kind>`), `error` and a closing `result`
   whose text is the decision (`is_error` set on failure).
-- **Path.** `<transcripts root>/conductor/<card id or "system">/<call_id>.jsonl`.
-  The issue wrote `_conductor`. The writer's path sanitiser strips leading underscores, so the
-  folder is `conductor`. Config refuses a symphony named `conductor`, so the folder is never
-  shared with a symphony.
+- **Path.** `<transcripts root>/_conductor/<card id or "system">/<call_id>.jsonl`.
+  `sanitize_segment` strips leading underscores and never returns a name that starts with one,
+  so no symphony or card folder can be `_conductor`, in any letter case. (The first draft wrote
+  `conductor`, which a symphony can be named; `sanitize_segment("_conductor")` is
+  `conductor-a4d9f101`, so that folder was never the conductor's.) The one bypass is
+  `is_conductor_folder()` in `lib/path_segments.py`, used by the writer (`conductor_writer`),
+  the viewer's symphony address (`_valid_symphony_segment`), the ledger (`observe`, and the
+  rebuild's folder walk) and the layout check of the retention sweep. Config accepts any
+  symphony name, including `conductor` and `_conductor`.
 - **Written at close, off the loop.** The file is written once, when the call's `async with`
   exits (normal exit, error or cancellation). The write runs on a worker thread as a tracked
   task, so neither the call nor the decision waits for disk. A failure is logged and dropped.
   A process killed mid-call loses that one call's file.
 - **Ledger.** The usage record is counted by `TokenLedger` under the card (`card` = the card id
   or `system`) and stage `conductor:<kind>`, priced by the same `cost_tracking` table. Its
-  symphony folder is `conductor`, so the `token_usage` block gains a `conductor` bucket. The
-  named symphonies, `unattributed` and `conductor` together add up to the total. The spend
-  strip does not draw that bucket yet. The boot rebuild reads the same folder name, so live
-  and rebuilt totals agree.
+  symphony is the one the call names (the header's `conductor.symphony`), so it is in that
+  symphony's per-symphony figures, and the scoped spend strip includes it. A call that names
+  no symphony stays in the `conductor` bucket of `token_usage`, so the named symphonies,
+  `unattributed` and `conductor` add up to the total. After a restart the rebuild reads the
+  symphony from the file's header, so live and rebuilt totals agree.
 - **Limits.** The CLI backends report no token usage, so their calls have no `usage` record
   and count zero tokens. The record says why.
 - **Redaction and safety.** Every record goes through the writer, which applies
@@ -80,10 +86,31 @@ One wrapper, `services/conductor_calls.py`, owns every conductor model call.
   files appear with no route change. `run_viewer._header_summary` reads the `conductor`
   section: its stage is `conductor:<kind>` and it carries the decision.
 - The card detail's run list (`dashboard_static/runs.js`) labels a conductor call with its kind
-  and decision, and links it to `/runs/conductor/<card>/<call_id>`, which the existing viewer
+  and decision, and links it to `/runs/_conductor/<card>/<call_id>`, which the existing viewer
   opens.
 - The activity feed has no assessment or classification rows today, so nothing there links to
   a call. The timeline link is #147's.
+
+## Known limit (not changed here)
+
+Symphony folders are the sanitised symphony name. On a case-insensitive filesystem (the default on
+macOS) the symphonies `conductor` and `Conductor` are one folder, so their runs share it. That is
+the sanitiser's behaviour since #139, and separating them needs a layout migration.
+
+## Review fixes (PR #215)
+
+- Every backend built by `build_conducting_backend` records, and the test goes through the factory
+  for each kind (`tests/unit/test_131_review_fixes.py`). The Anthropic backend exposes its
+  service's log, and a call opened on a log-less backend no longer hides an inner send's record.
+- The conductor's folder is `_conductor` (above). The config refusal is removed.
+- Card in scope: the comment, PR-comment and env-signature calls take the card id.
+- Decisions never raise (`assessment_decision`, `CallRecord.decide`, the persona scope decision).
+  The CLI backends keep their original log event names.
+- Shutdown drains the pending writes for at most `SHUTDOWN_DRAIN_SECONDS`, without cancelling them.
+- `list_runs` caps by file time before it reads headers.
+- The AST guard flags model SDK imports, httpx against a model endpoint, method aliases of
+  `messages.create`, model CLI spawns outside `_run_cli`, and `_run_cli` called outside a backend's
+  `_send`. Each rule has a self-test.
 
 ## Acceptance
 

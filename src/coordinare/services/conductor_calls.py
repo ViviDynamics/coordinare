@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -43,7 +44,7 @@ from coordinare.lib.path_segments import CONDUCTOR_FOLDER
 from coordinare.observability import get_current_symphony
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from coordinare.services.run_transcript import TranscriptCollector
 
@@ -61,10 +62,13 @@ UNBOUND_SYMPHONY = "__default__"
 RUN_HEADER_TYPE = "run_header"
 RUN_HEADER_VERSION = 1
 
+#: How long shutdown waits for the conductor's pending transcript writes (131).
+SHUTDOWN_DRAIN_SECONDS = 5.0
 PROMPT_LIMIT_CHARS = 98_304
 DECISION_LIMIT_CHARS = 500
 NO_DECISION_TEXT = "no decision recorded"
 NO_USAGE_REASON = "the backend reports no token usage for this call"
+DECISION_UNAVAILABLE = "decision unavailable"
 _HEADER_BACKEND = "conductor"
 _HEADER_TRANSPORT = "direct"
 _TOOL_TYPE = "tool_call"
@@ -125,8 +129,14 @@ class CallRecord:
     decision: str | None = None
 
     def decide(self, decision: str) -> None:
-        """The decision the call produced, from its output (e.g. ``assessed: ready``)."""
-        self.decision = decision[:DECISION_LIMIT_CHARS]
+        """The decision the call produced, from its output (e.g. ``assessed: ready``).
+
+        Never raises: recording a decision must not change the decision or the call that made it.
+        """
+        try:
+            self.decision = str(decision)[:DECISION_LIMIT_CHARS]
+        except Exception:  # a value that cannot be written as text is recorded as unavailable
+            self.decision = DECISION_UNAVAILABLE
 
 
 _CURRENT: ContextVar[CallRecord | None] = ContextVar("conductor_call", default=None)
@@ -147,7 +157,12 @@ class ConductorCallLog:
     async def call(
         self, kind: str, *, card_id: str | None = None, symphony: str | None = None,
     ) -> AsyncIterator[CallRecord]:
-        """Open one call. Its model sends made inside the block are recorded on it."""
+        """Open one call. Its model sends made inside the block are recorded on it.
+
+        With no enabled log the call is not set as the current call, so a send made inside it
+        is recorded by whatever log that send itself carries, instead of into a record that
+        is dropped.
+        """
         record = CallRecord(
             kind=kind,
             card_id=card_id or None,
@@ -155,11 +170,17 @@ class ConductorCallLog:
             call_id=uuid.uuid4().hex,
             started_at=datetime.now(UTC),
         )
+        if not self.enabled:
+            yield record
+            return
         token = _CURRENT.set(record)
         try:
             yield record
         finally:
-            _CURRENT.reset(token)
+            try:
+                _CURRENT.reset(token)
+            except ValueError:  # the call was closed in another context: nothing to restore
+                _CURRENT.set(None)
             self._close(record)
 
     async def invoke(
@@ -172,23 +193,37 @@ class ConductorCallLog:
                 return await _send_into(implicit, request, send)
         return await _send_into(record, request, send)
 
-    async def drain(self) -> None:
-        """Wait for every pending write. For shutdown and tests."""
+    async def drain(self, within: float | None = None) -> None:
+        """Wait for the pending writes, for at most ``within`` seconds when one is given.
+
+        Shutdown uses the bound, so a stuck disk cannot hold the daemon. The writes themselves are
+        not cancelled: one still pending after the bound finishes on its own, if the process lives
+        long enough, and otherwise its call loses its file.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if within is None else loop.time() + within
         while self._pending:
-            await asyncio.gather(*list(self._pending), return_exceptions=True)
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                return
+            await asyncio.wait(list(self._pending), timeout=remaining)
 
     def _close(self, record: CallRecord) -> None:
-        # A call that never reached a model send made no model call, so it has nothing to record.
-        if not self.enabled or record.request is None:
-            return
+        """Schedule the call's write. Never raises: closing a call cannot change its outcome."""
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._persist(record)
-            return
-        task = loop.create_task(asyncio.to_thread(self._persist, record))
-        self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+            # A call that never reached a model send made no model call, so it has nothing to record.
+            if not self.enabled or record.request is None:
+                return
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._persist(record)
+                return
+            task = loop.create_task(asyncio.to_thread(self._persist, record))
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
+        except Exception as exc:  # best effort: a failed transcript never reaches the call
+            logger.warning("conductor_call.close_failed", call_kind=record.kind, exc_type=type(exc).__name__)
 
     def _persist(self, record: CallRecord) -> None:
         """Write the call's file. Blocking: runs on a worker thread. Never raises."""
@@ -197,21 +232,21 @@ class ConductorCallLog:
             return
         try:
             # A one-shot writer: the live-writer map is the poll path's, and this file is never polled.
-            writer = collector.new_writer(
+            writer = collector.conductor_writer(
                 run_id=record.call_id,
-                symphony=CONDUCTOR_FOLDER,
                 card_id=record.card_id or SYSTEM_CARD,
             )
             writer.set_stage(f"conductor:{record.kind}")
             writer.stage_run_header(_header(record))
             rows = _records(record)
             writer.append_batch(rows, last_seq=len(rows))
-            # The usage the writer accepted is counted under the card and the stage, as the poll path does.
+            # The usage is counted under the card, the stage, and the symphony the call names.
+            # A call that names none stays in the conductor's own folder.
             taken = writer.drain_usage()
             if taken:
                 collector.usage.observe(
                     record.call_id,
-                    symphony=writer.parts[0],
+                    symphony=record.symphony or CONDUCTOR_FOLDER,
                     card=writer.parts[1],
                     stage=writer.stage,
                     records=taken,
@@ -260,16 +295,25 @@ def conductor_call(
     return log.call(kind, card_id=card_id, symphony=symphony)
 
 
-def assessment_decision(assessment: Mapping[str, Any]) -> str:
-    """The decision an assessment (``sufficient`` / ``questions`` / ``dependencies``) reached."""
-    deps = assessment.get("dependencies") or []
-    if isinstance(deps, list) and deps:
-        numbers = ", ".join(f"#{d}" for d in deps)
-        return f"assessed: blocked by {numbers}"
-    if assessment.get("sufficient", True):
-        return "assessed: ready"
-    count = len(assessment.get("questions") or [])
-    return f"assessed: needs input ({count} question{'' if count == 1 else 's'})"
+def assessment_decision(assessment: Any) -> str:
+    """The decision an assessment (``sufficient`` / ``questions`` / ``dependencies``) reached.
+
+    Never raises, whatever the assessment holds: the caller records it inside the card's
+    assessment handling, and a formatting error there must not block the card.
+    """
+    try:
+        if not isinstance(assessment, Mapping):
+            return DECISION_UNAVAILABLE
+        deps = assessment.get("dependencies") or []
+        if isinstance(deps, list) and deps:
+            numbers = ", ".join(f"#{d}" for d in deps)
+            return f"assessed: blocked by {numbers}"
+        if assessment.get("sufficient", True):
+            return "assessed: ready"
+        count = len(assessment.get("questions") or [])
+        return f"assessed: needs input ({count} question{'' if count == 1 else 's'})"
+    except Exception:
+        return DECISION_UNAVAILABLE
 
 
 def _bound_symphony() -> str:

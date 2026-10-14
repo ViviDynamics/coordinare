@@ -47,6 +47,7 @@ from coordinare.services.board_provider import (
     board_of,
 )
 from coordinare.services.closed_pr import is_closed_pr_block
+from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
@@ -5786,6 +5787,13 @@ class CoordinareDaemon:
         last save: an idle daemon whose state never moved must NOT write a
         snapshot (test_no_snapshot_write_when_phase_unchanged), and a redundant
         rewrite of already-persisted state is pointless."""
+        # 131: let the conductor's pending call transcripts land, for a bounded time.
+        calls = self._state.get("conductor_calls")
+        if isinstance(calls, ConductorCallLog):
+            try:
+                await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
+            except Exception as exc:  # pragma: no cover, best-effort drain
+                logger.warning("daemon.conductor_drain_failed", error=str(exc))
         if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
             try:
                 await self._state_store.save(self._build_snapshot())

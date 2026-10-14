@@ -14,6 +14,8 @@ var RUN_TITLE_CHARS = 90;
 var RUN_CARD_CACHE_MS = 30000;
 var RUN_SEARCH_LIMIT = 50;
 var RUN_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// 131: the folder of the conductor's own model calls (services/conductor_calls.py).
+var CONDUCTOR_FOLDER = '_conductor';
 var RUN_KIND_LABELS = {
   user: 'User', assistant_text: 'Assistant', thinking: 'Thinking', tool_call: 'Tool call',
   tool_result: 'Tool result', usage: 'Tokens', result: 'Result', error: 'Error',
@@ -42,7 +44,9 @@ function runAddressFromPath(path) {
   for (var i = 0; i < parts.length; i++) {
     var value;
     try { value = decodeURIComponent(parts[i]); } catch (_malformed) { return { invalid: true }; }
-    if (!RUN_NAME_PATTERN.test(value)) return { invalid: true };
+    // 131: the conductor's own folder is the one symphony segment that starts with an underscore.
+    var conductorFolder = i === 0 && parts.length === 3 && value === CONDUCTOR_FOLDER;
+    if (!conductorFolder && !RUN_NAME_PATTERN.test(value)) return { invalid: true };
     decoded.push(value);
   }
   if (decoded.length === 1) return { kind: 'short', run: decoded[0] };

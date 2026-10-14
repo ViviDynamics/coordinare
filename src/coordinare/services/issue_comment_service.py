@@ -139,6 +139,7 @@ async def classify_issue_comment_ai(
     body: str,
     author: str,
     conducting_backend: Any,
+    card_id: str | None = None,
 ) -> str | None:
     """Classify a comment using the conducting LLM.
 
@@ -152,7 +153,7 @@ async def classify_issue_comment_ai(
         return "noise"
 
     prompt_text = _AI_CLASSIFY_PROMPT.format(author=author or "unknown", body=body)
-    async with conductor_call(conducting_backend, kind="comment_classify") as call:
+    async with conductor_call(conducting_backend, kind="comment_classify", card_id=card_id) as call:
         label = await _ask_comment_label(prompt_text, conducting_backend)
         call.decide(f"comment: {label}" if label else "comment: unclassified")
     return label

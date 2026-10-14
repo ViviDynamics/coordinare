@@ -226,6 +226,11 @@ class ClaudeService:
         )
         return reply.text
 
+    @property
+    def calls(self) -> ConductorCallLog:
+        """The call log every send of this service is recorded on (131)."""
+        return self._calls
+
     def _request(self, system: str, prompt: str, response_format: str | None) -> ModelRequest:
         """What a send carries, for the conductor transcript (131)."""
         parameters: dict[str, Any] = {

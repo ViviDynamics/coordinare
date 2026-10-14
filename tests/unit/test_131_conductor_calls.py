@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from coordinare.config import CoordinareConfiguration
-from coordinare.lib.path_segments import CONDUCTOR_FOLDER
+from coordinare.lib.path_segments import CONDUCTOR_FOLDER, is_conductor_folder, sanitize_segment
 from coordinare.services import conductor_calls
 from coordinare.services.conductor_calls import (
     CONDUCTOR_FOLDER as CALLS_FOLDER,
@@ -196,8 +196,12 @@ def test_the_wrapper_header_constants_match_the_run_header_module() -> None:
     assert conductor_calls.RUN_HEADER_VERSION == run_header.RUN_HEADER_VERSION
 
 
-def test_the_folder_is_shared_by_the_wrapper_and_the_ledger() -> None:
-    assert CALLS_FOLDER == CONDUCTOR_FOLDER == "conductor"
+def test_the_folder_is_the_one_name_the_sanitiser_never_produces() -> None:
+    assert CALLS_FOLDER == CONDUCTOR_FOLDER == "_conductor"
+    assert sanitize_segment(CONDUCTOR_FOLDER) != CONDUCTOR_FOLDER
+    assert is_conductor_folder(CONDUCTOR_FOLDER)
+    assert not is_conductor_folder("conductor")
+    assert not is_conductor_folder("Conductor")
 
 
 async def test_a_long_prompt_is_bounded_and_says_so(tmp_path: Path) -> None:
@@ -409,9 +413,12 @@ async def test_the_ledger_counts_and_prices_the_call_under_its_card(tmp_path: Pa
     assert call_id in ledger.run_ids(card=CARD)
 
     table = PriceTable(rules={MODEL: PRICE}, source="table")
-    block = usage_block(ledger, table, today=datetime.now(UTC).date())
-    assert block["conductor"]["week"]["models"][0]["priced"] is True
-    assert block["conductor"]["week"]["tokens"]["input"] == 120
+    block = usage_block(ledger, table, today=datetime.now(UTC).date(), symphonies=["coordinare"])
+    # The call names its symphony, so its spend is in that symphony's figures (and not the bucket).
+    per_symphony = block["by_symphony"]["coordinare"]["week"]
+    assert per_symphony["models"][0]["priced"] is True
+    assert per_symphony["tokens"]["input"] == 120
+    assert block["conductor"]["week"]["tokens"]["total"] == 0
 
 
 async def test_a_rebuild_from_disk_counts_the_same_calls(tmp_path: Path) -> None:
@@ -424,7 +431,8 @@ async def test_a_rebuild_from_disk_counts_the_same_calls(tmp_path: Path) -> None
     rebuilt = TokenLedger()
     rebuilt.load_from_transcripts(root, now=datetime.now(UTC))
     assert rebuilt.totals(card=CARD)[MODEL] == live
-    assert rebuilt.totals(symphony=CONDUCTOR_FOLDER)[MODEL] == live
+    # After a restart the call is attributed to the symphony its header names, as it was live.
+    assert rebuilt.totals(symphony="coordinare")[MODEL] == live
 
 
 async def test_the_disabled_mode_leaves_the_ledger_empty(tmp_path: Path) -> None:
@@ -491,10 +499,31 @@ def test_a_decision_is_bounded() -> None:
 # --- config: the reserved folder name ------------------------------------------------------
 
 
-def test_a_symphony_named_conductor_is_refused() -> None:
-    symphonies: Any = [SimpleNamespace(name="coordinare"), SimpleNamespace(name="conductor")]
-    with pytest.raises(ValueError, match="reserved for the conductor"):
-        CoordinareConfiguration.validate_unique_names(symphonies)
+def test_symphonies_named_conductor_load() -> None:
+    for name in ("conductor", "Conductor", "_conductor"):
+        symphonies: Any = [SimpleNamespace(name="coordinare"), SimpleNamespace(name=name)]
+        assert CoordinareConfiguration.validate_unique_names(symphonies) == symphonies
+
+
+async def test_a_symphony_named_like_the_conductor_keeps_its_runs_apart_from_the_calls(tmp_path: Path) -> None:
+    """A symphony named ``conductor`` (or ``_conductor``) writes its runs to its own folder."""
+    root = tmp_path / "t"
+    collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**6, retention_days=0)
+    for name in ("conductor", "_conductor"):
+        writer = collector.writer_for(run_id=f"run-{name}", symphony=name, card_id=CARD)
+        writer.append_batch([{"ts": "2026-10-14T10:00:00+00:00", "seq": 1, "type": "assistant_text",
+                              "text": "performer run"}], last_seq=1)
+    log = ConductorCallLog(collector)
+    call_id, _ = await _scope_call(log, root)
+    collector.release("run-conductor")
+    collector.release("run-_conductor")
+    listing = list_runs(root, symphony=None, card=CARD)
+    by_run = {row["run"]: row["symphony"] for row in listing["runs"]}
+    assert by_run["run-conductor"] == "conductor"
+    assert by_run["run-_conductor"].startswith("conductor-")
+    assert by_run[call_id] == CONDUCTOR_FOLDER
+    # The conductor's folder holds only the conductor's calls.
+    assert {p.stem for p in (root / CONDUCTOR_FOLDER / CARD).glob("*.jsonl")} == {call_id}
 
 
 def test_other_symphony_names_are_accepted() -> None:

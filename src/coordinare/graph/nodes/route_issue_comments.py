@@ -100,7 +100,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
         try:
             async with asyncio.timeout(min(_CLASSIFIER_TIMEOUT_SECONDS, remaining)):
                 label = await classify_issue_comment_ai(
-                    event.body, event.author, conducting_backend,
+                    event.body, event.author, conducting_backend, card_id=card_id,
                 )
         except TimeoutError:
             # The existing keyword fallback preserves the original comment body

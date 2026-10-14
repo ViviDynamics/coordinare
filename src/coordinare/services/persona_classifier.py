@@ -442,6 +442,15 @@ def _validate_and_coerce_slice(raw: Any) -> PersonaScopeSlice | None:
     return slice_
 
 
+def _scope_decision(filled: dict[str, Any], expected: list[str]) -> str:
+    """The decision a classified scope reached, for its conductor transcript (131). Never raises."""
+    try:
+        depths = ", ".join(f"{name} {filled[name]['depth']}" for name in expected if name in filled)
+    except (KeyError, TypeError):
+        return "scope: decision unavailable"
+    return f"scope: {depths}"
+
+
 async def classify(
     *,
     session: dict[str, Any],
@@ -663,9 +672,7 @@ async def classify(
                 latency_ms=latency_ms,
                 depths={name: filled[name]["depth"] for name in expected_personas if name in filled},
             )
-            decisions.append(
-                "scope: " + ", ".join(f"{name} {filled[name]['depth']}" for name in expected_personas if name in filled),
-            )
+            decisions.append(_scope_decision(filled, expected_personas))
             return scope
         finally:
             call.decide(decisions[-1] if decisions else "scope: no decision")

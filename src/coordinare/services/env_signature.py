@@ -124,6 +124,7 @@ async def match_env_signature_with_model(
     reason: str,
     patterns: list[EnvSignaturePattern],
     backend: ConductingBackend | None = None,
+    card_id: str | None = None,
 ) -> EnvCause | None:
     """Classify environmental failures using model judgment when regex doesn't match.
 
@@ -176,7 +177,7 @@ async def match_env_signature_with_model(
             'Respond ONLY with JSON: {{"is_environmental": bool, "pattern_id": "category_name", "reason": "brief explanation"}}'
         )
 
-        async with conductor_call(backend, kind="env_signature") as call:
+        async with conductor_call(backend, kind="env_signature", card_id=card_id) as call:
             response = await backend.prompt(prompt, response_format="json")
             data = response.get("data")
             if not isinstance(data, dict):

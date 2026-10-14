@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -233,6 +234,11 @@ class AnthropicApiBackend:
     def __init__(self, claude_service: ClaudeService) -> None:
         self._svc = claude_service
 
+    @property
+    def calls(self) -> ConductorCallLog:
+        """The call log of the service, so a conductor call opened on this backend is recorded (131)."""
+        return self._svc.calls
+
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         return await self._svc.assess_card_sufficiency(card)
 
@@ -415,15 +421,27 @@ class OpenAiApiBackend:
         return _parse_prompt_response(raw, response_format)
 
 
+@dataclass(frozen=True)
+class _CliSpec:
+    """How one model CLI reports: its note label, its timeout, and its log-event template (``{purpose}``)."""
+
+    label: str
+    limit: float
+    events: str
+
+
 async def _run_cli(
-    executable: str, args: list[str], prompt: str, *, label: str, limit: float,
+    executable: str, args: list[str], prompt: str, *, spec: _CliSpec, purpose: str,
 ) -> ModelReply:
     """Pipe ``prompt`` to a model CLI on stdin and return its stdout. The one subprocess model send (131).
 
     The prompt goes on stdin, not argv: card text may hold user-authored issue bodies and
     comments, which stay out of process listings and argv length limits. A timeout or a launch
-    failure comes back as ``error``, with a ``note`` for the caller's rationale.
+    failure comes back as ``error``, with a ``note`` for the caller's rationale. The log events keep
+    the backends' existing names (e.g. ``prompt_cli_timeout``): alerts key on them.
     """
+    label, limit = spec.label, spec.limit
+    events = spec.events.format(purpose=purpose)
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -442,14 +460,14 @@ async def _run_cli(
                 proc.kill()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=2)
-        log.warning("conductor.cli_timeout", backend=label, timeout=limit)
+        log.warning(f"{events}_timeout", backend=label, timeout=limit)
         return ModelReply(error="timeout", timed_out=True, note=f"{label} timeout")
     except OSError as exc:
-        log.error("conductor.cli_launch_failed", backend=label, error=str(exc))
+        log.error(f"{events}_launch_failed", backend=label, error=str(exc))
         return ModelReply(error=f"launch failed: {exc}", note=f"{label} error: {exc}")
     if proc.returncode and proc.returncode != 0:
         err = stderr.decode(errors="replace").strip() if stderr else ""
-        log.warning("conductor.cli_nonzero_exit", backend=label, returncode=proc.returncode, stderr_length=len(err))
+        log.warning(f"{events}_nonzero_exit", backend=label, returncode=proc.returncode, stderr_length=len(err))
     return ModelReply(text=stdout.decode(errors="replace").strip() if stdout else "")
 
 
@@ -463,9 +481,10 @@ class ClaudeCliBackend:
         self._executable = executable
         self.calls = calls if calls is not None else NULL_CALL_LOG
 
-    async def _send(self, prompt: str) -> ModelReply:
+    async def _send(self, prompt: str, purpose: str) -> ModelReply:
         return await _run_cli(
-            self._executable, ["--print", "-"], prompt, label="cli", limit=self._TIMEOUT,
+            self._executable, ["--print", "-"], prompt,
+            spec=_CliSpec("cli", self._TIMEOUT, "{purpose}_cli"), purpose=purpose,
         )
 
     def _request(self, prompt: str) -> ModelRequest:
@@ -474,7 +493,7 @@ class ClaudeCliBackend:
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
-        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt, "assessment"))
         if not reply.text:
             return {"sufficient": False, "questions": [], "rationale": reply.note or "empty cli response"}
         return _parse_assessment_response(reply.text)
@@ -483,7 +502,7 @@ class ClaudeCliBackend:
         """Send an arbitrary text prompt via the Claude CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
-        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text, "prompt"))
         return _parse_prompt_response(reply.text, response_format)
 
 
@@ -509,10 +528,10 @@ class OpenCodeBackend:
     def _effort_args(self) -> list[str]:
         return ["--effort", self._effort] if self._effort else []
 
-    async def _send(self, prompt: str) -> ModelReply:
+    async def _send(self, prompt: str, purpose: str) -> ModelReply:
         return await _run_cli(
             self._executable, ["run", *self._effort_args(), "-"], prompt,
-            label="opencode", limit=self._TIMEOUT,
+            spec=_CliSpec("opencode", self._TIMEOUT, "{purpose}_opencode"), purpose=purpose,
         )
 
     def _request(self, prompt: str) -> ModelRequest:
@@ -524,7 +543,7 @@ class OpenCodeBackend:
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
-        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt, "assessment"))
         if not reply.text:
             return {"sufficient": False, "questions": [], "rationale": reply.note or "empty opencode response"}
         return _parse_assessment_response(reply.text)
@@ -533,7 +552,7 @@ class OpenCodeBackend:
         """Send an arbitrary text prompt via the opencode CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
-        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text, "prompt"))
         return _parse_prompt_response(reply.text, response_format)
 
 
@@ -573,9 +592,11 @@ class CodexCliBackend:
         args.append("-")
         return args
 
-    async def _send(self, prompt: str) -> ModelReply:
+    async def _send(self, prompt: str, purpose: str) -> ModelReply:
         executable, *args = self._build_args()
-        return await _run_cli(executable, args, prompt, label="codex", limit=self._TIMEOUT)
+        return await _run_cli(
+            executable, args, prompt, spec=_CliSpec("codex", self._TIMEOUT, "codex_cli"), purpose=purpose,
+        )
 
     def _request(self, prompt: str) -> ModelRequest:
         parameters: dict[str, Any] = {"effort": self._effort} if self._effort else {}
@@ -586,7 +607,7 @@ class CodexCliBackend:
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
-        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt, "assessment"))
         if not reply.text:
             return {"sufficient": False, "questions": [], "rationale": "empty codex response"}
         return _parse_assessment_response(reply.text)
@@ -594,7 +615,7 @@ class CodexCliBackend:
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
         if not text.strip():
             return {"text": "", "data": None}
-        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text, "prompt"))
         return _parse_prompt_response(reply.text, response_format)
 
 
