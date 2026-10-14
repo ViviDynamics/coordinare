@@ -139,9 +139,9 @@ def refresh_todo_waits(
             reason = REASON_ASSIGNED_ELSEWHERE if assignees.get(card_id) else REASON_UNASSIGNED
             waits[card_id] = _entry(reason, [], VERDICT_ESTIMATE)
         elif dep_graph is not None:
-            pending = _blockers(dep_graph, card_id, frozenset({DependencyStatus.PENDING}))
-            if pending:
-                waits[card_id] = _entry(REASON_WAITING_ON, pending, VERDICT_ESTIMATE)
+            open_blockers = _blockers(dep_graph, card_id, frozenset({DependencyStatus.PENDING}))
+            if open_blockers:
+                waits[card_id] = _entry(REASON_WAITING_ON, open_blockers, VERDICT_ESTIMATE)
             elif full:
                 waits[card_id] = _entry(REASON_QUEUED, [], VERDICT_ESTIMATE)
     state["todo_waits"] = waits
