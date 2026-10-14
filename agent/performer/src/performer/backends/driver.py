@@ -278,44 +278,50 @@ class DriverBackend:
             self._handle_result(parsed)
             self._record_outcome(parsed)
             return
-        self._transcribe(parsed)
-        self._handle_event(parsed)
+        transcript_seq = self._transcribe(parsed)
+        self._handle_event(parsed, transcript_seq=transcript_seq)
 
     # ------------------------------------------------------------------
     # Transcript (spec 129). Records only; never changes status or events.
     # ------------------------------------------------------------------
 
     @transcript.best_effort
-    def _transcribe(self, event: dict[str, Any]) -> None:
-        """Record one non-result line with its full text, before the 200-char cut."""
+    def _transcribe(self, event: dict[str, Any]) -> int | None:
+        """Record one non-result line with its full text, before the 200-char cut.
+
+        Returns the seq of the record that describes the event (211), or None when a
+        stream delta is only buffered (its assistant_text record is written on flush).
+        """
         raw_type = str(event.get("type", ""))
         text = str(event.get("text", ""))
+        seq: int | None = None
         if raw_type == "progress" and event.get("is_delta") is True:
             stream = str(event.get("stream_id", ""))
             self._pending_stream[stream] = self._pending_stream.get(stream, "") + text
-            return
+            return None
         self._flush_stream()
         if raw_type == "tool_use":
-            transcript.emit(
+            seq = transcript.emit(
                 "tool_call",
                 text=text,
                 tool_name=str(event.get("detail", "")) or "tool",
                 input_data=event,
             )
         elif raw_type == "thinking":
-            transcript.emit("thinking", text=text, input_data=event)
+            seq = transcript.emit("thinking", text=text, input_data=event)
         elif raw_type == "cost":
-            self._emit_usage(
+            seq = self._emit_usage(
                 event.get("usage"),
                 "driver cost event; the contract does not say whether this is a per-turn or a run total",
                 None,
             )
         elif raw_type == "error":
-            transcript.emit("error", text=text, input_data=event)
+            seq = transcript.emit("error", text=text, input_data=event)
         else:
             # Non-delta progress, output, and unrecognised types are status or raw
             # lines, not model text; they keep their raw payload as system records.
-            transcript.emit("system", text=text, input_data=event)
+            seq = transcript.emit("system", text=text, input_data=event)
+        return seq
 
     @transcript.best_effort
     def _flush_stream(self) -> None:
@@ -351,22 +357,25 @@ class DriverBackend:
         usage: object,
         note: str,
         scope: transcript.TranscriptScope | None,
-    ) -> None:
+    ) -> int | None:
         if not isinstance(usage, dict):
-            return
+            return None
         input_tokens = _count(usage.get("input_tokens"))
         output_tokens = _count(usage.get("output_tokens"))
         if input_tokens is None and output_tokens is None:
-            return
-        transcript.emit(
+            return None
+        seq: int | None = transcript.emit(
             "usage",
             text=note,
             input_data=usage,
             usage=transcript.TranscriptUsage(input_tokens=input_tokens, output_tokens=output_tokens),
             scope=scope,
         )
+        return seq
 
-    def _handle_event(self, event: dict[str, object]) -> None:
+    def _handle_event(
+        self, event: dict[str, object], *, transcript_seq: int | None = None,
+    ) -> None:
         """C5: ``BackendEvent`` passthrough; unrecognized → progress-equivalent."""
         raw_type = str(event.get("type", ""))
         text = str(event.get("text", ""))[:_MAX_TEXT] or raw_type
@@ -379,6 +388,7 @@ class DriverBackend:
             etype = BackendEventType.progress
         self._event_buffer.append(BackendEvent(
             type=etype, text=text, detail=str(event.get("detail", "")),
+            transcript_seq=transcript_seq,
         ))
         if etype == BackendEventType.cost:
             usage = event.get("usage")

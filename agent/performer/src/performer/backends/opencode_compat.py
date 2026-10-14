@@ -609,14 +609,21 @@ class OpenCodeCompatAdapter:
             pass
         self._status = BackendStatus(state="done")
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *, transcript_seq: int | None = None,
+    ) -> None:
+        self._event_buffer.append(
+            BackendEvent(
+                type=type, text=clip_event_text(text), detail=detail, transcript_seq=transcript_seq,
+            ),
+        )
 
     def _handle_event(self, event: dict) -> None:
         payload = event.get("payload", event)
         event_type = payload.get("type", "")
         props = payload.get("properties", {})
-        self._tap.observe(event_type, props)
+        # 211: the seq of the record the tap wrote for this SSE event, if any.
+        record_seq = self._tap.observe(event_type, props)
 
         if event_type == "session.updated":
             session = props.get("session", props)
@@ -631,7 +638,7 @@ class OpenCodeCompatAdapter:
         elif event_type == "session.error":
             reason = props.get("error", {}).get("message", str(props))
             self._status = BackendStatus(state="error", error_reason=reason)
-            self._emit(BackendEventType.error, reason)
+            self._emit(BackendEventType.error, reason, transcript_seq=record_seq)
         elif event_type == "message.part.updated":
             part = props.get("part", {})
             part_type = part.get("type", "")
@@ -643,11 +650,17 @@ class OpenCodeCompatAdapter:
             elif part_type in ("tool-input", "tool_input"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 input_text = str(part.get("input", ""))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool)
+                self._emit(
+                    BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool,
+                    transcript_seq=record_seq,
+                )
             elif part_type in ("tool-output", "tool_output"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 output_text = str(part.get("output", ""))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool)
+                self._emit(
+                    BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool,
+                    transcript_seq=record_seq,
+                )
         elif event_type in ("session.message", "message.updated"):
             parts = props.get("parts", [])
             questions = [

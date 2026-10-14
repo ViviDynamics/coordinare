@@ -87,6 +87,8 @@ def _record_activity_batch(
                 "source_event_id": str(ev.get("timestamp") or ""),
                 # 133: the performer's own event time, which the transcript's record times share.
                 "event_at": str(ev.get("timestamp") or ""),
+                # 211: the transcript record the event was built from, exact where the performer sends it.
+                "transcript_seq": ev.get("transcript_seq"),
                 **attribution,
             }
             for ev in events

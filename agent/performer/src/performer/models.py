@@ -191,6 +191,11 @@ class BackendEvent(BaseModel):
     tool: str = ""
     arg: str = ""
     status: str = ""
+    # 211: the seq of the transcript record this event was built from (see transcript.emit),
+    # so the dashboard can open the run at that exact record. None when the event has no
+    # record (a workflow marker, a backend without transcripts, transcripts disabled).
+    # Older daemons ignore the key; older performers never send it.
+    transcript_seq: int | None = None
 
     @model_validator(mode="before")
     @classmethod

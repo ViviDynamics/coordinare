@@ -318,7 +318,7 @@ class PiBackend:
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         etype = str(event.get("type", ""))
-        self._transcribe_event(etype, event)
+        transcript_seq = self._transcribe_event(etype, event)
 
         if etype == "message_start":
             self._message_seq = getattr(self, "_message_seq", 0) + 1
@@ -339,6 +339,7 @@ class PiBackend:
             self._event_buffer.append(BackendEvent(
                 type=BackendEventType.tool_use, text=tool, detail=tool, tool=tool,
                 arg=primary_argument(tool, event.get("args")),
+                transcript_seq=transcript_seq,
             ))
 
         elif etype == "agent_end":
@@ -354,7 +355,9 @@ class PiBackend:
             if isinstance(err, dict):
                 msg = str(err.get("message", ""))
             msg = msg or str(event.get("message", "")) or etype
-            self._emit(BackendEventType.error, msg)
+            self._event_buffer.append(BackendEvent(
+                type=BackendEventType.error, text=clip_event_text(msg), transcript_seq=transcript_seq,
+            ))
             # Non-retry errors are terminal.
             if etype == "error" and not event.get("willRetry", False):
                 self._saw_terminal = True
@@ -371,7 +374,10 @@ class PiBackend:
     # ------------------------------------------------------------------
 
     @transcript.best_effort
-    def _transcribe_event(self, etype: str, event: dict[str, Any]) -> None:
+    def _transcribe_event(self, etype: str, event: dict[str, Any]) -> int | None:
+        """Record one stream event. Returns the seq of the record that describes it
+        (211): the tool_call for tool_execution_start, the error for an error event."""
+        seq: int | None = None
         if etype in ("session", "agent_start"):
             transcript.emit("system", text=f"pi {etype} event", input_data=event)
         elif etype == "message_end":
@@ -379,7 +385,7 @@ class PiBackend:
             if isinstance(message, dict) and message.get("role") == "assistant":
                 self._transcribe_assistant_message(message)
         elif etype == "tool_execution_start":
-            transcript.emit(
+            seq = transcript.emit(
                 "tool_call",
                 tool_name=str(event.get("toolName", "tool")),
                 call_id=str(event.get("toolCallId", "")) or None,
@@ -395,7 +401,7 @@ class PiBackend:
             )
         elif etype == "auto_retry_start":
             message = str(event.get("errorMessage") or etype)
-            transcript.emit("error", text=message, input_data=event)
+            seq = transcript.emit("error", text=message, input_data=event)
         elif etype == "agent_end":
             self._transcribe_agent_end(event)
         elif etype == "error":
@@ -404,9 +410,10 @@ class PiBackend:
             if isinstance(err, dict):
                 message = str(err.get("message", ""))
             message = message or str(event.get("message", "")) or etype
-            transcript.emit("error", text=message, input_data=event)
+            seq = transcript.emit("error", text=message, input_data=event)
             if not event.get("willRetry", False):
                 transcript.emit("result", text=message, is_error=True)
+        return seq
 
     @transcript.best_effort
     def _transcribe_assistant_message(self, message: dict[str, Any]) -> None:

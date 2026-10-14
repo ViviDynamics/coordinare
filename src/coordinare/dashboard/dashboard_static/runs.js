@@ -243,11 +243,15 @@ function runEntryLinkHtml(entry) {
   // Self-contained with helpers.js (runIdHtml), so the activity feed can carry these functions alone.
   var session = entry && entry.session_id ? String(entry.session_id) : '';
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(session)) return '';
+  // 211: the transcript record the event was built from, when the performer named it. That link
+  // opens the exact record. Without one, the link opens the run at the event's time (133).
+  var seq = entry.transcript_seq;
+  var exact = typeof seq === 'number' && seq >= 1 && seq <= Number.MAX_SAFE_INTEGER && Math.floor(seq) === seq;
   // The performer's own event time when the entry has one: the transcript's record times are
   // on the same clock. The daemon's observation time (entry.timestamp) lags behind it.
   var when = entry.event_at || entry.timestamp || '';
-  var href = '/runs/' + encodeURIComponent(session) +
-    (when ? '?at=' + encodeURIComponent(String(when)) : '');
+  var target = exact ? '#e' + String(seq) : (when ? '?at=' + encodeURIComponent(String(when)) : '');
+  var href = '/runs/' + encodeURIComponent(session) + target;
   return runIdHtml(session, {href: href, className: 'run-entry-link'});
 }
 
@@ -320,14 +324,13 @@ function runHeaderHtml(detail) {
   var hs = detail.header_summary || {};
   var sum = detail.summary || {};
   var persona = hs.persona || {};
-  var tokens = sum.tokens || {};
-  var tokenText = tokens.scope
-    ? 'in ' + (tokens.input == null ? '-' : tokens.input) + ' · out ' + (tokens.output == null ? '-' : tokens.output) +
-      ' · cache ' + (tokens.cache_read == null ? '-' : tokens.cache_read) + ' read, ' + (tokens.cache_write == null ? '-' : tokens.cache_write) + ' write'
-    : (tokens.reason || 'no usage recorded');
+  // 211: tokens and cost are the #134 ledger's figures for this run. The readouts (usage.js) put
+  // the breakdown, the pricing date, or the reason a cost is unknown in the tooltip.
+  var usage = sum.usage || { tracked: false, reason: 'no usage figures for this run' };
+  var tokenView = usageTokensReadout(usage);
+  var costView = usageCostReadout(usage);
   var outcome = sum.outcome || {};
   var outcomeText = outcome.status ? outcome.status : (outcome.reason || '-');
-  var cost = sum.cost || {};
   var prHref = runsSafeHref(sum.pr_url);
   var prHtml = prHref
     ? '<a href="' + esc(prHref) + '" target="_blank" rel="noopener noreferrer">' + esc(prHref) + '</a>'
@@ -348,8 +351,8 @@ function runHeaderHtml(detail) {
     '<div class="run-fact"><span class="run-fact-label">Run</span><span>' + runIdHtml(detail.run, {copy: true}) + '</span></div>' +
     list +
     '<div class="run-fact"><span class="run-fact-label">Persona version</span><span>' + versionHtml + '</span></div>' +
-    '<div class="run-fact"><span class="run-fact-label">Tokens</span><span>' + esc(tokenText) + '</span></div>' +
-    '<div class="run-fact"><span class="run-fact-label">Cost</span><span title="' + esc(cost.reason || '') + '">' + esc(cost.value == null ? '-' : String(cost.value)) + '</span></div>' +
+    '<div class="run-fact"><span class="run-fact-label">Tokens</span><span title="' + esc(tokenView.title) + '">' + esc(tokenView.text) + '</span></div>' +
+    '<div class="run-fact"><span class="run-fact-label">Cost</span><span title="' + esc(costView.title) + '">' + esc(costView.text) + '</span></div>' +
     '<div class="run-fact"><span class="run-fact-label">Pull request</span><span>' + prHtml + '</span></div>' +
     '</div>' +
     '<div class="run-downloads"><a href="' + esc(runDownloadHref(detail, 'jsonl')) + '" download>Download JSONL</a> · ' +

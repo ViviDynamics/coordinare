@@ -37,7 +37,7 @@ from coordinare.services.issue_comment_service import classify_issue_comment_ai
 from coordinare.services.pr_conversation_feedback import _classify
 from coordinare.services.run_transcript import TranscriptCollector
 from coordinare.services.run_viewer import RunRef, list_runs, run_detail
-from coordinare.services.token_usage import TokenLedger
+from coordinare.services.token_usage import PriceTable, TokenLedger, usage_summary
 
 CARD = "PVTI_131R"
 KEY_ENV = "RV131_API_KEY"
@@ -268,7 +268,11 @@ async def test_symphonies_named_conductor_keep_their_runs_apart_from_the_calls(
     assert by_run["run-_conductor"]["symphony"].startswith("conductor-")
     assert by_run[call.call_id]["symphony"] == CONDUCTOR_FOLDER
     # The call opens under the conductor's folder, and its header names the symphony it was for.
-    detail = run_detail(root, RunRef(symphony=CONDUCTOR_FOLDER, card=CARD, run=call.call_id))
+    # 211: the header's usage is the ledger's figures for the call.
+    usage = {"tracked": True, "reason": None, **usage_summary(
+        collector.usage.totals(run_id=call.call_id), PriceTable(rules={}, source="none"),
+    )}
+    detail = run_detail(root, RunRef(symphony=CONDUCTOR_FOLDER, card=CARD, run=call.call_id), usage=usage)
     assert detail["header"]["conductor"]["symphony"] == "conductor"
     # Its spend is attributed to that symphony on the ledger.
     assert collector.usage.totals(symphony="conductor")
