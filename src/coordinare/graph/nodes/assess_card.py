@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.board_provider import board_of
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 
@@ -105,7 +106,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
             error=str(exc),
         )
         state["phase"] = "blocked"
-        state["open_questions"] = [f"Assessment failed: {exc}"]
+        state["open_questions"] = redact_state_value([f"Assessment failed: {exc}"])
         return state
 
     clarifications = state.get("card_clarifications") or []
@@ -178,7 +179,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
             })
         state["blocked_by_dependencies"] = dep_info  # type: ignore[typeddict-unknown-key]
         state["phase"] = "blocked"
-        state["open_questions"] = all_questions
+        state["open_questions"] = redact_state_value(all_questions)
         return state
 
     # If the model returned insufficient with no new questions, the assessor
@@ -205,5 +206,5 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
         state["open_questions"] = []
     else:
         state["phase"] = "blocked"
-        state["open_questions"] = [str(item) for item in questions] if isinstance(questions, list) else []
+        state["open_questions"] = redact_state_value([str(item) for item in questions] if isinstance(questions, list) else [])
     return state

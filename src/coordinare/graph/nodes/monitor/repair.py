@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.attribution import coordinare_attribution
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.failure_signature import normalize_reason
 from coordinare.services.test_integrity_guard import analyze_diff
 
@@ -294,7 +295,7 @@ async def _reject_repair(
             "agent_dispatch": {},
             "agent_dispatch_at": None,
             "repair_audit": audit + records,
-            "open_questions": open_qs,
+            "open_questions": redact_state_value(open_qs),
         },
         True,
     )

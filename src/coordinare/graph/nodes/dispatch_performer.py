@@ -19,6 +19,7 @@ import structlog
 
 from coordinare.graph.nodes.monitor_performer import _advance_stage
 from coordinare.graph.state import _set_current_card
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.env_cache import (
@@ -1069,12 +1070,12 @@ async def _rebase_guard_classify(state: CoordinareState, card_id: str, github: A
         verdict = "conflicts with" if raw.upper() == "CONFLICTING" else "is behind"
         state["phase"] = "blocked"
         state["slot_queued_since"] = None
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Branch `{branch or '?'}` still {verdict} main (`{current_main[:8]}`) after the "
             f"implementer was asked to rebase it at head `{head[:8]}`, and neither has moved "
             "since. Rebase the branch onto main by hand and push, or leave an instruction on "
             "the issue, then unblock the card.",
-        ]
+        ])
         return False
 
     # decision == "request". Source the branch from the PR (head_ref_name), NOT
@@ -1646,13 +1647,13 @@ async def _closed_pr_churn_gate(state: CoordinareState, ctx: dict[str, Any]) -> 
                         error=str(exc),
                     )
                 state["phase"] = "blocked"
-                state["open_questions"] = [
+                state["open_questions"] = redact_state_value([
                     (
                         f"Card has {closed_count} closed PR attempts (limit: {closed_pr_limit}). "
                         "Blocking new PR creation. Please review prior PRs and decide whether to "
                         "resume manually, reset branch strategy, or close the card."
                     ),
-                ]
+                ])
                 return state
     return None
 
@@ -1704,13 +1705,13 @@ async def _recover_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> Co
                     performer_stage=performer_stage,
                 )
                 state["phase"] = "blocked"
-                state["open_questions"] = [
+                state["open_questions"] = redact_state_value([
                     (
                         f"Cannot run stage '{performer_stage}' because PR context is missing "
                         "(`pr_url`/`pr_node_id`) and no open PR could be recovered from "
                         "the linked issue."
                     ),
-                ]
+                ])
                 return state
     return None
 
@@ -1836,12 +1837,12 @@ async def _check_service_health(state: CoordinareState, service: Any, performer_
     if health_status == "error":
         health_reason = health.get("reason", "") if isinstance(health, dict) else ""
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Performer health check failed for stage {performer_stage!r} "
             f"(status: {health_status}). "
             + (f"Reason: {health_reason}" if health_reason else
                "Check performer logs for details."),
-        ]
+        ])
         _release_slot_on_error()
         return state
     return None
@@ -1930,7 +1931,7 @@ async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, 
         state["workspace_branch"] = None
         _release_slot_on_error()
         state["phase"] = "blocked"
-        state["open_questions"] = [str(exc)]
+        state["open_questions"] = redact_state_value([str(exc)])
         return None, state
     except asyncio.CancelledError:
         raise
@@ -1957,7 +1958,7 @@ async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, 
         state["workspace_branch"] = None
         _release_slot_on_error()
         state["phase"] = "blocked"
-        state["open_questions"] = [reason]
+        state["open_questions"] = redact_state_value([reason])
         return None, state
     terminal = await _validate_workspace_fields(
         state, card_id, performer_stage, workspace_info,
@@ -2009,7 +2010,7 @@ async def _validate_workspace_fields(state: CoordinareState, card_id: str, perfo
             state["workspace_branch"] = None
             _release_slot_on_error()
             state["phase"] = "blocked"
-            state["open_questions"] = [reason]
+            state["open_questions"] = redact_state_value([reason])
             return state
     return None
 
@@ -2603,7 +2604,7 @@ async def _dispatch_auth_error(state: CoordinareState, exc: Exception, ctx: dict
     state["workspace_branch"] = None
     _release_slot_on_error()
     state["phase"] = "blocked"
-    state["open_questions"] = [f"Performer config error: {exc}"]
+    state["open_questions"] = redact_state_value([f"Performer config error: {exc}"])
     return state
 
 
@@ -2628,7 +2629,7 @@ async def _dispatch_transport_error(state: CoordinareState, exc: Exception, ctx:
         state["system_error_notified"] = False
     state["system_error_count"] = state.get("system_error_count", 0) + 1
     state["system_error_last_at"] = datetime.now(UTC)
-    state["system_error_reason"] = reason
+    state["system_error_reason"] = redact_state_value(reason)
     _release_slot_on_error()
     state["phase"] = "system_error"
     card["previous_status"] = card.get("status", "TODO")
@@ -2679,7 +2680,7 @@ async def _dispatch_permanent_error(state: CoordinareState, exc: Exception, ctx:
     state["workspace_branch"] = None
     _release_slot_on_error()
     state["phase"] = "blocked"
-    state["open_questions"] = [f"Permanent service failure: {exc}"]
+    state["open_questions"] = redact_state_value([f"Permanent service failure: {exc}"])
     return state
 
 
@@ -2710,7 +2711,7 @@ async def _dispatch_result_error(state: CoordinareState, result: Any, ctx: dict[
         state["system_error_notified"] = False
     state["system_error_count"] = state.get("system_error_count", 0) + 1
     state["system_error_last_at"] = datetime.now(UTC)
-    state["system_error_reason"] = f"Performer dispatch failed ({performer_stage}): {reason}"
+    state["system_error_reason"] = redact_state_value(f"Performer dispatch failed ({performer_stage}): {reason}")
     _release_slot_on_error()
     state["phase"] = "system_error"
     return state

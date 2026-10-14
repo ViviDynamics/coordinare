@@ -19,6 +19,7 @@ from coordinare.graph.state import (
     _retire_active_session,
 )
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.dependency import DependencyGraph, DependencyStatus
 from coordinare.models.notification import (
     EventType,
@@ -1950,8 +1951,8 @@ async def _resume_closed_pr(
         session["last_blocked_notified_at"] = None
     if state.get("active_card_id") == card_id:
         state["phase"] = session["phase"]
-        state["system_error_reason"] = session.get("system_error_reason")
-        state["open_questions"] = session.get("open_questions") or []
+        state["system_error_reason"] = redact_state_value(session.get("system_error_reason"))
+        state["open_questions"] = redact_state_value(session.get("open_questions") or [])
         _rederive_current_card(state)
 
 

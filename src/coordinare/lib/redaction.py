@@ -176,6 +176,24 @@ def redact_command_text(text: str) -> str:
     return redact_client_forms(text)
 
 
+def redact_state_value(value: Any) -> Any:
+    """A value about to enter coordinare state, with its free text redacted (203).
+
+    Strings get ``redact_command_text``. Lists and dicts are walked, so a list of
+    questions or a dict of block details is covered in one call. Anything else
+    passes through. Every writer of a dashboard-visible text field calls this, so
+    the board comment, notifications, the snapshot and MCP all see the redacted form.
+    The walk is linear in the text.
+    """
+    if isinstance(value, str):
+        return redact_command_text(value)
+    if isinstance(value, Mapping):
+        return {key: redact_state_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_state_value(item) for item in value]
+    return value
+
+
 _EVENT_TEXT_FIELDS = ("text", "detail", "arg", "tool")
 
 

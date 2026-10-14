@@ -14,6 +14,7 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
@@ -211,7 +212,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
                 assessment = await backend.assess(card_data)
                 generated = assessment.get("questions") or []
                 questions = [str(q) for q in generated if str(q).strip()]
-                state["open_questions"] = questions
+                state["open_questions"] = redact_state_value(questions)
             except Exception as exc:
                 logger.warning("handle_blocked_assessment_failed", card_id=card_id, error=str(exc))
         if not questions:

@@ -17,6 +17,7 @@ from coordinare_service_inference.cache_key import (
     load_prior_manifest,
 )
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.env_manifest import (
     STRUCTURED_SPEC_FILES,
@@ -792,7 +793,7 @@ class EnvCacheService:
                 )
                 cache_state.last_bootstrap_succeeded = False
                 cache_state.cache_dir_ready = False
-                cache_state.last_bootstrap_error = f"restart verify failed: {detail}"
+                cache_state.last_bootstrap_error = redact_state_value(f"restart verify failed: {detail}")
                 needs_bootstrap = True
             else:
                 logger.info(
@@ -1290,7 +1291,7 @@ class EnvCacheService:
                 ),
                 "symphony": symphony_name,
                 "attempts": str(cache_state.bootstrap_attempts),
-                "last_error": str(cache_state.last_bootstrap_error or ""),
+                "last_error": redact_state_value(str(cache_state.last_bootstrap_error or "")),
             },
             source="env_cache",
             dedup_key=f"bootstrap_exhausted:{symphony_name}:{cache_state.readme_sha}",
@@ -1354,7 +1355,7 @@ class EnvCacheService:
 
         cache_state.last_bootstrap_succeeded = success
         # 077: surface WHY a bootstrap failed (dashboard); clear on success.
-        cache_state.last_bootstrap_error = None if success else (error or "bootstrap failed")
+        cache_state.last_bootstrap_error = redact_state_value(None if success else (error or "bootstrap failed"))
 
         # 061: Mark the cache usable only after a successful bootstrap.
         # cache_dir_ready stays False until at least one bootstrap succeeds,

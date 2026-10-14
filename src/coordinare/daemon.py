@@ -36,6 +36,7 @@ from coordinare.graph.state import (
     initial_state,
 )
 from coordinare.lib.clarifications import annotate_clarifications
+from coordinare.lib.redaction import redact_state_value
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -545,9 +546,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
-        open_questions=[str(q) for q in f["questions_raw"] if q is not None]
+        open_questions=redact_state_value([str(q) for q in f["questions_raw"] if q is not None]
         if isinstance(f["questions_raw"], (list, tuple, set))
-        else [],
+        else []),
         consumed_loop_questions=[
             str(qf) for qf in (sess.get("consumed_loop_questions") or ()) if qf is not None
         ],
@@ -563,7 +564,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         else [],
         system_error_count=int(sess.get("system_error_count") or 0),
         system_error_last_at=sess.get("system_error_last_at"),
-        system_error_reason=(sess.get("system_error_reason") or None),
+        system_error_reason=(redact_state_value(sess.get("system_error_reason") or None)),
         system_error_notified=bool(sess.get("system_error_notified")),
         requirements_changed=bool(sess.get("requirements_changed")),
         last_blocked_notified_at=f["last_notified"],
@@ -579,11 +580,11 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         ),
         repair_audit=_persist_repair_audit(sess.get("repair_audit")),
         ci_gate_rollup_signature=f["ci_gate_rollup_sig"],
-        env_blocked=_persist_env_blocked(sess.get("env_blocked")),
+        env_blocked=redact_state_value(_persist_env_blocked(sess.get("env_blocked"))),
         last_rebase_attempt=_persist_last_rebase_attempt(sess.get("last_rebase_attempt")),
         content_feedback_cycles=f["content_feedback_cycles"],
         transient_error_cycles=f["transient_error_cycles"],
-        assessor_open_questions=_persist_assessor_questions(sess.get("assessor_open_questions")),
+        assessor_open_questions=redact_state_value(_persist_assessor_questions(sess.get("assessor_open_questions"))),
         stage_verdicts=_persist_stage_verdicts(sess.get("stage_verdicts")),
         documentation_findings=sess.get("documentation_findings") or {},
         blueprint=f["blueprint"],
@@ -650,7 +651,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             sanitised_name=str(get("sanitised_name") or ""),
             cache_dir=str(cache_dir) if cache_dir is not None else "",
             readme_sha=get("readme_sha"),
-            last_bootstrap_error=get("last_bootstrap_error"),
+            last_bootstrap_error=redact_state_value(get("last_bootstrap_error")),
             last_bootstrap_at=get("last_bootstrap_at"),
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
@@ -665,7 +666,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             wiki_exhausted=bool(get("wiki_exhausted") or False),
             last_wiki_init_at=get("last_wiki_init_at"),
             last_wiki_init_succeeded=get("last_wiki_init_succeeded"),
-            last_wiki_init_error=get("last_wiki_init_error"),
+            last_wiki_init_error=redact_state_value(get("last_wiki_init_error")),
         )
     return out
 
@@ -719,7 +720,7 @@ def _restored_session_dict(
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
-        "open_questions": list(persisted.open_questions),
+        "open_questions": redact_state_value(list(persisted.open_questions)),
         "consumed_loop_questions": list(persisted.consumed_loop_questions),
         "card_clarifications": list(persisted.card_clarifications),
         "pending_override": _dict_or_none(persisted.pending_override),
@@ -730,7 +731,7 @@ def _restored_session_dict(
         "dispatched_feedback": dict(persisted.dispatched_feedback),
         "system_error_count": persisted.system_error_count,
         "system_error_last_at": persisted.system_error_last_at,
-        "system_error_reason": persisted.system_error_reason,
+        "system_error_reason": redact_state_value(persisted.system_error_reason),
         "system_error_notified": persisted.system_error_notified,
         "requirements_changed": persisted.requirements_changed,
         "last_blocked_notified_at": persisted.last_blocked_notified_at,
@@ -746,7 +747,7 @@ def _restored_session_dict(
         "ci_gate_advisory_failures": [],
                     # 095: restore per-card ENV_BLOCKED hold/dedup state so a
                     # still-active block does not re-notify after a restart.
-                    "env_blocked": _dict_or_none(persisted.env_blocked),
+                    "env_blocked": redact_state_value(_dict_or_none(persisted.env_blocked)),
                     # 096: restore the per-card auto-rebase anti-thrash marker so
                     # a BLOCKED conflict isn't re-attempted right after a restart.
                     "last_rebase_attempt": _dict_or_none(persisted.last_rebase_attempt),
@@ -754,7 +755,7 @@ def _restored_session_dict(
         # carryover so they survive a daemon restart.
         "content_feedback_cycles": persisted.content_feedback_cycles,
         "transient_error_cycles": persisted.transient_error_cycles,
-        "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
+        "assessor_open_questions": redact_state_value([dict(q) for q in persisted.assessor_open_questions]),
         # 125: restore stage-verdict memory (plain dicts at session
         # level) + the per-card issue-comment dedup watermark so a
         # restart neither re-runs passed stages nor re-classifies
@@ -898,7 +899,7 @@ def _synthesize_v1_session(
         "lifecycle_completed_at": snapshot.lifecycle_completed_at,
         "processed_review_ids": set(snapshot.processed_review_ids),
         "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
-        "open_questions": list(snapshot.open_questions),
+        "open_questions": redact_state_value(list(snapshot.open_questions)),
         "card_clarifications": list(snapshot.card_clarifications),
         "relay_feedback": [],
         "system_error_count": 0,
@@ -954,7 +955,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.readme_sha = persisted.readme_sha
             live.last_bootstrap_at = persisted.last_bootstrap_at
             live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
-            live.last_bootstrap_error = persisted.last_bootstrap_error
+            live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
@@ -968,7 +969,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_wiki_init_succeeded = getattr(
                 persisted, "last_wiki_init_succeeded", None,
             )
-            live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
+            live.last_wiki_init_error = redact_state_value(getattr(persisted, "last_wiki_init_error", None))
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "state_store.env_cache_rehydrate_failed",
@@ -2556,7 +2557,7 @@ class CoordinareDaemon:
             agent_session_id=_str_or_none(dispatch_dict.get("session_id"))
             if dispatch_dict
             else None,
-            open_questions=questions,
+            open_questions=redact_state_value(questions),
             card_clarifications=clarifications,
             performer_stage=str(performer_stage)
             if isinstance(performer_stage, str) and performer_stage
@@ -2586,7 +2587,7 @@ class CoordinareDaemon:
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
         self._state["phase"] = snapshot.phase
-        self._state["open_questions"] = list(snapshot.open_questions)
+        self._state["open_questions"] = redact_state_value(list(snapshot.open_questions))
         self._state["card_clarifications"] = list(snapshot.card_clarifications)
         # Bootstrap resolves the current configured lifecycle. Saved workflow
         # state retains session progress, but must not change new admission.
@@ -3536,7 +3537,7 @@ class CoordinareDaemon:
             s = sym_states.get(symphony_name)
             if s is not None:
                 s.error_count = getattr(s, "error_count", 0) + 1
-                s.last_error = str(exc)
+                s.last_error = redact_state_value(str(exc))
             # Do NOT re-raise — other symphonies continue
         finally:
             clear_symphony()

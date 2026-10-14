@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.state import _retire_active_session
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.dispatcher_dedup_models import (
     ReconciliationDecision,
     ReconciliationReport,
@@ -445,11 +446,11 @@ def detect_wedged_state(
     # threshold=3, wedges 1/2/3 release the pin; wedge 4 promotes.
     if len(window) > wedge_block_threshold:
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             *(state.get("open_questions") or []),
             f"Card {card_id} has wedged {len(window)} times in the trailing "
             f"{wedge_block_window_hours}h. Operator intervention required.",
-        ]
+        ])
         # Notify via the standard card_blocked event channel — the notify
         # node will pick it up on its next pass.
         logger.warning(

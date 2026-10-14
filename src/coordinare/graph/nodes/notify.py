@@ -10,6 +10,7 @@ import structlog
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 from coordinare.graph.attribution import coordinare_attribution
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.services.ci_gate import compute_ci_gate_signature
 
@@ -481,7 +482,7 @@ async def notify(state: CoordinareState) -> CoordinareState:
         "previous_status": prev_status,
     }
     if open_questions:
-        payload["open_questions"] = "; ".join(open_questions)
+        payload["open_questions"] = redact_state_value("; ".join(open_questions))
     if commit_summary:
         payload["commit_summary"] = commit_summary
     if pr_url:

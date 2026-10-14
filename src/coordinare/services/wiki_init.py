@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.notification import (
     EventType,
     NotificationEvent,
@@ -93,7 +94,7 @@ class WikiInitService:
         ec_state.wiki_in_flight = False
         ec_state.wiki_attempts += 1
         ec_state.last_wiki_init_succeeded = False
-        ec_state.last_wiki_init_error = error
+        ec_state.last_wiki_init_error = redact_state_value(error)
         ec_state.last_wiki_init_at = datetime.now(UTC)
         if ec_state.wiki_attempts >= self._max_attempts:
             ec_state.wiki_exhausted = True
@@ -269,7 +270,7 @@ class WikiInitService:
                         "symphony": symphony_name,
                         "reason": reason,
                         "attempts": str(ec_state.wiki_attempts),
-                        "last_error": str(ec_state.last_wiki_init_error or ""),
+                        "last_error": redact_state_value(str(ec_state.last_wiki_init_error or "")),
                     },
                     dedup_key=f"wiki_init_exhausted:{symphony_name}",
                 ),

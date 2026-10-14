@@ -122,7 +122,7 @@ from coordinare.graph.nodes.monitor.verdict import (
 )
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
-from coordinare.lib.redaction import redact_performer_event
+from coordinare.lib.redaction import redact_performer_event, redact_state_value
 from coordinare.services.assessor_failure import (
     classify_assessor_failure,
     format_repair_hint,
@@ -568,7 +568,7 @@ async def _phase_stall_expired(
         if _sm is not None and hasattr(_sm, "release"):
             _sm.release(stage, card_id)
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             # 380: keeps the "timed out" wording operators and tests grep
             # for, and adds what the clock alone could never say: whether
             # anything was actually happening. A run that emitted hundreds
@@ -581,7 +581,7 @@ async def _phase_stall_expired(
             f"ran {_ev.tool_uses} commands and completed {_ev.completions} steps."
             + (f" Judged not converging: {state['convergence_reason']}"
                if state.get("convergence_reason") else ""),
-        ]
+        ])
         return state
     ctx._ev = _ev
     ctx._sm = _sm
@@ -666,7 +666,7 @@ async def _observer_stall_judgement(
     if verdict.verdict == "kill":
         return await _observer_stall_kill(state, ctx, verdict, evidence)
     if verdict.verdict == "escalate":
-        state["convergence_reason"] = verdict.reason
+        state["convergence_reason"] = redact_state_value(verdict.reason)
         return ("block", None)
     # continue / correction / retune all grant the turn more time; correction
     # and retune additionally fold their payloads in, and the next poll
@@ -897,7 +897,7 @@ async def poll_transport_error(
                         "move_card_to_blocked_failed", card_id=card_id,
                     )
             state["phase"] = "blocked"
-            state["open_questions"] = [reason]
+            state["open_questions"] = redact_state_value([reason])
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             _sm = state.get("slot_manager")
@@ -924,7 +924,7 @@ async def poll_transport_error(
     state["system_error_count"] = state.get("system_error_count", 0) + 1
     state["system_error_last_at"] = datetime.now(UTC)
     state["system_error_reason"] = (
-        f"Transport failure during status check: {type(exc).__name__}: {exc}"
+        redact_state_value(f"Transport failure during status check: {type(exc).__name__}: {exc}")
     )
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
@@ -974,7 +974,7 @@ async def poll_permanent_error(
         except Exception:
             logger.warning("move_card_to_blocked_failed", card_id=card_id)
     state["phase"] = "blocked"
-    state["open_questions"] = [f"Permanent service failure: {exc}"]
+    state["open_questions"] = redact_state_value([f"Permanent service failure: {exc}"])
     # 048: release slot on permanent error
     _sm = state.get("slot_manager")
     if _sm is not None and hasattr(_sm, "release"):
@@ -1703,15 +1703,15 @@ async def _phase_stall_watchdog_s2(
                 _sm.release(stage, card_id)
             state["phase"] = "blocked"
             state["system_error_reason"] = (
-                f"performer stage '{stage}' stalled (no progress for "
-                f"{round(_stalled_for)}s) and exhausted {_budget} retries"
+                redact_state_value(f"performer stage '{stage}' stalled (no progress for "
+                f"{round(_stalled_for)}s) and exhausted {_budget} retries")
             )
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"The `{stage}` performer made no forward progress for "
                 f"{round(_stalled_for)}s (stall watchdog) and exhausted the "
                 f"{_budget}-retry budget in {_window_h}h — likely a wedged "
                 f"upstream model. Operator intervention required.",
-            ]
+            ])
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
@@ -1792,7 +1792,7 @@ async def _phase_terminal_markers(
                     symphony=_sym_name,
                     error=str(_exc),
                 )
-        state["env_health_hold_reason"] = f"qa_env_blocked: {_reason}"
+        state["env_health_hold_reason"] = redact_state_value(f"qa_env_blocked: {_reason}")
         state["phase"] = "dispatching"
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
@@ -1816,10 +1816,10 @@ async def phase_1206(
         state.update(_record_pr_artefacts(state, status))
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
-        state["system_error_reason"] = str(ci_infra.get("cause") or status.get("reason") or "CI infrastructure unavailable")
+        state["system_error_reason"] = redact_state_value(str(ci_infra.get("cause") or status.get("reason") or "CI infrastructure unavailable"))
         pr_url = status.get("pr_url") or (state.get("current_card") or {}).get("pr_url")
-        state["env_blocked"] = {**ci_infra, "pattern_id": "ci_infrastructure", "blocked_at": datetime.now(UTC).isoformat(),
-                                "action": "Repair the shared CI infrastructure; the PR will recheck its own jobs"}
+        state["env_blocked"] = redact_state_value({**ci_infra, "pattern_id": "ci_infrastructure", "blocked_at": datetime.now(UTC).isoformat(),
+                                "action": "Repair the shared CI infrastructure; the PR will recheck its own jobs"})
         # The next monitor cycle re-evaluates the shared CI gate, without a
         # model dispatch, local-cache invalidation or repair-counter update.
         state["phase"] = "monitoring_performer" if (pr_url and getattr(_get_ci_gate_config(state), "enabled", False)
@@ -1900,7 +1900,7 @@ async def _phase_local_test_gate_s2(
     # same over-budget suite, block it again, and oscillate at a full run
     # per cycle. Raising the budget is a human action; the hold waits for it.
     if not _budget_exceeded:
-        state["env_blocked"] = {
+        state["env_blocked"] = redact_state_value({
             "pattern_id": "local_test_gate",
             "stage": stage,
             "reason": _reason[:500],
@@ -1908,10 +1908,10 @@ async def _phase_local_test_gate_s2(
             "check_names": [],
             "action": "Nothing to do by hand: the env cache regenerates and "
                       "recovery lifts the card once it verifies healthy",
-        }
+        })
     state["env_health_hold_reason"] = (
-        f"env_blocked (test budget exceeded, services healthy): {_reason}"
-        if _budget_exceeded else f"env_blocked: {_reason}"
+        redact_state_value(f"env_blocked (test budget exceeded, services healthy): {_reason}"
+        if _budget_exceeded else f"env_blocked: {_reason}")
     )
     state["phase"] = "blocked"
     # 123 FR-006: env_blocked is an infrastructure/transient failure — count
@@ -1934,52 +1934,52 @@ async def _phase_local_test_gate_s3(
         # 169: the reviewer workflow holds when it could not post its one
         # review or could not read every changed file; neither is a test
         # environment problem and no code change fixes it.
-        state["system_error_reason"] = f"the review could not complete (no code defect):\n{_reason}"
-        state["open_questions"] = [
+        state["system_error_reason"] = redact_state_value(f"the review could not complete (no code defect):\n{_reason}")
+        state["open_questions"] = redact_state_value([
             f"The reviewer hit an environment blocker ({_reason}). The card is parked in the "
             "blocked column: check GitHub API access from the performer and the size of the "
             "injected diff, then re-run the review stage.",
-        ]
+        ])
     elif stage == "documenting":
         # 171: the documenter workflow holds when the tree was dirty at
         # start or the docs commit or push failed. No code change fixes it.
-        state["system_error_reason"] = f"the documentation update could not complete (no code defect):\n{_reason}"
-        state["open_questions"] = [
+        state["system_error_reason"] = redact_state_value(f"the documentation update could not complete (no code defect):\n{_reason}")
+        state["open_questions"] = redact_state_value([
             f"The documenter hit an environment blocker ({_reason}). The card is parked in the "
             "blocked column: check the workspace for leftover changes and the push path for the "
             "branch, then re-run the documenting stage.",
-        ]
+        ])
     elif stage == "closing_review":
         # 172: the closer workflow holds when it could not read the review
         # threads, could not post its one review, or could not resolve a
         # thread it judged addressed. None of these is a code defect.
-        state["system_error_reason"] = f"the closing review could not complete (no code defect):\n{_reason}"
-        state["open_questions"] = [
+        state["system_error_reason"] = redact_state_value(f"the closing review could not complete (no code defect):\n{_reason}")
+        state["open_questions"] = redact_state_value([
             f"The closer hit an environment blocker ({_reason}). The card is parked in the blocked "
             "column: check GitHub API access from the performer, then re-run the closing review.",
-        ]
+        ])
     elif stage == "security":
         # 170: the security workflow holds when a scanner is missing or broken,
         # when it could not post its one review, or when it could not read
         # every changed file. No code change fixes any of these.
-        state["system_error_reason"] = f"the security review could not complete (no code defect):\n{_reason}"
-        state["open_questions"] = [
+        state["system_error_reason"] = redact_state_value(f"the security review could not complete (no code defect):\n{_reason}")
+        state["open_questions"] = redact_state_value([
             f"The security stage hit an environment blocker ({_reason}). The card is parked in the "
             "blocked column: the hold names the tools the model chose and what went wrong with each, "
             "so check those run in the performer image, then GitHub API access from the performer and "
             "the size of the injected diff, then re-run the security stage.",
-        ]
+        ])
     else:
         state["system_error_reason"] = (
-            f"local tests could not run due to an environment blocker "
-            f"(no code defect); not pushing:\n{_reason}"
+            redact_state_value(f"local tests could not run due to an environment blocker "
+            f"(no code defect); not pushing:\n{_reason}")
         )
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             "The implementer's local test gate hit an environment blocker "
             f"(env-cache reason: {_reason}). The card is parked in the blocked "
             "column — no code change will fix this; an operator must repair the "
             "performer environment / env cache before the stage can re-run.",
-        ]
+        ])
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     return state
@@ -2454,15 +2454,15 @@ async def _phase_review_routes_s2(
         )
         state["phase"] = "blocked"
         state["system_error_reason"] = (
-            f"local tests still failing after {_max_attempts} self-fix "
-            f"attempt(s); not pushing:\n{_fail_blob}"
+            redact_state_value(f"local tests still failing after {_max_attempts} self-fix "
+            f"attempt(s); not pushing:\n{_fail_blob}")
         )
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"The implementer's local test gate failed "
             f"{_count - 1} consecutive self-fix attempt(s) (budget "
             f"{_max_attempts}) without converging. Failing output:\n"
             f"{_fail_blob}",
-        ]
+        ])
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         return state
@@ -2514,15 +2514,15 @@ async def _phase_review_routes_s3(
         state["review_empty_retry_count"] = 0
         state["phase"] = "blocked"
         state["system_error_reason"] = (
-            f"performer reported changes_requested with no actionable "
-            f"feedback after {_empty_retries} re-review(s) (stage={stage})"
+            redact_state_value(f"performer reported changes_requested with no actionable "
+            f"feedback after {_empty_retries} re-review(s) (stage={stage})")
         )
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"The `{stage}` performer rejected this card "
             f"(`status=changes_requested`) but returned no structured "
             f"comments and no prose body, even after a re-review. "
             f"Nothing to relay to the implementer. Operator triage required.",
-        ]
+        ])
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         return state
@@ -2644,10 +2644,10 @@ async def _phase_security_failed_s1(
         state["system_error_reason"] = (
             "security scan floor unavailable — fail-closed halt"
         )
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             str(f.get("description", "security scanner unavailable"))
             for f in halt_findings
-        ]
+        ])
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         return state
@@ -2849,7 +2849,7 @@ async def _phase_token_limit(
                     error=str(exc),
                 )
         state["phase"] = "blocked"
-        state["open_questions"] = [advice]
+        state["open_questions"] = redact_state_value([advice])
         return state
     ctx.config = config
     ctx.issue_id = issue_id
@@ -2951,11 +2951,11 @@ async def _phase_idle_branch(
         from coordinare.services.attempt_telemetry import close_attempt
         close_attempt(state, "timeout", "system", "blocked")
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Performer stage '{stage}' idle-timed-out the configured "
             f"max ({_budget}) retries in {_window_h}h for card {card_id}. "
             "Operator intervention required.",
-        ]
+        ])
         return state
     ctx._budget = _budget
     ctx._dd_cfg = _dd_cfg
@@ -3015,14 +3015,14 @@ async def phase_2016(
         # open_questions entry makes handle_blocked keep the card
         # blocked instead of re-dispatching it.
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Performer stage '{stage}' produced empty/unusable output "
             f"({str(status.get('reason', '')).strip()[:160]}) on "
             f"{_eo_budget + 1} attempt(s) for card {card_id}. This is "
             "typically a model-capability limit on a card too large for "
             "the configured model — consider a stronger model for this "
             "role or splitting the card. Operator intervention required.",
-        ]
+        ])
         return state
     ctx._dd_cfg = _dd_cfg
     ctx.decision = decision
@@ -3042,7 +3042,7 @@ async def _phase_error_status_s1(
     reason = str(status.get("reason", ""))
     # 103: keep the failure before this one, so s2 can tell an identical retry.
     ctx.previous_reason = state.get("system_error_reason")
-    state["system_error_reason"] = reason or "The performer failed without a diagnostic reason"
+    state["system_error_reason"] = redact_state_value(reason or "The performer failed without a diagnostic reason")
     # 098 US1 (FR-001/FR-007): the assessor (junie) harness terminal-errors
     # whenever its strict parser cannot build issue.md from a flaky upstream
     # response (empty answer / control chars / empty body). Scoped to the
@@ -3104,9 +3104,9 @@ async def _phase_error_status_s2(
             (assessor_retry or _is_format_contract_error(reason))
             and not reason.startswith(_FORMAT_ERROR_PREFIX)
         ):
-            state["system_error_reason"] = f"{_FORMAT_ERROR_PREFIX} {reason}"
+            state["system_error_reason"] = redact_state_value(f"{_FORMAT_ERROR_PREFIX} {reason}")
         else:
-            state["system_error_reason"] = reason
+            state["system_error_reason"] = redact_state_value(reason)
         # 103: count consecutive format failures whose reason is byte-identical
         # (same captured output). Exhaustion names the class only when every
         # attempt matched; a changed failure starts the streak again.
@@ -3203,10 +3203,10 @@ async def _phase_error_status_s3(
         reason=reason or "<empty>",
     )
     state["phase"] = "blocked"
-    state["open_questions"] = [
+    state["open_questions"] = redact_state_value([
         f"Performer ({stage}) encountered an error: {reason}" if reason
         else f"Performer ({stage}) encountered an error.",
-    ]
+    ])
     return state
     ctx.exhausted = exhausted
     ctx.lifecycle = lifecycle
@@ -3268,10 +3268,10 @@ async def _phase_blocked_questions_s2_s1(
             reason=reason,
         )
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Relay failed {error_count} consecutive times on stage '{stage}'. "
             f"Last error: {reason}. Check performer logs for transport errors.",
-        ]
+        ])
         return state
     logger.info(
         "monitor_performer.session_expired_resume_monitoring_pr",
@@ -3321,11 +3321,11 @@ async def _phase_blocked_questions_s2_s2(
                 exc_type=type(exc).__name__,
             )
             state["phase"] = "blocked"
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"Failed to move card {card_id!r} to IN_REVIEW after session "
                 f"expiry for stage {stage!r}: {exc}. Blocking to avoid an "
                 "infinite monitoring loop on stale board state.",
-            ]
+            ])
     return None
 
 async def _phase_blocked_questions_s2(
@@ -3450,13 +3450,13 @@ async def _phase_feedback_bounce_s1(
             if _sm_np is not None and hasattr(_sm_np, "release"):
                 _sm_np.release(stage, card_id)
             state["phase"] = "blocked"
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"Performer ({stage}) relayed {_spent} times without "
                 "committing anything. Each relay repeated the same "
                 "outcome, so more attempts will not help. "
                 + (str(status.get("reason") or "").strip()
                    or "The last run reported no reason."),
-            ]
+            ])
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
@@ -3610,11 +3610,11 @@ async def _phase_no_progress_relay_s2(
                 relays=_spent_nc, limit=MAX_NO_PROGRESS_RELAYS, marker=marker,
             )
             state["phase"] = "blocked"
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"Performer ({stage}) ended {_spent_nc} turns without "
                 "pushing any commits, after being told each time to "
                 "finish or checkpoint.",
-            ]
+            ])
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
@@ -3707,11 +3707,11 @@ async def _phase_no_progress_relay_s4(
                 relays=_spent_zp, limit=MAX_NO_PROGRESS_RELAYS, marker=marker,
             )
             state["phase"] = "blocked"
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"Performer ({stage}) produced nothing on {_spent_zp} "
                 "consecutive turns: no commits, no PR comments, no "
                 "clarifications.",
-            ]
+            ])
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
@@ -3747,16 +3747,16 @@ async def _phase_no_progress_relay_s5(
     status = ctx.status
     questions = status.get("questions")
     if isinstance(questions, list) and questions:
-        state["open_questions"] = [str(item) for item in questions]
+        state["open_questions"] = redact_state_value([str(item) for item in questions])
         # 123 US4 (FR-010): persist the assessor's open questions so a
         # later assessor re-dispatch carries them forward as
         # prior_clarifications (FR-011) and does not re-ask them.
         # Distinct from open_questions above (blocked-card diagnostic
         # surface): stored as {"question","answer"} carry-forward Q&A.
         if stage == "assessing":
-            state["assessor_open_questions"] = [
+            state["assessor_open_questions"] = redact_state_value([
                 {"question": str(item), "answer": ""} for item in questions
-            ]
+            ])
     else:
         # Blocked with no questions — assessment backend will generate them.
         state["open_questions"] = []
@@ -4210,11 +4210,11 @@ async def _phase_observer_kill(
         if decision == "block":
             close_attempt(state, "timeout", "system", "blocked")
             state["phase"] = "blocked"
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"Observer killed stage '{stage}' beyond its retry budget "
                 f"in the 24h window for card {card_id} "
                 f"(reason: {verdict.reason}). Operator intervention required.",
-            ]
+            ])
             logger.warning(
                 "observer.kill_escalated",
                 card_id=card_id,
