@@ -19,6 +19,7 @@ retryable — otherwise a real failure would retry forever.
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 # The coordinare system-error retry tag (see monitor_performer). A reason may
@@ -110,3 +111,79 @@ def classify_assessor_failure(
     if any(m in low for m in _EMPTY_ANSWER_MARKERS):
         return "empty_answer"
     return None
+
+
+# 103: a format failure the performer stamped with the shape of its output
+# (performer main._output_shape). The shape says which end of the output was lost.
+_OUTPUT_SHAPE_RE = re.compile(r"\bshape (head_cut|tail_cut|whole|empty)\b")
+_LAST_OUTPUT_MARKER = "Last output: "
+_STAGE_LABELS = {"assessing": "assessment"}
+# Shape-specific repair guidance. The performer keeps the same wording in its
+# own retry prompt (performer main._OUTPUT_SHAPE_GUIDANCE); the two processes
+# cannot share an import, so the wording is kept in step by hand.
+_SHAPE_GUIDANCE = {
+    "head_cut": (
+        "The previous output began mid-object: its opening brace and first keys were "
+        "lost. Emit the complete object from its first character."
+    ),
+    "tail_cut": (
+        "The previous output ended before the object closed. Keep the answer compact "
+        "so the object completes."
+    ),
+    "whole": "The previous output had braces but was not valid JSON. Emit one valid JSON object.",
+    "empty": "The previous output was empty.",
+}
+
+
+def format_failure_shape(reason: str | None) -> str | None:
+    """The output shape a performer stamped on a format failure, or None."""
+    if not reason:
+        return None
+    match = _OUTPUT_SHAPE_RE.search(reason)
+    return match.group(1) if match else None
+
+
+def format_failure_excerpt(reason: str | None) -> str | None:
+    """The captured output a format failure quotes (bounded by the performer)."""
+    if not reason or _LAST_OUTPUT_MARKER not in reason:
+        return None
+    return reason.split(_LAST_OUTPUT_MARKER, 1)[1].strip()
+
+
+def format_repair_hint(reason: str | None, stage_label: str) -> str | None:
+    """A repair prompt for the next dispatch, or None when the reason carries no shape.
+
+    Without a shape there is nothing specific to say, so the retry stays as it was.
+    """
+    shape = format_failure_shape(reason)
+    if shape is None:
+        return None
+    excerpt = format_failure_excerpt(reason) or "<empty>"
+    return (
+        f"Your previous {stage_label} output could not be parsed as a JSON object. "
+        f"{_SHAPE_GUIDANCE[shape]}\n"
+        f"The failed output was: {excerpt}\n"
+        "Return ONLY one complete JSON object that matches the required schema."
+    )
+
+
+def describe_format_exhaustion(
+    reason: str | None, *, stage: str, count: int, identical: bool,
+) -> str:
+    """Name the failure class for a format failure whose retries are spent.
+
+    ``identical`` is True only when every attempt produced the same reason, so
+    the class ("same failure") is stated as a fact, not inferred from the count.
+    Any other reason is returned unchanged.
+    """
+    if not reason or not reason.startswith(_FORMAT_ERROR_PREFIX):
+        return reason or ""
+    label = _STAGE_LABELS.get(stage, stage or "performer")
+    wording = f"{label} output unparseable {count} times"
+    if identical:
+        wording += ", same failure"
+    shape = format_failure_shape(reason)
+    if shape is not None:
+        wording += f" (output shape {shape})"
+    body = reason[len(_FORMAT_ERROR_PREFIX):].strip()
+    return f"{_FORMAT_ERROR_PREFIX} {wording}. {body}"

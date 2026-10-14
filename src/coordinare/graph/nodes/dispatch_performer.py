@@ -482,7 +482,10 @@ def inject_observer_correction(card_context: dict[str, Any], state: Any) -> None
         return
     existing = card_context.get("relay_feedback")
     items = list(existing) if isinstance(existing, list) else []
-    items.append({"body": correction["body"], "author_login": "observer"})
+    # 103: a format-repair hint names its own author; a human observer correction
+    # keeps the "observer" attribution it always had.
+    author = correction.get("author_login") or "observer"
+    items.append({"body": correction["body"], "author_login": author})
     card_context["relay_feedback"] = items
 
 

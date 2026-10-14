@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Literal
 import structlog
 
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
-from coordinare.services.assessor_failure import classify_assessor_failure
+from coordinare.services.assessor_failure import (
+    classify_assessor_failure,
+    describe_format_exhaustion,
+)
 from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
@@ -138,6 +141,16 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
     # Max retries exhausted — notify operator once, then move card to BLOCKED
     if not state.get("system_error_notified"):
         reason = state.get("system_error_reason") or "Unknown performer error"
+        # 103: a format failure that exhausted its retries names its class on the
+        # card. "same failure" is claimed only when every attempt matched.
+        identical = int(state.get("system_error_identical_count") or 0) >= count > 0
+        reason = describe_format_exhaustion(
+            reason,
+            stage=str(state.get("performer_stage") or ""),
+            count=count,
+            identical=identical,
+        )
+        state["system_error_reason"] = reason
         # 098 US3 (FR-003): when the assessor stage exhausted retries on a
         # persistently EMPTY upstream (the heavily-shared model is overloaded/down),
         # this is an infrastructure condition — surface it as ENV_BLOCKED (operator

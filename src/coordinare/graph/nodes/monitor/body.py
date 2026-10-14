@@ -122,7 +122,10 @@ from coordinare.graph.nodes.monitor.verdict import (
 )
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
-from coordinare.services.assessor_failure import classify_assessor_failure
+from coordinare.services.assessor_failure import (
+    classify_assessor_failure,
+    format_repair_hint,
+)
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
@@ -230,6 +233,7 @@ class _BodyCtx:
     production_advanced: bool = False
     pr_url: Any = None
     prior_session_id: Any = None
+    previous_reason: Any = None
     reason: Any = None
     relay_body: Any = None
     service: Any = None
@@ -2991,6 +2995,8 @@ async def _phase_error_status_s1(
     stage = ctx.stage
     status = ctx.status
     reason = str(status.get("reason", ""))
+    # 103: keep the failure before this one, so s2 can tell an identical retry.
+    ctx.previous_reason = state.get("system_error_reason")
     state["system_error_reason"] = reason or "The performer failed without a diagnostic reason"
     # 098 US1 (FR-001/FR-007): the assessor (junie) harness terminal-errors
     # whenever its strict parser cannot build issue.md from a flaky upstream
@@ -3025,6 +3031,7 @@ async def _phase_error_status_s2(
     """Phase helper: return a state to short-circuit, or None to continue."""
     assessor_retry = ctx.assessor_retry
     reason = ctx.reason
+    stage = ctx.stage
     if (
         reason.startswith(_FORMAT_ERROR_PREFIX)
         or _is_transient_backend_error(reason)
@@ -3042,6 +3049,7 @@ async def _phase_error_status_s2(
             state["system_error_notified"] = False
         state["system_error_count"] = state.get("system_error_count", 0) + 1
         state["system_error_last_at"] = datetime.now(UTC)
+        previous_reason = ctx.previous_reason
         # 098 US1/US3: tag an assessor-shape failure at the reason source so
         # the persisted reason carries the format-error marker (matched by
         # the retry gate above on the next cycle) AND remains re-classifiable
@@ -3054,9 +3062,28 @@ async def _phase_error_status_s2(
             state["system_error_reason"] = f"{_FORMAT_ERROR_PREFIX} {reason}"
         else:
             state["system_error_reason"] = reason
+        # 103: count consecutive format failures whose reason is byte-identical
+        # (same captured output). Exhaustion names the class only when every
+        # attempt matched; a changed failure starts the streak again.
+        stored_reason = str(state["system_error_reason"])
+        if stored_reason.startswith(_FORMAT_ERROR_PREFIX):
+            identical = previous_reason == stored_reason
+            state["system_error_identical_count"] = (
+                int(state.get("system_error_identical_count") or 0) + 1 if identical else 1
+            )
+        else:
+            state["system_error_identical_count"] = 0
+        # 103: a format retry must change something. The next dispatch carries the
+        # failure and the output it quoted, through the observer-correction channel
+        # (rides the payload's relay_feedback, never triggers a dispatch, cleared
+        # once a dispatch succeeds).
+        stage_label = "assessment" if stage == "assessing" else (stage or "performer")
+        repair = format_repair_hint(stored_reason, stage_label)
+        state["observer_correction"] = (
+            {"body": repair, "author_login": "coordinare"} if repair is not None else None
+        )
         state["open_questions"] = []
         state["relay_feedback"] = []
-        state["observer_correction"] = None
         state["phase"] = "system_error"
         return state
     return None
