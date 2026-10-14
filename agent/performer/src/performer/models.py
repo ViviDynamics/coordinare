@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from performer.transcript_redaction import redact_text as transcript_redact_text
+
 log = structlog.get_logger(__name__)
 
 
@@ -37,36 +39,18 @@ def _redact_secrets(text: str) -> str:
     return text
 
 
-# 148: command and header forms, identical to coordinare.lib.redaction (the daemon
-# redacts again on ingest). A parity test pins the two lists together.
-_COMMAND_MARKERS = ("=", ":", "-", "@", "configure")
+# 148: the command forms the transcript redactor (lib/transcript_redaction.py,
+# spec 129) does not cover. Run after it, so anything it already handles is
+# never matched twice. Each pattern keeps its prefix in group 1 and replaces the
+# secret span. The performer keeps an identical list (performer/models.py); a
+# parity test pins the two together.
+_COMMAND_MARKERS = ("-", "configure")
 _QUOTED_OR_BARE = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 _COMMAND_SECRET_PATTERNS: list[re.Pattern[str]] = [
-    # FOO_TOKEN=abc, PGPASSWORD=x, AWS_SECRET_ACCESS_KEY=...
+    # docker login -p x, sshpass -p x (mysql -p, env assignments, --password and
+    # --token flags, curl -u, URL userinfo and auth headers are all transcript rules)
     re.compile(
-        r"\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*=)"
-        + _QUOTED_OR_BARE,
-        re.IGNORECASE,
-    ),
-    # --token x, --password=x, --api-key x
-    re.compile(
-        r"((?:^|\s)--?(?:token|password|passwd|pass|secret|api[-_]?key)[=\s]+)" + _QUOTED_OR_BARE,
-        re.IGNORECASE,
-    ),
-    # docker login -p x, sshpass -p x, mysql -pVALUE (the password follows -p, attached or not)
-    re.compile(
-        r"(\b(?:docker\s+login|mysql|mariadb|psql|sshpass|mongosh?)\b[^|;&\n]*?\s-p)\s*"
-        + _QUOTED_OR_BARE,
-        re.IGNORECASE,
-    ),
-    # curl -u user:pass, --user user:pass (only the password after the colon)
-    re.compile(r"((?:^|\s)(?:-u|--user)(?:=|\s+)[\"']?[^\s:\"']*:)[^\s\"']+", re.IGNORECASE),
-    # scheme://user:pass@host, any scheme (https, postgresql, x-access-token, ...)
-    re.compile(r"\b((?:[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/:@'\"]*:)[^\s/@'\"]+(?=@)"),
-    # -H 'X-API-Key: v', -H "Token: v", Authorization: Bearer v
-    re.compile(
-        r"((?:^|[\s\"'])(?:-H\s*)?[\"']?[A-Za-z0-9-]*(?:key|token|secret|auth|password|credential)"
-        r"[A-Za-z0-9-]*\s*:\s*(?:(?:bearer|basic|token)\s+)?)[^\s\"']+",
+        r"(\b(?:docker\s+login|sshpass)\b[^|;&\n]*?\s-p)\s*" + _QUOTED_OR_BARE,
         re.IGNORECASE,
     ),
     # aws configure set aws_secret_access_key VALUE (no equals sign)
@@ -83,8 +67,9 @@ _COMMAND_SECRET_PATTERNS: list[re.Pattern[str]] = [
 
 
 def redact_command(text: str) -> str:
-    """Value patterns plus the command and header forms (148). Redact before clipping."""
+    """Value patterns, the transcript redactor, then the command forms (148, 129). Redact before clipping."""
     text = _redact_secrets(text)
+    text = transcript_redact_text(text)
     # Every form below needs one of these, so text with none of them skips the scan.
     lowered = text.lower()
     if not any(marker in lowered for marker in _COMMAND_MARKERS):

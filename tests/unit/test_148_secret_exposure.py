@@ -20,6 +20,7 @@ from performer.models import BackendEvent, BackendEventType
 from coordinare.dashboard import DashboardStore
 from coordinare.graph.nodes.monitor.body import _BodyCtx, _phase_merge_events
 from coordinare.lib import redaction as daemon_redaction
+from tests.unit import test_129_review5, test_129_review6
 from tests.unit.test_dashboard import _make_mock_daemon, _make_mock_health, _make_mock_metrics
 
 _CARD = {"id": "PVTI_148", "issue_number": 148, "title": "Activity detail"}
@@ -138,3 +139,16 @@ def test_the_performer_and_daemon_carry_the_same_command_patterns() -> None:
 def test_both_redactors_remove_every_sample(command: str, secret: str) -> None:
     assert secret not in daemon_redaction.redact_command_text(command)
     assert secret not in performer_models.redact_command(command)
+
+
+# The transcript redactor's own leak corpus (spec 129). Each one must be gone from
+# the snapshot too, so the transcript layer is proven to reach the dashboard.
+TRANSCRIPT_LEAKS = [*test_129_review5.NEW_LEAKS, *test_129_review6.REGRESSIONS]
+
+
+@pytest.mark.parametrize(("example", "secret"), TRANSCRIPT_LEAKS)
+def test_transcript_leak_samples_never_reach_the_snapshot(example: str, secret: str) -> None:
+    store = DashboardStore()
+    event = {"type": "progress", "text": example, "timestamp": "2026-10-14T09:00:00+00:00"}
+    daemon, _ = _feed_through_daemon(store, event)
+    assert secret not in _payload_text(store, daemon), f"{secret!r} leaked through {example!r}"

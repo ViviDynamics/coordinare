@@ -247,9 +247,15 @@ def test_wedged_agent_reemits_nothing() -> None:
 
 
 def test_memory_ceiling_under_flood() -> None:
-    """SC-013: 100k oversized records leave <=2000 entries, each <=200 chars."""
+    """SC-013: oversized records leave <=2000 entries, each <=200 chars.
+
+    10k records is five times the retention cap, which is what the bound needs.
+    The count is down from 100k since spec 148: every record now also passes
+    through the transcript redactor (linear, but about 0.1 us per character),
+    so the old count ran past the test timeout. The property is unchanged.
+    """
     log = ActivityLog()
-    for i in range(100_000):
+    for i in range(10_000):
         log.record(activity_type="progress", card_id=f"C{i % 20}", text=f"{i} " + "z" * 4000)
     entries = log.snapshot()
     assert len(entries) == 2000
