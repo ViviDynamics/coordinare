@@ -267,6 +267,9 @@ async def _reject_repair(
     kind_seq: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], bool]:
     """Fail-safe rejection: audit the verdict, escalate, and block (no push)."""
+    # 203: the guard's detail is reviewer text. It is redacted here, before it reaches the audit
+    # record, the open question or the PR comment, so no later copy can carry it raw.
+    detail = redact_state_value(detail)
     records = list(kind_seq)
     records.append(
         _repair_record(

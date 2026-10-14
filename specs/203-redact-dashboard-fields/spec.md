@@ -32,6 +32,9 @@ Every field a viewer can receive (dashboard `/api/state`, the SSE `state_update`
 | `assessor_open_questions` (persisted session) | assessor questions and answers | `body.py`, `check_board.py`, daemon restore | No | Redacted at each writer |
 | `last_bootstrap_error` (`/api/symphonies` env cache, snapshot symphony rows) | env bootstrap failure text from the performer | `services/env_cache.py` | No | Redacted at write |
 | `last_wiki_init_error` (env cache) | wiki init failure text | `services/wiki_init.py` | No | Redacted at write |
+| `last_<role>_error`, e.g. `last_advocate_error`, `last_curator_error` (env cache, persisted with the snapshot) | intake run failure text, from a performer run or the dispatcher's exception | `services/intake_dispatch.py` `register_failure`, called from `daemon.py` and `intake_dispatch.py` | No | Redacted once at the top of `register_failure`, so the stored value and the log both see the redacted form |
+| `result_reason` (documenting side and owned writers, persisted) | the writer's reason text | `services/documenting_side.py` `record_result`, `services/owned_writers.py` | No | Redacted at write |
+| PR comment body for a rejected baseline repair (`detail`) | the test-integrity guard's reason, which is reviewer text | `graph/nodes/monitor/repair.py` `_reject_repair` (the rejection path) | No | Redacted at the top of the function, before the audit record, the open question and the comment |
 | symphony `last_error` (`/api/symphonies`, snapshot symphony rows) | exception text | `daemon.py` symphony failure | No | Redacted at write |
 | `session_stats.title` (session rows) | session title generated from the task (model text) | `SubprocessTransport._fetch_session_stats` | No | Redacted at fetch |
 | `workflow_step`, `workflow_step_trail` | step names taken from performer event text | `services/workflow_step.py` from the merged events | Yes (#148, events redacted before merge) | Unchanged |
@@ -46,6 +49,20 @@ Every field a viewer can receive (dashboard `/api/state`, the SSE `state_update`
 | `/api/assistant/message` | the operator's own chat turn | `services/config_assistant.py` | Not state | Out of scope |
 | `session_skip_reasons`, `todo_waits`, `pending_control`, `lifecycle_sequence`, `stage_verdicts` | coordinare-written reasons, stage names, markers and SHAs (`stage_verdicts` holds no free text) | coordinare | Not performer text | Unchanged |
 | MCP tools `get_state`, `get_performer_logs`, `get_activity`, symphony, config, persona | proxies of the routes above | `mcp/tools/*` through `/api/*` | Follows the routes | Unchanged |
+
+## Coverage gaps (static guard only)
+
+Three fields are written inside large phase functions with no cheap entry point to drive from a test. They are covered by the static writer guard (every write must route through `redact_state_value`), not by the seeded-secret walk:
+
+- symphony `last_error`, written in `daemon.py` `_conduct_single_symphony`.
+- `convergence_reason`, written in `graph/nodes/monitor/body.py` `_observer_stall_judgement`.
+- `assessor_open_questions`, written in `graph/nodes/monitor/body.py` `_phase_no_progress_relay_s5`.
+
+The daemon mock in the walk reads `symphony_last_error` and `convergence_reason` keys, but the seeding does not set them, so the walk does not exercise those two fields at all.
+
+## Dynamic-write allow-list
+
+Writes whose key the guard cannot resolve to a field name are listed in `_DYNAMIC_WRITE_ALLOWANCES` in the test module, keyed `<file>::<target expression>`, each with a reason. Save-path copies (`_persist_one_session`, `_persist_env_cache`, `_build_snapshot`) are listed in `_SAVE_PATH_COPIES`, keyed by file, function and field. The save path does not redact again, because the live state was redacted by its writers. The restore path does redact, so snapshots written before this change are still redacted on load.
 
 ## Out of scope
 

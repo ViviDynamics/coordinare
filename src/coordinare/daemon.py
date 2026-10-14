@@ -546,9 +546,9 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         lifecycle_completed_at=f["completed"],
         processed_review_ids=f["processed_ids"],
         surfaced_stale_reviews=f["surfaced_stale"],
-        open_questions=redact_state_value([str(q) for q in f["questions_raw"] if q is not None]
+        open_questions=[str(q) for q in f["questions_raw"] if q is not None]
         if isinstance(f["questions_raw"], (list, tuple, set))
-        else []),
+        else [],
         consumed_loop_questions=[
             str(qf) for qf in (sess.get("consumed_loop_questions") or ()) if qf is not None
         ],
@@ -564,7 +564,7 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         else [],
         system_error_count=int(sess.get("system_error_count") or 0),
         system_error_last_at=sess.get("system_error_last_at"),
-        system_error_reason=(redact_state_value(sess.get("system_error_reason") or None)),
+        system_error_reason=(sess.get("system_error_reason") or None),
         system_error_notified=bool(sess.get("system_error_notified")),
         requirements_changed=bool(sess.get("requirements_changed")),
         last_blocked_notified_at=f["last_notified"],
@@ -580,11 +580,11 @@ def _persist_one_session(card_id: str, sess: dict[str, Any]) -> PersistedSession
         ),
         repair_audit=_persist_repair_audit(sess.get("repair_audit")),
         ci_gate_rollup_signature=f["ci_gate_rollup_sig"],
-        env_blocked=redact_state_value(_persist_env_blocked(sess.get("env_blocked"))),
+        env_blocked=_persist_env_blocked(sess.get("env_blocked")),
         last_rebase_attempt=_persist_last_rebase_attempt(sess.get("last_rebase_attempt")),
         content_feedback_cycles=f["content_feedback_cycles"],
         transient_error_cycles=f["transient_error_cycles"],
-        assessor_open_questions=redact_state_value(_persist_assessor_questions(sess.get("assessor_open_questions"))),
+        assessor_open_questions=_persist_assessor_questions(sess.get("assessor_open_questions")),
         stage_verdicts=_persist_stage_verdicts(sess.get("stage_verdicts")),
         documentation_findings=sess.get("documentation_findings") or {},
         blueprint=f["blueprint"],
@@ -651,7 +651,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             sanitised_name=str(get("sanitised_name") or ""),
             cache_dir=str(cache_dir) if cache_dir is not None else "",
             readme_sha=get("readme_sha"),
-            last_bootstrap_error=redact_state_value(get("last_bootstrap_error")),
+            last_bootstrap_error=get("last_bootstrap_error"),
             last_bootstrap_at=get("last_bootstrap_at"),
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
@@ -666,7 +666,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             wiki_exhausted=bool(get("wiki_exhausted") or False),
             last_wiki_init_at=get("last_wiki_init_at"),
             last_wiki_init_succeeded=get("last_wiki_init_succeeded"),
-            last_wiki_init_error=redact_state_value(get("last_wiki_init_error")),
+            last_wiki_init_error=get("last_wiki_init_error"),
         )
     return out
 
@@ -2557,7 +2557,7 @@ class CoordinareDaemon:
             agent_session_id=_str_or_none(dispatch_dict.get("session_id"))
             if dispatch_dict
             else None,
-            open_questions=redact_state_value(questions),
+            open_questions=questions,
             card_clarifications=clarifications,
             performer_stage=str(performer_stage)
             if isinstance(performer_stage, str) and performer_stage

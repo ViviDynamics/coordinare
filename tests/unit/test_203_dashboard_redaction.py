@@ -10,23 +10,31 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import fnmatch
 import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from coordinare.dashboard import DashboardStore
+import pytest
+from fastapi.testclient import TestClient
+
+from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.graph.nodes.monitor.body import (
     _BodyCtx,
     _phase_local_test_gate,
     _phase_review_routes_s2,
 )
-from coordinare.lib.redaction import redact_state_value
+from coordinare.lib.redaction import _TOO_DEEP_MARKER, MAX_STATE_DEPTH, redact_state_value
 from coordinare.mcp.client import ToolResult
 from coordinare.mcp.tools.state_tools import get_state_handler
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.env_cache import EnvCacheService
+from coordinare.services.intake_dispatch import register_failure
 from coordinare.services.observer import OBSERVER_VERDICTS, parse_verdict, record_recent_verdict
-from coordinare.transport.subprocess_transport import SubprocessTransport
+from coordinare.transport import subprocess_transport
+from coordinare.transport.subprocess_transport import SubprocessTransport, _fetch_session_stats
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "coordinare"
@@ -58,6 +66,7 @@ TEXT_FIELDS = frozenset({
     "last_bootstrap_error",
     "last_error",
     "last_wiki_init_error",
+    "result_reason",
 })
 
 
@@ -77,11 +86,37 @@ class _FakeProc:
             yield (line + "\n").encode()
 
 
+class _FakeHttpResponse:
+    """What the backend's /api/session returns for a session with a model-written title."""
+
+    is_success = True
+    status_code = 200
+
+    def json(self) -> dict[str, Any]:
+        return {"title": SECRET_TEXTS["export"], "filesChanged": 2, "linesAdded": 3, "linesRemoved": 1}
+
+
+class _FakeHttpClient:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.args = args
+
+    async def __aenter__(self) -> _FakeHttpClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def get(self, url: str) -> _FakeHttpResponse:
+        return _FakeHttpResponse()
+
+
 def _seed_performer_state() -> dict[str, Any]:
     """Run the real entry points on secret-bearing performer output.
 
-    Returns the state the daemon would hold after these writers ran, with the
-    performer's stderr buffer under ``performer_logs``.
+    Returns the state the daemon would hold after these writers ran. Each field the
+    review named is driven where it has a cheap entry point. The symphony ``last_error``,
+    ``convergence_reason`` and ``assessor_open_questions`` writers are inline in large
+    phase functions, so the static writer guard covers them instead.
     """
     state: dict[str, Any] = {"local_fix_counter": {"abc": 9}}
 
@@ -115,6 +150,32 @@ def _seed_performer_state() -> dict[str, Any]:
     )
     asyncio.run(_phase_local_test_gate(state, env_ctx))
 
+    # Intake failure: last_<role>_error is written by register_failure.
+    intake = SimpleNamespace(
+        symphony_name="sym", advocate_attempts=0, last_advocate_succeeded=None, last_advocate_error=None,
+        last_advocate_run_at=None, advocate_exhausted=False,
+    )
+    register_failure(intake, "advocate", f"dispatch failed: {SECRET_TEXTS['curl']}", max_attempts=3)
+    state["intake"] = intake
+
+    # Env bootstrap failure: last_bootstrap_error is written by on_bootstrap_complete.
+    cache = EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=Path("/tmp/203-env-sym"))
+    state["env_cache"] = {"sym": cache}
+
+    async def _bootstrap_failed() -> None:
+        EnvCacheService(None).on_bootstrap_complete(
+            "sym", False, state, error=f"bootstrap failed: {SECRET_TEXTS['dburl']}",
+        )
+
+    asyncio.run(_bootstrap_failed())
+
+    # Session title: model-written text from the backend's /api/session, fetched for real.
+    with patch.object(subprocess_transport.httpx, "AsyncClient", _FakeHttpClient):
+        state["session_stats"] = asyncio.run(_fetch_session_stats("http://127.0.0.1:4096"))
+
+    # Clarification history: the question is copied from open_questions, as check_board does.
+    state["card_clarifications"] = [{"questions": list(state.get("open_questions") or []), "answer": ""}]
+
     # Performer stderr: the subprocess transport's buffer, the same one the dashboard reads.
     transport = SubprocessTransport(executable="performer", timeout=5)
     proc: Any = _FakeProc([SECRET_TEXTS["export"], SECRET_TEXTS["curl"], SECRET_TEXTS["bearer"]])
@@ -123,8 +184,8 @@ def _seed_performer_state() -> dict[str, Any]:
     return state
 
 
-def _snapshot_from(state: dict[str, Any]) -> dict[str, Any]:
-    """Build the dashboard snapshot for a live blocked session holding ``state``."""
+def _daemon_for(state: dict[str, Any]) -> MagicMock:
+    """A daemon whose state the dashboard reads, holding one blocked live session."""
     daemon = MagicMock()
     daemon.state = {
         "phase": "blocked",
@@ -141,6 +202,8 @@ def _snapshot_from(state: dict[str, Any]) -> dict[str, Any]:
                 "env_health_hold_reason": state.get("env_health_hold_reason"),
                 "env_blocked": state.get("env_blocked"),
                 "observer_verdicts": list(state.get("observer_verdicts") or []),
+                "card_clarifications": list(state.get("card_clarifications") or []),
+                "assessor_open_questions": list(state.get("assessor_open_questions") or []),
                 "performer_events": [],
             },
         },
@@ -149,13 +212,61 @@ def _snapshot_from(state: dict[str, Any]) -> dict[str, Any]:
         "observer_verdicts": list(state.get("observer_verdicts") or []),
         "env_blocked": state.get("env_blocked"),
         "env_health_hold_reason": state.get("env_health_hold_reason"),
+        "env_cache": state.get("env_cache") or {},
+        "session_stats": state.get("session_stats"),
+        "convergence_reason": state.get("convergence_reason"),
+        "symphony_configs": {"sym": SimpleNamespace(
+            github_project_number=1, enabled=True, overrides={}, personas={},
+            env_spec_files=["README.md"], env_bootstrap_performer_id=None, github_org="acme",
+        )},
+        "symphony_states": {"sym": SimpleNamespace(
+            cycle_count=0, error_count=0, last_error=state.get("symphony_last_error"), last_poll_at=None,
+            active_card=None, board_snapshot=None, board_titles={}, board_issue_numbers={},
+            board_issue_urls={}, board_pr_urls={}, session_skip_reasons={}, todo_waits={},
+            todo_capacity=None, active_sessions={},
+        )},
     }
     daemon.state_store.last_snapshot = None
     daemon._cycle_active = False
     daemon.running = True
+    return daemon
+
+
+def _health() -> MagicMock:
     health = MagicMock()
     health.snapshot.return_value.probes = []
-    return DashboardStore().build_snapshot(daemon, None, health)
+    return health
+
+
+def _snapshot_from(state: dict[str, Any]) -> dict[str, Any]:
+    """Build the dashboard snapshot for a live blocked session holding ``state``."""
+    return DashboardStore().build_snapshot(_daemon_for(state), None, _health())
+
+
+def _endpoint_texts(state: dict[str, Any]) -> dict[str, str]:
+    """The response bodies of every dashboard route a viewer reads, after the same seeding."""
+    store = DashboardStore()
+    store.activity_log.record_many([{
+        "activity_type": "performer_event", "card_id": "PVTI_203", "card_number": 203,
+        "card_title": "Redact", "stage": "implementing", "text": SECRET_TEXTS["bearer"],
+    }])
+    daemon = _daemon_for(state)
+    app = create_dashboard_app(store, daemon, MagicMock(), _health())
+    client = TestClient(app, base_url="http://127.0.0.1:8090")
+    paths = ("/api/state", "/api/symphonies", "/api/symphonies/sym", "/api/activity")
+    texts = {path: client.get(path).text for path in paths}
+
+    async def _first_frame() -> str:
+        stream = store.sse_stream(daemon, MagicMock(), _health())
+        try:
+            return await stream.__anext__()
+        finally:
+            await stream.aclose()
+            store.shutdown()
+
+    texts["sse state_update"] = asyncio.run(_first_frame())
+    assert "event: state_update" in texts["sse state_update"]
+    return texts
 
 
 # --- the helper ---------------------------------------------------------------- #
@@ -174,6 +285,31 @@ def test_the_helper_passes_plain_values_through() -> None:
     assert redact_state_value(7) == 7
     assert redact_state_value("no secret here") == "no secret here"
     assert redact_state_value([]) == []
+
+
+def test_a_cyclic_value_terminates_at_the_depth_bound() -> None:
+    cyclic: dict[str, Any] = {"reason": SECRET_TEXTS["export"]}
+    cyclic["self"] = cyclic
+    out = redact_state_value(cyclic)
+    assert ENV_TOKEN not in json.dumps(out, default=str)
+    depth = 0
+    node: Any = out
+    while isinstance(node, dict) and "self" in node:
+        node = node["self"]
+        depth += 1
+    assert depth == MAX_STATE_DEPTH
+
+
+def test_an_adversarially_deep_list_is_cut_to_the_marker() -> None:
+    deep: Any = SECRET_TEXTS["bearer"]
+    for _ in range(MAX_STATE_DEPTH * 3):
+        deep = [deep]
+    assert _TOO_DEEP_MARKER in json.dumps(redact_state_value(deep))
+
+
+def test_a_shallow_value_is_unchanged_by_the_depth_bound() -> None:
+    shallow = {"a": [{"b": ["plain"]}]}
+    assert redact_state_value(shallow) == shallow
 
 
 # --- the entry points -------------------------------------------------------------- #
@@ -213,6 +349,23 @@ def test_no_secret_appears_anywhere_in_the_dashboard_snapshot() -> None:
     for value in SECRET_VALUES:
         assert value not in text, f"a secret reached the dashboard: {value[:6]}..."
     assert "[REDACTED]" in text, "the snapshot carried no redacted text, so the walk proved nothing"
+
+
+def test_no_secret_appears_in_any_route_or_stream_a_viewer_reads() -> None:
+    """The walk covers /api/state, /api/symphonies, /api/symphonies/sym, /api/activity and one SSE frame."""
+    texts = _endpoint_texts(_seed_performer_state())
+    for path, text in texts.items():
+        for value in SECRET_VALUES:
+            assert value not in text, f"a secret reached {path}: {value[:6]}..."
+    assert "[REDACTED" in texts["/api/state"], "the state route carried no redacted text, so the walk proved nothing"
+
+
+def test_the_seeded_intake_and_bootstrap_errors_are_stored_redacted() -> None:
+    state = _seed_performer_state()
+    stored = json.dumps([state["intake"].last_advocate_error, state["env_cache"]["sym"].last_bootstrap_error])
+    for value in (CURL_PASSWORD, DB_PASSWORD):
+        assert value not in stored
+    assert "[REDACTED]" in stored
 
 
 def test_no_secret_appears_in_the_mcp_state_tool_output() -> None:
@@ -256,40 +409,191 @@ def _wrapped(value: ast.expr) -> bool:
     return isinstance(value, (ast.List, ast.Dict)) and not (value.elts if isinstance(value, ast.List) else value.keys)
 
 
+# Field names that can be built at run time, such as ``last_{role}_error`` in the env cache.
+TEXT_GLOBS = ("last_*_error",)
+# Dynamic writes the guard cannot resolve to a field name. Each one is a deliberate decision:
+# the key ``"<file relative to src/coordinare>::<target expression>"`` maps to the reason it
+# cannot carry performer text. A new dynamic write fails the guard until it is listed here.
+_COPY_FROM_WRITER = (
+    "copies a value a writer already produced; the writers wrap the dict literal or the field at source"
+)
+_SESSION_RECORD = (
+    "stores a session record built by the session writers, whose text fields are redacted where they are set"
+)
+# Save-path copies. ``_persist_one_session`` and the snapshot builder copy live session values
+# into the persisted snapshot without redacting them again. Each value was redacted by its writer
+# when it entered the live state, and the restore path (``_restored_session_dict``,
+# ``_restore_from_snapshot`` and the env-cache rehydrate) redacts again, so snapshots written
+# before this change are still redacted on load. Keyed "<file>::<function>::<field>".
+_SAVE_PATH_COPIES: dict[str, str] = {
+    "daemon.py::_persist_one_session::open_questions": _COPY_FROM_WRITER,
+    "daemon.py::_persist_one_session::system_error_reason": _COPY_FROM_WRITER,
+    "daemon.py::_persist_one_session::env_blocked": _COPY_FROM_WRITER,
+    "daemon.py::_persist_one_session::assessor_open_questions": _COPY_FROM_WRITER,
+    "daemon.py::_persist_env_cache::last_bootstrap_error": _COPY_FROM_WRITER,
+    "daemon.py::_persist_env_cache::last_wiki_init_error": _COPY_FROM_WRITER,
+    "daemon.py::_build_snapshot::open_questions": _COPY_FROM_WRITER,
+}
+_DYNAMIC_WRITE_ALLOWANCES: dict[str, str] = {
+    "graph/nodes/check_board.py::_sessions_pre[_flat_id_pre]": _SESSION_RECORD,
+    "graph/nodes/check_board.py::active_sessions[item]": _SESSION_RECORD,
+    "graph/nodes/check_board.py::_sessions_b[item]": _SESSION_RECORD,
+    "graph/nodes/handle_blocked.py::active_sessions[card_id]": _SESSION_RECORD,
+    "graph/nodes/monitor_pr.py::session[key]": _COPY_FROM_WRITER,
+    "graph/nodes/monitor_pr.py::state[key]": _COPY_FROM_WRITER,
+    "graph/nodes/dispatch_performer.py::state[key]": _COPY_FROM_WRITER,
+    "graph/nodes/dispatch_performer.py::card_context[key]": (
+        "the dispatch context sent to the performer, which is not a dashboard or board field"
+    ),
+    "graph/nodes/dispatch_performer.py::card_context[knob]": (
+        "a dispatch context knob with a bounded numeric or enumerated value, not performer text"
+    ),
+    "graph/nodes/monitor/body.py::state[key]": _COPY_FROM_WRITER,
+    "graph/nodes/monitor/body.py::state[_k]": _COPY_FROM_WRITER,
+    "graph/nodes/monitor/verdict.py::state[k]": _COPY_FROM_WRITER,
+    "services/no_progress.py::state[_KEY]": (
+        "stores a per-stage counter dict of integers, not text"
+    ),
+    "services/reconciliation.py::by_session[sid]": _SESSION_RECORD,
+    "daemon.py::sessions[active_card_id]": _SESSION_RECORD,
+    "daemon.py::active_sessions[cid]": _SESSION_RECORD,
+    "daemon.py::active_sessions[result.card_id]": _SESSION_RECORD,
+    "daemon.py::_sym_sessions[cid]": _SESSION_RECORD,
+    "daemon.py::updated_session[_f]": _COPY_FROM_WRITER,
+    "daemon.py::state[k]": _COPY_FROM_WRITER,
+    "daemon.py::state[_meta_dst]": _COPY_FROM_WRITER,
+    "daemon.py::self._session_stuck_alerts[key]": "stores a timestamp for each stuck-alert key, not text",
+}
+_APPEND_METHODS = {"append", "extend", "insert"}
+_TEXT_NAME_SAMPLES = frozenset({*TEXT_FIELDS, "last_x_error"})
+
+
+def _text_name(name: str) -> bool:
+    return name in TEXT_FIELDS or any(fnmatch.fnmatchcase(name, glob) for glob in TEXT_GLOBS)
+
+
+def _could_be_text(pattern: str) -> bool:
+    """True when a name built from a pattern (``*`` for a formatted part) could be a text field."""
+    return any(fnmatch.fnmatchcase(name, pattern) for name in _TEXT_NAME_SAMPLES) or any(
+        fnmatch.fnmatchcase(pattern, glob) for glob in TEXT_GLOBS
+    )
+
+
+def _name_pattern(node: ast.expr) -> str | None:
+    """The literal name a setattr call sets, with ``*`` for each formatted part; None if unknowable."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        parts = [
+            value.value if isinstance(value, ast.Constant) else "*"
+            for value in node.values
+        ]
+        pattern = "".join(str(part) for part in parts)
+        return pattern if pattern.replace("*", "") else None
+    return None
+
+
+def _label_of(target: ast.expr) -> str:
+    return ast.unparse(target)
+
+
+_STATE_BASES = frozenset({"state", "sess", "override_result", "_snap", "snap", "card_context"})
+
+
+def _state_container(target: ast.Subscript) -> bool:
+    """True for a write into a state or session container, where a text field can sit under a variable key."""
+    base = target.value
+    name = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
+    return name in _STATE_BASES or "session" in name
+
+
 def _unwrapped_writers(tree: ast.AST) -> list[tuple[int, str]]:
+    """Every write of a text field whose value does not go through the helper.
+
+    A field write is labelled with the field name. A write whose key cannot be resolved
+    is labelled with its target expression, and the test decides whether it is allow-listed.
+    """
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign | ast.AnnAssign):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            value = node.value
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets, value = [node.target], node.value
+            else:
+                targets, value = [node.target], node.value
+            if value is None:
+                continue
             for target in targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and isinstance(target.slice, ast.Constant)
-                    and target.slice.value in TEXT_FIELDS
-                    and value is not None
-                    and not _wrapped(value)
-                ):
-                    found.append((node.lineno, str(target.slice.value)))
-                elif isinstance(target, ast.Attribute) and target.attr in TEXT_FIELDS and not _wrapped(value):
+                if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant):
+                    if _text_name(str(target.slice.value)) and not _wrapped(value):
+                        found.append((node.lineno, str(target.slice.value)))
+                elif isinstance(target, ast.Subscript) and _state_container(target):
+                    if not _wrapped(value):
+                        found.append((node.lineno, _label_of(target)))
+                elif isinstance(target, ast.Attribute) and _text_name(target.attr) and not _wrapped(value):
                     found.append((node.lineno, target.attr))
         elif isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values, strict=True):
-                if isinstance(key, ast.Constant) and key.value in TEXT_FIELDS and not _wrapped(value):
+                if isinstance(key, ast.Constant) and _text_name(str(key.value)) and not _wrapped(value):
                     found.append((value.lineno, str(key.value)))
         elif isinstance(node, ast.Call):
-            is_log = isinstance(node.func, ast.Attribute) and node.func.attr in _LOGGER_METHODS
+            func = node.func
+            is_log = isinstance(func, ast.Attribute) and func.attr in _LOGGER_METHODS
             for keyword in node.keywords:
-                if keyword.arg in TEXT_FIELDS and not is_log and not _wrapped(keyword.value):
+                if keyword.arg and _text_name(keyword.arg) and not is_log and not _wrapped(keyword.value):
                     found.append((keyword.value.lineno, keyword.arg))
+            if isinstance(func, ast.Name) and func.id == "setattr" and len(node.args) == 3:
+                pattern = _name_pattern(node.args[1])
+                if pattern is None:
+                    if not _wrapped(node.args[2]):
+                        found.append((node.lineno, f"setattr({_label_of(node.args[0])}, {_label_of(node.args[1])})"))
+                elif _could_be_text(pattern) and not _wrapped(node.args[2]):
+                    found.append((node.lineno, pattern))
+            elif isinstance(func, ast.Attribute) and func.attr == "setdefault" and node.args:
+                first = node.args[0]
+                if (
+                    isinstance(first, ast.Constant)
+                    and _text_name(str(first.value))
+                    and len(node.args) > 1
+                    and not _wrapped(node.args[1])
+                ):
+                    found.append((node.lineno, str(first.value)))
+            elif isinstance(func, ast.Attribute) and func.attr in _APPEND_METHODS:
+                receiver = func.value
+                field = None
+                if isinstance(receiver, ast.Subscript) and isinstance(receiver.slice, ast.Constant):
+                    field = str(receiver.slice.value)
+                elif isinstance(receiver, ast.Attribute):
+                    field = receiver.attr
+                if field is not None and _text_name(field):
+                    for arg in node.args:
+                        if not _wrapped(arg):
+                            found.append((node.lineno, field))
     return found
+
+
+def _enclosing_function(tree: ast.AST, line: int) -> str:
+    """The name of the innermost function that contains *line*, or "" at module level."""
+    best: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            end = node.end_lineno or node.lineno
+            if node.lineno <= line <= end and (best is None or node.lineno > best.lineno):
+                best = node
+    return best.name if best is not None else ""
 
 
 def test_every_writer_of_a_text_field_routes_through_the_helper() -> None:
     offenders: list[str] = []
     for path in _scanned_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        rel = str(path.relative_to(SRC))
         for line, key in _unwrapped_writers(tree):
+            if f"{rel}::{key}" in _DYNAMIC_WRITE_ALLOWANCES:
+                continue
+            if f"{rel}::{_enclosing_function(tree, line)}::{key}" in _SAVE_PATH_COPIES:
+                continue
             offenders.append(f"{path.relative_to(ROOT)}:{line} writes {key!r} unredacted")
     assert not offenders, "\n".join(offenders)
 
@@ -299,6 +603,51 @@ def test_the_guard_catches_an_unwrapped_writer() -> None:
     assert _unwrapped_writers(tree) == [(1, "open_questions")]
     assert _unwrapped_writers(ast.parse("state['open_questions'] = redact_state_value([x])\n")) == []
     assert _unwrapped_writers(ast.parse("state['open_questions'] = None\n")) == []
+
+
+_GUARD_PROBES = [
+    ("state['open_questions'] += [f'performer said {x}']\n", "open_questions"),
+    ("state.setdefault('open_questions', [f'performer said {x}'])\n", "open_questions"),
+    ("setattr(state, 'open_questions', f'performer said {x}')\n", "open_questions"),
+    ("setattr(state, f'last_{role}_error', error)\n", "last_*_error"),
+    ("state['open_questions'].append(f'performer said {x}')\n", "open_questions"),
+    ("state['open_questions'].extend([f'performer said {x}'])\n", "open_questions"),
+    ("state.update(open_questions=[f'performer said {x}'])\n", "open_questions"),
+    ("state.update({'open_questions': [f'performer said {x}']})\n", "open_questions"),
+    ("state.open_questions.append(f'performer said {x}')\n", "open_questions"),
+    ("state[k] = text\n", "state[k]"),
+    ("setattr(state, name, error)\n", "setattr(state, name)"),
+]
+
+
+@pytest.mark.parametrize(("snippet", "label"), _GUARD_PROBES)
+def test_the_guard_flags_every_form_a_writer_can_take(snippet: str, label: str) -> None:
+    found = [key for _, key in _unwrapped_writers(ast.parse(snippet))]
+    assert found, f"the guard missed an unwrapped write: {snippet.strip()}"
+    assert label in found[0] or found[0] == label, f"flagged {found!r}, expected {label!r}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "state['open_questions'] += redact_state_value([f'x {y}'])\n",
+        "state.setdefault('open_questions', redact_state_value([f'x {y}']))\n",
+        "setattr(state, f'last_{role}_error', redact_state_value(error))\n",
+        "state['open_questions'].append(redact_state_value(f'x {y}'))\n",
+        "state.update(open_questions=redact_state_value([f'x {y}']))\n",
+        "state.setdefault('stage_verdicts', {})\n",
+        "setattr(state, 'agent_dispatch_at', None)\n",
+    ],
+)
+def test_the_guard_passes_every_wrapped_or_non_text_form(snippet: str) -> None:
+    assert _unwrapped_writers(ast.parse(snippet)) == []
+
+
+def test_a_dynamic_write_is_flagged_until_it_is_allow_listed_with_a_reason() -> None:
+    tree = ast.parse("state[k] = redact_state_value(v)\nsetattr(state, name, value)\n")
+    labels = [key for _, key in _unwrapped_writers(tree)]
+    assert "setattr(state, name)" in labels
+    assert all(reason.strip() for reason in _DYNAMIC_WRITE_ALLOWANCES.values())
 
 
 def test_the_secret_fixtures_are_what_the_redactor_is_meant_to_catch() -> None:

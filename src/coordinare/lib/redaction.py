@@ -176,6 +176,12 @@ def redact_command_text(text: str) -> str:
     return redact_client_forms(text)
 
 
+# 203: how deep redact_state_value walks. A value nested past this is replaced whole by a fixed
+# marker, so a cyclic or adversarially deep structure cannot recurse without limit.
+MAX_STATE_DEPTH = 32
+_TOO_DEEP_MARKER = "[REDACTED: value nested too deeply]"
+
+
 def redact_state_value(value: Any) -> Any:
     """A value about to enter coordinare state, with its free text redacted (203).
 
@@ -183,14 +189,20 @@ def redact_state_value(value: Any) -> Any:
     questions or a dict of block details is covered in one call. Anything else
     passes through. Every writer of a dashboard-visible text field calls this, so
     the board comment, notifications, the snapshot and MCP all see the redacted form.
-    The walk is linear in the text.
+    The walk is linear in the text, and it stops at ``MAX_STATE_DEPTH``.
     """
+    return _redact_state(value, 0)
+
+
+def _redact_state(value: Any, depth: int) -> Any:
     if isinstance(value, str):
         return redact_command_text(value)
-    if isinstance(value, Mapping):
-        return {key: redact_state_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [redact_state_value(item) for item in value]
+    if isinstance(value, (Mapping, list)):
+        if depth >= MAX_STATE_DEPTH:
+            return _TOO_DEEP_MARKER
+        if isinstance(value, Mapping):
+            return {key: _redact_state(item, depth + 1) for key, item in value.items()}
+        return [_redact_state(item, depth + 1) for item in value]
     return value
 
 

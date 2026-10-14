@@ -28,6 +28,7 @@ from coordinare.graph.nodes.dispatch_performer import (
     documenter_side_run_wanted,
     project_brief,
 )
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.documentation_findings import clean_findings, content_hash
 
 logger = structlog.get_logger(__name__)
@@ -111,7 +112,7 @@ def record_dispatched(session: dict[str, Any], *, blueprint_hash: str, session_i
 
 def record_result(session: dict[str, Any], *, status: str, head_sha: str | None, reason: str | None, paths: list[str] | None = None, writer_active: bool = False) -> None:
     side = dict(session.get("documenting_side") or {})
-    side.update({"status": status, "head_sha": head_sha, "result_reason": reason, "paths": (paths or [])[:20], "writer_active": writer_active})
+    side.update({"status": status, "head_sha": head_sha, "result_reason": redact_state_value(reason), "paths": (paths or [])[:20], "writer_active": writer_active})
     session["documenting_side"] = side
     logger.info("documenting_side.%s" % ("completed" if status == "done" else "failed"),
                 card_id=session.get("card_id"), blueprint_hash=side.get("blueprint_hash"), head_sha=head_sha, reason=reason)
