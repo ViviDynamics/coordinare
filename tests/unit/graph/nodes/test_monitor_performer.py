@@ -9,10 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from coordinare.config import CostTrackingConfig
 from coordinare.graph.nodes.monitor_performer import (
     TERMINAL_SUCCESS_STATES,
     _advance_stage,
@@ -20,6 +21,7 @@ from coordinare.graph.nodes.monitor_performer import (
 )
 from coordinare.graph.state import initial_state
 from coordinare.services.progress_fingerprint import progress_fingerprint
+from coordinare.services.run_transcript import TranscriptCollector
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -2158,16 +2160,49 @@ async def test_negative_tokens_clamped_to_zero() -> None:
     assert result["card_tokens_total"] == 500  # unchanged
 
 
-@pytest.mark.asyncio
-async def test_cost_estimate_calculated() -> None:
-    """card_cost_estimate is calculated from tokens and config rate."""
-    from unittest.mock import MagicMock
+def _priced_collector(tmp_path: Path, *, input_tokens: int, seq: int = 1) -> TranscriptCollector:
+    """134: a transcript collector whose ledger holds one priced usage record for ITEM_1."""
+    collector = TranscriptCollector(tmp_path / "transcripts", enabled=True, max_bytes_per_run=10**6)
+    collector.usage.observe(
+        "s1",
+        symphony="sym",
+        card="ITEM_1",
+        stage="implementing",
+        records=[{
+            "ts": datetime.now(UTC).isoformat(),
+            "seq": seq,
+            "type": "usage",
+            "scope": "message",
+            "usage": {"input_tokens": input_tokens, "output_tokens": 0, "cache_read": 0, "cache_write": 0, "model": "m-1"},
+        }],
+    )
+    return collector
 
+
+def _priced_config(*, budget: float | None = None, flat: float | None = None) -> MagicMock:
+    """134: the cost_tracking block with a per-model table: m-1 at $3.00 per million input tokens."""
+    tracking: dict[str, object] = {
+        "pricing_as_of": "2026-10-01",
+        "prices": [{
+            "models": ["m-1"],
+            "input_per_million": 3.0,
+            "output_per_million": 0.0,
+            "cache_read_per_million": 0.0,
+            "cache_write_per_million": 0.0,
+        }],
+        "cost_budget_per_card": budget,
+    }
     config = MagicMock()
-    config.cost_tracking.cost_per_million_tokens = 3.0
-    config.cost_tracking.cost_budget_per_card = None
+    config.cost_tracking = CostTrackingConfig.model_validate(
+        tracking if flat is None else {"cost_per_million_tokens": flat, "cost_budget_per_card": budget},
+    )
     config.requirement_change_policy = "ignore"
+    return config
 
+
+@pytest.mark.asyncio
+async def test_cost_estimate_comes_from_the_priced_ledger(tmp_path: Path) -> None:
+    """134: the card cost is the ledger's priced total, not tokens times a flat rate."""
     state = initial_state()
     svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 1_000_000}})
     state["performer_services"] = {"implementing": svc}
@@ -2176,22 +2211,36 @@ async def test_cost_estimate_calculated() -> None:
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
     state["phase"] = "monitoring_performer"
-    state["config"] = config
+    state["config"] = _priced_config()
+    state["transcript_collector"] = _priced_collector(tmp_path, input_tokens=1_000_000)
 
     result = await monitor_performer(state)
     assert result["card_cost_estimate"] == pytest.approx(3.0)
 
 
 @pytest.mark.asyncio
-async def test_budget_exceeded_notification_fires_once() -> None:
+async def test_the_flat_rate_no_longer_prices_a_card(tmp_path: Path) -> None:
+    """134: with no ledger (transcripts off) there is no priced cost, and the flat rate is not used."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 1_000_000}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["config"] = _priced_config(flat=3.0)
+    state["transcript_collector"] = TranscriptCollector(tmp_path / "off", enabled=False, max_bytes_per_run=10**6)
+
+    result = await monitor_performer(state)
+    # 134 review: an unknown cost is None, not zero, and the gauge is not set to a zero.
+    assert result["card_cost_estimate"] is None
+    assert result["card_tokens_total"] == 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_notification_fires_once(tmp_path: Path) -> None:
     """Budget exceeded dispatches notification exactly once."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    config = MagicMock()
-    config.cost_tracking.cost_per_million_tokens = 3.0
-    config.cost_tracking.cost_budget_per_card = 1.0
-    config.requirement_change_policy = "ignore"
-
     notification_service = AsyncMock()
 
     state = initial_state()
@@ -2202,7 +2251,8 @@ async def test_budget_exceeded_notification_fires_once() -> None:
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
     state["phase"] = "monitoring_performer"
-    state["config"] = config
+    state["config"] = _priced_config(budget=1.0)
+    state["transcript_collector"] = _priced_collector(tmp_path, input_tokens=500_000)
     state["notification_service"] = notification_service
 
     # First poll: cost = $1.50, exceeds $1.00 budget
@@ -2214,6 +2264,11 @@ async def test_budget_exceeded_notification_fires_once() -> None:
     svc2 = _Performer(response={"status": "working", "metrics": {"tokens_processed": 200_000}})
     result["performer_services"] = {"implementing": svc2}
     result["agent_dispatch"] = {"session_id": "s1"}
+    result["transcript_collector"].usage.observe(
+        "s1", symphony="sym", card="ITEM_1", stage="implementing",
+        records=[{"ts": datetime.now(UTC).isoformat(), "seq": 2, "type": "usage", "scope": "message",
+                  "usage": {"input_tokens": 200_000, "output_tokens": 0, "cache_read": 0, "cache_write": 0, "model": "m-1"}}],
+    )
     result = await monitor_performer(result)
     assert notification_service.dispatch.await_count == 1  # no duplicate
 

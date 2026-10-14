@@ -938,7 +938,6 @@ def _build_transcript_collector(
             guard=guard,
         )
         collector.add_ambient_secrets(os.environ)
-        return collector
     except Exception as exc:  # best effort: transcripts must never stop the daemon
         logger.exception(
             "run_transcript.collector_unavailable",
@@ -946,6 +945,26 @@ def _build_transcript_collector(
             error=str(exc),
         )
         return None
+    _rebuild_usage_ledger(collector)
+    return collector
+
+
+def _rebuild_usage_ledger(collector: TranscriptCollector) -> None:
+    """134: recount usage from the transcripts on disk, after the collector is built.
+
+    Outside the collector's own try: a failed rebuild is logged and leaves the ledger
+    empty for the window. It never disables transcription.
+    """
+    if not collector.enabled:
+        return
+    try:
+        collector.usage.load_from_transcripts(collector.root, now=datetime.now(UTC))
+    except Exception as exc:  # best effort: the rebuild reports, it never fails the daemon
+        logger.exception(
+            "token_usage.rebuild_failed",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
 
 
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:

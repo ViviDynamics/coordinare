@@ -2103,6 +2103,7 @@ async def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> d
         transcript_target={
             "symphony": str(state.get("current_symphony") or ""),
             "card_id": str(ctx.get("card_id") or ""),
+            "stage": str(state.get("performer_stage") or ""),
         },
     )
 

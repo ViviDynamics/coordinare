@@ -264,7 +264,7 @@ class CoordinareState(TypedDict, total=False):
     processed_review_ids: set[str]  # Review node IDs already processed — prevents re-dispatch loops
     surfaced_stale_reviews: dict[str, str]  # 128: {review_id: head_oid} — stale-review surfacing dedup
     card_tokens_total: int  # 034: accumulated token count for current card
-    card_cost_estimate: float  # 034: estimated cost in dollars
+    card_cost_estimate: float | None  # 034 / 134: priced cost in dollars; None when unknown
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent
     active_sessions: dict[str, Any]  # 035: card-ID → CardSession for multi-card parallelism
     # 066: Index pointer into active_sessions for the card whose per-session

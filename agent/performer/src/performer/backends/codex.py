@@ -859,11 +859,22 @@ def _transcript_int(value: Any) -> int | None:
 
 @transcript.best_effort
 def _transcript_usage(total: dict[str, Any]) -> transcript.TranscriptUsage:
+    """Map the app-server token breakdown to the transcript's four kinds (134 review).
+
+    ``inputTokens`` includes ``cachedInputTokens``: totalTokens is inputTokens plus
+    outputTokens, and the cached part is a subset of the input. The fresh input is
+    therefore the difference, so the cached tokens are not counted twice. Codex
+    reports no cache-write count, so none is recorded.
+    """
+    input_total = _transcript_int(total.get("inputTokens"))
+    cached = _transcript_int(total.get("cachedInputTokens"))
+    fresh_input = input_total
+    if input_total is not None and cached is not None:
+        fresh_input = max(0, input_total - cached)
     return transcript.TranscriptUsage(
-        input_tokens=_transcript_int(total.get("inputTokens")),
+        input_tokens=fresh_input,
         output_tokens=_transcript_int(total.get("outputTokens")),
-        cache_read=_transcript_int(total.get("cachedInputTokens")),
-        cache_write=_transcript_int(total.get("cacheWriteInputTokens")),
+        cache_read=cached,
     )
 
 

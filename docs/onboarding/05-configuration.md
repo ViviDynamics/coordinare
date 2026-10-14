@@ -145,6 +145,34 @@ COORDINARE_BLOCKED_RECOVERY=1   # spec 129: auto-recover BLOCKED cards whose blo
 Enable these only after validating the behavior live; they route the notification through the
 `card_auto_recovered` entry in `notifications.routing`.
 
+## Token and cost accounting (spec 134)
+
+Tokens and cost come from the run transcripts' `usage` records (`transcripts.enabled`, spec 129).
+With transcripts off, the dashboard says "not tracked" for cost; it never shows a zero.
+
+Each model has its own rates, per million tokens, for input, output, cache read and cache write.
+
+```yaml
+cost_tracking:
+  pricing_as_of: "2026-10-01"        # required with prices: the date the rates were checked
+  prices:
+    - models: ["claude-opus-4-5", "claude-opus-4-5-*"]   # exact id, alias, or prefix ending in *
+      input_per_million: 15.00
+      output_per_million: 75.00
+      cache_read_per_million: 1.50
+      cache_write_per_million: 18.75
+  default_price: null                # optional: rates for models no entry matches
+  cost_budget_per_card: null         # alert when one card's priced cost exceeds this
+```
+
+- An exact id beats a prefix; the longest prefix beats a shorter one. A prefix must end in `*`.
+- A model no entry matches keeps its token counts, and its cost is shown as unknown with the
+  reason. No price is ever guessed. Set `default_price` only if you want one rate for the rest.
+- The rates in `config.example.yaml` are examples. Copy the provider's current rates.
+- The old `cost_per_million_tokens` (one flat rate, no date) still loads, with a startup
+  warning. It prices every model until a `prices` table is set, and is then ignored.
+- Days are UTC. The header shows spend today and over the rolling 7 UTC days.
+
 ## Precedence summary
 
 1. **Field env overrides** (`COORDINARE_<FIELD>`) beat YAML.

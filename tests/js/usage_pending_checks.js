@@ -26,7 +26,6 @@ function check(name, actual, expected) {
 eval(src);
 
 const NOTE = "Reported when the stage ends";
-const top = { cost_per_million_tokens: 3 };
 
 // A running stage with nothing reported is pending, never 0.
 check("running with zero tokens is pending", tokenReadout(0, true), { text: "—", title: NOTE, pending: true });
@@ -50,13 +49,24 @@ check("monitoring_agent is running", isStageRunning({ phase: "monitoring_agent" 
 });
 check("missing session is not running", isStageRunning(undefined), false);
 
-// Cost follows the same rule.
+// Cost follows the same rule, from the card's usage summary (134).
+function cardSummary(tokens, usd) {
+  return {
+    tokens: { input: tokens, output: 0, cache_read: 0, cache_write: 0, total: tokens },
+    cost: { usd: usd, partial_usd: usd, kind_usd: {}, unknown_reason: null },
+    models: [],
+    pricing: { as_of: "2026-10-01", source: "table" },
+  };
+}
+const running = "monitoring_performer";
 check("cost for a running stage with no usage is pending",
-  costHtml({ phase: "monitoring_performer", card_tokens_total: 0 }, top), '<span title="' + NOTE + '">—</span>');
+  costHtml({ phase: running, usage: { tracked: true, card: cardSummary(0, 0) } }, {}), '<span title="' + NOTE + '">-</span>');
 check("cost for a running stage with usage is priced",
-  costHtml({ phase: "monitoring_performer", card_tokens_total: 1000000 }, top).indexOf("$3.00<") !== -1, true);
+  costHtml({ phase: running, usage: { tracked: true, card: cardSummary(1000000, 3) } }, {}).indexOf("$3.00<") !== -1, true);
 check("cost for a stage that is not running shows a real zero",
-  costHtml({ phase: "monitoring_pr", card_tokens_total: 0 }, top).indexOf("$0.00<") !== -1, true);
+  costHtml({ phase: "monitoring_pr", usage: { tracked: true, card: cardSummary(0, 0) } }, {}).indexOf("$0.00<") !== -1, true);
+check("untracked transcripts are not pending, they are not tracked",
+  costHtml({ phase: running, usage: { tracked: false, reason: "transcripts disabled" } }, {}).indexOf(">not tracked<") !== -1, true);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
