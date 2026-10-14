@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.attribution import coordinare_attribution
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.failure_signature import normalize_reason
 from coordinare.services.test_integrity_guard import analyze_diff
 
@@ -187,7 +188,7 @@ def _repair_record(
         kind=kind,  # type: ignore[arg-type]
         is_safe=is_safe,
         flagged_patterns=flagged_patterns or [],
-        detail=detail,
+        detail=redact_state_value(detail),
         decided_at=now_iso,
     ).model_dump(mode="json")
 
@@ -266,6 +267,10 @@ async def _reject_repair(
     kind_seq: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], bool]:
     """Fail-safe rejection: audit the verdict, escalate, and block (no push)."""
+    # 203: the guard's detail is reviewer text. It is redacted here for the open question and the
+    # PR comment. The audit records redact it again in _repair_record, which every record passes
+    # through, so the reviewer's own detail is covered too.
+    detail = redact_state_value(detail)
     records = list(kind_seq)
     records.append(
         _repair_record(
@@ -294,7 +299,7 @@ async def _reject_repair(
             "agent_dispatch": {},
             "agent_dispatch_at": None,
             "repair_audit": audit + records,
-            "open_questions": open_qs,
+            "open_questions": redact_state_value(open_qs),
         },
         True,
     )

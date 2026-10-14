@@ -19,6 +19,7 @@ from coordinare.graph.state import (
     _retire_active_session,
 )
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.dependency import DependencyGraph, DependencyStatus
 from coordinare.models.notification import (
     EventType,
@@ -1518,7 +1519,7 @@ async def _collect_blocked_clarification(
                         "answer": answer_body,
                     }
                     existing = state.get("card_clarifications") or []
-                    state["card_clarifications"] = [*existing, clarification]
+                    state["card_clarifications"] = redact_state_value([*existing, clarification])
                     state["open_questions"] = []
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -1543,7 +1544,7 @@ async def _collect_blocked_clarification(
                     # Persist the answer on its owner before that view is discarded.
                     if isinstance(_sess_qa, dict):
                         _sess_qa.update(
-                            card_clarifications=state["card_clarifications"],
+                            card_clarifications=redact_state_value(state["card_clarifications"]),
                             open_questions=[], agent_dispatch={}, phase="dispatching",
                             agent_dispatch_at=None,
                             last_blocked_notified_at=None,
@@ -1950,8 +1951,8 @@ async def _resume_closed_pr(
         session["last_blocked_notified_at"] = None
     if state.get("active_card_id") == card_id:
         state["phase"] = session["phase"]
-        state["system_error_reason"] = session.get("system_error_reason")
-        state["open_questions"] = session.get("open_questions") or []
+        state["system_error_reason"] = redact_state_value(session.get("system_error_reason"))
+        state["open_questions"] = redact_state_value(session.get("open_questions") or [])
         _rederive_current_card(state)
 
 

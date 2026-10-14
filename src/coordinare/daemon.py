@@ -36,6 +36,7 @@ from coordinare.graph.state import (
     initial_state,
 )
 from coordinare.lib.clarifications import annotate_clarifications
+from coordinare.lib.redaction import redact_state_value
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -719,9 +720,9 @@ def _restored_session_dict(
         "lifecycle_completed_at": persisted.lifecycle_completed_at,
         "processed_review_ids": set(persisted.processed_review_ids),
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
-        "open_questions": list(persisted.open_questions),
+        "open_questions": redact_state_value(list(persisted.open_questions)),
         "consumed_loop_questions": list(persisted.consumed_loop_questions),
-        "card_clarifications": list(persisted.card_clarifications),
+        "card_clarifications": redact_state_value(list(persisted.card_clarifications)),
         "pending_override": _dict_or_none(persisted.pending_override),
         "pr_comment_tracking": dict(persisted.pr_comment_tracking),
         "pending_pr_handoff": _dict_or_none(persisted.pending_pr_handoff),
@@ -730,7 +731,7 @@ def _restored_session_dict(
         "dispatched_feedback": dict(persisted.dispatched_feedback),
         "system_error_count": persisted.system_error_count,
         "system_error_last_at": persisted.system_error_last_at,
-        "system_error_reason": persisted.system_error_reason,
+        "system_error_reason": redact_state_value(persisted.system_error_reason),
         "system_error_notified": persisted.system_error_notified,
         "requirements_changed": persisted.requirements_changed,
         "last_blocked_notified_at": persisted.last_blocked_notified_at,
@@ -746,7 +747,7 @@ def _restored_session_dict(
         "ci_gate_advisory_failures": [],
                     # 095: restore per-card ENV_BLOCKED hold/dedup state so a
                     # still-active block does not re-notify after a restart.
-                    "env_blocked": _dict_or_none(persisted.env_blocked),
+                    "env_blocked": redact_state_value(_dict_or_none(persisted.env_blocked)),
                     # 096: restore the per-card auto-rebase anti-thrash marker so
                     # a BLOCKED conflict isn't re-attempted right after a restart.
                     "last_rebase_attempt": _dict_or_none(persisted.last_rebase_attempt),
@@ -754,7 +755,7 @@ def _restored_session_dict(
         # carryover so they survive a daemon restart.
         "content_feedback_cycles": persisted.content_feedback_cycles,
         "transient_error_cycles": persisted.transient_error_cycles,
-        "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
+        "assessor_open_questions": redact_state_value([dict(q) for q in persisted.assessor_open_questions]),
         # 125: restore stage-verdict memory (plain dicts at session
         # level) + the per-card issue-comment dedup watermark so a
         # restart neither re-runs passed stages nor re-classifies
@@ -898,8 +899,8 @@ def _synthesize_v1_session(
         "lifecycle_completed_at": snapshot.lifecycle_completed_at,
         "processed_review_ids": set(snapshot.processed_review_ids),
         "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
-        "open_questions": list(snapshot.open_questions),
-        "card_clarifications": list(snapshot.card_clarifications),
+        "open_questions": redact_state_value(list(snapshot.open_questions)),
+        "card_clarifications": redact_state_value(list(snapshot.card_clarifications)),
         "relay_feedback": [],
         "system_error_count": 0,
         "system_error_reason": None,
@@ -954,7 +955,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.readme_sha = persisted.readme_sha
             live.last_bootstrap_at = persisted.last_bootstrap_at
             live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
-            live.last_bootstrap_error = persisted.last_bootstrap_error
+            live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
@@ -968,7 +969,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_wiki_init_succeeded = getattr(
                 persisted, "last_wiki_init_succeeded", None,
             )
-            live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
+            live.last_wiki_init_error = redact_state_value(getattr(persisted, "last_wiki_init_error", None))
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "state_store.env_cache_rehydrate_failed",
@@ -2586,8 +2587,8 @@ class CoordinareDaemon:
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
         self._state["phase"] = snapshot.phase
-        self._state["open_questions"] = list(snapshot.open_questions)
-        self._state["card_clarifications"] = list(snapshot.card_clarifications)
+        self._state["open_questions"] = redact_state_value(list(snapshot.open_questions))
+        self._state["card_clarifications"] = redact_state_value(list(snapshot.card_clarifications))
         # Bootstrap resolves the current configured lifecycle. Saved workflow
         # state retains session progress, but must not change new admission.
         # Legacy callers without a configured sequence still recover it.
@@ -3536,7 +3537,7 @@ class CoordinareDaemon:
             s = sym_states.get(symphony_name)
             if s is not None:
                 s.error_count = getattr(s, "error_count", 0) + 1
-                s.last_error = str(exc)
+                s.last_error = redact_state_value(str(exc))
             # Do NOT re-raise — other symphonies continue
         finally:
             clear_symphony()

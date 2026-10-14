@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.lib.redaction import redact_state_value
 from coordinare.metrics import METRICS
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.defunct_branch import (
@@ -38,9 +39,9 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         # retry loop and surface to the operator via blocked phase.
         logger.warning("merge_pr.check_mergeability_permanent_error", error=str(exc))
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Cannot check PR mergeability — GitHub rejected the request: {exc}",
-        ]
+        ])
         return state
     except Exception as exc:
         logger.warning("merge_pr.check_mergeability_failed", error=str(exc))
@@ -53,19 +54,19 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         mergeable_raw = str(mergeability.get("mergeable_raw", "")).upper()
         review_decision = str(mergeability.get("review_decision", ""))
         if mergeable_raw != "MERGEABLE":
-            state["open_questions"] = ["PR has merge conflicts requiring human intervention."]
+            state["open_questions"] = redact_state_value(["PR has merge conflicts requiring human intervention."])
         elif review_decision:
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 f"PR is mergeable but GitHub's review decision is {review_decision}, "
                 "not APPROVED — the review gate is blocking the merge.",
-            ]
+            ])
         else:
-            state["open_questions"] = [
+            state["open_questions"] = redact_state_value([
                 "PR is mergeable but GitHub reports no review decision (reviewDecision "
                 "is null). A null reviewDecision with an APPROVED review on the head "
                 "usually means branch protection requires 0 approving reviews, so the "
                 "approval cannot be counted.",
-            ]
+            ])
         return state
 
     try:
@@ -78,9 +79,9 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         # add the App to the ruleset bypass list.
         logger.warning("merge_pr.squash_merge_permanent_error", error=str(exc))
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             f"Cannot merge PR — GitHub rejected the merge request: {exc}",
-        ]
+        ])
         return state
     except Exception as exc:
         logger.warning("merge_pr.squash_merge_failed", error=str(exc))

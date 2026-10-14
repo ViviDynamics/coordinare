@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from coordinare.lib.redaction import redact_command_text
 from coordinare.services.retune import retune_prompt_fragment
 
 logger = structlog.get_logger(__name__)
@@ -182,7 +183,9 @@ def parse_verdict(answer: Any) -> ObserverVerdict | None:
     # Single-line, capped: the verdict log is a structured-log line, and the
     # prompt it summarises carries summaries only (never raw event text), so
     # the reason cannot echo telemetry the model was never shown.
-    reason = " ".join(reason[:_REASON_CAP].split())
+    # 203: the judge's reason is model text, so it is redacted before it is capped
+    # and before it is stored in state, the verdict log or the session view.
+    reason = " ".join(redact_command_text(reason)[:_REASON_CAP].split())
     # 428: the optional structured retune request. Only scalar values survive
     # (the retune phase clamps scalars); anything nested is model noise and
     # is dropped, an all-noise block parses as absent.
@@ -253,7 +256,8 @@ def _summarise_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, (bool, int, float)):
             summary[key] = value
         elif isinstance(value, str):
-            summary[key] = value[:_PROMPT_TEXT_CAP]
+            # 203: redacted before the cap, so a cut never leaves half of a secret.
+            summary[key] = redact_command_text(value)[:_PROMPT_TEXT_CAP]
     return summary
 
 
