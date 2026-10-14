@@ -39,6 +39,11 @@ RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
 SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
 
 
+def _run_argv(fake: Any) -> tuple[str, ...]:
+    """The docker run call: the daemon's probe (docker version) is also recorded."""
+    return next(c for c in fake.calls if "run" in c)
+
+
 class _FakeDocker:
     """Stands in for ``asyncio.create_subprocess_exec`` for the docker calls."""
 
@@ -57,6 +62,11 @@ class _FakeDockerProc:
     def __init__(self, owner: _FakeDocker) -> None:
         self._owner = owner
         self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = self._owner.rc
+        return self.returncode
 
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
         data = kwargs.get("input")
@@ -137,8 +147,8 @@ async def test_rewritten_verify_sh_that_exits_zero_does_not_pass(
     # The daemon's own text went to the container on stdin, and the cache copy was never named.
     assert fake.stdin_seen == [RENDERED_VERIFY.encode()]
     assert all("verify.sh" not in arg for call in fake.calls for arg in call)
-    assert "-i" in fake.calls[0]
-    assert "-s" in fake.calls[0]
+    assert "-i" in _run_argv(fake)
+    assert "-s" in _run_argv(fake)
 
 
 @pytest.mark.asyncio
@@ -157,7 +167,7 @@ async def test_clean_verify_pipes_the_daemon_script_read_only(
 
     assert passed is True
     assert fake.stdin_seen == [RENDERED_VERIFY.encode()]
-    argv = fake.calls[0]
+    argv = _run_argv(fake)
     assert f"{cache}:/devenv/sym-abc:ro" in argv
     assert argv[-1] == "-s"
 

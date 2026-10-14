@@ -54,6 +54,11 @@ class _Proc:
         self._owner = owner
         self.returncode: int | None = None
 
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
     async def communicate(self, **kwargs: Any) -> tuple[bytes, None]:
         data = kwargs.get("input")
         self._owner.stdin.append(data)
@@ -99,8 +104,9 @@ def _ctx(state: EnvCacheState) -> dict[str, Any]:
 
 
 def _docker_argv(fake: _Docker) -> tuple[str, ...]:
-    assert len(fake.argv) == 1
-    return fake.argv[0]
+    runs = [c for c in fake.argv if c[1:2] == ("run",)]
+    assert len(runs) == 1, fake.argv
+    return runs[0]
 
 
 def _env_pairs(argv: tuple[str, ...]) -> set[str]:

@@ -81,7 +81,7 @@ class DockerRuntime:
         other error is False. A subprocess error propagates to the caller, which fails closed.
         """
         stop = await asyncio.create_subprocess_exec(
-            "docker", "stop", "--time", str(timeout_s), handle,
+            "docker", "stop", "--time", str(timeout_s), "--", handle,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -89,7 +89,7 @@ class DockerRuntime:
         if stop.returncode == 0:
             return True
         inspect = await asyncio.create_subprocess_exec(
-            "docker", "container", "inspect", "--format", "{{.State.Running}}", handle,
+            "docker", "container", "inspect", "--format", "{{.State.Running}}", "--", handle,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

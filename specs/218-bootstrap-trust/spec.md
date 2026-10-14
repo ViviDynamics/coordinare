@@ -247,15 +247,38 @@ Tests changed because they pinned the old path (fixture and expectation changes 
   `test_inlines_activate_and_exits`, which asserts the cache path is no longer named.
 - Version pins (round 1, schema v35): the `CURRENT_SCHEMA_VERSION` assertions and the contract enum.
 
+## Round 4
+
+- **Cancellation cleans up.** A daemon task cancelled during the verify kills the docker client and removes
+  the container by name, the same as a timeout. The cleanup is shielded from a second cancel, and the
+  cancellation then propagates.
+- **Removal of a container already gone is confirmed.** `docker rm -f` on a container that `--rm` already
+  removed prints "No such container", and that counts as removed.
+- **A new spec SHA re-arms the infrastructure budget at any count.** `rearm_budgets_on_spec_change` resets
+  `infra_failures` whenever `readme_sha` changes. Before this, the reset sat inside the verdict-budget branch,
+  so a count below the cap survived a spec fix.
+- **A docker daemon outage is infrastructure.** Before the verify runs, `docker version` must answer. The
+  probe is the daemon's own call, not error text: the CLI exits 1 for an unreachable daemon, the same code as a
+  failed verdict. A toolchain that exits 1 is still a verdict, and exit 125 is still infrastructure.
+- **Docker options end before the handle.** `docker stop`, `container inspect` and `rm -f` take `--` before the
+  handle, so a handle that starts with `-` is never read as an option.
+- **Opt-in lane in CI.** The `docker_image` lane runs in the Docker Images job, as the step "Verify the verify
+  decision against the built performer image (spec 218)". That job builds `coordinare-performer:full`, so the
+  step needs only the Python and uv setup and the dependency install. It adds about two minutes. The conftest
+  prints one terminal summary line whenever it deselects the lane.
+
 ## Quality gate
 
-No new `skip`, `skipif`, `xfail` or other quality-guard marker is added. The docker lane is selected out by
-`tests/conftest.py`, which deselects (does not skip) items marked `docker_image` unless
-`COORDINARE_DOCKER_IMAGE_TESTS` is set. The marker is registered in `pyproject.toml`. Because no guarded
-pattern is added, this PR needs no entry under "Quality gate changes". Its PR body needs this entry under
-"Test selection" instead:
+`pyproject.toml` (the `docker_image` marker) and `.github/workflows/pr-ci.yml` (the Docker Images step) are
+protected paths. The PR body names both under "### Quality gate changes", with this text:
 
-> `docker_image` marker: tests that need docker and a built performer image are deselected unless
-> `COORDINARE_DOCKER_IMAGE_TESTS=1` is set (tests/conftest.py). They are not skipped, and a missing image
-> fails the run. Run them with `COORDINARE_DOCKER_IMAGE_TESTS=1 COORDINARE_E2E_PERFORMER_IMAGE=<image>
-> pytest -m docker_image tests/integration/test_218_verify_real_image.py`.
+> - `pyproject.toml`: registers the `docker_image` pytest marker. It adds no skip, xfail, ignore or lint,
+>   type or coverage setting. Marked tests are deselected, not skipped, unless `COORDINARE_DOCKER_IMAGE_TESTS=1`
+>   is set. `tests/conftest.py` enforces that and prints one terminal summary line when it deselects.
+> - `.github/workflows/pr-ci.yml`: adds the step "Verify the verify decision against the built performer image
+>   (spec 218)" to the Docker Images job. It runs `tests/integration/test_218_verify_real_image.py` with
+>   `COORDINARE_DOCKER_IMAGE_TESTS=1` against the `coordinare-performer:full` image that the same job builds.
+>   It removes no step, check or gate, and the job stays advisory. It adds about two minutes (Python and uv setup,
+>   and the dependency install).
+
+No new skip, skipif, xfail or ignore line is added anywhere.

@@ -51,6 +51,8 @@ class _Fake:
 
     async def create_subprocess_exec(self, *argv: Any, **_kwargs: Any) -> Any:
         self.argv.append(tuple(str(a) for a in argv))
+        if "version" in argv:
+            return _Done(0)  # the daemon probe answers
         if self.hang and "run" in argv:
             return _SlowProc(self)
         return _Done(self.rc)

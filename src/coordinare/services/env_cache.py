@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -82,6 +83,9 @@ _VERIFY_TIMEOUT_S = 300.0
 
 # 218 (review round 3): docker run exit code when the daemon or the image could not start the container.
 _DOCKER_RUN_START_FAILED = 125
+
+# 218 (round 4): the daemon's own docker probe. A run is attempted only when this answers.
+_DOCKER_PROBE_TIMEOUT_S = 15.0
 
 # 218 (review round 3): infrastructure failures before the cache is exhausted (operator-visible).
 _INFRA_FAILURE_CAP = 5
@@ -415,17 +419,74 @@ async def resolve_test_env_vars(
 
 
 async def _remove_verify_container(name: str) -> bool:
-    """218 (review round 3): remove the verify container by its name. True when docker confirms it."""
+    """218: remove the verify container by its name. True when it is confirmed gone.
+
+    A container that is already removed is confirmed: nothing is left running. Any other failure is
+    not confirmed."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "docker", "rm", "-f", name,
+            "docker", "rm", "-f", "--", name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except (OSError, TimeoutError):
+        return False
+    if proc.returncode == 0:
+        return True
+    return "No such container" in err.decode(errors="replace")
+
+
+async def _kill_and_remove(proc: asyncio.subprocess.Process, name: str) -> bool:
+    """218: kill the docker client, then remove its container by name. True when the removal is confirmed."""
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    return await _remove_verify_container(name)
+
+
+async def _docker_daemon_reachable() -> bool:
+    """218 (round 4): True when the docker daemon answers. An unreachable daemon is infrastructure.
+
+    A performer cannot change this probe, and it does not parse error text: the CLI exits 1 for an
+    unreachable daemon, which is the same code as a failed verdict."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "version", "--format", "{{.Server.Version}}",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(proc.wait(), timeout=30.0)
+        await asyncio.wait_for(proc.wait(), timeout=_DOCKER_PROBE_TIMEOUT_S)
     except (OSError, TimeoutError):
         return False
     return proc.returncode == 0
+
+
+def _verify_cache_refusal(
+    symphony_name: str, ec: EnvCacheState, performer_mounts: Sequence[Path],
+) -> str | None:
+    """218: why the verify must not run against this cache, or None. Logs each refusal."""
+    cache_dir = Path(ec.cache_dir)
+    cache_refusal = _cache_dir_refusal(cache_dir, performer_mounts=performer_mounts)
+    if cache_refusal is not None:
+        logger.error(
+            "env_cache.clean_verify_refused",
+            symphony=symphony_name,
+            cache_dir=str(cache_dir),
+            reason=cache_refusal,
+        )
+        return f"env-cache dir refused: {cache_refusal}"
+    if not _cache_dir_has_activate(
+        cache_dir,
+        performer_mounts=performer_mounts,
+        expected_activate=ec.rendered_activate_sh,
+    ):
+        logger.error(
+            "env_cache.activate_mismatch",
+            symphony=symphony_name,
+            cache_dir=str(cache_dir),
+        )
+        return "activate.sh in the cache does not match the coordinare-rendered content"
+    return None
 
 
 async def verify_env_cache_clean(
@@ -477,26 +538,18 @@ async def verify_env_cache_clean(
             reason="no daemon-rendered verify.sh on record",
         )
         return False, "no daemon-rendered verify.sh on record for this cache"
-    cache_refusal = _cache_dir_refusal(cache_dir, performer_mounts=performer_mounts)
-    if cache_refusal is not None:
+    refusal = _verify_cache_refusal(symphony_name, ec, performer_mounts)
+    if refusal is not None:
+        return False, refusal
+    # 218 (round 4): an unreachable daemon is infrastructure. The CLI exits 1 for it, the same code as a
+    # failed verdict, so the probe answers first. A planted toolchain that exits 1 or 125 is still a verdict.
+    if not await _docker_daemon_reachable():
         logger.error(
-            "env_cache.clean_verify_refused",
+            "env_cache.clean_verify_docker_unreachable",
             symphony=symphony_name,
-            cache_dir=str(cache_dir),
-            reason=cache_refusal,
+            detail="the docker daemon did not answer; the clean verify was not run",
         )
-        return False, f"env-cache dir refused: {cache_refusal}"
-    if not _cache_dir_has_activate(
-        cache_dir,
-        performer_mounts=performer_mounts,
-        expected_activate=ec.rendered_activate_sh,
-    ):
-        logger.error(
-            "env_cache.activate_mismatch",
-            symphony=symphony_name,
-            cache_dir=str(cache_dir),
-        )
-        return False, "activate.sh in the cache does not match the coordinare-rendered content"
+        return None, "the docker daemon is not reachable; the clean verify was not run"
     devenv_root = (
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
@@ -550,9 +603,13 @@ async def _verify_outcome(
         out_b, _ = await asyncio.wait_for(
             proc.communicate(input=script.encode()), timeout=_VERIFY_TIMEOUT_S,
         )
+    except asyncio.CancelledError:
+        # 218 (round 4): the daemon task was cancelled. The container must still be killed and removed.
+        # The cleanup is shielded, so a second cancel cannot skip it. The cancellation then propagates.
+        await asyncio.shield(_kill_and_remove(proc, name))
+        raise
     except TimeoutError:
-        proc.kill()
-        removed = await _remove_verify_container(name)
+        removed = await _kill_and_remove(proc, name)
         logger.error(
             "env_cache.clean_verify_timed_out",
             symphony=symphony_name,
@@ -657,6 +714,24 @@ def write_service_scripts(
             error=str(exc),
         )
         return False
+
+
+def rearm_budgets_on_spec_change(cache_state: EnvCacheState, current_sha: str, symphony_name: str) -> None:
+    """218 (round 4): a new spec SHA re-arms the infrastructure budget, at any count.
+
+    The 088 breaker re-arms on a spec change, and so must the infrastructure budget. Before this, the
+    reset sat inside the verdict-budget branch, so an infrastructure count below the cap survived a
+    spec fix. The first SHA, and an unchanged SHA, re-arm nothing."""
+    if cache_state.readme_sha is None or current_sha == cache_state.readme_sha:
+        return
+    if cache_state.infra_failures:
+        logger.info(
+            "env_cache.infra_budget_reset",
+            symphony=symphony_name,
+            previous_infra_failures=cache_state.infra_failures,
+            new_sha=current_sha,
+        )
+        cache_state.infra_failures = 0
 
 
 class EnvCacheService:
@@ -942,8 +1017,9 @@ class EnvCacheService:
             )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
-            # 218 (review round 3): a new spec re-arms the infrastructure budget too.
-            cache_state.infra_failures = 0
+
+        # 218 (round 4): a new spec re-arms the infrastructure budget at any count.
+        rearm_budgets_on_spec_change(cache_state, current_sha, symphony_name)
 
         # 088 (FR-009): tripped breaker — no further dispatch for this spec SHA.
         # The (rate-limited implicit) exhaustion was announced once when the

@@ -350,6 +350,29 @@ jobs:
       - name: Build full image
         run: docker build -t coordinare-performer:full -f agent/performer/Dockerfile.full agent/performer/
 
+      # 218: the real-docker verify decision, run against the image built just above. The Test job
+      # deselects the docker_image lane, so this is the only place it runs. Advisory job. The docker
+      # setup mirrors the Daemon Image job. It adds roughly two minutes (Python and uv setup, the
+      # dependency install); the image build is already in this job.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install coordinare
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      - name: Verify the verify decision against the built performer image (spec 218)
+        env:
+          COORDINARE_DOCKER_IMAGE_TESTS: "1"
+          COORDINARE_E2E_PERFORMER_IMAGE: coordinare-performer:full
+        run: uv run pytest tests/integration/test_218_verify_real_image.py -v
+
       - name: Verify image size gap (SC-007 — full must be ≥ 150 MB larger than base)
         run: |
           python3 - <<'EOF'

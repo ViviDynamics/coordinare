@@ -117,9 +117,20 @@ def _ready_state(cache_dir, verify_text):
     )
 
 
+def _docker_answers(run_rc: int):
+    """218: the daemon probe (docker version) answers 0; the verify run answers ``run_rc``."""
+    async def _fake(*argv, **_kwargs):
+        return _FakeProc(0 if "version" in argv else run_rc)
+
+    return _fake
+
+
 class _FakeProc:
     def __init__(self, rc: int) -> None:
         self.returncode = rc
+
+    async def wait(self):
+        return self.returncode
 
     async def communicate(self, input: bytes | None = None):
         return (b"verify output", None)
@@ -144,7 +155,7 @@ async def test_clean_verify_passes_on_zero_exit(tmp_path, monkeypatch) -> None:
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 0\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
-    monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc(0)))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(0))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is True
 
@@ -158,7 +169,7 @@ async def test_clean_verify_fails_on_nonzero_exit(tmp_path, monkeypatch) -> None
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 1\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
-    monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc(1)))
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _docker_answers(1))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is False
     assert isinstance(_detail, str)

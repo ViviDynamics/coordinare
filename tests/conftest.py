@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,25 +13,47 @@ import stamina
 from coordinare.models.card import Card, CardStatus
 from coordinare.services import run_header
 
+_DOCKER_DESELECTED = pytest.StashKey[int]()
+
+
+def _deselect_docker_image(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """218: deselect (not skip) the docker_image lane unless COORDINARE_DOCKER_IMAGE_TESTS is set.
+
+    A deselected test never runs, so an unset environment cannot pass it quietly. The count is kept for the
+    terminal summary, so the deselection shows in every run.
+    """
+    if os.environ.get("COORDINARE_DOCKER_IMAGE_TESTS"):
+        return
+    deselected = [item for item in items if "docker_image" in item.keywords]
+    if not deselected:
+        return
+    items[:] = [item for item in items if "docker_image" not in item.keywords]
+    config.hook.pytest_deselected(items=deselected)
+    config.stash[_DOCKER_DESELECTED] = len(deselected)
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """218: the docker_image lane is deselected (not skipped) unless COORDINARE_DOCKER_IMAGE_TESTS is set.
-    A deselected test never runs and never reports, so an unset environment cannot pass it quietly.
-    With the variable set, a missing docker or image fails the module fixture."""
-    if not os.environ.get("COORDINARE_DOCKER_IMAGE_TESTS"):
-        kept = [item for item in items if "docker_image" not in item.keywords]
-        deselected = [item for item in items if "docker_image" in item.keywords]
-        if deselected:
-            items[:] = kept
-            config.hook.pytest_deselected(items=deselected)
     """151: skip `real`-marked tests unless RUN_REAL_BENCH is set (opt-in paid/
-    Docker lane; the free deterministic lane must stay green — SC-006)."""
+    Docker lane; the free deterministic lane must stay green (SC-006)).
+
+    218: the docker_image lane is deselected first (see _deselect_docker_image).
+    """
+    _deselect_docker_image(config, items)
     if os.environ.get("RUN_REAL_BENCH"):
         return
     skip_real = pytest.mark.skip(reason="opt-in real lane; set RUN_REAL_BENCH=1 to run")
     for item in items:
         if "real" in item.keywords:
             item.add_marker(skip_real)
+
+
+def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
+    """218: one line, so the opt-in docker lane is never silently absent from a run."""
+    count = config.stash.get(_DOCKER_DESELECTED, 0)
+    if count:
+        terminalreporter.write_line(
+            f"{count} docker_image tests deselected; set COORDINARE_DOCKER_IMAGE_TESTS=1 to run them",
+        )
 
 
 def _docker_available() -> bool:
