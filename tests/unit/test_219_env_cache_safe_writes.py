@@ -123,6 +123,7 @@ def _manifest(cache: Path) -> tuple[str | None, bool, bool]:
     github.get_file_content = fake_get
     return asyncio.run(
         svc._build_manifest_artifacts(
+            performer_mounts=(),
             symphony_name="sym",
             repo="sym",
             github_org="org",
@@ -161,7 +162,10 @@ def test_link_at_a_service_script_is_refused_and_host_untouched(tmp_path: Path, 
     (cache / "services").mkdir()
     os.symlink(host, cache / "services" / name)
 
-    assert write_service_scripts(cache, _service_models(), symphony="sym") is False
+    assert (
+        write_service_scripts(cache, _service_models(), symphony="sym", performer_mounts=())
+        is False
+    )
     _assert_host_file_untouched(host)
 
 
@@ -172,7 +176,10 @@ def test_link_at_services_dir_is_refused_and_host_dir_untouched(tmp_path: Path) 
     cache = _cache(tmp_path)
     os.symlink(host_dir, cache / "services")
 
-    assert write_service_scripts(cache, _service_models(), symphony="sym") is False
+    assert (
+        write_service_scripts(cache, _service_models(), symphony="sym", performer_mounts=())
+        is False
+    )
     assert sorted(p.name for p in host_dir.iterdir()) == ["keep.txt"]
 
 
@@ -189,7 +196,10 @@ def test_link_at_cache_dir_is_refused_and_host_dir_untouched(tmp_path: Path) -> 
 
     assert finished is True
     assert result[1] is False
-    assert write_service_scripts(root / "sym", _service_models(), symphony="sym") is False
+    assert (
+        write_service_scripts(root / "sym", _service_models(), symphony="sym", performer_mounts=())
+        is False
+    )
     assert sorted(p.name for p in host_dir.iterdir()) == ["keep.txt"]
 
 
@@ -201,7 +211,9 @@ def test_initialise_refuses_a_linked_cache_dir_and_skips_the_symphony(tmp_path: 
     name = "sym"
     os.symlink(host_dir, root / env_cache.sanitise_symphony_name(name))
     cfg = SimpleNamespace(
-        global_config=SimpleNamespace(env_cache_root=root),
+        global_config=SimpleNamespace(
+            env_cache_root=root, performer_log_dir=None, performer_endpoints=[],
+        ),
         symphonies=[SimpleNamespace(name=name, env_bootstrap_performer_id="performer")],
     )
     states: dict[str, Any] = {}
@@ -241,7 +253,10 @@ def test_hard_link_at_a_service_script_is_refused(tmp_path: Path) -> None:
     (cache / "services").mkdir()
     os.link(host, cache / "services" / "services-start.sh")
 
-    assert write_service_scripts(cache, _service_models(), symphony="sym") is False
+    assert (
+        write_service_scripts(cache, _service_models(), symphony="sym", performer_mounts=())
+        is False
+    )
     _assert_host_file_untouched(host)
 
 
@@ -263,7 +278,9 @@ def test_fifo_at_a_service_script_does_not_block(tmp_path: Path) -> None:
     os.mkfifo(cache / "services" / "services-health.sh")
 
     finished, result = _bounded(
-        lambda: write_service_scripts(cache, _service_models(), symphony="sym"),
+        lambda: write_service_scripts(
+            cache, _service_models(), symphony="sym", performer_mounts=(),
+        ),
     )
 
     assert finished is True
@@ -275,7 +292,10 @@ def test_regular_file_where_services_dir_is_expected_is_refused(tmp_path: Path) 
     cache = _cache(tmp_path)
     (cache / "services").write_text("keep\n")
 
-    assert write_service_scripts(cache, _service_models(), symphony="sym") is False
+    assert (
+        write_service_scripts(cache, _service_models(), symphony="sym", performer_mounts=())
+        is False
+    )
     assert (cache / "services").read_text() == "keep\n"
 
 
@@ -301,7 +321,7 @@ def test_linked_activate_sh_is_not_a_toolchain(tmp_path: Path) -> None:
     cache = _cache(tmp_path)
     os.symlink(host, cache / "activate.sh")
 
-    assert env_cache._cache_dir_has_activate(cache) is False
+    assert env_cache._cache_dir_has_activate(cache, performer_mounts=()) is False
     _assert_host_file_untouched(host)
 
 
@@ -312,7 +332,7 @@ def test_linked_cache_dir_is_not_populated(tmp_path: Path) -> None:
     root.mkdir()
     os.symlink(host_dir, root / "sym")
 
-    assert env_cache._cache_dir_is_populated(root / "sym") is False
+    assert env_cache._cache_dir_is_populated(root / "sym", performer_mounts=()) is False
 
 
 def test_bootstrap_mount_is_not_offered_for_a_linked_cache_dir(tmp_path: Path) -> None:
@@ -327,7 +347,9 @@ def test_bootstrap_mount_is_not_offered_for_a_linked_cache_dir(tmp_path: Path) -
         cache_dir=root / "sym",
     )
 
-    mount = get_env_volume_for_symphony("sym", {"sym": state}, is_bootstrap=True)
+    mount = get_env_volume_for_symphony(
+        "sym", {"sym": state}, is_bootstrap=True, performer_mounts=(),
+    )
 
     assert mount is None
 
@@ -371,7 +393,7 @@ def test_service_scripts_keep_bytes_and_mode(tmp_path: Path) -> None:
     )
     expected = render(manifest)
 
-    assert write_service_scripts(cache, models, symphony="sym") is True
+    assert write_service_scripts(cache, models, symphony="sym", performer_mounts=()) is True
 
     bodies = {
         "services-start.sh": expected.start,
@@ -392,7 +414,9 @@ def test_service_scripts_overwrite_an_existing_script_with_mode_755(tmp_path: Pa
     old.write_text("old\n")
     old.chmod(0o600)
 
-    assert write_service_scripts(cache, _service_models(), symphony="sym") is True
+    assert (
+        write_service_scripts(cache, _service_models(), symphony="sym", performer_mounts=()) is True
+    )
 
     assert "initdb" in old.read_text()
     assert stat.S_IMODE(old.stat().st_mode) == 0o755

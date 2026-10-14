@@ -55,6 +55,7 @@ logger = structlog.get_logger(__name__)
 
 _CHUNK_BYTES = 64 * 1024
 _DEFAULT_FILE_MODE = 0o644
+_INHERITED_MODE_MASK = 0o755
 _MAX_LINKS = 40
 
 
@@ -451,7 +452,8 @@ def replace_mounted_file(
     temporary file is created ``O_EXCL`` and renamed over the leaf by descriptor, and an
     existing leaf must be a plain single-name regular file. On an operator path the resolved
     path is written by name. The mode is set on the temporary descriptor before the rename:
-    *mode* when given (set even on an existing file), else the existing file's mode, else 0644.
+    *mode* when given (set even on an existing file), else the existing file's mode masked to
+    0755, else 0644.
     Raises an ``OSError`` on failure, including :class:`MountedFileRefusedError` (logged).
     """
     try:
@@ -465,13 +467,25 @@ def replace_mounted_file(
             operator = False
         try:
             existing = _existing_mode(dir_fd, leaf, operator=operator)
-            wanted = mode if mode is not None else existing
-            _rename_into(dir_fd, leaf, data, _DEFAULT_FILE_MODE if wanted is None else wanted)
+            _rename_into(dir_fd, leaf, data, _target_mode(mode, existing))
         finally:
             os.close(dir_fd)
     except MountedFileRefusedError as exc:
         _refused(path, str(exc))
         raise
+
+
+def _target_mode(mode: int | None, existing: int | None) -> int:
+    """The mode a replacement is created with: explicit, else inherited (masked), else 0644.
+
+    An inherited mode is masked to ``0o755``: a performer that planted the leaf with setuid,
+    setgid, sticky or group/other-write bits does not get them carried into the daemon's file.
+    """
+    if mode is not None:
+        return mode
+    if existing is not None:
+        return existing & _INHERITED_MODE_MASK
+    return _DEFAULT_FILE_MODE
 
 
 def _existing_mode(dir_fd: int, leaf: str, *, operator: bool) -> int | None:

@@ -1489,6 +1489,34 @@ class ProjectConfiguration(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_env_cache_root_disjoint(self) -> ProjectConfiguration:
+        """219: the env-cache root may not overlap any host path a performer can see.
+
+        A performer that can see the root (or a directory that contains it) can replace the root
+        itself. This rejects, at load, a root that is inside, equal to, or containing the
+        performer log dir or any endpoint volume. Compared on resolved paths, so a symlinked
+        spelling cannot slip past. Operators move the root outside the performer mounts.
+        """
+        root = self.env_cache_root.expanduser().resolve()
+        mounts: list[tuple[str, Path]] = []
+        if self.performer_log_dir is not None:
+            mounts.append(("performer_log_dir", self.performer_log_dir))
+        for endpoint in self.performer_endpoints:
+            for index, volume in enumerate(endpoint.volumes):
+                label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
+                mounts.append((label, volume.host_path))
+        for label, raw in mounts:
+            mount = raw.expanduser().resolve()
+            if mount == root or mount.is_relative_to(root) or root.is_relative_to(mount):
+                msg = (
+                    f"env_cache_root {root} overlaps {label} {mount}: a performer that can see "
+                    "that path can rewrite the env-cache root. Move env_cache_root outside "
+                    "every performer mount."
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def _validate_orchestration_catalogs(self) -> ProjectConfiguration:
         """080: validate endpoints/model_endpoints/modes references + unique names.
 

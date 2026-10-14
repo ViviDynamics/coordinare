@@ -32,6 +32,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
 from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.mounted_file import performer_mount_hosts
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.pr_lifecycle import retained_pr_is_open
@@ -44,6 +45,7 @@ from coordinare.workspace import WorkspaceSetupError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from coordinare.graph.state import AgentServiceProtocol, CoordinareState
 
@@ -2361,6 +2363,19 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
     return _extra_volumes, None
 
 
+def _performer_mounts(state: CoordinareState) -> tuple[Path, ...]:
+    """Every host directory a performer can see, from the loaded config (219 review).
+
+    ``state["config"]`` is the ProjectConfiguration; passing its full mount list to the env-cache
+    reads makes the outermost performer mount the trusted start of each anchored walk.
+    """
+    config = state.get("config")
+    if config is None:
+        msg = "no loaded config in state; cannot resolve the performer mounts for env-cache reads"
+        raise RuntimeError(msg)
+    return tuple(performer_mount_hosts(config))
+
+
 async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
     """077: holds consumer dispatch until the env cache is CURRENT+VERIFIED."""
     if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
@@ -2368,7 +2383,9 @@ async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage:
             _ec_state_for_sym.cache_dir_ready
             and bool(_ec_state_for_sym.last_bootstrap_succeeded)
             and not _ec_state_for_sym.bootstrap_in_flight
-            and _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
+            and _cache_dir_has_activate(
+                _ec_state_for_sym.cache_dir, performer_mounts=_performer_mounts(state),
+            )
             and _ec_state_for_sym.last_seen_spec_sha is not None
             and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
         )
@@ -2410,7 +2427,7 @@ async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str
         #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
         #     fall through on the legacy last_bootstrap_succeeded path.
         _readiness_passed, _readiness_detail = await verify_env_cache_clean(
-            state, _symphony_name_for_ec, service,
+            state, _symphony_name_for_ec, service, performer_mounts=_performer_mounts(state),
         )
         if _readiness_passed is False:
             logger.info(
@@ -2462,7 +2479,8 @@ async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: st
         _devenv_root = service.devenv_root
     if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
         _has_ready_caches = any(
-            isinstance(s, EnvCacheState) and _cache_dir_has_activate(s.cache_dir)
+            isinstance(s, EnvCacheState)
+            and _cache_dir_has_activate(s.cache_dir, performer_mounts=_performer_mounts(state))
             for s in _env_cache_for_ec.values()
         )
         if _has_ready_caches:
@@ -2482,6 +2500,7 @@ async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: st
             _env_cache_for_ec,
             is_bootstrap=_is_bootstrap_dispatch,
             container_devenv_root=_devenv_root,
+            performer_mounts=_performer_mounts(state),
         )
         if _ec_result is not None:
             _ec_vol, _ec_container_path = _ec_result
@@ -2529,6 +2548,7 @@ async def _inject_test_env_vars(state: CoordinareState, card_context: dict[str, 
                     repo=_eff_for_te.project_name or _symphony_name_for_ec,
                     github_service=_github_for_te,
                     fallback_source=_fallback_src,
+                    performer_mounts=_performer_mounts(state),
                 )
             except TestEnvFileError as exc:
                 # A configured-but-missing file is a clear coordinare-side

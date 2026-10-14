@@ -157,7 +157,7 @@ class TestBootstrapJobPayload:
 
 class TestGetEnvVolumeForSymphony:
     def test_returns_none_when_no_state(self) -> None:
-        result = get_env_volume_for_symphony("missing", {}, is_bootstrap=False)
+        result = get_env_volume_for_symphony("missing", {}, is_bootstrap=False, performer_mounts=())
         assert result is None
 
     def test_returns_none_when_cache_dir_missing(self, tmp_path: Path) -> None:
@@ -166,7 +166,7 @@ class TestGetEnvVolumeForSymphony:
             sanitised_name="s-abc",
             cache_dir=tmp_path / "nonexistent",
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is None
 
     def test_returns_ro_volume_for_regular_performer(self, tmp_path: Path) -> None:
@@ -181,7 +181,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir=cache_dir,
             cache_dir_ready=True,
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
         vol, container_path = result
         assert isinstance(vol, VolumeMount)
@@ -199,7 +199,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir=cache_dir,
             cache_dir_ready=True,
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=True)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=True, performer_mounts=())
         assert result is not None
         vol, _ = result
         assert vol.mode == "rw"
@@ -220,7 +220,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir=cache_dir,
             cache_dir_ready=False,
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=True)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=True, performer_mounts=())
         assert result is not None
         vol, _ = result
         assert vol.mode == "rw"
@@ -241,7 +241,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir=cache_dir,
             cache_dir_ready=False,
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is None
 
     def test_returns_ro_volume_when_activate_present_but_flag_false(
@@ -260,7 +260,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir=cache_dir,
             cache_dir_ready=False,
         )
-        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
         vol, _ = result
         assert vol.mode == "ro"
@@ -276,7 +276,7 @@ class TestGetEnvVolumeForSymphony:
             cache_dir_ready=True,
         )
         result = get_env_volume_for_symphony(
-            "s", {"s": state}, is_bootstrap=False, container_devenv_root="/custom",
+            "s", {"s": state}, is_bootstrap=False, performer_mounts=(), container_devenv_root="/custom",
         )
         assert result is not None
         vol, container_path = result
@@ -921,7 +921,7 @@ class TestOnBootstrapComplete:
 
 class TestCollectEnvVolumesForPersistentPerformer:
     def test_returns_empty_when_no_states(self) -> None:
-        result = _collect_env_volumes_for_persistent_performer({})
+        result = _collect_env_volumes_for_persistent_performer({}, performer_mounts=())
         assert result == []
 
     def test_skips_caches_without_activate(self, tmp_path: Path) -> None:
@@ -936,7 +936,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
             cache_dir=cache_dir,
             cache_dir_ready=False,
         )
-        result = _collect_env_volumes_for_persistent_performer({"s": state})
+        result = _collect_env_volumes_for_persistent_performer({"s": state}, performer_mounts=())
         assert result == []
 
     def test_returns_ro_mounts_for_all_ready_caches(self, tmp_path: Path) -> None:
@@ -960,7 +960,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
                 cache_dir_ready=True,
             ),
         }
-        result = _collect_env_volumes_for_persistent_performer(states)
+        result = _collect_env_volumes_for_persistent_performer(states, performer_mounts=())
         assert len(result) == 2
         paths = {str(v.container_path) for v in result}
         assert "/devenv/sym-a-111111" in paths
@@ -979,7 +979,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
             cache_dir_ready=True,
         )
         result = _collect_env_volumes_for_persistent_performer(
-            {"s": state}, container_devenv_root="/custom",
+            {"s": state}, container_devenv_root="/custom", performer_mounts=(),
         )
         assert len(result) == 1
         assert str(result[0].container_path) == "/custom/s-abc"
@@ -1019,6 +1019,18 @@ class TestBootstrapJobPayloadCacheMountPath:
 # ---------------------------------------------------------------------------
 
 
+def _mount_config() -> object:
+    """A loaded-config stand-in with no performer mounts beyond the env-cache root (219)."""
+    from types import SimpleNamespace
+
+    global_config = SimpleNamespace(
+        performer_log_dir=None,
+        performer_endpoints=[],
+        env_cache_root="/nonexistent-env-caches",
+    )
+    return SimpleNamespace(global_config=global_config)
+
+
 def _make_daemon_for_env_cache(**kwargs):
     """Return a CoordinareDaemon configured for single-cycle env-cache tests."""
     from unittest.mock import AsyncMock, MagicMock
@@ -1027,7 +1039,7 @@ def _make_daemon_for_env_cache(**kwargs):
 
     graph = MagicMock()
     graph.ainvoke = AsyncMock(return_value={})
-    return CoordinareDaemon(
+    daemon = CoordinareDaemon(
         graph,
         poll_interval_seconds=1,
         heartbeat_interval_seconds=1,
@@ -1035,6 +1047,9 @@ def _make_daemon_for_env_cache(**kwargs):
         sleep_func=lambda _: __import__("asyncio").sleep(0),
         **kwargs,
     )
+    if daemon._state.get("coordinare_config") is None:
+        daemon._state["coordinare_config"] = _mount_config()
+    return daemon
 
 
 def _make_symphony_config(name: str = "sym", performer_id: str | None = "bp-1"):
@@ -2037,7 +2052,7 @@ class TestManifestArtifacts:
         github.get_file_content = fake_get
         cache_dir = tmp_path / "cache"
 
-        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(
+        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(performer_mounts=(),
             symphony_name="website",
             repo="website",
             github_org="ViviDynamics",
@@ -2076,7 +2091,7 @@ class TestManifestArtifacts:
         github.get_file_content = fake_get
         cache_dir = tmp_path / "cache"
 
-        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(
+        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(performer_mounts=(),
             symphony_name="sym",
             repo="sym",
             github_org="org",
@@ -2580,7 +2595,7 @@ class TestWriteServiceScripts:
         return [pg, redis]
 
     def test_writes_start_stop_health_scripts(self, tmp_path: Path) -> None:
-        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website")
+        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
         assert ok is True
         svc = tmp_path / "services"
         for name in ("services-start.sh", "services-stop.sh", "services-health.sh"):
@@ -2598,10 +2613,10 @@ class TestWriteServiceScripts:
         # suffix via load_prior_manifest). A second coordinare writer with a different
         # agent_version/cache_inputs made the suffix oscillate → the dispatch gate
         # held every card forever (readme_sha != last_seen_spec_sha).
-        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website")
+        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website", performer_mounts=())
         assert not (tmp_path / "services" / "services.json").exists()
         assert (tmp_path / "services" / "services-start.sh").is_file()
 
     def test_no_services_is_noop(self, tmp_path: Path) -> None:
-        assert write_service_scripts(tmp_path, [], symphony="x") is False
+        assert write_service_scripts(tmp_path, [], symphony="x", performer_mounts=()) is False
         assert not (tmp_path / "services").exists()

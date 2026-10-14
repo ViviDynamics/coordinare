@@ -125,7 +125,7 @@ class TestConfiguredTestEnvInjection:
         )
 
         test_env = load_test_env(
-            TestEnvConfig(repo_path=".env.test"), repo_root=repo_root,
+            TestEnvConfig(repo_path=".env.test"), repo_root=repo_root, performer_mounts=(),
         )
         assert test_env == {PW_VAR: "test-pw-123"}
 
@@ -141,7 +141,7 @@ class TestConfiguredTestEnvInjection:
 
         test_env = load_test_env(
             TestEnvConfig(host_path=str(host_file)),
-            repo_root=tmp_path / "unrelated_repo",
+            repo_root=tmp_path / "unrelated_repo", performer_mounts=(),
         )
         assert test_env == {PW_VAR: "host-pw-456"}
 

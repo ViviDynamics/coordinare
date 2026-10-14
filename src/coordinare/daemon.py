@@ -86,6 +86,7 @@ from coordinare.state_store import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
@@ -3790,7 +3791,15 @@ class CoordinareDaemon:
         """
         from coordinare.services.env_cache import verify_env_cache_clean
 
-        return await verify_env_cache_clean(self._state, symphony_name, svc)
+        return await verify_env_cache_clean(
+            self._state, symphony_name, svc, performer_mounts=self._performer_mounts(),
+        )
+
+    def _performer_mounts(self) -> tuple[Path, ...]:
+        """Every host directory a performer can see, from the loaded config (219 review)."""
+        from coordinare.services.mounted_file import performer_mount_hosts
+
+        return tuple(performer_mount_hosts(self._state["coordinare_config"].global_config))
 
     async def _poll_bootstrap_completion(
         self,
@@ -4576,6 +4585,7 @@ class CoordinareDaemon:
             self._state.get("env_cache") or {},
             is_bootstrap=True,
             container_devenv_root=devenv_root,
+            performer_mounts=self._performer_mounts(),
         )
         extra = [ec_result[0]] if ec_result is not None else []
         dispatch_kw: dict[str, Any] = {}

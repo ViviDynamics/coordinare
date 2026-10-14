@@ -46,7 +46,25 @@ followed; inside a mount, every component is opened with `O_NOFOLLOW` by descrip
 - `mounted_dir_refusal(path, mounts=...)` and `read_mounted_dir_names(path, mounts=...)`:
   directory checks and listings through the same walk.
 
-The env-cache root is the mount for every cache dir (`cache_dir.parent`).
+Every env-cache call passes the full performer mount list (`performer_mount_hosts(config)`:
+the log dir, each endpoint volume, and the root). The root is also added as the cache dir's
+parent. So when the root itself sits under a performer volume, the walk starts at that volume,
+and a link the performer plants at the root is refused, not followed to a host directory.
+
+Config load also rejects an `env_cache_root` that is equal to, inside, or containing the
+performer log dir or any endpoint volume (resolved paths, the error names both). The check
+found no overlap in the shipped examples (`~/.junie`, `~/.opencode`, `/var/log/...`).
+
+## Review round
+
+- **Block (root under a volume)**: the mount list above, plus the load-time rule.
+- **Inherited mode**: with no explicit mode, an existing file's mode is masked to `0o755`, so
+  a planted setuid, setgid, sticky or group/other-write bit is not carried over.
+- **Diagnostic**: a refused cache dir after a "successful" bootstrap fails with the refusal
+  reason (`env_cache.bootstrap_cache_refused`), not "installed in the wrong location".
+- **`test_env` host read**: a `host_path` inside a performer mount is read through the
+  anchored reader (no links below the outermost mount, 1 MiB bound). The `repo_path` source
+  is still read through the clone path (not changed here).
 
 ## Refusal
 
@@ -59,8 +77,8 @@ content or mode.
 
 ## Modes
 
-Unchanged for every existing file: the scripts are 0755 and an existing `manifest.json` keeps
-its mode. One deliberate difference: a new `manifest.json` is created 0644 instead of
+Unchanged for every existing file in practice: the scripts are 0755, and an existing
+`manifest.json` keeps its permission bits, masked to 0755 (see the review round). One deliberate difference: a new `manifest.json` is created 0644 instead of
 `0666 & ~umask`. The two are equal under the usual umask 022.
 
 ## Tests

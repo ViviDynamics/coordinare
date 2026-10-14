@@ -25,27 +25,27 @@ def _write(path: Path, text: str) -> None:
 class TestDotenvParsing:
     def test_basic_key_value(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "POSTGRESQL_PASSWORD=secret-pw\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"POSTGRESQL_PASSWORD": "secret-pw"}
 
     def test_double_quotes_stripped_one_layer(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", 'KEY="value"\n')
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"KEY": "value"}
 
     def test_single_quotes_stripped_one_layer(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "KEY='value'\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"KEY": "value"}
 
     def test_only_one_quote_layer_stripped(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "KEY=\"'value'\"\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"KEY": "'value'"}
 
     def test_leading_export_ignored(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "export DATABASE_URL=postgres://x\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"DATABASE_URL": "postgres://x"}
 
     def test_comments_and_blank_lines_skipped(self, tmp_path: Path) -> None:
@@ -53,22 +53,22 @@ class TestDotenvParsing:
             tmp_path / ".env.test",
             "# a comment\n\n   # indented comment\nKEY=value\n\n",
         )
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"KEY": "value"}
 
     def test_equals_inside_value_preserved(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "DATABASE_URL=postgres://u:p=q@h/db\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"DATABASE_URL": "postgres://u:p=q@h/db"}
 
     def test_crlf_line_endings_tolerated(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "KEY=value\r\nKEY2=value2\r\n")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {"KEY": "value", "KEY2": "value2"}
 
     def test_empty_file_returns_empty_dict(self, tmp_path: Path) -> None:
         _write(tmp_path / ".env.test", "")
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {}
 
     def test_no_shell_execution_value_returned_literally(self, tmp_path: Path) -> None:
@@ -76,7 +76,7 @@ class TestDotenvParsing:
             tmp_path / ".env.test",
             "DANGER=$(rm -rf /)\nBACKTICK=`whoami`\nINTERP=${OTHER}\n",
         )
-        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path)
+        out = load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=tmp_path, performer_mounts=())
         assert out == {
             "DANGER": "$(rm -rf /)",
             "BACKTICK": "`whoami`",
@@ -92,6 +92,7 @@ class TestSourceResolution:
         out = load_test_env(
             TestEnvConfig(host_path=str(host_file)),
             repo_root=tmp_path / "some_repo",
+            performer_mounts=(),
         )
         assert out == {"HOST_KEY": "hv"}
 
@@ -101,6 +102,7 @@ class TestSourceResolution:
         _write(sub / ".env.test", "REPO_KEY=rv\n")
         out = load_test_env(
             TestEnvConfig(repo_path="config/.env.test"), repo_root=tmp_path,
+            performer_mounts=(),
         )
         assert out == {"REPO_KEY": "rv"}
 
@@ -113,19 +115,19 @@ class TestContainmentReassertion:
         # loader independently re-asserts containment.
         cfg = TestEnvConfig.model_construct(repo_path="../outside.env", host_path=None)
         with pytest.raises(TestEnvFileError, match=r"escapes|contain"):
-            load_test_env(cfg, repo_root=tmp_path / "repo")
+            load_test_env(cfg, repo_root=tmp_path / "repo", performer_mounts=())
 
     def test_absolute_repo_path_rejected(self, tmp_path: Path) -> None:
         cfg = TestEnvConfig.model_construct(repo_path="/etc/passwd", host_path=None)
         with pytest.raises(TestEnvFileError, match=r"escapes|relative|contain"):
-            load_test_env(cfg, repo_root=tmp_path / "repo")
+            load_test_env(cfg, repo_root=tmp_path / "repo", performer_mounts=())
 
 
 class TestMissingFileError:
     def test_missing_repo_file_names_path_and_field(self, tmp_path: Path) -> None:
         cfg = TestEnvConfig(repo_path=".env.test")
         with pytest.raises(TestEnvFileError) as exc:
-            load_test_env(cfg, repo_root=tmp_path)
+            load_test_env(cfg, repo_root=tmp_path, performer_mounts=())
         msg = str(exc.value)
         assert ".env.test" in msg
         assert "repo_path" in msg
@@ -134,7 +136,7 @@ class TestMissingFileError:
         missing = tmp_path / "nope.env"
         cfg = TestEnvConfig(host_path=str(missing))
         with pytest.raises(TestEnvFileError) as exc:
-            load_test_env(cfg, repo_root=tmp_path)
+            load_test_env(cfg, repo_root=tmp_path, performer_mounts=())
         msg = str(exc.value)
         assert str(missing) in msg
         assert "host_path" in msg
@@ -148,7 +150,7 @@ class TestPerformanceBudget:
         _write(tmp_path / ".env.test", lines + "\n")
         cfg = TestEnvConfig(repo_path=".env.test")
         start = time.perf_counter()
-        out = load_test_env(cfg, repo_root=tmp_path)
+        out = load_test_env(cfg, repo_root=tmp_path, performer_mounts=())
         elapsed = time.perf_counter() - start
         assert len(out) == 50
         assert elapsed < 0.010, f"loader took {elapsed * 1000:.2f}ms (budget 10ms)"

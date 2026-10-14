@@ -33,6 +33,7 @@ from coordinare.services.mounted_file import (
     anchored_mkdir,
     mounted_dir_refusal,
     mounted_file_refusal,
+    performer_mount_hosts,
     read_mounted_dir_names,
     read_mounted_file,
     replace_mounted_file,
@@ -44,7 +45,7 @@ from coordinare.services.test_env_loader import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
     from typing import Protocol
 
     from coordinare_service_inference.schema import ServicesManifest
@@ -73,18 +74,20 @@ _PRIOR_MANIFEST_MAX_BYTES = 1024 * 1024
 _EXECUTABLE_MODE = 0o755
 
 
-def load_prior_manifest_bounded(cache_dir: Path) -> ServicesManifest | None:
+def load_prior_manifest_bounded(
+    cache_dir: Path, *, performer_mounts: Sequence[Path],
+) -> ServicesManifest | None:
     """The sealed services.json from *cache_dir*, read without links and bounded (208).
 
     Returns None when it is missing, a link, not a regular file, larger than the bound,
-    not UTF-8, or not a valid manifest. The read is anchored at the env-cache root, which
-    is ``cache_dir``'s parent and is operator-configured, so a link planted at the cache
-    dir or below it is refused. Callers run it off the event loop.
+    not UTF-8, or not a valid manifest. The read is anchored at the outermost performer mount
+    over the cache dir (219), so a link planted at the root, the cache dir or below is refused.
+    Callers run it off the event loop.
     """
     data = read_mounted_file(
         cache_dir / SERVICES_SUBDIR / "services.json",
         max_bytes=_PRIOR_MANIFEST_MAX_BYTES,
-        mounts=(cache_dir.parent,),
+        mounts=_env_cache_mounts(cache_dir, performer_mounts),
     )
     if data is None:
         return None
@@ -131,22 +134,26 @@ def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
     )
 
 
-def _env_cache_mounts(cache_dir: Path) -> tuple[Path, ...]:
-    """The env-cache root, the mount a performer sees every cache dir through (219).
+def _env_cache_mounts(cache_dir: Path, performer_mounts: Sequence[Path]) -> tuple[Path, ...]:
+    """Every performer-visible host directory, plus the env-cache root (219, 219 review).
 
-    Every cache dir sits directly under the root, so the root is the parent. Nothing below it
-    is trusted: a link, hard link or wrong-type entry there is refused, never followed.
+    The walk trusts the outermost mount it reaches and refuses links below it. Passing the
+    full performer mount list (log dir, every endpoint volume, the root itself) means a root
+    that sits under a performer volume is walked from that volume, so a link the performer
+    plants at the root is refused, not followed to a host directory.
     """
-    return (cache_dir.parent,)
+    return (*performer_mounts, cache_dir.parent)
 
 
-def _cache_dir_refusal(cache_dir: Path) -> str | None:
+def _cache_dir_refusal(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> str | None:
     """Why the cache dir may not be mounted or read (219), or None. A missing dir is allowed."""
-    reason = mounted_dir_refusal(cache_dir, mounts=_env_cache_mounts(cache_dir))
+    reason = mounted_dir_refusal(
+        cache_dir, mounts=_env_cache_mounts(cache_dir, performer_mounts),
+    )
     return None if reason == "missing" else reason
 
 
-def _cache_dir_has_activate(cache_dir: Path) -> bool:
+def _cache_dir_has_activate(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> bool:
     """Return True iff the host cache_dir has a populated activate.sh.
 
     The on-disk presence of activate.sh is the authoritative signal that a
@@ -157,7 +164,8 @@ def _cache_dir_has_activate(cache_dir: Path) -> bool:
     (219): a link planted in the performer-writable cache counts as no toolchain.
     """
     refusal = mounted_file_refusal(
-        cache_dir / "activate.sh", mounts=_env_cache_mounts(cache_dir),
+        cache_dir / "activate.sh",
+        mounts=_env_cache_mounts(cache_dir, performer_mounts),
     )
     return refusal is None
 
@@ -173,15 +181,18 @@ def _cache_dir_has_activate(cache_dir: Path) -> bool:
 _CACHE_SEED_FILES = frozenset({"activate.sh", "manifest.json", "verify.sh"})
 
 
-def _cache_dir_is_populated(cache_dir: Path) -> bool:
+def _cache_dir_is_populated(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> bool:
     """Return True iff cache_dir holds toolchain content beyond the seed set.
 
     Used to fail a "successful" bootstrap loudly when the agent built the
     toolchain in the wrong location and the real mount is still just the three
     coordinare-seeded files. A non-empty result requires at least one entry whose
-    name is not in ``_CACHE_SEED_FILES``.
+    name is not in ``_CACHE_SEED_FILES``. A refused or missing directory is False here;
+    the caller reports a refusal separately (see ``_cache_dir_refusal``).
     """
-    names = read_mounted_dir_names(cache_dir, mounts=_env_cache_mounts(cache_dir))
+    names = read_mounted_dir_names(
+        cache_dir, mounts=_env_cache_mounts(cache_dir, performer_mounts),
+    )
     if names is None:
         return False
     return any(name not in _CACHE_SEED_FILES for name in names)
@@ -192,6 +203,7 @@ def get_env_volume_for_symphony(
     env_cache_states: dict[str, Any],
     *,
     is_bootstrap: bool,
+    performer_mounts: Sequence[Path],
     container_devenv_root: str = DEFAULT_DEVENV_ROOT,
 ) -> tuple[VolumeMount, str] | None:
     """Return (VolumeMount, container_path) for the symphony's env cache, or None.
@@ -218,11 +230,13 @@ def get_env_volume_for_symphony(
     state = env_cache_states.get(symphony_name)
     if state is None or not isinstance(state, EnvCacheState):
         return None
-    if not is_bootstrap and not _cache_dir_has_activate(state.cache_dir):
+    if not is_bootstrap and not _cache_dir_has_activate(
+        state.cache_dir, performer_mounts=performer_mounts,
+    ):
         return None
     # 219: the host path is bind-mounted, and docker follows a link in it, so a linked cache dir
     # is never mounted (rw for a bootstrap, ro for a consumer).
-    refusal = _cache_dir_refusal(state.cache_dir)
+    refusal = _cache_dir_refusal(state.cache_dir, performer_mounts=performer_mounts)
     if refusal is not None:
         logger.error(
             "env_cache.mount_refused",
@@ -242,6 +256,8 @@ def get_env_volume_for_symphony(
 def _collect_env_volumes_for_persistent_performer(
     env_cache_states: dict[str, Any],
     container_devenv_root: str = DEFAULT_DEVENV_ROOT,
+    *,
+    performer_mounts: Sequence[Path],
 ) -> list[VolumeMount]:
     """Return ro VolumeMounts for every symphony env cache that has an
     activate.sh on disk.
@@ -259,7 +275,7 @@ def _collect_env_volumes_for_persistent_performer(
     for state in env_cache_states.values():
         if not isinstance(state, EnvCacheState):
             continue
-        if not _cache_dir_has_activate(state.cache_dir):
+        if not _cache_dir_has_activate(state.cache_dir, performer_mounts=performer_mounts):
             continue
         container_path = f"{container_devenv_root}/{state.sanitised_name}"
         mounts.append(
@@ -280,6 +296,7 @@ async def resolve_test_env_vars(
     repo: str,
     github_service: _GitHubService,
     fallback_source: str | None = None,
+    performer_mounts: Sequence[Path],
 ) -> dict[str, str]:
     """Resolve a symphony's test-environment vars to literal ``KEY -> value`` pairs (092).
 
@@ -329,7 +346,9 @@ async def resolve_test_env_vars(
 
     if test_env.host_path is not None:
         # repo_root is unused for host_path resolution; pass a placeholder.
-        loaded = load_test_env(test_env, repo_root=Path("/"))
+        loaded = load_test_env(
+            test_env, repo_root=Path("/"), performer_mounts=performer_mounts,
+        )
         source = f"host_path:{test_env.host_path}"
     else:
         content = await github_service.get_file_content(
@@ -354,7 +373,11 @@ async def resolve_test_env_vars(
 
 
 async def verify_env_cache_clean(
-    state: Mapping[str, Any], symphony_name: str, svc: Any,
+    state: Mapping[str, Any],
+    symphony_name: str,
+    svc: Any,
+    *,
+    performer_mounts: Sequence[Path],
 ) -> tuple[bool | None, str]:
     """077/093: run the cache's ``verify.sh`` in a CLEAN consumer-context
     container — the performer image with ONLY the cache mounted read-only at
@@ -382,7 +405,7 @@ async def verify_env_cache_clean(
         return None, "no env-cache state for symphony"
     cache_dir = Path(ec.cache_dir)
     verify_refusal = mounted_file_refusal(
-        cache_dir / "verify.sh", mounts=_env_cache_mounts(cache_dir),
+        cache_dir / "verify.sh", mounts=_env_cache_mounts(cache_dir, performer_mounts),
     )
     if verify_refusal is not None:
         logger.warning(
@@ -434,7 +457,11 @@ async def verify_env_cache_clean(
 
 
 def write_service_scripts(
-    cache_dir: Path, service_models: list[Any], *, symphony: str = "",
+    cache_dir: Path,
+    service_models: list[Any],
+    *,
+    symphony: str = "",
+    performer_mounts: Sequence[Path],
 ) -> bool:
     """108 (P1): coordinare renders + writes the service start/stop/health scripts
     into ``<cache_dir>/services/`` DETERMINISTICALLY.
@@ -462,7 +489,7 @@ def write_service_scripts(
         )
         scripts = render_service_scripts(svc_manifest)
         svc_dir = cache_dir / "services"
-        mounts = _env_cache_mounts(cache_dir)
+        mounts = _env_cache_mounts(cache_dir, performer_mounts)
         anchored_mkdir(svc_dir, mounts=mounts)
         for name, body in (
             ("services-start.sh", scripts.start),
@@ -539,7 +566,9 @@ class EnvCacheService:
             cache_dir = env_cache_root / sanitised
 
             try:
-                anchored_mkdir(cache_dir, mounts=_env_cache_mounts(cache_dir))
+                anchored_mkdir(
+                    cache_dir, mounts=_env_cache_mounts(cache_dir, self._performer_mounts()),
+                )
             except MountedFileRefusedError as exc:
                 logger.error(
                     "env_cache.mkdir_refused",
@@ -628,7 +657,9 @@ class EnvCacheService:
         exists, returns a 12-char hash that changes whenever any tracked
         cache_input file's content changes (or the agent_version changes).
         """
-        prior = await asyncio.to_thread(load_prior_manifest_bounded, cache_dir)
+        prior = await asyncio.to_thread(
+            load_prior_manifest_bounded, cache_dir, performer_mounts=self._performer_mounts(),
+        )
         if prior is None:
             return ""
 
@@ -704,7 +735,11 @@ class EnvCacheService:
             and not cache_state.bootstrap_in_flight
             and not cache_state.bootstrap_exhausted
         ):
-            prior = await asyncio.to_thread(load_prior_manifest_bounded, cache_state.cache_dir)
+            prior = await asyncio.to_thread(
+                load_prior_manifest_bounded,
+                cache_state.cache_dir,
+                performer_mounts=self._performer_mounts(),
+            )
             agent_version = prior.agent_version if prior is not None else "no-prior-manifest"
             forced_sha = forced_regen_cache_key(agent_version)
             logger.info(
@@ -832,7 +867,9 @@ class EnvCacheService:
         if (
             not needs_bootstrap
             and cache_state.last_bootstrap_succeeded is True
-            and not _cache_dir_has_activate(cache_state.cache_dir)
+            and not _cache_dir_has_activate(
+                cache_state.cache_dir, performer_mounts=self._performer_mounts(),
+            )
         ):
             last_at = cache_state.last_bootstrap_at
             cooldown_elapsed = (
@@ -980,6 +1017,7 @@ class EnvCacheService:
             declared_services = []
 
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
+            performer_mounts=self._performer_mounts(),
             symphony_name=symphony_name,
             repo=repo,
             github_org=eff_config.github_org,
@@ -1116,7 +1154,39 @@ class EnvCacheService:
             repo=repo,
             github_service=github_service,
             fallback_source=fallback_source,
+            performer_mounts=self._performer_mounts(),
         )
+
+    def _cache_refusal_error(self, symphony_name: str, cache_state: EnvCacheState) -> str | None:
+        """The bootstrap failure text when the cache dir is refused, or None (219 review).
+
+        A refused dir (a link, hard link or non-directory where the cache must be) is reported as
+        such, so the operator is not sent looking for a toolchain in the wrong place.
+        """
+        refusal = _cache_dir_refusal(
+            cache_state.cache_dir, performer_mounts=self._performer_mounts(),
+        )
+        if refusal is None:
+            return None
+        logger.error(
+            "env_cache.bootstrap_cache_refused",
+            symphony=symphony_name,
+            cache_dir=str(cache_state.cache_dir),
+            reason=refusal,
+        )
+        return (
+            f"env-cache directory refused ({refusal}): {cache_state.cache_dir} is a link, "
+            "hard link or non-directory where the cache must be; the bootstrap output cannot "
+            "be read or verified. Cache rejected."
+        )
+
+    def _performer_mounts(self) -> tuple[Path, ...]:
+        """Every host directory a performer can see, from the loaded config (219 review).
+
+        Passed to every env-cache read and write so the outermost performer mount is always the
+        trusted start of the anchored walk.
+        """
+        return tuple(performer_mount_hosts(self._coordinare_config.global_config))
 
     async def _fetch_declared_services(
         self,
@@ -1166,6 +1236,7 @@ class EnvCacheService:
     async def _build_manifest_artifacts(
         self,
         *,
+        performer_mounts: Sequence[Path],
         symphony_name: str,
         repo: str,
         github_org: str,
@@ -1231,7 +1302,7 @@ class EnvCacheService:
 
         # 219: every write below the cache dir is anchored at the env-cache root (see
         # mounted_file): no link, hard link or wrong-type entry is followed or replaced.
-        mounts = _env_cache_mounts(cache_dir)
+        mounts = _env_cache_mounts(cache_dir, performer_mounts)
         try:
             anchored_mkdir(cache_dir, mounts=mounts)
             replace_mounted_file(
@@ -1264,7 +1335,12 @@ class EnvCacheService:
             # config, declared_services — and thus service_models — is empty, and the
             # performer's own apply_manual_override writes the service scripts (pre-108).
             if service_models:
-                write_service_scripts(cache_dir, service_models, symphony=symphony_name)
+                write_service_scripts(
+                    cache_dir,
+                    service_models,
+                    symphony=symphony_name,
+                    performer_mounts=performer_mounts,
+                )
         except MountedFileRefusedError as exc:
             logger.error(
                 "env_cache.write_refused",
@@ -1442,7 +1518,14 @@ class EnvCacheService:
         # so consumers would get no toolchain. Downgrade to failure LOUDLY here
         # rather than letting cache_dir_ready flip True on an empty cache; the
         # failure flows through the normal attempt-counter/exhaust path below.
-        if success and not _cache_dir_is_populated(cache_state.cache_dir):
+        refusal_error = self._cache_refusal_error(symphony_name, cache_state)
+        if success and refusal_error is not None:
+            # 219 review: a refused cache dir is not "wrong location". Say what was refused.
+            success = False
+            error = refusal_error
+        elif success and not _cache_dir_is_populated(
+            cache_state.cache_dir, performer_mounts=self._performer_mounts(),
+        ):
             success = False
             error = (
                 "env-cache mount contains only coordinare-seeded files "
