@@ -134,9 +134,9 @@ async def test_the_dispatch_node_awaits_the_bounded_inputs(
         "role": "architect",
         "card_id": CARD_ID,
     }
-    pending = dispatch_node._dispatch_run_inputs(state, ctx)
-    assert asyncio.iscoroutine(pending)
-    inputs = await pending
+    awaitable = dispatch_node._dispatch_run_inputs(state, ctx)
+    assert asyncio.iscoroutine(awaitable)
+    inputs = await awaitable
     assert inputs["persona"]["version"] == 1
 
 
