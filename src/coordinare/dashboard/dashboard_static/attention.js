@@ -39,6 +39,14 @@ function attentionCardLabel(number, title, fallback) {
 // Not derived: a PR waiting on review (monitoring_pr). The snapshot does not
 // say whether that wait is for a human review or for CI, and the daemon keeps
 // no per-session review-required flag, so counting it would invent a claim.
+// 139: an item on a card no symphony claims is still shown under every symphony
+// choice, and says so, so the operator knows whose it is.
+function attentionDetail(text, unclaimed) {
+  if (!unclaimed) return text;
+  var note = "not on any symphony's GitHub Project";
+  return text ? text + ' · ' + note : note;
+}
+
 function attentionItems(s) {
   s = s || {};
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
@@ -56,7 +64,8 @@ function attentionItems(s) {
         key: 'question:' + (cardId || 'card') + ':' + String(obj.text || ''),
       card_id: cardId || null,
       title: attentionCardLabel(obj.card_number, obj.card_title, 'Card'),
-      detail: String(obj.text || ''),
+      detail: attentionDetail(String(obj.text || ''), obj.unclaimed),
+      unclaimed: !!obj.unclaimed,
       href: attentionExternalUrl(obj.issue_url) || attentionRunHref(stage) || '/',
       since: obj.asked_at || null,
       stage: stage
@@ -72,7 +81,8 @@ function attentionItems(s) {
       key: 'needs_human:' + (cardId || 'card'),
       card_id: cardId || null,
       title: attentionCardLabel(sess.issue_number, sess.card_title, 'Card'),
-      detail: '',
+      detail: attentionDetail('', sess.unclaimed),
+      unclaimed: !!sess.unclaimed,
       href: attentionExternalUrl(sess.issue_url) || attentionRunHref(stage) || '/',
       since: null,
       stage: stage
@@ -113,7 +123,8 @@ function attentionCountText(n) {
 function attentionSignature(items) {
   return (items || []).map(function(it) {
     var since = it.kind === 'subsystem_down' ? '' : (it.since || '');
-    return it.kind + '|' + it.key + '|' + since;
+    // 139: an item's "not on any symphony's GitHub Project" label comes and goes with the scope.
+    return it.kind + '|' + it.key + '|' + since + (it.unclaimed ? '|unclaimed' : '');
   }).sort().join('\n');
 }
 
@@ -259,7 +270,13 @@ function renderAttentionBanner(items, sig) {
   var panel = document.getElementById('attention-panel');
   if (!panel) return;
   // Nothing left to show: forget the dismissal, so the next item shows again.
-  if (items.length === 0) storeAttentionDismissed('');
+  // 139: and drop the rows, so a list hidden here never keeps what the scope removed.
+  if (items.length === 0) {
+    storeAttentionDismissed('');
+    var emptied = document.getElementById('attention-list');
+    if (emptied) emptied.innerHTML = '';
+    _attentionRenderedSig = null;
+  }
   var show = items.length > 0 && sig !== attentionDismissedSignature();
   panel.hidden = !show;
   if (!show || sig === _attentionRenderedSig) return;

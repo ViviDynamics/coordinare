@@ -33,7 +33,7 @@ blocked · recovery · system_error`.
 
 ## The board model
 
-A symphony is a **GitHub Projects v2 board**. Columns map to phases:
+A symphony works from a **GitHub Projects v2 project**. Its columns map to phases:
 
 | Column | Phase(s) | Consumes a slot? |
 |---|---|---|

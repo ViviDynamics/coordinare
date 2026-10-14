@@ -167,7 +167,7 @@ MESSAGE_SCHEMA_PATCH = {
                     "properties": {
                         "id": {
                             "type": "string",
-                            "description": "Board item node ID (e.g. PVT_kwDOABCDEF)",
+                            "description": "GitHub Project item node ID of the card (e.g. PVT_kwDOABCDEF)",
                         },
                         "title": {
                             "type": "string",
@@ -184,7 +184,7 @@ MESSAGE_SCHEMA_PATCH = {
                         },
                         "status": {
                             "type": "string",
-                            "description": "Board column name at time of dispatch (e.g. 'In Progress')",
+                            "description": "GitHub Project column name of the card at time of dispatch (e.g. 'In Progress')",
                         },
                         "previous_status": {
                             "type": "string",

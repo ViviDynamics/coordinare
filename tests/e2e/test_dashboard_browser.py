@@ -2207,7 +2207,7 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     expect(tiles).to_contain_text("#57", timeout=_WAIT_LIVE)
     expect(tiles).to_contain_text("PR #81")
     assert "PVTI_" not in tiles.inner_text()
-    expect(tiles.locator(".ap-pill-card")).to_have_attribute("title", f"Board item {node_id}")
+    expect(tiles.locator(".ap-pill-card")).to_have_attribute("title", f"Card {node_id}")
 
     metrics = page.evaluate("""() => {
       const pill = document.querySelector('#active-performers .ap-pill-card').getBoundingClientRect();

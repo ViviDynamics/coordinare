@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 from tests.unit.dashboard_js_slices import app_js
 
 
@@ -19,8 +20,10 @@ def test_dashboard_stream_recovery(tmp_path: Path, case: str) -> None:
     bootstrap = tmp_path / "bootstrap.js"
     status = re.search(r'function updateConnectionStatus\(label\) \{.*?\n\}', app_js(), re.DOTALL)
     assert status is not None
+    # 139: the state listener calls the symphony switcher, which lives in symphonies.js.
     bootstrap.write_text(
         'var _afHasMessage = false, _afLastMsgAt = 0;\n' + status.group(0) + '\n' +
+        _DASHBOARD_JS_SOURCES["symphonies"] + '\n' +
         start + app_js().split(start, 1)[1].split(end, 1)[0],
     )
     node = shutil.which("node")

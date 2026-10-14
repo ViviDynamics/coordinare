@@ -12,7 +12,7 @@ flowchart TB
   end
 
   subgraph L2["② SYMPHONIES (N projects)"]
-    S1["Symphony: website<br/>(GitHub board + repo + config)"]
+    S1["Symphony: website<br/>(GitHub Project + repo + config)"]
     S2["Symphony: …<br/>"]
   end
 
@@ -63,7 +63,7 @@ flowchart LR
   BLK -.blocker cleared<br/>(auto-recovery, spec 129).-> IR
 ```
 
-- **Board columns** map to workflow phases (TODO → IN_PROGRESS → IN_REVIEW → DONE; BLOCKED is a parking lot).
+- **The GitHub Project's columns** map to workflow phases (TODO → IN_PROGRESS → IN_REVIEW → DONE; BLOCKED is a parking lot). The dashboard's Cards panel shows the four active columns for the symphony chosen in its header.
 - **`max_concurrent_cards`** limits how many cards are active at once (a slot model). A card holds a slot while it has work of ours to do or under way. A card waiting on a human review releases its slot so the next card can start. A card waiting on CI checks, or on anything the daemon will act on next without a person (a merge about to happen, comments still being read), keeps its slot (#186). When a card waiting on a human needs a performer again (feedback, a failing check, a rebase) it goes ahead of cards that have not started, once a slot is free. It never interrupts a running performer.
 - **`max_cards_in_review`** (default 3) caps how many cards may wait on a human review at once. Cards waiting on checks are not counted. When that many are waiting, no new card is started until a review lands; cards already in flight continue, so the number in review can pass the cap by up to `max_concurrent_cards - 1`. The effective cap is never below `max_concurrent_cards`. `null` means no cap, and a symphony can set it in its override editor.
 - **`review_slot_hold_seconds`** (default 900, 60 and up) bounds how long a card may keep its slot in review while it waits on CI checks or on the daemon. Past the bound it is treated as waiting on a human: it releases its slot, counts toward `max_cards_in_review`, is still ticked every cycle, and takes a slot again through the returning path when it needs a performer. A red base branch and a comment poll that can never complete (no PR number) are waits on a human at once, not held for the bound. A non-transient `monitor_pr` error is too. The same bound applies to a merge that keeps failing in `merging`: it releases its slot and is still retried every cycle. The clock is monotonic and is not persisted, so after a restart a card in a non-human hold is timed again from its first sighting.

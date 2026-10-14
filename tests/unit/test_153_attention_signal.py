@@ -42,7 +42,7 @@ def test_the_application_script_composes_titles_and_refreshes_the_signal() -> No
     app = app_js()
     assert "setPageTitle(" in app
     assert "document.title =" not in app, "every page title must go through setPageTitle"
-    assert "updateAttention(_lastState)" in app
+    assert "updateAttention(scoped)" in app  # 139: the scoped snapshot, not the whole of it
     assert "attentionLabelOf" not in app
 
 

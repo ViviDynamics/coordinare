@@ -52,7 +52,7 @@ function visibleText(html) { return html.replace(/<[^>]*>/g, ""); }
 var ref = cardRefHtml({ card_id: NODE, issue_number: 57, issue_url: "https://github.com/acme/repo/issues/57" });
 has("issue number is shown", visibleText(ref), "#57");
 has("node id is not in the visible text", visibleText(ref), "PVTI_", false);
-has("node id stays available on hover", ref, 'title="Board item ' + NODE + '"');
+has("node id stays available on hover", ref, 'title="Card ' + NODE + '"');
 has("issue number links to the issue", ref, 'href="https://github.com/acme/repo/issues/57"');
 var withPr = cardRefHtml({ card_id: NODE, issue_number: 57, issue_url: "https://github.com/acme/repo/issues/57",
   pr_url: "https://github.com/acme/repo/pull/81" });

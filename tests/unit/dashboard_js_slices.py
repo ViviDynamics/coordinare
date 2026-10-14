@@ -54,6 +54,11 @@ def label_helpers_js() -> str:
     )
 
 
+def symphony_switcher_js() -> str:
+    """139: the symphony switcher's pure functions, verbatim, with esc() in front of them."""
+    return "\n\n".join([shipped_function("helpers", "esc"), _DASHBOARD_JS_SOURCES["symphonies"]])
+
+
 def usage_helpers_js() -> str:
     """134: the token and cost formatting (usage.js) and the performers.js lookup that feeds it.
 

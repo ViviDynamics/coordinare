@@ -2276,7 +2276,7 @@ def test_config_page_renders_tabbed_layout() -> None:
     assert 'role="tab"' in _JS_CONFIG
     assert 'role="tabpanel"' in _JS_CONFIG
     # Tabs reuse the existing swimlane tab styling — no new visual language.
-    assert "swimlane-tabs" in _JS_CONFIG
+    assert "cfg-tabs" in _JS_CONFIG
     # Each section is wrapped in a panel and the active tab is hash-derived.
     assert "cfgPanelId(" in _JS_CONFIG
     assert "location.hash" in _JS_CONFIG

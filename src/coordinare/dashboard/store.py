@@ -61,7 +61,9 @@ def _token_usage_block(daemon: Any) -> dict[str, Any]:
         return disabled_usage_block(reason="transcripts disabled")
     today = datetime.now(UTC).date()
     ledger.prune(today)
-    return usage_block(ledger, _price_table(daemon), today=today)
+    # 139: the spend strip can show one symphony's figures, so each configured name gets its own.
+    names = list(daemon.state.get("symphony_configs") or {})
+    return usage_block(ledger, _price_table(daemon), today=today, symphonies=names)
 
 
 def _session_usage(daemon: Any, *, run_id: str, card_id: str) -> dict[str, Any]:
@@ -1006,19 +1008,71 @@ class DashboardStore:
         return summary
 
     @staticmethod
+    def _symphony_repository(sym_name: str, sym_cfg: Any, global_cfg: Any) -> tuple[str, str]:
+        """139: the owner and repository a symphony works against, as the config resolves them.
+
+        Mirrors ``SymphonyConfig.effective_config``: an override wins, then the global
+        value, and the repository falls back to the symphony name. Unknown parts are "".
+        """
+        overrides = getattr(sym_cfg, "overrides", None)
+        overrides = overrides if isinstance(overrides, dict) else {}
+
+        def _text(value: Any) -> str:
+            return value if isinstance(value, str) else ""
+
+        # A key present in the overrides wins even when it is empty (effective_config
+        # updates the global dict with the overrides). Only an empty repository then
+        # falls back to the symphony name.
+        org = _text(overrides["github_org"]) if "github_org" in overrides else _text(getattr(global_cfg, "github_org", ""))
+        repo = (
+            _text(overrides["project_name"]) if "project_name" in overrides
+            else _text(getattr(global_cfg, "project_name", ""))
+        )
+        return org, repo or sym_name
+
+    @staticmethod
+    def _symphony_effective(sym_cfg: Any, global_cfg: Any) -> Any:
+        """139: the config one symphony runs with (its effective_config), or the global one when that cannot be resolved."""
+        resolve = getattr(sym_cfg, "effective_config", None)
+        if global_cfg is None or not callable(resolve):
+            return global_cfg
+        try:
+            return resolve(global_cfg)
+        except (AttributeError, TypeError, ValueError):
+            return global_cfg
+
+    @staticmethod
+    def _symphony_hint(effective: Any) -> str:
+        """139: the card-ownership hint for one symphony's config, or "" when it cannot be read."""
+        try:
+            return ownership_hint(effective)
+        except (AttributeError, TypeError, ValueError):
+            return ""
+
+    @staticmethod
     def _build_symphonies_data(daemon: Any) -> list[dict[str, Any]]:
         """Build symphony state for the dashboard snapshot (spec 057)."""
         symphony_configs = daemon.state.get("symphony_configs") or {}
         symphony_states = daemon.state.get("symphony_states") or {}
+        global_cfg = daemon.state.get("config")
         symphonies_data = []
         for i, (sym_name, sym_cfg) in enumerate(symphony_configs.items()):
             sym_state = symphony_states.get(sym_name)
             last_poll_raw = getattr(sym_state, "last_poll_at", None) if sym_state else None
             cache = (daemon.state.get("env_cache") or {}).get(sym_name)
+            github_org, repo = DashboardStore._symphony_repository(sym_name, sym_cfg, global_cfg)
+            effective = DashboardStore._symphony_effective(sym_cfg, global_cfg)
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
                 "github_project_number": getattr(sym_cfg, "github_project_number", None),
+                # 139: the identity line reads "GitHub Project #N · owner/repo".
+                "github_org": github_org,
+                "repo": repo,
+                # 139: the timing and ownership this symphony runs with, so the
+                # dashboard never shows another symphony's.
+                "poll_interval_seconds": _poll_interval(effective),
+                "ownership_hint": DashboardStore._symphony_hint(effective),
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),
