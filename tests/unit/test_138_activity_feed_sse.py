@@ -132,6 +132,7 @@ def test_state_update_shape_additive_only() -> None:
     # assignee_filter. 343 added stall_timeout_seconds, which the step trail
     # uses to decide when a step has sat too long -- the per-step fields
     # themselves live on each active_sessions entry, not at top level.
+    # 151 added system_health: the System health card's rows, built from the recorder and config.
     # 134 replaced the flat cost_per_million_tokens with token_usage: today and
     # the rolling week, priced from the usage ledger, or "not tracked".
     assert added == {
@@ -142,6 +143,7 @@ def test_state_update_shape_additive_only() -> None:
         "include_unassigned",
         "ownership_hint",
         "stall_timeout_seconds",
+        "system_health",
     }, f"unplanned additions: {sorted(added)}"
     for key, expected in _PRE_138_KEYS.items():
         assert isinstance(snapshot[key], expected), f"{key} changed type"
