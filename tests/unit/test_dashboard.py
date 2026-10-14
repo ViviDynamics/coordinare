@@ -212,7 +212,7 @@ def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
     assert "(item.settings || []).map(cfgFieldRow)" not in _JS_CONFIG
 
 
-def test_dashboard_html_under_168kb() -> None:
+def test_dashboard_html_under_budget() -> None:
     """T036: _DASHBOARD_HTML must not exceed the size budget, lowered by #349
     after the bulk of the front end (shared helpers, the 081 config-editing UI,
     the performers-page rendering) moved to /static/*.js. The inline remainder
