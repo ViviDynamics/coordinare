@@ -41,11 +41,11 @@ def test_a_quiet_tick_under_a_selected_symphony_shows_only_its_own_tiles(
     expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_A1']")).to_have_count(0)
 
 
-# --- item 2: the history page agrees with the dashboard about cycle history ------- #
+# --- item 2: the history page never shows the snapshot's checks (#150 lists runs from the server) ---- #
 
 
 @pytest.mark.e2e
-def test_the_history_page_does_not_show_another_symphonys_checks(
+def test_the_history_page_does_not_show_the_dashboards_checks_under_any_symphony(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _connected(page, live_server_url + "/history?symphony=beta-sym")
@@ -53,7 +53,8 @@ def test_the_history_page_does_not_show_another_symphonys_checks(
                "duration_seconds": 2.0}]
     store.broadcaster.broadcast(_snapshot(_two_symphonies(), cycle_history=checks))
 
-    expect(page.locator("#history-page-section")).to_contain_text(
+    # The Dashboard panel keeps its scope note; the History page shows its own listing instead.
+    expect(page.locator("#history-section")).to_contain_text(
         "Recent checks are shown for all symphonies only.", timeout=_WAIT_LIVE,
     )
     expect(page.locator("#history-page-section")).not_to_contain_text("Merging")
