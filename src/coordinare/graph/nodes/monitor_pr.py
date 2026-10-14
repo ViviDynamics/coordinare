@@ -259,6 +259,23 @@ def _record_review_wait(
             selected.discard(card_id)
 
 
+def _record_approved_merge(state: CoordinareState, card_id: str, *, head: str) -> None:
+    """#186: an approved PR whose merge has not happened is still in its hold episode.
+
+    A merge that fails sends the card back through merging, check_board and
+    monitor_pr again, so this branch runs on every retry. If an episode is open (a
+    non-human hold, or an expired merge hold), it is kept whole: the clock, the
+    expiry and the human wait all continue. Only with no open episode does an approval
+    start from a clean slate. Dispatch, relay, a human wait that ends, and leaving review
+    clear the episode elsewhere.
+    """
+    if isinstance(state.get("review_wait_since"), float):
+        state["review_wait_reason"] = "approved"
+        state["review_wait_head"] = head
+        return
+    _record_review_wait(state, card_id, None, reason="approved", head=head)
+
+
 def _latest_human_change_request(
     reviews: list[dict[str, object]], human_reviewers: list[str],
 ) -> dict[str, object] | None:
@@ -857,7 +874,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
         _log_merge_decision(_decision_card, "merge", "approved", **_observed)
         state["phase"] = "merging"
-        _record_review_wait(state, _decision_card, None, reason="approved", head=_pr_head_oid)
+        _record_approved_merge(state, _decision_card, head=_pr_head_oid)
     else:
         # 128: no fresh-actionable feedback and no approval. If GitHub still
         # gates on an outstanding human CHANGES_REQUESTED, surface it —

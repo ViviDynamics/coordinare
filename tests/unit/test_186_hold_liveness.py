@@ -182,14 +182,24 @@ def test_a_live_side_writer_keeps_its_slot_through_a_human_wait(clock: _Clock, m
 
 
 class _FuzzGraph:
-    def __init__(self, rng: random.Random) -> None:
+    """Random outcomes per tick. ``side_cases`` collects the cases that matter for the guard:
+    a human wait recorded on a card in monitoring_pr with a live side writer, while another
+    card is waiting for a slot. Without that, the fuzz never reaches the guard."""
+
+    def __init__(self, rng: random.Random, side_cases: list[str]) -> None:
         self.rng = rng
+        self.side_cases = side_cases
 
     async def ainvoke(self, state: Any) -> Any:
         cid = str(state.get("active_card_id"))
         roll = self.rng.random()
         if state.get("phase") == "monitoring_pr":
             if roll < 0.3:
+                if has_live_work(state) and any(
+                    s.get("phase") == "dispatching" and not has_live_work(s)
+                    for s in (state.get("active_sessions") or {}).values()
+                ):
+                    self.side_cases.append(cid)
                 _record_review_wait(state, cid, "human", reason="human", head=_HEAD)
             elif roll < 0.6:
                 _record_review_wait(state, cid, "automation", reason=self.rng.choice(["a", "b"]),
@@ -209,17 +219,21 @@ class _FuzzGraph:
         return state
 
 
-def test_running_work_never_exceeds_the_limit_under_random_outcomes(clock: _Clock) -> None:
-    """Seeded fuzz over the real fanout and selection: 150 random sessions, outcomes and limits."""
+_FUZZ_SEEDS = 200
+_FUZZ_MIN_SIDE_CASES = 100  # 154 observed with the fix; a generator that drops below this has stopped covering the guard
+
+
+def _run_fuzz(clock: _Clock) -> tuple[list[tuple[int, int, int, int]], int, list[str]]:
     violations: list[tuple[int, int, int, int]] = []
+    side_cases: list[str] = []
     runs = 0
-    for seed in range(150):
+    for seed in range(_FUZZ_SEEDS):
         rng = random.Random(seed)
         limit = rng.randint(1, 3)
         sessions: dict[str, Any] = {}
         for i in range(rng.randint(2, 7)):
             cid = f"c{i}"
-            kind = rng.choice(["mon", "mon", "todo", "started_todo", "side"])
+            kind = rng.choice(["mon", "side", "side", "todo", "started_todo"])
             if kind == "mon":
                 extra = {"review_wait": rng.choice(["human", "automation", None])} if rng.random() < 0.8 else {}
                 sessions[cid] = _in_review(cid, 100 + i, pipeline_admitted=rng.random() < 0.5, **extra)
@@ -233,13 +247,18 @@ def test_running_work_never_exceeds_the_limit_under_random_outcomes(clock: _Cloc
         if sum(has_live_work(s) for s in sessions.values()) > limit:
             continue
         runs += 1
-        daemon = CoordinareDaemon(_FuzzGraph(rng), max_cycles=1, sleep_func=lambda _s: None)
+        daemon = CoordinareDaemon(_FuzzGraph(rng, side_cases), max_cycles=1, sleep_func=lambda _s: None)
         daemon._state["config"] = SimpleNamespace(max_concurrent_cards=limit,
                                                   max_cards_in_review=rng.choice([None, 1, 2]),
                                                   review_slot_hold_seconds=_BOUND)
         daemon._state["active_sessions"] = sessions
         daemon._state["github_service"] = _Github()
-        daemon._state["board_snapshot"] = {"TODO": list(sessions), "IN_REVIEW": []}
+        # The board must agree with each card's column, or the fallback check_board
+        # moves the card to idle and the case under test never happens.
+        daemon._state["board_snapshot"] = {
+            "TODO": [c for c, s in sessions.items() if s["current_card"]["status"] == "TODO"],
+            "IN_REVIEW": [c for c, s in sessions.items() if s["current_card"]["status"] == "IN_REVIEW"],
+        }
         for cycle in range(6):
             clock.advance(_CYCLE)
             asyncio.run(daemon._invoke_multi_session())
@@ -248,6 +267,16 @@ def test_running_work_never_exceeds_the_limit_under_random_outcomes(clock: _Cloc
                 violations.append((seed, cycle, limit, live))
                 break
     assert runs > 100
+    return violations, runs, side_cases
+
+
+def test_running_work_never_exceeds_the_limit_under_random_outcomes(clock: _Clock) -> None:
+    """Seeded fuzz over the real fanout and selection, with enough live-side-writer human waits to matter."""
+    violations, _runs, side_cases = _run_fuzz(clock)
+    assert len(side_cases) >= _FUZZ_MIN_SIDE_CASES, (
+        f"the generator produced {len(side_cases)} human waits on a live side writer with a card waiting; "
+        f"the guard is not being exercised"
+    )
     assert violations == []
 
 
