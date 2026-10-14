@@ -85,6 +85,8 @@ def _record_activity_batch(
                 "is_delta": ev.get("is_delta") is True,
                 "stream_id": ev.get("stream_id", ""),
                 "source_event_id": str(ev.get("timestamp") or ""),
+                # 133: the performer's own event time, which the transcript's record times share.
+                "event_at": str(ev.get("timestamp") or ""),
                 **attribution,
             }
             for ev in events

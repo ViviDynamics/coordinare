@@ -12,6 +12,7 @@ var RUN_ROW_ESTIMATE = 56;
 var RUN_WINDOW_MARGIN = 8;
 var RUN_TITLE_CHARS = 90;
 var RUN_CARD_CACHE_MS = 30000;
+var RUN_SEARCH_LIMIT = 50;
 var RUN_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 var RUN_KIND_LABELS = {
   user: 'User', assistant_text: 'Assistant', thinking: 'Thinking', tool_call: 'Tool call',
@@ -237,8 +238,11 @@ function runEntryLinkHtml(entry) {
   // Self-contained (the pattern is inline), so the activity feed can carry this function alone.
   var session = entry && entry.session_id ? String(entry.session_id) : '';
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(session)) return '';
+  // The performer's own event time when the entry has one: the transcript's record times are
+  // on the same clock. The daemon's observation time (entry.timestamp) lags behind it.
+  var when = entry.event_at || entry.timestamp || '';
   var href = '/runs/' + encodeURIComponent(session) +
-    (entry.timestamp ? '?at=' + encodeURIComponent(String(entry.timestamp)) : '');
+    (when ? '?at=' + encodeURIComponent(String(when)) : '');
   return '<a class="run-entry-link" href="' + esc(href) + '" ' +
     'onclick="event.stopPropagation();navigate(event,this.getAttribute(\'href\'))" ' +
     'onkeydown="event.stopPropagation()">Transcript</a>';
@@ -423,6 +427,23 @@ function runFetchJson(url) {
   });
 }
 
+// Requests that arrive while one is in flight are queued, the latest wins, and nothing is
+// dropped. A queued action runs once the in-flight request has settled (see runDrain).
+function runQueueIfBusy(page, action) {
+  if (!page.loading) return false;
+  page.queued = action;
+  return true;
+}
+
+// Always clears the loading flag, then runs the queued action, so a failed request cannot
+// freeze paging. Called once per request, after its result has been applied.
+function runDrain(page) {
+  page.loading = false;
+  var next = page.queued;
+  page.queued = null;
+  if (next && runPage === page) next();
+}
+
 // Opens the page for one path. A short /runs/<run> address is resolved first, then the
 // browser address is replaced with the full one, so Back and reload both work.
 function runsPageRoute(path, search) {
@@ -459,21 +480,33 @@ function runShowNotFound(message) {
 function runOpen(addr, at) {
   var seq = runSeqFromHash(location.hash);
   runPage = {
-    addr: addr, detail: null, records: [], nextAfter: null, loading: false, gen: 0,
-    filter: { types: [], errors: false }, open: {}, full: {}, measured: {}, remeasured: false,
-    focusSeq: seq, focusAt: at || '', errorCursor: 0, visible: []
+    addr: addr, detail: null, records: [], nextAfter: null, prevBefore: null,
+    loading: false, queued: null, gen: 0,
+    filter: { types: [], errors: false }, open: {}, measured: {}, remeasured: false,
+    focusSeq: seq, focusAt: at || '', focusLine: null, errorCursor: 0,
+    search: null, visible: []
   };
+  var page = runPage;
   var scroller = runEl('runs-scroll');
   if (scroller) scroller.onscroll = runOnScroll;
   runSetNotice('Loading the run...');
+  // A failed header does not stop the records: the events are the part that matters.
   runFetchJson(runApiBase(addr)).then(function(result) {
-    if (!runPage || runPage.addr !== addr) return;
-    if (!result.ok) { runShowNotFound('No transcript exists for this run.'); return; }
-    runPage.detail = result.body;
-    runEl('runs-header').innerHTML = runHeaderHtml(result.body);
-    runStyleTitle(addr, result.body);
+    if (runPage !== page) return;
+    if (result.status === 404) { runShowNotFound('No transcript exists for this run.'); return; }
+    if (result.ok) {
+      page.detail = result.body;
+      runEl('runs-header').innerHTML = runHeaderHtml(result.body);
+      runStyleTitle(addr, result.body);
+    } else {
+      runEl('runs-header').innerHTML = '<div class="muted">The run header could not be loaded. Its events are below.</div>';
+    }
     runLoadRecords(true);
-  }).catch(function() { runShowNotFound('The run could not be loaded.'); });
+  }).catch(function() {
+    if (runPage !== page) return;
+    runEl('runs-header').innerHTML = '<div class="muted">The run header could not be loaded. Its events are below.</div>';
+    runLoadRecords(true);
+  });
 }
 
 function runStyleTitle(addr, detail) {
@@ -483,64 +516,122 @@ function runStyleTitle(addr, detail) {
   }
 }
 
-// Loads the next page, or the first page again (reset). A focus (seq or time) positions
-// the first page on that event. The generation check drops a response that arrives after
-// the page has been reset.
+function runRecordsQuery(page, extra) {
+  var query = '?limit=' + RUN_PAGE_LIMIT;
+  if (extra) query += extra;
+  if (page.filter.types.length) query += '&types=' + encodeURIComponent(page.filter.types.join(','));
+  if (page.filter.errors) query += '&errors=true';
+  return query;
+}
+
+function runRecordsUrl(page, extra) {
+  return runApiBase(page.addr) + '/records' + runRecordsQuery(page, extra);
+}
+
+// Loads the next page, or the first page again (reset). A focus (seq or time) positions the
+// first page on that event. A reset requested during a load is queued, so a filter change
+// is never lost.
 function runLoadRecords(reset) {
   var page = runPage;
-  if (!page || page.loading) return;
+  if (!page) return;
+  if (runQueueIfBusy(page, reset ? function() { runLoadRecords(true); } : null)) return;
   if (!reset && page.nextAfter == null) return;
   if (reset) {
     page.gen += 1;
     page.records = [];
     page.nextAfter = null;
+    page.prevBefore = null;
   }
   var gen = page.gen;
-  var query = '?limit=' + RUN_PAGE_LIMIT;
-  if (reset && page.focusSeq != null) query += '&seq=' + page.focusSeq;
-  else if (reset && page.focusAt) query += '&at=' + encodeURIComponent(page.focusAt);
-  else query += '&after=' + (reset ? 0 : page.nextAfter);
-  if (page.filter.types.length) query += '&types=' + encodeURIComponent(page.filter.types.join(','));
-  if (page.filter.errors) query += '&errors=true';
+  var extra = '';
+  var asked = false;
+  if (reset && page.focusSeq != null) { extra = '&seq=' + page.focusSeq; asked = true; }
+  else if (reset && page.focusAt) { extra = '&at=' + encodeURIComponent(page.focusAt); asked = true; }
+  else extra = '&after=' + (reset ? 0 : page.nextAfter);
   page.loading = true;
-  runFetchJson(runApiBase(page.addr) + '/records' + query).then(function(result) {
-    if (!runPage || runPage !== page || page.gen !== gen) return;
-    page.loading = false;
-    if (!result.ok) { runSetNotice('The records could not be loaded.'); return; }
-    page.records = page.records.concat(result.body.records || []);
-    page.nextAfter = result.body.next_after;
-    if (reset && result.body.focus_line != null) {
-      page.focusLine = result.body.focus_line;
+  runFetchJson(runRecordsUrl(page, extra)).then(function(result) {
+    if (runPage !== page || page.gen !== gen) return;
+    if (!result.ok) { runSetNotice('The records could not be loaded. Try again.'); return; }
+    var body = result.body;
+    page.records = page.records.concat(body.records || []);
+    page.nextAfter = body.next_after;
+    if (reset && body.focus_line != null) {
+      page.focusLine = body.focus_line;
       page.focusSeq = null;
       page.focusAt = '';
     }
-    if (page.records.length >= RUN_MAX_LOADED && page.nextAfter != null) {
-      page.nextAfter = null;
-      runSetNotice('Showing the first ' + RUN_MAX_LOADED + ' events. Download the JSONL for the rest.');
-    } else {
-      runSetNotice(runCountText(page));
+    if (reset && asked && body.focus_found === false) {
+      runSetNotice('No event matches that link, so the run opens at its start.');
     }
+    runTrimTail(page);
     runRender(reset && page.focusLine != null);
+    if (!(reset && asked && body.focus_found === false)) runSetNotice(runCountText(page));
   }).catch(function() {
-    if (runPage === page) page.loading = false;
-    runSetNotice('The records could not be loaded.');
+    if (runPage === page) runSetNotice('The records could not be loaded. Try again.');
+  }).then(function() {
+    if (runPage === page) runDrain(page);
   });
+}
+
+// The cap keeps the page bounded. Past it, the oldest events leave the page (they are one
+// "Load earlier" away), so a long run is still fully reachable through the page.
+function runTrimTail(page) {
+  var extra = page.records.length - RUN_MAX_LOADED;
+  if (extra <= 0) return;
+  page.records = page.records.slice(extra);
+  page.prevBefore = page.records[0].line;
+}
+
+function runTrimHead(page) {
+  var extra = page.records.length - RUN_MAX_LOADED;
+  if (extra <= 0) return;
+  page.records = page.records.slice(0, RUN_MAX_LOADED);
+  page.nextAfter = page.records[page.records.length - 1].line;
 }
 
 function runCountText(page) {
   var total = page.detail && page.detail.summary ? page.detail.summary.records : null;
   var shown = filterRecords(page.records, page.filter).length;
   var text = shown + ' of ' + (total == null ? '?' : total) + ' records';
+  if (page.prevBefore != null) text += ', earlier events above';
   if (page.nextAfter != null) text += ', more below';
   return text;
+}
+
+// Pages back, for events above the loaded window. The anchor row stays where it was.
+function runLoadEarlier() {
+  var page = runPage;
+  if (!page || page.prevBefore == null) return;
+  if (runQueueIfBusy(page, runLoadEarlier)) return;
+  var gen = page.gen;
+  var anchor = page.records.length ? page.records[0].line : null;
+  page.loading = true;
+  runFetchJson(runRecordsUrl(page, '&before=' + page.prevBefore)).then(function(result) {
+    if (runPage !== page || page.gen !== gen) return;
+    if (!result.ok) { runSetNotice('Earlier events could not be loaded. Try again.'); return; }
+    page.records = (result.body.records || []).concat(page.records);
+    page.prevBefore = result.body.prev_before;
+    runTrimHead(page);
+    page.focusLine = anchor;
+    page.focusSeq = null;
+    runRender(true);
+    runSetNotice(runCountText(page));
+  }).catch(function() {
+    if (runPage === page) runSetNotice('Earlier events could not be loaded. Try again.');
+  }).then(function() {
+    if (runPage === page) runDrain(page);
+  });
 }
 
 function runOnScroll() {
   var scroller = runEl('runs-scroll');
   if (!scroller || !runPage) return;
   runRender(false);
+  var page = runPage;
   var nearEnd = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - scroller.clientHeight;
-  if (nearEnd && runPage.nextAfter != null && !runPage.loading) runLoadRecords(false);
+  if (nearEnd && page.nextAfter != null && !page.loading) runLoadRecords(false);
+  var nearTop = scroller.scrollTop < scroller.clientHeight / 2;
+  if (nearTop && page.prevBefore != null && !page.loading) runLoadEarlier();
 }
 
 // Draws only the rows in the window. Heights are measured after each draw and cached by
@@ -559,6 +650,7 @@ function runRender(scrollToFocus) {
       var offset = 0;
       for (var h = 0; h < target; h++) offset += heights[h];
       scroller.scrollTop = offset;
+      runMarkFocus(list[target]);
     }
   }
   var win = windowFor(heights, scroller.scrollTop, scroller.clientHeight || 600, RUN_WINDOW_MARGIN);
@@ -569,6 +661,23 @@ function runRender(scrollToFocus) {
   html += '<div class="run-spacer" style="height:' + win.padBottom + 'px"></div>';
   rows.innerHTML = html;
   runMeasure(rows, page);
+  if (scrollToFocus) runMarkFocus(runFocusRecord(list, page));
+}
+
+function runFocusRecord(list, page) {
+  var index = runIndexOfFocus(list, page);
+  return index >= 0 ? list[index] : null;
+}
+
+function runMarkFocus(rec) {
+  if (!rec) return;
+  var rows = runEl('runs-rows');
+  if (!rows) return;
+  var nodes = rows.querySelectorAll('.run-row.run-focus');
+  for (var i = 0; i < nodes.length; i++) nodes[i].classList.remove('run-focus');
+  var anchor = rec.seq != null ? 'e' + rec.seq : 'l' + rec.line;
+  var node = runEl(anchor);
+  if (node && node.classList) node.classList.add('run-focus');
 }
 
 function runIndexOfFocus(list, page) {
@@ -626,7 +735,9 @@ function runBindPage() {
       });
     }
     var search = runEl('runs-search-form');
-    if (search) search.addEventListener('submit', function(event) { event.preventDefault(); runSearch(false); });
+    if (search) search.addEventListener('submit', function(event) { event.preventDefault(); runSearch(false, false); });
+    var goto = runEl('runs-goto-form');
+    if (goto) goto.addEventListener('submit', function(event) { event.preventDefault(); runGotoSeq(); });
     var filter = runEl('runs-type-filter');
     if (filter) filter.addEventListener('change', runFilterChanged);
     var errors = runEl('runs-errors-filter');
@@ -648,7 +759,9 @@ function runPageClick(event) {
   var action = target.getAttribute('data-action');
   if (action === 'jump') runJumpToLine(parseInt(target.getAttribute('data-line'), 10));
   else if (action === 'diff') runShowDiff(target.getAttribute('data-role'), parseInt(target.getAttribute('data-version'), 10));
-  else if (action === 'next-error') runNextError();
+  else if (action === 'next-error') runSearch(true, false);
+  else if (action === 'more-matches') runSearch(false, true);
+  else if (action === 'earlier') runLoadEarlier();
 }
 
 function runLoadFull(button) {
@@ -678,13 +791,12 @@ function runCopyLink(button) {
   if (!runPage) return;
   var seq = parseInt(button.getAttribute('data-seq'), 10);
   var url = runCopyLinkUrl(location.origin, runPage.addr.symphony, runPage.addr.card, runPage.addr.run, seq);
-  var note = runEl('runs-notice');
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(url).then(
       function() { runSetNotice('Link copied: ' + url); },
       function() { runSetNotice('Copy this link: ' + url); }
     );
-  } else if (note) {
+  } else {
     runSetNotice('Copy this link: ' + url);
   }
 }
@@ -702,78 +814,118 @@ function runFilterChanged() {
   runLoadRecords(true);
 }
 
+// Jumps to an event by its seq (the number in the row's head).
+function runGotoSeq() {
+  var page = runPage;
+  var input = runEl('runs-goto');
+  var seq = input ? parseInt(input.value, 10) : NaN;
+  if (!page || isNaN(seq) || seq < 0) { runSetNotice('Enter an event number.'); return; }
+  page.focusSeq = seq;
+  page.focusAt = '';
+  page.focusLine = null;
+  runLoadRecords(true);
+}
+
+// Jumps to one line. An event already loaded is scrolled to. Otherwise the window is
+// rebuilt around it: the events before it (so Load earlier still works) and from it on.
 function runJumpToLine(line) {
-  if (!runPage || isNaN(line)) return;
+  var page = runPage;
+  if (!page || isNaN(line)) return;
   var found = null;
-  for (var i = 0; i < runPage.records.length; i++) {
-    if (runPage.records[i].line === line) { found = runPage.records[i]; break; }
+  for (var i = 0; i < page.records.length; i++) {
+    if (page.records[i].line === line) { found = page.records[i]; break; }
   }
   if (found) {
-    var index = filterRecords(runPage.records, runPage.filter).indexOf(found);
-    if (index >= 0) { runPage.focusSeq = found.seq; runPage.focusLine = found.line; runRender(true); return; }
+    page.focusSeq = found.seq;
+    page.focusLine = found.line;
+    runRender(true);
+    return;
   }
-  runPage.focusSeq = null;
-  runPage.focusLine = line;
-  runPage.focusAt = '';
-  runPage.records = [];
-  runPage.nextAfter = null;
-  runPage.gen += 1;
-  runPage.loading = false;
-  runLoadAt(line);
+  if (runQueueIfBusy(page, function() { runJumpToLine(line); })) return;
+  var gen = page.gen;
+  page.loading = true;
+  page.focusSeq = null;
+  page.focusLine = line;
+  page.focusAt = '';
+  Promise.all([
+    runFetchJson(runRecordsUrl(page, '&after=' + Math.max(0, line - 1))),
+    runFetchJson(runRecordsUrl(page, '&before=' + line)),
+  ]).then(function(results) {
+    if (runPage !== page || page.gen !== gen) return;
+    var forward = results[0];
+    var backward = results[1];
+    if (!forward.ok || !backward.ok) { runSetNotice('That event could not be loaded. Try again.'); return; }
+    page.records = (backward.body.records || []).concat(forward.body.records || []);
+    page.nextAfter = forward.body.next_after;
+    page.prevBefore = backward.body.prev_before;
+    runTrimTail(page);
+    runRender(true);
+    runSetNotice(runCountText(page));
+  }).catch(function() {
+    if (runPage === page) runSetNotice('That event could not be loaded. Try again.');
+  }).then(function() {
+    if (runPage === page) runDrain(page);
+  });
 }
 
-// Loads the page that starts at a line, for a jump to a search match or an error.
-function runLoadAt(line) {
+// Searches the whole run, or continues a search from its cursor. "Next error" searches for
+// failures after the last one reached. Each search stops at a byte budget and says so.
+function runSearch(fromError, more) {
   var page = runPage;
   if (!page) return;
-  var gen = page.gen;
-  var query = '?limit=' + RUN_PAGE_LIMIT + '&after=' + Math.max(0, line - 1);
-  if (page.filter.types.length) query += '&types=' + encodeURIComponent(page.filter.types.join(','));
-  if (page.filter.errors) query += '&errors=true';
-  page.loading = true;
-  runFetchJson(runApiBase(page.addr) + '/records' + query).then(function(result) {
-    if (runPage !== page || page.gen !== gen) return;
-    page.loading = false;
-    page.records = result.body.records || [];
-    page.nextAfter = result.body.next_after;
-    page.focusLine = line;
-    runRender(true);
-  });
-}
-
-function runSearch(fromError) {
-  if (!runPage) return;
+  if (more && !page.search) return;
+  if (!more && runQueueIfBusy(page, function() { runSearch(fromError, false); })) return;
   var input = runEl('runs-search');
-  var query = input ? input.value : '';
-  var after = fromError ? runPage.errorCursor : 0;
-  var url = runApiBase(runPage.addr) + '/search?q=' + encodeURIComponent(query) +
-    '&limit=50&after=' + after + (fromError ? '&errors=true' : '');
+  var query = fromError ? '' : (more ? page.search.query : (input ? input.value : ''));
+  var errors = fromError || (more ? page.search.errors : false);
+  var after = more ? page.search.next : (fromError ? page.errorCursor : 0);
+  var url = runApiBase(page.addr) + '/search?q=' + encodeURIComponent(query) +
+    '&limit=' + RUN_SEARCH_LIMIT + '&after=' + after + (errors ? '&errors=true' : '');
   var results = runEl('runs-search-results');
-  if (results) results.textContent = 'Searching...';
+  if (results && !more) results.textContent = 'Searching...';
   runFetchJson(url).then(function(result) {
-    if (!runPage) return;
-    if (!result.ok || !results) return;
-    var matches = result.body.matches || [];
-    if (!matches.length) {
-      results.innerHTML = '<div class="muted">No matches.</div>';
-      if (fromError) runSetNotice('No further errors in this run.');
+    if (runPage !== page) return;
+    if (!result.ok) { if (results) results.textContent = 'The search could not be run.'; return; }
+    var body = result.body;
+    var matches = body.matches || [];
+    var previous = more && page.search ? page.search.matches : [];
+    page.search = {
+      query: query, errors: errors, matches: previous.concat(matches),
+      next: body.next_after, stoppedAt: body.stopped_at_byte,
+    };
+    if (fromError) {
+      if (!matches.length) { runSetNotice('No further errors in this run.'); return; }
+      page.errorCursor = matches[0].line;
+      runJumpToLine(matches[0].line);
       return;
     }
-    results.innerHTML = matches.map(function(m) {
-      return '<button type="button" class="run-match" data-action="jump" data-line="' + esc(String(m.line)) + '">' +
-        esc(recordKindLabel(m)) + ' ' + esc(m.seq == null ? 'line ' + m.line : '#' + m.seq) + ': ' + esc(recordTitle(m)) + '</button>';
-    }).join('') + (result.body.next_after != null ? '<div class="muted">More matches follow.</div>' : '');
-    if (fromError) {
-      runPage.errorCursor = matches[0].line;
-      runJumpToLine(matches[0].line);
-    }
+    runRenderSearch(page);
+  }).catch(function() {
+    if (runPage === page && results) results.textContent = 'The search could not be run.';
   });
 }
 
-// Jumps to the next failure after the one last reached (the cursor is a line number).
-function runNextError() {
-  if (!runPage) return;
-  runSearch(true);
+function runRenderSearch(page) {
+  var box = runEl('runs-search-results');
+  if (!box) return;
+  var state = page.search || { matches: [], next: null, stoppedAt: null };
+  var html = '';
+  if (!state.matches.length) {
+    html = '<div class="muted">No matches' + (state.next != null ? ' yet' : '') + '.</div>';
+  } else {
+    html = state.matches.map(function(m) {
+      return '<button type="button" class="run-match" data-action="jump" data-line="' + esc(String(m.line)) + '">' +
+        esc(recordKindLabel(m)) + ' ' + esc(m.seq == null ? 'line ' + m.line : '#' + m.seq) + ': ' + esc(recordTitle(m)) + '</button>';
+    }).join('');
+  }
+  if (state.next != null) {
+    var note = state.stoppedAt != null
+      ? 'The search stopped after ' + esc(String(state.stoppedAt)) + ' bytes of the run.'
+      : 'More matches follow.';
+    html += '<div class="muted">' + note + '</div>' +
+      '<button type="button" class="run-more" data-action="more-matches">Load more matches</button>';
+  }
+  box.innerHTML = html;
 }
 
 function runShowDiff(role, version) {
@@ -787,4 +939,3 @@ function runShowDiff(role, version) {
       '<pre class="run-pre run-diff">' + esc(result.body.diff || 'This is the first retained version.') + '</pre>';
   });
 }
-

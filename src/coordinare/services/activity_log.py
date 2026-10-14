@@ -29,6 +29,7 @@ MAX_TITLE = 80
 # 148: a tool call's one-line summary, e.g. "Bash · uv run pytest -q". The
 # performer clips its argument to the same figure (backends/_tool_summary.py).
 MAX_SUMMARY = 160
+MAX_EVENT_AT = 40
 # 148: the only tool outcomes the feed distinguishes.
 TOOL_STATUSES = frozenset({"ok", "error"})
 MAX_SEEN_PER_CARD = 256
@@ -63,6 +64,9 @@ class ActivityEntry:
     stream_id: str = ""
     summary: str = ""
     status: str = ""
+    # 133: the performer's own time for the event (ISO 8601), when the event has one. A
+    # transcript record is stamped on the performer clock, so this is the time to open a run at.
+    event_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +85,7 @@ class ActivityEntry:
             "stream_id": self.stream_id,
             "summary": self.summary,
             "status": self.status,
+            "event_at": self.event_at,
         }
 
 
@@ -142,6 +147,7 @@ class ActivityLog:
         source_event_id: str = "",
         summary: str = "",
         status: str = "",
+        event_at: str = "",
     ) -> ActivityEntry | None:
         """Append one entry. Returns None when suppressed as a duplicate."""
         entry = self._append(
@@ -154,7 +160,7 @@ class ActivityLog:
             session_id=session_id,
             performer_id=performer_id,
             is_delta=is_delta, stream_id=stream_id, source_event_id=source_event_id,
-            summary=summary, status=status,
+            summary=summary, status=status, event_at=event_at,
         )
         if entry is not None:
             self._fan_out([entry])
@@ -180,6 +186,7 @@ class ActivityLog:
                 source_event_id=item.get("source_event_id", ""),
                 summary=item.get("summary", ""),
                 status=item.get("status", ""),
+                event_at=item.get("event_at", ""),
             )
             if entry is not None:
                 appended.append(entry)
@@ -221,6 +228,7 @@ class ActivityLog:
         source_event_id: Any = "",
         summary: Any = "",
         status: Any = "",
+        event_at: Any = "",
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
@@ -228,6 +236,8 @@ class ActivityLog:
         # 148: a tool's argument is a command or a path, so it is redacted in the
         # daemon, before the entry, the dedup key or the snapshot can hold it.
         clipped_summary, _ = _clip(redact_command_text(str(summary or "")), MAX_SUMMARY)
+        # 133: a timestamp is a short ISO string; anything longer is not one and is dropped.
+        clipped_event_at, _ = _clip(str(event_at or ""), MAX_EVENT_AT)
         status_str, _ = _clip(status, 16)
         if status_str not in TOOL_STATUSES:
             status_str = ""
@@ -312,7 +322,7 @@ class ActivityLog:
             session_id=sid,
             performer_id=pid,
             is_delta=is_delta, stream_id=stream,
-            summary=clipped_summary, status=status_str,
+            summary=clipped_summary, status=status_str, event_at=clipped_event_at,
         )
         self._next_seq += 1
         self._entries.append(entry)

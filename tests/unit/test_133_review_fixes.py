@@ -16,7 +16,6 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.localhost_guard import build_permitted
@@ -126,13 +125,13 @@ def test_hostile_tool_name_kind_and_persona_stay_inside_code_spans(tmp_path: Pat
     assert "](https://evil.example" not in prose
     assert "<img" not in prose
     assert "user*<img" not in prose
-    assert "[evil](https://evil.example)" in body
+    assert "`[click](https://evil.example/x) <img src=x onerror=alert(1)>`" in body
 
 
 def test_a_value_with_backticks_gets_a_longer_code_span(tmp_path: Path) -> None:
     records = [{"seq": 1, "type": "tool_call", "tool_name": "a``b", "call_id": "c", "input": {}}]
     body = _markdown(_write(tmp_path, records))
-    assert "``` a``b ```" in body
+    assert "```a``b```" in body
 
 
 def test_fenced_bodies_outgrow_any_backtick_run_in_their_content(tmp_path: Path) -> None:

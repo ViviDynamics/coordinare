@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import threading
 import time
@@ -18,9 +19,10 @@ from typing import Any
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+from coordinare.services import run_viewer
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
 from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
 
@@ -40,6 +42,7 @@ BIG_EVENTS = 2000
 BIG_ERROR_SEQ = 1500
 ACTIVITY_SEQ = 50
 ACTIVITY_TEXT = "running the viewer checks"
+ACTIVITY_LAG_SECONDS = 3
 FIRST_PAINT_BOUND_MS = 8_000
 STEP_BOUND_MS = 1_500
 DOM_ROW_BOUND = 200
@@ -126,6 +129,18 @@ def _activity_run(root: Path, activity_at: datetime) -> None:
     _write(root, ACTIVITY_CARD, ACTIVITY_RUN, lines)
 
 
+HUGE_RUN = "run-huge"
+HUGE_EVENTS = 20_001
+
+
+def _huge_run(root: Path, base: datetime) -> None:
+    lines = [json.dumps(_header(HUGE_RUN, "PVTI_HUGE", base))]
+    for seq in range(1, HUGE_EVENTS + 1):
+        lines.append(json.dumps({"ts": _ts(base, seq * 0.001), "seq": seq, "type": "assistant_text",
+                                 "text": f"huge event {seq}"}))
+    _write(root, "PVTI_HUGE", HUGE_RUN, lines)
+
+
 @pytest.fixture(scope="module")
 def transcript_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("transcripts")
@@ -133,6 +148,7 @@ def transcript_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _small_run(root, base)
     _big_run(root, base)
     _hostile_run(root, base)
+    _huge_run(root, base)
     return root
 
 
@@ -325,13 +341,14 @@ def test_a_hostile_transcript_renders_as_text_and_runs_nothing(page: Page, run_s
 def test_an_activity_entry_links_to_the_event_it_was_recorded_at(
     page: Page, run_server_url: str, store: DashboardStore, transcript_root: Path,
 ) -> None:
+    # The performer emitted the event at event_at; the daemon observed it ACTIVITY_LAG seconds later.
+    # The link must open the event (seq 50), not the time the daemon observed it (which is seq 53).
+    event_at = datetime.now(UTC) - timedelta(seconds=ACTIVITY_LAG_SECONDS)
     store.activity_log.record(
         activity_type="progress", card_id=ACTIVITY_CARD, card_number=133, card_title="Transcript viewer",
-        stage="implementing", text=ACTIVITY_TEXT, session_id=ACTIVITY_RUN,
+        stage="implementing", text=ACTIVITY_TEXT, session_id=ACTIVITY_RUN, event_at=event_at.isoformat(),
     )
-    entry = store.activity_log.snapshot(limit=1)[0]
-    activity_at = datetime.fromisoformat(entry["timestamp"])
-    _activity_run(transcript_root, activity_at)
+    _activity_run(transcript_root, event_at)
     page.goto(run_server_url + "/")
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
     link = page.locator("#activity-feed a.run-entry-link").first
@@ -339,3 +356,68 @@ def test_an_activity_entry_links_to_the_event_it_was_recorded_at(
     link.click()
     expect(page.locator(f"#e{ACTIVITY_SEQ}")).to_be_attached(timeout=_WAIT_RUN)
     expect(page.locator("#runs-rows")).to_contain_text("marker-50")
+    expect(page.locator(f"#e{ACTIVITY_SEQ}")).to_have_class(re.compile("run-focus"))
+
+
+@pytest.mark.e2e
+def test_a_link_to_an_event_that_does_not_exist_says_so(page: Page, run_server_url: str) -> None:
+    page.goto(run_server_url + _run_url(SMALL_CARD, SMALL_RUN) + "#e999")
+    expect(page.locator("#runs-notice")).to_contain_text("No event matches that link", timeout=_WAIT_RUN)
+    expect(page.locator("#runs-rows .run-row").first).to_be_attached()
+
+
+@pytest.mark.e2e
+def test_a_failed_records_request_does_not_freeze_paging(page: Page, run_server_url: str) -> None:
+    failed = {"done": False}
+
+    def _fail_once(route: Route) -> None:
+        if not failed["done"]:
+            failed["done"] = True
+            route.abort()
+        else:
+            route.continue_()
+
+    page.route("**/records?**", _fail_once)
+    page.goto(run_server_url + _run_url(BIG_CARD, BIG_RUN))
+    expect(page.locator("#runs-notice")).to_contain_text("could not be loaded", timeout=_WAIT_RUN)
+    page.locator("#runs-type-filter").select_option("tool_result")
+    expect(page.locator("#runs-notice")).to_contain_text("of 2000 records", timeout=_WAIT_LIVE)
+    page.unroute("**/records?**")
+
+
+@pytest.mark.e2e
+def test_a_search_stopped_at_its_byte_budget_offers_more_matches(
+    page: Page, run_server_url: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run_viewer, "SEARCH_BYTE_BUDGET", 40_000)
+    _open_run(page, run_server_url, BIG_CARD, BIG_RUN)
+    page.locator("#runs-search").fill("step 900")
+    page.locator("#runs-search-form button[type=submit]").click()
+    expect(page.locator("#runs-search-results")).to_contain_text("stopped after", timeout=_WAIT_LIVE)
+    more = page.locator('#runs-search-results [data-action="more-matches"]')
+    for _ in range(200):
+        if page.locator("#runs-search-results .run-match", has_text="step 900").count():
+            break
+        if more.count() == 0:
+            break
+        more.click()
+        page.wait_for_timeout(100)
+    expect(page.locator("#runs-search-results .run-match", has_text="step 900")).to_be_attached(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_a_seq_typed_into_the_box_reaches_that_event(page: Page, run_server_url: str) -> None:
+    _open_run(page, run_server_url, BIG_CARD, BIG_RUN)
+    page.locator("#runs-goto").fill("1501")
+    page.locator("#runs-goto-form button[type=submit]").click()
+    expect(page.locator("#e1501")).to_be_attached(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_every_event_of_a_run_past_the_client_cap_is_reachable(page: Page, run_server_url: str) -> None:
+    _open_run(page, run_server_url, "PVTI_HUGE", HUGE_RUN, f"#e{HUGE_EVENTS}")
+    expect(page.locator(f"#e{HUGE_EVENTS}")).to_be_attached(timeout=_WAIT_RUN)
+    assert page.locator("#runs-rows .run-row").count() < DOM_ROW_BOUND
+    page.locator("#runs-goto").fill("1")
+    page.locator("#runs-goto-form button[type=submit]").click()
+    expect(page.locator("#e1")).to_be_attached(timeout=_WAIT_RUN)

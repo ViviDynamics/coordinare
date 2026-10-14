@@ -444,11 +444,11 @@ def test_the_markdown_download_fences_every_value_so_nothing_is_markup(root: Pat
     assert response.status_code == 200
     body = response.text
     assert response.headers["content-type"].startswith("text/markdown")
-    assert "# Run run-133" in body
-    assert "- Stage: implementing" in body
+    assert "# Run `run-133`" in body
+    assert "- Stage: `implementing`" in body
     assert "<script>alert(1)</script>" in body
     assert "pytest -q tests/" in body
-    assert "### 5 · tool_result" in body
+    assert "### 5 · `tool_result`" in body
 
 
 def test_the_markdown_fence_grows_past_any_backtick_run_in_the_content(root: Path) -> None:

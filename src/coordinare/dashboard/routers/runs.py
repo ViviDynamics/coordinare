@@ -9,7 +9,7 @@ not in the writer's sanitized form is 404 before any disk is touched.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
 
 import structlog
@@ -50,6 +50,8 @@ class RecordsQuery(BaseModel):
     errors: bool = False
     seq: int | None = Field(None, ge=0)
     at: str | None = None
+    # Page back from this line (the nearest records before it). Ignores after, seq and at.
+    before: int | None = Field(None, ge=1)
 
 
 class SearchQuery(BaseModel):
@@ -91,16 +93,35 @@ def _parse_at(raw: str) -> datetime | None:
 def _read_records(
     root: Path, ref: RunRef, params: RecordsQuery, when: datetime | None,
 ) -> dict[str, Any]:
-    """One page, opened on the file. Positioning by seq or time moves the start line first."""
+    """One page, opened on the file. Positioning by seq or time moves the start line first.
+
+    ``before`` pages backwards instead. ``focus_found`` is False when a seq or a time was asked
+    for and no record matches it, so the client can say so rather than opening the top silently.
+    """
     record_filter = run_viewer.RecordFilter(types=_parse_types(params.types), errors=params.errors)
     path = run_viewer.run_file(root, ref)
     with run_viewer.open_run(path, ref) as handle:
+        if params.before is not None:
+            back = run_viewer.read_before(handle, before=params.before, limit=params.limit,
+                                          record_filter=record_filter)
+            return {
+                "after": None,
+                "before": params.before,
+                "next_after": None,
+                "prev_before": back.prev_before,
+                "focus_line": None,
+                "focus_found": True,
+                "types": sorted(record_filter.types),
+                "records": back.records,
+            }
         focus: int | None = None
+        asked = params.seq is not None or when is not None
         start = params.after
         if params.seq is not None:
             focus = run_viewer.line_for_seq(handle, params.seq)
         elif when is not None:
-            focus = run_viewer.line_for_time(handle, when)
+            # The record is stamped on the performer's clock a moment before its event object: allow that slack.
+            focus = run_viewer.line_for_time(handle, when - timedelta(seconds=run_viewer.EVENT_TIME_SLACK_SECONDS))
         if focus is not None:
             start = max(0, focus - 1)
         page = run_viewer.read_page(
@@ -109,8 +130,11 @@ def _read_records(
         )
     return {
         "after": start,
+        "before": None,
         "next_after": page.next_after,
+        "prev_before": None,
         "focus_line": focus,
+        "focus_found": focus is not None or not asked,
         "types": sorted(record_filter.types),
         "records": page.records,
     }
@@ -123,7 +147,12 @@ def _scan_matches(root: Path, ref: RunRef, params: SearchQuery) -> dict[str, Any
         page = run_viewer.search(
             handle, query=params.q, record_filter=record_filter, after=params.after, limit=params.limit,
         )
-    return {"query": params.q, "next_after": page.next_after, "matches": page.records}
+    return {
+        "query": params.q,
+        "next_after": page.next_after,
+        "stopped_at_byte": page.stopped_at_byte,
+        "matches": page.records,
+    }
 
 
 def _register_listings(app: FastAPI, ctx: DashboardContext) -> None:

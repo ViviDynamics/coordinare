@@ -28,7 +28,7 @@ import os
 import re
 import stat
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -64,6 +64,17 @@ OUTCOME_PREVIEW_CHARS = 300
 TOOL_ARG_CHARS = 120
 SUMMARY_CACHE_SIZE = 32
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# Markdown is yielded in chunks of about this size. One chunk is one thread-pool hop when the
+# app streams it, so a per-record yield made a 20k-record download take seconds.
+MARKDOWN_CHUNK_CHARS = 64 * 1024
+# Search stops after scanning this many bytes and hands back a cursor. Searches hold a slot
+# of SEARCH_CONCURRENCY, so a few large runs cannot starve the others.
+SEARCH_BYTE_BUDGET = 16 * 1024 * 1024
+SEARCH_CONCURRENCY = 4
+# A performer event's time and its transcript record's time come from the same process
+# clock, but the record can be stamped a moment before the event object. The link allows
+# this much slack when it looks for the first record at or after an event.
+EVENT_TIME_SLACK_SECONDS = 0.25
 
 FULL_FIELDS = ("text", "input", "output")
 ERROR_TYPES = frozenset({"error"})
@@ -118,6 +129,10 @@ class RecordPage:
     records: list[dict[str, Any]]
     next_after: int | None
     focus_line: int | None
+    # Set when a search stopped at its byte budget (the byte offset it stopped at).
+    stopped_at_byte: int | None = None
+    # Set by a backward page: the line to start the next page back from.
+    prev_before: int | None = None
 
 
 @dataclass
@@ -138,9 +153,10 @@ class _Summary:
     truncated: bool = False
 
 
-_summary_cache: OrderedDict[tuple[str, int, int], _Summary] = OrderedDict()
+_summary_cache: OrderedDict[tuple[str, int, int, int, int], _Summary] = OrderedDict()
 # Requests run on worker threads, so the cache is guarded.
 _summary_lock = threading.Lock()
+_SEARCH_SLOTS = threading.BoundedSemaphore(SEARCH_CONCURRENCY)
 
 
 # --------------------------------------------------------------------------- #
@@ -544,16 +560,18 @@ def _duration_seconds(start: str | None, end: str | None) -> float | None:
     if not start or not end:
         return None
     try:
-        began = datetime.fromisoformat(start)
-        ended = datetime.fromisoformat(end)
-    except ValueError:
+        began = _aware(datetime.fromisoformat(start))
+        ended = _aware(datetime.fromisoformat(end))
+    except (TypeError, ValueError):
         return None
     return round((ended - began).total_seconds(), 3)
 
 
 def _summary_for(path: Path, handle: BinaryIO) -> _Summary:
+    # Device, inode, size and mtime together: a file replaced in place by the same size and
+    # mtime (an atomic rename) is a different file and must not be served from the cache.
     info = os.fstat(handle.fileno())
-    key = (str(path), info.st_size, info.st_mtime_ns)
+    key = (str(path), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
     with _summary_lock:
         cached = _summary_cache.get(key)
         if cached is not None:
@@ -646,6 +664,39 @@ def read_page(
     return RecordPage(records=records, next_after=next_after, focus_line=None)
 
 
+def read_before(
+    handle: BinaryIO,
+    *,
+    before: int,
+    limit: int,
+    record_filter: RecordFilter,
+) -> RecordPage:
+    """The nearest ``limit`` matching records on lines before ``before``, in file order.
+
+    Used to page back from a jump target. ``prev_before`` is the line of the first record
+    returned, when more matching records come before it; None at the start of the run.
+    The whole prefix is streamed (only the last ``limit`` matches are kept in memory).
+    """
+    window: deque[dict[str, Any]] = deque(maxlen=limit)
+    total = 0
+    handle.seek(0)
+    for number, raw in enumerate(handle, start=1):
+        if number >= before:
+            break
+        parsed = _parse(raw)
+        if parsed is None:
+            if record_filter.errors or not record_filter.types:
+                window.append(_unreadable_view(number, raw))
+                total += 1
+            continue
+        if _is_event(parsed) and _matches_types(parsed, record_filter.types, record_filter.errors):
+            window.append(_record_view(number, raw, parsed))
+            total += 1
+    records = list(window)
+    prev = records[0]["line"] if records and total > len(records) else None
+    return RecordPage(records=records, next_after=None, focus_line=None, prev_before=prev)
+
+
 def line_for_seq(handle: BinaryIO, seq: int) -> int | None:
     """The line whose record has this seq. A streamed scan."""
     handle.seek(0)
@@ -691,33 +742,39 @@ def search(
     """Matching records after line ``after``, over the full text of each record (not its preview).
 
     ``query`` is matched case-insensitively. The text searched is the record's text,
-    input, output and tool name, serialized. An unreadable line matches on its raw
-    text when there is no type filter.
+    input, output and tool name, serialized. An unreadable line matches on its raw text
+    when there is no type filter. A search scans at most SEARCH_BYTE_BUDGET bytes; when it
+    stops early, ``stopped_at_byte`` says where and ``next_after`` is the cursor to continue.
     """
     needle = query.casefold()
     types = record_filter.types
     errors = record_filter.errors
-    handle.seek(0)
     matches: list[dict[str, Any]] = []
-    next_after: int | None = None
-    for number, raw in enumerate(handle, start=1):
-        if number <= after:
-            continue
-        if len(matches) >= limit:
-            next_after = number - 1
-            break
-        parsed = _parse(raw)
-        if parsed is None:
-            raw_text = raw.decode("utf-8", "replace").casefold()
-            if errors or (not types and needle in raw_text):
-                matches.append(_unreadable_view(number, raw))
-            continue
-        if not _is_event(parsed) or not _matches_types(parsed, types, errors):
-            continue
-        if needle and needle not in _searchable(parsed):
-            continue
-        matches.append(_record_view(number, raw, parsed))
-    return RecordPage(records=matches, next_after=next_after, focus_line=None)
+    scanned = 0
+    with _SEARCH_SLOTS:
+        handle.seek(0)
+        for number, raw in enumerate(handle, start=1):
+            if number <= after:
+                continue
+            if len(matches) >= limit:
+                return RecordPage(records=matches, next_after=number - 1, focus_line=None)
+            if scanned >= SEARCH_BYTE_BUDGET:
+                return RecordPage(
+                    records=matches, next_after=number - 1, focus_line=None, stopped_at_byte=scanned,
+                )
+            scanned += len(raw)
+            parsed = _parse(raw)
+            if parsed is None:
+                raw_text = raw.decode("utf-8", "replace").casefold()
+                if errors or (not types and needle in raw_text):
+                    matches.append(_unreadable_view(number, raw))
+                continue
+            if not _is_event(parsed) or not _matches_types(parsed, types, errors):
+                continue
+            if needle and needle not in _searchable(parsed):
+                continue
+            matches.append(_record_view(number, raw, parsed))
+    return RecordPage(records=matches, next_after=None, focus_line=None)
 
 
 def _searchable(parsed: dict[str, Any]) -> str:
@@ -778,27 +835,61 @@ def _fence(body: str, info: str = "") -> str:
     return f"{marker}{info}\n{body}\n{marker}\n"
 
 
+def _code(value: object) -> str:
+    """A value as an inline code span, so Markdown shows it as literal text.
+
+    Line breaks and tabs become spaces, so the value stays on its line. The span's backtick
+    fence is one longer than the longest backtick run in the value, so the value cannot
+    close it. Used for every value outside a fenced body, which is every header value,
+    heading and tool name.
+    """
+    text = re.sub(r"[\r\n\t]+", " ", _as_text(value))
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    # A space on each side is needed only when the value starts or ends with a backtick or space.
+    pad = " " if text[:1] in ("`", " ") or text[-1:] in ("`", " ") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _markdown_parts(handle: BinaryIO, ref: RunRef) -> Iterator[str]:
+    handle.seek(0)
+    header = read_header(handle)
+    summary = _header_summary(header)
+    yield f"# Run {_code(ref.run)}\n\n"
+    yield f"Card {_code(ref.card)} · symphony {_code(ref.symphony)}\n\n"
+    for label, value in (
+        ("Stage", summary.get("stage")),
+        ("Agent", summary.get("agent")),
+        ("Model", summary.get("model")),
+        ("Endpoint", summary.get("endpoint")),
+        ("Started", summary.get("started_at")),
+    ):
+        if value is not None:
+            yield f"- {label}: {_code(value)}\n"
+    yield "\n"
+    handle.seek(0)
+    for number, raw in enumerate(handle, start=1):
+        yield from _markdown_event(number, raw)
+
+
 def iter_markdown(handle: BinaryIO, ref: RunRef) -> Iterator[str]:
-    """The run as Markdown, one event at a time. Every value is fenced, so none is rendered as markup."""
+    """The run as Markdown, in chunks of about MARKDOWN_CHUNK_CHARS.
+
+    Every value outside a fenced body is an inline code span (see _code) and every body is a
+    fence longer than its own backtick runs (see _fence), so nothing is rendered as markup.
+    """
     with handle:
-        handle.seek(0)
-        header = read_header(handle)
-        summary = _header_summary(header)
-        yield f"# Run {ref.run}\n\n"
-        yield f"Card {ref.card} · symphony {ref.symphony}\n\n"
-        for label, value in (
-            ("Stage", summary.get("stage")),
-            ("Agent", summary.get("agent")),
-            ("Model", summary.get("model")),
-            ("Endpoint", summary.get("endpoint")),
-            ("Started", summary.get("started_at")),
-        ):
-            if value is not None:
-                yield f"- {label}: {value}\n"
-        yield "\n"
-        handle.seek(0)
-        for number, raw in enumerate(handle, start=1):
-            yield from _markdown_event(number, raw)
+        buffer: list[str] = []
+        size = 0
+        for part in _markdown_parts(handle, ref):
+            buffer.append(part)
+            size += len(part)
+            if size >= MARKDOWN_CHUNK_CHARS:
+                yield "".join(buffer)
+                buffer = []
+                size = 0
+        if buffer:
+            yield "".join(buffer)
 
 
 def _markdown_event(number: int, raw: bytes) -> Iterator[str]:
@@ -812,10 +903,11 @@ def _markdown_event(number: int, raw: bytes) -> Iterator[str]:
     if kind == RUN_HEADER_TYPE:
         return
     seq = parsed.get("seq")
-    yield f"### {seq if seq is not None else number} · {kind}\n\n"
+    label = str(seq) if seq is not None else str(number)
+    yield f"### {label} · {_code(kind)}\n\n"
     tool = parsed.get("tool_name")
     if tool:
-        yield f"Tool: {tool}\n\n"
+        yield f"Tool: {_code(tool)}\n\n"
     if parsed.get("text") is not None:
         yield _fence(_as_text(parsed["text"]), "text")
     if parsed.get("input") is not None:

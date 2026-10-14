@@ -628,6 +628,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <label><input type="checkbox" id="runs-errors-filter"> Errors only</label>
     <form id="runs-search-form" class="runs-search"><input type="search" id="runs-search" placeholder="Search this run" aria-label="Search this run"> <button type="submit">Search</button></form>
     <button type="button" data-action="next-error">Next error</button>
+    <form id="runs-goto-form" class="runs-goto"><label>Event <input type="number" id="runs-goto" min="0" aria-label="Go to event number"></label> <button type="submit">Go</button></form>
+    <button type="button" data-action="earlier">Load earlier events</button>
   </div>
   <div id="runs-search-results" class="runs-search-results" aria-live="polite"></div>
   <div id="runs-diff" class="runs-diff"></div>
