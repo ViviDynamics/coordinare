@@ -3234,10 +3234,10 @@ async def _phase_blocked_questions_s1(
     open_qs = [str(q) for q in (state.get("open_questions") or [])]
     if open_qs:
         existing_clarifications = list(state.get("card_clarifications") or [])
-        state["card_clarifications"] = [
+        state["card_clarifications"] = redact_state_value([
             *existing_clarifications,
             {"questions": open_qs, "answer": ""},
-        ]
+        ])
     state["open_questions"] = []
     return None
 
@@ -4070,13 +4070,16 @@ def _apply_observer_retune(
         return
     now = datetime.now(UTC)
     for decision in decisions:
+        # 203: the requested value came from the judge, so it is redacted before the audit keeps it
+        # and before either log event carries it.
+        requested = redact_state_value(decision.requested)
         audit.append({
             "at": now.isoformat(),
             "symphony": sym_name,
             "card_id": card_id,
             "knob": decision.knob,
             "before": decision.before,
-            "requested": decision.requested,
+            "requested": requested,
             "applied": decision.applied,
             "outcome": decision.outcome,
         })
@@ -4088,7 +4091,7 @@ def _apply_observer_retune(
                 symphony=sym_name,
                 knob=decision.knob,
                 before=decision.before,
-                requested=decision.requested,
+                requested=requested,
                 applied=decision.applied,
                 clamped=decision.outcome == "clamped",
             )
@@ -4099,7 +4102,7 @@ def _apply_observer_retune(
                 performer_stage=stage,
                 symphony=sym_name,
                 knob=decision.knob,
-                requested=decision.requested,
+                requested=requested,
                 outcome=decision.outcome,
             )
     if new_overrides != current:

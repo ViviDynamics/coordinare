@@ -22,8 +22,10 @@ Every field a viewer can receive (dashboard `/api/state`, the SSE `state_update`
 | `performer_logs` (snapshot, session rows, `/api/performer-logs`) | performer stderr | `SubprocessTransport._drain_stderr` (subprocess transport buffer) | No | Redacted as buffered |
 | `performer_logs` (HTTP transport) | container log tail | `HTTPPerformerService._redact_tail` | Yes (#207) | Unchanged |
 | `open_questions` (snapshot, session rows, board, notifications) | performer and gate output, questions, reasons | writers in `graph/nodes/**`, `services/**` and the `daemon.py` restore (about 100 writes of the text fields in total) | No | Redacted at each writer |
-| `card_clarifications` questions (snapshot) | the questions above, copied from `open_questions` | `check_board` copy of `open_questions` | Derived from a redacted source | Unchanged |
-| `card_clarifications` answers (snapshot) | human issue comments | `route_issue_comments` | Not performer text | Out of scope, see below |
+| `card_clarifications` questions and answers (snapshot, session rows, restored sessions) | the questions are performer output copied from `open_questions`; the answers are human issue comments | `check_board`, `monitor/body.py`, `route_issue_comments.py` at write; `daemon.py` restore sites and `state_store.load()` | No (restore and load were unredacted) | The whole list is redacted at each writer and at each restore site, so answers are redacted too. The save path stays raw, because the live state was redacted when it was written |
+| Snapshot read from disk (`last_snapshot`, the restored sessions, the v1 synthesis) | any guarded field from a snapshot written before this change | `state_store.load()`, `daemon.py` restore | No | `load()` redacts every guarded field in the whole payload before validating it (`redact_persisted_text`), so `last_snapshot` never holds raw text. The restore sites redact again, which is harmless |
+| Refused retune values (`observer_retune_audit`, `observer.retune_applied`, `observer.retune_refused` logs) | the judge's requested knob values, which may be text | `monitor/body.py` `_apply_observer_retune` | No | Redacted before the audit keeps them and before either log event carries them |
+| Repair audit `detail` (`repair_audit`, the reviewer record) | reviewer text | `monitor/repair.py` `_repair_record` | No | Redacted in the audit builder, so every record is covered |
 | `observer_verdicts` (snapshot, session rows) | judge reason and evidence strings (model text) | `services/observer.py` `parse_verdict`, `_summarise_evidence` | No | Redacted on record |
 | `system_error_reason` (board blocked reason, notifications, persisted session; not in the snapshot) | performer output | writers in `graph/nodes/**` | No | Redacted at each writer |
 | `env_blocked` (board, notifications, persisted session) | performer cause and reason | `graph/nodes/monitor/body.py` env-blocked phases, `handle_system_error.py` | No | Redacted at each writer |
@@ -62,7 +64,9 @@ The daemon mock in the walk reads `symphony_last_error` and `convergence_reason`
 
 ## Dynamic-write allow-list
 
-Writes whose key the guard cannot resolve to a field name are listed in `_DYNAMIC_WRITE_ALLOWANCES` in the test module, keyed `<file>::<target expression>`, each with a reason. Save-path copies (`_persist_one_session`, `_persist_env_cache`, `_build_snapshot`) are listed in `_SAVE_PATH_COPIES`, keyed by file, function and field. The save path does not redact again, because the live state was redacted by its writers. The restore path does redact, so snapshots written before this change are still redacted on load.
+Writes whose key the guard cannot resolve to a field name are listed in `_DYNAMIC_WRITE_ALLOWANCES` in the test module, keyed `<file>::<target expression>`, each with a reason. Both maps are keyed `<file>::<function>::<expression>`, so an entry admits a write in its own function and nowhere else in the file. Save-path copies (`_persist_one_session`, `_persist_env_cache`, `_build_snapshot`) are listed in `_SAVE_PATH_COPIES`, keyed by file, function and field. The save path does not redact again, because the live state was redacted by its writers. The restore path and `state_store.load()` do redact, so snapshots written before this change are redacted when they are read.
+
+The `register_failure` entry in `services/intake_dispatch.py` is keyed on `last_*_error`. The error is redacted once at the top of the function, and the `setattr` writes that value.
 
 ## Out of scope
 

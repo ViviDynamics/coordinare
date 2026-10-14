@@ -188,7 +188,7 @@ def _repair_record(
         kind=kind,  # type: ignore[arg-type]
         is_safe=is_safe,
         flagged_patterns=flagged_patterns or [],
-        detail=detail,
+        detail=redact_state_value(detail),
         decided_at=now_iso,
     ).model_dump(mode="json")
 
@@ -267,8 +267,9 @@ async def _reject_repair(
     kind_seq: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], bool]:
     """Fail-safe rejection: audit the verdict, escalate, and block (no push)."""
-    # 203: the guard's detail is reviewer text. It is redacted here, before it reaches the audit
-    # record, the open question or the PR comment, so no later copy can carry it raw.
+    # 203: the guard's detail is reviewer text. It is redacted here for the open question and the
+    # PR comment. The audit records redact it again in _repair_record, which every record passes
+    # through, so the reviewer's own detail is covered too.
     detail = redact_state_value(detail)
     records = list(kind_seq)
     records.append(

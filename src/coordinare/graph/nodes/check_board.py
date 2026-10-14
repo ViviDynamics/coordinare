@@ -1519,7 +1519,7 @@ async def _collect_blocked_clarification(
                         "answer": answer_body,
                     }
                     existing = state.get("card_clarifications") or []
-                    state["card_clarifications"] = [*existing, clarification]
+                    state["card_clarifications"] = redact_state_value([*existing, clarification])
                     state["open_questions"] = []
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -1544,7 +1544,7 @@ async def _collect_blocked_clarification(
                     # Persist the answer on its owner before that view is discarded.
                     if isinstance(_sess_qa, dict):
                         _sess_qa.update(
-                            card_clarifications=state["card_clarifications"],
+                            card_clarifications=redact_state_value(state["card_clarifications"]),
                             open_questions=[], agent_dispatch={}, phase="dispatching",
                             agent_dispatch_at=None,
                             last_blocked_notified_at=None,

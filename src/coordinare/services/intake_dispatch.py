@@ -108,7 +108,7 @@ def register_failure(
     attempts = int(getattr(state, f"{role}_attempts") or 0) + 1
     setattr(state, f"{role}_attempts", attempts)
     setattr(state, f"last_{role}_succeeded", False)
-    setattr(state, f"last_{role}_error", redact_state_value(error))
+    setattr(state, f"last_{role}_error", error)
     setattr(state, f"last_{role}_run_at", now or datetime.now(UTC))
     exhausted = attempts >= max_attempts
     if exhausted:

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.board_provider import board_of
 from coordinare.services.issue_comment_service import (
     CommentClassification,
@@ -134,7 +135,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
             )
         # approval and noise: already logged above
 
-    state["card_clarifications"] = clarifications
+    state["card_clarifications"] = redact_state_value(clarifications)
     state["requirements_changed"] = requirements_changed
     state["last_issue_comment_id"] = new_max_id or since_id
     state["processed_issue_comment_ids"] = processed

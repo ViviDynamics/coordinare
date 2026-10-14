@@ -26,7 +26,13 @@ from coordinare.graph.nodes.monitor.body import (
     _phase_local_test_gate,
     _phase_review_routes_s2,
 )
-from coordinare.lib.redaction import _TOO_DEEP_MARKER, MAX_STATE_DEPTH, redact_state_value
+from coordinare.lib.redaction import (
+    _TOO_DEEP_MARKER,
+    MAX_STATE_DEPTH,
+    TEXT_FIELD_GLOBS,
+    TEXT_FIELD_NAMES,
+    redact_state_value,
+)
 from coordinare.mcp.client import ToolResult
 from coordinare.mcp.tools.state_tools import get_state_handler
 from coordinare.models.env_cache import EnvCacheState
@@ -55,19 +61,7 @@ SECRET_TEXTS = {
 }
 SECRET_VALUES = (GITHUB_PAT, ENV_TOKEN, CURL_PASSWORD, DB_PASSWORD, BEARER)
 
-# The state keys whose values are free text that comes from a performer or a model.
-TEXT_FIELDS = frozenset({
-    "open_questions",
-    "system_error_reason",
-    "env_health_hold_reason",
-    "convergence_reason",
-    "env_blocked",
-    "assessor_open_questions",
-    "last_bootstrap_error",
-    "last_error",
-    "last_wiki_init_error",
-    "result_reason",
-})
+TEXT_FIELDS = TEXT_FIELD_NAMES
 
 
 def _all_text() -> str:
@@ -243,14 +237,14 @@ def _snapshot_from(state: dict[str, Any]) -> dict[str, Any]:
     return DashboardStore().build_snapshot(_daemon_for(state), None, _health())
 
 
-def _endpoint_texts(state: dict[str, Any]) -> dict[str, str]:
+def _endpoint_texts(state: dict[str, Any], *, daemon: Any = None) -> dict[str, str]:
     """The response bodies of every dashboard route a viewer reads, after the same seeding."""
     store = DashboardStore()
     store.activity_log.record_many([{
         "activity_type": "performer_event", "card_id": "PVTI_203", "card_number": 203,
         "card_title": "Redact", "stage": "implementing", "text": SECRET_TEXTS["bearer"],
     }])
-    daemon = _daemon_for(state)
+    daemon = daemon if daemon is not None else _daemon_for(state)
     app = create_dashboard_app(store, daemon, MagicMock(), _health())
     client = TestClient(app, base_url="http://127.0.0.1:8090")
     paths = ("/api/state", "/api/symphonies", "/api/symphonies/sym", "/api/activity")
@@ -410,7 +404,7 @@ def _wrapped(value: ast.expr) -> bool:
 
 
 # Field names that can be built at run time, such as ``last_{role}_error`` in the env cache.
-TEXT_GLOBS = ("last_*_error",)
+TEXT_GLOBS = TEXT_FIELD_GLOBS
 # Dynamic writes the guard cannot resolve to a field name. Each one is a deliberate decision:
 # the key ``"<file relative to src/coordinare>::<target expression>"`` maps to the reason it
 # cannot carry performer text. A new dynamic write fails the guard until it is listed here.
@@ -433,36 +427,41 @@ _SAVE_PATH_COPIES: dict[str, str] = {
     "daemon.py::_persist_env_cache::last_bootstrap_error": _COPY_FROM_WRITER,
     "daemon.py::_persist_env_cache::last_wiki_init_error": _COPY_FROM_WRITER,
     "daemon.py::_build_snapshot::open_questions": _COPY_FROM_WRITER,
+    "daemon.py::_persist_one_session::card_clarifications": _COPY_FROM_WRITER,
+    "daemon.py::_build_snapshot::card_clarifications": _COPY_FROM_WRITER,
 }
 _DYNAMIC_WRITE_ALLOWANCES: dict[str, str] = {
-    "graph/nodes/check_board.py::_sessions_pre[_flat_id_pre]": _SESSION_RECORD,
-    "graph/nodes/check_board.py::active_sessions[item]": _SESSION_RECORD,
-    "graph/nodes/check_board.py::_sessions_b[item]": _SESSION_RECORD,
-    "graph/nodes/handle_blocked.py::active_sessions[card_id]": _SESSION_RECORD,
-    "graph/nodes/monitor_pr.py::session[key]": _COPY_FROM_WRITER,
-    "graph/nodes/monitor_pr.py::state[key]": _COPY_FROM_WRITER,
-    "graph/nodes/dispatch_performer.py::state[key]": _COPY_FROM_WRITER,
-    "graph/nodes/dispatch_performer.py::card_context[key]": (
-        "the dispatch context sent to the performer, which is not a dashboard or board field"
-    ),
-    "graph/nodes/dispatch_performer.py::card_context[knob]": (
-        "a dispatch context knob with a bounded numeric or enumerated value, not performer text"
-    ),
-    "graph/nodes/monitor/body.py::state[key]": _COPY_FROM_WRITER,
-    "graph/nodes/monitor/body.py::state[_k]": _COPY_FROM_WRITER,
-    "graph/nodes/monitor/verdict.py::state[k]": _COPY_FROM_WRITER,
-    "services/no_progress.py::state[_KEY]": (
-        "stores a per-stage counter dict of integers, not text"
-    ),
-    "services/reconciliation.py::by_session[sid]": _SESSION_RECORD,
-    "daemon.py::sessions[active_card_id]": _SESSION_RECORD,
-    "daemon.py::active_sessions[cid]": _SESSION_RECORD,
-    "daemon.py::active_sessions[result.card_id]": _SESSION_RECORD,
-    "daemon.py::_sym_sessions[cid]": _SESSION_RECORD,
-    "daemon.py::updated_session[_f]": _COPY_FROM_WRITER,
-    "daemon.py::state[k]": _COPY_FROM_WRITER,
-    "daemon.py::state[_meta_dst]": _COPY_FROM_WRITER,
-    "daemon.py::self._session_stuck_alerts[key]": "stores a timestamp for each stuck-alert key, not text",
+    'services/intake_dispatch.py::register_failure::last_*_error': 'the error is redacted once at the top of register_failure; the setattr writes that value',
+    'graph/nodes/check_board.py::check_board::_sessions_pre[_flat_id_pre]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/check_board.py::_readopt_in_progress_cards::active_sessions[item]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/check_board.py::_pickup_todo_cards::active_sessions[item]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/check_board.py::_handle_in_review_cards::active_sessions[item]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/check_board.py::_handle_blocked_cards::_sessions_b[item]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/dispatch_performer.py::inject_briefs::card_context[key]': 'the dispatch context sent to the performer, which is not a dashboard or board field',
+    'graph/nodes/dispatch_performer.py::_stage_advance_gates::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/dispatch_performer.py::_acquire_via_slot_manager::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/dispatch_performer.py::_apply_observer_retune_overrides::card_context[knob]': 'a dispatch context knob with a bounded numeric or enumerated value, not performer text',
+    'graph/nodes/dispatch_performer.py::_persona_scope_skip::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/dispatch_performer.py::_documenting_gate_skip::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/handle_blocked.py::handle_blocked::active_sessions[card_id]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'graph/nodes/monitor/body.py::_phase_terminal_success_s4_s1::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor/body.py::_phase_terminal_success_s5::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor/body.py::_phase_terminal_success_s2::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor/body.py::_phase_ephemeral_gate::state[_k]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor/verdict.py::_apply_pending_override::state[k]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor_pr.py::_mirror_closed_pr_ownership::session[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'graph/nodes/monitor_pr.py::monitor_pr::state[key]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'services/no_progress.py::note_no_progress::state[_KEY]': 'stores a per-stage counter dict of integers, not text',
+    'services/no_progress.py::note_progress::state[_KEY]': 'stores a per-stage counter dict of integers, not text',
+    'services/reconciliation.py::run_startup_reconciliation::by_session[sid]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'daemon.py::_invoke_single_graph::sessions[active_card_id]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'daemon.py::_mirror_board_metadata::state[_meta_dst]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'daemon.py::_merge_fanout_results::active_sessions[cid]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'daemon.py::_merge_session_results::active_sessions[result.card_id]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
+    'daemon.py::_detect_stuck_performers::self._session_stuck_alerts[key]': 'stores a timestamp for each stuck-alert key, not text',
+    'daemon.py::_collect_session_updates::updated_session[_f]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'daemon.py::_merge_fanout_results::state[k]': 'copies a value a writer already produced; the writers wrap the dict literal or the field at source',
+    'daemon.py::_resolve_symphony_effective_state::_sym_sessions[cid]': 'stores a session record built by the session writers, whose text fields are redacted where they are set',
 }
 _APPEND_METHODS = {"append", "extend", "insert"}
 _TEXT_NAME_SAMPLES = frozenset({*TEXT_FIELDS, "last_x_error"})
@@ -497,14 +496,23 @@ def _label_of(target: ast.expr) -> str:
     return ast.unparse(target)
 
 
-_STATE_BASES = frozenset({"state", "sess", "override_result", "_snap", "snap", "card_context"})
+_STATE_BASES = frozenset({"state", "sess", "override_result", "snap", "card_context"})
+
+
+def _state_base(base: ast.expr) -> bool:
+    """True for a state or session container: a bare name, or an attribute such as ``self._state``."""
+    if isinstance(base, ast.Name):
+        name = base.id
+    elif isinstance(base, ast.Attribute):
+        name = base.attr.lstrip("_")
+    else:
+        return False
+    return name in _STATE_BASES or "session" in name
 
 
 def _state_container(target: ast.Subscript) -> bool:
     """True for a write into a state or session container, where a text field can sit under a variable key."""
-    base = target.value
-    name = base.id if isinstance(base, ast.Name) else base.attr if isinstance(base, ast.Attribute) else ""
-    return name in _STATE_BASES or "session" in name
+    return _state_base(target.value)
 
 
 def _unwrapped_writers(tree: ast.AST) -> list[tuple[int, str]]:
@@ -552,13 +560,12 @@ def _unwrapped_writers(tree: ast.AST) -> list[tuple[int, str]]:
                     found.append((node.lineno, pattern))
             elif isinstance(func, ast.Attribute) and func.attr == "setdefault" and node.args:
                 first = node.args[0]
-                if (
-                    isinstance(first, ast.Constant)
-                    and _text_name(str(first.value))
-                    and len(node.args) > 1
-                    and not _wrapped(node.args[1])
-                ):
-                    found.append((node.lineno, str(first.value)))
+                has_value = len(node.args) > 1
+                if isinstance(first, ast.Constant):
+                    if _text_name(str(first.value)) and has_value and not _wrapped(node.args[1]):
+                        found.append((node.lineno, str(first.value)))
+                elif _state_base(func.value) and has_value and not _wrapped(node.args[1]):
+                    found.append((node.lineno, f"{_label_of(func.value)}.setdefault({_label_of(first)})"))
             elif isinstance(func, ast.Attribute) and func.attr in _APPEND_METHODS:
                 receiver = func.value
                 field = None
@@ -571,6 +578,12 @@ def _unwrapped_writers(tree: ast.AST) -> list[tuple[int, str]]:
                         if not _wrapped(arg):
                             found.append((node.lineno, field))
     return found
+
+
+def _is_allowed(rel: str, function: str, key: str) -> bool:
+    """True when a write is allow-listed for exactly this file, this function and this key."""
+    scoped = f"{rel}::{function}::{key}"
+    return scoped in _DYNAMIC_WRITE_ALLOWANCES or scoped in _SAVE_PATH_COPIES
 
 
 def _enclosing_function(tree: ast.AST, line: int) -> str:
@@ -590,9 +603,7 @@ def test_every_writer_of_a_text_field_routes_through_the_helper() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         rel = str(path.relative_to(SRC))
         for line, key in _unwrapped_writers(tree):
-            if f"{rel}::{key}" in _DYNAMIC_WRITE_ALLOWANCES:
-                continue
-            if f"{rel}::{_enclosing_function(tree, line)}::{key}" in _SAVE_PATH_COPIES:
+            if _is_allowed(rel, _enclosing_function(tree, line), key):
                 continue
             offenders.append(f"{path.relative_to(ROOT)}:{line} writes {key!r} unredacted")
     assert not offenders, "\n".join(offenders)

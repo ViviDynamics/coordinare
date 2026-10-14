@@ -722,7 +722,7 @@ def _restored_session_dict(
         "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
         "open_questions": redact_state_value(list(persisted.open_questions)),
         "consumed_loop_questions": list(persisted.consumed_loop_questions),
-        "card_clarifications": list(persisted.card_clarifications),
+        "card_clarifications": redact_state_value(list(persisted.card_clarifications)),
         "pending_override": _dict_or_none(persisted.pending_override),
         "pr_comment_tracking": dict(persisted.pr_comment_tracking),
         "pending_pr_handoff": _dict_or_none(persisted.pending_pr_handoff),
@@ -900,7 +900,7 @@ def _synthesize_v1_session(
         "processed_review_ids": set(snapshot.processed_review_ids),
         "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
         "open_questions": redact_state_value(list(snapshot.open_questions)),
-        "card_clarifications": list(snapshot.card_clarifications),
+        "card_clarifications": redact_state_value(list(snapshot.card_clarifications)),
         "relay_feedback": [],
         "system_error_count": 0,
         "system_error_reason": None,
@@ -2588,7 +2588,7 @@ class CoordinareDaemon:
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
         self._state["phase"] = snapshot.phase
         self._state["open_questions"] = redact_state_value(list(snapshot.open_questions))
-        self._state["card_clarifications"] = list(snapshot.card_clarifications)
+        self._state["card_clarifications"] = redact_state_value(list(snapshot.card_clarifications))
         # Bootstrap resolves the current configured lifecycle. Saved workflow
         # state retains session progress, but must not change new admission.
         # Legacy callers without a configured sequence still recover it.
