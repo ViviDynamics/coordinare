@@ -493,6 +493,8 @@ class CoordinareState(TypedDict, total=False):
     attempt_log: Any
     # 129: the run-transcript collector (None when transcripts are not wired).
     transcript_collector: Any
+    # 131: the conductor's own model calls, transcribed through this log.
+    conductor_calls: Any
     # 132: the full run log collector (None when it cannot be built).
     run_log_collector: Any
 

@@ -57,6 +57,7 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
+from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
 from coordinare.services.notification import NotificationService, build_notification_service
@@ -1110,10 +1111,15 @@ async def _bootstrap_services(
 
     from coordinare.services.conducting import build_conducting_backend
 
+    # 131: the transcript collector is built before the conducting backend, so the
+    # conductor's own model calls are written through the same collector as the runs.
+    transcript_collector = _build_transcript_collector(config, config_path)
+    conductor_calls = ConductorCallLog(transcript_collector)
     conducting_backend = build_conducting_backend(
         config,
         circuit_breaker=circuit_breakers["anthropic"],
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
+        calls=conductor_calls,
     )
 
     workspace_manager = WorkspaceManager(config, auth=_auth, github_service=github)
@@ -1146,7 +1152,6 @@ async def _bootstrap_services(
                 count=orphan_count,
                 hint="performers left by a previous coordinare crash",
             )
-    transcript_collector = _build_transcript_collector(config, config_path)
     run_log_collector = _build_run_logs_collector(config, config_path)
     http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(
         config,
@@ -1226,6 +1231,8 @@ async def _bootstrap_services(
         # 141: attempt telemetry singleton
         "attempt_log": attempt_log,
         "transcript_collector": transcript_collector,
+        # 131: the conductor's own model calls are transcribed through this log.
+        "conductor_calls": conductor_calls,
         # 132: the full run log collector (None when it cannot be built).
         "run_log_collector": run_log_collector,
         "human_reviewers": config.human_reviewers,

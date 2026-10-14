@@ -34,7 +34,12 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.lib.path_segments import UNATTRIBUTED, sanitize_segment
+from coordinare.lib.path_segments import (
+    CONDUCTOR_FOLDER,
+    UNATTRIBUTED,
+    is_conductor_folder,
+    sanitize_segment,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -258,8 +263,10 @@ class TokenLedger:
         never counted twice. A record's own ``stage`` key wins over the argument.
         """
         # 139 review: the ledger keys a run by the folder its transcript was written to,
-        # so the symphony is the sanitised name the writer used.
-        symphony = sanitize_segment(symphony)
+        # so the symphony is the sanitised name the writer used. 131: the one exception is the
+        # conductor's own folder, which no sanitised name can equal. Every caller passes either
+        # a sanitised folder or a raw symphony name, so this is the only admitted bypass.
+        symphony = symphony if is_conductor_folder(symphony) else sanitize_segment(symphony)
         counted = 0
         with self._lock:
             run = self._runs.get(run_id)
@@ -452,13 +459,40 @@ class TokenLedger:
             report.oversize_usage_lines += oversize
             report.usage_records += self.observe(
                 path.stem,
-                symphony=path.parent.parent.name,
+                symphony=_file_symphony(path),
                 card=path.parent.name,
                 stage="",
                 records=records,
             )
         self.prune(now.date())
         return report
+
+
+def _file_symphony(path: Path) -> str:
+    """The symphony a transcript file is attributed to (131).
+
+    A symphony's runs are attributed to their folder. A conductor call is attributed to the
+    symphony its header names, so its spend lands in that symphony's figures after a restart
+    exactly as it did live. A conductor call whose header names none stays in the conductor's
+    own folder.
+    """
+    folder = path.parent.parent.name
+    if not is_conductor_folder(folder):
+        return folder
+    return _header_symphony(path) or folder
+
+
+def _header_symphony(path: Path) -> str:
+    """The ``conductor.symphony`` of a file's header line, or '' when it has none. Bounded and never raises."""
+    try:
+        with path.open("rb") as handle:
+            raw = handle.readline(USAGE_LINE_MAX_BYTES)
+        header = json.loads(raw)
+    except (OSError, ValueError, RecursionError):
+        return ""
+    conductor = header.get("conductor") if isinstance(header, dict) else None
+    name = conductor.get("symphony") if isinstance(conductor, dict) else None
+    return name if isinstance(name, str) else ""
 
 
 def _run_files(root: Path) -> tuple[list[Path], int]:
@@ -801,6 +835,9 @@ def usage_block(
         "week": usage_summary(ledger.totals(days=(week_start, today_iso)), table),
         "by_symphony": {name: _figures(sanitize_segment(name)) for name in symphonies},
         "unattributed": _figures(UNATTRIBUTED),
+        # 131: the conductor's own model calls, by the folder they were written to.
+        # The conductor's calls that name no symphony. Calls that do are in their symphony's figures.
+        "conductor": _figures(CONDUCTOR_FOLDER),
     }
 
 

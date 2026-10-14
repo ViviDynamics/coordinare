@@ -13,6 +13,17 @@ import re
 # status poll made without a transcript target). The file is still written.
 UNATTRIBUTED = "unattributed"
 
+# The folder the conductor's own model calls are written under (131). Every folder
+# sanitize_segment() returns is stripped of leading underscores, so no symphony or card
+# folder can ever be this name, in any letter case. is_conductor_folder() is the only
+# place that admits it.
+CONDUCTOR_FOLDER = "_conductor"
+
+
+def is_conductor_folder(name: str) -> bool:
+    """True only for the conductor's own folder. It is never a symphony's folder."""
+    return name == CONDUCTOR_FOLDER
+
 _SEGMENT_INVALID = re.compile(r"[^A-Za-z0-9._-]+")
 _SEGMENT_MAX_LEN = 120
 

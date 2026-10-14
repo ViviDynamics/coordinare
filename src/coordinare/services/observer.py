@@ -22,6 +22,7 @@ from typing import Any, Protocol
 import structlog
 
 from coordinare.lib.redaction import redact_command_text
+from coordinare.services.conductor_calls import conductor_call
 from coordinare.services.retune import retune_prompt_fragment
 
 logger = structlog.get_logger(__name__)
@@ -339,31 +340,36 @@ async def observe(
     """Ask the observer. Never raises; a dead observer is no action."""
     if backend is None:
         return None
-    try:
-        answer = await asyncio.wait_for(
-            backend.prompt(query.prompt, response_format="json"),
-            timeout=60.0,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.warning(
-            "observer.unreachable",
-            card_id=query.card_id,
-            performer_stage=query.stage,
-            triggers=sorted(query.triggers),
-            error=str(exc),
-        )
-        return None
-    verdict = parse_verdict(answer)
-    if verdict is None:
-        logger.warning(
-            "observer.malformed",
-            card_id=query.card_id,
-            performer_stage=query.stage,
-            triggers=sorted(query.triggers),
-        )
-        return None
+    async with conductor_call(backend, kind="observer", card_id=query.card_id) as call:
+        try:
+            answer = await asyncio.wait_for(
+                backend.prompt(query.prompt, response_format="json"),
+                timeout=60.0,
+            )
+        except asyncio.CancelledError:
+            call.decide("observer: cancelled")
+            raise
+        except Exception as exc:
+            call.decide("observer: unreachable")
+            logger.warning(
+                "observer.unreachable",
+                card_id=query.card_id,
+                performer_stage=query.stage,
+                triggers=sorted(query.triggers),
+                error=str(exc),
+            )
+            return None
+        verdict = parse_verdict(answer)
+        if verdict is None:
+            call.decide("observer: malformed reply")
+            logger.warning(
+                "observer.malformed",
+                card_id=query.card_id,
+                performer_stage=query.stage,
+                triggers=sorted(query.triggers),
+            )
+            return None
+        call.decide(f"observer: {verdict.verdict}")
     logger.info(
         "observer.evaluation",
         card_id=query.card_id,

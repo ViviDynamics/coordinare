@@ -58,7 +58,12 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from coordinare.lib.path_segments import UNATTRIBUTED, sanitize_segment
+from coordinare.lib.path_segments import (
+    CONDUCTOR_FOLDER,
+    UNATTRIBUTED,
+    is_conductor_folder,
+    sanitize_segment,
+)
 from coordinare.lib.transcript_redaction import redact_value, secret_values_from_env
 from coordinare.services.token_usage import TokenLedger
 
@@ -860,14 +865,31 @@ class TranscriptCollector:
         existing = self._writers.get(run_id)
         if existing is not None:
             return existing
+        writer = self.new_writer(run_id=run_id, symphony=symphony, card_id=card_id)
+        self._writers[run_id] = writer
+        return writer
+
+    def new_writer(self, *, run_id: str, symphony: str, card_id: str) -> RunTranscriptWriter:
+        """A writer for one file that is not kept in the live set (spec 131: one-shot files).
+
+        Built with the same path rules and ambient secrets as :meth:`writer_for`. The caller
+        owns it, so it can be used on a worker thread without touching the live-writer map.
+        A symphony name is always sanitised here, so it can never reach the conductor's folder.
+        """
+        return self._one_shot(run_id=run_id, folder=sanitize_segment(symphony), card_id=card_id)
+
+    def conductor_writer(self, *, run_id: str, card_id: str) -> RunTranscriptWriter:
+        """A one-shot writer for a conductor call, in the conductor's own folder (spec 131)."""
+        return self._one_shot(run_id=run_id, folder=CONDUCTOR_FOLDER, card_id=card_id)
+
+    def _one_shot(self, *, run_id: str, folder: str, card_id: str) -> RunTranscriptWriter:
         writer = RunTranscriptWriter(
             self._root,
-            parts=(sanitize_segment(symphony), sanitize_segment(card_id)),
+            parts=(folder, sanitize_segment(card_id)),
             run_id=run_id,
             max_bytes=self._max_bytes_per_run,
         )
         writer.add_secret_values(self._ambient_secrets)
-        self._writers[run_id] = writer
         return writer
 
     def add_ambient_secrets(self, environ: Mapping[str, str]) -> None:
@@ -934,12 +956,12 @@ def make_collector(
 
 
 def _layout_dirs(parent: Path) -> list[Path]:
-    """Immediate subdirectories whose names the writer could have created."""
+    """Immediate subdirectories whose names the writer could have created (the conductor's folder included)."""
     found: list[Path] = []
     for entry in parent.iterdir():
         if entry.is_symlink() or not entry.is_dir():
             continue
-        if sanitize_segment(entry.name) == entry.name:
+        if is_conductor_folder(entry.name) or sanitize_segment(entry.name) == entry.name:
             found.append(entry)
     return found
 
