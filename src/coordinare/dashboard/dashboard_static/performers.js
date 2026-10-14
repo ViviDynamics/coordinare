@@ -341,7 +341,10 @@ function renderActiveWorkPanels(s) {
       var skip = skipAll[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
-      var phaseLabel = queueLimitLabel(skip) || queuedLabel || formatPhaseLabel(sess.phase || '');
+      // 142: a stopped session names its kind and reason, not the bare phase.
+      var phaseLabel = queueLimitLabel(skip) || queuedLabel ||
+        (sess.phase === 'blocked' ? esc(blockedSessionText(sess, waitSnapshot.open_questions, skipAll))
+          : formatPhaseLabel(sess.phase || ''));
       var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '';
       // Queued wait is measured from the queued stamp; an actively
       // dispatching card measures from when its dispatch began.
@@ -367,7 +370,8 @@ function renderActiveWorkPanels(s) {
       : '';
 
     // 149: why a To Do or Blocked card is not progressing (empty for the rest).
-    var waitLine = waitingLineHtml(waitingReason({id: iid, column: col, has_session: !!sess}, waitSnapshot));
+    var waitLine = waitingLineHtml(waitingReason({id: iid, column: col, has_session: !!sess,
+      block_cause: sess ? sess.block_cause : null}, waitSnapshot));
 
     // 139: with all symphonies in view, each card says which one it belongs to.
     var symphonyLine = multiView && entry.symphony
@@ -405,7 +409,9 @@ function renderActiveWorkPanels(s) {
 }
 
 function renderCardDetailContent(sess, s) {
-  var phaseLabel = formatPhaseLabel(sess.phase || '');
+  var phaseLabel = sess.phase === 'blocked'
+    ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
+    : formatPhaseLabel(sess.phase || '');
   var cardLink = sess.issue_url && /^https?:\/\//i.test(sess.issue_url)
     ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
     : esc(sess.card_title || sess.card_id || '—');
@@ -538,7 +544,9 @@ function renderActivePerformers(s) {
     var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '—';
     var title = sess.card_title || sess.card_id || '—';
     var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
-    var phaseLabel = formatPhaseLabel(sess.phase || 'active');
+    var phaseLabel = sess.phase === 'blocked'
+      ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
+      : formatPhaseLabel(sess.phase || 'active');
     html += '<div class="ap-tile">' +
       '<div class="ap-tile-header">' +
         '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +

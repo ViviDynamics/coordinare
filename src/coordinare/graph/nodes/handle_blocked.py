@@ -313,10 +313,10 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         if issue_id:
             try:
                 header = coordinare_attribution(state.get("config"), stage)
-                label = "System blocked — operator action required" if system_block else "Needs input"
+                label = "Needs human, operator action required" if system_block else "Needs human"
                 await board_provider.add_card_comment(
                     issue_id,
-                    f"{header}\n\n**{role_label}** — {label}:\n{question_lines}",
+                    f"{header}\n\n**{role_label}** · {label}:\n{question_lines}",
                 )
                 clear_deferred_github_operation(state, "handle_blocked_comment")
             except Exception as exc:

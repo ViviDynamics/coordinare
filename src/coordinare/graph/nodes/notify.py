@@ -460,7 +460,7 @@ async def notify(state: CoordinareState) -> CoordinareState:
         questions_preview = open_questions[0][:80]
         # Board-wide dependency filtering describes queued TODO cards, not the
         # cause of this performer's terminal response. Preserve its actual reason.
-        summary = f"🚫 {display_title} — blocked: {questions_preview}"
+        summary = f"🚫 {display_title} (Needs human): {questions_preview}"
     elif event_type == EventType.card_merged:
         summary = f"✅ {display_title} — merged!"
     elif prev_status and status and prev_status != status:

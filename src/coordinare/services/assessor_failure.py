@@ -210,6 +210,15 @@ def format_repair_hint(reason: str | None, stage_label: str) -> str | None:
     )
 
 
+def is_format_failure(reason: str | None) -> bool:
+    """True for a reason the performer stamped as a format failure (#142).
+
+    Whether its retries are still running or spent is for the caller to say;
+    this only names the class.
+    """
+    return isinstance(reason, str) and reason.startswith(_FORMAT_ERROR_PREFIX)
+
+
 def describe_format_exhaustion(
     reason: str | None, *, stage: str, count: int, identical: bool,
 ) -> str:

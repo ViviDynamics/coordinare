@@ -32,8 +32,8 @@ function attentionCardLabel(number, title, fallback) {
 //  - question: one per open clarification question (open_questions). Its
 //    since is asked_at.
 //  - needs_human: a session in the blocked phase that has no open question of
-//    its own, so a card is counted once. The snapshot carries no reason for a
-//    block beyond its questions, so none is shown.
+//    its own, so a card is counted once. Its reason is the cause the conductor
+//    named (142), in words; a stop with no known cause shows none.
 //  - subsystem_down: a required subsystem reporting unavailable. Optional ones
 //    are left out, so an integration nobody configured never holds the badge.
 // Not derived: a PR waiting on review (monitoring_pr). The snapshot does not
@@ -41,6 +41,12 @@ function attentionCardLabel(number, title, fallback) {
 // no per-session review-required flag, so counting it would invent a claim.
 // 139: an item on a card no symphony claims is still shown under every symphony
 // choice, and says so, so the operator knows whose it is.
+// 142: the words for a cause the conductor named, or '' when it named none.
+function attentionCauseText(code) {
+  var map = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY.block_cause_labels) || {};
+  return Object.prototype.hasOwnProperty.call(map, code) ? String(map[code]) : '';
+}
+
 function attentionDetail(text, unclaimed) {
   if (!unclaimed) return text;
   var note = "not on any symphony's GitHub Project";
@@ -81,7 +87,7 @@ function attentionItems(s) {
       key: 'needs_human:' + (cardId || 'card'),
       card_id: cardId || null,
       title: attentionCardLabel(sess.issue_number, sess.card_title, 'Card'),
-      detail: attentionDetail('', sess.unclaimed),
+      detail: attentionDetail(attentionCauseText(sess.block_cause), sess.unclaimed),
       unclaimed: !!sess.unclaimed,
       href: attentionExternalUrl(sess.issue_url) || attentionRunHref(stage) || '/',
       since: null,

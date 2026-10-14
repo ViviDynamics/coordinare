@@ -266,7 +266,7 @@ def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
         ("relay_feedback", "Sending feedback"),
         ("idle", "Idle"),
         ("dispatching", "Starting an agent"),
-        ("blocked", "Blocked"),
+        ("blocked", "Needs human"),
         ("merging", "Merging"),
         # A code with no glossary entry is shown as it is, never prettified.
         ("unknown_future_phase", "unknown_future_phase"),
