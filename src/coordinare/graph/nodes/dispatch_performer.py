@@ -2390,7 +2390,9 @@ async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage:
             and bool(_ec_state_for_sym.last_bootstrap_succeeded)
             and not _ec_state_for_sym.bootstrap_in_flight
             and _cache_dir_has_activate(
-                _ec_state_for_sym.cache_dir, performer_mounts=_performer_mounts(state),
+                _ec_state_for_sym.cache_dir,
+                performer_mounts=_performer_mounts(state),
+                expected_activate=_ec_state_for_sym.rendered_activate_sh,
             )
             and _ec_state_for_sym.last_seen_spec_sha is not None
             and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
@@ -2430,7 +2432,7 @@ async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str
         #   False (nonzero) ⇒ withhold + release slot; the FAIL falls into the
         #     same env_cache_not_current hold (re-bootstrap is triggered by the
         #     bootstrap-completion path / budget machinery — single hold point).
-        #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
+        #   None  (docker could not run the script) ⇒ degraded: MUST NOT block,
         #     fall through on the legacy last_bootstrap_succeeded path.
         _readiness_passed, _readiness_detail = await verify_env_cache_clean(
             state, _symphony_name_for_ec, service, performer_mounts=_performer_mounts(state),
@@ -2486,7 +2488,11 @@ async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: st
     if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
         _has_ready_caches = any(
             isinstance(s, EnvCacheState)
-            and _cache_dir_has_activate(s.cache_dir, performer_mounts=_performer_mounts(state))
+            and _cache_dir_has_activate(
+                s.cache_dir,
+                performer_mounts=_performer_mounts(state),
+                expected_activate=s.rendered_activate_sh,
+            )
             for s in _env_cache_for_ec.values()
         )
         if _has_ready_caches:

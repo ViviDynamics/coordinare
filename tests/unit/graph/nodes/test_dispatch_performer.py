@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1417,6 +1418,19 @@ def _make_http_service(*, mode: str = "ephemeral", devenv_root: str = "/devenv")
     return svc
 
 
+_RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (test fixture, daemon-rendered)\n"
+
+
+@pytest.fixture(autouse=True)
+def _readiness_gate_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """218: the fixture cache has no daemon-run verify (it would call docker). Keep the 093 gate
+    in its degraded pass-through, as before 218. A test that drives the gate patches it again."""
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer.verify_env_cache_clean",
+        AsyncMock(return_value=(None, "verify not run in this test")),
+    )
+
+
 def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
     """Return an env_cache dict with one ready EnvCacheState."""
     from coordinare.models.env_cache import EnvCacheState
@@ -1425,7 +1439,8 @@ def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
     sanitised = sanitise_symphony_name(symphony_name)
     cache_dir = tmp_path / sanitised
     cache_dir.mkdir(parents=True, exist_ok=True)
-    (cache_dir / "activate.sh").touch()
+    # 218: the cache's activate.sh must equal the daemon-rendered text to gate a mount.
+    (cache_dir / "activate.sh").write_text(_RENDERED_ACTIVATE)
     state = EnvCacheState(
         symphony_name=symphony_name,
         sanitised_name=sanitised,
@@ -1437,6 +1452,7 @@ def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
         # spec (readme_sha == last_seen_spec_sha).
         last_bootstrap_succeeded=True,
         last_seen_spec_sha="abc123",
+        rendered_activate_sh=_RENDERED_ACTIVATE,
     )
     return {symphony_name: state}
 

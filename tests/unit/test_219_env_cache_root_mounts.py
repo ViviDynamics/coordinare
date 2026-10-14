@@ -123,7 +123,12 @@ def test_root_link_under_performer_volume_is_not_a_consumer_toolchain(tmp_path: 
     victim, ws, root = _performer_root(tmp_path)
     (victim / "sym" / "activate.sh").write_text("HOST\n")
 
-    assert env_cache._cache_dir_has_activate(root / "sym", performer_mounts=(ws,)) is False
+    assert (
+        env_cache._cache_dir_has_activate(
+            root / "sym", performer_mounts=(ws,), expected_activate="HOST\n",
+        )
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -6,13 +6,14 @@ import tempfile
 import time
 from datetime import datetime  # noqa: TC003 — Pydantic needs this at runtime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import structlog
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 35  # 147: the card lifecycle log behind the pipeline timeline
+CURRENT_SCHEMA_VERSION: int = 36  # 218: daemon-rendered env-cache scripts and the infrastructure budget
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -136,6 +137,10 @@ CURRENT_SCHEMA_VERSION: int = 35  # 147: the card lifecycle log behind the pipel
 # detail values). It outlives the card's session, which is dropped when the card
 # finishes. v1-v34 snapshots load with an empty log, so older cards show their
 # events as not recorded. Stage codes and short values only, never secrets.
+# v36 (218) adds rendered_verify_sh and rendered_activate_sh on EnvCacheStateSnapshot: the
+# daemon-rendered env-cache scripts the bootstrap verification runs and the activate.sh gate
+# compares against. v1-v35 snapshots load with None (fail closed, one re-bootstrap). The same
+# step adds infra_failures and last_infra_failure_at (the infrastructure budget), defaults 0/None.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -674,6 +679,17 @@ class EnvCacheStateSnapshot(BaseModel):
     # and the feedback-injection retry survives a restart.
     last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
+    # 218 (schema v35): the daemon-rendered verify.sh and activate.sh text. Verification
+    # and the activate.sh gate compare against these, never against the performer's cache
+    # copies. Old snapshots load with None, which fails closed (one re-bootstrap). The model
+    # strips whitespace by default, which would drop the trailing newline and break the exact
+    # activate.sh comparison, so these two fields keep their text byte for byte.
+    rendered_verify_sh: Annotated[str | None, StringConstraints(strip_whitespace=False)] = None
+    rendered_activate_sh: Annotated[str | None, StringConstraints(strip_whitespace=False)] = None
+    # 218 (review round 3): the infrastructure-failure budget, separate from the 088 verdict budget.
+    # Old snapshots load with 0 and None.
+    infra_failures: int = 0
+    last_infra_failure_at: datetime | None = None
     # 088 (FR-009): bootstrap circuit-breaker budget. Persisted so a restart
     # does not reset a failing bootstrap's attempt count; old snapshots load
     # with the defaults (no migration).

@@ -321,7 +321,12 @@ def test_linked_activate_sh_is_not_a_toolchain(tmp_path: Path) -> None:
     cache = _cache(tmp_path)
     os.symlink(host, cache / "activate.sh")
 
-    assert env_cache._cache_dir_has_activate(cache, performer_mounts=()) is False
+    assert (
+        env_cache._cache_dir_has_activate(
+            cache, performer_mounts=(), expected_activate=host.read_text(),
+        )
+        is False
+    )
     _assert_host_file_untouched(host)
 
 

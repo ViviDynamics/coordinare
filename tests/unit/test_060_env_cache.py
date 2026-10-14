@@ -7,11 +7,14 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_cache import (
     BOOTSTRAP_RETRY_COOLDOWN_S,
     EnvCacheService,
@@ -40,6 +43,10 @@ def _seed_toolchain(cache_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # T026: sanitise_symphony_name
 # ---------------------------------------------------------------------------
+
+
+# 218: the real quiesce, captured before the class stub replaces it. The idle-reap test restores it.
+_ORIGINAL_QUIESCE = CoordinareDaemon._quiesce_bootstrap_container
 
 
 class TestSanitiseSymphonyName:
@@ -155,6 +162,10 @@ class TestBootstrapJobPayload:
 # ---------------------------------------------------------------------------
 
 
+# 218: the daemon-rendered activate.sh text. A cache copy counts only when it matches it.
+_RENDERED = "# daemon-rendered activate.sh\n"
+
+
 class TestGetEnvVolumeForSymphony:
     def test_returns_none_when_no_state(self) -> None:
         result = get_env_volume_for_symphony("missing", {}, is_bootstrap=False, performer_mounts=())
@@ -174,12 +185,13 @@ class TestGetEnvVolumeForSymphony:
 
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
@@ -253,12 +265,13 @@ class TestGetEnvVolumeForSymphony:
         """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=False,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
@@ -268,12 +281,13 @@ class TestGetEnvVolumeForSymphony:
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony(
             "s", {"s": state}, is_bootstrap=False, performer_mounts=(), container_devenv_root="/custom",
@@ -942,22 +956,24 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_returns_ro_mounts_for_all_ready_caches(self, tmp_path: Path) -> None:
         dir_a = tmp_path / "a"
         dir_a.mkdir()
-        (dir_a / "activate.sh").touch()
+        (dir_a / "activate.sh").write_text(_RENDERED)
         dir_b = tmp_path / "b"
         dir_b.mkdir()
-        (dir_b / "activate.sh").touch()
+        (dir_b / "activate.sh").write_text(_RENDERED)
         states = {
             "sym-a": EnvCacheState(
                 symphony_name="sym-a",
                 sanitised_name="sym-a-111111",
                 cache_dir=dir_a,
                 cache_dir_ready=True,
+                rendered_activate_sh=_RENDERED,
             ),
             "sym-b": EnvCacheState(
                 symphony_name="sym-b",
                 sanitised_name="sym-b-222222",
                 cache_dir=dir_b,
                 cache_dir_ready=True,
+                rendered_activate_sh=_RENDERED,
             ),
         }
         result = _collect_env_volumes_for_persistent_performer(states, performer_mounts=())
@@ -971,12 +987,13 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = _collect_env_volumes_for_persistent_performer(
             {"s": state}, container_devenv_root="/custom", performer_mounts=(),
@@ -1397,6 +1414,24 @@ class TestPollBootstrapCompletion:
 
         monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
 
+    @pytest.fixture(autouse=True)
+    def _clean_verify_passes(self, monkeypatch):
+        """218: these tests cover the poll loop mapping a result to on_bootstrap_complete.
+        The clean-context verify has its own tests in test_218_bootstrap_trust."""
+        from coordinare.daemon import CoordinareDaemon
+
+        monkeypatch.setattr(
+            CoordinareDaemon,
+            "_verify_bootstrap_in_clean_context",
+            AsyncMock(return_value=(True, None, False)),
+        )
+        # 218: the bootstrap container's stop has its own tests; these tests run the success path.
+        monkeypatch.setattr(
+            CoordinareDaemon,
+            "_quiesce_bootstrap_container",
+            AsyncMock(return_value=True),
+        )
+
     @pytest.mark.asyncio
     async def test_success_path_calls_on_bootstrap_complete_true(self) -> None:
         daemon = _make_daemon_for_env_cache()
@@ -1658,13 +1693,17 @@ class TestPollBootstrapCompletion:
         daemon._state["performer_services"] = {}
 
         stop_calls: list[tuple] = []
+        order: list[str] = []
         counter = {"n": 0}
 
         async def _fake_exec(*argv, **kwargs):
             if "stop" in argv:
                 stop_calls.append(argv)
+                order.append("stop")
 
             class _P:
+                returncode = 0
+
                 async def communicate(self):
                     # New meaningful (non-poll) line every iteration -> progress.
                     counter["n"] += 1
@@ -1686,11 +1725,25 @@ class TestPollBootstrapCompletion:
         statuses = [{"status": "working"}] * 5 + [{"status": "env_bootstrap_complete"}]
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=statuses)
+        svc._runtime = DockerRuntime()
         ec_svc = MagicMock()
+
+        # The real quiesce (not the class stub), and a verify that records when it runs.
+        monkeypatch.setattr(CoordinareDaemon, "_quiesce_bootstrap_container", _ORIGINAL_QUIESCE)
+
+        async def _recording_verify(*_a: Any, **_k: Any) -> tuple[bool, None, bool]:
+            order.append("verify")
+            return True, None, False
+
+        monkeypatch.setattr(CoordinareDaemon, "_verify_bootstrap_in_clean_context", _recording_verify)
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-slow")
 
-        assert not stop_calls  # never reaped
+        # 218: the one `docker stop` is the completion quiesce, not an idle reap. It names the stopped
+        # container, and it happens before the clean verify. Progress kept the idle reap from firing.
+        assert len(stop_calls) == 1
+        assert "ctr-slow" in stop_calls[0]
+        assert order == ["stop", "verify"]
         ec_svc.on_bootstrap_complete.assert_called_once()
         assert ec_svc.on_bootstrap_complete.call_args.args[1] is True  # completed successfully
 
@@ -1837,8 +1890,13 @@ class TestPollBootstrapCompletion:
 
         # Stub create_subprocess_exec to return a fake proc with snapshot output.
         class _FakeProc:
+            returncode = 0
+
             async def communicate(self):
                 return (b"snap-line-1\nsnap-line-2\n", b"")
+
+            async def wait(self):
+                return 0
 
         async def _make_proc(*_a, **_kw):
             return _FakeProc()
@@ -2080,8 +2138,9 @@ class TestManifestArtifacts:
         assert (cache_dir / "activate.sh").stat().st_mode & 0o100  # executable
 
     @pytest.mark.asyncio
-    async def test_no_deps_returns_none_false(self, tmp_path: Path) -> None:
-        """A project with no parseable pin files → fall back (agent writes verify)."""
+    async def test_no_deps_still_renders_daemon_scripts(self, tmp_path: Path) -> None:
+        """218: a project with no parseable pin files still gets the daemon-owned
+        verify.sh and activate.sh, so no bootstrap rests on performer-written scripts."""
         svc = EnvCacheService(MagicMock())
 
         async def fake_get(org: str, repo: str, path: str) -> str | None:
@@ -2103,10 +2162,10 @@ class TestManifestArtifacts:
             llm_chat=None,
         )
         assert checklist is None
-        assert verify_provided is False
-        assert activate_provided is False
-        assert not (cache_dir / "verify.sh").exists()
-        assert not (cache_dir / "activate.sh").exists()
+        assert verify_provided is True
+        assert activate_provided is True
+        assert "Bootstrap verification PASSED" in (cache_dir / "verify.sh").read_text()
+        assert (cache_dir / "activate.sh").is_file()
 
 
 def test_env_bootstrap_persona_injects_previous_failure_on_retry() -> None:
