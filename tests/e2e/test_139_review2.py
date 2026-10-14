@@ -54,7 +54,7 @@ def test_the_history_page_does_not_show_the_dashboards_checks_under_any_symphony
     store.broadcaster.broadcast(_snapshot(_two_symphonies(), cycle_history=checks))
 
     # The Dashboard panel keeps its scope note; the History page shows its own listing instead.
-    expect(page.locator("#history-section")).to_contain_text(
+    expect(page.locator("#history-cycles")).to_contain_text(
         "Recent checks are shown for all symphonies only.", timeout=_WAIT_LIVE,
     )
     expect(page.locator("#history-page-section")).not_to_contain_text("Merging")

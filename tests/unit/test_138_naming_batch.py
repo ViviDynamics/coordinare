@@ -47,8 +47,10 @@ def test_the_word_phase_is_gone_from_the_card_ui() -> None:
 
 
 def test_headline_is_built_by_the_sentence_helper_with_the_state_in_a_tooltip() -> None:
-    assert "phaseEl.textContent = conductorHeadline(s, activeSess);" in page_source()
-    assert "phaseEl.title = 'Conductor state: '" in page_source()
+    # 154: the headline is written by the status strip (layout.js); the tooltip stays in renderState.
+    assert "phaseEl.textContent = model.headline;" in _DASHBOARD_JS_SOURCES["layout"]
+    assert "conductorHeadline(s, activeSess)" in _DASHBOARD_JS_SOURCES["layout"]
+    assert "'Conductor state: ' + String(effectivePhase" in page_source()
 
 
 def test_snapshot_poll_interval() -> None:
@@ -87,13 +89,14 @@ def test_feedback_loops_are_called_revision_rounds() -> None:
 
 def test_small_labels() -> None:
     assert ">Check Board Now<" not in _SHIPPED and ">Check now</button>" in page_source()
-    assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED
+    assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED  # the Symphonies table's column; 154 removed the header copy
     assert "Active / Idle / Max" not in _SHIPPED
     assert '<label for="af-filter">Card</label>' not in page_source()
     assert 'aria-label="Filter activity by card"' in page_source()
     assert "Observer Verdicts" not in _SHIPPED and "Progress checks (recent)" in _PERFORMERS
     assert "progress_check" in vocabulary.CONCEPTS
-    assert "Card Tokens" not in _SHIPPED and 'id="card-tokens-label"' in page_source()
+    # 154: the tile labels its tokens "Tokens" (the card's name is in the tile title).
+    assert "Card Tokens" not in _SHIPPED and 'class="ap-tile-tokens"' in _DASHBOARD_JS_SOURCES["layout"]
     assert "toFixed(4)" not in _SHIPPED
 
 

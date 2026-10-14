@@ -35,18 +35,6 @@ function stepTrailHtml(sess, slowAfterSeconds) {
 }
 
 // humanPhase + formatPhaseLabel: /static/helpers.js (#349)
-function computeOverallHealth(subsystems) {
-  var required = (subsystems || []).filter(function(s) { return s.required; });
-  if (!required.length || required.every(function(s) { return s.status === 'healthy'; })) return 'healthy';
-  if (required.some(function(s) { return s.status === 'unavailable'; })) return 'unavailable';
-  return 'degraded';
-}
-
-function isIdle(s) {
-  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
-  return sessions.length === 0 && s.phase === 'idle';
-}
-
 // 128: the Dashboard panel shows collapsed rows and a fixed number of them
 // (opts.collapse, opts.limit); the History page keeps the full list.
 function renderCycleHistoryInto(container, cycleHistory, opts) {
@@ -101,12 +89,9 @@ function renderState(s) {
   // get clobbered by whichever session last synced to CoordinareState.
   var activeSess = findActivePerformerSession(s);
   var effectivePhase = activeSess ? activeSess.phase : s.phase;
-  var effectiveDispatchAt = activeSess ? activeSess.agent_dispatch_at : s.agent_dispatch_at;
+  // 154: the headline is the status strip's text (layout.js). Its description and the
+  // conductor's internal state are the tooltip.
   var phaseEl = document.getElementById('phase');
-  // 138: a plain sentence; the conductor's internal state stays in the tooltip.
-  phaseEl.textContent = conductorHeadline(s, activeSess);
-  phaseEl.title = 'Conductor state: ' + String(effectivePhase || '');
-  phaseEl.className = 'phase ' + phaseClass(effectivePhase);
   var phaseDescriptions = {
     'idle':             'Waiting for a card to enter the TODO column on the GitHub Project.',
     'running':          'Running a check.',
@@ -119,59 +104,25 @@ function renderState(s) {
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
     'recovery':         'A check failed; the daemon is recovering before retrying.',
   };
-  document.getElementById('phase-desc').textContent = phaseDescriptions[effectivePhase] || '';
-
-  // Session age (shown when a performer is actively running on any session)
-  var ageEl = document.getElementById('session-age');
-  if (activeSess && effectiveDispatchAt) {
-    ageEl.style.display = '';
-    // 125: same start point and same refresh timer as the performer tile.
-    ageEl.setAttribute('data-elapsed-since', effectiveDispatchAt);
-    ageEl.setAttribute('data-elapsed-prefix', 'Stage running for: ');
-    ageEl.title = 'Time since this stage run was dispatched';
-    ageEl.textContent = 'Stage running for: ' + (fmtAge(effectiveDispatchAt) || '—');
-  } else {
-    ageEl.style.display = 'none';
-    ageEl.removeAttribute('data-elapsed-since');
+  phaseEl.title = 'Conductor state: ' + String(effectivePhase || '');
+  // 154 review: the description is visible text in the strip (truncated, full text on hover).
+  var descEl = document.getElementById('phase-desc');
+  var description = phaseDescriptions[effectivePhase] || '';
+  if (descEl) {
+    descEl.textContent = description;
+    descEl.title = description;
   }
+  phaseEl.className = 'phase ' + phaseClass(effectivePhase);
+  renderStatusStrip(s, activeSess);
 
   // Flowchart (async)
   updateFlowChart(s.phase);
 
-  // Active Work + Awaiting Review panels
+  // Cards (the board). The active runs are rendered by renderDashboardExtras.
   renderActiveWorkPanels(s);
-
-  // Idle state panel (059 Phase G)
-  var idlePanel = document.getElementById('idle-panel');
-  var workCard = document.getElementById('active-work-card');
-  if (idlePanel) {
-    if (isIdle(s)) {
-      idlePanel.style.display = '';
-      if (workCard) workCard.style.display = '';
-      var idleSummary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
-      var bCount = function(k) { var v = idleSummary[k]; return Number.isFinite(v) ? v : 0; };
-      var idleTotal = bCount('TODO') + bCount('IN_PROGRESS') + bCount('IN_REVIEW') + bCount('DONE');
-      var idleInProg = bCount('IN_PROGRESS');
-      var idlePoll = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '\u2014';
-      var idleCycles = s.cycles_completed != null ? esc(String(s.cycles_completed)) : '\u2014';
-      var idleFilterText = s.ownership_hint ? esc(s.ownership_hint) : '';
-      var idleFilter = idleFilterText ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + idleFilterText + ')</span>' : '';
-      document.getElementById('idle-panel-content').innerHTML =
-        '<table style="border-collapse:collapse;font-size:13px">' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Cards total</td>' +
-              '<td style="padding:4px 0"><strong>' + idleTotal + '</strong>' + idleFilter + '</td></tr>' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">In progress</td>' +
-              '<td style="padding:4px 0"><strong>' + idleInProg + '</strong></td></tr>' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Last checked</td>' +
-              '<td style="padding:4px 0"><strong>' + idlePoll + '</strong></td></tr>' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Checks completed</td>' +
-              '<td style="padding:4px 0"><strong>' + idleCycles + '</strong></td></tr>' +
-        '</table>';
-    } else {
-      idlePanel.style.display = 'none';
-      if (workCard) workCard.style.display = '';
-    }
-  }
+  markBoardOverflow();
+  var cardsSummary = document.getElementById('cards-summary');
+  if (cardsSummary) cardsSummary.textContent = boardCountsText(s);
 
   // T032: Live-update card detail view if one is open
   if (_selectedCardId) {
@@ -213,25 +164,6 @@ function renderState(s) {
     }).join('');
   } else {
     depCard.style.display = 'none';
-  }
-
-  // 048: Performer utilization
-  var utilCard = document.getElementById('role-utilization-card');
-  if (!utilCard) {
-    utilCard = document.createElement('div');
-    utilCard.id = 'role-utilization-card';
-    utilCard.className = 'card';
-    utilCard.style.display = 'none';
-    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Stage · Agent</th><th>Busy</th></tr></thead><tbody></tbody></table>';
-    var utilizationAnchor = document.getElementById('recent-cycles-card');
-    if (utilizationAnchor && utilizationAnchor.parentNode) { utilizationAnchor.parentNode.insertBefore(utilCard, utilizationAnchor); }
-  }
-  var utilTbody = utilCard.querySelector('tbody');
-  if (s.role_utilization && s.role_utilization.length > 0) {
-    utilCard.style.display = '';
-    utilTbody.innerHTML = s.role_utilization.map(utilizationRowHtml).join('');
-  } else {
-    utilCard.style.display = 'none';
   }
 
   // Open questions (355: card-attributed; the server scopes the list to
@@ -339,7 +271,7 @@ function renderState(s) {
         attr = esc(round.card_title);
       }
       if (round.stage) attr += ' <span class="muted">(' + esc(round.stage) + ')</span>';
-      var header = 'Round ' + (i + 1) + (attr ? ' — ' + attr : '');
+      var header = 'Round ' + (i + 1) + (attr ? ': ' + attr : '');
       return '<div class="qa-round">' +
         '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">' + header + '</div>' +
         (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
@@ -357,43 +289,16 @@ function renderState(s) {
   // 119: uptime at a glance, the exact start time on hover.
   var daemonStartEl = document.getElementById('daemon-start-time');
   var daemonUptime = fmtAge(s.daemon_start_time);
-  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : '—';
+  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : 'unknown';
   daemonStartEl.title = s.daemon_start_time ? 'Started ' + fmtTime(s.daemon_start_time) : '';
-  // 134: tokens and cost are the card's usage summary, by kind and model, with the
-  // breakdown and the pricing date on hover. Shared-pool usage lives on the session.
-  var tokenSource = activeSess || s;
-  var cardUsage = usageSummaryOf(tokenSource, 'card');
-  var fallbackTokens = tokenSource.card_tokens_total || s.card_tokens_total || derivePerformerTokenTotal(tokenSource);
-  var cardTokensTotal = usageTotalOf(cardUsage, fallbackTokens);
-  // 122: while a stage runs with nothing reported yet, show pending, not 0.
-  var tokenView = tokenReadout(cardTokensTotal, !!activeSess);
-  var usageTokensView = usageTokensReadout(cardUsage, fallbackTokens);
-  var tokensEl = document.getElementById('card-tokens-total');
-  tokensEl.textContent = tokenView.text;
-  tokensEl.title = tokenView.pending ? tokenView.title : usageTokensView.title;
-  var costReadout = cardUsage || activeSess ? usageCostReadout(cardUsage) : { text: '-', title: 'No card is running.' };
-  var costEl = document.getElementById('card-cost-estimate');
-  costEl.textContent = tokenView.pending ? '-' : costReadout.text;
-  costEl.title = tokenView.pending ? tokenView.title : costReadout.title;
+  // 134/154: the card's tokens and cost are on its active-run tile (layout.js); the
+  // spend figures are in the status strip.
   renderSpend(s.token_usage);
-  // 144: say which card the figure is for.
-  var tokenCardRef = cardRefText(activeSess || s);
-  document.getElementById('card-tokens-label').textContent = 'Tokens' + (tokenCardRef && /^#/.test(tokenCardRef) ? ' · ' + tokenCardRef : '');
-  // 144: "Check now" sits beside when the board was last checked.
-  var lastCheckedEl = document.getElementById('last-checked');
-  if (s.last_poll_at) {
-    lastCheckedEl.setAttribute('data-elapsed-since', s.last_poll_at);
-    lastCheckedEl.setAttribute('data-elapsed-prefix', 'Last checked ');
-    lastCheckedEl.setAttribute('data-elapsed-suffix', ' ago');
-    lastCheckedEl.textContent = 'Last checked ' + (fmtAge(s.last_poll_at) || '—') + ' ago';
-  } else {
-    lastCheckedEl.removeAttribute('data-elapsed-since');
-    lastCheckedEl.textContent = '';
-  }
-
   // Current run (141: the run's short name, with its full id in the title and a Copy button)
+  // 154: a run that an active-run tile already names is not repeated here.
   var agentEl = document.getElementById('agent-session');
-  if (s.agent_session_id) {
+  var tiled = activeRunSessions(s).some(function(sess) { return sess.session_id === s.agent_session_id; });
+  if (s.agent_session_id && !tiled) {
     agentEl.style.display = '';
     document.getElementById('agent-session-id').innerHTML = runIdHtml(s.agent_session_id, {copy: true});
   } else {
@@ -451,13 +356,13 @@ function renderState(s) {
     if (!shouldDisable) fpMsg.textContent = '';
   }
 
-  renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history, { collapse: true, limit: 5 });
+  // 154: the cycle log is on the History page (its Recent checks panel), not the Dashboard.
+  renderCycleHistoryInto(document.getElementById('history-cycles'), s.cycle_history, { collapse: true });
   // 139: the panels that are not known per symphony say so, last, so they win over the rows above.
   applyScopeNotes(s);
 }
 
 // esc + fmtBytes: /static/helpers.js (#349)
-var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
 
 var _selectedCardId = null;   // card_id shown in card-detail-view
 
@@ -487,7 +392,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/config':'Settings | Coordinare'};
+  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/history':'History | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   // 153: the label, not the link's text: a needs-attention badge sits in the link.
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
@@ -510,10 +415,10 @@ function renderSymphoniesPage(s) {
     if (tbl && sym) {
       var rows = tbl.querySelectorAll('tbody tr');
       function _setTd(row, val) { if (row) { var td = row.querySelector('td'); if (td) td.textContent = val; } }
-      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : '—');
-      _setTd(rows[2], sym.error_count != null ? sym.error_count : '—');
-      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : '—');
-      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : '—');
+      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : 'None');
+      _setTd(rows[2], sym.error_count != null ? sym.error_count : 'None');
+      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : 'None');
+      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : 'None');
       return;
     }
     loadSymphonyDetail(detail, el);
@@ -542,7 +447,7 @@ function renderSymphoniesPage(s) {
   var rows = syms.map(function(sym) {
     var bootBtn = sym.env_bootstrap_performer_id
       ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
-      : '<span style="color:var(--color-text-muted)">—</span>';
+      : '<span style="color:var(--color-text-muted)">None</span>';
     // 077: at-a-glance bootstrap status badge (colored dot + label) so a failing
     // env bootstrap is visible on the overview without opening the symphony.
     var bootStatus = '';
@@ -562,10 +467,10 @@ function renderSymphoniesPage(s) {
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyRepoHtml(sym) + '</td>'
-      + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
-      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
-      + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
-      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
+      + '<td>' + (sym.priority != null ? sym.priority : 'None') + '</td>'
+      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : 'None') + '</td>'
+      + '<td>' + (sym.error_count != null ? sym.error_count : 'None') + '</td>'
+      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : 'None') + '</td>'
       + '<td>' + bootStatus + bootBtn + '</td>'
       + '</tr>';
   }).join('');
@@ -622,12 +527,12 @@ async function loadSymphonyDetail(name, el) {
   ];
   var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
   var statusRows = [
-    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : '—'],
-    ['Cycles', st.cycle_count != null ? st.cycle_count : '—'],
-    ['Errors', st.error_count != null ? st.error_count : '—'],
-    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—'],
-    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
-    ['Last error', st.last_error ? esc(st.last_error) : '—'],
+    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
+    ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
+    ['Errors', st.error_count != null ? st.error_count : 'None'],
+    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
+    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : 'None'],
+    ['Last error', st.last_error ? esc(st.last_error) : 'None'],
   ].map(function(r) {
     return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
   }).join('');
@@ -694,18 +599,18 @@ async function loadSymphonyDetail(name, el) {
           + esc(tryCountText(ec.last_inference_attempts || '?')) + ', '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else {
-        infRow = '—';
+        infRow = 'None';
       }
       ecRows = [
         ['Status', '<span style="color:' + statusColor + '">' + statusText + '</span>'],
         ['Performer', esc(ecBootstrapId)],
-        ['Cache dir', esc(ec.cache_dir || '—')],
+        ['Cache dir', esc(ec.cache_dir || 'None')],
         ['Cache ready', ready ? 'yes' : 'no'],
         ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
-        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : '—'],
-        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : '—'],
+        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : 'None'],
+        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : 'None'],
         ['Service inference', infRow],
-        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : '—'],
+        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : 'None'],
       ].map(function(r) {
         return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
       }).join('');
@@ -798,7 +703,7 @@ async function loadSymphonyDetail(name, el) {
         var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init', {method: 'POST'});
         var d = await r.json();
         if (r.ok) {
-          msg.textContent = 'Accepted — building the wiki, a seed PR will open on completion';
+          msg.textContent = 'Accepted: building the wiki, a seed PR will open on completion';
           msg.style.color = 'var(--color-accent-green)';
           setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
         } else {

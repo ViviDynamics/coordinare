@@ -201,7 +201,8 @@ def test_hostile_symphony_names_are_escaped(page: Page, live_server_url: str, st
 @pytest.mark.e2e
 def test_no_user_facing_board_or_swimlane_text_remains(page: Page, live_server_url: str, store: DashboardStore) -> None:
     _open(page, live_server_url, store, _snapshot(_two_symphonies()))
-    expect(page.locator("#active-work-card h2")).to_have_text("Cards", timeout=_WAIT_LIVE)
+    # 154: the Cards heading carries the board's counts beside its name.
+    expect(page.locator("#active-work-card h2")).to_contain_text("Cards", timeout=_WAIT_LIVE)
     text = page.locator("body").inner_text()
     assert not re.search(r"\bBoard\b", text), "a Board label is still visible"
     assert "swimlane" not in text.lower(), "a swimlane label is still visible"

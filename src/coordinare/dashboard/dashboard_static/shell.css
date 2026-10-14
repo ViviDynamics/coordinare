@@ -219,3 +219,91 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .history-checks summary { cursor: pointer; color: var(--color-text-muted); }
 .history-pager { margin-top: 12px; display: flex; gap: 8px; }
 .history-notice { color: var(--color-accent-yellow); font-size: 12px; }
+
+/* 154: the Dashboard's status strip: one row, the headline first, the freshness and
+   the health dot at the end. It wraps only on a narrow screen. */
+.status-strip { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); padding: var(--space-2) var(--space-4); margin-bottom: 0; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-panel); font-size: 12px; }
+.status-strip .phase { font-size: 15px; line-height: 1.3; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-counts { color: var(--color-text-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.status-muted { color: var(--color-text-muted); white-space: nowrap; }
+.status-freshness { color: var(--color-text-muted); white-space: nowrap; }
+.status-freshness.conn-stale { color: var(--color-accent-yellow); }
+.status-actions { display: inline-flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.status-actions .action-btn { margin-top: 0; padding: 4px 12px; }
+.status-actions .action-msg { margin-top: 0; min-height: 0; }
+.status-health { background: transparent; border: none; padding: 0 var(--space-1); font-size: 14px; line-height: 1; }
+.status-health:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; border-radius: 3px; }
+
+/* 154: the active-runs section: a header with the utilization summary and the last check. */
+.active-runs-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-bottom: var(--space-3); }
+.active-runs { padding: 12px var(--space-4); }
+.cards-summary { font-size: 12px; font-weight: normal; margin-left: var(--space-2); }
+.active-runs-head h2 { margin-bottom: 0; }
+.active-runs-head .muted { font-size: 12px; }
+.active-runs .ap-tile-meta { margin-top: 2px; }
+.ap-tile .tl-dots { display: inline-flex; gap: 3px; margin-bottom: var(--space-2); }
+
+/* 154: the lower row: Metrics and System health side by side on a desktop. */
+.lower-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+@media (min-width: 1100px) {
+  .lower-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.panel-summary { cursor: pointer; font-size: 15px; font-weight: 600; color: var(--color-text-primary); list-style-position: inside; }
+#metrics-card[open] > .panel-summary { margin-bottom: var(--space-4); }
+#history-cycles-panel > .panel-summary { font-size: 14px; }
+#history-cycles-panel[open] > .panel-summary { margin-bottom: var(--space-3); }
+.panel-title { display: inline; margin: 0; font-size: 15px; font-weight: 600; }
+
+/* 154 review: the fold holds for long titles, four or more runs and the banner.
+   The Conductor description is visible text in the strip, cut with an ellipsis. */
+/* The strip is one row: its parts are cut, not wrapped, so the page height does not change with the words. */
+.status-strip { flex-wrap: nowrap; font-size: 11px; gap: var(--space-2) 12px; }
+@media (max-width: 1099px) { .status-strip { flex-wrap: wrap; } }
+.status-strip .phase { font-size: 14px; max-width: 180px; }
+.status-desc { max-width: 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.status-counts, .status-muted, .status-freshness, .status-actions { white-space: nowrap; }
+.status-actions .action-btn { font-size: 12px; }
+.swimlane-card-title, .ap-tile-title { font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ap-tile-title { font-size: 13px; font-weight: bold; -webkit-line-clamp: 1; }
+.ap-tile-header { flex-wrap: nowrap; margin-bottom: 4px; min-width: 0; }
+.ap-tile-role { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.ap-tile-track { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 4px; }
+.ap-tile-track .tl-dots { margin-bottom: 0; }
+/* The stage dots wrap inside a narrow board card instead of spilling past it. */
+.swimlane-card .tl-dots { display: inline-flex; flex-wrap: wrap; max-width: 100%; }
+.status-strip .phase { max-width: 230px; flex-shrink: 0; }
+.status-desc { max-width: 150px; flex: 0 1 150px; }
+.status-counts, .status-muted, .status-freshness, .status-actions { flex-shrink: 0; }
+.ap-tile-meta .view-run-link { margin: 0 0 0 8px; }
+.ap-tile-phase { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--color-text-muted); border: none; background: none; padding: 0; border-radius: 0; }
+#swimlane-section .swimlane-col { min-height: 0; }
+#swimlane-section .swimlane-col-body { max-height: 140px; overflow-y: auto; }
+.ap-tiles { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+.ap-tile { padding: 10px; }
+.ap-tile-meta { display: flex; flex-wrap: wrap; gap: 2px 0; font-size: 11px; color: var(--color-text-muted); }
+.ap-fact { white-space: nowrap; color: var(--color-text-muted); }
+.ap-fact strong { color: var(--color-text-primary); font-weight: 600; }
+.ap-tile-meta > .ap-fact + .ap-fact::before { content: "\00b7"; margin: 0 6px; color: var(--color-text-muted); }
+.ap-tile-meta .run-id-copy { font-size: 10px; padding: 0 4px; }
+.attention-panel { margin-bottom: var(--space-3); padding: 6px var(--space-4); }
+.attention-panel .attention-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: 0; }
+.attention-panel .action-btn { margin-top: 0; padding: 3px 10px; }
+#attention-panel:not(.expanded) #attention-list { display: none; }
+
+/* 154 review 2: the Conductor description has its own line under the headline. */
+.status-headline { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 360px; flex-shrink: 0; }
+.status-strip .phase { max-width: 100%; font-size: 14px; }
+.status-desc { display: block; max-width: 100%; flex: none; font-size: 11px; line-height: 16px; }
+
+/* 154 review 2: a board column that overflows fades at its foot and says how many cards are below. */
+#swimlane-section .swimlane-col-body { position: relative; }
+#swimlane-section .swimlane-col.is-overflowing .swimlane-col-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.swimlane-more { font-size: 11px; color: var(--color-text-muted); padding: 2px 6px; text-align: center; }
+/* Tighter spacing so the Cards row still clears the fold with the banner and four runs. */
+#active-work-card h2, #activity-feed-card h2 { margin-bottom: 10px; }
+.active-runs-head { margin-bottom: 8px; }
+.ap-tile { padding: 8px 10px; }
+.swimlane-more[hidden] { display: none; }

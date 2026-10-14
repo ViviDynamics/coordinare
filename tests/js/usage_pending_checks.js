@@ -28,8 +28,8 @@ eval(src);
 const NOTE = "Reported when the stage ends";
 
 // A running stage with nothing reported is pending, never 0.
-check("running with zero tokens is pending", tokenReadout(0, true), { text: "—", title: NOTE, pending: true });
-check("running with unknown tokens is pending", tokenReadout(null, true), { text: "—", title: NOTE, pending: true });
+check("running with zero tokens is pending", tokenReadout(0, true), { text: "no usage yet", title: NOTE, pending: true });
+check("running with unknown tokens is pending", tokenReadout(null, true), { text: "no usage yet", title: NOTE, pending: true });
 check("running with NaN tokens is pending", tokenReadout(NaN, true).pending, true);
 check("pending never renders the digit 0", /0/.test(tokenReadout(0, true).text), false);
 

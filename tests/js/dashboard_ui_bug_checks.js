@@ -37,14 +37,13 @@ check("missing queued field uses the normal colour",
   utilizationBarColor({ role: "implementer", active: 1, max: 1 }), "var(--color-bar-fill)");
 check("queued work is highlighted",
   utilizationBarColor({ role: "implementer", active: 1, max: 1, queued: 2 }), "var(--color-accent-yellow)");
-var busyRow = utilizationRowHtml({ role: "implementer", active: 1, max: 1, queued: 0 });
-has("busy row never uses the full/red colour", busyRow, "color-bar-full", false);
-has("busy row shows no queued count", busyRow, "queued", false);
-has("busy row says how many are busy", busyRow, " 1 of 1 busy");
-var queuedRow = utilizationRowHtml({ role: "qa", active: 1, max: 1, queued: 3 });
-has("queued row shows the queued count", queuedRow, "3 queued");
-has("queued row is highlighted", queuedRow, "var(--color-accent-yellow)");
-has("role names are escaped", utilizationRowHtml({ role: "<b>x", active: 0, max: 1 }), "&lt;b&gt;x");
+// 154: the bar moved to the Performers page table (utilizationBarHtml); the busy text is its own cell.
+var busyBar = utilizationBarHtml({ role: "implementer", active: 1, max: 1, queued: 0 });
+has("busy bar never uses the full/red colour", busyBar, "color-bar-full", false);
+has("busy bar is the normal fill", busyBar, "var(--color-bar-fill)");
+var queuedBar = utilizationBarHtml({ role: "qa", active: 1, max: 1, queued: 3 });
+has("queued bar is highlighted", queuedBar, "var(--color-accent-yellow)");
+has("the bar is 100 percent full when the role is full", busyBar, "width:100%");
 
 // --- 124: no raw ProjectV2 item id in the visible text -----------------------
 const NODE = "PVTI_lADOBjmjsc4Bkx5YzhANaH0";

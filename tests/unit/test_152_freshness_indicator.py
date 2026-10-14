@@ -15,7 +15,7 @@ from tests.unit.dashboard_js_slices import page_source, shipped_function
 
 
 def test_header_has_the_freshness_slot_and_the_page_refreshes_it_every_second() -> None:
-    assert '<span id="connection-label">Connecting</span><span id="connection-detail"></span>' in page_source()
+    assert '<span id="connection-label" role="status" aria-live="polite">Connecting</span><span id="connection-detail"></span>' in page_source()
     assert "refreshElapsedReadouts(document); refreshFreshness(); }, 1000);" in page_source()
 
 

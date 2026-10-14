@@ -170,8 +170,12 @@ def test_session_summary_exposes_a_queued_control() -> None:
 def test_actions_script_is_shipped_and_wired() -> None:
     assert "actions" in _DASHBOARD_JS_FILES
     performers = _DASHBOARD_JS_SOURCES["performers"]
-    assert performers.count("cardActionsHtml(sess, s)") == 2  # the tile and card detail
-    assert performers.count("pendingControlHtml(sess)") == 2
+    layout = _DASHBOARD_JS_SOURCES["layout"]
+    # 154: the active-run tile moved to layout.js; the card detail stays in performers.js.
+    assert performers.count("cardActionsHtml(sess, s)") == 1  # the card detail
+    assert layout.count("cardActionsHtml(sess, s)") == 1  # the active-run tile
+    assert performers.count("pendingControlHtml(sess)") == 1
+    assert layout.count("pendingControlHtml(sess)") == 1
     actions = _DASHBOARD_JS_SOURCES["actions"]
     assert "window.confirm(cardActionEffect(kind, stage))" in actions
     assert "performers" in _DASHBOARD_JS_FILES and _DASHBOARD_JS_FILES.index("actions") > _DASHBOARD_JS_FILES.index("helpers")

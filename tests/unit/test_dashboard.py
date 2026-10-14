@@ -246,7 +246,10 @@ def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
     assert '<div class="card full">\n  <h2>Workflow</h2>' not in page_source()
     assert 'id="performers-card" class="card full"' not in page_source()
     assert 'id="active-performers" class="card full"' not in page_source()
-    assert 'id="active-performers" class="card"' in page_source()
+    # 154: the active runs are a card that spans the page, with the board and activity beside each other.
+    assert 'id="active-performers" class="card active-runs"' in page_source()
+    assert '<div class="card" id="active-work-card">' in page_source()
+    assert 'id="activity-feed-card" class="card"' in page_source()
     assert 'id="clarifications-card" class="card full"' not in page_source()
     assert 'id="clarifications-card" class="card"' in page_source()
     assert '<div class="card full">\n  <h2>Recent Cycles</h2>' not in page_source()
@@ -1470,15 +1473,15 @@ def test_skip_role_monitoring_agent_phase() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_html_includes_token_elements() -> None:
-    """Dashboard HTML includes card-tokens-total and card-cost-estimate elements."""
+def test_dashboard_html_carries_the_status_strip_and_the_tile_tokens() -> None:
+    """154: the status strip holds the spend; a running card's tokens and cost are on its active-run tile."""
     client = _make_app()
     res = client.get("/")
     assert res.status_code == 200
-    assert "card-tokens-total" in res.text
-    assert "card-cost-estimate" in res.text
-    assert 'id="card-tokens-label">Tokens<' in res.text
-    assert "Estimated Cost" in res.text
+    assert 'id="status-strip"' in res.text
+    assert 'id="spend-strip"' in res.text
+    assert "card-tokens-total" not in res.text
+    assert 'class="ap-tile-tokens"' in _DASHBOARD_JS_SOURCES["layout"]
 
 
 # --- 046: Dependency state in dashboard snapshot ---
