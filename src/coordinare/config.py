@@ -1225,6 +1225,13 @@ class ProjectConfiguration(BaseSettings):
         default=3, ge=1, le=50,
         description="How many cards may wait on PR review at once before new cards stop being started.",
     )
+    # 186: a card may hold its slot in monitoring_pr while waiting on CI checks or
+    # on the daemon, but only this long. After that it is treated as waiting on a
+    # human: it releases the slot and counts toward max_cards_in_review.
+    review_slot_hold_seconds: int = Field(
+        default=900, ge=60,
+        description="How long a card may hold its slot while waiting on checks or the daemon before it is treated as waiting on a human.",
+    )
 
     # 073 (drive-by) — Hold all regular card dispatch while env_bootstrap is
     # in-flight.  When ``False`` (default), only the on-disk ``activate.sh``

@@ -49,7 +49,9 @@ from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
+    configured_hold_seconds,
     configured_review_limit,
+    expire_review_holds,
     has_live_side_writer,
     has_started,
     is_parked_in_review,
@@ -1615,6 +1617,9 @@ def _compute_session_eligibilities(
     selection to started work only and records nothing else, so the full pass
     that follows is the one that reports skip reasons and review waits.
     """
+    # #186: a non-human hold in monitoring_pr that outlived its bound is a human
+    # wait before anything is selected, so it releases its slot this cycle.
+    expire_review_holds(active_sessions, hold_seconds=configured_hold_seconds(state.get("config")))
     # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
     # so sessions blocked by a now-closed off-board issue may be conservatively skipped
     # this cycle.  The full resolution runs inside each session's check_board tick and

@@ -323,6 +323,11 @@ class CoordinareState(TypedDict, total=False):
     # "human" (releases the slot), "automation" (keeps it), or absent/None when
     # not evaluated. Mirrored to the session; see session.CardSession.
     review_wait: str | None
+    # 186: the hold bound's clock for a non-human wait (see session.CardSession).
+    review_wait_since: datetime | None
+    review_wait_reason: str | None
+    review_wait_head: str | None
+    review_wait_expired: bool
     idle_timeout_retries: dict[str, dict[str, Any]]
     # 076 dispatcher dedup — declared so the initial_state() defaults type-check
     # and the keys survive LangGraph's state merge (types mirror CardSession).

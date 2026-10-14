@@ -678,6 +678,12 @@ max_concurrent_cards: 1
 # max_concurrent_cards. Set to null for no cap. Range: 1-50. Default: 3.
 max_cards_in_review: 3
 
+# How long a card may keep its slot while it waits on CI checks or on the daemon
+# (anything it is not waiting on a person for). Past this, it is treated as waiting
+# on a human: it releases the slot and counts toward max_cards_in_review, and it
+# takes a slot again when it needs a performer. Range: 60 and up. Default: 900.
+review_slot_hold_seconds: 900
+
 # Maximum revision rounds per PR (reviewer feedback going back to the implementer)
 # before blocking for human review.
 # Each "changes requested" that routes back to the implementer counts as one cycle.

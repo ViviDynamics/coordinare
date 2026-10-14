@@ -1,17 +1,69 @@
 """Reserve issue slots across performer stages, independently of role capacity."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
+
+import structlog
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
+logger = structlog.get_logger(__name__)
+
 # #186: what a card in monitoring_pr is waiting on, as monitor_pr records it in
 # the session's ``review_wait``. Only a wait on a human releases the slot and
 # counts toward max_cards_in_review. Anything the daemon or CI resolves next
-# without a person is "automation": the card keeps its reservation.
+# without a person is "automation": the card keeps its reservation, but only for
+# ``review_slot_hold_seconds``. A longer hold is treated as a wait on a human.
 REVIEW_WAIT_HUMAN: Final = 'human'
 REVIEW_WAIT_AUTOMATION: Final = 'automation'
+REVIEW_SLOT_HOLD_SECONDS_DEFAULT: Final = 900
+REVIEW_WAIT_UNEVALUATED: Final = 'unevaluated'
+
+
+def utc_now() -> datetime:
+    """The clock for hold bounds. One seam, so a test can cross the bound."""
+    return datetime.now(UTC)
+
+
+def configured_hold_seconds(config: Any) -> int:
+    """``review_slot_hold_seconds``, or the default when the config does not carry it."""
+    raw = getattr(config, 'review_slot_hold_seconds', None)
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else REVIEW_SLOT_HOLD_SECONDS_DEFAULT
+
+
+def expire_review_holds(sessions: dict[str, Any], *, hold_seconds: int) -> list[str]:
+    """#186: a non-human hold in monitoring_pr that outlives its bound becomes a human wait.
+
+    A card that is not waiting on a human, and has no live work, may keep its slot
+    only while the daemon is about to act on it. The first sighting stamps
+    ``review_wait_since`` (a card never evaluated, or restored after a restart, is
+    timed from there). Past ``hold_seconds`` the card is recorded as waiting on a
+    human: it releases its slot, still counts toward the review cap, is still ticked
+    every cycle, and regains a slot through the returning path when it needs a
+    performer. Logged once per expiry.
+    """
+    now = utc_now()
+    expired: list[str] = []
+    for cid, session in sessions.items():
+        if session.get('phase') != 'monitoring_pr' or has_live_work(session):
+            continue
+        if session.get('review_wait') == REVIEW_WAIT_HUMAN:
+            continue
+        since = session.get('review_wait_since')
+        if not isinstance(since, datetime):
+            session['review_wait_since'] = now
+            continue
+        held = (now - since).total_seconds()
+        if held <= hold_seconds:
+            continue
+        reason = session.get('review_wait_reason') or REVIEW_WAIT_UNEVALUATED
+        session['review_wait'] = REVIEW_WAIT_HUMAN
+        session['review_wait_expired'] = True
+        expired.append(cid)
+        logger.warning('monitor_pr.slot_hold_expired', card_id=cid, reason=reason, seconds=int(held))
+    return expired
 
 
 def has_live_side_writer(session: dict[str, Any]) -> bool:
@@ -68,21 +120,21 @@ def has_open_pr(session: dict[str, Any]) -> bool:
 
 
 def has_started(session: dict[str, Any]) -> bool:
-    """#186: work of ours is under way or done for this card, PR or not.
+    """#186: the card was accepted and has work of ours in flight, PR or not.
 
-    A finished stage leaves a record on the session (the assessment, the
-    blueprint, stage verdicts), so a card past assessing or architecting counts
-    as started even when it has no PR yet and has lost its reservation, for
-    example after a block and unblock or a readoption after restart. A started
-    card is returning work: it is admitted ahead of cards that have not started
-    and is not held by the review cap.
+    Started means the work was accepted: an open PR, a blueprint (architecting
+    done), a stage verdict for a stage past assessing, or an accepted assessment.
+    A declined assessment (not work, or needs a split) is not started, so a card
+    that comes back to To Do is new work again. A started card that has lost its
+    PR fields (blocked then unblocked, or readopted after restart) is returning
+    work: it is admitted ahead of cards that have not started and is not held by
+    the review cap.
     """
-    return (
-        has_open_pr(session)
-        or bool(session.get('assessment'))
-        or bool(session.get('blueprint'))
-        or bool(session.get('stage_verdicts'))
-    )
+    assessment = session.get('assessment') or {}
+    accepted = bool(assessment) and not assessment.get('declined')
+    verdicts = session.get('stage_verdicts') or {}
+    past_assessing = any(stage != 'assessing' for stage in verdicts)
+    return has_open_pr(session) or accepted or bool(session.get('blueprint')) or past_assessing
 
 
 def parked_in_review(sessions: dict[str, Any]) -> int:

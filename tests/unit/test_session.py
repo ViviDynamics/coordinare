@@ -389,7 +389,7 @@ def test_session_fields_match_card_session_keys() -> None:
         "observer_repetition_count", "observer_verdict", "observer_correction",
         "observer_verdicts", "system_error_identical_count",
         # 186: absent until monitor_pr has evaluated the card in monitoring_pr.
-        "review_wait",
+        "review_wait", "review_wait_since", "review_wait_reason", "review_wait_head", "review_wait_expired",
     }
     for field in _SESSION_FIELDS:
         if field in session_optional:
@@ -440,7 +440,7 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "observer_verdicts",
         "system_error_identical_count",
         # 186: absent until monitor_pr has evaluated the card in monitoring_pr.
-        "review_wait",
+        "review_wait", "review_wait_since", "review_wait_reason", "review_wait_head", "review_wait_expired",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

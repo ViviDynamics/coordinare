@@ -56,6 +56,15 @@ releases a slot, so that a card on checks keeps its reservation and is not count
   `max_concurrent_cards`.
 - Liveness has one definition, `has_live_work`: a live performer or agent with a session,
   or a live side writer. Pickup counting in `check_board` and the budget both use it.
+**Bounded holds (#186 follow-up).** A card may keep its slot in `monitoring_pr` for
+`review_slot_hold_seconds` (default 900) while it waits on checks or the daemon. After
+that it is recorded as a wait on a human, and `monitor_pr.slot_hold_expired` is logged
+once with the reason. The clock starts at the first sighting of a non-human hold and
+restarts when the reason or the PR head changes. An expired hold stays a human wait until
+the PR moves on. A red base branch, a comment poll that cannot complete (no PR number), and
+a non-transient `monitor_pr` error are human waits at once. A declined assessment is not
+"started": a card that comes back to To Do is new work again.
+
 - In the symphony override editor, "No cap (unlimited)" saves `null` for
   `max_cards_in_review`. An empty input removes the override and inherits the global default.
 
