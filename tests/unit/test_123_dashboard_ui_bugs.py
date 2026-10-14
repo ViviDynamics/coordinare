@@ -31,7 +31,7 @@ def _sliced_js() -> str:
     return "\n\n".join(
         [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtAge"), label_helpers_js()]
         + [_fn(_PERFORMERS, name) for name in (
-            "utilizationBarColor", "utilizationRowHtml", "cardRefHtml",
+            "utilizationBarColor", "utilizationBarHtml", "cardRefHtml",
             "elapsedSinceHtml", "refreshElapsedReadouts", "collapseCycleRows",
         )],
     )
@@ -52,9 +52,10 @@ def test_dashboard_ui_bug_client_js(tmp_path: Path) -> None:
     assert int(summary.group(1)) >= 30, f"only {summary.group(1)} checks ran:\n{report}"
 
 
-def test_utilization_table_uses_the_shared_row_renderer() -> None:
-    """#123: the template no longer picks the bar colour from the percentage."""
-    assert "s.role_utilization.map(utilizationRowHtml)" in page_source()
+def test_utilization_table_uses_the_shared_bar_renderer() -> None:
+    """#123, moved by #154: the Performers page table draws the bar, and the template never picks a colour from the percentage."""
+    assert "utilizationBarHtml(r) + ' ' + esc(busyText(activeVal, maxVal, 0))" in _PERFORMERS
+    assert "role-utilization" not in page_source()
     assert "pct >= 100" not in page_source()
 
 
@@ -66,17 +67,19 @@ def test_performer_tile_no_longer_prints_the_card_node_id() -> None:
 
 def test_elapsed_readouts_share_one_start_point_and_one_timer() -> None:
     """#125"""
+    # 154: the Conductor card's "Stage running for" line is gone; the tile's elapsed readout is the one.
     assert "Agent running for" not in page_source()
-    assert "data-elapsed-prefix', 'Stage running for: '" in page_source()
+    assert "Stage running for" not in page_source()
     assert page_source().count("refreshElapsedReadouts(document)") == 1
-    assert "elapsedSinceHtml(dispatchAt)" in _PERFORMERS
+    assert "elapsedSinceHtml(dispatchAt)" in _DASHBOARD_JS_SOURCES["layout"]
 
 
-def test_dashboard_panel_collapses_and_caps_recent_checks() -> None:
-    """#128: collapsed and capped on the Dashboard. #150: History lists runs from the server instead."""
-    assert "s.cycle_history, { collapse: true, limit: 5 }" in page_source()
+def test_recent_checks_are_collapsed_and_capped_on_the_history_page() -> None:
+    """#128 kept the list collapsed; #150 put runs on History, and #154 moved this cycle log there too."""
+    assert "renderCycleHistoryInto(document.getElementById('history-cycles'), s.cycle_history, { collapse: true });" in page_source()
     assert "document.getElementById('history-page-section'), s.cycle_history);" not in page_source()
     assert ".cycle-history-compact { max-height: 240px; overflow-y: auto; }" in page_source()
+    assert 'id="history-cycles-panel"' in page_source()
 
 
 def test_the_configuration_tabs_scroll_inside_their_own_container() -> None:

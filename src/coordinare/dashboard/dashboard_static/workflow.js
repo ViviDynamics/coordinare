@@ -30,7 +30,7 @@ function buildFlowDef(phase) {
     '  RF["relay_feedback"]',
     '  HB["handle_blocked"]',
     '  N["notify"]',
-    '  IDLE(["idle — waiting"])',
+    '  IDLE(["idle, waiting"])',
     '  WAIT1(["wait for next check"])',
     '  WAIT2(["wait for next check"])',
     '  DONE1(["done"])',

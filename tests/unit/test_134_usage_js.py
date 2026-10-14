@@ -44,10 +44,12 @@ def test_usage_js_is_loaded_before_the_scripts_that_call_it() -> None:
     assert order.index("usage") < order.index("performers") < order.index("app")
 
 
-def test_the_header_carries_the_spend_strip_and_the_metrics_line() -> None:
-    assert 'id="spend-strip"' in _DASHBOARD_HTML
-    assert 'id="spend-today"' in _DASHBOARD_HTML
-    assert 'id="spend-week"' in _DASHBOARD_HTML
+def test_the_status_strip_carries_the_spend_and_metrics_no_longer_repeat_it() -> None:
+    """#154: the spend strip moved from the header into the status strip; Metrics keeps no spend figures."""
+    strip = re.search(r'<section id="status-strip".*?</section>', _DASHBOARD_HTML, re.DOTALL)
+    assert strip is not None and 'id="spend-strip"' in strip.group(0)
+    assert 'id="spend-today"' not in _DASHBOARD_HTML
+    assert 'id="spend-week"' not in _DASHBOARD_HTML
 
 
 def test_dashboard_html_stays_under_its_budget() -> None:

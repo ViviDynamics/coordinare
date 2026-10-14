@@ -310,6 +310,17 @@ function renderAttentionBanner(items, sig) {
   _attentionRenderedSig = sig;
 }
 
+// 154 review: the banner is one line until it is opened. The list shows only when expanded.
+function toggleAttentionList() {
+  var panel = document.getElementById('attention-panel');
+  var button = document.getElementById('attention-toggle');
+  if (!panel || !button) return;
+  var open = !panel.classList.contains('expanded');
+  panel.classList.toggle('expanded', open);
+  button.setAttribute('aria-expanded', String(open));
+  button.textContent = open ? 'Hide' : 'Show';
+}
+
 // The banner's dismiss button. The title and the favicon keep the true count.
 function dismissAttention() {
   if (!_attentionSig) return;

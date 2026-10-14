@@ -115,8 +115,11 @@ def test_rows_show_a_chevron_and_the_page_styles_it() -> None:
 
 
 def test_every_run_link_uses_the_shared_helper() -> None:
-    # The Active performers tile, the swimlane card and the card detail.
-    assert _PERFORMERS.count("viewRunLinkHtml(sess) +") == 3
+    # The card detail in performers.js and the active-run tile in layout.js (154). The board card
+    # shows no link while its card has a tile, so it reads the helper only when the card is not running.
+    assert _PERFORMERS.count("viewRunLinkHtml(sess) +") == 1
+    assert _DASHBOARD_JS_SOURCES["layout"].count("viewRunLinkHtml(sess) +") == 1
+    assert "(isStageRunning(sess) ? '' : viewRunLinkHtml(sess))" in _PERFORMERS
     assert "function viewRunLinkHtml(" in _PERFORMERS
 
 

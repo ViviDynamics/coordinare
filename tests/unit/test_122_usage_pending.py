@@ -52,10 +52,12 @@ def test_usage_pending_client_js(tmp_path: Path) -> None:
     assert int(summary.group(1)) >= 20, f"only {summary.group(1)} checks ran:\n{report}"
 
 
-def test_metrics_card_uses_the_pending_readout() -> None:
-    assert "tokenReadout(cardTokensTotal, !!activeSess)" in page_source()
+def test_the_active_run_tile_uses_the_pending_readout() -> None:
+    """#154: the card's tokens moved from Metrics to its active-run tile, which keeps the pending readout."""
+    layout = _DASHBOARD_JS_SOURCES["layout"]
+    assert "return tokenReadout(usageTotalOf(cardUsage, fallback), true);" in layout
     assert "cardTokensTotal.toLocaleString();" not in page_source()
-    assert "costEl.textContent = tokenView.pending ? '-' : costReadout.text;" in page_source()
+    assert "costEl.textContent" not in page_source()
 
 
 def test_performer_detail_uses_the_pending_readout() -> None:

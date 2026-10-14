@@ -41,16 +41,12 @@ function utilizationBarColor(r) {
   return Number(r && r.queued) > 0 ? 'var(--color-accent-yellow)' : 'var(--color-bar-fill)';
 }
 
-function utilizationRowHtml(r) {
+// 154: the role's busy bar. The Performers page table carries it; the Dashboard shows a summary line.
+function utilizationBarHtml(r) {
   var max = Number(r.max) || 0;
   var active = Number(r.active) || 0;
-  var queued = Number(r.queued) || 0;
   var pct = max > 0 ? Math.min(100, Math.round(active / max * 100)) : 0;
-  var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
-  var queuedHtml = queued > 0
-    ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + roleOrStageLabel(r.role) + ' slot">· ' + queued + ' queued</span>'
-    : '';
-  return '<tr><td>' + roleOrStageLabel(r.role) + '</td><td>' + bar + ' ' + active + ' of ' + max + ' busy' + queuedHtml + '</td></tr>';
+  return '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
 }
 
 // 124: users see the issue number, never the raw ProjectV2 item id. The node
@@ -77,7 +73,7 @@ function cardRefHtml(sess) {
 // same run can never disagree. The element carries its start point.
 function elapsedSinceHtml(iso) {
   if (!iso) return '<strong>—</strong>';
-  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || '—') + '</strong>';
+  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || 'unknown') + '</strong>';
 }
 
 function refreshElapsedReadouts(root) {
@@ -85,7 +81,7 @@ function refreshElapsedReadouts(root) {
   for (var i = 0; i < nodes.length; i++) {
     var prefix = nodes[i].getAttribute('data-elapsed-prefix') || '';
     var suffix = nodes[i].getAttribute('data-elapsed-suffix') || '';
-    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || '—') + suffix;
+    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || 'unknown') + suffix;
   }
   // 138: the same tick keeps the headline's "next check in Ns" counting down.
   if (typeof refreshConductorHeadline === 'function') refreshConductorHeadline();
@@ -148,7 +144,7 @@ function isStageRunning(sess) {
 function tokenReadout(tokens, running) {
   var n = Number(tokens);
   if (isFinite(n) && n > 0) return { text: Math.floor(n).toLocaleString(), title: '', pending: false };
-  if (running) return { text: '—', title: USAGE_PENDING_NOTE, pending: true };
+  if (running) return { text: 'no usage yet', title: USAGE_PENDING_NOTE, pending: true };
   return { text: '0', title: '', pending: false };
 }
 
@@ -311,7 +307,7 @@ function renderActiveWorkPanels(s) {
     }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
-      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
+      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column. Add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
       : '<span class="empty-state">Waiting for cards&hellip;</span>';
     if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
     return;
@@ -337,7 +333,8 @@ function renderActiveWorkPanels(s) {
     }
 
     var liveLine = '';
-    if (sess) {
+    // 154: a running card's phase, stage, elapsed time and cost are on its active-run tile.
+    if (sess && !isStageRunning(sess)) {
       var skip = skipAll[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
@@ -356,7 +353,7 @@ function renderActiveWorkPanels(s) {
           ? '<span style="color:var(--color-accent-yellow)">' + esc(elapsed) + '</span>'
           : (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed)))
         : '';
-      var costStr = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
+      var costStr = sess.agent_dispatch_at ? costHtml(sess, s) : 'None';
       var parts = [phaseLabel];
       if (!queuedLabel && stage) parts.push('<code>' + stage + '</code>');
       if (elapsedHtml) parts.push(elapsedHtml);
@@ -379,11 +376,11 @@ function renderActiveWorkPanels(s) {
     // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
     var pipelineDots = timelineDotsHtml(cardPipelineOf(s, iid));
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
-      '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
+      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + prBadge + '</div>' +
       pipelineDots +
       waitLine +
       liveLine +
-      viewRunLinkHtml(sess) +
+      (isStageRunning(sess) ? '' : viewRunLinkHtml(sess)) +
       '</div>';
   }
 
@@ -391,7 +388,7 @@ function renderActiveWorkPanels(s) {
   COLUMNS.forEach(function(col) {
     var entries = columnItems[col];
     var body = entries.length === 0
-      ? '<div class="swimlane-empty">&mdash;</div>'
+      ? '<div class="swimlane-empty">None</div>'
       : entries.map(function(entry) { return renderCard(entry, col); }).join('');
     // 149: the To Do header says how full the card slots are and how many cards queue.
     var headerTitle = '';
@@ -416,14 +413,14 @@ function renderCardDetailContent(sess, s) {
     ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
     : formatPhaseLabel(sess.phase || '');
   var cardLink = sess.issue_url && /^https?:\/\//i.test(sess.issue_url)
-    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
-    : esc(sess.card_title || sess.card_id || '—');
-  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || 'unknown') + ' &#8599;</a>'
+    : esc(sess.card_title || sess.card_id || 'unknown');
+  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || 'unknown') : 'None';
   var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
   var elapsedHtml = stale
     ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
     : esc(rawElapsed);
-  var cost = sess.agent_dispatch_at ? costHtml(sess, s) : '—';
+  var cost = sess.agent_dispatch_at ? costHtml(sess, s) : 'None';
   // 348 (closes TODO(054)): logs come from the service holding this card's slot.
   var logs = Array.isArray(sess.performer_logs) ? sess.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
@@ -514,76 +511,21 @@ function closeCardDetail() {
   if (detailView) detailView.style.display = 'none';
 }
 
+// 154: the active-runs section. One tile per running card (layout.js), the idle
+// line when none runs, and the utilization summary and last check in its header.
 function renderActivePerformers(s) {
   var container = document.getElementById('active-performer-tiles');
-  var section = document.getElementById('active-performers');
-  if (!container || !section) return;
+  var summaryEl = document.getElementById('active-runs-summary');
+  if (!container) return;
+  if (summaryEl) summaryEl.textContent = utilizationSummaryText(s);
   // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
-  var activeSessions = sessions.filter(function(sess) {
-    return sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent';
-  });
+  var activeSessions = sessions.filter(isStageRunning);
   if (activeSessions.length === 0) {
-    section.style.display = '';
-    var phase = s.phase_label || s.phase || 'idle';
-    var cycleCount = s.cycles_completed != null ? s.cycles_completed : '—';
-    var summary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
-    function count(key) {
-      var value = summary[key];
-      return Number.isFinite(value) ? value : 0;
-    }
-    var pollHint = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '—';
-    var filterHint = s.ownership_hint ? esc(s.ownership_hint) : '';
-    container.innerHTML =
-      '<div class="ap-idle">' +
-        '<div class="ap-idle-title">No active performers</div>' +
-        '<div class="ap-idle-rows">' +
-          '<div class="ap-idle-row">' +
-            '<span class="ap-pill">Status: <strong>' + esc(phase) + '</strong></span>' +
-            '<span class="ap-pill">Checks: <strong>' + esc(String(cycleCount)) + '</strong></span>' +
-            '<span class="ap-pill">Last checked: <strong>' + pollHint + '</strong></span>' +
-            (filterHint ? '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span>' : '') +
-          '</div>' +
-          '<div class="ap-idle-row">' +
-            '<span class="ap-pill">TODO <strong>' + String(count('TODO')) + '</strong></span>' +
-            '<span class="ap-pill">IN_PROGRESS <strong>' + String(count('IN_PROGRESS')) + '</strong></span>' +
-            '<span class="ap-pill">IN_REVIEW <strong>' + String(count('IN_REVIEW')) + '</strong></span>' +
-            '<span class="ap-pill">DONE <strong>' + String(count('DONE')) + '</strong></span>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
+    container.innerHTML = activeRunsIdleHtml(s);
     return;
   }
-  section.style.display = '';
-  var html = '';
-  activeSessions.forEach(function(sess) {
-    var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '—';
-    var title = sess.card_title || sess.card_id || '—';
-    var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
-    var phaseLabel = sess.phase === 'blocked'
-      ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
-      : formatPhaseLabel(sess.phase || 'active');
-    html += '<div class="ap-tile">' +
-      '<div class="ap-tile-header">' +
-        '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
-        '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
-        cardActionsHtml(sess, s) +
-        viewRunLinkHtml(sess) +
-      '</div>' +
-      '<div class="ap-tile-title">' + esc(title) + '</div>' +
-      '<div class="ap-tile-meta">' +
-        '<span class="ap-pill ap-tile-elapsed">&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
-        (sess.session_id ? '<span class="ap-pill">' + runIdHtml(sess.session_id) + '</span>' : '') +
-        cardRefHtml(sess) +
-        pendingControlHtml(sess) +
-        // 138 FR-032: quiet marker — observation only, never a phase change.
-        // .af-kind carries no colours of its own, so .ev-quiet is not overridden
-        // by .ap-pill (equal specificity, later in the sheet).
-        (_afQuietCards[sess.card_id] ? '<span class="af-kind ev-quiet">QUIET</span>' : '') +
-      '</div>' +
-      '</div>';
-  });
-  container.innerHTML = html;
+  container.innerHTML = activeSessions.map(function(sess) { return activeRunTileHtml(sess, s); }).join('');
 }
 
 function renderDashboardExtras(s) {
@@ -666,10 +608,10 @@ function renderPerformersPage(s) {
     var badge = '<span class="role-status-badge ' + (isActive ? 'role-active' : 'role-idle') + '">' + (isActive ? 'active' : 'idle') + '</span>';
     var cards = (activeByStage[r.role] || []).map(function(sess) {
       return esc((sess.card_title || sess.card_id || '').substring(0, 40));
-    }).join('<br>') || '<span class="empty-state">—</span>';
+    }).join('<br>') || '<span class="empty-state">None</span>';
     var maxVal = r.max > 0 ? r.max : 1;
     var activeVal = isActive ? (r.active || 1) : 0;
-    var utilStr = esc(busyText(activeVal, maxVal, 0));
+    var utilStr = utilizationBarHtml(r) + ' ' + esc(busyText(activeVal, maxVal, 0));
     var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">· ' + r.queued + ' queued</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
       '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td><td class="row-chevron" aria-hidden="true"></td></tr>';
@@ -712,7 +654,7 @@ function renderPerformersPage(s) {
     : '<div class="muted">No run in progress for this role.</div>';
   // 348: the panels below describe ONE card -- name it.
   var telemetryFor = selectedSessions.length > 1
-    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || '—') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
+    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'unknown') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
     : '';
   // 348: telemetry is per-card, so read the session running this role rather
   // than top-level state (null in shared-pool mode). No fallback: a role with
@@ -736,7 +678,7 @@ function renderPerformersPage(s) {
   var metricsLine = (metrics && metrics.pid != null)
     ? (
       'PID ' + String(metrics.pid) +
-      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : '—') +
+      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : 'unknown') +
       ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
       ' · Tokens ' + tokenText
     )

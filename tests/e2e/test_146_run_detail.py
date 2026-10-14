@@ -115,11 +115,13 @@ def test_the_active_performers_tile_links_to_the_run(page: Page, live_server_url
 
 
 @pytest.mark.e2e
-def test_the_board_card_links_to_the_run_without_opening_the_card(
+def test_the_running_card_links_to_the_run_from_its_tile_and_not_from_the_board(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _open_dashboard(page, live_server_url, store)
-    card_link = page.locator("#swimlane-section .swimlane-card").get_by_role("link", name="View run")
+    # 154 review: the View run link is on the tile; the board card does not repeat it while it has a tile.
+    expect(page.locator("#swimlane-section .swimlane-card").get_by_role("link", name="View run")).to_have_count(0)
+    card_link = page.locator("#active-performers .ap-tile").get_by_role("link", name="View run")
     expect(card_link).to_be_visible(timeout=_WAIT_LIVE)
     card_link.click()
     expect(page).to_have_url(_RUN_URL)

@@ -40,12 +40,13 @@ check("dispatching names the card and the agent",
   conductorHeadline({ phase: "dispatching", active_sessions: [{ phase: "dispatching", performer_stage: "assessing", issue_number: 65 }] }, null),
   "Dispatching #65 to Assessor");
 var soon = new Date(Date.now() - 12000).toISOString();
-check("idle counts down to the next check",
-  conductorHeadline({ phase: "idle", poll_interval_seconds: 30, last_poll_at: soon }, null), "Idle: next check in 18s");
+// 154: the countdown is the freshness line's (152); the headline says only that it is idle.
+check("idle says it is waiting, whatever the timing",
+  conductorHeadline({ phase: "idle", poll_interval_seconds: 30, last_poll_at: soon }, null), "Idle: waiting for the next check");
 check("idle without timing says it is waiting",
   conductorHeadline({ phase: "idle" }, null), "Idle: waiting for the next check");
-check("an overdue check never shows a negative countdown",
-  conductorHeadline({ phase: "idle", poll_interval_seconds: 30, last_poll_at: "2020-01-01T00:00:00Z" }, null), "Idle: next check in 0s");
+check("an overdue check says nothing about a countdown",
+  conductorHeadline({ phase: "idle", poll_interval_seconds: 30, last_poll_at: "2020-01-01T00:00:00Z" }, null), "Idle: waiting for the next check");
 check("other states use the plain status word",
   conductorHeadline({ phase: "monitoring_pr" }, null), "Waiting on review");
 check("the server's label wins when the snapshot carries one",
@@ -54,18 +55,18 @@ check("no internal code leaks into the headline",
   /monitoring_|_performer|_agent/.test(conductorHeadline({ phase: "monitoring_performer" }, { performer_stage: "reviewing", issue_number: 1 })), false);
 check("missing state does not throw", conductorHeadline(undefined, null), "Idle: waiting for the next check");
 
-// The countdown ticks between state updates (review of #164): the headline is
-// re-rendered from the last state by the page's one-second timer.
+// The page's one-second timer re-renders the headline from the last state (review of #164).
+// 154: the headline no longer counts down, so a tick leaves it as the state says.
 (function() {
   var el = { textContent: "stale" };
   var saved = { doc: typeof document === "undefined" ? undefined : document };
   document = { getElementById: function(id) { return id === "phase" ? el : null; } };
   _lastState = { phase: "idle", poll_interval_seconds: 30, last_poll_at: new Date(Date.now() - 12000).toISOString() };
   refreshConductorHeadline();
-  check("refresh renders the countdown from the last state", el.textContent, "Idle: next check in 18s");
+  check("refresh renders the idle headline from the last state", el.textContent, "Idle: waiting for the next check");
   _lastState.last_poll_at = new Date(Date.now() - 20000).toISOString();
   refreshConductorHeadline();
-  check("a later tick shows less time left", el.textContent, "Idle: next check in 10s");
+  check("a later tick keeps the same headline", el.textContent, "Idle: waiting for the next check");
   _lastState = null;
   el.textContent = "kept";
   refreshConductorHeadline();

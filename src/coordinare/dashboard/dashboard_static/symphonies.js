@@ -383,10 +383,10 @@ function applyScopeNotes(s) {
   setText('capacity-scope-note', scoped ? SCOPE_NOTE_CAPACITY : '');
   var last = document.getElementById('last-duration');
   if (last) last.title = hidden.indexOf('last_cycle_duration_seconds') !== -1 ? SCOPE_NOTE_DURATION : '';
-  // 150: the History page lists runs from the server under the same scope, so only the
-  // Dashboard's Recent checks panel carries this note.
+  // 150/154: the History page's runs come from the server under the same scope. Only its
+  // Recent checks panel (the daemon's cycle log) carries this note.
   if (hidden.indexOf('cycle_history') !== -1) {
-    var recent = document.getElementById('history-section');
+    var recent = document.getElementById('history-cycles');
     if (recent) recent.innerHTML = '<span class="empty-state">' + SCOPE_NOTE_CHECKS + '</span>';
   }
   var depList = document.getElementById('dependency-blockers-list');
