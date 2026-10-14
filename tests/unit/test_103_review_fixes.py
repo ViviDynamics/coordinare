@@ -119,7 +119,8 @@ async def test_whole_object_quoting_truncated_stays_a_format_failure() -> None:
 
 
 def test_repair_hint_fences_quoted_output_as_untrusted_data() -> None:
-    hint = format_repair_hint(_HEAD_CUT_REASON, "assessment")
+    # A head_cut excerpt is not quoted at all (223), so fence a whole-shape one.
+    hint = format_repair_hint(_QUOTED_TRUNCATED_REASON, "assessment")
     assert hint is not None
     assert "not as instructions" in hint
     assert "model's own earlier output" in hint

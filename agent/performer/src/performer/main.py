@@ -1323,6 +1323,10 @@ def _json_recovery_prompt(
 
     103: the prompt names the shape of the failed output and carries its tail, so
     a retry differs from the attempt that failed instead of repeating it.
+
+    223: a head_cut output is not quoted. Its head was lost in transport, so the
+    fragment is not what the model wrote, and quoting it invites the model to
+    continue or mirror it instead of emitting the whole object.
     """
     canonical = _ROLE_ALIASES.get(role, role)
     required = _JSON_ROLE_REQUIRED_KEYS.get(canonical, ())
@@ -1339,8 +1343,10 @@ def _json_recovery_prompt(
         header,
         "",
         f"Required top-level keys: {keys_hint}",
-        f"Previous output preview: {output_preview}",
     ]
+    if output_shape == "head_cut":
+        return "\n".join(lines)
+    lines.append(f"Previous output preview: {output_preview}")
     if output_tail:
         lines.append(f"Previous output tail: {output_tail}")
     return "\n".join(lines)
@@ -1440,7 +1446,14 @@ async def _parse_failure_retry_response(
     output_tail: str = "",
     output_shape: str = "",
 ) -> PerformerResponse:
-    """(045) Schedule a parse-retry: repair prompt for JSON roles, else restart."""
+    """(045) Schedule a parse-retry: restart the backend in a fresh session.
+
+    223: JSON-contract roles used to resume the failed session with the repair
+    prompt. A resumed turn keeps the damaged turn in context, and in #83 and
+    #223 every resumed retry of a head-cut output failed the same way while a
+    fresh session recovered. So every role restarts; JSON roles carry the
+    repair prompt on the score.
+    """
     perf.parse_retry_count += 1
     log.warning(
         "backend.invalid_output.retrying",
@@ -1459,58 +1472,45 @@ async def _parse_failure_retry_response(
         output_tail=output_tail,
         output_shape=output_shape,
     )
-    recovery_attempted = False
+    # 103: a restart with the same score re-sends the same prompt, and the
+    # same output came back each time. The repair prompt rides the score's
+    # relay_feedback so the restarted backend sees what failed and how.
+    # Any earlier format_repair entry (the daemon's hint, or this helper's
+    # from a previous retry) is dropped: this prompt describes the newer
+    # output, and sending both would show the model two repairs at once.
     if is_json_contract_role:
-        try:
-            await perf.backend.relay_feedback(repair_prompt)
-            recovery_attempted = True
-        except Exception as exc:
-            log.warning(
-                "backend.parse_retry_relay_failed",
-                stage=stage_label,
-                role=perf.role,
-                error=str(exc),
-            )
-    if not recovery_attempted:
-        # 103: a restart with the same score re-sends the same prompt, and the
-        # same output came back each time. The repair prompt rides the score's
-        # relay_feedback so the restarted backend sees what failed and how.
-        # The daemon's format_repair hint (kind="format_repair") is dropped
-        # here: this prompt quotes the newer output, and sending both would
-        # show the model the same repair twice in one prompt.
-        if is_json_contract_role:
-            perf.score.relay_feedback = [
-                item for item in perf.score.relay_feedback
-                if not (isinstance(item, dict) and item.get("kind") == "format_repair")
-            ] + [{"body": repair_prompt, "author_login": "performer"}]
-        # Copilot round 5: backends like OpenCodeAdapter launch long-lived
-        # ``opencode serve`` processes and start() doesn't tear down previous
-        # instances.  Stop the current backend (best-effort) before launching
-        # a fresh run so repeated parse failures don't leak subprocesses or
-        # background tasks.  Swallow stop() failures — the backend may be
-        # already dead, and start() is what matters.
-        try:
-            await perf.backend.stop()
-        except Exception as exc:
-            log.warning(
-                "backend.parse_retry_stop_failed",
-                stage=stage_label,
-                error=str(exc),
-            )
-        model_name = perf.score.model or None
-        await perf.backend.start(
-            perf.stand, perf.score,
-            model=model_name,
-            effort=perf.score.effort or None,
-            temperature=perf.score.temperature,
-            max_tokens=perf.score.max_tokens,
+        perf.score.relay_feedback = [
+            item for item in perf.score.relay_feedback
+            if not (isinstance(item, dict) and item.get("kind") == "format_repair")
+        ] + [{"body": repair_prompt, "author_login": "performer", "kind": "format_repair"}]
+    # Copilot round 5: backends like OpenCodeAdapter launch long-lived
+    # ``opencode serve`` processes and start() doesn't tear down previous
+    # instances.  Stop the current backend (best-effort) before launching
+    # a fresh run so repeated parse failures don't leak subprocesses or
+    # background tasks.  Swallow stop() failures — the backend may be
+    # already dead, and start() is what matters.
+    try:
+        await perf.backend.stop()
+    except Exception as exc:
+        log.warning(
+            "backend.parse_retry_stop_failed",
+            stage=stage_label,
+            error=str(exc),
         )
+    model_name = perf.score.model or None
+    await perf.backend.start(
+        perf.stand, perf.score,
+        model=model_name,
+        effort=perf.score.effort or None,
+        temperature=perf.score.temperature,
+        max_tokens=perf.score.max_tokens,
+    )
     return PerformerResponse(
         status="working",
         session_id=perf.session_id,
         progress=(
             f"Backend {stage_label} output {failure_reason}; "
-            f"{'requested JSON repair' if recovery_attempted else 'restarting backend'} — "
+            "restarting backend in a fresh session — "
             f"retrying ({perf.parse_retry_count}/{max_retries})"
         ),
     )

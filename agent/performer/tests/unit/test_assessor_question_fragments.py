@@ -20,6 +20,8 @@ def performance(output: str) -> Performance:
     backend = MagicMock()
     backend.get_status.return_value = BackendStatus(state="done", output=output)
     backend.relay_feedback = AsyncMock()
+    backend.stop = AsyncMock()
+    backend.start = AsyncMock()
     perf = Performance(
         session_id="synthetic",
         stand=Stand(path=Path("/tmp/synthetic"), branch="synthetic"),
@@ -156,7 +158,8 @@ async def test_fragment_still_gets_configured_parse_retry():
                                       Settings(AGENT_BACKEND="claude_code", BACKEND_PARSE_RETRIES=1))
     assert response.status == "working"
     assert perf.parse_retry_count == 1
-    perf.backend.relay_feedback.assert_awaited_once()
+    perf.backend.start.assert_awaited_once()
+    perf.backend.relay_feedback.assert_not_awaited()
     commit.assert_not_awaited()
 
 
