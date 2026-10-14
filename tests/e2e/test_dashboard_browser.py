@@ -486,8 +486,8 @@ def test_navigate_to_personas_shows_personas_page(page: Page, live_server_url: s
 
 
 @pytest.mark.e2e
-def test_navigate_to_history_shows_live_empty_state(page: Page, live_server_url: str) -> None:
-    """Clicking History nav link must show the real history container empty-state."""
+def test_navigate_to_history_shows_the_listing_state(page: Page, live_server_url: str) -> None:
+    """Clicking History opens the run listing. With no transcripts configured it says so (#150)."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
 
@@ -495,17 +495,21 @@ def test_navigate_to_history_shows_live_empty_state(page: Page, live_server_url:
 
     expect(page).to_have_url(f"{live_server_url}/history", timeout=_WAIT_NAV)
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#history-page")).to_contain_text("No checks completed yet", timeout=_WAIT_NAV)
+    expect(page.locator("#history-page")).to_contain_text(
+        "transcripts are not configured on this daemon", timeout=_WAIT_NAV,
+    )
 
 
 @pytest.mark.e2e
-def test_history_page_renders_cycle_rows_from_sse(
+def test_history_page_does_not_render_the_dashboards_cycle_rows(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """053: /history must render cycle rows and live-update from SSE."""
+    """#150: /history lists runs from the server. The snapshot's cycle rows stay on the Dashboard."""
     page.goto(f"{live_server_url}/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#history-page-section")).to_contain_text("No checks completed yet", timeout=_WAIT_NAV)
+    expect(page.locator("#history-page-section")).to_contain_text(
+        "transcripts are not configured on this daemon", timeout=_WAIT_NAV,
+    )
 
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -516,9 +520,8 @@ def test_history_page_renders_cycle_rows_from_sse(
         ),
     )
 
-    expect(page.locator("#history-page-section table")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#history-page-section")).to_contain_text("Waiting on review", timeout=_WAIT_LIVE)
-    expect(page.locator("#history-page-section")).to_contain_text("error", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section")).not_to_contain_text("Waiting on review", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section table")).to_have_count(0)
 
 
 @pytest.mark.e2e
@@ -1452,7 +1455,7 @@ def test_cycle_history_shows_cycles(
 def test_history_page_shows_cycle_list(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """History page displays full list of cycles."""
+    """#150: History lists card runs from the server. The snapshot's cycles stay on the Dashboard."""
     page.goto(f"{live_server_url}/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
 
@@ -1469,9 +1472,20 @@ def test_history_page_shows_cycle_list(
             ],
         ),
     )
-    expect(page.locator("#history-page-section")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#history-page-section")).to_contain_text("Idle", timeout=_WAIT_LIVE)
-    expect(page.locator("#history-page-section")).to_contain_text("30", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section")).to_contain_text(
+        "transcripts are not configured on this daemon", timeout=_WAIT_LIVE,
+    )
+    expect(page.locator("#history-page-section")).not_to_contain_text("Idle")
+    page.goto(live_server_url)
+    expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_LIVE)
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            cycles_completed=3,
+            cycle_history=[{"phase": "idle", "phase_label": "Idle", "duration_seconds": 30,
+                            "completed_at": "2026-03-02T10:31:00+00:00"}],
+        ),
+    )
+    expect(page.locator("#history-section")).to_contain_text("Idle", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------

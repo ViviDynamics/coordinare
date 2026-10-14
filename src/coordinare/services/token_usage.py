@@ -52,6 +52,8 @@ logger = structlog.get_logger(__name__)
 # The ledger keeps the 7-day week plus one day of slack. Older runs are pruned.
 USAGE_WINDOW_DAYS = 8
 WEEK_DAYS = 7
+# Answers kept by TokenLedger.totals between writes (150: the cache is bounded).
+TOTALS_CACHE_MAX = 256
 # Per-turn entries kept for one run, and across all runs. Totals stay exact beyond these.
 MAX_TURNS_PER_RUN = 2000
 MAX_TURNS_TOTAL = 20_000
@@ -373,7 +375,27 @@ class TokenLedger:
                         continue
                     out[model] = out.get(model, UsageCounts()) + counts
             self._cache[key] = out
+            # 150: the cache holds at most TOTALS_CACHE_MAX answers between writes, oldest first out.
+            while len(self._cache) > TOTALS_CACHE_MAX:
+                del self._cache[next(iter(self._cache))]
             return dict(out)
+
+    def totals_by_run(self, run_ids: Iterable[str]) -> dict[str, ModelTotals]:
+        """Each named run's totals, in one pass over the runs (150). Runs with no usage are absent.
+
+        Not cached: a page asks once for all its runs, and the caller keeps the answer.
+        """
+        wanted = set(run_ids)
+        found: dict[str, ModelTotals] = {}
+        with self._lock:
+            for run in self._runs.values():
+                if run.run_id not in wanted:
+                    continue
+                per_model: ModelTotals = {}
+                for (_day, model), counts in run.buckets().items():
+                    per_model[model] = per_model.get(model, UsageCounts()) + counts
+                found[run.run_id] = per_model
+        return found
 
     def run_ids(self, *, card: str | None = None) -> list[str]:
         with self._lock:
