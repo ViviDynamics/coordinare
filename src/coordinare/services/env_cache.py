@@ -28,7 +28,15 @@ from coordinare.services.env_manifest import (
     render_verify_sh,
 )
 from coordinare.services.env_manifest_llm import enrich_from_readme
-from coordinare.services.mounted_file import read_mounted_file
+from coordinare.services.mounted_file import (
+    MountedFileRefusedError,
+    anchored_mkdir,
+    mounted_dir_refusal,
+    mounted_file_refusal,
+    read_mounted_dir_names,
+    read_mounted_file,
+    replace_mounted_file,
+)
 from coordinare.services.test_env_loader import (
     TestEnvFileError,
     load_test_env,
@@ -60,6 +68,9 @@ BOOTSTRAP_RETRY_COOLDOWN_S = 120.0
 
 # 208: the prior manifest lives in a cache dir the performer can write during bootstrap.
 _PRIOR_MANIFEST_MAX_BYTES = 1024 * 1024
+
+# 219: the scripts coordinare renders into the cache (verify.sh, activate.sh, services-*.sh).
+_EXECUTABLE_MODE = 0o755
 
 
 def load_prior_manifest_bounded(cache_dir: Path) -> ServicesManifest | None:
@@ -120,6 +131,21 @@ def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
     )
 
 
+def _env_cache_mounts(cache_dir: Path) -> tuple[Path, ...]:
+    """The env-cache root, the mount a performer sees every cache dir through (219).
+
+    Every cache dir sits directly under the root, so the root is the parent. Nothing below it
+    is trusted: a link, hard link or wrong-type entry there is refused, never followed.
+    """
+    return (cache_dir.parent,)
+
+
+def _cache_dir_refusal(cache_dir: Path) -> str | None:
+    """Why the cache dir may not be mounted or read (219), or None. A missing dir is allowed."""
+    reason = mounted_dir_refusal(cache_dir, mounts=_env_cache_mounts(cache_dir))
+    return None if reason == "missing" else reason
+
+
 def _cache_dir_has_activate(cache_dir: Path) -> bool:
     """Return True iff the host cache_dir has a populated activate.sh.
 
@@ -127,12 +153,13 @@ def _cache_dir_has_activate(cache_dir: Path) -> bool:
     prior bootstrap left a usable toolchain — independent of the in-process
     ``cache_dir_ready`` flag, which resets on every coordinare restart.
     Letting consumer performers mount a stale-but-real cache is strictly
-    better than dispatching them with no toolchain at all.
+    better than dispatching them with no toolchain at all. The check is anchored
+    (219): a link planted in the performer-writable cache counts as no toolchain.
     """
-    try:
-        return (cache_dir / "activate.sh").is_file()
-    except OSError:
-        return False
+    refusal = mounted_file_refusal(
+        cache_dir / "activate.sh", mounts=_env_cache_mounts(cache_dir),
+    )
+    return refusal is None
 
 
 # 092: the three files coordinare itself seeds into every cache_dir before a
@@ -154,10 +181,10 @@ def _cache_dir_is_populated(cache_dir: Path) -> bool:
     coordinare-seeded files. A non-empty result requires at least one entry whose
     name is not in ``_CACHE_SEED_FILES``.
     """
-    try:
-        return any(entry.name not in _CACHE_SEED_FILES for entry in cache_dir.iterdir())
-    except OSError:
+    names = read_mounted_dir_names(cache_dir, mounts=_env_cache_mounts(cache_dir))
+    if names is None:
         return False
+    return any(name not in _CACHE_SEED_FILES for name in names)
 
 
 def get_env_volume_for_symphony(
@@ -192,6 +219,17 @@ def get_env_volume_for_symphony(
     if state is None or not isinstance(state, EnvCacheState):
         return None
     if not is_bootstrap and not _cache_dir_has_activate(state.cache_dir):
+        return None
+    # 219: the host path is bind-mounted, and docker follows a link in it, so a linked cache dir
+    # is never mounted (rw for a bootstrap, ro for a consumer).
+    refusal = _cache_dir_refusal(state.cache_dir)
+    if refusal is not None:
+        logger.error(
+            "env_cache.mount_refused",
+            symphony=symphony_name,
+            cache_dir=str(state.cache_dir),
+            reason=refusal,
+        )
         return None
     container_path = f"{container_devenv_root}/{state.sanitised_name}"
     return VolumeMount(
@@ -343,7 +381,10 @@ async def verify_env_cache_clean(
     if not isinstance(ec, EnvCacheState):
         return None, "no env-cache state for symphony"
     cache_dir = Path(ec.cache_dir)
-    if not (cache_dir / "verify.sh").is_file():
+    verify_refusal = mounted_file_refusal(
+        cache_dir / "verify.sh", mounts=_env_cache_mounts(cache_dir),
+    )
+    if verify_refusal is not None:
         logger.warning(
             "env_cache.clean_verify_skipped",
             symphony=symphony_name,
@@ -421,15 +462,16 @@ def write_service_scripts(
         )
         scripts = render_service_scripts(svc_manifest)
         svc_dir = cache_dir / "services"
-        svc_dir.mkdir(parents=True, exist_ok=True)
+        mounts = _env_cache_mounts(cache_dir)
+        anchored_mkdir(svc_dir, mounts=mounts)
         for name, body in (
             ("services-start.sh", scripts.start),
             ("services-stop.sh", scripts.stop),
             ("services-health.sh", scripts.health),
         ):
-            path = svc_dir / name
-            path.write_text(body)
-            path.chmod(0o755)
+            replace_mounted_file(
+                svc_dir / name, body.encode(), mounts=mounts, mode=_EXECUTABLE_MODE,
+            )
         # 113: do NOT write services.json here. `load_prior_manifest_bounded` derives the
         # inference-cache suffix (part of readme_sha / last_seen_spec_sha) from
         # <cache>/services/services.json. The performer's apply_manual_override is the
@@ -445,6 +487,14 @@ def write_service_scripts(
             services=[s.name for s in service_models],
         )
         return True
+    except MountedFileRefusedError as exc:
+        logger.error(
+            "env_cache.write_refused",
+            symphony=symphony,
+            cache_dir=str(cache_dir),
+            reason=str(exc),
+        )
+        return False
     except Exception as exc:  # best-effort, never block the bootstrap
         logger.warning(
             "env_cache.service_scripts_write_failed",
@@ -489,7 +539,15 @@ class EnvCacheService:
             cache_dir = env_cache_root / sanitised
 
             try:
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                anchored_mkdir(cache_dir, mounts=_env_cache_mounts(cache_dir))
+            except MountedFileRefusedError as exc:
+                logger.error(
+                    "env_cache.mkdir_refused",
+                    symphony=symphony.name,
+                    path=str(cache_dir),
+                    reason=str(exc),
+                )
+                continue
             except OSError as exc:
                 logger.warning(
                     "env_cache.mkdir_failed",
@@ -1171,23 +1229,32 @@ class EnvCacheService:
             except Exception:
                 service_models = []
 
+        # 219: every write below the cache dir is anchored at the env-cache root (see
+        # mounted_file): no link, hard link or wrong-type entry is followed or replaced.
+        mounts = _env_cache_mounts(cache_dir)
         try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            verify_path = cache_dir / "verify.sh"
-            verify_path.write_text(
+            anchored_mkdir(cache_dir, mounts=mounts)
+            replace_mounted_file(
+                cache_dir / "verify.sh",
                 render_verify_sh(
                     manifest,
                     cache_mount_path=cache_mount_path,
                     services=service_models,
-                ),
+                ).encode(),
+                mounts=mounts,
+                mode=_EXECUTABLE_MODE,
             )
-            verify_path.chmod(0o755)
-            activate_path = cache_dir / "activate.sh"
-            activate_path.write_text(
-                render_activate_sh(manifest, cache_mount_path=cache_mount_path),
+            replace_mounted_file(
+                cache_dir / "activate.sh",
+                render_activate_sh(manifest, cache_mount_path=cache_mount_path).encode(),
+                mounts=mounts,
+                mode=_EXECUTABLE_MODE,
             )
-            activate_path.chmod(0o755)
-            (cache_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
+            replace_mounted_file(
+                cache_dir / "manifest.json",
+                manifest.model_dump_json(indent=2).encode(),
+                mounts=mounts,
+            )
             # 108 (P1): coordinare writes the service start/stop/health scripts into
             # <cache>/services/ DETERMINISTICALLY here (like verify.sh/activate.sh),
             # rather than relying on the performer-side manual_override write that
@@ -1198,6 +1265,14 @@ class EnvCacheService:
             # performer's own apply_manual_override writes the service scripts (pre-108).
             if service_models:
                 write_service_scripts(cache_dir, service_models, symphony=symphony_name)
+        except MountedFileRefusedError as exc:
+            logger.error(
+                "env_cache.write_refused",
+                symphony=symphony_name,
+                cache_dir=str(cache_dir),
+                reason=str(exc),
+            )
+            return render_checklist(manifest), False, False
         except OSError as exc:
             logger.warning(
                 "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc),
