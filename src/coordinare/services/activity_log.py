@@ -47,6 +47,27 @@ MAX_TRACKED_STREAMS = 128
 # 135: a stream's hidden count goes to the feed at a power of two, or once a second. Between
 # sends the stored count stays exact, and the keepalive flush sends the last one still pending.
 RESEND_INTERVAL_SECONDS = 1.0
+# 211: the transcript record a feed entry was built from. The browser reads integers above
+# 2**53 - 1 inexactly, so a larger value is not a seq it can name, and it is dropped.
+MIN_TRANSCRIPT_SEQ = 1
+MAX_TRANSCRIPT_SEQ = 2**53 - 1
+
+
+def transcript_seq_or_none(value: object) -> int | None:
+    """211: the value as a transcript seq when it is one, else None. A bool is never a seq."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if MIN_TRANSCRIPT_SEQ <= value <= MAX_TRANSCRIPT_SEQ:
+        return value
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class EventLink:
+    """211: where a feed entry opens in its run. The transcript record is exact; the time is the fallback."""
+
+    event_at: str = ""
+    transcript_seq: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +92,9 @@ class ActivityEntry:
     # 133: the performer's own time for the event (ISO 8601), when the event has one. A
     # transcript record is stamped on the performer clock, so this is the time to open a run at.
     event_at: str = ""
+    # 211: the transcript record this event was built from. Set, the row opens the run at that
+    # exact record. None (an older performer, or no record) falls back to event_at.
+    transcript_seq: int | None = None
     # 135: what each cut removed, so the feed can say how much is hidden. None means the count
     # was not recorded (an entry from before 135), and the feed shows nothing rather than a guess.
     # The lengths are the original sizes before the clip. hidden_updates is set on a stream's
@@ -101,6 +125,7 @@ class ActivityEntry:
             "summary": self.summary,
             "status": self.status,
             "event_at": self.event_at,
+            "transcript_seq": self.transcript_seq,
             "text_length": self.text_length,
             "summary_length": self.summary_length,
             "hidden_updates": self.hidden_updates,
@@ -182,7 +207,7 @@ class ActivityLog:
         source_event_id: str = "",
         summary: str = "",
         status: str = "",
-        event_at: str = "",
+        link: EventLink | None = None,
     ) -> ActivityEntry | None:
         """Append one entry. Returns None when suppressed as a duplicate."""
         entry = self._append(
@@ -195,7 +220,7 @@ class ActivityLog:
             session_id=session_id,
             performer_id=performer_id,
             is_delta=is_delta, stream_id=stream_id, source_event_id=source_event_id,
-            summary=summary, status=status, event_at=event_at,
+            summary=summary, status=status, link=link,
         )
         if entry is not None:
             self._fan_out([entry])
@@ -221,7 +246,10 @@ class ActivityLog:
                 source_event_id=item.get("source_event_id", ""),
                 summary=item.get("summary", ""),
                 status=item.get("status", ""),
-                event_at=item.get("event_at", ""),
+                link=EventLink(
+                    event_at=str(item.get("event_at") or ""),
+                    transcript_seq=item.get("transcript_seq"),
+                ),
             )
             if entry is not None:
                 appended.append(entry)
@@ -339,7 +367,7 @@ class ActivityLog:
         source_event_id: Any = "",
         summary: Any = "",
         status: Any = "",
-        event_at: Any = "",
+        link: EventLink | None = None,
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
@@ -352,7 +380,8 @@ class ActivityLog:
         # 135: the hidden update count, set only when this append is a stream's marker.
         hidden_updates: int | None = None
         # 133: a timestamp is a short ISO string; anything longer is not one and is dropped.
-        clipped_event_at, _ = _clip(str(event_at or ""), MAX_EVENT_AT)
+        link = link or EventLink()
+        clipped_event_at, _ = _clip(str(link.event_at or ""), MAX_EVENT_AT)
         status_str, _ = _clip(status, 16)
         if status_str not in TOOL_STATUSES:
             status_str = ""
@@ -426,6 +455,9 @@ class ActivityLog:
             performer_id=pid,
             is_delta=is_delta, stream_id=stream,
             summary=clipped_summary, status=status_str, event_at=clipped_event_at,
+            # 211: validated here as well as at the caller. Not part of the dedup key: a re-reported
+            # event that now names its record is still the same activity.
+            transcript_seq=transcript_seq_or_none(link.transcript_seq),
             text_length=len(raw_text), summary_length=len(raw_summary),
             hidden_updates=hidden_updates, log_dropped=self._dropped,
             log_capacity=self._entries.maxlen,

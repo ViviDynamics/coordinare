@@ -379,8 +379,14 @@ class JunieBackend:
                 pass
         self._json_output_path = None
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *, transcript_seq: int | None = None,
+    ) -> None:
+        self._event_buffer.append(
+            BackendEvent(
+                type=type, text=clip_event_text(text), detail=detail, transcript_seq=transcript_seq,
+            ),
+        )
 
     @transcript.best_effort
     def _record_launch(self, prompt: str, effective_model: str | None) -> None:
@@ -415,13 +421,18 @@ class JunieBackend:
     @transcript.best_effort
     def _record_outcome(
         self, parsed: dict | None, rc: int | None, stdout_text: str, stderr_text: str,
-    ) -> None:
+    ) -> dict[str, int | None]:
         """Spec 129: the terminal record set for one junie process.
 
         ``usage`` is emitted only when the JSON result file itself reports an
         integer count. Its token fields are read best-effort (see
         ``_apply_parsed_result``), so the file is also kept whole in ``result``.
+
+        Returns the seq of each record that a backend event mirrors (211), keyed
+        by ``usage``, ``error`` and ``assistant_text``. A missing key means no
+        such record was emitted.
         """
+        seqs: dict[str, int | None] = {}
         raw_input = {"rc": rc, "stdout": stdout_text, "json_output": parsed}
         if not isinstance(parsed, dict):
             if rc == 0:
@@ -429,18 +440,18 @@ class JunieBackend:
                     "result", text="done without a JSON result file", output_data=None,
                     is_error=False, input_data=raw_input,
                 )
-                return
+                return seqs
             failure = stderr_text.strip() or stdout_text.strip() or f"junie exited with code {rc}"
-            transcript.emit("error", text=failure, input_data={"rc": rc})
+            seqs["error"] = transcript.emit("error", text=failure, input_data={"rc": rc})
             transcript.emit(
                 "result", text=f"failed: junie exited with code {rc}", output_data=None,
                 is_error=True, input_data=raw_input,
             )
-            return
+            return seqs
 
         input_tokens, output_tokens = _reported_token_counts(parsed)
         if input_tokens is not None or output_tokens is not None:
-            transcript.emit(
+            seqs["usage"] = transcript.emit(
                 "usage",
                 text="run total reported by the junie JSON result file, not per model turn",
                 usage=transcript.TranscriptUsage(
@@ -452,19 +463,20 @@ class JunieBackend:
         summary = parsed.get("summary") or parsed.get("result") or parsed.get("message")
         if err or (rc not in (None, 0)):
             failure = str(err) if err else (stderr_text.strip() or f"junie exited with code {rc}")
-            transcript.emit("error", text=failure, input_data={"rc": rc})
+            seqs["error"] = transcript.emit("error", text=failure, input_data={"rc": rc})
             transcript.emit(
                 "result", text="failed", output_data=summary if isinstance(summary, str) else None,
                 is_error=True, input_data=raw_input,
             )
-            return
+            return seqs
         if isinstance(summary, str) and summary:
-            transcript.emit("assistant_text", text=summary)
+            seqs["assistant_text"] = transcript.emit("assistant_text", text=summary)
         transcript.emit(
             "result", text="done",
             output_data=summary if isinstance(summary, str) else None,
             is_error=False, input_data=raw_input,
         )
+        return seqs
 
     async def _wait_and_parse(self) -> None:
         """Wait for junie to exit, then derive final status from JSON output."""
@@ -491,8 +503,11 @@ class JunieBackend:
                         pass
                     self._json_output_path = None
 
+            # 211: records first, so each event below can carry the seq of the
+            # record it mirrors. Records and status are independent of each other.
+            record_seqs = self._record_outcome(parsed, rc, stdout_text, stderr_text) or {}
             if isinstance(parsed, dict):
-                self._apply_parsed_result(parsed, rc, stderr_text)
+                self._apply_parsed_result(parsed, rc, stderr_text, record_seqs)
             else:
                 if rc == 0:
                     self._status = BackendStatus(state="done")
@@ -502,8 +517,10 @@ class JunieBackend:
                         state="error",
                         error_reason=reason[-_MAX_TEXT:],
                     )
-                    self._emit(BackendEventType.error, reason[-_MAX_TEXT:])
-            self._record_outcome(parsed, rc, stdout_text, stderr_text)
+                    self._emit(
+                        BackendEventType.error, reason[-_MAX_TEXT:],
+                        transcript_seq=record_seqs.get("error"),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -511,8 +528,14 @@ class JunieBackend:
             self._status = BackendStatus(state="error", error_reason=str(exc))
             transcript.emit("error", text=f"junie reader error: {exc}")
 
-    def _apply_parsed_result(self, parsed: dict, rc: int | None, stderr_text: str) -> None:
-        """Map a Junie JSON result document onto BackendStatus + events."""
+    def _apply_parsed_result(
+        self, parsed: dict, rc: int | None, stderr_text: str, record_seqs: dict[str, int | None],
+    ) -> None:
+        """Map a Junie JSON result document onto BackendStatus + events.
+
+        ``record_seqs`` maps the outcome records to their seq (211). The cost
+        event is the run usage, so it carries the ``usage`` record's seq.
+        """
         # Best-effort field discovery — Junie's exact schema isn't fully
         # public, so we accept a few common shapes.
         err = parsed.get("error") or parsed.get("error_message")
@@ -523,7 +546,10 @@ class JunieBackend:
         cost = parsed.get("cost_usd") or parsed.get("cost")
         if tokens or cost is not None:
             cost_str = f" · ${cost:.4f}" if isinstance(cost, (int, float)) else ""
-            self._emit(BackendEventType.cost, f"{tokens:,} tokens{cost_str}")
+            self._emit(
+                BackendEventType.cost, f"{tokens:,} tokens{cost_str}",
+                transcript_seq=record_seqs.get("usage"),
+            )
 
         if err or (rc not in (None, 0)):
             reason = str(err) if err else (stderr_text.strip() or f"junie exited with code {rc}")
@@ -532,12 +558,18 @@ class JunieBackend:
                 error_reason=reason[-_MAX_TEXT:],
                 tokens_processed=tokens or None,
             )
-            self._emit(BackendEventType.error, reason[-_MAX_TEXT:])
+            self._emit(
+                BackendEventType.error, reason[-_MAX_TEXT:],
+                transcript_seq=record_seqs.get("error"),
+            )
             return
 
         summary = parsed.get("summary") or parsed.get("result") or parsed.get("message")
         if isinstance(summary, str) and summary:
-            self._emit(BackendEventType.progress, summary)
+            self._emit(
+                BackendEventType.progress, summary,
+                transcript_seq=record_seqs.get("assistant_text"),
+            )
 
         self._status = BackendStatus(
             state="done",

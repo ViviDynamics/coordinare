@@ -131,24 +131,29 @@ class OpenCodeTranscriptTap:
         transcript.emit("error", text=message)
 
     @transcript.best_effort
-    def observe(self, event_type: str, props: Any) -> None:
-        """Record the raw content of one SSE event. Never raises."""
+    def observe(self, event_type: str, props: Any) -> int | None:
+        """Record the raw content of one SSE event. Never raises.
+
+        Returns the seq of the record this event produced, or None (211). The
+        caller pairs it with the backend event built from the same SSE event.
+        """
         if not isinstance(props, dict):
-            return
+            return None
         if event_type == "message.part.updated":
             part = props.get("part")
             if isinstance(part, dict):
-                self._observe_part(part)
+                return self._observe_part(part)
         elif event_type == "session.error":
-            transcript.emit("error", text=_error_text(props.get("error"), str(props)))
+            return transcript.emit("error", text=_error_text(props.get("error"), str(props)))
         elif event_type == "session.updated":
             session = props.get("session", props)
             if not isinstance(session, dict):
-                return
+                return None
             time_info = session.get("time") or {}
             failure = session.get("error") or time_info.get("error")
             if not time_info.get("idle") and failure:
-                transcript.emit("error", text=_error_text(failure, "unknown error"))
+                return transcript.emit("error", text=_error_text(failure, "unknown error"))
+        return None
 
     @transcript.best_effort
     def finish(
@@ -175,7 +180,9 @@ class OpenCodeTranscriptTap:
         )
 
     @transcript.best_effort
-    def _observe_part(self, part: dict[str, Any]) -> None:
+    def _observe_part(self, part: dict[str, Any]) -> int | None:
+        """Returns the seq of the tool_call or tool_result record for a tool-input
+        or tool-output part (211), else None. Text is held, not recorded here."""
         ptype = part.get("type", "")
         if ptype == "text":
             full_text = str(part.get("text", ""))
@@ -184,7 +191,7 @@ class OpenCodeTranscriptTap:
                 self._pending_text[key] = full_text
         elif ptype in ("tool-input", "tool_input"):
             self._flush_text()
-            transcript.emit(
+            return transcript.emit(
                 "tool_call",
                 tool_name=str(part.get("toolName", part.get("tool_name", "tool"))),
                 call_id=_tool_call_id(part),
@@ -192,7 +199,7 @@ class OpenCodeTranscriptTap:
             )
         elif ptype in ("tool-output", "tool_output"):
             self._flush_text()
-            transcript.emit(
+            return transcript.emit(
                 "tool_result",
                 tool_name=str(part.get("toolName", part.get("tool_name", "tool"))),
                 call_id=_tool_call_id(part),
@@ -200,6 +207,7 @@ class OpenCodeTranscriptTap:
             )
         elif ptype == "tool":
             self._observe_tool(part)
+        return None
 
     @transcript.best_effort
     def _observe_tool(self, part: dict[str, Any]) -> None:
@@ -608,8 +616,14 @@ class OpenCodeAdapter:
         output-parsing roles (assessor/reviewer/qa/...) can read it."""
         return BackendStatus(state="done", output=self._assembled_output() or None)
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *, transcript_seq: int | None = None,
+    ) -> None:
+        self._event_buffer.append(
+            BackendEvent(
+                type=type, text=clip_event_text(text), detail=detail, transcript_seq=transcript_seq,
+            ),
+        )
 
     def _handle_event(self, event: dict) -> None:  # type: ignore[type-arg]
         # Events may be wrapped: {"directory": ..., "payload": {...}}
@@ -617,7 +631,8 @@ class OpenCodeAdapter:
         payload = event.get("payload", event)
         event_type = payload.get("type", "")
         props = payload.get("properties", {})
-        self._tap.observe(event_type, props)
+        # 211: the seq of the record the tap wrote for this SSE event, if any.
+        record_seq = self._tap.observe(event_type, props)
 
         if event_type == "session.updated":
             session = props.get("session", props)
@@ -636,7 +651,7 @@ class OpenCodeAdapter:
         elif event_type == "session.error":
             reason = props.get("error", {}).get("message", str(props))
             self._status = BackendStatus(state="error", error_reason=reason)
-            self._emit(BackendEventType.error, reason)
+            self._emit(BackendEventType.error, reason, transcript_seq=record_seq)
 
         elif event_type == "message.part.updated":
             part = props.get("part", {})
@@ -655,11 +670,17 @@ class OpenCodeAdapter:
             elif part_type in ("tool-input", "tool_input"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 input_text = str(part.get("input", ""))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool)
+                self._emit(
+                    BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool,
+                    transcript_seq=record_seq,
+                )
             elif part_type in ("tool-output", "tool_output"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 output_text = str(part.get("output", ""))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool)
+                self._emit(
+                    BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool,
+                    transcript_seq=record_seq,
+                )
             elif part_type == "tool" and part.get("tool") == "question":
                 # opencode >=1.18 surfaces an interactive question as a `tool`
                 # part named "question" that sits in `state.status=running`

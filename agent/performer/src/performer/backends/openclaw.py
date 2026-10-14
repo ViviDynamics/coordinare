@@ -502,9 +502,15 @@ class OpenClawBackend:
             path=str(config_dir / "openclaw.json"),
         )
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *,
+        transcript_seq: int | None = None,
+    ) -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=clip_event_text(text), detail=detail),
+            BackendEvent(
+                type=type, text=clip_event_text(text), detail=detail,
+                transcript_seq=transcript_seq,
+            ),
         )
 
     @transcript.best_effort
@@ -540,13 +546,13 @@ class OpenClawBackend:
                 )
                 snippet = (stderr_text.strip() or stdout_text.strip())[-_MAX_TEXT:]
                 log.warning("openclaw failed", rc=rc, stderr=stderr_text[-1000:])
-                if snippet:
-                    self._emit(BackendEventType.error, snippet)
-                self._record_failure(
+                error_seq = self._record_failure(
                     error_text=stderr_text.strip() or stdout_text.strip() or f"subprocess_exit:{rc}",
                     detail={"rc": rc, "reason": f"subprocess_exit:{rc}", "stderr": stderr_text},
                     output=stdout_text,
                 )
+                if snippet:
+                    self._emit(BackendEventType.error, snippet, transcript_seq=error_seq)
                 self._terminal = True
                 return
 
@@ -559,12 +565,12 @@ class OpenClawBackend:
                 self._status = BackendStatus(
                     state="error", error_reason="malformed_output",
                 )
-                self._emit(BackendEventType.error, "malformed_output")
-                self._record_failure(
+                error_seq = self._record_failure(
                     error_text="malformed_output: stdout was not a JSON object",
                     detail={"rc": rc, "reason": "malformed_output", "stderr": stderr_text},
                     output=stdout_text,
                 )
+                self._emit(BackendEventType.error, "malformed_output", transcript_seq=error_seq)
                 self._terminal = True
                 return
 
@@ -579,8 +585,7 @@ class OpenClawBackend:
                     error_reason=f"stop_reason:{stop_reason or 'aborted'}",
                     output=output_text or None,
                 )
-                self._emit(BackendEventType.error, str(stop_reason or "aborted"))
-                self._record_failure(
+                error_seq = self._record_failure(
                     error_text=f"turn ended without a clean stop: {stop_reason or 'aborted'}",
                     detail={
                         "rc": rc,
@@ -590,6 +595,9 @@ class OpenClawBackend:
                     },
                     output=output_text or stdout_text,
                 )
+                self._emit(
+                    BackendEventType.error, str(stop_reason or "aborted"), transcript_seq=error_seq,
+                )
                 self._terminal = True
                 return
 
@@ -598,9 +606,10 @@ class OpenClawBackend:
                 stop_reason=stop_reason,
                 output=output_text or None,
             )
+            success_seq = self._record_success(parsed=parsed, meta=meta, output_text=output_text)
             if output_text:
-                self._emit(BackendEventType.progress, output_text)
-            self._record_success(parsed=parsed, meta=meta, output_text=output_text)
+                # The delivered payload that output_text is taken from (211).
+                self._emit(BackendEventType.progress, output_text, transcript_seq=success_seq)
             self._terminal = True
         except asyncio.CancelledError:
             raise
@@ -617,13 +626,13 @@ class OpenClawBackend:
         error_text: str,
         detail: dict[str, object],
         output: str,
-    ) -> None:
+    ) -> int | None:
         """Spec 129: full error text plus a failed result carrying the raw stdout.
 
         ``detail`` holds rc, reason, stderr and (when present) meta. The result
         record repeats it without stderr, which the error record already carries.
         """
-        transcript.emit("error", text=error_text, input_data=detail)
+        error_seq: int | None = transcript.emit("error", text=error_text, input_data=detail)
         result_input = {key: value for key, value in detail.items() if key != "stderr"}
         transcript.emit(
             "result",
@@ -632,11 +641,12 @@ class OpenClawBackend:
             is_error=True,
             input_data=result_input,
         )
+        return error_seq
 
     @transcript.best_effort
     def _record_success(
         self, *, parsed: dict, meta: dict, output_text: str,
-    ) -> None:
+    ) -> int | None:
         """Spec 129: each delivered payload is one complete assistant message.
 
         ``payloads`` are the replies openclaw hands to a channel, so each
@@ -652,8 +662,9 @@ class OpenClawBackend:
         ]
         if not messages and output_text:
             messages.append(output_text)
-        for message in messages:
-            transcript.emit("assistant_text", text=message)
+        message_seqs: list[int | None] = [
+            transcript.emit("assistant_text", text=message) for message in messages
+        ]
         transcript.emit(
             "result",
             text="done",
@@ -661,3 +672,4 @@ class OpenClawBackend:
             is_error=False,
             input_data={"meta": meta},
         )
+        return message_seqs[0] if message_seqs else None

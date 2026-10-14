@@ -29,6 +29,7 @@ from coordinare.services.token_usage import (
     price_table_from_config,
     session_usage,
     usage_block,
+    usage_summary,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,23 @@ def _session_usage(daemon: Any, *, run_id: str, card_id: str) -> dict[str, Any]:
     if ledger is None:
         return {"tracked": False, "reason": "transcripts disabled", "run": None, "card": None}
     return session_usage(ledger, _price_table(daemon), run_id=run_id, card=card_id)
+
+
+def run_usage_block(daemon: Any, *, run_id: str) -> dict[str, Any]:
+    """211: one run's ledger figures for the transcript viewer header, or why they are not tracked."""
+    ledger = _usage_ledger(daemon)
+    if ledger is None:
+        return {"tracked": False, "reason": "transcripts disabled"}
+    if ledger.run_info(run_id) is None:
+        return {
+            "tracked": False,
+            "reason": "the ledger holds no usage for this run (it may be older than the usage window)",
+        }
+    return {
+        "tracked": True,
+        "reason": None,
+        **usage_summary(ledger.totals(run_id=run_id), _price_table(daemon)),
+    }
 
 
 def _pending_control(raw: Any) -> dict[str, str] | None:

@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from coordinare.dashboard.assets import _page_html
+from coordinare.dashboard.store import run_usage_block
 from coordinare.services import run_viewer
 from coordinare.services.run_transcript import TranscriptCollector
 from coordinare.services.run_viewer import (
@@ -216,7 +217,9 @@ def _register_run_detail(app: FastAPI, ctx: DashboardContext) -> None:
                                 headers=_NO_STORE)
         ref = RunRef(symphony=symphony, card=card, run=run)
         try:
-            detail = await asyncio.to_thread(run_viewer.run_detail, root, ref)
+            detail = await asyncio.to_thread(
+                run_viewer.run_detail, root, ref, usage=run_usage_block(daemon, run_id=ref.run),
+            )
         except (RunLookupError, RunRefusedError) as exc:
             return _error_response(exc)
         return JSONResponse(detail, headers=_NO_STORE)

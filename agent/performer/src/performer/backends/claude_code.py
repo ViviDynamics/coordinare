@@ -532,8 +532,10 @@ class ClaudeCodeBackend:
             joined = "..." + joined[-_STDERR_ERROR_MAX_CHARS:]
         return joined
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
+    def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
+              transcript_seq: int | None = None) -> None:
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail,
+                                               transcript_seq=transcript_seq))
 
     def _open_stdout_capture(self) -> None:
         """Open a per-launch stdout-tee file if capture_dir is configured.
@@ -696,40 +698,48 @@ class ClaudeCodeBackend:
             _record_new_error(self._status, status_before_finally)
 
     @transcript.best_effort
-    def _transcribe_event(self, event: dict[str, Any]) -> None:
+    def _transcribe_event(self, event: dict[str, Any]) -> list[int | None] | None:
         """129: full-fidelity transcript records for one stream-json event.
 
         Reads the untruncated payload. The 200-character BackendEvent summaries
         in ``_handle_event`` are a separate channel and are never a source here.
         Every event type is recorded: a type this mapping does not know is kept
         as a ``system`` record with its raw type name, never dropped.
+
+        211: returns the seq of each record written, so ``_handle_event`` can
+        attach it to the BackendEvent built from the same stream event. The
+        shape per event type is documented at the call site in ``_handle_event``.
         """
         if not transcript.transcript_enabled():
-            return
+            return None
         event_type = event.get("type", "")
+        seqs: list[int | None] | None = None
         if event_type == "system":
             subtype = str(event.get("subtype", ""))
             if subtype == "api_retry":
                 err = str(event.get("error", "")) or "api_retry"
-                transcript.emit("error", text=f"upstream api_retry ({err})", output_data=event)
+                seqs = [transcript.emit(
+                    "error", text=f"upstream api_retry ({err})", output_data=event,
+                )]
             else:
-                transcript.emit("system", text=subtype or "system", input_data=event)
+                seqs = [transcript.emit("system", text=subtype or "system", input_data=event)]
         elif event_type == "assistant":
-            self._transcribe_assistant(event)
+            seqs = self._transcribe_assistant(event)
         elif event_type == "user":
             self._transcribe_user_content((event.get("message") or {}).get("content"))
         elif event_type == "tool_result":
-            self._transcribe_tool_result(event)
+            seqs = [self._transcribe_tool_result(event)]
         elif event_type == "result":
-            self._transcribe_result(event)
+            seqs = self._transcribe_result(event)
         else:
             # stream_event (from --include-partial-messages), or a type a future
             # CLI adds. Recorded raw so nothing the model produced is silently lost.
-            transcript.emit(
+            seqs = [transcript.emit(
                 "system",
                 text=f"unhandled stream event type: {event_type or '(none)'}",
                 input_data=event,
-            )
+            )]
+        return seqs
 
     def _flush_pending_usage(self) -> None:
         """Write the usage of the message that just ended, if any (129).
@@ -746,10 +756,12 @@ class ClaudeCodeBackend:
         transcript.emit("usage", text="message usage (last chunk)", usage=usage, scope="message")
 
     @transcript.best_effort
-    def _transcribe_assistant(self, event: dict[str, Any]) -> None:
+    def _transcribe_assistant(self, event: dict[str, Any]) -> list[int | None]:
+        """Returns one seq per content block (None where no record was written)."""
+        seqs: list[int | None] = []
         message = event.get("message")
         if not isinstance(message, dict):
-            return
+            return seqs
         model = message.get("model")
         message_id = message.get("id")
         usage = message.get("usage")
@@ -770,23 +782,27 @@ class ClaudeCodeBackend:
             )
         for block in message.get("content") or []:
             if not isinstance(block, dict):
+                seqs.append(None)
                 continue
             block_type = block.get("type", "")
             if block_type == "text":
-                transcript.emit("assistant_text", text=str(block.get("text", "")))
+                seqs.append(transcript.emit("assistant_text", text=str(block.get("text", ""))))
             elif block_type == "thinking":
-                transcript.emit("thinking", text=str(block.get("thinking", "")))
+                seqs.append(transcript.emit("thinking", text=str(block.get("thinking", ""))))
             elif block_type == "tool_use":
                 call_id = str(block.get("id", ""))
                 name = str(block.get("name", "tool"))
                 if call_id:
                     self._transcript_tool_names[call_id] = name
-                transcript.emit(
+                seqs.append(transcript.emit(
                     "tool_call",
                     tool_name=name,
                     call_id=call_id or None,
                     input_data=block.get("input"),
-                )
+                ))
+            else:
+                seqs.append(None)
+        return seqs
 
     @transcript.best_effort
     def _transcribe_user_content(self, content: object) -> None:
@@ -805,10 +821,10 @@ class ClaudeCodeBackend:
                 transcript.emit("user", text=str(block.get("text", "")))
 
     @transcript.best_effort
-    def _transcribe_tool_result(self, block: dict[str, Any]) -> None:
+    def _transcribe_tool_result(self, block: dict[str, Any]) -> int | None:
         call_id = str(block.get("tool_use_id", "")) or None
         tool_name = self._transcript_tool_names.get(call_id or "")
-        transcript.emit(
+        return transcript.emit(
             "tool_result",
             tool_name=tool_name,
             call_id=call_id,
@@ -817,7 +833,11 @@ class ClaudeCodeBackend:
         )
 
     @transcript.best_effort
-    def _transcribe_result(self, event: dict[str, Any]) -> None:
+    def _transcribe_result(self, event: dict[str, Any]) -> list[int | None]:
+        """Returns the seqs of the usage, result and error records, in that slot order.
+
+        A slot is None when its record was not written for this event.
+        """
         subtype = str(event.get("subtype", ""))
         usage = event.get("usage")
         model_usage = event.get("modelUsage")
@@ -827,15 +847,16 @@ class ClaudeCodeBackend:
             else None
         )
         self._flush_pending_usage()
+        usage_seq: int | None = None
         if isinstance(usage, dict):
-            transcript.emit(
+            usage_seq = transcript.emit(
                 "usage",
                 text="run total from the result event",
                 usage=_usage_from_claude(usage, model),
                 scope="run",
             )
         result_text = event.get("result")
-        transcript.emit(
+        result_seq = transcript.emit(
             "result",
             text=subtype or "result",
             output_data={
@@ -847,12 +868,14 @@ class ClaudeCodeBackend:
             },
             is_error=bool(event.get("is_error", False)) or subtype != "success",
         )
+        error_seq: int | None = None
         if subtype in ("error", "interrupted"):
-            transcript.emit(
+            error_seq = transcript.emit(
                 "error",
                 text=str(event.get("error", subtype)),
                 output_data=event,
             )
+        return [usage_seq, result_seq, error_seq]
 
     def _handle_event(self, event: dict) -> bool:  # type: ignore[type-arg]
         """Translate a Claude Code stream-json event into BackendStatus + BackendEvent.
@@ -863,7 +886,7 @@ class ClaudeCodeBackend:
         so a stalled CLI stuck in retries can't keep the idle watchdog alive
         indefinitely.
         """
-        self._transcribe_event(event)
+        seqs = self._transcribe_event(event)
         event_type = event.get("type", "")
 
         if event_type == "system":
@@ -888,6 +911,7 @@ class ClaudeCodeBackend:
                     BackendEventType.error,
                     f"upstream api_retry ({err})",
                     detail=detail,
+                    transcript_seq=_seq_at(seqs, 0),
                 )
                 if self._api_retry_count >= _API_RETRY_MAX:
                     reason = (
@@ -900,7 +924,8 @@ class ClaudeCodeBackend:
 
         elif event_type == "assistant":
             message = event.get("message", {})
-            for block in message.get("content", []):
+            # 211: seqs is aligned to content blocks, so the index picks each block's record.
+            for index, block in enumerate(message.get("content", [])):
                 block_type = block.get("type", "")
                 if block_type == "text":
                     full_text = str(block.get("text", ""))
@@ -908,17 +933,20 @@ class ClaudeCodeBackend:
                         self._output_accumulator.append(full_text)
                     text = clip_event_text(full_text)
                     self._status = BackendStatus(state="working", progress=text)
-                    self._emit(BackendEventType.progress, text)
+                    self._emit(BackendEventType.progress, text,
+                               transcript_seq=_seq_at(seqs, index))
                 elif block_type == "tool_use":
                     tool = str(block.get("name", "tool"))
                     # 148: the name and its primary argument; the rest of the input stays here.
                     self._event_buffer.append(BackendEvent(
                         type=BackendEventType.tool_use, text=tool, detail=tool,
                         tool=tool, arg=primary_argument(tool, block.get("input")),
+                        transcript_seq=_seq_at(seqs, index),
                     ))
                 elif block_type == "thinking":
                     thinking = clip_event_text(str(block.get("thinking", "")))
-                    self._emit(BackendEventType.thinking, thinking)
+                    self._emit(BackendEventType.thinking, thinking,
+                               transcript_seq=_seq_at(seqs, index))
 
         elif event_type == "tool_result":
             tool_id = str(event.get("tool_use_id", ""))
@@ -933,7 +961,7 @@ class ClaudeCodeBackend:
             status = "error" if event.get("is_error") is True else "ok"
             self._event_buffer.append(BackendEvent(
                 type=BackendEventType.tool_use, text=f"result: {text}"[:_MAX_TEXT],
-                detail=tool_id, status=status,
+                detail=tool_id, status=status, transcript_seq=_seq_at(seqs, 0),
             ))
 
         elif event_type == "result":
@@ -954,10 +982,13 @@ class ClaudeCodeBackend:
                 tokens = _result_tokens(event)
                 cost_str = f" · ${cost:.4f}" if cost is not None else ""
                 tokens_str = "usage unknown" if tokens is None else f"{tokens:,} tokens"
-                self._emit(BackendEventType.cost, f"{tokens_str}{cost_str}")
+                self._emit(BackendEventType.cost, f"{tokens_str}{cost_str}",
+                           transcript_seq=_seq_at(seqs, _RESULT_USAGE_SLOT))
                 stop_reason = event.get("stop_reason") or None
                 if stop_reason == "max_tokens":
-                    self._emit(BackendEventType.error, "output token limit reached")
+                    # The result record carries stop_reason; no record names the limit itself.
+                    self._emit(BackendEventType.error, "output token limit reached",
+                               transcript_seq=_seq_at(seqs, _RESULT_RECORD_SLOT))
                     self._status = BackendStatus(
                         state="error",
                         stop_reason="max_tokens",
@@ -1009,7 +1040,8 @@ class ClaudeCodeBackend:
                     )
             elif subtype in ("error", "interrupted"):
                 reason = event.get("error", subtype)
-                self._emit(BackendEventType.error, str(reason))
+                self._emit(BackendEventType.error, str(reason),
+                           transcript_seq=_seq_at(seqs, _RESULT_ERROR_SLOT))
                 self._status = BackendStatus(state="error", error_reason=str(reason))
 
         # A progress event arrived (anything except the early-return api_retry
@@ -1030,6 +1062,19 @@ _RESULT_TOKEN_FIELDS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+
+
+# 211: slots of the per-event transcript seq list for a `result` event.
+_RESULT_USAGE_SLOT = 0
+_RESULT_RECORD_SLOT = 1
+_RESULT_ERROR_SLOT = 2
+
+
+def _seq_at(seqs: list[int | None] | None, index: int) -> int | None:
+    """The transcript seq at ``index`` of one event's seq list, or None (211)."""
+    if seqs is None or index >= len(seqs):
+        return None
+    return seqs[index]
 
 
 def _record_new_error(now: BackendStatus, before: BackendStatus) -> None:
