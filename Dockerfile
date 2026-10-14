@@ -13,7 +13,7 @@ COPY src ./src
 # the requirement by being present. Dockerfile.daemon avoids this by using uv.
 COPY packages ./packages
 
-RUN pip install --no-cache-dir ./packages/service_inference .
+RUN pip install --no-cache-dir ./packages/ci_detection ./packages/service_inference ./packages/routing_models .
 
 COPY config.example.yaml /app/config.example.yaml
 COPY .env.example /app/.env.example

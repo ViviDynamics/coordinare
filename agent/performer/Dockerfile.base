@@ -49,6 +49,13 @@ COPY packages/service_inference/pyproject.toml ./
 COPY packages/service_inference/src/ ./src/
 RUN pip install --no-cache-dir .
 
+# Issue #228: the spec-078 routing-table models. The performer re-exports them from
+# performer.proxy.routing, and the daemon validates against the same package.
+WORKDIR /pkgs/routing_models
+COPY packages/routing_models/pyproject.toml ./
+COPY packages/routing_models/src/ ./src/
+RUN pip install --no-cache-dir .
+
 # 339: the performer imports CI/test-command detection. It used to reach for
 # coordinare.services.ci_detection, but this image has never shipped coordinare
 # (only packages/ and agent/performer are copied), so that import always raised
