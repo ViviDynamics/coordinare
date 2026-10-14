@@ -92,7 +92,9 @@ def clear_waits(state: Any) -> None:
 def warn_once_per_cycle(state: Any, failure: str) -> None:
     """A display bug is logged once per cycle, not once per session tick."""
     token = state.get("orphan_sweep_cycle_token")
-    if _warned_for_cycle.get("token") == token:
+    # No token means the cycle is not identified: log, since staying silent
+    # would hide the failure for ever.
+    if token is not None and _warned_for_cycle.get("token") == token:
         return
     _warned_for_cycle["token"] = token
     logger.warning("check_board.todo_waits_failed", failure=failure, exc_info=True)

@@ -83,6 +83,35 @@ async def test_a_queued_session_card_reaches_the_snapshot_in_symphony_mode(monke
     assert entry["state"]["session_skip_reasons"]["queued"]["capacity"] == {"in_use": 1, "limit": 1}
 
 
+@pytest.mark.asyncio
+async def test_the_cycles_to_do_waits_reach_the_snapshot_in_symphony_mode(monkeypatch) -> None:
+    """Second review: the cycle restored the shared keys and then mirrored the
+    restored values, so a symphony never kept what its own cycle recorded."""
+    daemon = CoordinareDaemon(AsyncMock())
+    sym_state = SymphonyRuntimeState(name="website")
+    daemon._state["symphony_states"] = {"website": sym_state}
+    daemon._state["symphony_configs"] = {"website": SimpleNamespace(github_project_number=None,
+                                                                    env_bootstrap_performer_id=None)}
+    recorded = {"WEB": {"reason": "queued", "blockers": [], "detail": None}}
+    capacity = {"in_use": 1, "limit": 1, "hold": "queued"}
+
+    async def cycle_records_waits(*_args, **_kwargs):
+        daemon._state["todo_waits"] = dict(recorded)
+        daemon._state["todo_capacity"] = dict(capacity)
+
+    monkeypatch.setattr(daemon, "_invoke_multi_session", cycle_records_waits)
+    await daemon._conduct_single_symphony("website", SimpleNamespace())
+
+    assert sym_state.todo_waits == recorded
+    assert sym_state.todo_capacity == capacity
+    # The shared keys are back to what the cycle found, so the next board starts clean.
+    assert daemon._state.get("todo_waits") == {}
+    snapshot = DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health())
+    (entry,) = snapshot["symphonies"]
+    assert entry["state"]["todo_waits"] == recorded
+    assert entry["state"]["todo_capacity"] == capacity
+
+
 # --- item 2: the To Do verdict is the pickup's own outcome ------------------ #
 
 

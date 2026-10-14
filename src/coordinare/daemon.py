@@ -3266,6 +3266,12 @@ class CoordinareDaemon:
         """Inner-finally restore of the per-symphony graph-key swaps."""
         # 149: the To Do verdicts belong to the symphony that recorded them, so a
         # cycle that fails puts back what it found.
+        # 149: keep what this cycle recorded on the symphony before the shared
+        # keys go back to their earlier values. The dashboard reads it from there.
+        sym_state = (self._state.get("symphony_states") or {}).get(symphony_name)
+        if sym_state is not None:
+            sym_state.todo_waits = dict(self._state.get("todo_waits") or {})
+            sym_state.todo_capacity = self._state.get("todo_capacity")
         self._state["todo_waits"] = prev_todo_waits or {}
         self._state["todo_capacity"] = prev_todo_capacity
         self._state["config"] = prev_config
@@ -3286,9 +3292,6 @@ class CoordinareDaemon:
         sym_state.active_card = self._state.get("current_card")
         skip_reasons = self._state.get("session_skip_reasons")
         sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
-        # 149: this symphony's To Do waits, so the swimlane reads each board's own.
-        sym_state.todo_waits = dict(self._state.get("todo_waits") or {})
-        sym_state.todo_capacity = self._state.get("todo_capacity")
         # 062: Per-card metadata for the dashboard swimlane.
         sym_state.board_titles = dict(self._state.get("_board_titles") or {})
         sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})
