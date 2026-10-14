@@ -79,8 +79,11 @@ def test_dashboard_panel_collapses_and_caps_recent_checks() -> None:
     assert ".cycle-history-compact { max-height: 240px; overflow-y: auto; }" in page_source()
 
 
-def test_board_tabs_scroll_inside_their_own_container() -> None:
-    """#127"""
-    tabs = re.search(r"\.swimlane-tabs \{[^}]*\}", page_source())
+def test_the_configuration_tabs_scroll_inside_their_own_container() -> None:
+    """#127, kept for the Configuration page's tabs after the board tabs went (#139)."""
+    tabs = re.search(r"\.cfg-tabs \{[^}]*\}", page_source())
     assert tabs is not None
     assert "overflow-x: auto" in tabs.group(0) and "flex-wrap: nowrap" in tabs.group(0)
+    # The Cards panel has no tab strip any more, so nothing in the page is left to scroll for it.
+    assert 'id="swimlane-tabs"' not in page_source()
+    assert "swimlane-tab" not in page_source()

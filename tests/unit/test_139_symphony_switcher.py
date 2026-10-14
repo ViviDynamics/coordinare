@@ -132,6 +132,14 @@ def test_the_header_is_the_switcher_and_the_board_tabs_are_gone() -> None:
     assert "swimlane-tab" not in _PERFORMERS  # the tab buttons are no longer rendered
 
 
+def test_no_swimlane_tab_markup_or_style_remains_anywhere() -> None:
+    # The board tabs are gone (#139), and the Configuration tabs that borrowed their
+    # classes now have their own names. Nothing still calls the tab strip swimlane.
+    shipped = _STATIC_TEXT + _DASHBOARD_JS_SOURCES["config"]
+    assert "swimlane-tab" not in shipped
+    assert 'id="swimlane-tabs"' not in shipped
+
+
 def test_the_panel_is_called_cards_and_keeps_its_id() -> None:
     assert '<h2>Cards</h2>' in _DASHBOARD_HTML
     assert 'id="swimlane-section"' in _DASHBOARD_HTML  # ids stay: tests and the MCP tools depend on them

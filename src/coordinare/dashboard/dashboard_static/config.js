@@ -754,7 +754,7 @@ function cfgSectionBlock(sec) {
     + '</section>';
 }
 
-// Render the horizontal tab strip. Reuses .swimlane-tab styling. WAI-ARIA tabs
+// Render the horizontal tab strip (.cfg-tabs, .cfg-tab in dashboard.html). WAI-ARIA tabs
 // pattern: roving tabindex, aria-selected/aria-controls on each tab.
 function cfgTabBar(sections, active) {
   var tabs = (sections || []).map(function(sec) {
@@ -763,12 +763,12 @@ function cfgTabBar(sections, active) {
       + ' aria-selected="' + (on ? 'true' : 'false') + '"'
       + ' aria-controls="' + cfgPanelId(sec.id) + '"'
       + ' tabindex="' + (on ? '0' : '-1') + '"'
-      + ' class="swimlane-tab' + (on ? ' active' : '') + '"'
+      + ' class="cfg-tab' + (on ? ' active' : '') + '"'
       + ' onclick="cfgSelectTab(&quot;' + esc(sec.id) + '&quot;)"'
       + ' onkeydown="cfgTabKey(event, &quot;' + esc(sec.id) + '&quot;)">'
       + esc(sec.title) + '</button>';
   }).join('');
-  return '<div class="swimlane-tabs" role="tablist" aria-label="Configuration sections" style="overflow-x:auto">'
+  return '<div class="cfg-tabs" role="tablist" aria-label="Configuration sections">'
     + tabs + '</div>';
 }
 
