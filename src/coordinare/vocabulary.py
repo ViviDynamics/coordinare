@@ -115,12 +115,22 @@ CONCEPTS: dict[str, Term] = _terms(
     ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
 )
 
+#: Why a card is not progressing, shown on To Do and Blocked cards (#149).
+#: Keys are the wait kinds the dashboard names, not the conductor's wire reasons.
+WAITS: dict[str, Term] = _terms(
+    ("queued", "Queued", "Queued", "Every card slot is in use, so the card waits for a free one."),
+    ("waiting_on", "Waiting on", "Waiting on", "The card depends on another card that is not done yet."),
+    ("needs_human", "Needs human", "Needs human", "The conductor needs a person to answer or decide before the card goes on."),
+    ("filtered", "Filtered out", "Filtered out", "The card is not coordinare's to work, because of who it is assigned to."),
+)
+
 GROUPS: dict[str, dict[str, Term]] = {
     "phases": PHASES,
     "stages": STAGES,
     "agents": AGENTS,
     "outcomes": OUTCOMES,
     "concepts": CONCEPTS,
+    "waits": WAITS,
 }
 
 def _label(group: dict[str, Term], code: str | None) -> str:
@@ -183,6 +193,7 @@ def payload() -> dict[str, Any]:
         "labels": labels(),
         "stage_labels": {code: term.label for code, term in STAGES.items()},
         "agent_labels": {code: term.label for code, term in AGENTS.items()},
+        "wait_labels": {code: term.label for code, term in WAITS.items()},
         "stage_agent": dict(STAGE_AGENT),
         **{name: [asdict(term) for term in terms.values()] for name, terms in GROUPS.items()},
     }

@@ -56,6 +56,7 @@ from coordinare.services.orphan_pr import run_per_cycle_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.review_staleness import classify_review_staleness
+from coordinare.services.todo_waits import record_dependency_waits, refresh_todo_waits
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
 if TYPE_CHECKING:
@@ -1885,6 +1886,9 @@ async def _apply_todo_dependencies(
     state["blocked_by_dependencies"] = []
     if eligible_todo:
         eligible_todo, filtered_ids, dep_graph = await _dep_filter_cards(state, board, eligible_todo)
+        record_dependency_waits(
+            state, dep_graph=dep_graph, filtered_ids=filtered_ids, passed_ids=list(eligible_todo),
+        )
         if filtered_ids:
             logger.info(
                 "check_board.dependency_filtered",
@@ -2102,6 +2106,26 @@ async def _handle_todo_cards(
     return None
 
 
+def _record_todo_waits(
+    state: CoordinareState,
+    board: dict[str, Any],
+    todo: list[str],
+    ownership: OwnershipPolicy,
+    assignees: dict[str, Any],
+    max_cards: int,
+) -> None:
+    """149: the wait for each To Do card with no session, from this check's view."""
+    refresh_todo_waits(
+        state,
+        board=board,
+        todo=todo,
+        active_card_ids=set((state.get("active_sessions") or {}).keys()),
+        ownership=ownership,
+        assignees=assignees,
+        limit=max_cards,
+    )
+
+
 async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     state["stale_session_reconciliation_deferred"] = False
     github = state.get("github_service")
@@ -2180,6 +2204,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     in_progress = [cid for cid in in_progress if cid not in paused_ids]
     blocked = [cid for cid in blocked if cid not in paused_ids]
     todo = [cid for cid in todo if cid not in paused_ids]
+    # 149: name each To Do card's wait before any handler can return early
+    # (an in-progress card filling the last slot returns before the pickup).
+    _record_todo_waits(state, board, todo, _ownership, _assignees, max_cards)
     result = await _handle_in_review_cards(state, board, in_review, _ownership, _assignees, max_cards)
     if result is not None:
         return result

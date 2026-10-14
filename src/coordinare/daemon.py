@@ -55,6 +55,7 @@ from coordinare.services.pipeline_budget import (
     is_parked_in_review,
     parked_in_review,
     review_cap_allows_new_card,
+    review_cap_detail,
     select_pipelines,
 )
 from coordinare.services.rebase import fetch_main_sha
@@ -1067,6 +1068,10 @@ _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     # discarded by the fanout's global merge before the next dispatch.
     "observer_retunes",
     "observer_retune_audit",
+    # 149: To Do waits are decided in check_board, which runs inside the fanout's
+    # session ticks; without these two keys the merge would drop them.
+    "todo_waits",
+    "todo_capacity",
     # phase is NOT included here; it is derived explicitly from active_sessions
     # after the merge loop to avoid misreporting the daemon as idle when only
     # the first completed session had phase="idle" while others are still active.
@@ -1640,6 +1645,10 @@ def _compute_session_eligibilities(
     held_by_review_cap = not review_cap_allows_new_card(active_sessions, review_limit)
     waiting = parked_in_review(active_sessions)
     details: dict[str, str] = {}
+    # #149: the numbers behind each queued reason, so the dashboard words them
+    # without parsing the detail string.
+    facts: dict[str, dict[str, Any]] = {}
+    slots_in_use = len(selected)
     for cid, eligibility in eligibilities.items():
         session = active_sessions[cid]
         # #102: a card parked in monitoring_pr launches no performer. It holds
@@ -1651,9 +1660,11 @@ def _compute_session_eligibilities(
         # back cards that have not started.
         if held_by_review_cap and not has_open_pr(session) and len(selected) < max_cards:
             reason: EligibilityReason = "review_capacity"
-            details[cid] = f"max_cards_in_review is {review_limit}: {waiting} waiting on review"
+            details[cid] = review_cap_detail(review_limit, waiting)
+            facts[cid] = {"waiting_on_review": waiting, "review_limit": review_limit}
         else:
             reason = "pipeline_capacity"
+        facts.setdefault(cid, {})["capacity"] = {"in_use": slots_in_use, "limit": max_cards}
         eligibilities[cid] = SessionEligibility(card_id=cid, eligible=False, reason=reason)
     _log_review_waits(active_sessions, review_limit, str(state.get("current_symphony") or "__default__"))
 
@@ -1665,6 +1676,7 @@ def _compute_session_eligibilities(
                 "reason": elig.reason,
                 "detail": details.get(card_id),
                 "blockers": elig.blockers,
+                **facts.get(card_id, {}),
             }
             _log_session_skip(card_id, active_sessions[card_id], elig)
     state["session_skip_reasons"] = skip_reasons
@@ -3211,6 +3223,10 @@ class CoordinareDaemon:
                 self._state["board_snapshot"] = sym_state.board_snapshot
             if sym_state.session_skip_reasons is not None:
                 self._state["session_skip_reasons"] = sym_state.session_skip_reasons
+            if sym_state.todo_waits is not None:
+                self._state["todo_waits"] = sym_state.todo_waits
+            if sym_state.todo_capacity is not None:
+                self._state["todo_capacity"] = sym_state.todo_capacity
             if sym_state.previous_phase is not None:
                 self._state["phase"] = sym_state.previous_phase
         if _effective_cfg is not None and _effective_cfg is not _prev_config:
@@ -3259,6 +3275,9 @@ class CoordinareDaemon:
         sym_state.active_card = self._state.get("current_card")
         skip_reasons = self._state.get("session_skip_reasons")
         sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
+        # 149: this symphony's To Do waits, so the swimlane reads each board's own.
+        sym_state.todo_waits = dict(self._state.get("todo_waits") or {})
+        sym_state.todo_capacity = self._state.get("todo_capacity")
         # 062: Per-card metadata for the dashboard swimlane.
         sym_state.board_titles = dict(self._state.get("_board_titles") or {})
         sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})

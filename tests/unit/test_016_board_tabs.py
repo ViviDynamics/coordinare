@@ -12,7 +12,8 @@ def test_shipped_board_renderer_isolates_empty_tabs_and_retains_legacy_fallback(
     helpers = tmp_path / "helpers.js"
     performers = tmp_path / "performers.js"
     helpers.write_text(_DASHBOARD_JS_SOURCES["helpers"], encoding="utf-8")
-    performers.write_text(_DASHBOARD_JS_SOURCES["performers"], encoding="utf-8")
+    # 149: the renderer calls waiting.js, which the page loads right after performers.js.
+    performers.write_text(_DASHBOARD_JS_SOURCES["performers"] + "\n" + _DASHBOARD_JS_SOURCES["waiting"], encoding="utf-8")
     selection = tmp_path / "selection.js"
     hook = re.search(r"function selectSwimlaneTab\(name\) \{.*?\n\}", app_js(), re.DOTALL)
     assert hook is not None

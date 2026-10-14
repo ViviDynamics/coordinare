@@ -2145,9 +2145,9 @@ def test_pipeline_queue_is_distinct_from_dispatching(page, live_server_url, stor
     session["phase"] = "dispatching"
     store.broadcaster.broadcast(_full_snapshot(
         active_sessions=[session], active_session_count=1,
-        session_skip_reasons={"queued-card": {"reason": "pipeline_capacity"}},
+        session_skip_reasons={"queued-card": {"reason": "pipeline_capacity", "capacity": {"in_use": 1, "limit": 1}}},
     ))
-    expect(page.locator("#swimlane-section")).to_contain_text("Queued — issue limit reached")
+    expect(page.locator("#swimlane-section")).to_contain_text("Queued: 1 of 1 card slots in use")
 
 
 @pytest.mark.e2e

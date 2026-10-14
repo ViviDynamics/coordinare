@@ -981,6 +981,9 @@ class DashboardStore:
                     "board_issue_numbers": getattr(sym_state, "board_issue_numbers", None) or {},
                     "board_issue_urls": getattr(sym_state, "board_issue_urls", None) or {},
                     "board_pr_urls": getattr(sym_state, "board_pr_urls", None) or {},
+                    # 149: why each To Do card waits, and the slots they were judged against.
+                    "todo_waits": getattr(sym_state, "todo_waits", None) or {},
+                    "todo_capacity": getattr(sym_state, "todo_capacity", None),
                     "active_sessions": getattr(sym_state, "active_sessions", None) or {},
                 } if sym_state is not None else None,
             }

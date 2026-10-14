@@ -168,11 +168,11 @@ function costHtml(sess, s) {
 }
 
 // Which limit is keeping a card queued, in plain words. null for any other
-// skip reason, so callers keep their ordinary label.
-function queueLimitLabel(reason) {
-  if (reason === 'pipeline_capacity') return 'Queued — issue limit reached';
-  if (reason === 'review_capacity') return 'Queued: too many cards waiting on review';
-  return null;
+// skip reason, so callers keep their ordinary label. The words are shared with
+// the swimlane's wait line (waiting.js queuedWaitText), so they cannot differ.
+function queueLimitLabel(skip) {
+  var r = skip || {};
+  return queuedWaitText(r.reason, {capacity: r.capacity, waiting: r.waiting_on_review});
 }
 
 // 354: queued-for-slot board-row presentation. A card whose role pool is
@@ -221,12 +221,18 @@ function renderActiveWorkPanels(s) {
   var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
   var hasBoardSnapshot = false;
   var boardSnapshots = {};
+  // 149: each board's To Do waits (card ids are unique across boards) and the
+  // slot count each board was judged against.
+  var todoWaits = {};
+  var todoCapacityBySym = {};
   symphonies.forEach(function(sym) {
     var st = sym && sym.state ? sym.state : {};
     Object.assign(titles, st.board_titles || {});
     Object.assign(issueNums, st.board_issue_numbers || {});
     Object.assign(issueUrls, st.board_issue_urls || {});
     Object.assign(prUrls, st.board_pr_urls || {});
+    Object.assign(todoWaits, st.todo_waits || {});
+    todoCapacityBySym[sym.name || ''] = st.todo_capacity || null;
     var snap = st.board_snapshot || {};
     if (st.board_snapshot && typeof st.board_snapshot === 'object' && !Array.isArray(st.board_snapshot)) {
       hasBoardSnapshot = true;
@@ -281,6 +287,15 @@ function renderActiveWorkPanels(s) {
     }
   }
 
+  // 149: the snapshot the wait reasons read. The slot count is the selected board's.
+  var waitSnapshot = {
+    session_skip_reasons: s.session_skip_reasons || {},
+    open_questions: s.open_questions || [],
+    todo_waits: todoWaits,
+    todo_capacity: _swimlaneTab ? (todoCapacityBySym[_swimlaneTab] || null) : null,
+    now: Date.now()
+  };
+
   var totalCards = 0;
   COLUMNS.forEach(function(c) { totalCards += columnItems[c].length; });
 
@@ -329,7 +344,7 @@ function renderActiveWorkPanels(s) {
   }
   if (workCard) workCard.classList.remove('card-warning');
 
-  function renderCard(entry) {
+  function renderCard(entry, col) {
     var iid = entry.iid;
     var title = titles[iid] || '';
     var num = issueNums[iid] || 0;
@@ -352,7 +367,7 @@ function renderActiveWorkPanels(s) {
       var skip = (s.session_skip_reasons || {})[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
-      var phaseLabel = (skip && queueLimitLabel(skip.reason)) || queuedLabel || formatPhaseLabel(sess.phase || '');
+      var phaseLabel = queueLimitLabel(skip) || queuedLabel || formatPhaseLabel(sess.phase || '');
       var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '';
       // Queued wait is measured from the queued stamp; an actively
       // dispatching card measures from when its dispatch began.
@@ -377,8 +392,12 @@ function renderActiveWorkPanels(s) {
       ? ' style="cursor:pointer" tabindex="0" data-card-id="' + esc(iid) + '" onclick="showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))" onkeydown="if(event.key===&quot;Enter&quot;||event.key===&quot; &quot;){showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))}"'
       : '';
 
+    // 149: why a To Do or Blocked card is not progressing (empty for the rest).
+    var waitLine = waitingLineHtml(waitingReason({id: iid, column: col, has_session: !!sess}, waitSnapshot));
+
     return '<div class="swimlane-card"' + clickAttrs + '>' +
       '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
+      waitLine +
       liveLine +
       viewRunLinkHtml(sess) +
       '</div>';
@@ -389,9 +408,18 @@ function renderActiveWorkPanels(s) {
     var entries = columnItems[col];
     var body = entries.length === 0
       ? '<div class="swimlane-empty">&mdash;</div>'
-      : entries.map(renderCard).join('');
+      : entries.map(function(entry) { return renderCard(entry, col); }).join('');
+    // 149: the To Do header says how full the card slots are and how many cards queue.
+    var headerTitle = '';
+    if (col === 'TODO') {
+      var queuedCount = entries.filter(function(e) {
+        return waitingReason({id: e.iid, column: 'TODO', has_session: !!sessionsByCard[e.iid]}, waitSnapshot).kind === 'queued';
+      }).length;
+      headerTitle = todoHeaderTitle(waitSnapshot.todo_capacity, queuedCount);
+    }
     html += '<div class="swimlane-col">' +
-      '<div class="swimlane-col-header">' + esc(COLUMN_LABELS[col]) + ' <span class="swimlane-col-count">' + entries.length + '</span></div>' +
+      '<div class="swimlane-col-header"' + (headerTitle ? ' title="' + esc(headerTitle) + '"' : '') + '>' +
+      esc(COLUMN_LABELS[col]) + ' <span class="swimlane-col-count">' + entries.length + '</span></div>' +
       '<div class="swimlane-col-body">' + body + '</div>' +
       '</div>';
   });
@@ -724,7 +752,7 @@ function renderPerformersPage(s) {
   var skipHtml = roleSkips.length
     ? '<ul class="detail-list">' + roleSkips.map(function(sr) {
         var r = sr.reason || {};
-        var label = queueLimitLabel(r.reason) || esc(r.reason || 'skipped');
+        var label = esc(queueLimitLabel(r) || r.reason || 'skipped');
         var blockers = Array.isArray(r.blockers) && r.blockers.length
           ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
         return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
