@@ -35,6 +35,8 @@ import structlog
 from performer.main import _VISUAL_TASK_KEYWORDS
 from performer.models import Score
 from performer.protocol import PerformerResponse
+from performer.workspace import WorkspaceSetupError
+from performer.write_scope import MAX_REPORTED_PATHS, enforce_write_scope, head_paths
 
 log = structlog.get_logger(__name__)
 
@@ -58,6 +60,18 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     qa_output = (
         _extract_json(qa_raw) if isinstance(qa_raw, str) and qa_raw.strip() else None
     )
+    # 098: before anything is committed, keep the turn to its report and the
+    # new test files it declares. The loop below writes model-named paths.
+    try:
+        write_scope_discarded, write_scope_refused = await _qa_write_scope(
+            perf, qa_output, _doc_folder(perf.score),
+        )
+    except WorkspaceSetupError as exc:
+        perf.state = "error"
+        perf.error_reason = f"QA write-scope check could not run: {exc}"
+        return PerformerResponse(
+            status="error", session_id=perf.session_id, reason=perf.error_reason,
+        )
     if not isinstance(qa_output, dict):
         # 088 US6 (FR-013): the fold-in below never runs on this path, so
         # consult the recorded services-start failure HERE too. An agent
@@ -89,7 +103,11 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     new_tests = qa_output.get("new_test_files", [])
     if isinstance(new_tests, list):
         for tf in new_tests:
-            if isinstance(tf, dict) and tf.get("path") and "content" in tf:
+            # 098: a declared path that already exists at HEAD is never written.
+            if (
+                isinstance(tf, dict) and tf.get("path") and "content" in tf
+                and tf["path"] not in write_scope_refused
+            ):
                 try:
                     await commit_file(perf.stand, tf["path"], tf["content"],
                                       "test: add QA acceptance criterion tests")
@@ -197,6 +215,11 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             visual_evidence=visual_evidence,
         ),
     )
+    # 098: a turn that changed files outside its scope has a QA verdict problem,
+    # whatever its findings say. The changes were discarded, not published.
+    write_scope_paths = list(dict.fromkeys([*write_scope_discarded, *write_scope_refused]))
+    if write_scope_paths:
+        failures.append(_write_scope_failure(write_scope_paths, _doc_folder(perf.score)))
     latest_main_sha = perf.score.latest_main_sha.strip()
     qa_freshness_check: dict = {}
     if not latest_main_sha:
@@ -849,6 +872,78 @@ def _qa_visual_validation_required(
         ],
     )
     return _VISUAL_TASK_PATTERN.search(content) is not None
+
+
+def _declared_new_test_paths(qa_output: dict) -> list[str]:
+    """The paths a QA turn declares in ``new_test_files`` (the ones the loop commits)."""
+    new_tests = qa_output.get("new_test_files", [])
+    if not isinstance(new_tests, list):
+        return []
+    return [
+        tf["path"]
+        for tf in new_tests
+        if isinstance(tf, dict) and isinstance(tf.get("path"), str) and tf["path"] and "content" in tf
+    ]
+
+
+_TEST_DIR_NAMES = frozenset({"test", "tests", "spec", "specs", "__tests__"})
+_TEST_FILE_PATTERN = re.compile(r"^test_|[._-](test|spec)s?\.[A-Za-z0-9]+$")
+
+
+def _is_test_path(path: str) -> bool:
+    """098: True for a path a QA turn may create: an acceptance test, not source.
+
+    A file under a test directory counts, as does a test-named file
+    (``test_x.py``, ``x_test.go``, ``x.spec.ts``).
+    """
+    *dirs, name = path.split("/")
+    return any(d in _TEST_DIR_NAMES for d in dirs) or _TEST_FILE_PATTERN.search(name) is not None
+
+
+async def _qa_write_scope(
+    perf: Any, qa_output: object, folder: str,
+) -> tuple[list[str], list[str]]:
+    """098: restrict a QA turn to its report and the new test files it declares.
+
+    Returns ``(discarded, refused)``. ``discarded`` are changed paths outside the
+    allowlist, now restored or removed. ``refused`` are declared new-file paths
+    the commit loop must not write: a path that already exists at HEAD, or one
+    that is not test-shaped. Both are verdict evidence. Raises
+    WorkspaceSetupError when the tree cannot be checked.
+    """
+    # A stand that is not a clone cannot publish anything (commit_file needs a
+    # repository), so there is no write to scope. Real clones are always checked.
+    if not (perf.stand.path / ".git").exists():
+        return [], []
+    allowed = {f"{folder}/qa.md"}
+    refused: list[str] = []
+    if isinstance(qa_output, dict):
+        tracked = await head_paths(perf.stand)
+        for path in _declared_new_test_paths(qa_output):
+            if path in tracked or not _is_test_path(path):
+                refused.append(path)
+            else:
+                allowed.add(path)
+    discarded = await enforce_write_scope(perf.stand, allowed, role="qa")
+    return discarded, refused
+
+
+def _write_scope_failure(paths: list[str], report_path: str) -> dict:
+    """The QA defect for out-of-scope writes. Its wording must not trip the
+    environmental classifier: a clobber is a defect, not a missing tool."""
+    shown = ", ".join(paths[:MAX_REPORTED_PATHS])
+    overflow = len(paths) - MAX_REPORTED_PATHS
+    if overflow > 0:
+        shown += f" (and {overflow} more)"
+    return {
+        "file": None,
+        "line": None,
+        "message": "QA turn changed paths outside its report scope; those changes were discarded",
+        "type": "write_scope_violation",
+        "criterion": "QA turn writes only its report and new test files",
+        "expected": f"Only {report_path} and new test files are written",
+        "actual": f"Changes outside the QA scope were discarded: {shown}",
+    }
 
 
 def _delete_qa_capture_dir(qa_output: dict) -> None:
