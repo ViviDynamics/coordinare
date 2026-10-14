@@ -19,22 +19,25 @@ def test_running_stage_with_no_usage_shows_pending_then_the_real_count(
                "agent_dispatch_at": "2026-10-13T12:00:00+00:00"}
     store.broadcaster.broadcast(_full_snapshot(
         phase="monitoring_performer", phase_label="Monitoring Performer",
-        active_sessions=[running], cost_per_million_tokens=3.0,
+        active_sessions=[running],
     ))
     tokens = page.locator("#card-tokens-total")
     cost = page.locator("#card-cost-estimate")
     expect(tokens).to_have_text("—", timeout=_WAIT_LIVE)
     expect(tokens).to_have_attribute("title", "Reported when the stage ends")
-    expect(cost).to_have_text("—")
+    # 134: the pending placeholder is a plain hyphen; the value itself is unchanged.
+    expect(cost).to_have_text("-")
 
     reported = {**running, "card_tokens_total": 2000000}
     store.broadcaster.broadcast(_full_snapshot(
         phase="monitoring_performer", phase_label="Monitoring Performer",
-        active_sessions=[reported], cost_per_million_tokens=3.0,
+        active_sessions=[reported],
     ))
     expect(tokens).to_have_text((2000000).__format__(","), timeout=_WAIT_LIVE)
-    expect(cost).to_have_text("$6.00")
+    # 134: the cost is priced from the usage ledger. Without a ledger it is not
+    # tracked; the flat rate that used to price these tokens is gone.
+    expect(cost).to_have_text("not tracked")
 
-    store.broadcaster.broadcast(_full_snapshot(cost_per_million_tokens=3.0))
+    store.broadcaster.broadcast(_full_snapshot())
     expect(tokens).to_have_text("0", timeout=_WAIT_LIVE)
-    expect(cost).to_have_text("$0.00")
+    expect(cost).to_have_text("-")

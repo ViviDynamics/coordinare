@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import page_source
+from tests.unit.dashboard_js_slices import page_source, usage_helpers_js
 
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
 _HELPERS = _DASHBOARD_JS_SOURCES["helpers"]
@@ -29,7 +29,7 @@ def _sliced_js() -> str:
     note = re.search(r"var USAGE_PENDING_NOTE = .*?;", _PERFORMERS)
     assert note is not None
     return "\n\n".join(
-        [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtCost"), note.group(0)]
+        [_fn(_HELPERS, "esc"), _fn(_HELPERS, "fmtCost"), note.group(0), usage_helpers_js()]
         + [_fn(_PERFORMERS, name) for name in (
             "parseTokenCount", "derivePerformerTokenTotal", "estimateCost",
             "isStageRunning", "tokenReadout", "costHtml",
@@ -55,7 +55,7 @@ def test_usage_pending_client_js(tmp_path: Path) -> None:
 def test_metrics_card_uses_the_pending_readout() -> None:
     assert "tokenReadout(cardTokensTotal, !!activeSess)" in page_source()
     assert "cardTokensTotal.toLocaleString();" not in page_source()
-    assert "tokenView.pending ? '—' : fmtCost(costEstimate.value)" in page_source()
+    assert "costEl.textContent = tokenView.pending ? '-' : costReadout.text;" in page_source()
 
 
 def test_performer_detail_uses_the_pending_readout() -> None:

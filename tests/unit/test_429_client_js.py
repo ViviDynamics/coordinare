@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function
+from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function, usage_helpers_js
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "observer_detail_checks.js"
 
@@ -63,6 +63,8 @@ def _extract_detail_js() -> str:
         raise AssertionError("USAGE_PENDING_NOTE is no longer in performers.js")
     cost_helpers.append(pending_note.group(0))
     cost_helpers.append(shipped_function("helpers", "fmtCost"))
+    # 134: the cost cell reads the usage summary through usage.js.
+    cost_helpers.append(usage_helpers_js())
     # 145: the detail renderer offers the card action menu.
     cost_helpers.append(_DASHBOARD_JS_SOURCES["actions"])
     # 146: the renderer links to the run.

@@ -938,6 +938,10 @@ def _build_transcript_collector(
             guard=guard,
         )
         collector.add_ambient_secrets(os.environ)
+        if collector.enabled:
+            # 134: the usage ledger is recomputed from the transcripts still on disk, so
+            # the day, week and card totals survive a restart. Bounded to the window.
+            collector.usage.load_from_transcripts(collector.root, now=datetime.now(UTC))
         return collector
     except Exception as exc:  # best effort: transcripts must never stop the daemon
         logger.exception(

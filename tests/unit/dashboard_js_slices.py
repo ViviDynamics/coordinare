@@ -52,3 +52,14 @@ def label_helpers_js() -> str:
         [_DASHBOARD_JS_SOURCES["vocabulary"]]
         + [shipped_function("helpers", name) for name in _LABEL_HELPERS],
     )
+
+
+def usage_helpers_js() -> str:
+    """134: the token and cost formatting (usage.js) and the performers.js lookup that feeds it.
+
+    Assumes ``esc`` and ``fmtCost`` are already defined by the caller's slice.
+    """
+    return "\n\n".join([
+        _DASHBOARD_JS_SOURCES["usage"],
+        shipped_function("performers", "usageSummaryOf"),
+    ])

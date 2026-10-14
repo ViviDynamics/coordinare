@@ -131,6 +131,7 @@ from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.progress_fingerprint import progress_fingerprint
+from coordinare.services.token_usage import TokenLedger, price_table_from_config, price_totals
 from coordinare.services.workflow_step import (
     latch_declared_steps,
     latch_workflow_step,
@@ -751,11 +752,26 @@ async def _observer_stall_kill(
         return ("continue", None)
     return ("short", kill_result)
 
+def _ledger_card_cost(state: CoordinareState, card_id: object) -> float | None:
+    """134: the priced total of a card across its runs, or None when it is not tracked or not priced.
+
+    None when transcripts are off (there is no ledger to read) or a model has no price.
+    The caller shows nothing rather than a zero.
+    """
+    collector = state.get("transcript_collector")
+    usage = getattr(collector, "usage", None)
+    if not isinstance(usage, TokenLedger) or not getattr(collector, "enabled", False):
+        return None
+    config = state.get("config")
+    table = price_table_from_config(getattr(config, "cost_tracking", None))
+    return price_totals(usage.totals(card=str(card_id or "")), table).cost_usd
+
 def _transcript_target(state: CoordinareState, card_id: object) -> dict[str, str]:
-    """129: the symphony and card a run's transcript is filed under."""
+    """129: the symphony and card a run's transcript is filed under. 134: and its stage."""
     return {
         "symphony": str(state.get("current_symphony") or ""),
         "card_id": str(card_id or ""),
+        "stage": str(state.get("performer_stage") or ""),
     }
 
 async def phase_458(
@@ -1106,21 +1122,22 @@ async def _phase_token_counters(
     tokens_delta = ctx.tokens_delta
     if tokens_delta > 0:
         state["card_tokens_total"] = state.get("card_tokens_total", 0) + tokens_delta
-        from coordinare.config import CostTrackingConfig
+    # 134: the cost is the ledger's priced total for the card, not a flat rate. It is
+    # recomputed on every poll, since usage records arrive with the transcript.
+    card_cost = _ledger_card_cost(state, card_id)
+    state["card_cost_estimate"] = card_cost if card_cost is not None else 0.0
+    if tokens_delta > 0 or card_cost is not None:
         config = state.get("config")
-        cost_rate = CostTrackingConfig().cost_per_million_tokens
-        if config is not None and hasattr(config, "cost_tracking"):
-            cost_rate = config.cost_tracking.cost_per_million_tokens
-        state["card_cost_estimate"] = state["card_tokens_total"] / 1_000_000 * cost_rate
         # Update Prometheus metrics
         from coordinare.metrics import METRICS
-        METRICS.card_tokens_total.labels(role=stage).inc(tokens_delta)
+        if tokens_delta > 0:
+            METRICS.card_tokens_total.labels(role=stage).inc(tokens_delta)
         METRICS.card_cost_estimate_dollars.set(state["card_cost_estimate"])
         # 034: Budget alert — fire once per card
         budget = None
         if config is not None and hasattr(config, "cost_tracking"):
             budget = config.cost_tracking.cost_budget_per_card
-        if budget is not None and state["card_cost_estimate"] > budget and not state.get("card_budget_alert_sent"):
+        if budget is not None and card_cost is not None and card_cost > budget and not state.get("card_budget_alert_sent"):
             notification_service = state.get("notification_service")
             if notification_service is not None:
                 try:

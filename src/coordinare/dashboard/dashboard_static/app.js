@@ -363,28 +363,23 @@ function renderState(s) {
     a.textContent = s.project_name + ' Board';
     linkEl.appendChild(a);
   }
-  // Shared-pool usage lives on the monitored session.
+  // 134: tokens and cost are the card's usage summary, by kind and model, with the
+  // breakdown and the pricing date on hover. Shared-pool usage lives on the session.
   var tokenSource = activeSess || s;
-  var cardTokensTotal = (tokenSource.card_tokens_total || s.card_tokens_total || 0);
-  if (!(cardTokensTotal > 0)) {
-    var fallbackTokens = derivePerformerTokenTotal(tokenSource);
-    if (fallbackTokens == null && tokenSource !== s) fallbackTokens = derivePerformerTokenTotal(s);
-    if (fallbackTokens != null) cardTokensTotal = fallbackTokens;
-  }
+  var cardUsage = usageSummaryOf(tokenSource, 'card');
+  var fallbackTokens = tokenSource.card_tokens_total || s.card_tokens_total || derivePerformerTokenTotal(tokenSource);
+  var cardTokensTotal = usageTotalOf(cardUsage, fallbackTokens);
   // 122: while a stage runs with nothing reported yet, show pending, not 0.
   var tokenView = tokenReadout(cardTokensTotal, !!activeSess);
+  var usageTokensView = usageTokensReadout(cardUsage, fallbackTokens);
   var tokensEl = document.getElementById('card-tokens-total');
   tokensEl.textContent = tokenView.text;
-  tokensEl.title = tokenView.title;
-  // 121: cost reads the same source as the tokens beside it, and falls back to
-  // the displayed token count when the daemon has not priced the session yet.
-  var costSource = tokenSource;
-  if (!(cardTokensTotal > 0) || estimateCost(costSource, s).value <= 0) {
-    costSource = { card_cost_estimate: s.card_cost_estimate, card_tokens_total: cardTokensTotal };
-  }
-  var costEstimate = estimateCost(costSource, s);
+  tokensEl.title = tokenView.pending ? tokenView.title : usageTokensView.title;
+  var costReadout = cardUsage || activeSess ? usageCostReadout(cardUsage) : { text: '-', title: 'No card is running.' };
   var costEl = document.getElementById('card-cost-estimate');
-  costEl.textContent = tokenView.pending ? '—' : fmtCost(costEstimate.value);
+  costEl.textContent = tokenView.pending ? '-' : costReadout.text;
+  costEl.title = tokenView.pending ? tokenView.title : costReadout.title;
+  renderSpend(s.token_usage);
   // 144: say which card the figure is for.
   var tokenCardRef = cardRefText(activeSess || s);
   document.getElementById('card-tokens-label').textContent = 'Tokens' + (tokenCardRef && /^#/.test(tokenCardRef) ? ' · ' + tokenCardRef : '');
@@ -399,7 +394,6 @@ function renderState(s) {
     lastCheckedEl.removeAttribute('data-elapsed-since');
     lastCheckedEl.textContent = '';
   }
-  costEl.title = tokenView.pending ? tokenView.title : costEstimate.basis;
 
   // Agent session
   var agentEl = document.getElementById('agent-session');

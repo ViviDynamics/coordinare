@@ -1642,10 +1642,23 @@ def test_card_tokens_and_cost_display(
     """Card token count and cost estimate display correctly."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
+    # 134: the cost is the priced usage summary, not a flat rate times tokens.
+    summary = {
+        "tokens": {"input": 42, "output": 0, "cache_read": 0, "cache_write": 0, "total": 42},
+        "cost": {"usd": 0.15, "partial_usd": 0.15, "kind_usd": {}, "unknown_reason": None},
+        "models": [],
+        "pricing": {"as_of": "2026-10-01", "source": "table"},
+    }
+    session = {
+        **_active_session("PVTI_134_tokens", "Priced card", "implementing"),
+        "agent_dispatch_at": "2026-10-14T09:00:00+00:00",
+        "usage": {"tracked": True, "run": summary, "card": summary},
+    }
     store.broadcaster.broadcast(
         _full_snapshot(
-            card_tokens_total=42,
-            card_cost_estimate=0.15,
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_sessions=[session],
         ),
     )
     expect(page.locator("#card-tokens-total")).to_contain_text("42", timeout=_WAIT_LIVE)
@@ -1812,6 +1825,16 @@ def test_agent_session_info_visible_when_active(
 # ---------------------------------------------------------------------------
 
 
+def _priced_summary(usd: float) -> dict:
+    """134: a usage summary priced at ``usd``, as the daemon sends it."""
+    return {
+        "tokens": {"input": 1000, "output": 0, "cache_read": 0, "cache_write": 0, "total": 1000},
+        "cost": {"usd": usd, "partial_usd": usd, "kind_usd": {}, "unknown_reason": None},
+        "models": [],
+        "pricing": {"as_of": "2026-10-01", "source": "table"},
+    }
+
+
 @pytest.mark.e2e
 def test_active_work_row_shows_cost(
     page: Page, live_server_url: str, store: DashboardStore,
@@ -1826,7 +1849,11 @@ def test_active_work_row_shows_cost(
     session = {
         **_active_session("PVTI_cost", "Cost feature", "implementing"),
         "agent_dispatch_at": dispatch_ts,
-        "card_cost_estimate": 0.0123,
+        "usage": {
+            "tracked": True,
+            "run": _priced_summary(0.0123),
+            "card": _priced_summary(0.0123),
+        },
     }
     store.broadcaster.broadcast(
         _full_snapshot(

@@ -3,11 +3,13 @@ from __future__ import annotations
 import re
 import string
 from collections import Counter
+from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+import structlog
 import yaml
 from pydantic import (
     BaseModel,
@@ -27,6 +29,8 @@ from coordinare.models.performer_endpoint import (
 )
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # 052 — Branch collision strategy
@@ -306,11 +310,79 @@ class PersonasConfig(BaseModel):
 RequirementChangePolicy = Literal["ignore", "warn", "re-dispatch"]
 
 
-class CostTrackingConfig(BaseModel):
-    """034: Cost and token tracking configuration."""
+class PriceRates(BaseModel):
+    """134: dollars per million tokens, one rate for each token kind."""
 
-    cost_per_million_tokens: float = Field(default=3.0, ge=0.0)
+    model_config = ConfigDict(extra="forbid")
+
+    input_per_million: float = Field(ge=0.0)
+    output_per_million: float = Field(ge=0.0)
+    cache_read_per_million: float = Field(ge=0.0)
+    cache_write_per_million: float = Field(ge=0.0)
+
+
+_PATTERN_MSG = "model pattern {pattern!r} must be an id, an alias, or a prefix ending in '*'"
+_PRICING_DATE_MSG = "cost_tracking.pricing_as_of is required when prices or default_price are configured"
+_DUPLICATE_MODEL_MSG = "cost_tracking.prices: model {pattern!r} is priced by more than one entry"
+
+
+class ModelPriceConfig(PriceRates):
+    """134: one price entry. ``models`` holds exact ids, aliases, or ``prefix*`` patterns."""
+
+    models: list[str] = Field(min_length=1)
+
+    @field_validator("models")
+    @classmethod
+    def _valid_patterns(cls, models: list[str]) -> list[str]:
+        for pattern in models:
+            body = pattern.removesuffix("*")
+            if not body or "*" in body or any(ch.isspace() for ch in body):
+                raise ValueError(_PATTERN_MSG.format(pattern=pattern))
+        return models
+
+
+class CostTrackingConfig(BaseModel):
+    """034 / 134: cost budget and the per-model price table.
+
+    ``prices`` (with ``pricing_as_of``, the date the table was checked) prices each
+    model by its own rates. ``default_price`` is an optional entry for models no
+    entry matches. ``cost_per_million_tokens`` is the deprecated flat rate: it still
+    loads, prices every model at one rate, and is ignored once a table is configured.
+    """
+
+    cost_per_million_tokens: float | None = Field(default=None, ge=0.0)
     cost_budget_per_card: float | None = Field(default=None, ge=0.0)
+    pricing_as_of: date | None = None
+    prices: list[ModelPriceConfig] = Field(default_factory=list)
+    default_price: PriceRates | None = None
+
+    @field_validator("pricing_as_of", mode="before")
+    @classmethod
+    def _iso_date(cls, value: object) -> object:
+        if isinstance(value, str):
+            return date.fromisoformat(value)
+        return value
+
+    @model_validator(mode="after")
+    def _check_pricing(self) -> CostTrackingConfig:
+        priced = bool(self.prices) or self.default_price is not None
+        if priced and self.pricing_as_of is None:
+            raise ValueError(_PRICING_DATE_MSG)
+        seen: set[str] = set()
+        for entry in self.prices:
+            for pattern in entry.models:
+                if pattern in seen:
+                    raise ValueError(_DUPLICATE_MODEL_MSG.format(pattern=pattern))
+                seen.add(pattern)
+        if self.cost_per_million_tokens is not None:
+            if priced:
+                logger.warning("config.cost_per_million_tokens_ignored", replacement="cost_tracking.prices")
+            else:
+                logger.warning(
+                    "config.cost_per_million_tokens_deprecated",
+                    replacement="cost_tracking.prices with cost_tracking.pricing_as_of",
+                )
+        return self
 
 
 # ---------------------------------------------------------------------------

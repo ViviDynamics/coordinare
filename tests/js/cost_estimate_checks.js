@@ -1,5 +1,8 @@
-// 121: checks for the dashboard's shared cost estimate, executed against the
-// functions the Python test slices out of the shipped performers.js.
+// 121 / 134: checks for the dashboard's card cost, executed against the functions
+// the Python test slices out of the shipped performers.js and usage.js.
+//
+// 134 replaced the flat-rate estimate: the cost is the daemon's priced usage
+// summary, and nothing is computed from a token count here.
 //
 // Usage: node cost_estimate_checks.js <path-to-sliced-js>
 //
@@ -27,37 +30,43 @@ function check(name, actual, expected) {
 
 eval(src);
 
-const top = { cost_per_million_tokens: 3 };
+// A usage summary as the daemon sends it, with the given tokens and priced cost.
+function summary(tokens, usd) {
+  return {
+    tokens: { input: tokens, output: 0, cache_read: 0, cache_write: 0, total: tokens },
+    cost: { usd: usd, partial_usd: usd, kind_usd: {}, unknown_reason: null },
+    models: [],
+    pricing: { as_of: "2026-10-01", source: "table" },
+  };
+}
+function sessionWith(card, phase) {
+  return { phase: phase, usage: { tracked: true, run: card, card: card } };
+}
 
-// The daemon's own figure wins.
-check("reported cost is used as is",
-  estimateCost({ card_cost_estimate: 1.25, card_tokens_total: 10 }, top).value, 1.25);
+// The daemon's own priced figure is what is shown.
+check("the priced card cost is used as is",
+  estimateCost(sessionWith(summary(1000000, 3), "monitoring_pr"), {}).value, 3);
+check("the estimate carries the breakdown as its basis",
+  /Pricing as of 2026-10-01\./.test(estimateCost(sessionWith(summary(1000000, 3), "monitoring_pr"), {}).basis), true);
 
-// The bug: tokens on screen, cost 0. Estimate from the same tokens.
-check("tokens with no reported cost are priced at the flat rate",
-  estimateCost({ card_cost_estimate: 0, card_tokens_total: 382979 }, top).value, 382979 / 1000000 * 3);
-check("live performer metrics count as tokens",
-  estimateCost({ performer_metrics: { tokens_processed: 2000000 } }, top).value, 6);
-check("a non-zero token count never yields a zero cost",
-  estimateCost({ card_tokens_total: 1 }, top).value > 0, true);
-
-// Nothing to estimate.
-check("no tokens and no cost is zero", estimateCost({}, top).value, 0);
+// Nothing priced is never a made-up number.
+check("no usage summary is zero", estimateCost({}, {}).value, 0);
 check("missing arguments do not throw", estimateCost(undefined, undefined).value, 0);
-check("a zero rate cannot invent a cost", estimateCost({ card_tokens_total: 500 }, { cost_per_million_tokens: 0 }).value, 0);
-check("an absent rate cannot invent a cost", estimateCost({ card_tokens_total: 500 }, {}).value, 0);
+check("an unknown cost is zero, not a guess",
+  estimateCost({ usage: { tracked: true, card: { tokens: { total: 5 }, cost: { usd: null, unknown_reason: "no price for m" }, models: [] } } }, {}).value, 0);
+check("untracked transcripts price nothing",
+  estimateCost({ usage: { tracked: false, reason: "transcripts disabled" } }, {}).value, 0);
 
-// The tooltip names the pricing basis.
-check("basis names the rate",
-  estimateCost({ card_tokens_total: 5 }, top).basis,
-  "Estimate at $3.00 per million tokens (one flat rate for all models and token types)");
-check("basis without a rate still says it is an estimate",
-  /flat rate/.test(estimateCost({}, {}).basis), true);
-
-// Rendered form carries the tooltip and the requested precision.
+// Rendered form carries the tooltip and the two-decimal format.
 check("costHtml renders value and tooltip",
-  costHtml({ card_tokens_total: 1000000 }, top),
-  '<span title="Estimate at $3.00 per million tokens (one flat rate for all models and token types)">$3.00</span>');
+  costHtml(sessionWith(summary(1000000, 3), "monitoring_pr"), {}),
+  '<span title="Tokens: input 1,000,000, output 0, cache read 0, cache write 0 (total 1,000,000)\nCost: input $0, output $0, cache read $0, cache write $0 (total $3.000000)\nPricing as of 2026-10-01.">$3.00</span>');
+
+// Untracked: not tracked, and the reason is on the tooltip.
+check("costHtml for untracked transcripts says not tracked",
+  costHtml({ usage: { tracked: false, reason: "transcripts disabled" } }, {}).indexOf(">not tracked</span>") !== -1, true);
+check("costHtml with no usage says not tracked",
+  costHtml({}, {}).indexOf(">not tracked</span>") !== -1, true);
 
 // 144: one format everywhere: two decimals, three when under a cent.
 check("ordinary amounts use two decimals", fmtCost(1.149), "$1.15");

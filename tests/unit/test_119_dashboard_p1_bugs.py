@@ -13,15 +13,14 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
-from coordinare.config import CostTrackingConfig
 from coordinare.daemon import get_daemon_started_at
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES, DashboardStore
-from coordinare.dashboard.store import _cost_rate, _daemon_started_at_iso
+from coordinare.dashboard.store import _daemon_started_at_iso
 from coordinare.services.kubernetes_runtime import KubernetesRuntime, _decode_pod_log
+from tests.unit.dashboard_js_slices import usage_helpers_js
 
 # --- #119 ---------------------------------------------------------------------- #
 
@@ -116,14 +115,6 @@ def test_dumped_pod_log_is_real_text(tmp_path: Path) -> None:
 # --- #121 ---------------------------------------------------------------------- #
 
 
-def test_cost_rate_comes_from_config_else_the_model_default() -> None:
-    assert _cost_rate(SimpleNamespace(cost_tracking=SimpleNamespace(cost_per_million_tokens=7.5))) == 7.5
-    default = CostTrackingConfig().cost_per_million_tokens
-    for config in (None, SimpleNamespace(), SimpleNamespace(cost_tracking=None), MagicMock(),
-                   SimpleNamespace(cost_tracking=SimpleNamespace(cost_per_million_tokens=-1))):
-        assert _cost_rate(config) == default
-
-
 def _cost_js() -> str:
     performers = _DASHBOARD_JS_SOURCES["performers"]
     helpers = _DASHBOARD_JS_SOURCES["helpers"]
@@ -134,9 +125,9 @@ def _cost_js() -> str:
         return match.group(0)
 
     return "\n\n".join([
-        fn(helpers, "esc"), fn(helpers, "fmtCost"), fn(performers, "parseTokenCount"),
-        fn(performers, "derivePerformerTokenTotal"), fn(performers, "estimateCost"),
-        fn(performers, "costHtml"),
+        fn(helpers, "esc"), fn(helpers, "fmtCost"), usage_helpers_js(), fn(performers, "parseTokenCount"),
+        fn(performers, "derivePerformerTokenTotal"), fn(performers, "isStageRunning"),
+        fn(performers, "estimateCost"), fn(performers, "costHtml"),
     ])
 
 
@@ -168,4 +159,4 @@ def test_every_cost_readout_goes_through_the_shared_estimate() -> None:
     direct = re.findall(r"card_cost_estimate\s*\|\|\s*0\)\.toFixed", shipped)
     assert direct == []
     assert shipped.count("? costHtml(sess, s) :") == 2
-    assert "estimateCost(costSource, s)" in shipped
+    assert "usageCostReadout(cardUsage)" in shipped

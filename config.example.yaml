@@ -859,10 +859,32 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   redirect_url: "https://coordinare.example/oidc/callback"
 #   session_hours: 12                        # 1-168; sessions end on daemon restart
 
-# --- Cost Tracking ---
+# --- Cost Tracking (134) ---
+# Tokens and cost come from the run transcripts' usage records (transcripts.enabled).
+# Each model has its own rates per million tokens, for input, output, cache read and
+# cache write. `models` takes exact ids, aliases, or prefixes ending in `*`; an exact
+# id wins over a prefix, and the longest prefix wins over a shorter one. A model that
+# no entry matches is shown with its tokens and an unknown cost. Nothing is guessed.
+# `pricing_as_of` is the date the rates were checked, and the dashboard shows it.
+# The rates below are EXAMPLE values, not a price list: copy the provider's current
+# rates for your models and set pricing_as_of to the date you checked them.
 # cost_tracking:
-#   cost_per_million_tokens: 3.0        # dollars per million tokens; used for estimates
+#   pricing_as_of: "2026-10-01"
+#   prices:
+#     - models: ["claude-opus-4-5", "claude-opus-4-5-*"]
+#       input_per_million: 15.00
+#       output_per_million: 75.00
+#       cache_read_per_million: 1.50
+#       cache_write_per_million: 18.75
+#     - models: ["claude-haiku-4-5*"]
+#       input_per_million: 1.00
+#       output_per_million: 5.00
+#       cache_read_per_million: 0.10
+#       cache_write_per_million: 1.25
+#   default_price: null                 # optional: rates for any model no entry matches
 #   cost_budget_per_card: null          # alert when a card exceeds this dollar budget; null = no limit
+# Deprecated: `cost_per_million_tokens: 3.0` (one flat rate for every model, no pricing
+# date) still loads with a startup warning, and is ignored once `prices` is set.
 
 # --- Implementer-Side Rebase (555) ---
 # Coordinare never clones, rebases or pushes a branch. When enabled, it reads

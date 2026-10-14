@@ -132,11 +132,12 @@ def test_state_update_shape_additive_only() -> None:
     # assignee_filter. 343 added stall_timeout_seconds, which the step trail
     # uses to decide when a step has sat too long -- the per-step fields
     # themselves live on each active_sessions entry, not at top level.
-    # 121 added cost_per_million_tokens, the flat rate behind every cost readout.
+    # 134 replaced the flat cost_per_million_tokens with token_usage: today and
+    # the rolling week, priced from the usage ledger, or "not tracked".
     assert added == {
         "activity_run_id",
         "activity_quiet_threshold_seconds",
-        "cost_per_million_tokens",
+        "token_usage",
         "poll_interval_seconds",
         "include_unassigned",
         "ownership_hint",
