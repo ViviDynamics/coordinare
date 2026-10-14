@@ -1,46 +1,35 @@
-"""098: a QA turn writes only its report and the new test files it declares.
+"""098: the write-scope guard, against real git repositories.
 
-Issue #98: on card remove_vowels a QA turn wrote its prose notes into
-``tests/test_sample.py``, replacing the whole module, and the performer
-committed and pushed it. Two write paths made that possible: the
-``new_test_files`` loop committed any model-named path with no check against
-what already existed, and a free agent turn could edit a tracked file in the
-clone that the next commit then carried.
+Issue #98: a QA turn wrote prose into ``tests/test_sample.py`` and the performer
+published it. The guard's rules, as these tests pin them:
 
-The rules these tests pin:
-
-* A tracked file changed outside the allowlist is restored from HEAD, and the
-  verdict fails naming it.
-* An untracked path the turn did not declare is never committed, is left on
-  disk, and does not fail the verdict. Test runs leave such files behind
-  (``.coverage``, ``dist/``), and failing on them would be a false verdict.
-* A staged-but-untracked stray is unstaged, not committed, and not failed.
-* A declared new-file path that exists at HEAD, or is not test-shaped, is never
-  written, and fails the verdict.
-* The commit step stages and commits only the path it was given.
-
-These tests drive real git repositories (the guard's whole job is git state),
-so the assertions are about what is on disk and in the index, not about mocks.
+* Commits the QA agent made during the turn are checked against the turn's
+  starting commit. Out-of-scope commits are removed from the branch.
+* A tracked file changed in the working tree and not declared is restored from
+  HEAD and reported as information. It does not fail the verdict.
+* An untracked path is never committed, is left on disk, and is information.
+* A declared new-file path is checked before anything is written. Glob and magic
+  pathspecs, traversal, configuration and hook files, symlinked ancestors,
+  directories, extensions, and case collisions are all refused by name.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from performer.backends.base import BackendStatus
-from performer.config import Settings
-from performer.main import handle_status
-from performer.models import Performance, Score, Stand
-from performer.protocol import PerformerMessage
-from performer.workspace import WorkspaceSetupError, commit_file
-from performer.write_scope import dirty_paths, enforce_write_scope, parse_porcelain_z
+from performer.models import Stand
+from performer.workspace import WorkspaceSetupError
+from performer.write_scope import (
+    dirty_paths,
+    declared_path_refusal,
+    enforce_write_scope,
+    head_paths,
+    parse_porcelain_z,
+)
 
-ISSUE = 74
 BRANCH = "feat/remove-vowels"
 REPORT = "docs/cards/74-remove-vowels/qa.md"
 ORIGINAL_TEST = "def test_remove_vowels():\n    assert remove_vowels('abc') == 'bc'\n"
@@ -57,6 +46,10 @@ def _git(repo: Path, *args: str) -> str:
         text=True,
     )
     return result.stdout
+
+
+def _head(repo: Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").strip()
 
 
 @pytest.fixture
@@ -78,106 +71,115 @@ def _status(repo: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The guard itself (performer.write_scope)
+# Working tree and index
 # ---------------------------------------------------------------------------
 
 
-class TestWriteScopeGuard:
-    async def test_a_tracked_file_rewritten_outside_scope_is_restored(self, repo: Path) -> None:
+class TestWorkingTreeScope:
+    async def test_a_tracked_change_not_declared_is_restored_as_information(
+        self, repo: Path
+    ) -> None:
+        base = _head(repo)
         (repo / "tests" / "test_sample.py").write_text(PROSE_NOTES)
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == ["tests/test_sample.py"]
-        assert result.left_out == []
+        assert report.restored == ["tests/test_sample.py"]
+        assert report.committed_out_of_scope == []
+        assert report.reset_to is None
         assert (repo / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
         assert _status(repo) == ""
 
-    async def test_a_deleted_tracked_file_outside_scope_is_restored(self, repo: Path) -> None:
+    async def test_a_deleted_tracked_file_is_restored(self, repo: Path) -> None:
+        base = _head(repo)
         (repo / "app.py").unlink()
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == ["app.py"]
+        assert report.restored == ["app.py"]
         assert (repo / "app.py").exists()
         assert _status(repo) == ""
 
-    async def test_an_untracked_stray_is_left_on_disk_not_restored(self, repo: Path) -> None:
+    async def test_an_untracked_stray_is_left_on_disk_and_not_committed(self, repo: Path) -> None:
+        base = _head(repo)
         (repo / "notes.txt").write_text(PROSE_NOTES)
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == []
-        assert result.left_out == ["notes.txt"]
+        assert report.restored == []
+        assert report.left_out == ["notes.txt"]
         assert (repo / "notes.txt").read_text() == PROSE_NOTES
         assert _status(repo) == "?? notes.txt\n"
 
     async def test_a_staged_new_file_is_unstaged_and_kept_on_disk(self, repo: Path) -> None:
+        base = _head(repo)
         (repo / "tests" / "test_extra.py").write_text(PROSE_NOTES)
         _git(repo, "add", "--", "tests/test_extra.py")
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == []
-        assert result.left_out == ["tests/test_extra.py"]
+        assert report.left_out == ["tests/test_extra.py"]
         assert (repo / "tests" / "test_extra.py").exists()
         assert _status(repo) == "?? tests/test_extra.py\n"
 
     async def test_untracked_artifact_directories_are_left_alone(self, repo: Path) -> None:
         """Test runs leave coverage and build output behind. None of it is deleted."""
+        base = _head(repo)
         (repo / "coverage").mkdir()
         (repo / "coverage" / "index.html").write_text("<html></html>\n")
         (repo / "dist").mkdir()
         (repo / "dist" / "bundle.js").write_text("console.log(1);\n")
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == []
-        assert set(result.left_out) == {"coverage/index.html", "dist/bundle.js"}
+        assert report.restored == []
+        assert set(report.left_out) == {"coverage/index.html", "dist/bundle.js"}
         assert (repo / "coverage" / "index.html").exists()
         assert (repo / "dist" / "bundle.js").exists()
 
-    async def test_the_allowed_report_is_kept(self, repo: Path) -> None:
-        (repo / "docs" / "cards" / "74-remove-vowels").mkdir(parents=True)
-        (repo / REPORT).write_text("# QA Report\n")
-        stand = Stand(path=repo, branch=BRANCH)
-
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
-
-        assert result.restored == []
-        assert result.left_out == []
-        assert (repo / REPORT).read_text() == "# QA Report\n"
-
-    async def test_untracked_build_detritus_is_not_a_change(self, repo: Path) -> None:
+    async def test_untracked_build_detritus_is_not_reported(self, repo: Path) -> None:
+        base = _head(repo)
         (repo / "tests" / "__pycache__").mkdir()
         (repo / "tests" / "__pycache__" / "x.pyc").write_bytes(b"\x00")
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == []
-        assert result.left_out == []
+        assert report.left_out == []
         assert (repo / "tests" / "__pycache__" / "x.pyc").exists()
 
-    async def test_a_clean_tree_changes_nothing(self, repo: Path) -> None:
+    async def test_the_allowed_report_is_kept(self, repo: Path) -> None:
+        base = _head(repo)
+        (repo / "docs" / "cards" / "74-remove-vowels").mkdir(parents=True)
+        (repo / REPORT).write_text("# QA Report\n")
         stand = Stand(path=repo, branch=BRANCH)
 
-        result = await enforce_write_scope(stand, {REPORT}, role="qa")
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        assert result.restored == []
-        assert result.left_out == []
+        assert report.restored == []
+        assert report.left_out == []
+        assert (repo / REPORT).read_text() == "# QA Report\n"
+
+    async def test_a_clean_tree_changes_nothing(self, repo: Path) -> None:
+        base = _head(repo)
+        stand = Stand(path=repo, branch=BRANCH)
+
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
+
+        assert report.restored == []
+        assert report.left_out == []
+        assert report.committed_out_of_scope == []
 
     async def test_an_unreadable_tree_fails_closed(self, tmp_path: Path) -> None:
-        """Not a repository: the check cannot tell what changed, so it must refuse."""
         stand = Stand(path=tmp_path, branch="feat/none")
 
         with pytest.raises(WorkspaceSetupError):
-            await enforce_write_scope(stand, {REPORT}, role="qa")
+            await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start="0" * 40)
 
     async def test_dirty_paths_reports_the_rename_source_too(self, repo: Path) -> None:
         _git(repo, "mv", "app.py", "engine.py")
@@ -200,201 +202,157 @@ class TestWriteScopeGuard:
 
 
 # ---------------------------------------------------------------------------
-# The commit step stages and commits only what it is given
+# Commits made by the agent during the turn
 # ---------------------------------------------------------------------------
 
 
-class TestCommitStaysOnItsPath:
-    async def test_commit_file_never_commits_another_staged_path(self, repo: Path) -> None:
-        """The commit step alone: a stray staged elsewhere stays staged and out of HEAD.
-
-        The push is stubbed so this isolates the commit. The push step separately
-        refuses to publish while unrelated paths are staged, which is a second guard.
-        """
-        (repo / "notes.txt").write_text(PROSE_NOTES)
-        _git(repo, "add", "--", "notes.txt")
-        stand = Stand(path=repo, branch=BRANCH)
-
-        with patch("performer.workspace._push_head_without_clobbering", new=AsyncMock()):
-            await commit_file(stand, REPORT, "# QA Report\n", "chore: add QA report")
-
-        committed = _git(repo, "show", "--name-only", "--format=", "HEAD").split()
-        assert committed == [REPORT]
-        assert "notes.txt" in _git(repo, "diff", "--cached", "--name-only").split()
-
-    async def test_a_guarded_turn_publishes_only_its_report(
-        self, repo: Path, tmp_path: Path
-    ) -> None:
-        """The real order: the guard unstages strays first, then the commit and push run."""
-        origin = tmp_path / "origin.git"
-        _git(tmp_path, "init", "-q", "--bare", str(origin))
-        _git(repo, "remote", "add", "origin", str(origin))
-        _git(repo, "push", "-q", "origin", BRANCH)
-        (repo / "notes.txt").write_text(PROSE_NOTES)
-        _git(repo, "add", "--", "notes.txt")
-        stand = Stand(path=repo, branch=BRANCH)
-
-        await enforce_write_scope(stand, {REPORT}, role="qa")
-        await commit_file(stand, REPORT, "# QA Report\n", "chore: add QA report")
-
-        committed = _git(repo, "show", "--name-only", "--format=", "HEAD").split()
-        assert committed == [REPORT]
-        assert (repo / "notes.txt").read_text() == PROSE_NOTES
-        assert _git(repo, "ls-remote", "origin", BRANCH).strip() != ""
-
-
-# ---------------------------------------------------------------------------
-# The QA verdict (performer.qa_postprocess.finalize_qa via handle_status)
-# ---------------------------------------------------------------------------
-
-
-def _qa_json(**over) -> str:
-    base = {
-        "passed": True,
-        "criteria_checked": 1,
-        "criteria_passed": 1,
-        "failures": [],
-        "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
-        "verification_steps": ["Run: pytest -q"],
-    }
-    base.update(over)
-    return json.dumps(base)
-
-
-class TestQAWriteScopeVerdict:
-    def _make_perf(self, repo: Path) -> Performance:
-        stand = Stand(path=repo, branch=BRANCH)
-        score = Score(
-            title="remove_vowels",
-            repo_url="https://github.com/acme/conductor-e2e-sample",
-            branch=BRANCH,
-            issue_number=ISSUE,
-        )
-        return Performance(
-            session_id="sid",
-            stand=stand,
-            score=score,
-            backend=MagicMock(),
-            role="qa",
-        )
-
-    async def _handle(self, repo: Path, output: str, commit: AsyncMock) -> object:
-        perf = self._make_perf(repo)
-        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        with (
-            patch("performer.main.commit_file", new=commit),
-            patch("performer.main.post_issue_comment", new=AsyncMock()),
-        ):
-            return await handle_status(
-                PerformerMessage(action="status", session_id="sid", payload={}),
-                perf,
-                Settings(AGENT_BACKEND="opencode"),
-            )
-
-    async def test_incident_a_qa_turn_cannot_replace_an_existing_test_module(
+class TestAgentCommits:
+    async def test_an_agent_commit_outside_scope_is_rewound_off_the_branch(
         self, repo: Path
     ) -> None:
-        """Reproduction of #98: the QA JSON names the existing test module and
-        carries prose as its content. The module must keep its content, nothing
-        may be committed under that path, and the verdict must name it."""
-        committed: list[str] = []
-
-        async def fake_commit(stand, path, content, message, **_kw):
-            committed.append(path)
-
-        resp = await self._handle(
-            repo,
-            _qa_json(new_test_files=[{"path": "tests/test_sample.py", "content": PROSE_NOTES}]),
-            AsyncMock(side_effect=fake_commit),
-        )
-
-        assert (repo / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
-        assert "tests/test_sample.py" not in committed
-        assert resp.status == "qa_failed"
-        scope = [f for f in resp.failures if f.get("type") == "write_scope_violation"]
-        assert scope and "tests/test_sample.py" in scope[0]["actual"]
-
-    async def test_a_turn_that_edits_a_tracked_file_is_restored_and_failed(
-        self, repo: Path
-    ) -> None:
+        base = _head(repo)
         (repo / "tests" / "test_sample.py").write_text(PROSE_NOTES)
-        committed: list[str] = []
+        _git(repo, "commit", "-qam", "agent: edit the test module")
+        stand = Stand(path=repo, branch=BRANCH)
 
-        async def fake_commit(stand, path, content, message, **_kw):
-            committed.append(path)
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        resp = await self._handle(repo, _qa_json(), AsyncMock(side_effect=fake_commit))
-
+        assert report.committed_out_of_scope == ["tests/test_sample.py"]
+        assert report.reset_to == base
+        assert _head(repo) == base
         assert (repo / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
-        assert committed == [REPORT]
-        assert resp.status == "qa_failed"
-        assert any(
-            f.get("type") == "write_scope_violation" and "tests/test_sample.py" in f["actual"]
-            for f in resp.failures
-        )
 
-    async def test_a_new_source_file_declared_as_a_test_is_refused(self, repo: Path) -> None:
-        """A brand-new file is not a clobber, but a QA turn creating source is still
-        outside its scope. Only test-shaped paths may be declared as new files."""
-        committed: list[str] = []
+    async def test_an_agent_commit_of_only_allowed_paths_is_kept(self, repo: Path) -> None:
+        base = _head(repo)
+        (repo / "docs" / "cards" / "74-remove-vowels").mkdir(parents=True)
+        (repo / REPORT).write_text("# QA Report\n")
+        _git(repo, "add", "--", REPORT)
+        _git(repo, "commit", "-qm", "agent: report")
+        stand = Stand(path=repo, branch=BRANCH)
 
-        async def fake_commit(stand, path, content, message, **_kw):
-            committed.append(path)
+        report = await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        resp = await self._handle(
-            repo,
-            _qa_json(new_test_files=[{"path": "src/helper.py", "content": PROSE_NOTES}]),
-            AsyncMock(side_effect=fake_commit),
-        )
+        assert report.committed_out_of_scope == []
+        assert report.reset_to is None
+        assert _head(repo) != base
 
-        assert committed == [REPORT]
-        assert not (repo / "src" / "helper.py").exists()
-        assert resp.status == "qa_failed"
-        assert any(
-            f.get("type") == "write_scope_violation" and "src/helper.py" in f["actual"]
-            for f in resp.failures
-        )
+    async def test_head_no_longer_descending_from_the_start_fails_closed(self, repo: Path) -> None:
+        base = _head(repo)
+        _git(repo, "checkout", "-q", "--orphan", "elsewhere")
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "unrelated history")
+        stand = Stand(path=repo, branch=BRANCH)
 
-    async def test_a_legitimate_new_test_file_and_report_still_pass(self, repo: Path) -> None:
-        """A QA turn that creates a new acceptance test and its report is the
-        normal case; neither may be discarded or failed by the guard."""
-        new_test = "tests/test_acceptance_remove_vowels.py"
-        new_body = "def test_acceptance():\n    assert True\n"
-        written: list[str] = []
+        with pytest.raises(WorkspaceSetupError, match="descend"):
+            await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=base)
 
-        async def fake_commit(stand, path, content, message, **_kw):
-            target = stand.path / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
-            written.append(path)
+    async def test_an_unknown_starting_commit_fails_closed(self, repo: Path) -> None:
+        stand = Stand(path=repo, branch=BRANCH)
 
-        resp = await self._handle(
-            repo,
-            _qa_json(new_test_files=[{"path": new_test, "content": new_body}]),
-            AsyncMock(side_effect=fake_commit),
-        )
+        with pytest.raises(WorkspaceSetupError, match="starting commit"):
+            await enforce_write_scope(stand, {REPORT}, role="qa", head_at_start=None)
 
-        assert written == [new_test, REPORT]
-        assert (repo / new_test).read_text() == new_body
-        assert resp.status == "qa_passed"
-        assert not any(f.get("type") == "write_scope_violation" for f in resp.failures)
+    async def test_head_paths_reads_a_named_revision(self, repo: Path) -> None:
+        base = _head(repo)
+        (repo / "extra.py").write_text("x = 1\n")
+        _git(repo, "add", "--", "extra.py")
+        _git(repo, "commit", "-qm", "add extra")
+        stand = Stand(path=repo, branch=BRANCH)
 
-    async def test_untracked_test_artifacts_do_not_fail_the_verdict(self, repo: Path) -> None:
-        """A QA run that executes the project's tests leaves coverage output and a
-        .coverage file behind. That is not a write to the repository's content: it
-        must not fail the verdict, and it must not be committed."""
-        (repo / "coverage").mkdir()
-        (repo / "coverage" / "index.html").write_text("<html></html>\n")
-        (repo / ".coverage").write_bytes(b"\x00")
-        committed: list[str] = []
+        assert "extra.py" in await head_paths(stand)
+        assert "extra.py" not in await head_paths(stand, base)
 
-        async def fake_commit(stand, path, content, message, **_kw):
-            committed.append(path)
 
-        resp = await self._handle(repo, _qa_json(), AsyncMock(side_effect=fake_commit))
+# ---------------------------------------------------------------------------
+# Declared new-file paths
+# ---------------------------------------------------------------------------
 
-        assert committed == [REPORT]
-        assert (repo / "coverage" / "index.html").exists()
-        assert (repo / ".coverage").exists()
-        assert resp.status == "qa_passed"
-        assert not any(f.get("type") == "write_scope_violation" for f in resp.failures)
+
+async def _refusal(repo: Path, path: object) -> str | None:
+    tracked = await head_paths(Stand(path=repo, branch=BRANCH))
+    return declared_path_refusal(path, root=repo, tracked=tracked)
+
+
+class TestDeclaredPathRules:
+    @pytest.mark.parametrize(
+        ("path", "keyword"),
+        [
+            ("tests/test_*.py", "glob or magic"),
+            ("tests/test_?.py", "glob or magic"),
+            ("tests/[ab]_test.py", "glob or magic"),
+            (":(glob)tests/test_x.py", "glob or magic"),
+            ("tests\\test_x.py", "backslash"),
+            ("tests/test_x\n.py", "control"),
+            ("tests/test_x\x00.py", "control"),
+            ("/etc/test_x.py", "absolute"),
+            ("../escape/test_x.py", "traversing"),
+            ("tests//test_x.py", "traversing"),
+            (".github/workflows/test_ci.yml", "dot"),
+            (".hidden/test_x.py", "dot"),
+            ("tests/conftest.py", "configuration or hook"),
+            ("tests/__init__.py", "configuration or hook"),
+            ("tests/pytest.ini", "configuration or hook"),
+            ("setup.cfg", "configuration or hook"),
+            ("tests/setup.py", "configuration or hook"),
+            ("__tests__/jest.config.js", "configuration or hook"),
+            ("__tests__/vitest.config.ts", "configuration or hook"),
+            ("package.json", "configuration or hook"),
+            ("hooks/test_pre.py", "configuration or hook"),
+            ("tests/test_ci.yml", "configuration or hook"),
+            ("tests/test_x.sh", "test source extension"),
+            ("tests/helpers.py", "named as a test"),
+            ("tests", "directory"),
+            ("tests/TEST_SAMPLE.PY", "case collision"),
+            ("tests/Test_Sample.py", "case collision"),
+            ("tests/test_sample.py", "exists at HEAD"),
+            (None, "not a path"),
+            (["tests/test_x.py"], "not a path"),
+        ],
+    )
+    async def test_a_refused_declared_path_is_named_with_its_reason(
+        self, repo: Path, path: object, keyword: str
+    ) -> None:
+        reason = await _refusal(repo, path)
+
+        assert reason is not None
+        assert keyword in reason
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/test_new.py",
+            "tests/unit/test_deep.py",
+            "src/widget.test.ts",
+            "spec/user_spec.rb",
+            "internal/x/x_test.go",
+            "tests/suite.bats",
+            "tests/test_widget.jsx",
+        ],
+    )
+    async def test_a_legitimate_new_test_path_is_allowed(self, repo: Path, path: str) -> None:
+        assert await _refusal(repo, path) is None
+
+    async def test_a_symlinked_ancestor_is_refused_before_anything_is_written(
+        self, repo: Path
+    ) -> None:
+        _git(repo, "rm", "-r", "-q", "tests")
+        (repo / "src").mkdir()
+        (repo / "src" / "app_old.py").write_text("x = 1\n")
+        (repo / "tests").symlink_to("src")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "tests becomes a symlink")
+
+        reason = await _refusal(repo, "tests/test_new.py")
+
+        assert reason is not None
+        assert "symlink" in reason
+        assert not (repo / "src" / "test_new.py").exists()
+
+    async def test_a_symlink_at_the_declared_path_is_refused(self, repo: Path) -> None:
+        (repo / "src").mkdir()
+        (repo / "src" / "real.py").write_text("x = 1\n")
+        (repo / "tests" / "test_link.py").symlink_to(repo / "src" / "real.py")
+
+        reason = await _refusal(repo, "tests/test_link.py")
+
+        assert reason is not None
+        assert "symlink" in reason

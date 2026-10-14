@@ -1678,7 +1678,9 @@ async def commit_file(
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")
 
-    env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
+    # 098: literal pathspecs, so a path containing * ? [ is one file and never a pattern
+    # that stages every match.
+    env = {**os.environ, **stand.git_env, "GIT_LITERAL_PATHSPECS": "1"}
 
     # Stage the file (use -- separator to prevent option injection from paths starting with -)
     returncode, stderr = await _run_git(

@@ -430,7 +430,7 @@ class TestWorkflowVerdictIntegration:
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output=_qa_output(
             passed=True, criteria_checked=1, criteria_passed=1,
-            new_test_files=[{"path": "tests/x.py", "content": "def t(): pass"}],
+            new_test_files=[{"path": "tests/test_x.py", "content": "def test_t(): pass"}],
             visual_capture_dir=str(evidence),
         ))
         with patch(
