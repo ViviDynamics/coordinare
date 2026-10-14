@@ -2850,7 +2850,7 @@ async def _phase_token_limit(
                     error=str(exc),
                 )
         # 142: the stop names its own cause, so the Blocked chip can say it was the output cap.
-        state["system_error_reason"] = OUTPUT_CAP_REASON
+        state["system_error_reason"] = redact_state_value(OUTPUT_CAP_REASON)
         state["phase"] = "blocked"
         state["open_questions"] = redact_state_value([advice])
         return state
