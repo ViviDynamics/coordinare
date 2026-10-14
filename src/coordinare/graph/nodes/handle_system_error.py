@@ -153,8 +153,8 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         state["system_error_reason"] = reason
         # 103: the retries are spent, so a pending format-repair hint must not ride a
         # later dispatch. A human observer correction is not touched.
-        pending = state.get("observer_correction")
-        if isinstance(pending, dict) and pending.get("kind") == "format_repair":
+        correction = state.get("observer_correction")
+        if isinstance(correction, dict) and correction.get("kind") == "format_repair":
             state["observer_correction"] = None
         # 098 US3 (FR-003): when the assessor stage exhausted retries on a
         # persistently EMPTY upstream (the heavily-shared model is overloaded/down),
