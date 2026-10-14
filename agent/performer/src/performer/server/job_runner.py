@@ -14,6 +14,7 @@ secrets return JobBusyResponse with reason="secret_missing".
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -94,6 +95,9 @@ class JobRunner:
         # Mutable, shared with the running job task via _refreshed_secrets_var.
         # PATCH /jobs/{id}/secrets writes here; the _perform_job loop reads.
         self._refreshed_secrets: dict[str, str] = {}
+        # The PATCH handler writes this on the loop; the transcript provider reads it on a
+        # worker thread. Writes and copies both take the lock (review item 8).
+        self._secrets_lock = threading.Lock()
 
     @property
     def current_job_id(self) -> str | None:
@@ -169,13 +173,16 @@ class JobRunner:
             # 129: exact-value redaction covers every secret this job was handed,
             # including values PATCHed in mid-run (read through the same dict).
             refreshed = self._refreshed_secrets
+            lock = self._secrets_lock
 
             def job_secret_values(
                 _payload: JobInitPayload = payload,
                 _refreshed: dict[str, str] = refreshed,
+                _lock: threading.Lock = lock,
             ) -> list[str]:
                 values = [s.get_secret_value() for s in _payload.secrets.values()]
-                values.extend(_refreshed.values())
+                with _lock:
+                    values.extend(list(_refreshed.values()))
                 return values
 
             self._transcript = (
@@ -206,7 +213,8 @@ class JobRunner:
             raise JobNotFoundError(job_id)
         # Mutate in place — the in-job loop holds the same dict reference via
         # _refreshed_secrets_var, so an .update() is sufficient.
-        self._refreshed_secrets.update(secrets)
+        with self._secrets_lock:
+            self._refreshed_secrets.update(secrets)
         log.debug(
             "job_runner.secrets_refreshed",
             job_id=job_id,

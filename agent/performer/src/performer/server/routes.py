@@ -19,9 +19,11 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
+import structlog
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
 
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
@@ -41,6 +43,39 @@ class _RefreshSecretsPayload(BaseModel):
 
 def _runner(request: Request) -> JobRunner:
     return request.app.state.runner  # type: ignore[no-any-return]
+
+
+_logger = structlog.get_logger(__name__)
+
+
+async def _transcript_status(
+    runner: JobRunner,
+    job_id: str,
+    transcript_after: int,
+    transcript_limit: int,
+) -> JobStatus:
+    """The job status with a transcript batch. Never fails because of the transcript.
+
+    The batch is redacted on a worker thread, so the status endpoint and the backend
+    share the loop. If serving the batch fails for any reason, the normal status is
+    returned with an empty batch and ``transcript_error`` set, so job completion is
+    still observed and the daemon can carry on (129 review, item 1).
+    """
+    try:
+        return await asyncio.to_thread(
+            runner.get,
+            job_id,
+            transcript_after=transcript_after,
+            transcript_limit=transcript_limit,
+        )
+    except JobNotFoundError:
+        raise
+    except Exception as exc:  # the status must never fail because of the transcript
+        _logger.exception("transcript.batch_failed", job_id=job_id, exc_type=type(exc).__name__)
+        status = runner.get(job_id)
+        return status.model_copy(
+            update={"transcript": [], "transcript_error": type(exc).__name__},
+        )
 
 
 def _capabilities(request: Request) -> PerformerCapabilities:
@@ -95,14 +130,8 @@ def register_routes(app: FastAPI) -> None:
         try:
             if transcript_after is None:
                 return _runner(request).get(job_id)
-            # 129 item 2: a transcript batch is redacted while it is served. That work
-            # runs on a worker thread, so the status endpoint and the running backend
-            # share the loop without the regex work stalling either.
-            return await asyncio.to_thread(
-                _runner(request).get,
-                job_id,
-                transcript_after=transcript_after,
-                transcript_limit=transcript_limit,
+            return await _transcript_status(
+                _runner(request), job_id, transcript_after, transcript_limit,
             )
         except JobNotFoundError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc

@@ -81,6 +81,23 @@ A second adversarial review found further defects. These revisions change the fo
 
 Deployment note: the default root is `<state directory>/transcripts`. `docker-compose.yml` mounts only `config.yaml` into the coordinare container, so the state directory, and with it the default transcripts root, lives in the container layer and is lost when that container is recreated. Point `transcripts.dir` at a mounted volume that is outside every performer mount to keep transcripts across container recreation. No compose change is made in this issue.
 
+## Third review revisions
+
+A third review, of the branch as PR #174, found the following. The changes are in code and tests, and the behaviour is:
+
+- **A record that cannot be redacted never fails a poll.** Redaction recursion is bounded (depth 64). A structure that cannot be redacted structurally falls back to pattern redaction of its text, and a non-text value is replaced by a marker. The performer's batch serving is guarded per record: a record that cannot be redacted is served as a withheld `error` record with the same seq. A failure in serving the batch returns the normal status with an empty batch and `transcript_error` set, so completion is still observed. The daemon writes a withheld marker for one bad record and continues with the run.
+- **Lines are always valid JSON.** Redaction changes string values only, and the line is never rewritten. Every line keeps its seq. A property-style test checks every string field against a corpus of nasty strings. An unparsable last line no longer resets the cursor: the scan goes back to the last line that parses.
+- **File I/O cannot hang a worker.** The run file is opened non-blocking and must be a regular file before any write, so a FIFO at the path fails the run. A failed load never reaches a write. Writes complete short writes, and a failed write truncates back to the pre-batch size, so no torn line stays mid-file.
+- **Completion never waits on the transcript.** The terminal state is returned at once. The drain (bounded at 30 seconds) and the teardown run in a background task, and the teardown always follows the drain. Each poll waits at most 2 seconds for a transcript operation. A slow cursor read falls back to a plain poll, so no duplicate is possible.
+- **Code is not redacted as if it were a secret.** A comparison (`==`, `===`), a type annotation (`token: str`), a bare number or boolean, and a name with a descriptive suffix (`_count`, `_limit`, `_budget`, `_usage`, `_type`, `_name`) are left alone. A PEM block is redacted from BEGIN to its matching END. A BEGIN with no END is redacted only when base64 lines follow it.
+- **More credential shapes are caught**: netrc `password` (on a machine line, or alone on a line), `curl -u user:password` and `--user`, bare JWTs, Stripe `sk_live_` and `rk_live_` keys, PGP private key blocks, the `pass_word`, `passphrase` and `*_API_KEY` names. ANSI escape sequences are removed before matching, so they cannot hide a secret. Matching stays linear: 5 MB inputs take about half a second.
+- **Retention races and shutdown.** A folder that a writer re-creates while the sweep removes it is not an error. The sweep never removes a file modified within the last hour. The sweep loop exits on shutdown as well as on cancellation.
+- **Names and directories.** A changed sanitised name carries a short digest, so two distinct ids never share a file. New directories are created private. A batch that arrives out of order is sorted and written whole.
+- **Record size.** A string field longer than 256 KiB is cut with a marker on the performer before it is buffered. A record still over 1 MiB has its input and output withheld, so a single record cannot approach the per-run cap or the 30-second client timeout.
+- **Lone surrogates** are replaced in text before redaction, so the output is valid text and nothing is dropped.
+
+Documented limits that are unchanged: base64, URL-encoded or split secrets are not matched; exact-value matching applies to values of 8 or more characters; two daemons writing the same file are not supported.
+
 ## Known loss window
 
 Records are pulled on each status poll. A pod that dies on its own between two polls loses up to one poll interval of records. The file keeps everything pulled before that. Drains before cancellation, reaping and normal termination narrow this window, but cannot close it when a pod is deleted by the platform without warning.

@@ -77,7 +77,10 @@ def _file(root: Path) -> Path:
 
 
 def test_sanitize_segment_cannot_escape_or_be_empty() -> None:
-    assert sanitize_segment("../../etc/passwd") == "etc_passwd"
+    # A name that had to change carries a digest, so it cannot collide with another id.
+    cleaned = sanitize_segment("../../etc/passwd")
+    assert cleaned.startswith("etc_passwd-")
+    assert "/" not in cleaned
     assert "/" not in sanitize_segment("a/b\\c")
     assert sanitize_segment("..") == "unattributed"
     assert sanitize_segment("   ") == "unattributed"
@@ -88,8 +91,8 @@ def test_transcript_path_is_lexical_and_stays_under_root(tmp_path: Path) -> None
     root = tmp_path / "transcripts"
     path = transcript_path(root, symphony="../../outside", card_id="/abs/card", run_id="run/../x")
     assert path.is_relative_to(root)
-    assert path.parent.parent.name == "outside"
-    assert path.parent.name == "abs_card"
+    assert path.parent.parent.name.startswith("outside-")
+    assert path.parent.name.startswith("abs_card-")
 
 
 def test_default_root_is_daemon_only_state_dir(tmp_path: Path) -> None:
@@ -225,10 +228,17 @@ def test_seq_above_the_reported_last_seq_is_rejected(tmp_path: Path) -> None:
     assert [r["seq"] for r in _lines(_file(root))] == [1, 2]
 
 
-def test_non_increasing_seq_within_a_batch_is_rejected(tmp_path: Path) -> None:
+def test_out_of_order_batch_is_sorted_and_written_whole(tmp_path: Path) -> None:
+    """Review item 8: [1, 3, 2] is written as 1, 2, 3, never partially as 1, 3."""
     root = tmp_path / "t"
     _writer(root).append_batch([_rec(1), _rec(3), _rec(2)], last_seq=3)
-    assert [r["seq"] for r in _lines(_file(root))] == [1, 3]
+    assert [r["seq"] for r in _lines(_file(root))] == [1, 2, 3]
+
+
+def test_reversed_batch_is_written_whole(tmp_path: Path) -> None:
+    root = tmp_path / "t"
+    _writer(root).append_batch([_rec(3), _rec(2), _rec(1)], last_seq=3)
+    assert [r["seq"] for r in _lines(_file(root))] == [1, 2, 3]
 
 
 def test_oversize_record_becomes_a_truncation_marker(

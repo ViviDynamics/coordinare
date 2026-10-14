@@ -149,6 +149,20 @@ With `enabled: false`: no buffer, no cap in the payload, no query parameters on 
 - **Disabled payload.** With transcripts disabled, `_transcript_identity` returns the payload object unchanged. Dispatch is byte-identical to the pre-129 path.
 - **Claude Code usage without a message id.** Chunks with no id are keyed by `None` and replace one another, so only the last is written.
 
+### D16. Third review: bounds, ordering and the failure contract
+
+- **Redaction is bounded and never raises.** `MAX_DEPTH` is 64. `redact_value` falls back to pattern redaction of the text of a value that fails structurally, and replaces a non-text value with the marker. The unredacted value is never returned.
+- **Redaction changes string values only.** The line-level rewrite is removed. `_to_line` writes ASCII JSON (`ensure_ascii`), which escapes lone surrogates, so every line encodes and parses.
+- **Cursor recovery.** `_last_parsable_record` scans back over unparsable lines (bounded at 1000) to the last line that parses as a record. The writer is marked loaded only after the cursor is read, so a poll never sees the placeholder 0.
+- **Non-blocking file path.** Every open uses `O_NONBLOCK` and `O_NOFOLLOW`. `fstat` must show a regular file with one link before any read that matters or any write. A failed load returns before the write.
+- **Complete writes.** `_write_all` loops over short writes. A failure after a partial write truncates to the size recorded before the batch.
+- **Bounded poll and deferred terminal.** `_load_writer` and the absorb each wait at most `_TRANSCRIPT_POLL_SECONDS` (2 seconds). A terminal poll returns the status and schedules `_defer_terminal_finish`, which drains (bounded at 30 seconds) and then calls `_finish_terminal`. Background tasks are held in `_finish_tasks`.
+- **Performer failure contract.** `after()` guards each record. The status route catches a failing batch and returns the normal status with an empty batch and `transcript_error`.
+- **Sanitised names and order.** A changed sanitised name gets an 8-character digest of the original. Batches are sorted by seq before the window check.
+- **Retention.** Removals go through `_remove_quietly`: `ENOTEMPTY`, `ENOENT` and `EEXIST` are ignored, and other errors are logged and skipped. A file newer than `MIN_RETENTION_AGE_SECONDS` (one hour) is kept. The loop waits on the daemon's stop event.
+- **Performer size bound.** `_bounded` cuts strings over 256 KiB with a marker, and a record over 1 MiB has its input and output withheld. Both happen before buffering.
+- **Refreshed secrets.** The runner's refresh writes and the transcript provider's copy both take `_secrets_lock`.
+
 ## Wire and contract changes
 
 | Surface | Change | Compatibility |

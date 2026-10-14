@@ -121,6 +121,9 @@ class JobStatus(BaseModel):
     # the request's transcript_limit. Both are empty unless requested.
     transcript: list[dict[str, Any]] = Field(default_factory=list)
     transcript_last_seq: int | None = None
+    # 129: set when the transcript batch could not be served. The status itself is
+    # still returned; the batch is empty and the run carries on.
+    transcript_error: str | None = None
 
     @field_validator("progress_pct")
     @classmethod

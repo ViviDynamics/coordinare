@@ -40,6 +40,9 @@ packages do not import each other; the field names are the contract.
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import hashlib
 import json
 import os
 import re
@@ -53,10 +56,10 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from coordinare.lib.transcript_redaction import redact_text, redact_value, secret_values_from_env
+from coordinare.lib.transcript_redaction import redact_value, secret_values_from_env
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
 logger = structlog.get_logger(__name__)
 
@@ -92,6 +95,8 @@ _SEGMENT_INVALID = re.compile(r"[^A-Za-z0-9._-]+")
 _SEGMENT_MAX_LEN = 120
 _TRANSCRIPT_SUFFIX = ".jsonl"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+# A FIFO at the run path must not hang a worker thread (review item 3a).
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 
 class TranscriptUsage(BaseModel):
@@ -136,8 +141,16 @@ def sanitize_segment(value: str) -> str:
     and underscores are stripped (so ``..`` cannot survive), and the result is
     length-capped. An empty result becomes ``UNATTRIBUTED``.
     """
-    cleaned = _SEGMENT_INVALID.sub("_", value.strip())[:_SEGMENT_MAX_LEN].strip("._")
-    return cleaned or UNATTRIBUTED
+    stripped = value.strip()
+    cleaned = _SEGMENT_INVALID.sub("_", stripped)[:_SEGMENT_MAX_LEN].strip("._")
+    if not cleaned:
+        return UNATTRIBUTED
+    if cleaned != stripped:
+        # Two different ids can clean to the same text ("a/b" and "a_b"). A short
+        # digest of the original keeps them apart (review item 8).
+        digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+        return f"{cleaned[: _SEGMENT_MAX_LEN - 9].rstrip('._')}-{digest}"
+    return cleaned
 
 
 def transcript_path(root: Path, *, symphony: str, card_id: str, run_id: str) -> Path:
@@ -231,6 +244,22 @@ def transcript_root_conflicts(root: Path, guard: RootGuard) -> list[Path]:
     return [path.resolve() for path in conflicts]
 
 
+def _seq_key(raw: dict[str, Any]) -> int:
+    seq = _seq_of(raw)
+    return seq if seq is not None else 0
+
+
+def _withheld_record(run_id: str, seq: int) -> dict[str, Any]:
+    """The marker written in place of a record that could not be recorded (item 1)."""
+    return {
+        "ts": datetime.now(UTC).isoformat(),
+        "run_id": run_id,
+        "seq": seq,
+        "type": "error",
+        "text": f"transcript record {seq} withheld: could not be recorded",
+    }
+
+
 def _seq_of(raw: object) -> int | None:
     if not isinstance(raw, dict):
         return None
@@ -240,9 +269,15 @@ def _seq_of(raw: object) -> int | None:
     return None
 
 
-def _to_line(record: dict[str, Any], secrets: tuple[str, ...]) -> bytes:
-    text = json.dumps(record, ensure_ascii=False, separators=(",", ":"), default=str)
-    return (redact_text(text, secrets) + "\n").encode()
+def _to_line(record: dict[str, Any]) -> bytes:
+    """One JSON line, ASCII only.
+
+    Values were redacted before this point. The line itself is not rewritten, so it
+    always parses and keeps its seq (review item 2). ``ensure_ascii`` escapes lone
+    surrogates, so every line encodes.
+    """
+    text = json.dumps(record, ensure_ascii=True, separators=(",", ":"), default=str)
+    return (text + "\n").encode("ascii")
 
 
 def _check_chain(root: Path, parts: Sequence[str], *, create: bool) -> Path:
@@ -259,7 +294,9 @@ def _check_chain(root: Path, parts: Sequence[str], *, create: bool) -> Path:
         except FileNotFoundError:
             if not create:
                 raise
-            candidate.mkdir(mode=0o700)
+            with contextlib.suppress(FileExistsError):
+                # Created by a concurrent writer: the lstat below decides.
+                candidate.mkdir(mode=0o700)
             info = os.lstat(candidate)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             message = f"transcript path component is not a plain directory: {candidate}"
@@ -269,6 +306,14 @@ def _check_chain(root: Path, parts: Sequence[str], *, create: bool) -> Path:
 
 
 _TAIL_CHUNK = 64 * 1024
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    """Write every byte. ``os.write`` may return a short count."""
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
 
 
 def _refuse_unless_private_regular(info: os.stat_result, path: Path) -> None:
@@ -304,6 +349,26 @@ def _parse_line(data: bytes) -> object | None:
     except ValueError:
         return None
     return parsed
+
+
+_MAX_TAIL_LINES = 1000
+
+
+def _last_parsable_record(fd: int, end: int) -> object | None:
+    """The last line, scanning back from ``end`` (its newline index), that parses as JSON.
+
+    A torn or garbled last line must not reset the cursor to 0: that would re-pull
+    the whole run and write duplicates (review item 2). The scan is bounded.
+    """
+    for _ in range(_MAX_TAIL_LINES):
+        if end < 0:
+            return None
+        start = _rfind_newline(fd, end) + 1
+        obj = _parse_line(os.pread(fd, end - start, start))
+        if isinstance(obj, dict) and _seq_of(obj) is not None:
+            return obj
+        end = start - 1
+    return None
 
 
 class RunTranscriptWriter:
@@ -397,7 +462,7 @@ class RunTranscriptWriter:
         """Open the existing run file read-write, refusing links, or None if absent."""
         directory = _check_chain(self._root, self._parts, create=False)
         try:
-            return os.open(directory / self._file_name, os.O_RDWR | _NOFOLLOW)
+            return os.open(directory / self._file_name, os.O_RDWR | _NONBLOCK | _NOFOLLOW)
         except FileNotFoundError:
             return None
 
@@ -425,12 +490,12 @@ class RunTranscriptWriter:
                 size = complete
                 logger.warning("run_transcript.torn_line_trimmed", run_id=self._run_id)
             if complete:
-                start = _rfind_newline(fd, newline) + 1
-                last = os.pread(fd, newline - start, start)
-                obj = _parse_line(last)
+                obj = _last_parsable_record(fd, newline)
                 seq = _seq_of(obj)
                 if seq is not None:
                     self._cursor = seq
+                else:
+                    logger.warning("run_transcript.tail_unreadable", run_id=self._run_id)
                 if isinstance(obj, dict) and obj.get("type") == "truncated":
                     self._truncated = True
             self._bytes = size
@@ -476,11 +541,14 @@ class RunTranscriptWriter:
         with self._lock:
             if self._loaded or self._failed:
                 return
-            self._loaded = True
             try:
                 self._load_tail()
             except Exception as exc:  # best effort: a broken file fails this run only
                 self._fail(exc)
+            finally:
+                # Set only after the cursor is read: a poll that sees ``loaded`` must
+                # never see the placeholder cursor of 0 (it would re-pull the run).
+                self._loaded = True
 
     def append_batch(self, records: list[dict[str, Any]], *, last_seq: int | None = None) -> int:
         """Write the records that pass validation, in order. Returns lines written.
@@ -495,6 +563,8 @@ class RunTranscriptWriter:
         if self._failed:
             return 0
         self.ensure_loaded()
+        if self._failed:
+            return 0
         with self._lock:
             try:
                 return self._append(records, last_seq)
@@ -508,10 +578,14 @@ class RunTranscriptWriter:
         lines: list[bytes] = []
         batch_bytes = 0
         previous_in_batch: int | None = None
-        for raw in records:
+        # Records are written in seq order. A batch that arrives out of order is
+        # sorted, so [3, 2, 1] is written as 1, 2, 3 rather than partially (item 8).
+        seqd = [raw for raw in records if _seq_of(raw) is not None]
+        if len(seqd) != len(records):
+            logger.warning("run_transcript.seq_rejected", run_id=self._run_id, reason="no_seq")
+        for raw in sorted(seqd, key=_seq_key):
             seq = _seq_of(raw)
             if seq is None:
-                logger.warning("run_transcript.seq_rejected", run_id=self._run_id, reason="no_seq")
                 continue
             if seq <= self._cursor:
                 continue  # already on disk: a re-delivered record
@@ -535,10 +609,20 @@ class RunTranscriptWriter:
                     reason="not_increasing",
                 )
                 continue
-            record = self._prepare(raw)
-            if record is None:
-                continue
-            line = _to_line(record, self._secrets)
+            try:
+                record = self._prepare(raw)
+                if record is None:
+                    continue
+                line = _to_line(record)
+            except Exception as exc:  # one bad record: a marker in its place, then go on
+                logger.warning(
+                    "run_transcript.record_withheld",
+                    run_id=self._run_id,
+                    seq=seq,
+                    exc_type=type(exc).__name__,
+                )
+                record = _withheld_record(self._run_id, seq)
+                line = _to_line(record)
             if lines and batch_bytes + len(line) > MAX_BATCH_BYTES:
                 break  # the rest is re-requested on the next poll
             out = self._admit(record, seq, line)
@@ -577,18 +661,42 @@ class RunTranscriptWriter:
         self._truncated = True
         self._dropped_records += 1
         self._dropped_bytes += dropped_len
-        return _to_line(self._marker(seq, reason), self._secrets)
+        return _to_line(self._marker(seq, reason))
 
     def _write(self, payload: bytes) -> None:
-        self._root.mkdir(parents=True, exist_ok=True)
-        directory = _check_chain(self._root, self._parts, create=True)
-        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW
-        fd = os.open(directory / self._file_name, flags, 0o600)
+        """Append ``payload`` completely, or leave the file as it was (review item 3b)."""
+        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = self._open_for_append()
         try:
-            _refuse_unless_private_regular(os.fstat(fd), self.path)
-            os.write(fd, payload)
+            start = os.fstat(fd).st_size
+            try:
+                _write_all(fd, payload)
+            except OSError:
+                # A short or failed write must not leave a torn line mid-file.
+                os.ftruncate(fd, start)
+                raise
         finally:
             os.close(fd)
+
+    def _open_for_append(self) -> int:
+        """Open the run file for append. A directory that vanished under the open is retried once."""
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NONBLOCK | _NOFOLLOW
+        for attempt in range(2):
+            directory = _check_chain(self._root, self._parts, create=True)
+            try:
+                fd = os.open(directory / self._file_name, flags, 0o600)
+            except FileNotFoundError:
+                if attempt:
+                    raise
+                continue
+            try:
+                _refuse_unless_private_regular(os.fstat(fd), self.path)
+            except _RefusedError:
+                os.close(fd)
+                raise
+            return fd
+        message = f"could not open transcript file: {self.path}"
+        raise OSError(message)
 
 
 class TranscriptCollector:
@@ -718,6 +826,31 @@ def _is_run_file(entry: Path) -> bool:
     return sanitize_segment(stem) == stem
 
 
+#: Files modified more recently than this are never removed by the sweep. A run that
+#: is still active after a daemon restart writes often, so its file is young (review
+#: item 7). The live set covers the same case within this process.
+MIN_RETENTION_AGE_SECONDS = 3600.0
+
+
+def _remove_quietly(action: Callable[[], None], path: Path) -> bool:
+    """Run one removal. A racing writer is normal, so ENOTEMPTY and ENOENT are ignored.
+
+    Any other error is logged and skipped, so one bad entry never aborts the sweep.
+    Returns True when the removal happened.
+    """
+    try:
+        action()
+    except OSError as exc:
+        if exc.errno not in (errno.ENOTEMPTY, errno.ENOENT, errno.EEXIST):
+            logger.warning(
+                "run_transcript.retention_skipped",
+                path=str(path),
+                exc_type=type(exc).__name__,
+            )
+        return False
+    return True
+
+
 def prune_expired(
     root: Path,
     *,
@@ -730,32 +863,34 @@ def prune_expired(
     Only ``<root>/<symphony>/<card>/<run>.jsonl`` is considered, at exactly that depth,
     and only names the writer could have produced (129 review, item 3). Symlinks are
     never followed or removed. A file in ``keep`` (a live writer's file) is never
-    removed. Folders left empty are removed, but the root is not.
-    Returns the number of files deleted.
+    removed, and neither is a file modified within ``MIN_RETENTION_AGE_SECONDS``.
+    Folders left empty are removed, but the root is not. A writer creating a folder
+    at the same moment is not an error (review item 7). Returns the files deleted.
     """
     if retention_days <= 0 or not root.is_dir():
         return 0
     base = root.resolve()
     keep_resolved = {path.resolve() for path in keep}
-    cutoff = ((now or datetime.now(UTC)) - timedelta(days=retention_days)).timestamp()
+    current = now or datetime.now(UTC)
+    cutoff = (current - timedelta(days=retention_days)).timestamp()
+    youngest_allowed = current.timestamp() - MIN_RETENTION_AGE_SECONDS
     removed = 0
     for symphony in _layout_dirs(base):
         for card in _layout_dirs(symphony):
-            for entry in card.iterdir():
+            for entry in list(card.iterdir()):
                 if entry.is_symlink() or not entry.is_file() or not _is_run_file(entry):
                     continue
                 if entry.resolve() in keep_resolved:
                     continue
-                if entry.stat().st_mtime < cutoff:
-                    entry.unlink()
+                mtime = entry.stat().st_mtime
+                if mtime < cutoff and mtime < youngest_allowed and _remove_quietly(entry.unlink, entry):
                     removed += 1
             if not any(card.iterdir()):
-                card.rmdir()
+                _remove_quietly(card.rmdir, card)
         if symphony.exists() and not any(symphony.iterdir()):
-            symphony.rmdir()
+            _remove_quietly(symphony.rmdir, symphony)
     logger.info("run_transcript.retention_pruned", removed=removed, retention_days=retention_days)
     return removed
-
 
 __all__ = [
     "MAX_BATCH_BYTES",

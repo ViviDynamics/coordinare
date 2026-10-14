@@ -54,6 +54,20 @@ Checked items are done and verified by running. Unchecked items are open, and ea
 - [x] S008 Item 8, disabled payload restored: `test_disabled_transcripts_leave_the_payload_exactly_as_before`, `test_enabled_transcripts_use_the_session_id_as_the_job_id`
 - [x] S009 Item 9, deployment note in the spec (no compose change)
 
+## Third adversarial review
+
+- [x] T001 Redaction recursion: depth bound and a text fallback that never returns the unredacted value (`test_deep_brackets_do_not_raise_and_come_back_as_text`, `test_secret_inside_deep_brackets_is_still_redacted`, `test_deep_structure_is_bounded_not_recursed_without_limit`)
+- [x] T002 Per-record guards: withheld `error` marker in `after()`, in `append()`, and in the writer; route returns status with `transcript_error` (performer `test_a_failing_batch_still_returns_the_status_with_an_error_flag`, `test_a_record_that_cannot_be_redacted_is_served_as_a_withheld_marker_with_its_seq`, `test_a_record_that_cannot_be_captured_keeps_its_seq_and_the_run_goes_on`; daemon `test_a_record_that_cannot_be_recorded_becomes_a_marker_and_the_run_continues`)
+- [x] T003 Lines are JSON: no line-level redaction; property test over nasty strings; cursor scans back (`test_every_line_parses_and_keeps_its_seq_for_nasty_strings`, `test_line_level_pass_no_longer_corrupts_prose_with_a_marker`, `test_cursor_is_recovered_past_an_unparsable_last_line`)
+- [x] T004 FIFO does not hang; failed load never writes; short writes completed; failed write truncates (`test_fifo_at_the_run_path_fails_the_run_without_hanging`, `test_a_failed_load_never_reaches_the_write`, `test_short_writes_are_completed`, `test_failed_write_leaves_no_torn_line`)
+- [x] T005 Terminal state returned before the drain; per-poll bounds (`test_terminal_status_is_returned_before_the_drain_finishes`, `test_a_slow_write_does_not_hold_up_the_poll`, `test_a_slow_first_cursor_read_falls_back_to_a_plain_poll`)
+- [x] T006 Over-redaction of code and counts; PEM scoped to BEGIN..END; BEGIN without END only with base64 (`test_code_and_counts_are_not_redacted`, `test_a_quoted_pem_marker_in_prose_does_not_eat_the_text_after_it`, `test_a_pem_block_is_redacted_only_from_begin_to_end`, `test_a_begin_without_end_redacts_only_when_base64_lines_follow`)
+- [x] T007 Redaction gaps: netrc, bare netrc line, JWT, curl -u, ANSI, key variants, Stripe, PGP, descriptive suffixes; 5 MB linearity (`test_netrc_password_is_redacted`, `test_bare_jwt_is_redacted`, `test_curl_user_password_is_redacted`, `test_ansi_sequences_between_key_and_value_do_not_hide_the_secret`, `test_structured_key_variants_are_masked`, `test_stripe_live_key_is_redacted`, `test_pgp_private_key_block_is_redacted`, `test_five_megabyte_unbroken_word_redacts_in_well_under_two_seconds`)
+- [x] T008 Retention: racing folder, minimum age, shutdown exit (`test_a_card_folder_racing_a_writer_does_not_abort_the_sweep`, `test_the_sweep_skips_files_within_the_minimum_age`, `test_the_retention_loop_exits_on_shutdown`)
+- [x] T009 Directories private; distinct names; out-of-order batch; lone surrogate; secrets released (`test_new_directories_have_no_group_or_other_access`, `test_distinct_ids_never_share_a_file_name`, `test_out_of_order_batch_is_sorted_and_written_whole`, `test_a_lone_surrogate_is_written_not_dropped`)
+- [x] T010 Record size bounds on the performer (`test_a_huge_text_field_is_cut_with_a_marker_before_buffering`, `test_a_record_too_large_even_after_field_bounds_has_its_payload_withheld`)
+- [x] T011 Refreshed secrets under a lock (`test_refreshed_secrets_reach_the_redaction_set_of_the_running_job`, `test_a_refresh_during_a_secret_read_does_not_raise`)
+
 ## Open items
 
 - [ ] O001 Fails-without-fix was not verified by reverting each fix and running its test. The old writer signature is gone, so the old code cannot run these tests unchanged. Each test is written against the behaviour it changes.

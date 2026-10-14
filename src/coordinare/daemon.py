@@ -2969,7 +2969,7 @@ class CoordinareDaemon:
 
         The filesystem walk runs in a worker thread so it never stalls the cycle.
         """
-        while True:
+        while not self._stop_event.is_set():
             try:
                 # The live set is taken on the loop; the sweep never removes those files.
                 await asyncio.to_thread(
@@ -2985,7 +2985,12 @@ class CoordinareDaemon:
                     error=str(exc),
                     root=str(collector.root),
                 )
-            await asyncio.sleep(_TRANSCRIPT_RETENTION_INTERVAL_S)
+            # Wakes early on shutdown, so the sweep never outlives the daemon (review item 7).
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=_TRANSCRIPT_RETENTION_INTERVAL_S,
+                )
 
     def stop(self) -> None:
         if self._cycle_active:

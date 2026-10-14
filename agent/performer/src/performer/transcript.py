@@ -11,13 +11,17 @@ packages do not import each other; the field names are the contract.
 
 Design rules:
 
-* Nothing is truncated here. ``text``, ``input`` and ``output`` carry the full
-  value. The 200-character ``BackendEvent.text`` summary is a separate channel
-  and must never be used as a transcript source.
-* Redaction runs before a record is stored, with the shared rules in
-  ``performer.transcript_redaction``: credential-named keys, ``NAME=value``
-  lines, embedded JSON, token shapes, and the exact secret values the job was
-  handed (``secrets`` provider). The daemon redacts again at write time.
+* Text is kept whole up to ``FIELD_LIMIT_CHARS`` per string field. A longer field
+  is cut with a marker, and a record that is still larger than
+  ``RECORD_LIMIT_BYTES`` has its input and output withheld. So one record cannot
+  approach the per-run cap, the client timeout, or double the heap. The
+  200-character ``BackendEvent.text`` summary is a separate channel and is never a
+  transcript source.
+* Redaction runs when a batch is served, not when a record is stored, with the
+  shared rules in ``performer.transcript_redaction``. Stored records are raw, and
+  nothing leaves the performer unredacted. The daemon redacts again at write time.
+* A record that cannot be captured or redacted keeps its seq and is replaced by a
+  small ``error`` record saying so. It is never dropped silently and never raised.
 * Capture is best effort. :func:`emit` and every backend helper decorated with
   :func:`best_effort` swallow and log their own failures, so transcript code can
   never break a backend's reader loop.
@@ -67,6 +71,12 @@ TRANSCRIPT_TYPES: frozenset[str] = frozenset(get_args(TranscriptType))
 # Upper bound on the serialized size of one delivery batch. A single record
 # larger than this is still delivered alone, so the stream always makes progress.
 MAX_BATCH_BYTES = 8 * 1024 * 1024
+
+# Size bounds on one record (review item 9). A string field longer than the field
+# limit is cut with a marker. A record still over the record limit has its input
+# and output withheld.
+FIELD_LIMIT_CHARS = 256 * 1024
+RECORD_LIMIT_BYTES = 1024 * 1024
 
 SecretProvider = Callable[[], Iterable[str]]
 
@@ -128,8 +138,36 @@ def _jsonable(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+def _bounded(value: Any) -> Any:
+    """Cut every string longer than ``FIELD_LIMIT_CHARS``, keeping a marker."""
+    if isinstance(value, str):
+        if len(value) <= FIELD_LIMIT_CHARS:
+            return value
+        return (
+            value[:FIELD_LIMIT_CHARS]
+            + f"\n[transcript field truncated: {len(value)} characters, "
+            + f"first {FIELD_LIMIT_CHARS} kept]"
+        )
+    if isinstance(value, dict):
+        return {key: _bounded(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_bounded(item) for item in value]
+    return value
+
+
 def _line_bytes(record: TranscriptRecord) -> int:
     return len(record.model_dump_json(exclude_none=True).encode()) + 1
+
+
+def _withheld(run_id: str, seq: int, reason: str) -> TranscriptRecord:
+    """A small ``error`` record that keeps a seq whose content could not be captured."""
+    return TranscriptRecord(
+        ts=datetime.now(UTC).isoformat(),
+        run_id=run_id,
+        seq=seq,
+        type="error",
+        text=f"transcript record {seq} withheld: {reason}",
+    )
 
 
 _failure_sites_logged: set[str] = set()
@@ -181,7 +219,7 @@ class TranscriptBuffer:
         self._max_batch_bytes = max_batch_bytes
         self._secrets = secrets
         # Environment credentials are read once, at job start. Exact-value
-        # redaction of job secrets comes from the provider on every record, so a
+        # redaction of job secrets comes from the provider on every batch, so a
         # token refreshed mid-run is covered from its first use.
         self._env_secrets = secret_values_from_env(os.environ)
         self._records: list[TranscriptRecord] = []
@@ -208,26 +246,45 @@ class TranscriptBuffer:
             values.extend(str(v) for v in self._secrets())
         return values
 
-    def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
-        # Stored raw. Redaction happens in ``after()``, on the worker thread that
-        # serves the batch, so the event loop that runs the backends never does
-        # regex work over a large tool output (129 review, item 2).
-        seq = self.last_seq + 1
+    def _build(
+        self,
+        seq: int,
+        record_type: TranscriptType,
+        fields: RecordFields,
+    ) -> TranscriptRecord:
         record = TranscriptRecord(
             ts=datetime.now(UTC).isoformat(),
             run_id=self._run_id,
             seq=seq,
             type=record_type,
-            text=fields.get("text"),
-            tool_name=fields.get("tool_name"),
-            call_id=fields.get("call_id"),
-            input=_jsonable(fields.get("input_data")),
-            output=_jsonable(fields.get("output_data")),
+            text=_bounded(fields.get("text")),
+            tool_name=_bounded(fields.get("tool_name")),
+            call_id=_bounded(fields.get("call_id")),
+            input=_bounded(_jsonable(fields.get("input_data"))),
+            output=_bounded(_jsonable(fields.get("output_data"))),
             is_error=fields.get("is_error"),
             usage=fields.get("usage"),
             scope=fields.get("scope"),
         )
-        size = _line_bytes(record)
+        if _line_bytes(record) > RECORD_LIMIT_BYTES:
+            # Input and output are the only fields that can be large in bulk. They
+            # are withheld, and the record keeps its type, text and seq.
+            withheld = {"withheld": "record exceeded the per-record size limit"}
+            record = record.model_copy(update={"input": withheld, "output": withheld})
+        return record
+
+    def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
+        # Stored raw. Redaction happens in ``after()``, on the worker thread that
+        # serves the batch, so the event loop that runs the backends never does
+        # regex work over a large tool output (129 review, item 2).
+        seq = self.last_seq + 1
+        try:
+            record = self._build(seq, record_type, fields)
+            size = _line_bytes(record)
+        except Exception as exc:  # per-record guard: keep the seq, withhold the content
+            _logger.warning("transcript.record_withheld", seq=seq, exc_type=type(exc).__name__)
+            record = _withheld(self._run_id, seq, f"could not be captured ({type(exc).__name__})")
+            size = _line_bytes(record)
         if self._truncated or self._bytes + size > self._max_bytes:
             self._drop(record, size)
             return
@@ -256,23 +313,42 @@ class TranscriptBuffer:
         self._dropped_bytes += size
 
     def after(self, seq: int, limit: int) -> list[dict[str, Any]]:
-        """Records with ``seq > seq`` in ascending order.
+        """Records with ``seq > seq`` in ascending order, redacted for the wire.
 
         Returns at most ``limit`` records and at most ``max_batch_bytes`` of
         serialized output. The first record is always returned, so a single
-        large record cannot stall delivery.
+        large record cannot stall delivery. A record that cannot be redacted is
+        served as a withheld ``error`` record with the same seq (review item 1).
         """
         start = max(seq, 0)
         secrets = self._secret_values()
         batch: list[dict[str, Any]] = []
         total = 0
         for record in self._records[start : start + limit]:
-            size = _line_bytes(record)
+            data, size = _serve(record, secrets)
             if batch and total + size > self._max_batch_bytes:
                 break
-            batch.append(_redacted_dump(record, secrets))
+            batch.append(data)
             total += size
         return batch
+
+
+def _serve(record: TranscriptRecord, secrets: list[str]) -> tuple[dict[str, Any], int]:
+    """One record as it leaves the performer, with its serialized size.
+
+    Per-record guard: a record that cannot be redacted is replaced by a withheld
+    ``error`` record that keeps the seq, so a batch never fails because of one.
+    """
+    try:
+        data = _redacted_dump(record, secrets)
+        size = len(json.dumps(data, ensure_ascii=True).encode()) + 1
+    except Exception as exc:  # per-record guard (review item 1)
+        _logger.warning("transcript.record_withheld", seq=record.seq, exc_type=type(exc).__name__)
+        data = _withheld(record.run_id, record.seq, "could not be redacted").model_dump(
+            exclude_none=True,
+        )
+        size = len(json.dumps(data, ensure_ascii=True).encode()) + 1
+    return data, size
 
 
 def _redacted_dump(record: TranscriptRecord, secrets: list[str]) -> dict[str, Any]:
@@ -320,7 +396,9 @@ def emit(record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
 
 
 __all__ = [
+    "FIELD_LIMIT_CHARS",
     "MAX_BATCH_BYTES",
+    "RECORD_LIMIT_BYTES",
     "TRANSCRIPT_TYPES",
     "TranscriptBuffer",
     "TranscriptRecord",
