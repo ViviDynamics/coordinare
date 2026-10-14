@@ -237,14 +237,32 @@ function cfgCoerce(el) {
 }
 
 // Gather only the fields whose value differs from data-orig, scoped to a container.
+var CFG_SECRET_MASK = '••••••';  // the masked display of a stored secret; the server's SECRET_MASK
+
+// 143 review: a value is unchanged when it matches what was saved. An unset value and an
+// empty input are the same thing, and an unset checkbox reads as off.
+function cfgUnset(v) { return v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length); }
+function cfgSameValue(now, saved) {
+  if (cfgUnset(now) && cfgUnset(saved)) return true;
+  if (saved === null && now === false) return true;
+  return JSON.stringify(now) === JSON.stringify(saved);
+}
+
+// 143 review: a secret changes only when a value is typed in. An empty input, or the
+// masked display, is the stored secret kept as it is.
+function cfgSecretChanged(now) {
+  return now !== null && now !== undefined && now !== '' && now !== CFG_SECRET_MASK;
+}
+
 function cfgCollectChanges(container) {
   var changes = {};
   container.querySelectorAll('[data-field]').forEach(function(el) {
     if (el.closest('[data-create]')) return;
     var coerced = cfgCoerce(el);
-    if (JSON.stringify(coerced) !== el.getAttribute('data-orig')) {
-      changes[el.getAttribute('data-field')] = coerced;
-    }
+    var changed = el.getAttribute('data-secret') === 'true'
+      ? cfgSecretChanged(coerced)
+      : !cfgSameValue(coerced, cfgParseSaved(el.getAttribute('data-orig')));
+    if (changed) changes[el.getAttribute('data-field')] = coerced;
   });
   return changes;
 }
@@ -255,31 +273,36 @@ function cfgParseSaved(text) {
   try { return JSON.parse(text); } catch(e) { return text; }
 }
 
+// 143: the saved value of a field, read back from its data attribute.
+
+
 // 143: every setting in a container, with its saved value and its value now. A
 // create form is left out unless withCreate is set, because it has nothing saved.
+// 143: every setting in a container, with its saved value and its value now. A create
+// form is left out unless withCreate is set.
 function cfgEntries(container, withCreate) {
   var out = [];
   function inScope(el) { return withCreate || !el.closest('[data-create]'); }
   container.querySelectorAll('[data-field]').forEach(function(el) {
     if (!inScope(el)) return;
     var now = cfgCoerce(el);
-    var saved = el.getAttribute('data-orig');
+    var saved = cfgParseSaved(el.getAttribute('data-orig'));
+    var secret = el.getAttribute('data-secret') === 'true';
     out.push({
       key: el.getAttribute('data-field'),
       label: el.getAttribute('data-label') || el.getAttribute('data-field'),
-      before: cfgParseSaved(saved), after: now,
-      secret: el.getAttribute('data-secret') === 'true',
-      changed: JSON.stringify(now) !== saved,
+      before: saved, after: now, secret: secret,
+      changed: secret ? cfgSecretChanged(now) : !cfgSameValue(now, saved),
     });
   });
   container.querySelectorAll('[data-rkey]').forEach(function(el) {
     if (!inScope(el)) return;
     var now = cfgRCoerce(el);
-    var saved = el.getAttribute('data-rorig');
+    var saved = cfgParseSaved(el.getAttribute('data-rorig'));
     out.push({
       key: el.getAttribute('data-rkey'), label: el.getAttribute('data-rkey'),
-      before: cfgParseSaved(saved), after: now, secret: false,
-      changed: JSON.stringify(now) !== saved,
+      before: saved, after: now, secret: false,
+      changed: !cfgSameValue(now, saved),
     });
   });
   return out;
@@ -305,14 +328,50 @@ function cfgNewRows(container) {
 
 // 143: after a save, what is on screen is what is saved, so the next change is
 // measured from here and the unsaved-changes prompt does not fire for it.
+// 143: after a save, what is on screen is what is saved, so the next change is measured
+// from here. A secret is never kept: its baseline is the masked marker and its input is
+// cleared. A create form that was just submitted is measured from its current values.
 function cfgRebaseline(container) {
+  var own = container.hasAttribute('data-create');
+  function inScope(el) { return own || !el.closest('[data-create]'); }
   container.querySelectorAll('[data-field]').forEach(function(el) {
-    if (el.closest('[data-create]')) return;
+    if (!inScope(el)) return;
+    if (el.getAttribute('data-secret') === 'true') {
+      el.setAttribute('data-orig', JSON.stringify(CFG_SECRET_MASK));
+      el.value = '';
+      return;
+    }
     el.setAttribute('data-orig', JSON.stringify(cfgCoerce(el)));
   });
   container.querySelectorAll('[data-rkey]').forEach(function(el) {
-    if (el.closest('[data-create]')) return;
+    if (!inScope(el)) return;
     el.setAttribute('data-rorig', cfgROrig(cfgRCoerce(el), el.getAttribute('data-rtype')));
+  });
+}
+
+// 143 review: a New form's baseline is what it shows when the page loads, so typing into
+// it counts as an edit and merely having it on the page does not.
+function cfgBaselineCreate() {
+  document.querySelectorAll('#config-page-section [data-create]').forEach(function(box) {
+    box.querySelectorAll('[data-field]').forEach(function(el) {
+      var saved = el.getAttribute('data-secret') === 'true' ? CFG_SECRET_MASK : cfgCoerce(el);
+      el.setAttribute('data-orig', JSON.stringify(saved));
+    });
+    box.querySelectorAll('[data-rkey]').forEach(function(el) {
+      el.setAttribute('data-rorig', cfgROrig(cfgRCoerce(el), el.getAttribute('data-rtype')));
+    });
+  });
+}
+
+// 143: the review step. A save first lists each changed setting, old and new, and goes
+// ahead only when the reader confirms; "Keep editing" leaves the edits as they are.
+// Built from DOM text nodes, so a value is never read as markup.
+// 143 review: the editor is locked while a review is open, so what the reader reviewed is
+// what gets sent. The caller passes a snapshot to onConfirm, never a fresh read of the form.
+function cfgLock(container, locked) {
+  container.querySelectorAll('input, select, textarea, button').forEach(function(el) {
+    if (el.closest('[data-review]')) return;
+    el.disabled = locked;
   });
 }
 
@@ -357,9 +416,9 @@ function cfgShowReview(container, rows, onConfirm) {
   var save = document.createElement('button');
   save.type = 'button';
   save.className = 'cfg-btn';
+  save.textContent = 'Save these changes';
   // The one filled action on the page, so it carries the success pair the contrast check reads.
   save.style.cssText = 'background:var(--color-btn-success);border:none;color:var(--color-on-action);padding:4px 12px;border-radius:4px;cursor:pointer';
-  save.textContent = 'Save these changes';
   save.addEventListener('click', function() {
     if (box.parentNode) box.parentNode.removeChild(box);
     onConfirm();
@@ -370,11 +429,13 @@ function cfgShowReview(container, rows, onConfirm) {
   keep.textContent = 'Keep editing';
   keep.addEventListener('click', function() {
     if (box.parentNode) box.parentNode.removeChild(box);
+    cfgLock(container, false);
   });
   actions.appendChild(save);
   actions.appendChild(keep);
   box.appendChild(actions);
   container.appendChild(box);
+  cfgLock(container, true);
 }
 
 // 143: put a saved value back into its control after a reload.
@@ -386,6 +447,8 @@ function cfgSetControl(el, value) {
 
 // 143: after "Reload and reapply", the edits a conflict refused are back in their
 // form, against the current values, for the reader to check and save again.
+// 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
+// the current values. A New form that was refused is opened again so the edits can be seen.
 function cfgReapplyPending() {
   var pending = _cfgPending;
   if (!pending) return;
@@ -395,6 +458,7 @@ function cfgReapplyPending() {
     if (!box && el.getAttribute('data-scope') === pending.scope) box = el;
   });
   if (!box) return;
+  if (box.hasAttribute('data-create')) box.style.display = '';
   box.querySelectorAll('[data-field], [data-rkey]').forEach(function(el) {
     var key = el.getAttribute('data-field') || el.getAttribute('data-rkey');
     if (Object.prototype.hasOwnProperty.call(pending.changes, key)) {
@@ -411,16 +475,18 @@ function cfgOnSettingsPage() {
   return !!el && el.style.display !== 'none';
 }
 
+// 143 review: unsaved work includes a New form that has been typed into, not only saved entries.
 function cfgHasUnsaved() {
   var root = document.getElementById('config-page-section');
   if (!root || !cfgOnSettingsPage()) return false;
-  return cfgEntries(root).some(cfgChanged);
+  return cfgEntries(root, true).some(cfgChanged);
 }
 
 // 143: may the reader leave for nextPath? Only the unsaved-changes prompt can say no.
+// 143 review: the page's own path, exactly. A path that only starts with /config is another page.
 function cfgLeaveAllowed(nextPath) {
   if (!cfgHasUnsaved()) return true;
-  if (String(nextPath || '').indexOf('/config') === 0) return true;
+  if (nextPath === '/config') return true;
   return window.confirm('You have unsaved changes on this page. Leave without saving?');
 }
 
@@ -431,9 +497,10 @@ window.addEventListener('beforeunload', function(event) {
 });
 
 // 143: the "Used by" line in words. A stage reads as its stage name.
+// 143 review: the label is text, and cfgUsedByHtml escapes it once.
 function cfgUsedByLabel(use) {
   var name = String(use.name || '');
-  if (use.kind === 'stage') return stageLabel(name) + ' stage';
+  if (use.kind === 'stage') return vocabularyKindLabel('stage_labels', name) + ' stage';
   if (use.kind === 'symphony') return 'symphony ' + name;
   if (use.kind === 'mode') return 'mode ' + name;
   if (use.kind === 'model') return 'model ' + name;
@@ -526,6 +593,7 @@ async function cfgPut(url, payload, container, statusEl, btn) {
   // Fail closed, as the old Global Config page did: without a version to write
   // against, the server would refuse anyway, and saying so here explains what to do.
   if (payload.body && Object.prototype.hasOwnProperty.call(payload.body, 'base_hash') && !payload.body.base_hash) {
+    cfgLock(container, false);
     cfgFlash(statusEl, 'Cannot save: this page did not load a configuration version. Reload the page and try again.', 'red');
     return;
   }
@@ -542,6 +610,8 @@ async function cfgPut(url, payload, container, statusEl, btn) {
   } catch(e) {
     cfgFlash(statusEl, 'Network error', 'red');
   }
+  // The form stays locked from the review until the answer, then it is editable again.
+  cfgLock(container, false);
   if (btn) btn.disabled = false;
 }
 
@@ -551,9 +621,11 @@ function cfgSaveSection(btn, sectionId) {
   cfgClearErrors(container);
   var entries = cfgEntries(container).filter(cfgChanged);
   if (!entries.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  // 143 review: the snapshot is taken now, and it is what the review shows and what is sent.
+  var changes = cfgCollectChanges(container);
+  var pending = cfgPendingFor(container, entries);
   cfgShowReview(container, cfgDiffRows(entries), function() {
-    var changes = cfgCollectChanges(container);
-    _cfgPending = cfgPendingFor(container, entries);
+    _cfgPending = pending;
     cfgPut('/api/config/section/' + encodeURIComponent(sectionId),
       {body: {store: 'config_yaml', section: sectionId, changes: changes, base_hash: _cfgHash}},
       container, statusEl, btn);
@@ -566,9 +638,10 @@ function cfgSaveItem(btn, catalog, itemId) {
   cfgClearErrors(container);
   var entries = cfgEntries(container).filter(cfgChanged);
   if (!entries.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  var changes = cfgCollectChanges(container);
+  var pending = cfgPendingFor(container, entries);
   cfgShowReview(container, cfgDiffRows(entries), function() {
-    var changes = cfgCollectChanges(container);
-    _cfgPending = cfgPendingFor(container, entries);
+    _cfgPending = pending;
     if (catalog === 'personas') {
       // Persona text goes to the personas API, versioned by its ETag like the config.
       cfgPut('/api/personas/' + encodeURIComponent(itemId),
@@ -600,13 +673,17 @@ function cfgCreateItem(btn, catalog) {
   var container = btn.closest('[data-item]');
   var statusEl = container.querySelector('[data-status]');
   cfgClearErrors(container);
+  var entries = cfgEntries(container, true);
   var item = {};
-  cfgEntries(container, true).forEach(function(e) {
+  entries.forEach(function(e) {
     var v = e.after;
     if (v !== null && v !== '' && !(Array.isArray(v) && !v.length)) item[e.key] = v;
   });
   if (!item.name) { cfgFlash(statusEl, 'A name is required', 'red'); return; }
-  cfgShowReview(container, cfgNewRows(container), function() {
+  var rows = cfgNewRows(container);
+  var pending = cfgPendingFor(container, entries);
+  cfgShowReview(container, rows, function() {
+    _cfgPending = pending;
     cfgPut('/api/config/catalog/' + encodeURIComponent(catalog),
       {_method: 'POST', body: {item: item, base_hash: _cfgHash}}, container, statusEl, btn);
   });
@@ -654,23 +731,25 @@ function cfgRoutingFields(e) {
     + cfgRRow('target.reroute_upstream', cfgRText('target.reroute_upstream', t.reroute_upstream, 'string', 'only for reroute strategy'));
 }
 function cfgRoutingEntryBlock(entry, index) {
-  return '<div data-rentry data-scope="routing:' + index + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
+  // 143 review: an entry is identified by what it is (backend and model), not by its place in the list.
+  var identity = 'routing:' + String(entry.backend || '') + '|' + String(entry.model || '');
+  return '<div data-rentry data-scope="' + esc(identity) + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
     + esc(entry.backend || '') + ' / ' + esc(entry.model || '') + '</div>'
     + cfgRoutingFields(entry)
     + cfgUsedByHtml(entry.used_by)
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-    + '<button type="button" class="cfg-btn" onclick="cfgSaveRoutingEntry(this,' + index + ')">Save</button>'
-    + '<button type="button" class="cfg-btn cfg-btn-danger" onclick="cfgDeleteRoutingEntry(this,' + index + ')">Delete</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="save-routing" data-cfg-index="' + index + '">Save</button>'
+    + '<button type="button" class="cfg-btn cfg-btn-danger" data-cfg-action="delete-routing" data-cfg-index="' + index + '">Delete</button>'
     + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
 }
 function cfgRoutingAddBlock() {
-  return '<div id="cfg-add-routing" data-rentry data-create style="display:none;background:var(--color-bg-base);'
+  return '<div id="cfg-add-routing" data-rentry data-create data-scope="create:routing" style="display:none;background:var(--color-bg-base);'
     + 'border:1px dashed var(--color-accent-blue);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-accent-blue);font-size:13px;margin-bottom:4px">New routing entry</div>'
     + cfgRoutingFields({})
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-    + '<button type="button" class="cfg-btn" onclick="cfgCreateRoutingEntry(this)">Create</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="create-routing">Create</button>'
     + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
 }
 function cfgCollectRoutingChanges(container, all) {
@@ -691,9 +770,10 @@ function cfgSaveRoutingEntry(btn, index) {
   var statusEl = container.querySelector('[data-status]');
   var entries = cfgEntries(container).filter(cfgChanged);
   if (!entries.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  var changes = cfgCollectRoutingChanges(container, false);
+  var pending = cfgPendingFor(container, entries);
   cfgShowReview(container, cfgDiffRows(entries), function() {
-    var changes = cfgCollectRoutingChanges(container, false);
-    _cfgPending = cfgPendingFor(container, entries);
+    _cfgPending = pending;
     cfgPut('/api/config/routing/entry/' + index,
       {store: 'routing_yaml', body: {changes: changes, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
   });
@@ -712,10 +792,11 @@ function cfgCreateRoutingEntry(btn) {
   var statusEl = container.querySelector('[data-status]');
   var entry = cfgCollectRoutingChanges(container, true);
   if (!entry.backend || !entry.model) { cfgFlash(statusEl, 'backend and model are required', 'red'); return; }
+  var pending = cfgPendingFor(container, cfgEntries(container, true));
   cfgShowReview(container, cfgNewRows(container), function() {
-    var fresh = cfgCollectRoutingChanges(container, true);
+    _cfgPending = pending;
     cfgPut('/api/config/routing/entry',
-      {store: 'routing_yaml', _method: 'POST', body: {entry: fresh, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+      {store: 'routing_yaml', _method: 'POST', body: {entry: entry, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
   });
 }
 function cfgRoutingSection(sec, banner) {
@@ -725,7 +806,7 @@ function cfgRoutingSection(sec, banner) {
       + 'Routing edits apply to the next performer job (not live).</div>'
       + '<div id="cfg-routing-entries"><span class="empty-state">Loading routing…</span></div>'
       + cfgRoutingAddBlock()
-      + '<div style="margin-top:6px"><button type="button" class="cfg-btn" onclick="cfgToggleAdd(&quot;routing&quot;)">+ Add routing entry</button></div>';
+      + '<div style="margin-top:6px"><button type="button" class="cfg-btn" data-cfg-action="toggle-add" data-cfg-id="routing">+ Add routing entry</button></div>';
   } else {
     body = '<div class="empty-state">Routing is read-only on this host.</div>';
   }
@@ -849,22 +930,20 @@ function cfgItemBlock(item, catalog, editable) {
   }).join('');
   var footer = '';
   if (editable) {
-    var iid = esc(item.id);
-    var cat = esc(catalog);
-    var delTitle = item.deletable ? ''
-      : ' title="Protected: remove the references first. Referenced by: ' + esc((item.referenced_by || []).join(', ')) + '"';
-    var delBtn = '<button type="button" class="cfg-btn cfg-btn-danger"' + (item.deletable ? '' : ' disabled')
-      + delTitle + ' onclick="cfgDeleteItem(this, &quot;' + cat + '&quot;, &quot;' + iid + '&quot;)">Delete</button>';
+    // 143 review: config values travel as data-* attributes and one listener reads them. No value is ever
+    // written into a JavaScript string, so an id with quotes in it is only text.
+    var delAttr = item.deletable ? ''
+      : ' disabled title="Protected: remove the references first. Referenced by: ' + esc((item.referenced_by || []).join(', ')) + '"';
     footer = cfgUsedByHtml(item.used_by)
       + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-      + '<button type="button" class="cfg-btn" onclick="cfgSaveItem(this, &quot;' + cat + '&quot;, &quot;' + iid + '&quot;)">Save</button>'
-      + delBtn
+      + '<button type="button" class="cfg-btn" data-cfg-action="save-item" data-cfg-catalog="' + esc(catalog) + '" data-cfg-id="' + esc(item.id) + '">Save</button>'
+      + '<button type="button" class="cfg-btn cfg-btn-danger" data-cfg-action="delete-item" data-cfg-catalog="' + esc(catalog) + '" data-cfg-id="' + esc(item.id) + '"' + delAttr + '>Delete</button>'
       + '<span data-status style="font-size:11px;margin-left:6px"></span></div>';
   } else if (catalog === 'symphonies') {
     // 143: a symphony's settings are edited on its page. This is the link to it.
     var href = '/symphonies/' + encodeURIComponent(item.id);
-    footer = '<div style="margin-top:8px"><a href="' + esc(href) + '" onclick="navigate(event,&quot;' + esc(href)
-      + '&quot;)">Edit settings</a></div>';
+    footer = '<div style="margin-top:8px"><a href="' + esc(href) + '" data-cfg-action="navigate" data-cfg-href="' + esc(href)
+      + '">Edit settings</a></div>';
   } else {
     footer = cfgUsedByHtml(item.used_by);
   }
@@ -878,31 +957,35 @@ function cfgItemBlock(item, catalog, editable) {
 
 // 143: one persona in the Agents tab. Its text is the only editable part. Save and
 // Reset go through the same review and conflict handling as every other editor.
+// 143 review: one persona in the Agents tab. agentLabel already escapes, so it is not escaped again.
 function cfgPersonaBlock(p, usedBy) {
   var role = String(p.role || '');
   var text = String(p.instructions || '');
   return '<div data-item data-scope="' + esc('item:personas/' + role)
     + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
-    + esc(agentLabel(role)) + personaStageNote(role) + '</div>'
+    + agentLabel(role) + personaStageNote(role) + '</div>'
     + '<div style="' + CFG_HINT + '">' + (p.is_default ? 'Using the default text.' : 'Custom text.') + '</div>'
     + '<textarea data-field="instructions" data-label="Instructions" data-type="text"'
     + ' data-orig="' + esc(JSON.stringify(text)) + '" rows="8" style="' + CFG_INPUT + ';margin-top:6px">'
     + esc(text) + '</textarea>'
     + cfgUsedByHtml(usedBy)
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-    + '<button type="button" class="cfg-btn" onclick="cfgSaveItem(this, &quot;personas&quot;, &quot;' + esc(role) + '&quot;)">Save</button>'
-    + '<button type="button" class="cfg-btn" onclick="cfgResetPersona(this, &quot;' + esc(role) + '&quot;)">Reset to default</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="save-item" data-cfg-catalog="personas" data-cfg-id="' + esc(role) + '">Save</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="reset-persona" data-cfg-id="' + esc(role) + '">Reset to default</button>'
     + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
 }
 
+// 143 review: Reset to default goes through the same review as every other change.
 function cfgResetPersona(btn, role) {
   var container = btn.closest('[data-item]');
   var statusEl = container.querySelector('[data-status]');
-  if (!confirm('Reset the ' + role + ' instructions to the default text?')) return;
-  cfgPut('/api/personas/' + encodeURIComponent(role),
-    {store: 'persona', _method: 'DELETE', 'If-Match': _personaCfgHash || '', reload: true},
-    container, statusEl, btn);
+  var rows = [{label: 'Persona text', before: 'the text in use', after: 'the default text', secret: false}];
+  cfgShowReview(container, rows, function() {
+    cfgPut('/api/personas/' + encodeURIComponent(role),
+      {store: 'persona', _method: 'DELETE', 'If-Match': _personaCfgHash || '', reload: true},
+      container, statusEl, btn);
+  });
 }
 
 // 143: the Agents tab. Persona text comes from /api/personas (the text in effect, with
@@ -932,12 +1015,13 @@ function cfgAddBlock(sec) {
   if (!blanks) {
     blanks = cfgFieldRow({key: 'name', label: 'name', type: 'string', editable: true, current_value: null});
   }
-  return '<div id="cfg-add-' + esc(sec.id) + '" data-item data-create style="display:none;background:var(--color-bg-base);'
+  return '<div id="cfg-add-' + esc(sec.id) + '" data-item data-create data-scope="' + esc('create:' + sec.id)
+    + '" style="display:none;background:var(--color-bg-base);'
     + 'border:1px dashed var(--color-accent-blue);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-accent-blue);font-size:13px;margin-bottom:4px">New ' + esc(sec.id) + ' entry</div>'
     + blanks
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-    + '<button type="button" class="cfg-btn" onclick="cfgCreateItem(this, &quot;' + esc(sec.id) + '&quot;)">Create</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="create-item" data-cfg-catalog="' + esc(sec.id) + '">Create</button>'
     + '<span data-status style="font-size:11px;margin-left:6px"></span></div>'
     + '</div>';
 }
@@ -957,7 +1041,7 @@ function cfgSectionBlock(sec) {
     body = (sec.settings || []).map(function(s) { return cfgFieldRow(s, true); }).join('') || '<div class="empty-state">No settings.</div>';
     if (editable) {
       footer = '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'
-        + '<button type="button" class="cfg-btn" onclick="cfgSaveSection(this, &quot;' + esc(sec.id) + '&quot;)">Save changes</button>'
+        + '<button type="button" class="cfg-btn" data-cfg-action="save-section" data-cfg-id="' + esc(sec.id) + '">Save changes</button>'
         + '<span data-status style="font-size:11px;margin-left:6px"></span></div>';
     }
   } else {
@@ -966,8 +1050,8 @@ function cfgSectionBlock(sec) {
       : '<div class="empty-state">No entries.</div>';
     if (editable) {
       body += cfgAddBlock(sec);
-      footer = '<div style="margin-top:6px"><button type="button" class="cfg-btn" onclick="cfgToggleAdd(&quot;'
-        + esc(sec.id) + '&quot;)">+ Add entry</button></div>';
+      footer = '<div style="margin-top:6px"><button type="button" class="cfg-btn" data-cfg-action="toggle-add" data-cfg-id="'
+        + esc(sec.id) + '">+ Add entry</button></div>';
     }
   }
   var desc = sec.description ? '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">' + esc(sec.description) + '</div>' : '';
@@ -980,6 +1064,7 @@ function cfgSectionBlock(sec) {
 
 // Render the horizontal tab strip (.cfg-tabs, .cfg-tab in dashboard.html). WAI-ARIA tabs
 // pattern: roving tabindex, aria-selected/aria-controls on each tab.
+// 143 review: each tab carries its id as data, read by the page's one listener.
 function cfgTabBar(sections, active) {
   var tabs = (sections || []).map(function(sec) {
     var on = sec.id === active;
@@ -988,8 +1073,7 @@ function cfgTabBar(sections, active) {
       + ' aria-controls="' + cfgPanelId(sec.id) + '"'
       + ' tabindex="' + (on ? '0' : '-1') + '"'
       + ' class="cfg-tab' + (on ? ' active' : '') + '"'
-      + ' onclick="cfgSelectTab(&quot;' + esc(sec.id) + '&quot;)"'
-      + ' onkeydown="cfgTabKey(event, &quot;' + esc(sec.id) + '&quot;)">'
+      + ' data-cfg-action="select-tab" data-cfg-id="' + esc(sec.id) + '" data-cfg-tab="' + esc(sec.id) + '">'
       + esc(sec.title) + '</button>';
   }).join('');
   return '<div class="cfg-tabs" role="tablist" aria-label="Configuration sections">'
@@ -1012,7 +1096,49 @@ function cfgSelectTab(secId) {
   // The hash may carry an item after the tab ("#personas/implementer"), so compare the tab only.
   var current = (location.hash || '').replace(/^#/, '').split('/')[0];
   if (current !== secId) {
-    history.pushState(null, '', '/config#' + secId);
+    pushRoute('/config#' + secId);
+  }
+}
+
+// 143 review: one listener for every control on the page. It reads the data-* attributes
+// and calls the same functions the inline handlers used to, with values that are never
+// written into code.
+var _cfgWired = false;
+function cfgWireControls() {
+  if (_cfgWired) return;
+  var root = document.getElementById('config-page-section');
+  if (!root) return;
+  _cfgWired = true;
+  root.addEventListener('click', function(event) {
+    var el = event.target && event.target.closest ? event.target.closest('[data-cfg-action]') : null;
+    if (el && root.contains(el)) cfgRunAction(el, event);
+  });
+  root.addEventListener('keydown', function(event) {
+    var tab = event.target && event.target.closest ? event.target.closest('[data-cfg-tab]') : null;
+    if (tab) cfgTabKey(event, tab.getAttribute('data-cfg-tab'));
+  });
+}
+
+function cfgRunAction(el, event) {
+  var action = el.getAttribute('data-cfg-action');
+  var id = el.getAttribute('data-cfg-id') || '';
+  var catalog = el.getAttribute('data-cfg-catalog') || '';
+  var index = Number(el.getAttribute('data-cfg-index'));
+  if (action === 'select-tab') cfgSelectTab(id);
+  else if (action === 'toggle-add') cfgToggleAdd(id);
+  else if (action === 'save-section') cfgSaveSection(el, id);
+  else if (action === 'save-item') cfgSaveItem(el, catalog, id);
+  else if (action === 'delete-item') cfgDeleteItem(el, catalog, id);
+  else if (action === 'create-item') cfgCreateItem(el, catalog);
+  else if (action === 'reset-persona') cfgResetPersona(el, id);
+  else if (action === 'save-routing') cfgSaveRoutingEntry(el, index);
+  else if (action === 'delete-routing') cfgDeleteRoutingEntry(el, index);
+  else if (action === 'create-routing') cfgCreateRoutingEntry(el);
+  else if (action === 'reload') loadConfigPage();
+  else if (action === 'navigate') {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    navigate(null, el.getAttribute('data-cfg-href') || '/config');
   }
 }
 
@@ -1105,6 +1231,9 @@ async function loadConfigPage() {
   }).join('');
   el.innerHTML = header + cfgTabBar(sections, active) + panels;
   _cfgShown = true;
+  cfgWireControls();
+  // The New forms are baselined before any refused edit is put back into them.
+  cfgBaselineCreate();
   if (_cfgRoutingAvail) loadRoutingEntries();
   else cfgReapplyPending();
   if (parts.length > 1 && active === parts[0]) cfgFocusItem(parts.join('/'));

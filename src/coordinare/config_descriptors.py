@@ -32,7 +32,7 @@ import typing
 from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_core import PydanticUndefined
 
 from coordinare.config_usage import UsedBy, usage_index
@@ -271,6 +271,37 @@ def _infer_type(annotation: Any) -> SettingType:
     return "string"
 
 
+def _is_secret_type(annotation: Any) -> bool:
+    """True when the annotation is a ``SecretStr``, or a union (``Optional``) that holds one.
+
+    143 review: a secret is recognised by its type before any name list is consulted,
+    so an unannotated ``SecretStr`` field is masked and typed as a secret.
+    """
+    if annotation is SecretStr:
+        return True
+    return any(_is_secret_type(arg) for arg in typing.get_args(annotation))
+
+
+_PATTERN_CHOICES_RE = re.compile(r"^\^\(([A-Za-z0-9_|-]+)\)\$$")
+
+
+def _pattern_choices(field_info: FieldInfo, inner: Any) -> list[str] | None:
+    """The allowed values of a string field whose pattern is a plain alternation.
+
+    143 review: ``output_mode`` and ``log_level`` are ``pattern="^(a|b)$"`` strings. The
+    pattern is the schema's own list of values, so the dropdown reads it from there.
+    """
+    if inner is not str:
+        return None
+    for meta in field_info.metadata:
+        pattern = getattr(meta, "pattern", None)
+        if isinstance(pattern, str):
+            match = _PATTERN_CHOICES_RE.match(pattern)
+            if match is not None:
+                return match.group(1).split("|")
+    return None
+
+
 def _infer_range(field_info: FieldInfo) -> dict[str, Any] | None:
     """Extract a range from pydantic ``annotated_types`` metadata.
 
@@ -343,12 +374,18 @@ def setting_from_field(
     ann = annotation_for(dotted)
 
     inner = _unwrap_optional(field_info.annotation)
-    enum_choices = ann.enum if ann.enum is not None else _infer_enum(inner)
+    # 143 review: a secret is one whose type says so (SecretStr, also inside Optional),
+    # whatever its name; the name list stays as a second check.
+    is_secret = ann.secret or _is_secret_type(field_info.annotation)
+    pattern_choices = _pattern_choices(field_info, inner)
+    enum_choices = ann.enum if ann.enum is not None else (_infer_enum(inner) or pattern_choices)
     inferred_type = _infer_type(inner)
-    setting_type: SettingType = "secret" if ann.secret else inferred_type
+    if pattern_choices is not None and inferred_type == "string":
+        inferred_type = "enum"
+    setting_type: SettingType = "secret" if is_secret else inferred_type
     rng = ann.range if ann.range is not None else _infer_range(field_info)
 
-    display, is_env = serialize_value(_json_safe(value), secret=ann.secret)
+    display, is_env = serialize_value(_json_safe(value), secret=is_secret)
 
     default = field_info.default
     if default is PydanticUndefined:
@@ -376,7 +413,7 @@ def setting_from_field(
         enum=enum_choices,
         editable=ann.editable and not invalid,
         restart_required=ann.restart_required,
-        secret=ann.secret,
+        secret=is_secret,
         is_env_placeholder=is_env,
         invalid=invalid,
         section=section,

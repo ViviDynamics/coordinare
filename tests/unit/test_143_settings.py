@@ -247,7 +247,7 @@ _CONFIG_PURE = (
 def _run_node(tmp_path: Path, body: str) -> None:
     assert _NODE is not None, "node is required for the dashboard JS gates"
     functions = "\n\n".join(shipped_function("config", name) for name in _CONFIG_PURE)
-    stub = "function stageLabel(code) { return {implementing: 'Implement'}[code] || code; }\n"
+    stub = "function vocabularyKindLabel(kind, code) { return {implementing: 'Implement'}[code] || code; }\n"
     script = tmp_path / "check.js"
     script.write_text(
         stub + functions + "\n\n" + body + "\nconsole.log('ok');\n",

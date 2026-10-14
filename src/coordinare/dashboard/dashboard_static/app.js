@@ -912,6 +912,20 @@ async function submitAddSymphony() {
 // 081 config-editing UI: /static/config.js (#349)
 // 143: the route the page last showed. A declined leave (unsaved Settings) goes back here.
 var _lastRoute = '';
+// 143 review: every entry the page creates carries a sequence number. A declined Back
+// then returns to the exact entry it left with history.go, and adds no entry.
+var _navSeq = 0;
+var _restoringRoute = false;
+function tagRouteEntry() {
+  var state = history.state;
+  if (state && typeof state.seq === 'number') { _navSeq = state.seq; return; }
+  history.replaceState({seq: _navSeq}, '', location.href);
+}
+function pushRoute(url) {
+  _navSeq += 1;
+  history.pushState({seq: _navSeq}, '', url);
+  _lastRoute = location.pathname + location.search + location.hash;
+}
 // 143: the Global Config page is the General tab of Settings. Its old address
 // moves there, keeping the query string.
 function redirectRetiredPages() {
@@ -919,6 +933,7 @@ function redirectRetiredPages() {
   history.replaceState(null, '', '/config' + location.search + '#global');
 }
 function router() {
+  tagRouteEntry();
   redirectRetiredPages();
   var path = location.pathname;
   // 143: leaving Settings ends its rendered state, so the next visit loads it fresh.
@@ -969,18 +984,26 @@ function navigate(e, path) {
   }
   if (e) { e.preventDefault(); }
   // 139: in-app navigation keeps the symphony the header has chosen.
-  history.pushState(null, '', pathWithSymphony(path));
+  pushRoute(pathWithSymphony(path));
   window.closeMobileNav();
   router();
 }
 
 
-window.addEventListener('popstate', function() {
+window.addEventListener('popstate', function(event) {
+  // The restore below is our own step back; it is not a new decision to make.
+  if (_restoringRoute) { _restoringRoute = false; return; }
+  var target = event.state && typeof event.state.seq === 'number' ? event.state.seq : null;
   // 143: Back and Forward leave a page with unsaved Settings edits only if the reader agrees.
+  // A declined move steps back to the entry it came from: the exact URL, hash included.
   if (!cfgLeaveAllowed(location.pathname)) {
-    history.pushState(null, '', _lastRoute || '/config');
+    if (target !== null && target !== _navSeq) {
+      _restoringRoute = true;
+      history.go(_navSeq - target);
+    }
     return;
   }
+  if (target !== null) _navSeq = target;
   router();
 });
 
