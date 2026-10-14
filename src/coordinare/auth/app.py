@@ -140,7 +140,7 @@ class AppAuth:
             response = await client.get(f"{self._api_url}/app", headers=headers)
 
         if response.is_success:
-            pass  # success — parse below
+            pass  # success: parse below
         elif response.is_client_error:
             msg = f"app lookup rejected (HTTP {response.status_code}): check app_id and private key"
             raise PermanentGitHubError(msg)
