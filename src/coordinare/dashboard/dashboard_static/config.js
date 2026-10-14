@@ -357,6 +357,8 @@ function cfgShowReview(container, rows, onConfirm) {
   var save = document.createElement('button');
   save.type = 'button';
   save.className = 'cfg-btn';
+  // The one filled action on the page, so it carries the success pair the contrast check reads.
+  save.style.cssText = 'background:var(--color-btn-success);border:none;color:var(--color-on-action);padding:4px 12px;border-radius:4px;cursor:pointer';
   save.textContent = 'Save these changes';
   save.addEventListener('click', function() {
     if (box.parentNode) box.parentNode.removeChild(box);
