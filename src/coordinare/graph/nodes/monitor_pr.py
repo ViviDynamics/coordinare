@@ -62,6 +62,22 @@ def _parse_submitted_at(review: dict[str, object]) -> datetime | None:
     return None
 
 
+def _approved_since(
+    reviews: list[dict[str, object]], login: str, request: dict[str, object],
+) -> bool:
+    """Did ``login`` approve after ``request``? An approval does take it back."""
+    asked = _parse_submitted_at(request)
+    for review in reviews:
+        if review.get("state") != "APPROVED":
+            continue
+        if str(review.get("author_login") or "").strip().lower() != login:
+            continue
+        approved = _parse_submitted_at(review)
+        if asked is not None and approved is not None and approved > asked:
+            return True
+    return False
+
+
 def _latest_reviews_per_author(
     reviews: list[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -98,6 +114,22 @@ def _latest_reviews_per_author(
             # (or survive over) an actionable review on ordering luck.
             winner_by_author[login] = review
     winners = set(map(id, winner_by_author.values()))
+    # #97: a plain comment does not take back a change request. When a
+    # reviewer's latest review is a comment, their latest change request in
+    # the batch stays effective beside it, so its text still reaches the
+    # implementer instead of being dropped as superseded.
+    for login, winner in winner_by_author.items():
+        if winner.get("state") != "COMMENTED":
+            continue
+        requests = [
+            r
+            for r in reviews
+            if r.get("state") == "CHANGES_REQUESTED"
+            and str(r.get("author_login") or "").strip().lower() == login
+            and not _approved_since(reviews, login, r)
+        ]
+        if requests:
+            winners.add(id(requests[-1]))
     # Use the SAME normalization as the grouping key so a whitespace-only
     # author_login (which normalises to "" and is therefore ungrouped) is
     # treated consistently as "no login" in the passthrough too.
