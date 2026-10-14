@@ -1737,8 +1737,8 @@ def test_board_summary_displays_column_counts(
             },
         ),
     )
-    # Total is the four columns (5+3+2+10=20); Done and Backlog have no column of their own.
-    expect(page.locator("#cards-summary")).to_have_text("Total 20 · Done 10 · Backlog 8", timeout=_WAIT_LIVE)
+    # Total is every card the board shows: the four columns and Done (5+3+2+1+10=21); Backlog has no column.
+    expect(page.locator("#cards-summary")).to_have_text("Total 21 · Done 10 · Backlog 8", timeout=_WAIT_LIVE)
     expect(page.locator("#cycles-completed")).to_have_text("7", timeout=_WAIT_LIVE)
 
 

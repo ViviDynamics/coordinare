@@ -97,13 +97,45 @@ function renderStatusStrip(s, activeSess) {
 }
 
 // The Cards header's counts: the total of the four board columns, and the Done and
-// Backlog counts, which have no column of their own on the board. Read from the
-// board summary, so a symphony's scope is already applied.
+// The column counts the Cards header states. They come from the same symphony boards the columns are
+// drawn from, so the header and the columns cannot disagree. The top-level board summary is read only
+// when no symphony has a board yet. Total is every card the board shows: the four columns and Done.
+function boardColumnCounts(s) {
+  var boards = (s && Array.isArray(s.symphonies) ? s.symphonies : []).filter(function(sym) {
+    var snap = sym && sym.state && sym.state.board_snapshot;
+    return !!snap && typeof snap === 'object';
+  });
+  var counts = {TODO: 0, BLOCKED: 0, IN_PROGRESS: 0, IN_REVIEW: 0, DONE: 0, BACKLOG: 0};
+  if (boards.length === 0) {
+    var summary = (s && s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
+    Object.keys(counts).forEach(function(key) { counts[key] = Number.isFinite(summary[key]) ? summary[key] : 0; });
+    return counts;
+  }
+  boards.forEach(function(sym) {
+    var snap = sym.state.board_snapshot;
+    Object.keys(counts).forEach(function(key) {
+      if (Array.isArray(snap[key])) counts[key] += snap[key].length;
+    });
+  });
+  return counts;
+}
+
 function boardCountsText(s) {
-  var board = (s && s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
-  var count = function(key) { return Number.isFinite(board[key]) ? board[key] : 0; };
-  var total = count('TODO') + count('IN_PROGRESS') + count('IN_REVIEW') + count('DONE');
-  return 'Total ' + total + ' · Done ' + count('DONE') + ' · Backlog ' + count('BACKLOG');
+  var counts = boardColumnCounts(s);
+  var total = counts.TODO + counts.BLOCKED + counts.IN_PROGRESS + counts.IN_REVIEW + counts.DONE;
+  return 'Total ' + total + ' · Done ' + counts.DONE + ' · Backlog ' + counts.BACKLOG;
+}
+
+// The cost on an active run's tile, in one vocabulary: "not tracked" when the usage ledger is off,
+// "no usage yet" when it is on and nothing is recorded for the run, otherwise the cost (or "unknown",
+// with its reason on hover).
+function activeRunCostHtml(sess) {
+  var summary = usageSummaryOf(sess, 'card');
+  if (!summary || summary.tracked === false) return usageCostHtml(summary);
+  if (!summary.tokens || !(Number(summary.tokens.total) > 0)) {
+    return '<span title="' + esc(USAGE_PENDING_NOTE) + '">no usage yet</span>';
+  }
+  return usageCostHtml(summary);
 }
 
 // One summary line for the active-runs header: "8 agents · 1 busy · 0 queued".
@@ -149,10 +181,7 @@ function activeRunTileHtml(sess, s) {
     ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
     : formatPhaseLabel(sess.phase || 'active');
   var tokens = activeRunTokens(sess);
-  // While the stage runs with nothing reported, the cost is pending too (122), as the Metrics readout was.
-  // No dispatch time means there is no cost to show; otherwise a run with nothing reported is pending.
-  var costCell = !sess.agent_dispatch_at ? 'None'
-    : (tokens.pending ? '<span title="' + esc(USAGE_PENDING_NOTE) + '">-</span>' : costHtml(sess, s));
+  var costCell = activeRunCostHtml(sess);
   // The stale marker the board card carried for a long run (performers.js, 59 and after).
   var stale = dispatchAt && (Date.now() - new Date(dispatchAt).getTime()) > STALE_THRESHOLD_MS;
   var staleGlyph = stale ? '<span style="color:var(--color-degraded)">&#9888;</span> ' : '';

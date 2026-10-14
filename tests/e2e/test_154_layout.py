@@ -90,21 +90,28 @@ def _pipeline(card_ids: list[str]) -> dict:
 
 
 def _layout_snapshot(**overrides: Any) -> dict:
-    return _full_snapshot(
-        phase="monitoring_performer",
-        phase_label="Monitoring Performer",
-        symphonies=[_board()],
-        active_sessions=[
+    fields: dict[str, Any] = {
+        "phase": "monitoring_performer",
+        "phase_label": "Monitoring Performer",
+        "symphonies": [_board()],
+        "active_sessions": [
             _running(_RUNNING_A, "Fix login", 21, "run-aaa111"),
             _running(_RUNNING_B, "Speed up search", 22, "run-bbb222"),
         ],
-        agent_dispatch_at=_ago(5),
-        last_poll_at=_ago(0.5),
-        poll_interval_seconds=30,
-        board_summary={"TODO": 2, "IN_PROGRESS": 2, "IN_REVIEW": 2, "DONE": 1, "BLOCKED": 0, "BACKLOG": 3},
-        card_pipeline=_pipeline([_RUNNING_A, _RUNNING_B]),
-        **overrides,
-    )
+        "agent_dispatch_at": _ago(5),
+        "last_poll_at": _ago(0.5),
+        "poll_interval_seconds": 30,
+        "board_summary": {"TODO": 2, "IN_PROGRESS": 2, "IN_REVIEW": 2, "DONE": 1, "BLOCKED": 0, "BACKLOG": 3},
+        "card_pipeline": _pipeline([_RUNNING_A, _RUNNING_B]),
+    }
+    fields.update(overrides)
+    return _full_snapshot(**fields)
+
+
+def _no_dispatch_sessions() -> list[dict]:
+    """The two running cards with no dispatch time, as a daemon reports one that has not started a stage yet."""
+    return [{**_running(_RUNNING_A, "Fix login", 21, "run-aaa111"), "agent_dispatch_at": None},
+            {**_running(_RUNNING_B, "Speed up search", 22, "run-bbb222"), "agent_dispatch_at": None}]
 
 
 LONG_TITLE = ("Investigate the intermittent timeout when the export service retries a partially "
@@ -147,11 +154,11 @@ def _activity(count: int) -> list[dict[str, Any]]:
     ]
 
 
-def _show_the_layout(page: Page, live_server_url: str, store: DashboardStore) -> None:
+def _show_the_layout(page: Page, live_server_url: str, store: DashboardStore, **overrides: Any) -> None:
     page.set_viewport_size({"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT})
     page.goto(live_server_url)
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
-    store.broadcaster.broadcast(_layout_snapshot())
+    store.broadcaster.broadcast(_layout_snapshot(**overrides))
     store.broadcaster.broadcast({"_event": "activity_event", "entries": _activity(ACTIVITY_ROWS)})
     expect(page.locator("#active-performer-tiles .ap-tile")).to_have_count(RUNNING_CARDS, timeout=_WAIT_LIVE)
 
@@ -451,12 +458,26 @@ def test_metrics_and_recent_checks_summaries_carry_a_heading(page: Page, live_se
 # --- Review: no em or en dash in what the page renders ---------------------------
 
 @pytest.mark.e2e
-def test_the_rendered_dashboard_text_has_no_em_or_en_dash(page: Page, live_server_url: str, store: DashboardStore) -> None:
-    _show_the_layout(page, live_server_url, store)
+@pytest.mark.parametrize("dispatched", [True, False], ids=["dispatched", "no-dispatch-time"])
+def test_the_rendered_dashboard_text_has_no_em_or_en_dash(
+    page: Page, live_server_url: str, store: DashboardStore, dispatched: bool,
+) -> None:
+    # 155 review: a run with no dispatch time once rendered an em dash on its tile. This variant renders one.
+    if dispatched:
+        _show_the_layout(page, live_server_url, store)
+    else:
+        _show_the_layout(page, live_server_url, store, active_sessions=_no_dispatch_sessions(), agent_dispatch_at=None)
     page.evaluate("() => { document.getElementById('metrics-card').open = true; document.getElementById('health-card').open = true; }")
     text = page.evaluate("() => document.getElementById('dashboard-page').innerText")
     text += page.evaluate("() => document.getElementById('disconnected-banner').textContent")
     assert "\u2014" not in text and "\u2013" not in text  # em dash, en dash
+    if not dispatched:
+        tiles = page.locator("#active-performer-tiles .ap-tile").all_inner_texts()
+        assert len(tiles) == RUNNING_CARDS
+        for tile in tiles:
+            assert "unknown" in tile, tile  # the elapsed time, when no dispatch time is known
+            assert "None" not in tile and "\u2014" not in tile, tile
+            assert "no usage yet" in tile or "not tracked" in tile, tile  # the cost, never "None"
 
 
 @pytest.mark.e2e

@@ -72,7 +72,7 @@ function cardRefHtml(sess) {
 // dispatch of that run) and is refreshed by one timer, so two readouts for the
 // same run can never disagree. The element carries its start point.
 function elapsedSinceHtml(iso) {
-  if (!iso) return '<strong>—</strong>';
+  if (!iso) return '<strong>unknown</strong>';
   return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || 'unknown') + '</strong>';
 }
 

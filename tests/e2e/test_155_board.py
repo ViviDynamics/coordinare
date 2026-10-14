@@ -383,3 +383,22 @@ def test_a_card_shows_its_stage_pair_and_its_waiting_reason(
     expect(working.locator("code")).to_have_text("Implement · Implementer", timeout=_WAIT_LIVE)
     queued = page.locator("#swimlane-section .swimlane-card").filter(has_text="Queued work")
     expect(queued.locator(".swimlane-wait")).to_have_text("Queued: 1 of 1 card slots in use", timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_the_cards_header_counts_the_columns_it_draws_not_a_stale_summary(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # The top-level board summary is zero here, as a stale or missing one can be. The header must still say
+    # what the columns show: 1 to do, 2 running, 2 in review, 2 done, 0 blocked, 0 backlog.
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(
+        store,
+        symphonies=[_symphony(todo=["PVTI_91"], in_progress=["PVTI_92", "PVTI_93"],
+                              in_review=["PVTI_94", "PVTI_95"], done=["PVTI_96", "PVTI_97"],
+                              titles={"PVTI_91": "A", "PVTI_92": "B", "PVTI_93": "C", "PVTI_94": "D",
+                                      "PVTI_95": "E", "PVTI_96": "F", "PVTI_97": "G"})],
+    )
+    expect(page.locator("#swimlane-section .swimlane-col-count").nth(2)).to_have_text("2", timeout=_WAIT_LIVE)
+    expect(page.locator("#cards-summary")).to_have_text("Total 7 · Done 2 · Backlog 0", timeout=_WAIT_LIVE)
