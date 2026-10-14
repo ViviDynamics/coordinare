@@ -1,6 +1,6 @@
 """355: gate for the dashboard's inlined Open Questions / Clarification History JS.
 
-Slices the two panel blocks verbatim out of ``_DASHBOARD_HTML`` (plus the
+Slices the two panel blocks verbatim out of ``app_js()`` (plus the
 ``esc`` and ``fmtAge`` helpers they call) and executes them under node against
 a DOM stub (``tests/js/question_panels_checks.js``) — the same pattern as the
 spec-138 activity-feed gate: no browser, no npm install, no timers.
@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import app_js
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "question_panels_checks.js"
 
@@ -26,20 +27,20 @@ _START_CL = "// Clarification history (355"
 _END = "document.getElementById('cycles-completed')"
 
 # 349: the panels themselves render inside the inline renderState and stay in
-# _DASHBOARD_HTML, but their esc/fmtAge helpers moved to /static/helpers.js.
+# app_js(), but their esc/fmtAge helpers moved to /static/helpers.js.
 _HELPERS_JS = _DASHBOARD_JS_SOURCES["helpers"]
 
 
 def _extract_panels_js() -> str:
     """Return the shipped panel JS plus the shared helpers it calls."""
     for marker in (_START_Q, _START_CL, _END):
-        if _DASHBOARD_HTML.count(marker) != 1:
-            raise AssertionError(f"marker {marker!r} is not unique in _DASHBOARD_HTML")
+        if app_js().count(marker) != 1:
+            raise AssertionError(f"marker {marker!r} is not unique in app_js()")
 
-    start_q = _DASHBOARD_HTML.index(_START_Q)
-    start_cl = _DASHBOARD_HTML.index(_START_CL)
-    end = _DASHBOARD_HTML.index(_END)
-    panels_js = _DASHBOARD_HTML[start_q:start_cl] + _DASHBOARD_HTML[start_cl:end]
+    start_q = app_js().index(_START_Q)
+    start_cl = app_js().index(_START_CL)
+    end = app_js().index(_END)
+    panels_js = app_js()[start_q:start_cl] + app_js()[start_cl:end]
 
     esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:

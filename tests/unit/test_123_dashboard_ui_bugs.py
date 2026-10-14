@@ -13,8 +13,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import label_helpers_js
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import label_helpers_js, page_source
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "dashboard_ui_bug_checks.js"
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
@@ -54,8 +54,8 @@ def test_dashboard_ui_bug_client_js(tmp_path: Path) -> None:
 
 def test_utilization_table_uses_the_shared_row_renderer() -> None:
     """#123: the template no longer picks the bar colour from the percentage."""
-    assert "s.role_utilization.map(utilizationRowHtml)" in _DASHBOARD_HTML
-    assert "pct >= 100" not in _DASHBOARD_HTML
+    assert "s.role_utilization.map(utilizationRowHtml)" in page_source()
+    assert "pct >= 100" not in page_source()
 
 
 def test_performer_tile_no_longer_prints_the_card_node_id() -> None:
@@ -66,21 +66,21 @@ def test_performer_tile_no_longer_prints_the_card_node_id() -> None:
 
 def test_elapsed_readouts_share_one_start_point_and_one_timer() -> None:
     """#125"""
-    assert "Agent running for" not in _DASHBOARD_HTML
-    assert "data-elapsed-prefix', 'Stage running for: '" in _DASHBOARD_HTML
-    assert _DASHBOARD_HTML.count("refreshElapsedReadouts(document)") == 1
+    assert "Agent running for" not in page_source()
+    assert "data-elapsed-prefix', 'Stage running for: '" in page_source()
+    assert page_source().count("refreshElapsedReadouts(document)") == 1
     assert "elapsedSinceHtml(dispatchAt)" in _PERFORMERS
 
 
 def test_dashboard_panel_collapses_and_caps_recent_checks() -> None:
     """#128: collapsed and capped on the Dashboard, full list on History."""
-    assert "s.cycle_history, { collapse: true, limit: 5 }" in _DASHBOARD_HTML
-    assert "document.getElementById('history-page-section'), s.cycle_history);" in _DASHBOARD_HTML
-    assert ".cycle-history-compact { max-height: 240px; overflow-y: auto; }" in _DASHBOARD_HTML
+    assert "s.cycle_history, { collapse: true, limit: 5 }" in page_source()
+    assert "document.getElementById('history-page-section'), s.cycle_history);" in page_source()
+    assert ".cycle-history-compact { max-height: 240px; overflow-y: auto; }" in page_source()
 
 
 def test_board_tabs_scroll_inside_their_own_container() -> None:
     """#127"""
-    tabs = re.search(r"\.swimlane-tabs \{[^}]*\}", _DASHBOARD_HTML)
+    tabs = re.search(r"\.swimlane-tabs \{[^}]*\}", page_source())
     assert tabs is not None
     assert "overflow-x: auto" in tabs.group(0) and "flex-wrap: nowrap" in tabs.group(0)

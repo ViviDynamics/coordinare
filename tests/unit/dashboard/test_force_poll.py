@@ -7,7 +7,8 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from coordinare.dashboard import _DASHBOARD_HTML, DashboardStore, create_dashboard_app
+from coordinare.dashboard import DashboardStore, create_dashboard_app
+from tests.unit.dashboard_js_slices import page_source
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,15 +127,15 @@ class TestForcePollEndpoint409:
 
 class TestDashboardHtmlButton:
     def test_force_poll_button_present(self) -> None:
-        assert 'id="force-poll-btn"' in _DASHBOARD_HTML
+        assert 'id="force-poll-btn"' in page_source()
 
     def test_force_poll_button_has_aria_label(self) -> None:
-        assert 'aria-label="Check for work now"' in _DASHBOARD_HTML
+        assert 'aria-label="Check for work now"' in page_source()
         # 144: "Check now" sits beside when the board was last checked.
-        assert ">Check now</button>" in _DASHBOARD_HTML and 'id="last-checked"' in _DASHBOARD_HTML
+        assert ">Check now</button>" in page_source() and 'id="last-checked"' in page_source()
 
     def test_force_poll_message_element_present(self) -> None:
-        assert 'id="force-poll-msg"' in _DASHBOARD_HTML
+        assert 'id="force-poll-msg"' in page_source()
 
 
 # ---------------------------------------------------------------------------
@@ -144,19 +145,19 @@ class TestDashboardHtmlButton:
 
 class TestDashboardHtmlJs:
     def test_force_poll_function_defined(self) -> None:
-        assert "async function forcePoll()" in _DASHBOARD_HTML
+        assert "async function forcePoll()" in page_source()
 
     def test_force_poll_posts_to_correct_endpoint(self) -> None:
-        assert "fetch('/api/force-poll'" in _DASHBOARD_HTML
+        assert "fetch('/api/force-poll'" in page_source()
 
     def test_force_poll_handles_409(self) -> None:
-        assert "A check is already running" in _DASHBOARD_HTML
+        assert "A check is already running" in page_source()
 
     def test_force_poll_handles_network_error(self) -> None:
-        assert "Could not reach server" in _DASHBOARD_HTML
+        assert "Could not reach server" in page_source()
 
     def test_sse_handler_disables_button_on_cycle_active(self) -> None:
-        assert "s.cycle_active" in _DASHBOARD_HTML
+        assert "s.cycle_active" in page_source()
 
     def test_sse_handler_references_daemon_running(self) -> None:
-        assert "s.daemon_running" in _DASHBOARD_HTML
+        assert "s.daemon_running" in page_source()

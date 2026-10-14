@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import (
+    _DASHBOARD_JS_SOURCES,
     DashboardStore,
     check_port_available,
     create_dashboard_app,
@@ -209,8 +210,10 @@ def test_s1_html_has_required_structure() -> None:
         assert f'id="{element_id}"' in html, f"HTML is missing id={element_id!r}"
 
     # SSE connection wiring
-    assert "EventSource('/events')" in html
-    assert "state_update" in html
+    # 176: the SSE wiring is in the application script, not the markup.
+    app_js = _DASHBOARD_JS_SOURCES["app"]
+    assert "EventSource('/events')" in app_js
+    assert "state_update" in app_js
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,25 @@ from __future__ import annotations
 
 import re
 
-from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+
+# 176: the application script that used to be the page's inline block.
+APP_SCRIPT = "app"
+
+
+def app_js() -> str:
+    """The application script (176), verbatim from the shipped static file."""
+    return _DASHBOARD_JS_SOURCES[APP_SCRIPT]
+
+
+def page_source() -> str:
+    """The markup and the application script, for checks that used to read one string.
+
+    Every substring that sat in the old inline page still sits in here, so a
+    check written against the page keeps its meaning.
+    """
+    return _DASHBOARD_HTML + app_js()
+
 
 _LABEL_HELPERS = (
     "vocabularyLabel", "vocabularyKindLabel", "stageLabel", "agentLabel",

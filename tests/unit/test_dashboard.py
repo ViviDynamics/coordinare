@@ -24,6 +24,7 @@ from coordinare.dashboard import (
     is_session_stale,
     render_performer_pool_widget,
 )
+from tests.unit.dashboard_js_slices import app_js, page_source
 
 # 349: the extracted front-end JS. Assertions about functions that moved to
 # /static read the shipped source, not the page string.
@@ -154,8 +155,8 @@ def test_dashboard_multi_page_routes_return_html_shell() -> None:
 
 def test_config_view_page_containers_present() -> None:
     """081 T018: the live-config view ships its page container and loader hook."""
-    assert 'id="config-page"' in _DASHBOARD_HTML
-    assert 'id="config-page-section"' in _DASHBOARD_HTML
+    assert 'id="config-page"' in page_source()
+    assert 'id="config-page-section"' in page_source()
     assert "loadConfigPage" in _JS_CONFIG
     # T019: routing read-only empty state renders the section's guidance banner,
     # not an error — the renderer surfaces invalid_banner as a status region.
@@ -211,7 +212,7 @@ def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
     assert "(item.settings || []).map(cfgFieldRow)" not in _JS_CONFIG
 
 
-def test_dashboard_html_under_168kb() -> None:
+def test_dashboard_html_under_budget() -> None:
     """T036: _DASHBOARD_HTML must not exceed the size budget, lowered by #349
     after the bulk of the front end (shared helpers, the 081 config-editing UI,
     the performers-page rendering) moved to /static/*.js. The inline remainder
@@ -229,26 +230,26 @@ def test_dashboard_html_under_168kb() -> None:
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
     """053: /history should render live history containers, not placeholder copy."""
-    assert "Coming soon" not in _DASHBOARD_HTML
-    assert 'id="history-page-section"' in _DASHBOARD_HTML
+    assert "Coming soon" not in page_source()
+    assert 'id="history-page-section"' in page_source()
 
 
 def test_performers_page_includes_drilldown_detail_container() -> None:
     """053: /performers must include list/detail view containers for drilldown."""
-    assert 'id="performers-page-list-view"' in _DASHBOARD_HTML
-    assert 'id="performers-page-detail-view"' in _DASHBOARD_HTML
-    assert 'id="performers-page-back"' in _DASHBOARD_HTML
+    assert 'id="performers-page-list-view"' in page_source()
+    assert 'id="performers-page-detail-view"' in page_source()
+    assert 'id="performers-page-back"' in page_source()
 
 
 def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
     """053: Key dashboard cards should occupy single grid columns on desktop."""
-    assert '<div class="card full">\n  <h2>Workflow</h2>' not in _DASHBOARD_HTML
-    assert 'id="performers-card" class="card full"' not in _DASHBOARD_HTML
-    assert 'id="active-performers" class="card full"' not in _DASHBOARD_HTML
-    assert 'id="active-performers" class="card"' in _DASHBOARD_HTML
-    assert 'id="clarifications-card" class="card full"' not in _DASHBOARD_HTML
-    assert 'id="clarifications-card" class="card"' in _DASHBOARD_HTML
-    assert '<div class="card full">\n  <h2>Recent Cycles</h2>' not in _DASHBOARD_HTML
+    assert '<div class="card full">\n  <h2>Workflow</h2>' not in page_source()
+    assert 'id="performers-card" class="card full"' not in page_source()
+    assert 'id="active-performers" class="card full"' not in page_source()
+    assert 'id="active-performers" class="card"' in page_source()
+    assert 'id="clarifications-card" class="card full"' not in page_source()
+    assert 'id="clarifications-card" class="card"' in page_source()
+    assert '<div class="card full">\n  <h2>Recent Cycles</h2>' not in page_source()
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +369,7 @@ def test_get_root_returns_200_html() -> None:
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     assert "Coordinare Dashboard" in resp.text
-    assert "EventSource" in resp.text
+    assert "EventSource" in app_js()
 
 
 def test_sse_initial_event_is_state_update() -> None:
@@ -1961,8 +1962,8 @@ def test_list_symphonies_includes_env_bootstrap_performer_id(tmp_path) -> None:
 def test_dashboard_html_renders_per_row_bootstrap_button() -> None:
     """060: the symphonies list rendering includes the sym-row-bootstrap button class
     and wires its click to the env-bootstrap endpoint."""
-    assert "sym-row-bootstrap" in _DASHBOARD_HTML
-    assert "/env-bootstrap" in _DASHBOARD_HTML
+    assert "sym-row-bootstrap" in page_source()
+    assert "/env-bootstrap" in page_source()
 
 
 def test_build_snapshot_symphonies_include_env_bootstrap_performer_id() -> None:
@@ -2308,8 +2309,8 @@ def _daemon_with_symphony(wiki_in_flight: bool = False, has_cache: bool = True) 
 
 def test_wiki_init_button_present_on_symphony_detail() -> None:
     """The 'Init wiki' button ships in the dashboard HTML next to the env-bootstrap one."""
-    assert "sym-wiki-init-btn" in _DASHBOARD_HTML
-    assert "/wiki-init" in _DASHBOARD_HTML
+    assert "sym-wiki-init-btn" in page_source()
+    assert "/wiki-init" in page_source()
 
 
 def test_wiki_init_endpoint_accepts_and_records_request() -> None:
