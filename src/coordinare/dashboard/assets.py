@@ -29,7 +29,9 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # 176: "app" is the application script that used to be the page's last inline
 # block. It stays last, so it runs after every helper above and after
 # activity-streams.js, at the same point in the parse as before.
-_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "actions", "workflow", "account", "app")
+# 153: "attention" (the needs-attention signal) defines functions only, and
+# app calls them, so it loads before app.
+_DASHBOARD_JS_FILES = ("helpers", "config", "performers", "actions", "workflow", "account", "attention", "app")
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from
 # disk, and loads first so every other script can look labels up in it.

@@ -80,3 +80,15 @@ html[data-navigation-expanded="false"] .mascot-baton { transform: rotate(-16deg)
 /* 152: freshness beside the header connection label */
 #connection-detail { color: var(--color-text-muted); white-space: nowrap; }
 #connection-status.conn-stale, #connection-status.conn-stale #connection-detail { color: var(--color-accent-yellow); }
+
+/* 153: needs-attention badges on the nav and the Dashboard banner */
+#navbar a.nav-link[data-attention] { position: relative; }
+.nav-badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--color-accent-red); color: var(--color-on-action); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-badge[hidden] { display: none; }
+html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px; right: 2px; margin-left: 0; }
+.attention-panel { margin-bottom: var(--space-5); padding: var(--space-4); background: var(--color-bg-degraded); border: 1px solid var(--color-accent-yellow); border-radius: var(--radius-panel); }
+.attention-panel[hidden] { display: none; }
+.attention-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-2); color: var(--color-text-primary); }
+.attention-list { margin: 0; padding-left: 20px; line-height: 1.8; color: var(--color-text-primary); }
+.attention-kind { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; padding: 0 6px; margin-right: 4px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-surface); }
+.attention-detail { color: var(--color-text-muted); }

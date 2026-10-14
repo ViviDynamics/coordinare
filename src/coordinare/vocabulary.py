@@ -112,6 +112,7 @@ CONCEPTS: dict[str, Term] = _terms(
     ("check", "Check", "Checks", "One pass of the conductor over the board to see what needs doing."),
     ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
     ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),
+    ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
 )
 
 GROUPS: dict[str, dict[str, Term]] = {
