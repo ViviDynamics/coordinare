@@ -64,3 +64,45 @@ refusal. Three older writers did not.
 - `config.example.hermes.yaml` and `config.example.yaml` describe the daemon dump and the
   attempts location; both updated.
 - `config.py` field comment for `performer_log_dir` updated.
+
+## Review round 2
+
+Decided by the reviewer: the shorter stop is accepted (no `docker logs` or pod-log dump
+before stop). Shutdown and runs without a run log keep no daemon-side copy. This is the
+stated gap above, and it stays.
+
+Changes made in response to the review:
+
+1. **Links above the leaf.** Every performer-writable read, write and hash walks the
+   directory chain with `O_NOFOLLOW` per component, and opens the leaf relative to the last
+   directory descriptor. Anchor: the operator's root where one is known (env-cache root,
+   clone), so the root itself may be a link. Without a root, the whole parent must resolve
+   to itself, or the read is refused. Routing writes go through `replace_mounted_file`
+   (temporary file `O_EXCL`, rename by directory descriptor, mode preserved), not
+   `atomic_write_yaml`.
+2. **Prior manifest.** `env_cache.load_prior_manifest_bounded` reads
+   `<cache dir>/services/services.json` with the bounded reader (1 MiB, anchored at the env
+   cache root) and runs on a worker thread. The package keeps `parse_prior_manifest`. The
+   performer does not use `load_prior_manifest`.
+3. **Dashboard hash.** `routing_content_hash` replaces `compute_content_hash` for the routing
+   table in `/api/config/all`. A refused table has no hash and reads as the read-only state.
+   The write-side baseline uses the same reader; a refused table returns `forbidden`.
+4. **Project context.** `CLAUDE.md` and `AGENTS.md` from the clone are read through the
+   bounded reader anchored at the clone (256 KiB). A link or oversize file reads as absent.
+5. **Attempt directories** are created 0700 at every level the daemon creates
+   (`ensure_private_dir`).
+6. **FIFO at the attempt file**: the append opens `O_NONBLOCK`, so a FIFO fails with ENXIO
+   and is logged, not waited on.
+7. **Reopen**: the untrusted directory and the persisted path are both resolved before
+   comparison.
+8. **Mounts**: an attempt directory inside any performer mount (performer log dir, endpoint
+   volume, env-cache root) falls back to the state directory with `attempt_log.dir_in_performer_mount`.
+   If the state directory is itself inside a mount, `attempt_log.state_dir_in_performer_mount`
+   is logged as an error.
+9. **Docs**: `config.example.yaml` (Attempt telemetry block) and
+   `docs/operators/containerized-performers.md` (Where logs and telemetry go). Existing rows are
+   not migrated.
+10. **Test fake**: `test_132_run_log_teardown.py` stop signature matches the runtime.
+
+Out of scope, reported to the coordinator: the bootstrap trust issue (`verify.sh` and
+populated-cache checks rely on performer-writable files).

@@ -36,11 +36,12 @@ from coordinare.services.config_write_service import compute_content_hash
 
 def _deny_open(monkeypatch, denied: Path) -> None:
     """Make opening *denied* fail with EACCES, as an unreadable mounted file does (208 reads
-    go through ``os.open``, not ``Path.read_bytes``)."""
+    go through ``os.open``, not ``Path.read_bytes``). The leaf is opened relative to its
+    directory descriptor, so the match is on the leaf name."""
     real_open = os.open
 
     def _unreadable(path, flags, mode=0o777, *args, **kwargs):
-        if os.fspath(path) == str(denied):
+        if os.fspath(path) == denied.name:
             raise PermissionError(errno.EACCES, "permission denied", str(denied))
         return real_open(path, flags, mode, *args, **kwargs)
 
@@ -261,12 +262,10 @@ def test_create_routing_entry_oserror_is_forbidden_not_500(
     new = _entry()
     new["model"] = "llama-3"
 
-    from coordinare.services import config_write_service as cws
-
     def _boom(*_a, **_k):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(cws, "atomic_write_yaml", _boom)
+    monkeypatch.setattr(rcs, "replace_mounted_file", _boom)
     result = rcs.create_routing_entry(location, new, _base_hash(routing_path))
     assert result.ok is False
     assert result.errors[0].code == "forbidden"
@@ -548,12 +547,8 @@ def test_routing_conflict_oserror_is_forbidden_not_500(tmp_path, monkeypatch):
     host_path = tmp_path / "routing.yaml"
     host_path.write_text("entries: []\n", encoding="utf-8")
 
-    from coordinare.services import config_write_service as cws
-
-    def _boom(*_a, **_k):
-        raise OSError("simulated unreadable mount")
-
-    monkeypatch.setattr(cws, "guard_concurrency", _boom)
+    # 208: the baseline is read by the bounded reader; an unreadable table reads as None.
+    monkeypatch.setattr(rcs, "_readable_content_hash", lambda _path: None)
     result = rcs._routing_conflict(host_path, "sha256:whatever")
     assert result is not None
     assert result.ok is False

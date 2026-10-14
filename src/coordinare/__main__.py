@@ -74,6 +74,7 @@ from coordinare.services.run_log import (
 from coordinare.services.run_transcript import (
     RootGuard,
     TranscriptCollector,
+    _within,
     make_collector,
     resolve_transcripts_root,
 )
@@ -1029,19 +1030,27 @@ def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | N
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
 
-    Never under ``performer_log_dir`` (spec 208): that directory is mounted read-write
-    into performers, so attempt rows are written to the daemon-only ``logs/attempts``.
+    Never inside a performer mount (spec 208): ``performer_log_dir``, any endpoint volume and
+    the env-cache root are all writable by performers, so a config directory that lies in
+    one falls back to the state directory, with a log.
     """
     _state_base = config.state_file_path.resolve().parent
     _attempt_base = (
         config_path.resolve().parent if config_path is not None
         else _state_base
     )
+    _fallback = _state_base / "logs" / "attempts"
     _attempt_log_dir = _attempt_base / "logs" / "attempts"
+    mounts = _performer_mount_hosts(config)
+    if any(_within(_attempt_log_dir, mount) for mount in mounts):
+        logger.warning("attempt_log.dir_in_performer_mount", path=str(_attempt_log_dir))
+        _attempt_log_dir = _fallback
+    if any(_within(_fallback, mount) for mount in mounts):
+        logger.error("attempt_log.state_dir_in_performer_mount", path=str(_fallback))
     # 493: in containerized deployments config.yaml sits on a read-only
     # ConfigMap mount; anchor to the writable state dir when the chosen
     # directory cannot be written.
-    return resolve_writable_log_dir(_attempt_log_dir, _state_base / "logs" / "attempts")
+    return resolve_writable_log_dir(_attempt_log_dir, _fallback)
 
 
 async def _bootstrap_services(

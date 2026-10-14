@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 import structlog
 
 from coordinare.services.conductor_calls import conductor_call
+from coordinare.services.mounted_file import read_mounted_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -235,18 +236,27 @@ def _match_path_classes(file_path: str, path_classes: dict[str, list[str]]) -> l
     return hits
 
 
+# 208: the clone holds performer-committed content, so a file larger than this is refused.
+_PROJECT_CONTEXT_MAX_BYTES = 256 * 1024
+
+
 def _read_project_context(workspace_path: Path | None) -> dict[str, str]:
-    """Read first ``PROJECT_CONTEXT_BYTES`` of CLAUDE.md and AGENTS.md (if present)."""
+    """Read first ``PROJECT_CONTEXT_BYTES`` of CLAUDE.md and AGENTS.md (if present).
+
+    208: each file goes through the link-refusing, bounded reader anchored at the clone. A
+    committed symlink to a host file (which would send that file to the model provider)
+    and an oversize file both read as absent.
+    """
     out = {"claude_md_head": "", "agents_md_head": ""}
     if workspace_path is None:
         return out
     try:
-        claude = workspace_path / "CLAUDE.md"
-        if claude.is_file():
-            out["claude_md_head"] = claude.read_text(encoding="utf-8", errors="replace")[:PROJECT_CONTEXT_BYTES]
-        agents = workspace_path / "AGENTS.md"
-        if agents.is_file():
-            out["agents_md_head"] = agents.read_text(encoding="utf-8", errors="replace")[:PROJECT_CONTEXT_BYTES]
+        for name, key in (("CLAUDE.md", "claude_md_head"), ("AGENTS.md", "agents_md_head")):
+            data = read_mounted_file(
+                workspace_path / name, max_bytes=_PROJECT_CONTEXT_MAX_BYTES, root=workspace_path,
+            )
+            if data is not None:
+                out[key] = data.decode("utf-8", errors="replace")[:PROJECT_CONTEXT_BYTES]
     except Exception as exc:
         logger.debug("persona_scope.classifier.project_context_read_failed", error=str(exc))
     return out

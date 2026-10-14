@@ -71,10 +71,13 @@ def _build_config_snapshot_inputs(daemon: Any, config_path: Path | None) -> tupl
         routing_avail = routing_config_service.routing_available(endpoints)
         location = routing_config_service.locate_routing_file(endpoints)
         routing_mounted = location is not None
-        if location is not None and location.host_path.is_file():
-            content_hashes["routing_yaml"] = compute_content_hash(location.host_path)
-        else:
-            content_hashes["routing_yaml"] = None
+        # 208: the bounded, link-refusing reader. A refused table (a link, a directory,
+        # too large) has no hash, so it is never returned to the browser as a content
+        # oracle, and routing reads as the read-only state.
+        content_hashes["routing_yaml"] = (
+            routing_config_service.routing_content_hash(location)
+            if location is not None else None
+        )
 
     return coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted
 

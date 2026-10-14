@@ -236,6 +236,8 @@ def test_attempt_dir_is_not_the_performer_directory(tmp_path: Path) -> None:
     config = SimpleNamespace(
         state_file_path=state_dir / "coordinare.state.json",
         performer_log_dir=performer_dir,
+        performer_endpoints=[],
+        env_cache_root=state_dir / "env-caches",
     )
     config_dir = tmp_path / "config"
     config_dir.mkdir()

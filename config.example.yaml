@@ -933,6 +933,18 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # is at most 20 s before a stop). Redaction runs at roughly 2 MB/s, so a log whose head
 # and tail do not finish within that bound is kept as far as it got, with a marker that
 # says it was cut off. The stop always proceeds.
+# The daemon writes nothing into performer_log_dir (spec 208). A container's output
+# is kept only in this run log, so a shutdown, a run with run_logs disabled, or a
+# collector that could not start keeps no copy of that output.
+
+# --- Attempt telemetry (141) ---
+# One JSONL row per performer attempt, written by the daemon to
+# <config directory>/logs/attempts/YYYY-MM-DD.jsonl (or <state directory>/logs/attempts/
+# when the config directory is read-only). It is never written inside a performer
+# mount: a directory that lies in one falls back to the state directory, with an error
+# log. Rows are owner-only (0600) and the directories 0700. Rows written under
+# performer_log_dir/attempts by earlier releases are not migrated; copy them by hand
+# if you want the history.
 
 # --- Stuck Card Alerts ---
 # stuck_alerts:

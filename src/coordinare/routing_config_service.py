@@ -21,10 +21,16 @@ import hashlib
 from pathlib import Path  # noqa: TC003 — needed at runtime for pydantic type resolution
 from typing import TYPE_CHECKING, Any, TypeGuard
 
+import yaml
 from pydantic import BaseModel, Field
 
 from coordinare.lib.redaction import redact_secrets
-from coordinare.services.mounted_file import mounted_file_refusal, read_mounted_file
+from coordinare.services.mounted_file import (
+    MountedFileRefusedError,
+    mounted_file_refusal,
+    read_mounted_file,
+    replace_mounted_file,
+)
 
 if TYPE_CHECKING:
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
@@ -83,6 +89,17 @@ def _is_writable_location(location: RoutingLocation | None) -> TypeGuard[Routing
     return location is not None and mounted_file_refusal(location.host_path) is None
 
 
+def routing_content_hash(location: RoutingLocation) -> str | None:
+    """The ``sha256:<hex>`` hash of the routing table, or None when it is refused (208).
+
+    The dashboard uses this in place of ``compute_content_hash``. That hash follows links
+    and reads without a bound, so a performer could make it return the hash of a host
+    file, or load a large one on every fetch. None means the file is missing, a link,
+    not a regular file, or too large. The caller reports that as the read-only state.
+    """
+    return _readable_content_hash(location.host_path)
+
+
 def _readable_content_hash(host_path: Path) -> str | None:
     """Return ``host_path``'s content hash when it is a present, *readable* file;
     ``None`` when it is missing, a non-file, a link, or too large (208).
@@ -125,8 +142,6 @@ def _read_entries(host_path: Path) -> list[dict[str, Any]]:
     hard validation happens on write via the spec-078 models. A linked, oversize or
     unreadable file yields no entries (208).
     """
-    import yaml
-
     data_bytes = read_mounted_file(host_path, max_bytes=ROUTING_MAX_BYTES)
     if data_bytes is None:
         return []
@@ -239,15 +254,11 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
     Returns a ``validation`` ``SaveResult`` if ``base_hash`` is missing/empty (a
     client error — without this an empty hash never matches the real content hash,
     surfacing a misleading "config changed on disk" conflict), a ``conflict``
-    ``SaveResult`` if it is present but stale, else ``None``. Mirrors
-    ``config_write_service._conflict_result`` for cross-store parity.
+    ``SaveResult`` if it is present but stale, else ``None``. The current hash comes
+    from the same bounded, link-refusing reader as the reads (208), so the baseline a
+    write compares against is the content the daemon would have read.
     """
-    from coordinare.services.config_write_service import (
-        ConcurrencyConflictError,
-        FieldError,
-        SaveResult,
-        guard_concurrency,
-    )
+    from coordinare.services.config_write_service import FieldError, SaveResult
 
     if not base_hash:
         return SaveResult(
@@ -260,19 +271,8 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
                 ),
             ],
         )
-    try:
-        guard_concurrency(host_path, base_hash)
-    except ConcurrencyConflictError as err:
-        return SaveResult(
-            ok=False,
-            errors=[FieldError(key=None, code="conflict", message=str(err))],
-        )
-    except OSError:
-        # host_path exists but is unreadable (permissions / mount glitch):
-        # compute_content_hash inside guard_concurrency raised OSError. Mirror the
-        # tolerant-read contract — degrade to read-only rather than 500 the write
-        # endpoint — and surface it as ``forbidden`` (the routing store is not
-        # currently writable), not a misleading ``conflict``.
+    current = _readable_content_hash(host_path)
+    if current is None:
         return SaveResult(
             ok=False,
             errors=[
@@ -283,6 +283,17 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
                         "Routing table is currently unreadable on this host; "
                         "routing is read-only."
                     ),
+                ),
+            ],
+        )
+    if current != base_hash:
+        return SaveResult(
+            ok=False,
+            errors=[
+                FieldError(
+                    key=None,
+                    code="conflict",
+                    message="config changed on disk since it was read; reload and retry",
                 ),
             ],
         )
@@ -333,7 +344,6 @@ def _write_entries(
     from coordinare.services.config_write_service import (
         FieldError,
         SaveResult,
-        atomic_write_yaml,
     )
 
     try:
@@ -350,9 +360,12 @@ def _write_entries(
     if conflict is not None:
         return conflict
 
+    payload = yaml.safe_dump(
+        {"entries": entries}, sort_keys=False, default_flow_style=False, allow_unicode=True,
+    ).encode("utf-8")
     try:
-        new_hash = atomic_write_yaml(host_path, {"entries": entries})
-    except OSError as exc:
+        replace_mounted_file(host_path, payload)
+    except (OSError, MountedFileRefusedError) as exc:
         return SaveResult(
             ok=False,
             errors=[
@@ -363,6 +376,7 @@ def _write_entries(
                 ),
             ],
         )
+    new_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
     return SaveResult(ok=True, applied="staged_next_job", new_hash=new_hash)
 
 

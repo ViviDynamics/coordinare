@@ -10,12 +10,14 @@ from datetime import (
     UTC,
     datetime,
 )
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 from coordinare.services.run_transcript import (
     _NOFOLLOW,
+    _NONBLOCK,
     _refuse_unless_private_regular,
     _RefusedError,
     _write_all,
@@ -23,7 +25,6 @@ from coordinare.services.run_transcript import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
 logger = structlog.get_logger(__name__)
 
@@ -75,6 +76,22 @@ def map_verdict(raw: str) -> Verdict:
     return _VERDICT_MAP.get(raw.strip().lower(), "error")
 
 
+def ensure_private_dir(path: Path) -> None:
+    """Create *path* and any missing parents, each owner-only (0700) (spec 208).
+
+    ``Path.mkdir(parents=True, mode=...)`` applies the mode to the leaf only, so the
+    intermediate directories it creates would be 0755. Every level this creates is
+    made here with 0700.
+    """
+    missing: list[Path] = []
+    current = path
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    for level in reversed(missing):
+        level.mkdir(mode=0o700, exist_ok=True)
+
+
 def _dir_is_writable(path: Path) -> bool:
     """Probe real write access by creating and removing a temporary file.
 
@@ -84,7 +101,7 @@ def _dir_is_writable(path: Path) -> bool:
     mount (issue 493), EACCES on a permission-bounded directory.
     """
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(path)
         with tempfile.NamedTemporaryFile(prefix=".coordinare-attempt-probe", dir=path):
             return True
     except OSError:
@@ -116,7 +133,10 @@ def _append_private(path: Path, line: bytes) -> None:
     a hard link is refused before anything is written, so the row never lands in a file
     the daemon did not create.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW, 0o600)
+    # O_NONBLOCK: a FIFO planted at the path must not block the append. Opening a FIFO
+    # for write with no reader fails with ENXIO, which the caller logs and drops.
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK
+    fd = os.open(path, flags, 0o600)
     try:
         try:
             _refuse_unless_private_regular(os.fstat(fd), path)
@@ -151,7 +171,7 @@ class AttemptLog:
         self._log_dir = log_dir
         # Directories a performer can write (spec 208). A log path persisted under one of
         # them, from before attempts moved to the daemon-only directory, is not reused.
-        self._untrusted_dirs = tuple(untrusted_dirs)
+        self._untrusted_dirs = tuple(Path(d).resolve() for d in untrusted_dirs)
         self._open_attempts: dict[str, _OpenAttempt] = {}
 
     def reopen_attempt(self, attempt_id: str, task_id: str, log_path: Path) -> None:
@@ -165,7 +185,8 @@ class AttemptLog:
         today's file in the daemon-only directory instead.
         """
         if attempt_id not in self._open_attempts:
-            if any(log_path.is_relative_to(parent) for parent in self._untrusted_dirs):
+            resolved = Path(log_path).resolve()
+            if any(resolved.is_relative_to(parent) for parent in self._untrusted_dirs):
                 log_path = self._log_path()
             self._open_attempts[attempt_id] = _OpenAttempt(
                 started_at=None,  # unknown after restart; wall_time_s will be null
@@ -184,7 +205,7 @@ class AttemptLog:
 
     def _append(self, row: dict[str, Any], path: Path) -> None:
         try:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            ensure_private_dir(path.parent)
             _append_private(path, (json.dumps(row) + "\n").encode("utf-8"))
         except Exception as exc:
             logger.warning("attempt_log.write_failed", path=str(path), error=str(exc))

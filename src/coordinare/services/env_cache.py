@@ -14,8 +14,9 @@ import structlog
 from coordinare_service_inference.cache_key import (
     compute_inference_cache_key,
     forced_regen_cache_key,
-    load_prior_manifest,
+    parse_prior_manifest,
 )
+from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
@@ -27,6 +28,7 @@ from coordinare.services.env_manifest import (
     render_verify_sh,
 )
 from coordinare.services.env_manifest_llm import enrich_from_readme
+from coordinare.services.mounted_file import read_mounted_file
 from coordinare.services.test_env_loader import (
     TestEnvFileError,
     load_test_env,
@@ -36,6 +38,8 @@ from coordinare.services.test_env_loader import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping
     from typing import Protocol
+
+    from coordinare_service_inference.schema import ServicesManifest
 
     from coordinare.models.performer_endpoint import VolumeMount
     from coordinare.services.env_manifest_llm import ChatJson
@@ -52,6 +56,32 @@ DEFAULT_DEVENV_ROOT = "/devenv"
 # later cycle rather than waiting for the README to change.  The cooldown keeps
 # a failing bootstrap from spinning up a fresh container on every poll cycle.
 BOOTSTRAP_RETRY_COOLDOWN_S = 120.0
+
+
+# 208: the prior manifest lives in a cache dir the performer can write during bootstrap.
+_PRIOR_MANIFEST_MAX_BYTES = 1024 * 1024
+
+
+def load_prior_manifest_bounded(cache_dir: Path) -> ServicesManifest | None:
+    """The sealed services.json from *cache_dir*, read without links and bounded (208).
+
+    Returns None when it is missing, a link, not a regular file, larger than the bound,
+    not UTF-8, or not a valid manifest. The read is anchored at the env-cache root, which
+    is ``cache_dir``'s parent and is operator-configured, so a link planted at the cache
+    dir or below it is refused. Callers run it off the event loop.
+    """
+    data = read_mounted_file(
+        cache_dir / SERVICES_SUBDIR / "services.json",
+        max_bytes=_PRIOR_MANIFEST_MAX_BYTES,
+        root=cache_dir.parent,
+    )
+    if data is None:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return parse_prior_manifest(text)
 
 
 def sanitise_symphony_name(name: str) -> str:
@@ -400,7 +430,7 @@ def write_service_scripts(
             path = svc_dir / name
             path.write_text(body)
             path.chmod(0o755)
-        # 113: do NOT write services.json here. `load_prior_manifest` derives the
+        # 113: do NOT write services.json here. `load_prior_manifest_bounded` derives the
         # inference-cache suffix (part of readme_sha / last_seen_spec_sha) from
         # <cache>/services/services.json. The performer's apply_manual_override is the
         # canonical writer (agent_version="manual-override", cache_inputs from
@@ -540,7 +570,7 @@ class EnvCacheService:
         exists, returns a 12-char hash that changes whenever any tracked
         cache_input file's content changes (or the agent_version changes).
         """
-        prior = load_prior_manifest(cache_dir)
+        prior = await asyncio.to_thread(load_prior_manifest_bounded, cache_dir)
         if prior is None:
             return ""
 
@@ -616,7 +646,7 @@ class EnvCacheService:
             and not cache_state.bootstrap_in_flight
             and not cache_state.bootstrap_exhausted
         ):
-            prior = load_prior_manifest(cache_state.cache_dir)
+            prior = await asyncio.to_thread(load_prior_manifest_bounded, cache_state.cache_dir)
             agent_version = prior.agent_version if prior is not None else "no-prior-manifest"
             forced_sha = forced_regen_cache_key(agent_version)
             logger.info(
