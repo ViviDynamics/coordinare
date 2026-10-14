@@ -10,6 +10,7 @@ Nothing here is persisted — the log is per-process and discarded on restart
 from __future__ import annotations
 
 import contextlib
+import time
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -43,6 +44,9 @@ MAX_STREAM_ENTRIES = 200
 # How many stream budgets to remember. Bounded so the counters cannot become
 # their own leak on a long-running daemon.
 MAX_TRACKED_STREAMS = 128
+# 135: a stream's hidden count goes to the feed at a power of two, or once a second. Between
+# sends the stored count stays exact, and the keepalive flush sends the last one still pending.
+RESEND_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +80,8 @@ class ActivityEntry:
     summary_length: int | None = None
     hidden_updates: int | None = None
     log_dropped: int | None = None
+    # 135: the bound the log holds, so the feed states its own limit rather than guessing one.
+    log_capacity: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,7 +105,17 @@ class ActivityEntry:
             "summary_length": self.summary_length,
             "hidden_updates": self.hidden_updates,
             "log_dropped": self.log_dropped,
+            "log_capacity": self.log_capacity,
         }
+
+
+@dataclass(slots=True)
+class _StreamMarker:
+    """135: one stream's truncation marker, and when its count last went out to the feed."""
+
+    seq: int
+    sent_at: float
+    pending: bool = False
 
 
 def _clip(value: Any, limit: int) -> tuple[str, bool]:
@@ -139,9 +155,10 @@ class ActivityLog:
         self._seen_order: dict[str, deque[str]] = {}
         # 327: per-stream delta budgets. Insertion-ordered; oldest evicted.
         self._stream_counts: dict[str, int] = {}
-        # 135: the seq of each tracked stream's truncation marker, so a hidden update can
-        # be counted on it. Evicted together with the stream's budget.
-        self._stream_markers: dict[str, int] = {}
+        # 135: each tracked stream's truncation marker. Evicted together with the stream's budget.
+        self._stream_markers: dict[str, _StreamMarker] = {}
+        # 135: the time source for the re-send schedule. A test replaces it with a clock it moves by hand.
+        self._clock: Callable[[], float] = time.monotonic
         # 135: entries pushed out of the bounded deque, for the feed's "dropped" line.
         self._dropped = 0
         self._next_seq = 0
@@ -259,21 +276,52 @@ class ActivityLog:
         return used + 1 - self._max_stream_entries
 
     def _count_hidden_update(self, stream: str, hidden: int) -> None:
-        """135: record how many of a stream's updates are hidden, on its marker, and re-send it.
+        """135: store how many of a stream's updates are hidden, and re-send it on a schedule.
 
-        The marker is replaced in place, so a capped stream still takes one slot in the
-        log. The re-sent copy keeps the marker's seq, so a connected feed redraws the
-        count where the marker already sits instead of adding a row.
+        The stored count is exact on every update. It goes to the feed at a power of two, so a
+        doubling is never missed, or once a second has passed since the last send. Anything
+        else stays pending until the next send or flush_pending_markers(). The re-sent copy
+        keeps the marker's seq, so a connected feed redraws it where it already sits.
         """
-        seq = self._stream_markers.get(stream)
-        if seq is None:
+        marker = self._stream_markers.get(stream)
+        if marker is None:
             return
-        for index in range(len(self._entries) - 1, -1, -1):
-            if self._entries[index].seq == seq:
-                marker = replace(self._entries[index], hidden_updates=hidden)
-                self._entries[index] = marker
-                self._fan_out([marker])
-                return
+        index = self._index_of(marker.seq)
+        if index is None:
+            return
+        self._entries[index] = replace(self._entries[index], hidden_updates=hidden)
+        if hidden & (hidden - 1) == 0 or self._clock() - marker.sent_at >= RESEND_INTERVAL_SECONDS:
+            self._send_marker(marker, index)
+        else:
+            marker.pending = True
+
+    def flush_pending_markers(self) -> None:
+        """135: send every stream count still pending, so a stream that went quiet ends on its last count.
+
+        The SSE keepalive calls this. Once a count is sent it is no longer pending, so
+        several clients each calling it send each count once.
+        """
+        for marker in list(self._stream_markers.values()):
+            if not marker.pending:
+                continue
+            index = self._index_of(marker.seq)
+            if index is not None:
+                self._send_marker(marker, index)
+            marker.pending = False
+
+    def _send_marker(self, marker: _StreamMarker, index: int) -> None:
+        marker.sent_at = self._clock()
+        marker.pending = False
+        self._fan_out([self._entries[index]])
+
+    def _index_of(self, seq: int) -> int | None:
+        """The deque index of an entry still in the log. Seqs in the deque are contiguous, so this is O(1)."""
+        if not self._entries:
+            return None
+        index = seq - self._entries[0].seq
+        if 0 <= index < len(self._entries) and self._entries[index].seq == seq:
+            return index
+        return None
 
     def _append(
         self,
@@ -317,26 +365,6 @@ class ActivityLog:
         stage_str, _ = _clip(stage, 80)
         kind, _ = _clip(activity_type, 40)
 
-        # 327: bound how much of the shared log one delta stream may occupy, so
-        # a looping model cannot evict every other card's activity. The stream
-        # keeps its budget under LRU so an ACTIVE stream is never the one
-        # dropped from the bookkeeping.
-        if is_delta and stream:
-            # 135: how many of this stream's updates are past its budget, this one included.
-            hidden = self._count_stream_update(stream)
-            if hidden > 1:
-                self._count_hidden_update(stream, hidden)
-                return None  # already announced below; drop the rest quietly
-            if hidden == 1:
-                # Say it once, rather than silently swallowing the output.
-                kind = "stream_truncated"
-                raw_text = (
-                    f"stream {stream} exceeded {self._max_stream_entries} updates "
-                    "(looping or unusually long); further deltas are truncated"
-                )
-                clipped_text, truncated = _clip(raw_text, self._max_text)
-                is_delta = False
-                hidden_updates = hidden
         try:
             number = int(card_number) if card_number is not None else None
         except (TypeError, ValueError):
@@ -361,8 +389,27 @@ class ActivityLog:
         order.append(key)
         seen.add(key)
 
-        if hidden_updates is not None:
-            self._stream_markers[stream] = self._next_seq
+        # 327: bound how much of the shared log one delta stream may occupy, so
+        # a looping model cannot evict every other card's activity. The stream
+        # keeps its budget under LRU so an ACTIVE stream is never the one
+        # dropped from the bookkeeping. 135: only a kept update is charged. A repeat
+        # was suppressed above, and nothing about it is hidden.
+        if is_delta and stream:
+            hidden = self._count_stream_update(stream)
+            if hidden > 1:
+                self._count_hidden_update(stream, hidden)
+                return None  # already announced below; drop the rest quietly
+            if hidden == 1:
+                # Say it once, rather than silently swallowing the output.
+                kind = "stream_truncated"
+                raw_text = (
+                    f"stream {stream} exceeded {self._max_stream_entries} updates "
+                    "(looping or unusually long); further deltas are truncated"
+                )
+                clipped_text, truncated = _clip(raw_text, self._max_text)
+                is_delta = False
+                hidden_updates = hidden
+                self._stream_markers[stream] = _StreamMarker(seq=self._next_seq, sent_at=self._clock())
         if len(self._entries) == self._entries.maxlen:
             self._dropped += 1
         entry = ActivityEntry(
@@ -381,6 +428,7 @@ class ActivityLog:
             summary=clipped_summary, status=status_str, event_at=clipped_event_at,
             text_length=len(raw_text), summary_length=len(raw_summary),
             hidden_updates=hidden_updates, log_dropped=self._dropped,
+            log_capacity=self._entries.maxlen,
         )
         self._next_seq += 1
         self._entries.append(entry)

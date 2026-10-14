@@ -13,7 +13,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore
-from tests.e2e.test_dashboard_browser import _WAIT_SSE
+from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(90)]
 
@@ -146,3 +146,66 @@ def test_the_feed_says_how_many_older_entries_it_dropped(page: Page, live_server
                          log_dropped=312)])
     expect(page.locator("#af-dropped")).to_contain_text("312 entries were dropped")
     expect(page.locator("#af-dropped")).to_be_visible()
+
+
+def test_a_re_send_through_the_broadcaster_redraws_the_count_live(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """Review 135, item 8: the re-sends travel the real broadcaster to an open page.
+
+    The stream is recorded before the page opens, so the page's backfill starts at 1 hidden.
+    Each later record goes out through broadcast_activity while the page is open. A count that
+    is a power of two is sent at once, so the bursts below are deterministic.
+    """
+    session = "run-135-g"
+    for index in range(201):
+        store.activity_log.record(
+            activity_type="progress", card_id=_CARD, card_number=135, card_title="Visible truncation",
+            stage="implementing", text=f"live135-{index} ", session_id=session, performer_id="perf-135",
+            is_delta=True, stream_id="st-135-live-broadcast",
+        )
+    _open(page, live_server_url)
+    row = _row_with(page, "live135-")
+    row.locator("summary").click()
+    expect(row.locator(".af-notes")).to_contain_text("Showing 200 of 201 updates")
+    store.activity_log.record(
+        activity_type="progress", card_id=_CARD, card_number=135, card_title="Visible truncation",
+        stage="implementing", text="live135-201 ", session_id=session, performer_id="perf-135",
+        is_delta=True, stream_id="st-135-live-broadcast",
+    )
+    expect(row.locator(".af-notes")).to_contain_text("Showing 200 of 202 updates", timeout=_WAIT_LIVE)
+    for index in (202, 203):
+        store.activity_log.record(
+            activity_type="progress", card_id=_CARD, card_number=135, card_title="Visible truncation",
+            stage="implementing", text=f"live135-{index} ", session_id=session, performer_id="perf-135",
+            is_delta=True, stream_id="st-135-live-broadcast",
+        )
+    # Hidden 3 waits for the schedule; hidden 4 is a power of two and is sent, carrying the count.
+    expect(row.locator(".af-notes")).to_contain_text("Showing 200 of 204 updates", timeout=_WAIT_LIVE)
+    # The re-sent count redrew in place: the same open group, not a second row.
+    expect(row.locator("summary")).to_be_visible()
+    expect(_row_with(page, "live135-")).to_have_count(1)
+
+
+def test_a_re_send_for_an_unseen_marker_lands_in_seq_order(page: Page, live_server_url: str) -> None:
+    """Review 135, item 5: a marker whose creation was lost is inserted where its seq belongs."""
+    _open(page, live_server_url)
+    _append(page, [_entry(9730, activity_type="stage_change", text="later 135")])
+    _append(page, [_entry(9725, activity_type="stream_truncated", text="stream st-135-late exceeded 200 updates",
+                         hidden_updates=4)])
+    seqs = page.evaluate("_afEntries.map(function(e) { return e.seq; })")
+    assert [s for s in seqs if s >= 9700] == [9725, 9730]
+    expect(page.locator("#activity-feed")).to_contain_text("4 updates not shown")
+
+
+def test_a_re_send_redraws_in_the_ungrouped_view(page: Page, live_server_url: str) -> None:
+    """Review 135, item 5: with grouping off, a re-sent count still shows on screen."""
+    _open(page, live_server_url)
+    page.evaluate("_afGroupingActive = false; afRender();")
+    _append(page, [_entry(9740, activity_type="stream_truncated", text="stream st-135-flat exceeded 200 updates",
+                         hidden_updates=1)])
+    expect(page.locator("#activity-feed")).to_contain_text("1 update not shown")
+    _append(page, [_entry(9740, activity_type="stream_truncated", text="stream st-135-flat exceeded 200 updates",
+                         hidden_updates=3)])
+    expect(page.locator("#activity-feed")).to_contain_text("3 updates not shown")
+    expect(page.locator("#activity-feed")).not_to_contain_text("1 update not shown")

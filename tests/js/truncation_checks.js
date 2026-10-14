@@ -105,10 +105,38 @@ check('a hostile session id never reaches the link',
 
 check('afCount groups thousands', afCount(1234567) === '1,234,567', afCount(1234567));
 check('afCount leaves short numbers alone', afCount(999) === '999', afCount(999));
-check('afDroppedText is empty when nothing was dropped', afDroppedText(0) === '');
-check('afDroppedText is empty when the count is missing', afDroppedText(null) === '');
-check('afDroppedText names the dropped count',
-  afDroppedText(312).indexOf('312 entries were dropped') !== -1, afDroppedText(312));
+check('afDroppedText is empty when nothing was dropped', afDroppedText(0, 2000, false) === '');
+check('afDroppedText is empty when the count is missing', afDroppedText(null, 2000, false) === '');
+check('afDroppedText names the dropped count and the capacity the server sent',
+  afDroppedText(312, 500, false).indexOf('312 entries were dropped to keep the newest 500') !== -1,
+  afDroppedText(312, 500, false));
+check('afDroppedText says it covers every symphony when one is selected',
+  afDroppedText(312, 500, true).indexOf('across all symphonies') !== -1, afDroppedText(312, 500, true));
+check('afDroppedText does not claim a scope when everything is shown',
+  afDroppedText(312, 500, false).indexOf('across') === -1, afDroppedText(312, 500, false));
+
+// --- code points, not UTF-16 units (review 135, item 3) -------------------
+
+var EMOJI = '😀';   // one code point, two UTF-16 units
+var emojiClipped = afCutHtml([clipped(50, 210, { text: EMOJI.repeat(200) })]);
+check('a clipped emoji text counts code points, so its line appears',
+  emojiClipped.indexOf('text clipped at 200 characters (10 characters hidden)') !== -1, emojiClipped);
+var mixedClipped = afCutHtml([clipped(51, 300, { text: ('a' + EMOJI + 'b').repeat(66) + 'a' + EMOJI })]);
+check('mixed astral text counts code points too',
+  mixedClipped.indexOf('text clipped at 200 characters (100 characters hidden)') !== -1, mixedClipped);
+check('afCodePoints counts an emoji as one', afCodePoints(EMOJI + 'x') === 2, String(afCodePoints(EMOJI + 'x')));
+
+// --- a marker with nothing shown never reads as "Showing 0" (review item 4) ----
+
+var orphanCut = afCutHtml([marker(60, 5)]);
+check('a marker with no shown updates says how many are not shown',
+  orphanCut.indexOf('5 updates not shown') !== -1, orphanCut);
+check('a marker with no shown updates never claims a shown count of 0',
+  orphanCut.indexOf('Showing 0') === -1, orphanCut);
+check('the group summary counts a marker-only group as not shown',
+  afCountText([marker(61, 1)]) === '(1 update not shown)', afCountText([marker(61, 1)]));
+check('a group with shown updates keeps the plain summary count',
+  afCountText([delta(62, 'a'), delta(63, 'b')]) === '(2 updates)', afCountText([delta(62, 'a'), delta(63, 'b')]));
 
 console.log('SUMMARY ' + passed + ' ' + failed);
 process.exit(failed === 0 ? 0 : 1);

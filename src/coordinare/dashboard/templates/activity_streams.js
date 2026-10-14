@@ -95,9 +95,32 @@ function afUpdateCount(entries) {
 // 135), so an old entry shows nothing rather than a guess.
 function afClip(e, field) {
   var length = e[field + '_length'];
-  var kept = String(e[field] || '').length;
+  var kept = afCodePoints(e[field]);
   if (typeof length !== 'number' || length <= kept) return null;
   return {kept: kept, hidden: length - kept};
+}
+// 135: the server counts code points, so the client does too. An astral character is two UTF-16
+// units but one code point, and a low surrogate is the second half of one, so it is not counted.
+function afCodePoints(text) {
+  return String(text || '').replace(/[\uDC00-\uDFFF]/g, '').length;
+}
+// 135: the updates a group hid past the cap, counted from the markers it carries.
+function afHiddenCount(entries) {
+  var hidden = 0;
+  entries.forEach(function(e) {
+    if (e.activity_type === 'stream_truncated' && typeof e.hidden_updates === 'number') hidden += e.hidden_updates;
+  });
+  return hidden;
+}
+// 135: the group summary's count. A group whose updates are all past the cap says so, rather
+// than reading "0 updates", and the shown count is only ever a count of shown updates.
+function afCountText(entries) {
+  var shown = afUpdateCount(entries);
+  var hidden = afHiddenCount(entries);
+  if (!shown && hidden) {
+    return '(' + afCount(hidden) + (hidden === 1 ? ' update not shown)' : ' updates not shown)');
+  }
+  return '(' + shown + (shown === 1 ? ' update)' : ' updates)');
 }
 function afCutPhrase(label, cut) {
   return label + ' clipped at ' + afCount(cut.kept) + ' characters' +
@@ -128,7 +151,10 @@ function afCutHtml(entries) {
     });
   });
   var parts = [];
-  if (hidden > 0) parts.push('Showing ' + afCount(shown) + ' of ' + afCount(shown + hidden) + ' updates');
+  // A group with no shown update says how many it hides, and never claims a shown count of 0.
+  if (hidden > 0) parts.push(shown > 0
+    ? 'Showing ' + afCount(shown) + ' of ' + afCount(shown + hidden) + ' updates'
+    : afCount(hidden) + (hidden === 1 ? ' update not shown' : ' updates not shown'));
   if (cuts.text) parts.push(afCutPhrase('text', cuts.text));
   if (cuts.summary) parts.push(afCutPhrase('tool summary', cuts.summary));
   if (!parts.length) return '';
@@ -136,11 +162,14 @@ function afCutHtml(entries) {
   var link = anchor ? runEntryLinkHtml(anchor, 'Open full transcript') : '';
   return esc(parts.join(' · ')) + (link ? ' · ' + link : '');
 }
-// 135: the line for entries the bounded log dropped from the feed. Empty when none were.
-function afDroppedText(dropped) {
+// 135: the line for entries the bounded log dropped from the feed. Empty when none were. The
+// capacity comes from the server. The feed is deployment-wide, so a selected symphony does not
+// narrow the count, and the line says so.
+function afDroppedText(dropped, capacity, scoped) {
   if (!(dropped > 0)) return '';
-  return 'Older activity is not shown: ' + afCount(dropped) +
-    ' entries were dropped to keep the newest ' + afCount(AF_MAX_ROWS) + '.';
+  var scope = scoped ? ' across all symphonies' : '';
+  var keep = capacity > 0 ? ' to keep the newest ' + afCount(capacity) : '';
+  return 'Older activity is not shown: ' + afCount(dropped) + ' entries were dropped' + scope + keep + '.';
 }
 function afRawHtml(entries) {
   var blocks = [];
@@ -247,7 +276,6 @@ function afRowHtml(e, group) {
   // 137: the stage's one display name, when the glossary is loaded.
   var stageName = e.stage && typeof vocabularyKindLabel === 'function' ? vocabularyKindLabel('stage_labels', e.stage) : e.stage;
   var where = who + (stageName ? ' ' + stageName : '');
-  var count = afUpdateCount(entries);
   var key = group ? group.key : e.seq;
   var id = 'af-group-' + esc(String(key));
   // Lifecycle events are plain rows. Errors keep their collapsible line (353).
@@ -260,8 +288,8 @@ function afRowHtml(e, group) {
     '<summary><span class="af-time">' + esc(afTime(latest.timestamp)) + '</span> ' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
-    '<span class="af-summary">' + esc(preview) + ' (' + count +
-    (count === 1 ? ' update)' : ' updates)') + '</span>' + badge + runEntryLinkHtml(latest) + '</summary>' +
+    '<span class="af-summary">' + esc(preview) + ' ' + afCountText(entries) + '</span>' +
+    badge + runEntryLinkHtml(latest) + '</summary>' +
     '<div class="af-raw-label">Agent output</div>' +
     // 135: what was hidden from this group, and how to see all of it. Empty when nothing was cut.
     '<div class="af-notes">' + afCutHtml(entries) + '</div>' +
@@ -300,8 +328,7 @@ function afSyncGroups(reset) {
     // badge is inserted or removed to match the folded marker count.
     var summary = afPreview(g.entries) || afSummary(e);
     var summaryEl = node.querySelector('.af-summary');
-    var count = afUpdateCount(g.entries);
-    summaryEl.textContent = summary + ' (' + count + (count === 1 ? ' update)' : ' updates)');
+    summaryEl.textContent = summary + ' ' + afCountText(g.entries);
     // 135: a marker's count changes without a new row, so the cut line is redrawn on every pass.
     var notes = node.querySelector('.af-notes');
     if (notes) notes.innerHTML = afCutHtml(g.entries);

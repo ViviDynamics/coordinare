@@ -342,6 +342,9 @@ class DashboardStore:
                     _name = payload.get("_event") or "state_update"
                     yield f"event: {_name}\ndata: {json.dumps(payload, default=_json_default)}\n\n"
                 except TimeoutError:
+                    # 135: a stream that went quiet ends on its last count. Idempotent across
+                    # clients: a count is sent once, and a second flush finds nothing pending.
+                    self.activity_log.flush_pending_markers()
                     # Keepalive comment — prevents proxy/browser timeout.
                     # Order is load-bearing: test_dashboard.py reads exactly one
                     # message here and asserts this exact string (SC-007).

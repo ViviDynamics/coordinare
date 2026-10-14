@@ -25,6 +25,16 @@ _SESSION = "session-135"
 _PERFORMER = "performer-135"
 
 
+class _Clock:
+    """A clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def _delta(log: ActivityLog, index: int, stream: str = "st135") -> ActivityEntry | None:
     return log.record(
         activity_type="progress", card_id=_CARD, stage="implementing", text=f"w{index} ",
@@ -92,17 +102,21 @@ def test_a_stream_past_its_budget_counts_what_it_hid_on_its_marker() -> None:
     assert markers[0]["hidden_updates"] == total - MAX_STREAM_ENTRIES
 
 
-def test_the_marker_count_is_re_sent_as_the_stream_keeps_flowing() -> None:
+def test_the_marker_count_is_re_sent_on_a_schedule_as_the_stream_keeps_flowing() -> None:
+    clock = _Clock()
     log = ActivityLog()
+    log._clock = clock
     sent: list[dict[str, Any]] = []
     log.sink = lambda entries: sent.extend(e.to_dict() for e in entries)
     for i in range(MAX_STREAM_ENTRIES + 3):
         _delta(log, i)
     markers = [e for e in sent if e["activity_type"] == "stream_truncated"]
-    # One announcement (1 hidden), then one re-send per further hidden update.
-    assert [m["hidden_updates"] for m in markers] == [1, 2, 3]
+    # The announcement (1 hidden) and the power of two (2). Hidden 3 waits for a second or the flush.
+    assert [m["hidden_updates"] for m in markers] == [1, 2]
+    log.flush_pending_markers()
+    assert [m["hidden_updates"] for m in sent if m["activity_type"] == "stream_truncated"] == [1, 2, 3]
     # A re-send carries the marker's own seq, so a connected feed redraws it in place.
-    assert len({m["seq"] for m in markers}) == 1
+    assert len({m["seq"] for m in sent if m["activity_type"] == "stream_truncated"}) == 1
     # The marker keeps its one slot in the log: a re-send replaces it, never adds one.
     assert len([e for e in log.snapshot() if e["activity_type"] == "stream_truncated"]) == 1
 
