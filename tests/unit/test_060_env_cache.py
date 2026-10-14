@@ -155,6 +155,10 @@ class TestBootstrapJobPayload:
 # ---------------------------------------------------------------------------
 
 
+# 218: the daemon-rendered activate.sh text. A cache copy counts only when it matches it.
+_RENDERED = "# daemon-rendered activate.sh\n"
+
+
 class TestGetEnvVolumeForSymphony:
     def test_returns_none_when_no_state(self) -> None:
         result = get_env_volume_for_symphony("missing", {}, is_bootstrap=False, performer_mounts=())
@@ -174,12 +178,13 @@ class TestGetEnvVolumeForSymphony:
 
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
@@ -253,12 +258,13 @@ class TestGetEnvVolumeForSymphony:
         """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=False,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
         assert result is not None
@@ -268,12 +274,13 @@ class TestGetEnvVolumeForSymphony:
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = get_env_volume_for_symphony(
             "s", {"s": state}, is_bootstrap=False, performer_mounts=(), container_devenv_root="/custom",
@@ -942,22 +949,24 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_returns_ro_mounts_for_all_ready_caches(self, tmp_path: Path) -> None:
         dir_a = tmp_path / "a"
         dir_a.mkdir()
-        (dir_a / "activate.sh").touch()
+        (dir_a / "activate.sh").write_text(_RENDERED)
         dir_b = tmp_path / "b"
         dir_b.mkdir()
-        (dir_b / "activate.sh").touch()
+        (dir_b / "activate.sh").write_text(_RENDERED)
         states = {
             "sym-a": EnvCacheState(
                 symphony_name="sym-a",
                 sanitised_name="sym-a-111111",
                 cache_dir=dir_a,
                 cache_dir_ready=True,
+                rendered_activate_sh=_RENDERED,
             ),
             "sym-b": EnvCacheState(
                 symphony_name="sym-b",
                 sanitised_name="sym-b-222222",
                 cache_dir=dir_b,
                 cache_dir_ready=True,
+                rendered_activate_sh=_RENDERED,
             ),
         }
         result = _collect_env_volumes_for_persistent_performer(states, performer_mounts=())
@@ -971,12 +980,13 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
-        (cache_dir / "activate.sh").touch()
+        (cache_dir / "activate.sh").write_text(_RENDERED)
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
             cache_dir=cache_dir,
             cache_dir_ready=True,
+            rendered_activate_sh=_RENDERED,
         )
         result = _collect_env_volumes_for_persistent_performer(
             {"s": state}, container_devenv_root="/custom", performer_mounts=(),
@@ -1396,6 +1406,18 @@ class TestPollBootstrapCompletion:
             return None
 
         monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
+
+    @pytest.fixture(autouse=True)
+    def _clean_verify_passes(self, monkeypatch):
+        """218: these tests cover the poll loop mapping a result to on_bootstrap_complete.
+        The clean-context verify has its own tests in test_218_bootstrap_trust."""
+        from coordinare.daemon import CoordinareDaemon
+
+        monkeypatch.setattr(
+            CoordinareDaemon,
+            "_verify_bootstrap_in_clean_context",
+            AsyncMock(return_value=(True, None)),
+        )
 
     @pytest.mark.asyncio
     async def test_success_path_calls_on_bootstrap_complete_true(self) -> None:
@@ -2080,8 +2102,9 @@ class TestManifestArtifacts:
         assert (cache_dir / "activate.sh").stat().st_mode & 0o100  # executable
 
     @pytest.mark.asyncio
-    async def test_no_deps_returns_none_false(self, tmp_path: Path) -> None:
-        """A project with no parseable pin files → fall back (agent writes verify)."""
+    async def test_no_deps_still_renders_daemon_scripts(self, tmp_path: Path) -> None:
+        """218: a project with no parseable pin files still gets the daemon-owned
+        verify.sh and activate.sh, so no bootstrap rests on performer-written scripts."""
         svc = EnvCacheService(MagicMock())
 
         async def fake_get(org: str, repo: str, path: str) -> str | None:
@@ -2103,10 +2126,10 @@ class TestManifestArtifacts:
             llm_chat=None,
         )
         assert checklist is None
-        assert verify_provided is False
-        assert activate_provided is False
-        assert not (cache_dir / "verify.sh").exists()
-        assert not (cache_dir / "activate.sh").exists()
+        assert verify_provided is True
+        assert activate_provided is True
+        assert "Bootstrap verification PASSED" in (cache_dir / "verify.sh").read_text()
+        assert (cache_dir / "activate.sh").is_file()
 
 
 def test_env_bootstrap_persona_injects_previous_failure_on_retry() -> None:

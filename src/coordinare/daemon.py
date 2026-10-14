@@ -659,6 +659,9 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_at=get("last_bootstrap_at"),
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
+            # 218: the daemon-rendered scripts the verification and activate gate use.
+            rendered_verify_sh=get("rendered_verify_sh"),
+            rendered_activate_sh=get("rendered_activate_sh"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
@@ -961,6 +964,9 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
             live.last_bootstrap_error = redact_state_value(persisted.last_bootstrap_error)
             live.cache_dir_ready = persisted.cache_dir_ready
+            # 218: restore the daemon-rendered scripts; the cache copies are never read back.
+            live.rendered_verify_sh = persisted.rendered_verify_sh
+            live.rendered_activate_sh = persisted.rendered_activate_sh
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
@@ -3795,11 +3801,9 @@ class CoordinareDaemon:
         (it installs from the cache's local debs, no network), so this is a
         faithful "does the cache alone provide a working toolchain" check.
 
-        Returns ``(passed, detail)``: ``passed`` is True/False when verify.sh
-        ran, or None when it can't be run (absent script / docker error) — None
-        is degraded and does NOT downgrade success, to avoid looping on infra
-        errors. ``detail`` is a concise human-readable reason (the verify FAIL
-        lines) for the dashboard.
+        Returns ``(passed, detail)``. 218: the script run is the one the daemon rendered,
+        piped on stdin; see ``services.env_cache.verify_env_cache_clean``. None means docker
+        could not run it (degraded, does not downgrade success).
         """
         from coordinare.services.env_cache import verify_env_cache_clean
 
@@ -3933,18 +3937,23 @@ class CoordinareDaemon:
     async def _verify_bootstrap_in_clean_context(
         self, symphony_name: str, svc: Any, job_id: str,
     ) -> tuple[bool, str | None]:
-        """077 authoritative clean-context verify: re-run verify.sh in a clean
-        consumer container; a non-zero result downgrades success.  Returns the
-        (ok, boot_err) pair to record."""
+        """077 authoritative clean-context verify: re-run the daemon-rendered verify.sh in a
+        clean consumer container. Returns the (ok, boot_err) pair to record.
+
+        218: only a run that PASSED counts. A non-zero exit, a refusal and a run that could not
+        start all fail the bootstrap. This is the one decision point where nothing performer-
+        written can stand in for the verification, and the 088 breaker bounds the retries.
+        """
         _clean_ok, _clean_detail = await self._verify_env_cache_clean(
             symphony_name, svc,
         )
-        if _clean_ok is False:
+        if _clean_ok is not True:
             logger.warning(
                 "env_cache.clean_verify_failed",
                 symphony=symphony_name,
                 job_id=job_id,
                 detail=_clean_detail,
+                could_not_run=_clean_ok is None,
             )
             return False, (
                 f"env verification failed in a clean consumer context: {_clean_detail}"

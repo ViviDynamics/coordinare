@@ -115,6 +115,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     # if the mount holds only the coordinare-seeded files, so seed real toolchain
     # content to exercise the success path.
     (state.cache_dir / "toolchain").mkdir(exist_ok=True)
+    (state.cache_dir / "toolchain" / "ruby").write_text("bin")
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.cache_dir_ready is True
     assert state.bootstrap_in_flight is False
@@ -157,7 +158,8 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     # Simulate the bootstrap performer writing activate.sh — its on-disk
     # presence is the authoritative readiness gate for consumer mounts
     # (cache_dir_ready alone is not enough since it resets on restart).
-    (state.cache_dir / "activate.sh").touch()
+    (state.cache_dir / "activate.sh").write_text("# daemon-rendered activate.sh\n")
+    state.rendered_activate_sh = "# daemon-rendered activate.sh\n"
 
     # ---- 5. get_env_volume_for_symphony() — regular performer gets ro mount ----
     result = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=False, performer_mounts=())

@@ -105,24 +105,36 @@ def _ec_state(cache_dir):
     return EnvCacheState(symphony_name="sym", sanitised_name="sym", cache_dir=cache_dir)
 
 
+def _ready_state(cache_dir, verify_text):
+    """218: a state whose daemon-rendered verify.sh and activate.sh are on record, and a cache
+    whose activate.sh is the rendered text."""
+    from coordinare.models.env_cache import EnvCacheState
+    activate = "# daemon-rendered activate.sh\n"
+    (cache_dir / "activate.sh").write_text(activate)
+    return EnvCacheState(
+        symphony_name="sym", sanitised_name="sym", cache_dir=cache_dir,
+        rendered_verify_sh=verify_text, rendered_activate_sh=activate,
+    )
+
+
 class _FakeProc:
     def __init__(self, rc: int) -> None:
         self.returncode = rc
 
-    async def communicate(self):
+    async def communicate(self, input: bytes | None = None):
         return (b"verify output", None)
 
 
 @pytest.mark.asyncio
-async def test_clean_verify_returns_none_when_verify_script_absent(tmp_path) -> None:
-    """No verify.sh in the cache → degraded (None), must NOT downgrade success."""
+async def test_clean_verify_refuses_without_daemon_rendered_script(tmp_path) -> None:
+    """218: no daemon-rendered verify.sh on record → False. A missing record never passes."""
     daemon = _daemon()
     cache = tmp_path / "sym"
     cache.mkdir()
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
-    assert _res is None
+    assert _res is False
 
 
 @pytest.mark.asyncio
@@ -130,8 +142,7 @@ async def test_clean_verify_passes_on_zero_exit(tmp_path, monkeypatch) -> None:
     daemon = _daemon()
     cache = tmp_path / "sym"
     cache.mkdir()
-    (cache / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
-    daemon._state["env_cache"] = {"sym": _ec_state(cache)}
+    daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 0\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
     monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc(0)))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
@@ -145,8 +156,7 @@ async def test_clean_verify_fails_on_nonzero_exit(tmp_path, monkeypatch) -> None
     daemon = _daemon()
     cache = tmp_path / "sym"
     cache.mkdir()
-    (cache / "verify.sh").write_text("#!/bin/sh\nexit 1\n")
-    daemon._state["env_cache"] = {"sym": _ec_state(cache)}
+    daemon._state["env_cache"] = {"sym": _ready_state(cache, "#!/bin/sh\nexit 1\n")}
     svc = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
     monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc(1)))
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
@@ -179,6 +189,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     # 092: on_bootstrap_complete downgrades success to failure when the mount
     # holds only coordinare-seeded files; seed toolchain content for the success.
     (cache / "toolchain").mkdir()
+    (cache / "toolchain" / "ruby").write_text("bin")
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
 
     svc = EnvCacheService(
