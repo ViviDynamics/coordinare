@@ -72,6 +72,12 @@ github_org: "your-org"   # Required. The GitHub org/user that owns the repos.
 # github_api_url: "https://github.example.com/api/v3"
 # github_graphql_url: "https://github.example.com/api/graphql"
 
+# --- Own comments (optional) ---
+# coordinare resolves its own GitHub login (the App's slug, or the token's user) and never
+# reads a comment written by it as human input. Add logins here only for an unusual setup,
+# such as a second account that posts for coordinare. Matching ignores case.
+# github_self_logins: ["my-coordinare-bot[bot]"]
+
 # --- Agent Transport ---
 # Controls how coordinare spawns the performer process.
 #

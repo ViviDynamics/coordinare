@@ -221,7 +221,7 @@ async def test_system_block_has_operator_comment_without_fabricated_question(mar
     result = await handle_blocked(state)
     assert result['phase'] == 'blocked'
     assert github.moved_to == 'BLOCKED'
-    assert 'System blocked' in github.comment_body
+    assert 'Needs human, operator action required' in github.comment_body
     assert 'Needs input' not in github.comment_body
 
 

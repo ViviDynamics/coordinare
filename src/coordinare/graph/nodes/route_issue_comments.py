@@ -23,12 +23,28 @@ from coordinare.services.issue_comment_service import (
     classify_issue_comment,
     classify_issue_comment_ai,
     fetch_new_issue_comments,
+    normalize_logins,
 )
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
+
+
+async def _own_logins(state: CoordinareState) -> frozenset[str]:
+    """coordinare's own logins (#142): what GitHub reports for its identity, plus the configured list.
+
+    The identity is resolved by the GitHub service and cached there. With no GitHub
+    service, or while it is unresolved, only the configured list applies.
+    """
+    config = state.get("config")
+    configured = normalize_logins(getattr(config, "github_self_logins", None) or [])
+    resolver = getattr(state.get("github_service"), "self_logins", None)
+    if resolver is None:
+        return configured
+    resolved: frozenset[str] = await resolver()
+    return configured | resolved
 
 
 # Bound restart catch-up: one comment-heavy card must not hold every monitor tick.
@@ -57,7 +73,9 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     since_id: int | None = state.get("last_issue_comment_id")
     processed: set[int] = set(state.get("processed_issue_comment_ids") or ())
 
-    events = await fetch_new_issue_comments(card_id, since_id, board, issue_number)
+    events = await fetch_new_issue_comments(
+        card_id, since_id, board, issue_number, self_logins=await _own_logins(state),
+    )
     if not events:
         return state
 

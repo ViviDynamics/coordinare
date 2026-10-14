@@ -27,7 +27,7 @@ async def test_system_block_posts_operator_diagnostic(marker):
     state.update(github_service=github, current_card={"id": "ITEM_1", "issue_id": "ISSUE_1"}, open_questions=[])
     result = await handle_blocked(state)
     assert result["phase"] == "blocked"
-    assert "System blocked" in github.comment_body
+    assert "Needs human, operator action required" in github.comment_body
     assert "Needs input" not in github.comment_body
 
 
@@ -42,7 +42,7 @@ async def test_monitor_preserves_proxy_failure_for_operator_comment(stage):
     assert result["system_error_reason"] == reason
     assert result["phase"] == "blocked"
     await handle_blocked(result)
-    assert "System blocked" in github.comment_body
+    assert "Needs human, operator action required" in github.comment_body
     assert reason in github.comment_body
     assert "Needs input" not in github.comment_body
 
@@ -54,9 +54,9 @@ async def test_product_clarification_remains_a_question():
     state.update(github_service=github, current_card={"id": "ITEM_1", "issue_id": "ISSUE_1"},
                  open_questions=["Which behavior should this feature use?"])
     await handle_blocked(state)
-    assert "Needs input" in github.comment_body
+    assert "Needs human" in github.comment_body
     assert "Which behavior" in github.comment_body
-    assert "System blocked" not in github.comment_body
+    assert "operator action required" not in github.comment_body
 
 
 @pytest.mark.asyncio
@@ -78,9 +78,9 @@ async def test_recovered_retry_restores_product_clarification_semantics(answered
     if answered:
         assert result["phase"] == "idle"
     else:
-        assert "Needs input" in github.comment_body
+        assert "Needs human" in github.comment_body
         assert question in github.comment_body
-        assert "System blocked" not in github.comment_body
+        assert "operator action required" not in github.comment_body
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_current_infrastructure_hold_survives_retry_reason_cleanup(current
     result = await monitor_performer(state)
     assert result["system_error_reason"] is None
     await handle_blocked(result)
-    assert "System blocked" in github.comment_body
+    assert "Needs human, operator action required" in github.comment_body
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_restored_infrastructure_hold_keeps_operator_diagnostic(hold, expe
                  open_questions=[], env_blocked=hold)
     result = await handle_blocked(state)
     assert result['phase'] == 'blocked'
-    assert 'System blocked' in github.comment_body
+    assert 'Needs human, operator action required' in github.comment_body
     for diagnostic in expected:
         assert diagnostic in github.comment_body
     assert 'Needs input' not in github.comment_body

@@ -16,6 +16,7 @@ from gql.transport.aiohttp import AIOHTTPTransport
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from coordinare.services.card_identity import CardIdentityMap
+from coordinare.services.issue_comment_service import normalize_logins
 
 logger = structlog.get_logger(__name__)
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
@@ -699,6 +700,9 @@ class GitHubService(CardIdentityMap):
         self._circuit_breaker = circuit_breaker
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
         self._project_name: str = ""  # set externally by __main__ for REST branch operations
+        # 142: coordinare's own logins, resolved on first use and then kept. None until resolved.
+        self._self_logins: frozenset[str] | None = None
+        self._self_login_warned: bool = False
 
         self._client: Client | None = None
         self._last_token: str | None = None
@@ -713,6 +717,52 @@ class GitHubService(CardIdentityMap):
     async def current_token(self) -> str:
         """Public accessor for the current auth token."""
         return await self._current_token()
+
+    async def self_logins(self) -> frozenset[str]:
+        """coordinare's own GitHub logins (#142), resolved once and then cached on this service.
+
+        A GitHub App is named by its slug, so its comments come from ``<slug>[bot]``;
+        a token is named by its user's login. A failure is logged once and never
+        raised: the result is empty until a later call resolves it, so a startup
+        cannot fail on it and the comment filter falls back to the configured list.
+        """
+        if self._self_logins is not None:
+            return self._self_logins
+        try:
+            logins = await self._resolve_self_logins()
+        except Exception as exc:
+            if not self._self_login_warned:
+                self._self_login_warned = True
+                logger.warning(
+                    "github.self_logins_unresolved",
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                )
+            return frozenset()
+        self._self_logins = logins
+        logger.info("github.self_logins_resolved", count=len(logins))
+        return logins
+
+    async def _resolve_self_logins(self) -> frozenset[str]:
+        from coordinare.auth.app import AppAuth
+
+        if isinstance(self._auth, AppAuth):
+            slug = await self._auth.get_app_slug()
+            return normalize_logins([slug, f"{slug}[bot]"])
+        token = await self._current_token()
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{self._rest_api_base()}/user",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            )
+        if not resp.is_success:
+            msg = f"GET /user failed (HTTP {resp.status_code})"
+            raise RuntimeError(msg)
+        login = str(resp.json().get("login") or "")
+        if not login:
+            msg = "GET /user returned no login"
+            raise RuntimeError(msg)
+        return normalize_logins([login])
 
     @property
     def org(self) -> str:

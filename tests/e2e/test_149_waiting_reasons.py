@@ -88,8 +88,8 @@ def test_a_blocked_card_with_a_question_says_how_long_ago_it_was_asked(
     )
 
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Migrate auth")
-    expect(card.locator(".swimlane-wait")).to_contain_text(
-        "Needs human: clarification asked", timeout=_WAIT_LIVE,
+    expect(card.locator(".swimlane-wait")).to_have_text(
+        "Needs human: Which provider?", timeout=_WAIT_LIVE,
     )
     expect(card.locator(".swimlane-wait")).to_have_attribute("data-wait", "needs_human")
 

@@ -75,10 +75,11 @@ check("a Blocked card with no session keeps the dependency it was moved for",
   waitingReason({ id: "PVTI_60", column: "BLOCKED", has_session: false },
     { todo_waits: { PVTI_60: { reason: "waiting_on", blockers: ["#77"], verdict: "dependency" } } }).text,
   "Waiting on #77");
+// 142: a Blocked card is always one kind. With no known reason it is Needs human alone.
 check("a Blocked card with a session does not take a To Do wait",
   waitingReason({ id: "PVTI_61", column: "BLOCKED", has_session: true },
-    { todo_waits: { PVTI_61: { reason: "waiting_on", blockers: ["#78"] } } }).kind,
-  "none");
+    { todo_waits: { PVTI_61: { reason: "waiting_on", blockers: ["#78"] } } }).text,
+  "Needs human");
 check("queueLimitLabel and the swimlane read the same words",
   queuedWaitText("pipeline_capacity", { capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 card slots in use");
 check("an unknown reason has no queued words", queuedWaitText("mystery", {}), null);
@@ -102,22 +103,27 @@ check("a waiting-on entry with no blockers says nothing rather than guessing",
   "none");
 
 // --- needs a human ----------------------------------------------------------------
-check("a blocked card with an open question says how long ago it was asked",
+// 142: the reason is the question itself; the age is kept in the title.
+check("a blocked card with an open question shows the question as its reason",
   waitingReason({ id: "PVTI_3", column: "BLOCKED" },
-    { open_questions: [{ card_id: "PVTI_3", asked_at: TWO_HOURS_AGO }], now: NOW }).text,
-  "Needs human: clarification asked 2h ago");
-check("an open question with no timestamp still reads as needing a human",
+    { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: TWO_HOURS_AGO }], now: NOW }).text,
+  "Needs human: Which provider?");
+has("the title says how long ago the question was asked",
+  waitingReason({ id: "PVTI_3", column: "BLOCKED" },
+    { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: TWO_HOURS_AGO }], now: NOW }).title,
+  "Asked 2h ago.");
+check("an open question with no text and no timestamp is Needs human alone",
   waitingReason({ id: "PVTI_3", column: "BLOCKED" },
     { open_questions: [{ card_id: "PVTI_3", asked_at: null }], now: NOW }).text,
-  "Needs human: clarification asked");
-check("a question asked a minute ago reads as just now",
+  "Needs human");
+check("a question asked a minute ago reads as just now in the title",
   waitingReason({ id: "PVTI_3", column: "BLOCKED" },
-    { open_questions: [{ card_id: "PVTI_3", asked_at: "2026-10-13T11:59:30Z" }], now: NOW }).text,
-  "Needs human: clarification asked just now");
+    { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: "2026-10-13T11:59:30Z" }], now: NOW }).title,
+  "Asked just now. Which provider?");
 check("an open question for another card does not leak across",
   waitingReason({ id: "PVTI_4", column: "BLOCKED" },
-    { open_questions: [{ card_id: "PVTI_3", asked_at: TWO_HOURS_AGO }], now: NOW }).kind,
-  "none");
+    { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: TWO_HOURS_AGO }], now: NOW }).text,
+  "Needs human");
 check("an escalated To Do card needs a human",
   waitingReason({ id: "PVTI_5", column: "TODO" },
     { todo_waits: { PVTI_5: { reason: "escalated", blockers: [] } } }).text,
