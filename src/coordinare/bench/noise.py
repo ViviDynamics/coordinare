@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
+from coordinare.bench.score import cost_is_known, numeric_component
 
 if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
@@ -71,6 +72,9 @@ class NoiseReport(BaseModel):
     scalar_stats: ComponentStats | None = None
     card_agreement: dict[str, float] = {}
     score_refs: list[str] = []
+    #: 206: repeats whose cost was unknown or partial. The cost_usd stats cover only the
+    #: priced repeats, so a nonzero count means the cost figure is partial.
+    cost_unpriced_repeats: int = 0
 
     def to_validated_json(self) -> str:
         """Round-trip guard before the report is declared written (134/135 convention)."""
@@ -111,6 +115,11 @@ class NoiseReport(BaseModel):
                 f"| {name} | {s.mean:.6g} | {s.variance:.6g} | {s.stdev:.6g} "
                 f"| {s.min:.6g} | {s.max:.6g} | {s.n}{flag} |",
             )
+        if self.cost_unpriced_repeats:
+            lines.append(
+                f"- cost unpriced in {self.cost_unpriced_repeats} repeat(s): cost_usd covers "
+                "only the priced repeats",
+            )
         if self.card_agreement:
             lines += ["", "## Per-card verdict agreement (fraction agreeing with modal verdict)", ""]
             lines.extend(f"- `{fx}`: {frac:.3f}" for fx, frac in sorted(self.card_agreement.items()))
@@ -149,9 +158,7 @@ def aggregate(
     scores = [s for _, s, _ in runs]
     comp_stats: dict[str, ComponentStats] = {}
     for name in _NUMERIC_COMPONENTS:
-        values = [
-            float(v) for s in scores if (v := getattr(s.components, name)) is not None
-        ]
+        values = [v for s in scores if (v := numeric_component(s.components, name)) is not None]
         stats = component_stats(values)
         if stats is not None:
             comp_stats[name] = stats
@@ -174,6 +181,7 @@ def aggregate(
         scalar_stats=component_stats([s.scalar for s in scores if s.scalar is not None]),
         card_agreement=agreement,
         score_refs=[ref for _, _, ref in runs],
+        cost_unpriced_repeats=sum(1 for s in scores if not cost_is_known(s.components)),
     )
 
 
@@ -185,7 +193,6 @@ async def run_repeats(
     config_path: str | Path | None = None,
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
-    cost_per_million_tokens: float = 3.0,
     stub: bool = True,
     weights: Weights | None = None,
     judge: JudgeFn | None = None,
@@ -205,7 +212,6 @@ async def run_repeats(
                 config_path=config_path,
                 human_login=human_login,
                 max_cycles=max_cycles,
-                cost_per_million_tokens=cost_per_million_tokens,
                 stub=stub,
             )
             score = score_run(

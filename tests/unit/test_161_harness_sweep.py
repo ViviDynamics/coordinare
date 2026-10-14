@@ -18,6 +18,7 @@ import shutil
 import pytest
 import yaml
 
+from coordinare.bench.score import Weights
 from coordinare.bench.space import load_space
 from coordinare.bench.sweep import PointResult, enumerate_ablation, rank_candidates
 
@@ -153,7 +154,8 @@ async def test_real_sweep_passes_each_selected_backend_to_runner(tmp_path, monke
 
     monkeypatch.setattr(sweep, "run_board", capture)
     result = await sweep.run_sweep(loaded, "ablation", tmp_path / "runs", stub=False,
-                                   wall_clock_budget_seconds=17)
+                                   wall_clock_budget_seconds=17,
+                                   weights=Weights(w_cost=0.0))
     assert observed == ["opencode", "claude_code", "codex"]
     assert result.coverage.scored_points == 3
     assert not result.coverage.dropped

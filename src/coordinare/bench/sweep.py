@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import Weights
+from coordinare.bench.score import Weights, cost_is_known, numeric_component
 from coordinare.bench.space import config_fingerprint, materialize, resolve_path
 
 if TYPE_CHECKING:
@@ -67,6 +67,10 @@ class PointResult(BaseModel):
     mean_components: dict[str, float] = {}
     failed: bool = False
     error: str = ""
+    #: 206: repeats whose cost was unknown or partial, and the reason, so the point is
+    #: never ranked on a cost it does not have.
+    cost_unpriced_repeats: int = 0
+    cost_unknown_reason: str | None = None
 
 
 class AblationDelta(BaseModel):
@@ -247,6 +251,15 @@ def compute_deltas(baseline: PointResult, points: list[PointResult]) -> list[Abl
     return deltas
 
 
+def _dropped_reason(point: PointResult) -> str:
+    """Why a point has no ranking. A point whose cost is unknown says so (spec 206)."""
+    if point.error:
+        return point.error
+    if point.cost_unknown_reason is not None:
+        return f"unpriced: {point.cost_unknown_reason}"
+    return "unrankable score (no scalar)"
+
+
 def rank_candidates(points: list[PointResult]) -> list[str]:
     """Point ids by mean scalar descending; unrankable (failed/None) last."""
     rankable = [p for p in points if not p.failed and p.mean_scalar is not None]
@@ -290,9 +303,14 @@ def derive_repeats(
 
 
 def _mean_components(scores: list[ScoreObject]) -> dict[str, float]:
+    """Mean of each component over the repeats where it is known. An unpriced or partial
+    cost is left out of the mean (spec 206): averaging the priced repeats alone would
+    read as the cost of the whole point."""
     out: dict[str, float] = {}
     for name in _NUMERIC_COMPONENTS:
-        values = [float(v) for s in scores if (v := getattr(s.components, name)) is not None]
+        values = [v for s in scores if (v := numeric_component(s.components, name)) is not None]
+        if name == "cost_usd" and len(values) != len(scores):
+            continue
         if values:
             out[name] = statistics.fmean(values)
     return out
@@ -347,7 +365,6 @@ async def _run_point(
     stub: bool,
     human_login: str,
     max_cycles: int | None,
-    cost_per_million_tokens: float,
     wall_clock_budget_seconds: float,
 ) -> PointResult:
     result = PointResult(
@@ -363,7 +380,6 @@ async def _run_point(
             artifact = await run_board(
                 fixtures, repeat_dir,
                 human_login=human_login, max_cycles=max_cycles,
-                cost_per_million_tokens=cost_per_million_tokens,
                 stub=stub, config=cfg,
                 real_config=_real_point_config(cfg.global_config) if not stub else None,
                 wall_clock_budget_seconds=wall_clock_budget_seconds,
@@ -375,6 +391,12 @@ async def _run_point(
         scalars = [s.scalar for s in scores if s.scalar is not None]
         result.mean_scalar = statistics.fmean(scalars) if scalars else None
         result.mean_components = _mean_components(scores)
+        unpriced = [s for s in scores if not cost_is_known(s.components)]
+        result.cost_unpriced_repeats = len(unpriced)
+        result.cost_unknown_reason = next(
+            (s.components.cost_unknown_reason for s in unpriced if s.components.cost_unknown_reason),
+            None,
+        ) if unpriced else None
         logger.info("bench.sweep_point_done", point=spec.point_id, scalar=result.mean_scalar)
     except Exception as exc:  # a failed point is data, not a crash (FR-009)
         result.failed = True
@@ -399,7 +421,6 @@ async def run_sweep(
     stub: bool = True,
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
-    cost_per_million_tokens: float = 3.0,
     wall_clock_budget_seconds: float = 1200.0,
 ) -> SweepArtifact:
     """Execute one sweep; write and return the validated artifact."""
@@ -421,7 +442,6 @@ async def run_sweep(
     run_kwargs: dict[str, Any] = {
         "repeats": repeats, "weights": weights, "judge": judge, "judge_model": judge_model,
         "stub": stub, "human_login": human_login, "max_cycles": max_cycles,
-        "cost_per_million_tokens": cost_per_million_tokens,
         "wall_clock_budget_seconds": wall_clock_budget_seconds,
     }
     results = [await _run_point(spec, loaded, fixtures, session, **run_kwargs) for spec in specs]
@@ -430,7 +450,7 @@ async def run_sweep(
     points = [r for r in results if r.kind != "baseline"]
     flag_duplicates(([baseline] if baseline else []) + points)
 
-    dropped = [DroppedPoint(point_id=r.point_id, reason=r.error or "unrankable score (no scalar)")
+    dropped = [DroppedPoint(point_id=r.point_id, reason=_dropped_reason(r))
                for r in results if r.failed or r.mean_scalar is None]
     notes = list(repeat_notes or [])
     skipped = _baseline_coinciding_notes(loaded) if mode == "ablation" else []

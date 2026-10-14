@@ -56,3 +56,14 @@ scalar = w_correctness · correctness_rate
 Defaults `1.0 / 0.1 / 0.1`. `correctness_rate = None` (zero gradeable cards) makes
 the scalar `None`-safe: the score object is still written, with the condition
 explicit, and downstream consumers must treat it as unrankable.
+
+
+## Spec 206: cost is unknown or partial, not free (additive fields)
+
+- `ComponentVector.cost_partial` (default `False`): `True` when any card was unpriced, so
+  `cost_usd` is a partial sum.
+- `ComponentVector.cost_unknown_reason` (default `None`): why the cost is unknown or partial.
+- With the cost term weighted (`w_cost > 0`), an unknown or partial cost withholds `scalar`
+  (`None`). It is no longer scored as zero cost. With `w_cost == 0`, the scalar is computed
+  and `cost_component_missing` is `True`.
+- Score files written before spec 206 load unchanged. Their `cost_usd` value is kept.

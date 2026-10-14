@@ -13,7 +13,7 @@ from coordinare.bench.fixtures import tiny_fixture
 from coordinare.bench.grader import score_run
 from coordinare.bench.noise import NoiseReport, run_repeats
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import ScoreObject
+from coordinare.bench.score import ScoreObject, Weights
 
 
 async def test_stub_run_scores_pass_and_score_json_round_trips(tmp_path: Path) -> None:
@@ -31,14 +31,18 @@ async def test_stub_run_scores_pass_and_score_json_round_trips(tmp_path: Path) -
     assert verdict.category == "PASS", verdict.deterministic_detail
     assert score.components.correctness_rate == 1.0
     assert score.components.harness_failure_rate == 0.0
-    assert score.scalar is not None
-    # Cost is unlabeled in stub runs — omitted from the scalar, never zero-cost.
+    # Spec 206: stub runs report no tokens, so their cost is unknown. The cost term carries
+    # weight, so the scalar is withheld rather than scored as free.
+    assert score.scalar is None
     assert score.cost_component_missing is True
+    assert score.components.cost_unknown_reason
 
 
 async def test_two_repeat_noise_session_aggregates(tmp_path: Path) -> None:
     session = tmp_path / "noise"
-    report = await run_repeats([tiny_fixture()], 2, session)
+    report = await run_repeats(
+        [tiny_fixture()], 2, session, weights=Weights(w_cost=0.0),
+    )
 
     assert report.requested_repeats == 2
     assert report.effective_repeats == 2

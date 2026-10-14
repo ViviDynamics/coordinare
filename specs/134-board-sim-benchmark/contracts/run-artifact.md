@@ -53,3 +53,20 @@ RunArtifact
 - No scoring / correctness judgement of the produced code (135).
 - No authoritative per-request USD (deferred; research.md D8).
 - No aggregation across runs / noise measurement (135/136).
+
+
+## Spec 206: per-model pricing (additive fields)
+
+Cost is priced from the daemon's `cost_tracking.prices` table, read through the same loader
+(`bench/pricing.py`). The flat `cost_per_million_tokens` is not read by the bench. All fields
+below are additive and default to `None` or `False`, so every earlier document still loads.
+
+- `PersonaDispatch.cost_usd`, `cost_unknown_reason`, `cost_basis`: one dispatch's priced cost.
+  `None` means unknown, and the reason says why (no token count, or no price for the model).
+- `Cost.cost_unknown_reason`, `Cost.cost_basis`: the card's cost. A card is unknown when any
+  of its dispatches is unknown.
+- `RunTotals.cost_partial`, `RunTotals.cost_unpriced_cards`, `RunTotals.cost_unknown_reason`:
+  `cost_usd` sums the priced cards only. `cost_partial` is `True` when any card is unpriced.
+- `cost_basis` is `total_tokens_at_input_rate` for a bare total (the bench records one token
+  count per dispatch). A cost with no basis was written before spec 206 and is reported as
+  unknown, never as a price.

@@ -28,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from coordinare.bench.artifact import RunArtifact, estimate_cost_usd
+from coordinare.bench.artifact import RunArtifact
 from coordinare.bench.harness_rollup import HarnessRollup, RoleHarnessRow, roll_up
 from coordinare.bench.noise import component_stats
 from coordinare.bench.score import ScoringView, Weights
@@ -39,10 +39,6 @@ RANK_SCHEMA_VERSION = 1
 #: Three because a rate over one or two dispatches is not meaningfully distinguishable
 #: from noise, and presenting it as a ranking would overstate what was measured.
 DEFAULT_MIN_CONCLUSIVE = 3
-
-#: Token-rate used to convert tokens into the cost term's units. Mirrors the sweep's own
-#: ``cost_per_million_tokens`` default.
-DEFAULT_COST_PER_MILLION_TOKENS = 0.0
 
 Verdict = Literal["ranked", "tie", "insufficient_evidence", "no_viable_harness"]
 
@@ -57,6 +53,8 @@ class HarnessScore(BaseModel):
     credit_rate: float | None = None
     seconds: float = 0.0
     tokens: int | None = None
+    #: 206: the pair's priced cost, from its dispatches' own models. None when unknown.
+    cost_usd: float | None = None
     scalar: float | None = None
     cost_component_missing: bool = False
     evidence: RoleHarnessRow
@@ -71,6 +69,9 @@ class HarnessRanking(BaseModel):
     #: _ties_within_band for why merging a tie chain would overstate the finding.
     ties: list[list[str]] = Field(default_factory=list)
     insufficient_evidence: list[str] = Field(default_factory=list)
+    #: 206: candidates left out of the ordering because their cost is unknown or partial,
+    #: while the ranking weights cost. Maps backend to the reason. Never ranked as free.
+    cost_unknown: dict[str, str] = Field(default_factory=dict)
     verdict: Verdict = "insufficient_evidence"
     min_conclusive: int = DEFAULT_MIN_CONCLUSIVE
     #: True when no candidate had more than one contributing run, so no run-to-run spread
@@ -108,27 +109,24 @@ class HarnessRankingReport(BaseModel):
         return cls.model_validate_json(Path(path).read_text())
 
 
-def score_row(
-    row: RoleHarnessRow,
-    weights: Weights | None = None,
-    *,
-    cost_per_million_tokens: float = DEFAULT_COST_PER_MILLION_TOKENS,
-) -> HarnessScore:
+def score_row(row: RoleHarnessRow, weights: Weights | None = None) -> HarnessScore:
     """Score one row under the harness-comparison objective (FR-010, FR-024).
 
     Mirrors ``score.compute_scalar``'s shape, substituting a harness credit rate for card
     correctness::
 
         w_correctness * credit_rate
-          - w_cost * (estimated_cost_usd / cost_budget_usd)
+          - w_cost * (cost_usd / cost_budget_usd)
           - w_time * (seconds / time_budget_seconds)
 
-    The cost term divides **USD by USD**. Tokens are converted with the existing
-    estimator first; dividing a raw token count by a currency budget is a unit error.
-    When no token count is available the cost term is omitted and the omission recorded,
-    never treated as zero cost.
+    The cost is the pair's priced cost (spec 206), summed from each dispatch's own model
+    in the price table. It is never a flat rate. When it is unknown or partial, the scalar
+    is withheld (None) if the cost term carries weight, rather than scored as free. With
+    ``w_cost == 0`` the cost cannot move the objective, so the scalar stands and the cost
+    is flagged missing.
     """
     w = weights or Weights()
+    cost_missing = row.cost_usd is None or row.cost_partial
     score = HarnessScore(
         role=row.role,
         backend=row.backend,
@@ -136,30 +134,22 @@ def score_row(
         credit_rate=row.credit_rate,
         seconds=row.seconds_total,
         tokens=row.tokens_total,
+        cost_usd=None if cost_missing else row.cost_usd,
+        cost_component_missing=cost_missing,
         evidence=row,
     )
 
     if row.credit_rate is None:
         # No conclusive evidence: withhold the scalar rather than emit a zero that would
         # read as a measured (and terrible) result.
-        score.cost_component_missing = row.tokens_total is None or row.tokens_partial
+        return score
+
+    if cost_missing and w.w_cost > 0:
         return score
 
     scalar = w.w_correctness * row.credit_rate
-
-    # A partial token sum is a LOWER BOUND, so costing from it would undercharge and
-    # flatter a harness whose token reporting happens to be patchy. Treat it exactly like
-    # no tokens at all: omit the term and record that cost is unknown.
-    cost = (
-        None
-        if row.tokens_partial
-        else estimate_cost_usd(row.tokens_total, cost_per_million_tokens)
-    )
-    if cost is None:
-        score.cost_component_missing = True
-    else:
-        scalar -= w.w_cost * (cost / w.cost_budget_usd)
-
+    if row.cost_usd is not None and not cost_missing:
+        scalar -= w.w_cost * (row.cost_usd / w.cost_budget_usd)
     scalar -= w.w_time * (row.seconds_total / w.time_budget_seconds)
     score.scalar = round(scalar, 6)
     return score
@@ -207,7 +197,6 @@ def rank_role(
     weights: Weights | None = None,
     *,
     min_conclusive: int = DEFAULT_MIN_CONCLUSIVE,
-    cost_per_million_tokens: float = DEFAULT_COST_PER_MILLION_TOKENS,
 ) -> HarnessRanking:
     """Rank the harnesses observed for one role (FR-019 through FR-022, FR-027)."""
     w = weights or Weights()
@@ -215,10 +204,15 @@ def rank_role(
 
     rankable: list[HarnessScore] = []
     for row in rows:
-        score = score_row(row, w, cost_per_million_tokens=cost_per_million_tokens)
-        if score.scalar is None or row.conclusive < min_conclusive:
+        score = score_row(row, w)
+        if row.credit_rate is None or row.conclusive < min_conclusive:
             # Below the evidence floor, or no conclusive dispatches at all.
             ranking.insufficient_evidence.append(row.backend)
+            continue
+        if score.scalar is None:
+            # 206: priced cost is needed to order this candidate and it is unknown. It is
+            # excluded with its reason, never ordered as if its cost were zero.
+            ranking.cost_unknown[row.backend] = "; ".join(row.cost_unknown_reasons) or "cost unknown"
             continue
         rankable.append(score)
 
@@ -252,7 +246,6 @@ def rank(
     weights: Weights | None = None,
     *,
     min_conclusive: int = DEFAULT_MIN_CONCLUSIVE,
-    cost_per_million_tokens: float = DEFAULT_COST_PER_MILLION_TOKENS,
 ) -> HarnessRankingReport:
     """Rank every role present in *rollup* (FR-019)."""
     w = weights or Weights()
@@ -265,13 +258,7 @@ def rank(
         run_ids=list(rollup.run_ids),
         weights=w,
         rankings=[
-            rank_role(
-                role,
-                rows,
-                w,
-                min_conclusive=min_conclusive,
-                cost_per_million_tokens=cost_per_million_tokens,
-            )
+            rank_role(role, rows, w, min_conclusive=min_conclusive)
             for role, rows in sorted(by_role.items())
         ],
     )
@@ -299,6 +286,10 @@ def format_report(report: HarnessRankingReport) -> str:
             lines.append(
                 f"  insufficient evidence (<{r.min_conclusive} conclusive): "
                 f"{', '.join(sorted(r.insufficient_evidence))}",
+            )
+        for backend, reason in sorted(r.cost_unknown.items()):
+            lines.append(
+                f"  excluded, cost unknown (ranking weights cost): {backend} ({reason})",
             )
         lines.append("")
     if not report.rankings:

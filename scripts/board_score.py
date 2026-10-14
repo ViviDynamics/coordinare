@@ -57,7 +57,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     noise.add_argument("--config", help="coordinare config YAML (fingerprinted into each artifact)")
     noise.add_argument("--max-cycles", type=int, default=None, help="hard cycle budget per repeat")
     noise.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
-    noise.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
     noise.add_argument("--real", action="store_true", help="dispatch real performers (default: stubbed)")
     _add_shared_flags(noise)
 
@@ -146,7 +145,6 @@ async def _cmd_noise(args: argparse.Namespace) -> int:
         config_path=args.config,
         human_login=args.human_login,
         max_cycles=args.max_cycles,
-        cost_per_million_tokens=args.cost_rate,
         stub=not args.real,
         weights=_weights(args),
         judge=judge,

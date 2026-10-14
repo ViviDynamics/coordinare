@@ -95,8 +95,13 @@ class ComponentVector(BaseModel):
     correctness_rate: float | None = None
     harness_failure_rate: float = 0.0
     tokens_processed: int | None = None
+    #: 206: the run's priced cost. Sums only the priced cards when ``cost_partial`` is set.
     cost_usd: float | None = None
     cost_estimated: bool = True
+    #: 206: True when any card had no price, so ``cost_usd`` is a partial sum.
+    cost_partial: bool = False
+    #: 206: why the cost is unknown or partial. None on scores written before spec 206.
+    cost_unknown_reason: str | None = None
     wall_clock_seconds: float = 0.0
 
 
@@ -138,19 +143,40 @@ class ScoreObject(BaseModel):
         return cls.model_validate_json(Path(path).read_text())
 
 
+def cost_is_known(components: ComponentVector) -> bool:
+    """True when the run's cost is a complete priced figure (spec 206)."""
+    return components.cost_usd is not None and not components.cost_partial
+
+
+def numeric_component(components: ComponentVector, name: str) -> float | None:
+    """A component as a number, or None when it is unknown.
+
+    An unpriced or partial cost is unknown, never a number: averaging or comparing it would
+    treat the unpriced part as free (spec 206).
+    """
+    if name == "cost_usd" and not cost_is_known(components):
+        return None
+    value = getattr(components, name)
+    return None if value is None else float(value)
+
+
 def compute_scalar(components: ComponentVector, weights: Weights) -> tuple[float | None, bool]:
     """The weighted objective (spec Clarifications):
 
     ``w_c*correctness_rate - w_cost*(cost/cost_budget) - w_time*(time/time_budget)``
 
     Returns ``(scalar, cost_component_missing)``. A run with zero gradeable cards
-    (``correctness_rate is None``) has no scalar — the score object is still
-    written, explicitly unrankable. Unknown cost omits the cost term (never
-    treated as free)."""
+    (``correctness_rate is None``) has no scalar. Spec 206: when the cost is unknown
+    (no price, no token count) or partial, and the cost term carries weight, the scalar is
+    also None. Dropping the term would score the unpriced run as free and rank it above
+    priced runs, so the run is unrankable instead. With ``w_cost == 0`` cost cannot change
+    the objective, so the scalar is computed and the cost flagged missing."""
+    cost_missing = not cost_is_known(components)
     if components.correctness_rate is None:
-        return None, components.cost_usd is None
+        return None, cost_missing
+    if cost_missing and weights.w_cost > 0:
+        return None, True
     scalar = weights.w_correctness * components.correctness_rate
-    cost_missing = components.cost_usd is None
     if not cost_missing:
         scalar -= weights.w_cost * (float(components.cost_usd or 0.0) / weights.cost_budget_usd)
     scalar -= weights.w_time * (components.wall_clock_seconds / weights.time_budget_seconds)

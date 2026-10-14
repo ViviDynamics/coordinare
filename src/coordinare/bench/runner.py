@@ -43,9 +43,9 @@ from coordinare.bench.artifact import (
     PersonaDispatch,
     RunArtifact,
     Timing,
-    estimate_cost_usd,
 )
 from coordinare.bench.fixtures import apply_solution_branch, materialize_repo, seed_board
+from coordinare.bench.pricing import combine, price_table_for_run, price_tokens
 from coordinare.bench.recording_performer import RecordingPerformer, is_recorder
 from coordinare.daemon import CoordinareDaemon
 from coordinare.graph.builder import CoordinareGraphBuilder
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
     from coordinare.config import CoordinareConfiguration
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.token_usage import PriceTable
 
 logger = structlog.get_logger(__name__)
 
@@ -303,7 +304,6 @@ async def run_board(
     config_path: str | Path | None = None,
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
-    cost_per_million_tokens: float = 3.0,
     stub: bool = True,
     config: CoordinareConfiguration | None = None,
     real_config: Any = None,
@@ -504,7 +504,9 @@ async def run_board(
         finished_at=finished_at,
         config_path=config_path,
         config=config,
-        cost_rate=cost_per_million_tokens,
+        price_table=price_table_for_run(
+            config=config, real_config=real_config, config_path=config_path,
+        ),
         run_error=run_error,
     )
     artifact.write(run_dir)
@@ -588,7 +590,7 @@ def _build_artifact(
     started_at: datetime,
     finished_at: datetime,
     config_path: str | Path | None,
-    cost_rate: float,
+    price_table: PriceTable,
     run_error: str | None,
     config: CoordinareConfiguration | None = None,
 ) -> RunArtifact:
@@ -652,6 +654,16 @@ def _build_artifact(
         for d in dispatches:
             if d.stage and d.stage not in reached_stages:
                 reached_stages.append(d.stage)
+        # 206: each dispatch is priced with its own model. Cost is unknown, never zero,
+        # when a dispatch has no token count or its model has no price.
+        dispatch_costs = []
+        for dispatch in dispatches:
+            priced = price_tokens(dispatch.tokens_processed, dispatch.model, price_table)
+            dispatch.cost_usd = priced.cost_usd
+            dispatch.cost_unknown_reason = priced.unknown_reason
+            dispatch.cost_basis = priced.basis
+            dispatch_costs.append(priced)
+        card_cost = combine(dispatch_costs)
         tokens = [d.tokens_processed for d in dispatches if d.tokens_processed is not None]
         card_tokens = sum(tokens) if tokens else None
         cards.append(CardOutcome(
@@ -669,7 +681,12 @@ def _build_artifact(
                 first_dispatch_at=dispatches[0].started_at if dispatches else None,
                 terminal_at=finished_at,
             ),
-            cost=Cost(tokens_processed=card_tokens, cost_usd=estimate_cost_usd(card_tokens, cost_rate)),
+            cost=Cost(
+                tokens_processed=card_tokens,
+                cost_usd=card_cost.cost_usd,
+                cost_unknown_reason=card_cost.unknown_reason,
+                cost_basis=card_cost.basis,
+            ),
         ))
 
     artifact = RunArtifact(

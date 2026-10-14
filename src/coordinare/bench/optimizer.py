@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import Weights
+from coordinare.bench.score import Weights, numeric_component
 from coordinare.bench.space import config_fingerprint, materialize, resolve_path
 
 if TYPE_CHECKING:
@@ -228,7 +228,6 @@ def real_evaluator(
     stub: bool = True,
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
-    cost_per_million_tokens: float = 3.0,
 ) -> Evaluator:
     """The shipped evaluator: materialize → run_board(config) → score_run x repeats.
 
@@ -249,7 +248,6 @@ def real_evaluator(
                 artifact = await run_board(
                     fixtures, repeat_dir,
                     human_login=human_login, max_cycles=max_cycles,
-                    cost_per_million_tokens=cost_per_million_tokens,
                     stub=stub, config=config,
                 )
                 score = score_run(
@@ -261,7 +259,9 @@ def real_evaluator(
             scalars = [s.scalar for s in scores if s.scalar is not None]
             components: dict[str, float] = {}
             for name in _NUMERIC_COMPONENTS:
-                values = [float(v) for s in scores if (v := getattr(s.components, name)) is not None]
+                values = [v for s in scores if (v := numeric_component(s.components, name)) is not None]
+                if name == "cost_usd" and len(values) != len(scores):
+                    continue  # 206: a partially priced cost is not a mean of this evaluation
                 if values:
                     components[name] = statistics.fmean(values)
             return EvalOutcome(

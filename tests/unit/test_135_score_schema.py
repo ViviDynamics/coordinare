@@ -81,10 +81,26 @@ class TestScalar:
         assert scalar == pytest.approx(0.94)
         assert cost_missing is False
 
-    def test_unknown_cost_omits_term_and_flags(self) -> None:
+    def test_unknown_cost_withholds_the_scalar_and_flags(self) -> None:
+        """Spec 206: an unknown cost is never scored as free. With the cost term weighted,
+        the scalar is withheld."""
         comps = ComponentVector(correctness_rate=1.0, cost_usd=None, wall_clock_seconds=60.0)
         scalar, cost_missing = compute_scalar(comps, Weights())
-        assert scalar == pytest.approx(0.99)  # no cost penalty, never treated as zero-cost silently
+        assert scalar is None
+        assert cost_missing is True
+
+    def test_unknown_cost_is_unweighted_when_cost_has_no_weight(self) -> None:
+        comps = ComponentVector(correctness_rate=1.0, cost_usd=None, wall_clock_seconds=60.0)
+        scalar, cost_missing = compute_scalar(comps, Weights(w_cost=0.0))
+        assert scalar == pytest.approx(0.99)  # 1.0 - 0.1*(60/600); cost cannot move it
+        assert cost_missing is True
+
+    def test_partial_cost_withholds_the_scalar(self) -> None:
+        comps = ComponentVector(
+            correctness_rate=1.0, cost_usd=0.5, cost_partial=True, wall_clock_seconds=60.0,
+        )
+        scalar, cost_missing = compute_scalar(comps, Weights())
+        assert scalar is None
         assert cost_missing is True
 
     def test_zero_gradeable_cards_yields_no_scalar(self) -> None:
