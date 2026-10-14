@@ -1678,7 +1678,9 @@ async def commit_file(
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(content, encoding="utf-8")
 
-    env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
+    # 098: literal pathspecs, so a path containing * ? [ is one file and never a pattern
+    # that stages every match.
+    env = {**os.environ, **stand.git_env, "GIT_LITERAL_PATHSPECS": "1"}
 
     # Stage the file (use -- separator to prevent option injection from paths starting with -)
     returncode, stderr = await _run_git(
@@ -1687,9 +1689,11 @@ async def commit_file(
     if returncode != 0:
         raise WorkspaceSetupError(f"git add failed (exit {returncode}): {stderr}")
 
-    # Check if there are staged changes (exit 0 = no changes, 1 = changes, >1 = error)
+    # Check if there are staged changes to THIS path (exit 0 = no changes, 1 = changes, >1 = error).
+    # 098: scoped to *path*, so a stray staged file elsewhere in the index can neither
+    # trigger nor ride along in this commit.
     returncode, stderr = await _run_git(
-        ["git", "diff", "--cached", "--quiet"], cwd=stand.path, env=env,
+        ["git", "diff", "--cached", "--quiet", "--", path], cwd=stand.path, env=env,
     )
     if returncode == 0:
         log.info("commit_file.no_changes", path=path)
@@ -1704,9 +1708,10 @@ async def commit_file(
     ]:
         await _run_git(cfg_cmd, cwd=stand.path, env=env)
 
-    # Commit
+    # Commit only *path*. The explicit pathspec makes git commit that path alone,
+    # whatever else is in the index (098).
     returncode, stderr = await _run_git(
-        ["git", "commit", "-m", message], cwd=stand.path, env=env,
+        ["git", "commit", "-m", message, "--", path], cwd=stand.path, env=env,
     )
     if returncode != 0:
         raise WorkspaceSetupError(f"git commit failed (exit {returncode}): {stderr}")

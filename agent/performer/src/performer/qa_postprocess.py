@@ -35,6 +35,15 @@ import structlog
 from performer.main import _VISUAL_TASK_KEYWORDS
 from performer.models import Score
 from performer.protocol import PerformerResponse
+from performer.workspace import WorkspaceSetupError
+from performer.write_scope import (
+    MAX_REPORTED_PATHS,
+    Refusal,
+    ScopeReport,
+    declared_path_refusal,
+    enforce_write_scope,
+    head_paths,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -58,6 +67,18 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     qa_output = (
         _extract_json(qa_raw) if isinstance(qa_raw, str) and qa_raw.strip() else None
     )
+    # 098: before anything is committed, keep the turn to its report and the
+    # new test files it declares. The loop below writes model-named paths.
+    try:
+        write_scope, write_scope_refusals, write_scope_accepted = await _qa_write_scope(
+            perf, qa_output, _doc_folder(perf.score),
+        )
+    except WorkspaceSetupError as exc:
+        perf.state = "error"
+        perf.error_reason = f"QA write-scope check could not run: {exc}"
+        return PerformerResponse(
+            status="error", session_id=perf.session_id, reason=perf.error_reason,
+        )
     if not isinstance(qa_output, dict):
         # 088 US6 (FR-013): the fold-in below never runs on this path, so
         # consult the recorded services-start failure HERE too. An agent
@@ -81,15 +102,27 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             "was empty" if not qa_raw.strip()
             else "could not be parsed as a JSON object"
         )
-        return await _handle_backend_parse_failure(
+        response = await _handle_backend_parse_failure(
             perf, qa_raw, "QA", settings, reason,
         )
+        # 098: the turn still changed the clone, so its scope findings are recorded
+        # on the response. A retry reports them in the log only.
+        scope_note = _scope_note(write_scope, write_scope_refusals)
+        if scope_note:
+            log.warning("qa.write_scope.unparseable_turn", session_id=perf.session_id, note=scope_note[:300])
+            if response.status == "error":
+                response.reason = f"{response.reason or ''} {scope_note}".strip()
+        return response
 
     # Commit new test files written by the backend (FR-005)
     new_tests = qa_output.get("new_test_files", [])
     if isinstance(new_tests, list):
         for tf in new_tests:
-            if isinstance(tf, dict) and tf.get("path") and "content" in tf:
+            # 098: only a declared path that passed the refusal rules is written.
+            if (
+                isinstance(tf, dict) and "content" in tf
+                and isinstance(tf.get("path"), str) and tf["path"] in write_scope_accepted
+            ):
                 try:
                     await commit_file(perf.stand, tf["path"], tf["content"],
                                       "test: add QA acceptance criterion tests")
@@ -197,6 +230,16 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             visual_evidence=visual_evidence,
         ),
     )
+    # 098: out-of-scope commits and refused declared paths are QA verdict problems
+    # whatever the findings say. Restored tracked files and untracked leftovers are
+    # information only: they were never published, and failing on them would fail
+    # honest runs (lockfiles, snapshots, coverage output).
+    if write_scope.committed_out_of_scope or write_scope_refusals:
+        failures.append(
+            _write_scope_failure(
+                write_scope, write_scope_refusals, _doc_folder(perf.score),
+            ),
+        )
     latest_main_sha = perf.score.latest_main_sha.strip()
     qa_freshness_check: dict = {}
     if not latest_main_sha:
@@ -563,6 +606,13 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             qa_report_content += "\n### Capture blockers\n\n"
             for blocker in visual_capture_blockers:
                 qa_report_content += f"- {blocker}\n"
+    # 098: informational. These tracked files were changed by the turn and not
+    # declared; they were restored from HEAD and were never published.
+    if write_scope.restored:
+        qa_report_content += "\n## Out-of-scope edits restored (informational)\n\n"
+        qa_report_content += "The turn changed these tracked files without declaring them. They were restored from HEAD and not published.\n\n"
+        for restored_path in write_scope.restored[:MAX_REPORTED_PATHS]:
+            qa_report_content += f"- `{restored_path}`\n"
     if failures:
         qa_report_content += "\n## Failures\n\n"
         for f in failures:
@@ -849,6 +899,111 @@ def _qa_visual_validation_required(
         ],
     )
     return _VISUAL_TASK_PATTERN.search(content) is not None
+
+
+def _declared_new_test_paths(qa_output: dict) -> list[object]:
+    """Every path a QA turn declares in ``new_test_files``, validated by the guard.
+
+    Entries without a ``content`` key are not writes, so they are skipped, as the
+    commit loop skips them.
+    """
+    new_tests = qa_output.get("new_test_files", [])
+    if not isinstance(new_tests, list):
+        return []
+    return [
+        tf["path"]
+        for tf in new_tests
+        if isinstance(tf, dict) and tf.get("path") and "content" in tf
+    ]
+
+
+async def _qa_write_scope(
+    perf: Any, qa_output: object, folder: str,
+) -> tuple[ScopeReport, list[Refusal], set[str]]:
+    """098: restrict a QA turn to its report and the new test files it declares.
+
+    Returns ``(report, refusals, accepted)``. ``accepted`` are declared paths that
+    passed :func:`declared_path_refusal`; only those may be written. ``refusals``
+    name each declared path that was not allowed, and why. ``report`` is the
+    guard's own finding: out-of-scope commits and their removal (verdict), and
+    restored or left-out paths (information). Raises WorkspaceSetupError when the
+    tree cannot be checked or the turn's starting commit is unknown.
+    """
+    # A stand that is not a clone cannot publish anything (commit_file needs a
+    # repository), so the git scope check is skipped. Declared paths are still
+    # validated against the same rules, with nothing tracked.
+    is_clone = (perf.stand.path / ".git").exists()
+    head_at_start = perf.head_at_start
+    if is_clone and not head_at_start:
+        message = "the turn's starting commit is unknown; the write scope cannot be verified"
+        raise WorkspaceSetupError(message)
+    accepted: set[str] = set()
+    refusals: list[Refusal] = []
+    if isinstance(qa_output, dict):
+        tracked = await head_paths(perf.stand, head_at_start) if is_clone and head_at_start else set()
+        for path in _declared_new_test_paths(qa_output):
+            reason = declared_path_refusal(path, root=perf.stand.path, tracked=tracked)
+            if reason is None:
+                accepted.add(str(path))
+            else:
+                refusals.append(Refusal(str(path), reason))
+    if not is_clone:
+        return ScopeReport([], [], [], None), refusals, accepted
+    allowed = {f"{folder}/qa.md", *accepted}
+    report = await enforce_write_scope(
+        perf.stand, allowed, role="qa", head_at_start=head_at_start,
+    )
+    return report, refusals, accepted
+
+
+def _bounded_paths(paths: list[str]) -> str:
+    shown = ", ".join(paths[:MAX_REPORTED_PATHS])
+    overflow = len(paths) - MAX_REPORTED_PATHS
+    if overflow > 0:
+        shown += f" (and {overflow} more)"
+    return shown
+
+
+def _scope_note(report: ScopeReport, refusals: list[Refusal]) -> str:
+    """One line for the unparseable-output path, which returns before the verdict."""
+    parts: list[str] = []
+    if report.committed_out_of_scope:
+        parts.append(
+            "out-of-scope commits removed from the branch: "
+            + _bounded_paths(report.committed_out_of_scope),
+        )
+    if refusals:
+        parts.append("declared paths refused: " + ", ".join(r.path for r in refusals[:MAX_REPORTED_PATHS]))
+    if report.restored:
+        parts.append("tracked files restored from HEAD: " + _bounded_paths(report.restored))
+    return ("QA write scope: " + "; ".join(parts)) if parts else ""
+
+
+def _write_scope_failure(report: ScopeReport, refusals: list[Refusal], report_path: str) -> dict:
+    """The QA defect for scope violations: out-of-scope commits and refused declared
+    paths. Restored and left-out paths are information and never appear here. The
+    wording must not trip the environmental classifier: a clobber is a defect, not a
+    missing tool."""
+    parts: list[str] = []
+    if report.committed_out_of_scope:
+        parts.append(
+            "commits made during the turn touched paths outside its scope; those commits "
+            "were removed from the branch: " + _bounded_paths(report.committed_out_of_scope),
+        )
+    if refusals:
+        shown = [f"{r.path} ({r.reason})" for r in refusals[:MAX_REPORTED_PATHS]]
+        overflow = len(refusals) - MAX_REPORTED_PATHS
+        text = ", ".join(shown) + (f" (and {overflow} more)" if overflow > 0 else "")
+        parts.append(f"declared paths refused, nothing written: {text}")
+    return {
+        "file": None,
+        "line": None,
+        "message": "QA turn committed or declared paths outside its report scope",
+        "type": "write_scope_violation",
+        "criterion": "QA turn writes only its report and new test files",
+        "expected": f"Only {report_path} and new test files are written",
+        "actual": "; ".join(parts),
+    }
 
 
 def _delete_qa_capture_dir(qa_output: dict) -> None:
