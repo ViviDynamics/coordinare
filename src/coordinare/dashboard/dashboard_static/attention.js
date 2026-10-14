@@ -41,6 +41,21 @@ function attentionCardLabel(number, title, fallback) {
 // no per-session review-required flag, so counting it would invent a claim.
 // 139: an item on a card no symphony claims is still shown under every symphony
 // choice, and says so, so the operator knows whose it is.
+// 142: true when the conductor holds this card for a dependency with blockers (the page's own
+// skip record, top-level or in the card's symphony). The chip reads the same record.
+function attentionDependencyWait(s, cardId) {
+  if (!cardId) return false;
+  var maps = [s.session_skip_reasons];
+  (Array.isArray(s.symphonies) ? s.symphonies : []).forEach(function(sym) {
+    maps.push(sym && sym.state ? sym.state.session_skip_reasons : null);
+  });
+  return maps.some(function(map) {
+    if (!map || !Object.prototype.hasOwnProperty.call(map, cardId)) return false;
+    var r = map[cardId];
+    return !!r && r.reason === 'dependency_blocked' && Array.isArray(r.blockers) && r.blockers.length > 0;
+  });
+}
+
 // 142: the words for a cause the conductor named, or '' when it named none.
 function attentionCauseText(code) {
   var map = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY.block_cause_labels) || {};
@@ -81,6 +96,8 @@ function attentionItems(s) {
     if (!sess || sess.phase !== 'blocked') return;
     var cardId = sess.card_id ? String(sess.card_id) : '';
     if (cardId && askedCards[cardId]) return;
+    // 142: a card held for a dependency is Waiting on #N, the same kind its chip names, not Needs human.
+    if (attentionDependencyWait(s, cardId)) return;
     var stage = typeof sess.performer_stage === 'string' ? sess.performer_stage : '';
     items.push({
       kind: 'needs_human',

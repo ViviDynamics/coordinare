@@ -77,7 +77,7 @@ def test_a_format_failure_whose_retries_are_spent_is_named_as_exhausted() -> Non
     reason = describe_format_exhaustion(
         "BACKEND_FORMAT_ERROR: Expecting value at line 1", stage="implementing", count=3, identical=True,
     )
-    assert block_cause(_stopped(system_error_reason=reason)) == CAUSE_FORMAT_EXHAUSTED
+    assert block_cause(_stopped(system_error_reason=reason, system_error_notified=True)) == CAUSE_FORMAT_EXHAUSTED
 
 
 def test_any_other_recorded_error_is_the_performers_error() -> None:

@@ -127,6 +127,7 @@ from coordinare.services.assessor_failure import (
     classify_assessor_failure,
     format_repair_hint,
 )
+from coordinare.services.block_cause import OUTPUT_CAP_REASON
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
@@ -2848,6 +2849,8 @@ async def _phase_token_limit(
                     card_id=card_id,
                     error=str(exc),
                 )
+        # 142: the stop names its own cause, so the Blocked chip can say it was the output cap.
+        state["system_error_reason"] = OUTPUT_CAP_REASON
         state["phase"] = "blocked"
         state["open_questions"] = redact_state_value([advice])
         return state

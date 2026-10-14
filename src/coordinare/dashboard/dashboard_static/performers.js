@@ -757,11 +757,9 @@ function renderPerformersPage(s) {
   });
   var skipHtml = roleSkips.length
     ? '<ul class="detail-list">' + roleSkips.map(function(sr) {
-        var r = sr.reason || {};
-        var label = esc(queueLimitLabel(r) || r.reason || 'skipped');
-        var blockers = Array.isArray(r.blockers) && r.blockers.length
-          ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
-        return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
+        // 142: the wait in words the Blocked column uses ("Waiting on #N"), never the wire code.
+        var label = esc(skipReasonText(sr.reason));
+        return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span>: ' + label + '</li>';
       }).join('') + '</ul>'
     : '';
 

@@ -214,6 +214,11 @@ class DashboardStore:
                 # when the stage or phase happened to move, which is minutes to
                 # tens of minutes apart -- the exact gap this is meant to close.
                 sess.get("workflow_step"),
+                # 142: a change of cause (or a new environment hold) must reach the page.
+                # The reason text is compared here only; it is never sent.
+                sess.get("system_error_reason"),
+                bool(sess.get("env_blocked")),
+                block_cause(sess),
             ))
         return tuple(parts)
 

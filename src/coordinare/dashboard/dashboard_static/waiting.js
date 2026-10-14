@@ -193,6 +193,17 @@ function blockedSessionText(sess, questions, skipReasons) {
   return reason.text || waitLabel('needs_human');
 }
 
+// 142: the words for a card the conductor did not pick up this check, on the
+// Performers page. A dependency names its blockers, a capacity hold uses the queued
+// words, and any other skip reads as not picked up. The wire code is never shown.
+function skipReasonText(skip) {
+  var r = skip || {};
+  if (r.reason === 'dependency_blocked' && waitBlockersText(r.blockers)) {
+    return dependencyReason(r.blockers).text;
+  }
+  return queuedWaitText(r.reason, {capacity: r.capacity, waiting: r.waiting_on_review}) || 'Not picked up this check';
+}
+
 function dependencyReason(blockers) {
   return {
     kind: 'waiting_on',

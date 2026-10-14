@@ -153,5 +153,26 @@ everyChip.forEach(function(text, i) {
 });
 lacks("the banner row does not say blocked", attentionListHtml(attentionBlocked).toLowerCase(), "blocked");
 
+// --- 6. the skipped-card list names the wait, never the wire code -------------
+check("a dependency skip on the Performers page says Waiting on",
+  skipReasonText({ reason: "dependency_blocked", blockers: [42, 43] }), "Waiting on #42, #43");
+check("a queued skip keeps the queued words",
+  skipReasonText({ reason: "pipeline_capacity", capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 card slots in use");
+check("an unrecognised skip is not shown by its wire code",
+  skipReasonText({ reason: "blocked_column" }), "Not picked up this check");
+check("a skip with no reason is still named", skipReasonText(undefined), "Not picked up this check");
+
+// --- 7. the banner counts Needs human, not a dependency wait -------------------
+const depSession = { card_id: "PVTI_70", phase: "blocked", card_title: "Waits", issue_number: 70 };
+check("a blocked session waiting on a dependency is not a Needs human item",
+  attentionItems({ active_sessions: [depSession], open_questions: [],
+    session_skip_reasons: { PVTI_70: { reason: "dependency_blocked", blockers: [9] } } }).length, 0);
+check("a dependency wait in a symphony's own state is also not counted",
+  attentionItems({ active_sessions: [depSession], open_questions: [],
+    symphonies: [{ name: "alpha", state: { session_skip_reasons: { PVTI_70: { reason: "dependency_blocked", blockers: [9] } } } }] }).length, 0);
+check("a blocked session with a cause is a Needs human item",
+  attentionItems({ active_sessions: [Object.assign({}, depSession, { block_cause: "closed_pr" })], open_questions: [] })[0].kind,
+  "needs_human");
+
 console.log("SUMMARY " + passed + " " + failed);
 if (failed > 0) { process.exitCode = 1; }

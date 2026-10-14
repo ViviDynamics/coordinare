@@ -13,6 +13,19 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+#: The GitHub App coordinare posts as. GitHub shows its login with and without the
+#: ``[bot]`` suffix, so both are the coordinare account.
+COORDINARE_APP_LOGINS = frozenset({"vivi-coordinare", "vivi-coordinare[bot]"})
+
+
+def is_coordinare_author(login: str) -> bool:
+    """True when coordinare itself wrote the comment (#142).
+
+    Its own comments are never human input, whatever their text says: a comment
+    that reads like a question or a blocker is still coordinare's own report.
+    """
+    return login in COORDINARE_APP_LOGINS
+
 
 @dataclass
 class CommentClassification:
@@ -209,6 +222,9 @@ async def fetch_new_issue_comments(
         return []
     events: list[IssueCommentEvent] = []
     for c in raw:
+        # 142: coordinare's own comments are never human input, whatever their text says.
+        if is_coordinare_author(str(c.get("author", ""))):
+            continue
         events.append(
             IssueCommentEvent(
                 issue_number=issue_number,
