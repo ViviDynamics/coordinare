@@ -186,8 +186,9 @@ def test_retention_survives_an_entry_whose_stat_fails(
     monkeypatch.setattr(Path, "stat", failing_stat)
     monkeypatch.setattr(Path, "lstat", failing_lstat)
     assert prune_expired(root, retention_days=30) == 1
-    assert bad.exists()
-    assert not good.exists()
+    # os.path, not Path: on Python 3.12 Path.exists goes through the patched stat.
+    assert os.path.exists(bad)
+    assert not os.path.exists(good)
 
 
 # --- item 6: an unreadable tail fails the run, it never resets the cursor -----------
