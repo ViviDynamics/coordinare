@@ -53,14 +53,7 @@ class _Runtime:
         yield b"line one\n"
         yield b"line two\n"
 
-    async def stop(
-        self,
-        handle: str,
-        *,
-        timeout_s: int = 10,
-        host_log_dir: Path | None = None,
-        performer_id: str | None = None,
-    ) -> None:
+    async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
         self.events.append("stop")
         self.stops += 1
         self.file_present_at_stop = os.path.exists(self.final_path)

@@ -156,7 +156,7 @@ class TestRapidRestartOfTheSamePerformer:
         async def churn():
             for _ in range(6):
                 started = await runtime.start_ephemeral(_config("impl"))
-                await runtime.stop(started.handle, performer_id="impl")
+                await runtime.stop(started.handle)
 
         asyncio.run(churn())
 
@@ -173,7 +173,7 @@ class TestRapidRestartOfTheSamePerformer:
 
         async def scenario():
             started = await runtime.start_ephemeral(_config("impl"))
-            await runtime.stop(started.handle, performer_id="impl")
+            await runtime.stop(started.handle)
             return started.handle
 
         handle = asyncio.run(scenario())
@@ -205,7 +205,7 @@ class TestThisSuiteHasTeeth:
         async def churn():
             for _ in range(6):
                 started = await runtime.start_ephemeral(_config("impl"))
-                await runtime.stop(started.handle, performer_id="impl")
+                await runtime.stop(started.handle)
 
         with pytest.raises(performer_lifecycle.ContainerStartError):
             asyncio.run(churn())
@@ -233,9 +233,7 @@ class TestConcurrentDistinctPerformers:
             assert len({s.handle for s in started}) == len(ids), (
                 "distinct performers must get distinct Pod names"
             )
-            await asyncio.gather(
-                *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True)),
-            )
+            await asyncio.gather(*(runtime.stop(s.handle) for s in started))
 
         asyncio.run(scenario())
         assert cluster.create_conflicts == 0
@@ -252,7 +250,7 @@ class TestConcurrentDistinctPerformers:
             )
             for _ in range(4):
                 churned = await runtime.start_ephemeral(_config("churner"))
-                await runtime.stop(churned.handle, performer_id="churner")
+                await runtime.stop(churned.handle)
             return {s.handle for s in long_lived}
 
         expected = asyncio.run(scenario())
