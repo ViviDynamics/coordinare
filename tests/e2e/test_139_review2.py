@@ -107,7 +107,7 @@ def test_a_blocked_rebase_job_stays_visible_under_a_selected_symphony(
     expect(page.locator("#symphony-select")).to_have_value("beta-sym", timeout=_WAIT_LIVE)
 
     expect(page.locator("#rebase-status-card")).to_be_visible()
-    expect(page.locator("#rebase-status-list")).to_contain_text("blocked")
+    expect(page.locator("#rebase-status-list")).to_contain_text("needs human")
     expect(page.locator("#rebase-status-list")).to_contain_text("alpha-sym")
     expect(page.locator("#rebase-status-list")).not_to_contain_text("clean")
 
