@@ -167,6 +167,10 @@ async def _derive_resume_stage(github: GitHubServiceProtocol, card: dict[str, An
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 
+# One slot rule (#179): a card holds a slot while it has work of ours to do or
+# under way. The pipeline budget (services/pipeline_budget.py) applies the same
+# rule at dispatch: a card parked in review releases its reservation.
+#
 # Phases that do not occupy a concurrency slot.  Blocked cards are waiting on a
 # human answer and have no live performer running, so they shouldn't prevent
 # the coordinare from picking up additional TODO work up to ``max_concurrent_cards``.

@@ -579,6 +579,7 @@ _LEGACY_GLOBAL_FIELDS = {
     "poll_interval_seconds",
     "heartbeat_interval_seconds",
     "max_concurrent_cards",
+    "max_cards_in_review",
     "max_feedback_cycles",
     "max_closed_pr_attempts_per_issue",
     "log_level",
@@ -595,7 +596,7 @@ def test_legacy_get_config_global_returns_exact_field_slice(temp_config_path):
     client = _make_client(temp_config_path, raw)
     resp = client.get("/api/config/global")
     assert resp.status_code == 200
-    # The exact 11-field editable slice — no more, no less.
+    # The exact editable slice (179 added max_cards_in_review) — no more, no less.
     assert set(resp.json()) == _LEGACY_GLOBAL_FIELDS
 
 

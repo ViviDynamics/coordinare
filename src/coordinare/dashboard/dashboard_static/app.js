@@ -618,6 +618,7 @@ async function loadSymphonyDetail(name, el) {
   var personas = data.personas || {};
   var overrideFields = [
     {key:'max_concurrent_cards', label:'Max concurrent cards', type:'number', placeholder:'1'},
+    {key:'max_cards_in_review', label:'Max cards waiting on review', type:'number', placeholder:'3'},
     {key:'poll_interval_seconds', label:'Poll interval (seconds)', type:'number', placeholder:'30'},
     {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
     {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
@@ -827,7 +828,7 @@ async function loadSymphonyDetail(name, el) {
       var k = inp.getAttribute('data-override-key');
       var v = inp.value.trim();
       if (v === '') return;
-      var numFields = ['max_concurrent_cards','poll_interval_seconds','max_feedback_cycles','max_closed_pr_attempts_per_issue'];
+      var numFields = ['max_concurrent_cards','max_cards_in_review','poll_interval_seconds','max_feedback_cycles','max_closed_pr_attempts_per_issue'];
       overrides[k] = numFields.includes(k) ? Number(v) : v;
     });
     var personas = {};
