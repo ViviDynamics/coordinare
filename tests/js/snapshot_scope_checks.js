@@ -8,9 +8,9 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const [jsPath, keysPath] = process.argv.slice(2);
-if (!jsPath || !keysPath) {
-  console.error("usage: node snapshot_scope_checks.js <symphonies.js> <server-keys.json>");
+const [jsPath, keysPath, sessionKeysPath] = process.argv.slice(2);
+if (!jsPath || !keysPath || !sessionKeysPath) {
+  console.error("usage: node snapshot_scope_checks.js <symphonies.js> <server-keys.json> <session-keys.json>");
   process.exit(1);
 }
 
@@ -37,6 +37,8 @@ vm.runInContext(fs.readFileSync(jsPath, "utf8"), ctx);
 const SCOPE = vm.runInContext("SNAPSHOT_FIELD_SCOPE", ctx);
 const KINDS = ["scoped", "derived", "shared", "hidden"];
 const serverKeys = JSON.parse(fs.readFileSync(keysPath, "utf8"));
+const sessionKeys = JSON.parse(fs.readFileSync(sessionKeysPath, "utf8"));
+const SESSION_ROW = vm.runInContext("typeof SESSION_ROW_FIELDS !== 'undefined' ? SESSION_ROW_FIELDS : null", ctx);
 
 // --- the table covers what the server sends ---------------------------------- #
 const missing = serverKeys.filter((key) => !Object.prototype.hasOwnProperty.call(SCOPE, key));
@@ -44,6 +46,13 @@ check("every server key has a declared scope", missing, []);
 checkTrue("the server key list is not empty", serverKeys.length > 30);
 const badKinds = Object.keys(SCOPE).filter((key) => !KINDS.includes(SCOPE[key]));
 check("every scope is one of the four kinds", badKinds, []);
+
+// Session rows (active_sessions[]) are filtered with their session, so their keys are
+// declared once, as a row, not per scope.
+checkTrue("SESSION_ROW_FIELDS is declared", Array.isArray(SESSION_ROW));
+const unlistedSession = sessionKeys.filter((key) => !(Array.isArray(SESSION_ROW) && SESSION_ROW.includes(key)));
+check("every session-row key is declared in SESSION_ROW_FIELDS", unlistedSession, []);
+checkTrue("the session key list is not empty", sessionKeys.length > 15);
 
 // --- a selected symphony's view ----------------------------------------------- #
 function symphony(name, number, extra) {
@@ -75,7 +84,12 @@ function snapshot() {
     phase: "monitoring_pr", phase_label: "Waiting on review", agent_dispatch_at: "2026-10-14T09:00:00+00:00",
     card_tokens_total: 4242, agent_session_id: "sess-alpha", pr_url: "https://github.com/acme/x/pull/1",
     cycles_completed: 7, consecutive_error_count: 1, last_cycle_duration_seconds: 12.5,
-    cycle_history: [{ cycle: 1 }], blocked_by_dependencies: [{ issue_number: 5 }], last_rebase_round: { x: 1 },
+    cycle_history: [{ cycle: 1 }], blocked_by_dependencies: [{ issue_number: 5 }],
+    last_rebase_round: { trigger_pr_number: 1, trigger_sha: "a", jobs: [
+      { card_id: "A1", branch: "b1", outcome: "clean" },
+      { card_id: "A1", branch: "b2", outcome: "blocked" },
+      { card_id: "X9", branch: "b3", outcome: "failed" },
+    ] },
     backend_ui_url: "http://alpha.local", session_stats: { calls: 3 }, subsystems: [{ name: "github" }],
     role_utilization: [{ role: "implementer" }], daemon_running: true,
     board_summary: { TODO: 1, BLOCKED: 0, IN_PROGRESS: 0, IN_REVIEW: 0, DONE: 0, BACKLOG: 0 },
@@ -100,20 +114,28 @@ check("the spend is the selected symphony's", beta.token_usage.today, { t: "b" }
 check("the last check's duration is not known per symphony, so it is hidden", beta.last_cycle_duration_seconds, null);
 check("the recent checks are hidden under a symphony", beta.cycle_history, []);
 check("the dependency blockers are hidden under a symphony", beta.blocked_by_dependencies, []);
-check("the rebase round is hidden under a symphony", beta.last_rebase_round, null);
+// A blocked or failed branch needs a person, so it stays under every scope, attributed when
+// its card is known and marked unattributed when no symphony claims it. A healthy branch is
+// informational, so it is hidden under a symphony.
+const rebase = beta.last_rebase_round;
+check("the blocked and failed branches stay under a symphony", rebase.jobs.map((j) => j.outcome), ["blocked", "failed"]);
+check("a branch on alpha's card is attributed to alpha", rebase.jobs[0].symphony, "alpha");
+check("a branch on an unclaimed card is marked unattributed", rebase.jobs[1].unattributed, true);
+check("the healthy branch is hidden, and the round says some were", rebase.partial, true);
+check("the rebase round is not cleared when it needs a person", rebase === null, false);
 check("the backend link is hidden under a symphony", beta.backend_ui_url, null);
 check("the session stats are hidden under a symphony", beta.session_stats, null);
 check("deployment-wide values stay, labelled as shared", beta.subsystems, [{ name: "github" }]);
 check("the capacity table stays, labelled as shared", beta.role_utilization, [{ role: "implementer" }]);
 check("the scope names what it hid", [...beta.scope_hidden].sort(), [
   "backend_ui_url", "blocked_by_dependencies", "cycle_history", "last_cycle_duration_seconds",
-  "last_rebase_round", "session_stats",
+  "session_stats",
 ]);
 
 // An unclaimed card's sessions and questions stay visible under a symphony, and say so.
 const unclaimedSession = beta.active_sessions.find((sess) => sess.card_id === "X9");
 checkTrue("a session on an unclaimed card stays under a symphony", unclaimedSession);
-check("an unclaimed session is marked as not on a symphony's board", unclaimedSession && unclaimedSession.unclaimed, true);
+check("an unclaimed session is marked as on no symphony's GitHub Project", unclaimedSession && unclaimedSession.unclaimed, true);
 check("an unclaimed question stays under a symphony, marked",
   beta.open_questions.filter((q) => q.card_id === "X9").map((q) => q.unclaimed), [true]);
 check("another symphony's question is dropped",

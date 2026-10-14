@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from coordinare.dashboard.assets import _DASHBOARD_JS_DIR, _TEMPLATE_DIR
+from tests.unit.dashboard_js_slices import shipped_function
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "coordinare"
 
@@ -34,42 +36,78 @@ def test_the_paused_card_activity_and_error_name_the_github_project_not_the_boar
 # --- item 1: every top-level snapshot field declares how a symphony scopes it --------- #
 
 _NODE_SNAPSHOT_SCOPE_CHECKS = Path(__file__).resolve().parents[1] / "js" / "snapshot_scope_checks.js"
+_NODE_LAST_STATE_CHECKS = Path(__file__).resolve().parents[1] / "js" / "last_state_scope_checks.js"
+
+# The builders whose returned keys make up the top-level snapshot, and the ones that build a session row.
+_SNAPSHOT_BUILDERS = {"build_snapshot", "_snapshot_core", "_snapshot_extras", "_session_summaries"}
+_SESSION_BUILDERS = {"_session_summary", "_top_state_summary"}
 
 
-def _server_snapshot_keys() -> list[str]:
-    """Every top-level key the snapshot builder returns, read from store.py's AST.
+def _keys_built_by(names: set[str]) -> list[str]:
+    """Every key the named builders return, or assign with ``x["key"] = ...``, read from store.py's AST.
 
-    A key added to ``_snapshot_core`` or ``_snapshot_extras`` appears here without
-    anyone remembering to update the scope table.
+    A key added to a builder's returned dict, to a dict merged into the snapshot, or set by item
+    assignment appears here, so nobody can forget to declare its scope.
     """
     tree = ast.parse((_SRC / "dashboard" / "store.py").read_text(encoding="utf-8"))
     keys: set[str] = set()
     for func in ast.walk(tree):
-        if isinstance(func, ast.FunctionDef) and func.name in {"_snapshot_core", "_snapshot_extras"}:
-            for node in ast.walk(func):
-                if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
-                    keys.update(
-                        key.value for key in node.value.keys
-                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                    )
+        if not (isinstance(func, ast.FunctionDef) and func.name in names):
+            continue
+        for node in ast.walk(func):
+            if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+                keys.update(
+                    key.value for key in node.value.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                )
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                    ):
+                        keys.add(target.slice.value)
     return sorted(keys)
 
 
-def test_every_top_level_snapshot_field_declares_its_scope_and_scoping_is_right(tmp_path: Path) -> None:
-    keys = _server_snapshot_keys()
+def test_every_snapshot_key_declares_its_scope_and_every_session_key_is_declared(tmp_path: Path) -> None:
+    keys = _keys_built_by(_SNAPSHOT_BUILDERS)
+    session_keys = _keys_built_by(_SESSION_BUILDERS)
     assert len(keys) > 30, "the AST walk found too few snapshot keys"
+    assert len(session_keys) > 15, "the AST walk found too few session-row keys"
     keys_file = tmp_path / "keys.json"
     keys_file.write_text(json.dumps(keys), encoding="utf-8")
+    session_file = tmp_path / "session-keys.json"
+    session_file.write_text(json.dumps(session_keys), encoding="utf-8")
     scope_js = tmp_path / "symphonies.js"
     scope_js.write_text(_DASHBOARD_JS_SOURCES["symphonies"], encoding="utf-8")
     node = shutil.which("node")
     assert node is not None, "node is required for the dashboard JS gates"
     result = subprocess.run(
-        [node, str(_NODE_SNAPSHOT_SCOPE_CHECKS), str(scope_js), str(keys_file)],
+        [node, str(_NODE_SNAPSHOT_SCOPE_CHECKS), str(scope_js), str(keys_file), str(session_file)],
         capture_output=True, text=True, timeout=60, check=False,
     )
     report = result.stdout + result.stderr
     assert result.returncode == 0, f"snapshot scope checks failed:\n{report}"
+
+
+def test_every_read_of_the_full_snapshot_goes_through_the_scope_or_is_allow_listed() -> None:
+    node = shutil.which("node")
+    assert node is not None, "node is required for the dashboard JS gates"
+    result = subprocess.run(
+        [node, str(_NODE_LAST_STATE_CHECKS), str(_DASHBOARD_JS_DIR / "symphonies.js"),
+         str(_DASHBOARD_JS_DIR), str(_TEMPLATE_DIR)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    report = result.stdout + result.stderr
+    assert result.returncode == 0, f"a read of _lastState bypasses the scope:\n{report}"
+
+
+def test_the_unclaimed_label_names_the_github_project_and_never_says_board() -> None:
+    label = shipped_function("attention", "attentionDetail")
+    assert "not on any symphony's GitHub Project" in label
+    assert not re.search(r"board", label, re.IGNORECASE), label
 
 
 # --- item 7: per-symphony spend reconciles with the total ------------------------ #

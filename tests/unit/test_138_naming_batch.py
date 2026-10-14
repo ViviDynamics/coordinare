@@ -109,7 +109,8 @@ def test_naming_batch_client_js(tmp_path: Path) -> None:
     js_path = tmp_path / "naming.js"
     js_path.write_text(
         "\n\n".join(
-            [shipped_function("helpers", "esc"), label_helpers_js()]
+            # 139: the headline reads the scoped view, which lives in symphonies.js.
+            [shipped_function("helpers", "esc"), label_helpers_js(), _DASHBOARD_JS_SOURCES["symphonies"]]
             + [shipped_function("helpers", name) for name in (
                 "fmtCost", "busyText", "cardRefText", "conductorHeadline", "refreshConductorHeadline",
                 "nextCheckSeconds",
