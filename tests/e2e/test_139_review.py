@@ -13,7 +13,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore
-from tests.e2e.test_139_symphony_switcher import _open, _snapshot, _symphony, _two_symphonies
+from tests.e2e.test_139_symphony_switcher import _open, _snapshot, _two_symphonies
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_session
 
 
@@ -45,12 +45,12 @@ def test_under_a_selected_symphony_the_headline_and_tokens_are_not_another_symph
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _open(page, live_server_url, store, _busy_alpha_snapshot())
-    expect(page.locator("#phase")).to_contain_text("Alpha card", timeout=_WAIT_LIVE)
+    expect(page.locator("#phase")).to_contain_text("Waiting on review", timeout=_WAIT_LIVE)
 
     page.locator("#symphony-select").select_option("beta-sym")
 
-    expect(page.locator("#phase")).not_to_contain_text("Alpha card")
     expect(page.locator("#phase")).not_to_contain_text("Waiting on review")
+    expect(page.locator("#phase")).not_to_contain_text("Alpha card")
     expect(page.locator("#card-tokens-total")).not_to_contain_text("4,242")
     expect(page.locator("#card-tokens-total")).not_to_contain_text("4242")
 
@@ -66,6 +66,9 @@ def test_under_a_selected_symphony_the_checks_and_errors_are_its_own(
 
     expect(page.locator("#cycles-completed")).to_have_text("2")
     expect(page.locator("#error-count")).to_have_text("0")
+    # The recent checks are not known per symphony, so the panel says so instead of showing them.
+    expect(page.locator("#history-section")).to_contain_text("Shown for all symphonies only.")
+    expect(page.locator("#health-scope-note")).to_have_text("Covers all symphonies.")
 
 
 # --- item 2: an item on a card no symphony claims stays visible under every choice ----- #
@@ -122,6 +125,6 @@ def test_a_feed_card_filter_from_another_symphony_is_reset_on_switch(
     page.locator("#symphony-select").select_option("beta-sym")
 
     expect(page.locator("#af-filter")).to_have_value("")
-    expect(page.locator("#af-filter option")).not_to_contain_text("PVTI_A1")
+    expect(page.locator("#af-filter option[value='PVTI_A1']")).to_have_count(0)
     expect(page.locator("#activity-feed")).not_to_contain_text("alpha lint")
     expect(page.locator("#activity-feed")).to_contain_text("beta lint")

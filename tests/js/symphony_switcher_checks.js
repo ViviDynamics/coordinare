@@ -35,7 +35,7 @@ function snapshot() {
   return {
     symphonies: [
       {
-        name: "placeholder", github_project_number: 16, github_org: "ViviDynamics", repo: "placeholder-sample",
+        name: "placeholder", github_project_number: 16, github_org: "ViviDynamics", repo: "placeholder-sample", cycle_count: 4,
         state: {
           board_snapshot: { TODO: ["P1"], BLOCKED: [], IN_PROGRESS: ["P2"], IN_REVIEW: [], DONE: ["P9"], BACKLOG: ["P8"] },
           board_titles: { P1: "Placeholder card" },
@@ -114,7 +114,7 @@ check("scope recounts the board for the one symphony", scoped.board_summary,
   { TODO: 1, IN_PROGRESS: 1, IN_REVIEW: 0, DONE: 1, BLOCKED: 0, BACKLOG: 1 });
 check("scope shows that symphony's spend", scoped.token_usage.today, { tokens: { total: 4 } });
 check("scope shows that symphony's weekly spend", scoped.token_usage.week, { tokens: { total: 14 } });
-check("scope leaves the conductor's own fields alone", scoped.cycles_completed, 7);
+check("checks completed come from the chosen symphony, not the conductor's last check", scoped.cycles_completed, 4);
 check("the snapshot itself is not changed", s.symphonies.length, 2);
 check("All returns the snapshot unchanged", symphonyScope(s, "") === s, true);
 check("a single symphony returns the snapshot unchanged",

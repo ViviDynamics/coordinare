@@ -82,10 +82,12 @@ function symphonyHoldsCard(state, id) {
 
 // Whether an item that names a card belongs under the choice. An item that names
 // no card is about the whole conductor (a required subsystem, a daemon-level
-// event), so it stays under every choice.
+// event), and an item on a card no symphony claims could be anyone's, so both
+// stay under every choice. Only another symphony's card is hidden.
 function symphonyKeepsCard(s, choice, cardId) {
   if (!choice || !cardId) return true;
-  return symphonyOfCard(s, cardId) === choice;
+  var owner = symphonyOfCard(s, cardId);
+  return owner === '' || owner === choice;
 }
 
 // Counts per board column, summed over the symphonies given.
@@ -114,26 +116,206 @@ function symphonySpend(block, choice) {
 
 // The snapshot as one symphony sees it. All symphonies, or a deployment with a
 // single symphony, returns the snapshot unchanged.
+// Every top-level snapshot field, and how a selected symphony scopes it. A field
+// the server adds must get a row here: tests/js/snapshot_scope_checks.js and
+// tests/unit/test_139_review_fixes.py fail until it does.
+//   scoped  narrowed to the symphony's own rows (its sessions, questions, counts, spend)
+//   derived rebuilt from the symphony's own entry in symphonies[] or its own session
+//   shared  deployment-wide; shown under every symphony, labelled as covering all of them
+//   hidden  not known per symphony; cleared under a symphony and named in scope_hidden
+var SNAPSHOT_FIELD_SCOPE = {
+  activity_quiet_threshold_seconds: 'shared',
+  stall_timeout_seconds: 'shared',
+  phase: 'derived',
+  phase_label: 'derived',
+  active_card_title: 'derived',
+  active_card_column: 'derived',
+  active_card_issue_url: 'derived',
+  pr_url: 'derived',
+  agent_session_id: 'derived',
+  agent_dispatch_at: 'derived',
+  open_questions: 'scoped',
+  card_clarifications: 'derived',
+  performer_events: 'derived',
+  performer_metrics: 'derived',
+  performer_stage: 'derived',
+  lifecycle_sequence: 'derived',
+  performer_backend: 'derived',
+  performer_logs: 'derived',
+  card_tokens_total: 'derived',
+  card_cost_estimate: 'derived',
+  active_session_count: 'derived',
+  active_sessions: 'scoped',
+  subsystems: 'shared',
+  overall_health: 'shared',
+  project_name: 'shared',
+  project_board_url: 'shared',
+  cycles_completed: 'derived',
+  last_cycle_duration_seconds: 'hidden',
+  consecutive_error_count: 'derived',
+  daemon_start_time: 'shared',
+  poll_interval_seconds: 'derived',
+  token_usage: 'scoped',
+  activity_run_id: 'shared',
+  cycle_history: 'hidden',
+  cycle_active: 'shared',
+  daemon_running: 'shared',
+  blocked_by_dependencies: 'hidden',
+  last_rebase_round: 'hidden',
+  role_utilization: 'shared',
+  assignee_filter: 'shared',
+  include_unassigned: 'shared',
+  ownership_hint: 'derived',
+  board_summary: 'scoped',
+  last_poll_at: 'derived',
+  backend_ui_url: 'hidden',
+  session_stats: 'hidden',
+  session_skip_reasons: 'derived',
+  symphonies: 'scoped',
+  coordinare: 'shared'
+};
+
+// The phases that make a session the one the conductor is watching.
+var SYMPHONY_FOCUS_PHASES = ['monitoring_performer', 'monitoring_agent', 'relay_feedback'];
+
+// A copy of an item on a card no symphony claims, marked so the page can say so.
+function symphonyUnclaimed(item) {
+  var copy = {};
+  for (var key in item) {
+    if (symphonyHas(item, key)) copy[key] = item[key];
+  }
+  copy.unclaimed = true;
+  return copy;
+}
+
+// The session the conductor's own fields describe under a symphony: the first of
+// its own sessions in a monitoring phase, else its first session, else none.
+function symphonyFocusSession(own) {
+  for (var i = 0; i < own.length; i++) {
+    if (SYMPHONY_FOCUS_PHASES.indexOf(own[i].phase) !== -1) return own[i];
+  }
+  return own.length > 0 ? own[0] : null;
+}
+
+// The snapshot as one symphony sees it. All symphonies, or a deployment with a
+// single symphony, returns the snapshot unchanged. Items on a card no symphony
+// claims stay, marked unclaimed, so nothing that needs a person is hidden.
 function symphonyScope(s, choice) {
   if (!s || !choice || symphonyNames(s).length < 2) return s;
+  var mine = symphonyEntry(s, choice);
+  var state = mine.state || {};
   var scoped = {};
   for (var key in s) {
     if (symphonyHas(s, key)) scoped[key] = s[key];
   }
+
+  // Sessions: the symphony's own, and the unclaimed ones marked as such.
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var kept = [];
+  var own = [];
+  sessions.forEach(function(sess) {
+    if (!sess) return;
+    var owner = symphonyOfCard(s, sess.card_id);
+    if (owner === choice) { kept.push(sess); own.push(sess); }
+    else if (owner === '') { kept.push(symphonyUnclaimed(sess)); }
+  });
+  scoped.active_sessions = kept;
+  scoped.active_session_count = own.length;
+
+  // Questions: the symphony's own, and the unclaimed ones marked as such.
   var questions = Array.isArray(s.open_questions) ? s.open_questions : [];
-  scoped.active_sessions = sessions.filter(function(sess) {
-    return !!sess && symphonyOfCard(s, sess.card_id) === choice;
-  });
-  scoped.open_questions = questions.filter(function(q) {
-    return !q || typeof q !== 'object' || symphonyKeepsCard(s, choice, q.card_id);
-  });
+  scoped.open_questions = questions.reduce(function(out, q) {
+    if (!q || typeof q !== 'object') { out.push(q); return out; }
+    var owner = symphonyOfCard(s, q.card_id);
+    if (owner === choice) out.push(q);
+    else if (owner === '') out.push(symphonyUnclaimed(q));
+    return out;
+  }, []);
+
+  // The conductor's own fields: from the focus session, or idle when it has none.
+  var focus = symphonyFocusSession(own);
+  scoped.phase = focus ? focus.phase : 'idle';
+  scoped.phase_label = null;
+  scoped.active_card_title = focus ? focus.card_title || null : null;
+  scoped.active_card_column = null;
+  scoped.active_card_issue_url = focus ? focus.issue_url || null : null;
+  scoped.pr_url = focus ? focus.pr_url || null : null;
+  scoped.agent_session_id = focus ? focus.session_id || null : null;
+  scoped.agent_dispatch_at = focus ? focus.agent_dispatch_at || null : null;
+  scoped.card_clarifications = [];
+  scoped.performer_events = focus && Array.isArray(focus.performer_events) ? focus.performer_events : [];
+  scoped.performer_metrics = focus ? focus.performer_metrics || null : null;
+  scoped.performer_stage = focus ? focus.performer_stage || '' : '';
+  scoped.lifecycle_sequence = [];
+  scoped.performer_backend = focus ? focus.performer_backend || '' : '';
+  scoped.performer_logs = focus && Array.isArray(focus.performer_logs) ? focus.performer_logs : [];
+  scoped.card_tokens_total = focus ? focus.card_tokens_total || 0 : 0;
+  scoped.card_cost_estimate = focus ? focus.card_cost_estimate || 0 : 0;
+
+  // The symphony's own counts, poll timing and settings.
+  scoped.cycles_completed = symphonyNumber(mine.cycle_count);
+  scoped.consecutive_error_count = symphonyNumber(mine.error_count);
+  scoped.poll_interval_seconds = symphonyNumber(mine.poll_interval_seconds);
+  scoped.last_poll_at = mine.last_poll_at || null;
+  scoped.ownership_hint = typeof mine.ownership_hint === 'string' ? mine.ownership_hint : '';
+  scoped.session_skip_reasons = state.session_skip_reasons || {};
+
+  // The symphony list, counts and spend, narrowed to the choice.
   scoped.symphonies = (Array.isArray(s.symphonies) ? s.symphonies : []).filter(function(sym) {
     return !!sym && sym.name === choice;
   });
   scoped.board_summary = symphonyBoardSummary(scoped.symphonies);
   scoped.token_usage = symphonySpend(s.token_usage, choice);
+
+  // Hidden: values the snapshot does not carry per symphony. Each is cleared and named.
+  scoped.scope_hidden = ['backend_ui_url', 'blocked_by_dependencies', 'cycle_history',
+    'last_cycle_duration_seconds', 'last_rebase_round', 'session_stats'];
+  scoped.backend_ui_url = null;
+  scoped.blocked_by_dependencies = [];
+  scoped.cycle_history = [];
+  scoped.last_cycle_duration_seconds = null;
+  scoped.last_rebase_round = null;
+  scoped.session_stats = null;
   return scoped;
+}
+
+// A count from a symphony entry, or null when the snapshot does not carry it.
+function symphonyNumber(value) {
+  return typeof value === 'number' && isFinite(value) ? value : null;
+}
+
+// The notes that say a panel covers every symphony, or that it is not shown per symphony.
+var SCOPE_NOTE_HIDDEN = 'Shown for all symphonies only.';
+var SCOPE_NOTE_SHARED = 'Covers all symphonies.';
+
+function applyScopeNotes(s) {
+  var scoped = !!(s && Array.isArray(s.scope_hidden));
+  var hidden = scoped ? s.scope_hidden : [];
+  function note(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text;
+    return el;
+  }
+  note('health-scope-note', scoped ? SCOPE_NOTE_SHARED : '');
+  note('capacity-scope-note', scoped ? 'Capacity is shared by all symphonies.' : '');
+  var last = document.getElementById('last-duration');
+  if (last) last.title = hidden.indexOf('last_cycle_duration_seconds') !== -1 ? SCOPE_NOTE_HIDDEN : '';
+  var history = document.getElementById('history-section');
+  if (history && hidden.indexOf('cycle_history') !== -1) {
+    history.innerHTML = '<span class="empty-state">Recent checks cover all symphonies. ' + SCOPE_NOTE_HIDDEN + '</span>';
+  }
+  var depList = document.getElementById('dependency-blockers-list');
+  var depCard = document.getElementById('dependency-blockers-card');
+  if (depList && depCard && hidden.indexOf('blocked_by_dependencies') !== -1) {
+    depCard.style.display = '';
+    depList.innerHTML = '<li class="empty-state">Dependency blockers cover all symphonies. ' + SCOPE_NOTE_HIDDEN + '</li>';
+  }
+  var rebaseList = document.getElementById('rebase-status-list');
+  var rebaseCard = document.getElementById('rebase-status-card');
+  if (rebaseList && rebaseCard && hidden.indexOf('last_rebase_round') !== -1) {
+    rebaseCard.style.display = '';
+    rebaseList.innerHTML = '<li class="empty-state">Branch divergence covers all symphonies. ' + SCOPE_NOTE_HIDDEN + '</li>';
+  }
 }
 
 // Only an https link is ever written into the page.
@@ -268,5 +450,18 @@ function refreshScopedViews() {
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
   else renderDashboardExtras(scoped);
+  afUpdateFilterOptions();
   afRender();
+}
+
+// The address for an in-app link: the same path, carrying the symphony the header
+// has chosen, so navigating does not drop the scope. A path that already has a
+// query, or a deployment with one symphony, is returned as it is.
+function pathWithSymphony(path) {
+  var target = String(path || '');
+  if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target;
+  if (symphonyNames(_lastState).length < 2) return target;
+  var choice = currentSymphonyChoice(_lastState);
+  if (!choice) return target;
+  return target + '?' + SYMPHONY_PARAM + '=' + encodeURIComponent(choice);
 }

@@ -86,6 +86,8 @@ function findActivePerformerSession(s) {
   // For aggregate UI indicators, derive from active_sessions instead.
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
   for (var i = 0; i < sessions.length; i++) {
+    // 139: an item on a card no symphony claims is not the conductor's to describe.
+    if (sessions[i].unclaimed) continue;
     var p = sessions[i].phase;
     if (p === 'monitoring_performer' || p === 'monitoring_agent' || p === 'relay_feedback') {
       return sessions[i];
@@ -439,6 +441,8 @@ function renderState(s) {
   }
 
   renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history, { collapse: true, limit: 5 });
+  // 139: the panels that are not known per symphony say so, last, so they win over the rows above.
+  applyScopeNotes(s);
 }
 
 // esc + fmtBytes: /static/helpers.js (#349)
@@ -945,7 +949,8 @@ function navigate(e, path) {
   // Only intercept plain left-clicks; let ctrl/cmd/middle-click open new tabs normally
   if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
   if (e) { e.preventDefault(); }
-  history.pushState(null, '', path);
+  // 139: in-app navigation keeps the symphony the header has chosen.
+  history.pushState(null, '', pathWithSymphony(path));
   window.closeMobileNav();
   router();
 }
@@ -1272,6 +1277,8 @@ function afUpdateEmpty() {
 function afUpdateFilterOptions() {
   var sel = document.getElementById('af-filter');
   if (!sel) return;
+  // 139: a card filter set under another symphony does not survive the switch.
+  if (_afFilter && !afInScope({card_id: _afFilter})) _afFilter = '';
   var seen = {}, cards = [];
   for (var i = 0; i < _afEntries.length; i++) {
     var e = _afEntries[i];
@@ -1279,7 +1286,7 @@ function afUpdateFilterOptions() {
     seen[e.card_id] = true;
     cards.push(e);
   }
-  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:_afFilter + ' (no retained activity)'});
+  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:'(no retained activity)'});
   var key = cards.map(function(e) { return e.card_id; }).join(',');
   if (key === sel.getAttribute('data-cards')) return;
   sel.setAttribute('data-cards', key);

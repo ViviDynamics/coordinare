@@ -136,7 +136,8 @@ def test_the_choice_survives_a_reload_and_navigation(page: Page, live_server_url
     expect(page.locator("#swimlane-section")).not_to_contain_text("Alpha card")
 
     page.locator("#navbar a.nav-link[href='/performers']").click()
-    expect(page).to_have_url(re.compile(r"/performers$"))
+    # 139 review, item 4: navigating keeps the chosen symphony in the address.
+    expect(page).to_have_url(re.compile(r"/performers\?symphony=beta-sym$"))
     expect(page.locator("#symphony-select")).to_have_value("beta-sym")
     expect(page.locator("#symphony-identity")).to_have_text("beta-sym · GitHub Project #2 · acme/beta-repo")
 
