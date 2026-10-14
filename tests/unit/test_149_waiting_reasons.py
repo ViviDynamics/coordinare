@@ -1,14 +1,12 @@
 """#149: why each waiting card is waiting.
 
 The conductor decides, in check_board, whether a To Do card with no session is
-picked up. Those decisions are written into the per-symphony state where they
-are made (services/todo_waits.py), and the daemon carries them to the snapshot.
-The budget verdict for a new card is the dispatch gate's own (pipeline_budget),
-so a card parked in review does not count as a slot, and the review cap is
-named when it is what holds the card. This covers the recorder, the dependency
-verdict that overrides it, the daemon plumbing and the snapshot shape. The
-browser side is covered by tests/js/waiting_checks.js and
-tests/e2e/test_149_waiting_reasons.py.
+picked up. Each verdict written into the per-symphony state reports the
+decision that holds the card: the pickup's own slot count, the dependency
+filter, or the pickup's escalation and ownership tests (services/todo_waits.py).
+The daemon carries the verdicts to the snapshot, and the review cap is named
+only on cards that already have a session. The end-to-end checks against the
+real check_board pickup are in tests/unit/test_149_review_fixes.py.
 """
 from __future__ import annotations
 
@@ -29,10 +27,11 @@ from coordinare.services.todo_waits import (
     REASON_ASSIGNED_ELSEWHERE,
     REASON_ESCALATED,
     REASON_QUEUED,
-    REASON_REVIEW_CAPACITY,
     REASON_UNASSIGNED,
     REASON_WAITING_ON,
+    open_slots,
     record_dependency_waits,
+    record_pickup_outcome,
     refresh_todo_waits,
 )
 from coordinare.vocabulary import WAITS, payload
@@ -43,29 +42,24 @@ _OPEN = OwnershipPolicy(login="coordinare-bot", include_unassigned=True)
 _NO_FILTER = OwnershipPolicy()  # neither opt-in set: every card is eligible
 
 
-def _parked(cid: str) -> dict[str, Any]:
-    return {"current_card": {"id": cid, "status": "IN_REVIEW", "pr_number": 95},
-            "phase": "monitoring_pr", "performer_stage": "closing_review", "pipeline_admitted": True}
-
-
-def _state(sessions: dict[str, Any] | None = None, *, limit: int = 1, review_limit: int | None = None,
-           selected: set[str] | None = None) -> Any:
+def _state(sessions: dict[str, Any] | None = None, *, limit: int = 1) -> Any:
     state = initial_state()
     state["active_sessions"] = sessions or {}
-    state["config"] = SimpleNamespace(max_concurrent_cards=limit, max_cards_in_review=review_limit)
-    if selected is not None:
-        state["_pipeline_selected"] = selected
+    state["config"] = SimpleNamespace(max_concurrent_cards=limit, max_cards_in_review=None)
     return state
 
 
-def _refresh(state, todo, *, active=(), assignees=None, labels=None, ownership=_OPEN, limit=1):
+def _refresh(state, todo, *, blocked=(), active=(), assignees=None, labels=None,
+             ownership=_OPEN, in_use=0, limit=1):
     refresh_todo_waits(
         state,
         board={"item_labels": labels or {}},
         todo=list(todo),
+        blocked=list(blocked),
         active_card_ids=set(active),
         ownership=ownership,
         assignees=assignees or {},
+        in_use=in_use,
         limit=limit,
     )
     return state["todo_waits"]
@@ -79,170 +73,153 @@ def _dep(card: str, number: int, status: DependencyStatus, repo: str = "") -> Ca
     return CardDependency(dependent_item_id=card, blocker_issue_number=number, status=status, blocker_repo=repo)
 
 
-def _full(state: Any, limit: int = 1) -> Any:
-    """Fill every slot with a running card, as the dispatch gate would have."""
-    state["_pipeline_selected"] = {f"run{i}" for i in range(limit)}
-    return state
+def _entry(reason: str, blockers: list[str], verdict: str) -> dict[str, Any]:
+    return {"reason": reason, "blockers": blockers, "verdict": verdict}
 
 
-# --- the pre-pickup estimate: slots --------------------------------------- #
+# --- the estimate, before the dependency filter has run ------------------- #
 
 
-def test_a_full_board_queues_every_card_that_is_otherwise_free() -> None:
-    state = _full(_state())
-    waits = _refresh(state, ["PVTI_65", "PVTI_66"])
-    assert waits == {"PVTI_65": {"reason": REASON_QUEUED, "blockers": [], "detail": None},
-                     "PVTI_66": {"reason": REASON_QUEUED, "blockers": [], "detail": None}}
-    assert state["todo_capacity"]["in_use"] == 1 and state["todo_capacity"]["limit"] == 1
-    assert state["todo_capacity"]["hold"] == REASON_QUEUED
+def test_open_slots_is_the_pickups_own_count() -> None:
+    assert open_slots(0, 1) == 1
+    assert open_slots(1, 1) == 0
+    assert open_slots(3, 2) == 0
 
 
-def test_a_free_slot_records_no_queue() -> None:
-    state = _state(selected=set())
-    assert _refresh(state, ["PVTI_65"]) == {}
+def test_a_full_board_estimates_a_queued_card() -> None:
+    state = _state()
+    waits = _refresh(state, ["PVTI_65", "PVTI_66"], in_use=1, limit=1)
+    assert waits == {"PVTI_65": _entry(REASON_QUEUED, [], "estimate"),
+                     "PVTI_66": _entry(REASON_QUEUED, [], "estimate")}
+    assert state["todo_capacity"]["in_use"] == 1 and state["todo_capacity"]["hold"] == REASON_QUEUED
+
+
+def test_a_free_slot_records_no_reason() -> None:
+    state = _state()
+    assert _refresh(state, ["PVTI_65"], in_use=0, limit=1) == {}
     assert state["todo_capacity"]["hold"] is None
 
 
+def test_a_pending_blocker_is_named_even_with_a_free_slot() -> None:
+    """Covers the early return in check_board that happens before the dependency filter."""
+    state = _state()
+    graph = _graph(PVTI_1=[_dep("PVTI_1", 42, DependencyStatus.PENDING)])
+    state_graph = graph
+    original = todo_waits._dependency_graph
+    todo_waits._dependency_graph = lambda _state, _board: state_graph
+    try:
+        waits = _refresh(state, ["PVTI_1"], in_use=0, limit=1)
+    finally:
+        todo_waits._dependency_graph = original
+    assert waits == {"PVTI_1": _entry(REASON_WAITING_ON, ["#42"], "estimate")}
+
+
 def test_an_escalated_card_is_named_before_anything_else() -> None:
-    state = _full(_state())
+    state = _state()
     state["advocate_escalation_label"] = "needs-human"
-    waits = _refresh(state, ["PVTI_1"], labels={"PVTI_1": ["needs-human"]})
-    assert waits == {"PVTI_1": {"reason": REASON_ESCALATED, "blockers": [], "detail": None}}
+    waits = _refresh(state, ["PVTI_1"], labels={"PVTI_1": ["needs-human"]}, in_use=1, limit=1)
+    assert waits == {"PVTI_1": _entry(REASON_ESCALATED, [], "estimate")}
 
 
 def test_an_answered_advocate_label_does_not_count_as_escalated() -> None:
-    state = _state(selected=set())
+    state = _state()
     state["advocate_escalation_label"] = "needs-human"
     assert _refresh(state, ["PVTI_1"], labels={"PVTI_1": ["answered"]}) == {}
 
 
 def test_a_card_someone_else_holds_is_filtered_out_with_its_reason() -> None:
-    state = _state(selected=set())
-    waits = _refresh(state, ["PVTI_1", "PVTI_2"], assignees={"PVTI_1": ["alice"]}, ownership=_STRICT)
-    assert waits == {"PVTI_1": {"reason": REASON_ASSIGNED_ELSEWHERE, "blockers": [], "detail": None},
-                     "PVTI_2": {"reason": REASON_UNASSIGNED, "blockers": [], "detail": None}}
+    waits = _refresh(_state(), ["PVTI_1", "PVTI_2"], assignees={"PVTI_1": ["alice"]}, ownership=_STRICT)
+    assert waits == {"PVTI_1": _entry(REASON_ASSIGNED_ELSEWHERE, [], "estimate"),
+                     "PVTI_2": _entry(REASON_UNASSIGNED, [], "estimate")}
 
 
 def test_an_unassigned_card_is_admitted_when_the_filter_allows_it() -> None:
-    assert _refresh(_state(selected=set()), ["PVTI_2"]) == {}
+    assert _refresh(_state(), ["PVTI_2"]) == {}
 
 
 def test_a_card_with_a_session_never_gets_a_todo_wait() -> None:
-    state = _full(_state())
-    assert _refresh(state, ["PVTI_1"], active=["PVTI_1"]) == {}
+    assert _refresh(_state(), ["PVTI_1"], active=["PVTI_1"], in_use=1, limit=1) == {}
 
 
 def test_no_filter_configured_admits_every_card_to_the_queue_check() -> None:
-    state = _state(selected={"a", "b"}, limit=2)
-    waits = _refresh(state, ["PVTI_1"], ownership=_NO_FILTER, limit=2)
-    assert waits == {"PVTI_1": {"reason": REASON_QUEUED, "blockers": [], "detail": None}}
+    waits = _refresh(_state(), ["PVTI_1"], ownership=_NO_FILTER, in_use=2, limit=2)
+    assert waits == {"PVTI_1": _entry(REASON_QUEUED, [], "estimate")}
 
 
-def test_a_card_that_leaves_the_todo_column_loses_its_wait() -> None:
-    state = _full(_state())
-    state["todo_waits"] = {"PVTI_1": {"reason": REASON_QUEUED, "blockers": []}}
-    assert _refresh(state, []) == {}
+def test_a_card_that_leaves_the_todo_column_loses_its_estimate() -> None:
+    state = _state()
+    state["todo_waits"] = {"PVTI_1": _entry(REASON_QUEUED, [], "estimate")}
+    assert _refresh(state, [], in_use=1, limit=1) == {}
 
 
-# --- the pre-pickup estimate: the review cap (#179) ----------------------- #
+def test_a_failed_dependency_read_leaves_the_dependency_reason_blank(monkeypatch) -> None:
+    def broken(_state, _board):
+        raise ValueError("board shape")
+
+    monkeypatch.setattr(todo_waits, "_dependency_graph", broken)
+    state = _state()
+    state["advocate_escalation_label"] = "needs-human"
+    waits = _refresh(state, ["PVTI_1", "PVTI_2"], labels={"PVTI_2": ["needs-human"]}, in_use=1, limit=1)
+    assert waits == {"PVTI_2": _entry(REASON_ESCALATED, [], "estimate")}
 
 
-def test_a_parked_card_does_not_use_a_slot() -> None:
-    """With one slot, a card waiting on review leaves it free for a To Do card."""
-    sessions = {"reviewed": _parked("reviewed")}
-    state = _state(sessions, selected=set())
-    assert _refresh(state, ["PVTI_9"]) == {}
-    assert state["todo_capacity"]["in_use"] == 0
-
-
-def test_a_reached_review_cap_holds_a_free_slot_and_says_so() -> None:
-    sessions = {"p1": _parked("p1"), "p2": _parked("p2")}
-    state = _state(sessions, limit=2, review_limit=2, selected=set())
-    waits = _refresh(state, ["PVTI_9"], limit=2)
-    assert waits == {"PVTI_9": {"reason": REASON_REVIEW_CAPACITY, "blockers": [],
-                                "detail": "max_cards_in_review is 2: 2 waiting on review"}}
-    assert state["todo_capacity"] == {"in_use": 0, "limit": 2, "waiting_on_review": 2,
-                                      "review_limit": 2, "hold": REASON_REVIEW_CAPACITY}
-
-
-def test_slots_full_takes_precedence_over_the_review_cap() -> None:
-    sessions = {"p1": _parked("p1"), "p2": _parked("p2")}
-    state = _state(sessions, limit=2, review_limit=2, selected={"a", "b"})
-    waits = _refresh(state, ["PVTI_9"], limit=2)
-    assert waits["PVTI_9"]["reason"] == REASON_QUEUED
-
-
-def test_the_review_cap_is_read_from_the_budget_not_recomputed() -> None:
-    """Uses configured_review_limit, which never drops below max_concurrent_cards."""
-    sessions = {"p1": _parked("p1")}
-    state = _state(sessions, limit=3, review_limit=1, selected=set())
-    assert _refresh(state, ["PVTI_9"], limit=3) == {}
-    assert state["todo_capacity"]["review_limit"] == 3
-
-
-# --- the dependency filter's verdict -------------------------------------- #
+# --- the dependency filter's verdict ------------------------------------- #
 
 
 def test_a_card_held_back_by_a_pending_blocker_waits_on_it() -> None:
-    state = _state(selected=set())
+    state = _state()
     graph = _graph(PVTI_1=[_dep("PVTI_1", 42, DependencyStatus.PENDING)])
     record_dependency_waits(state, dep_graph=graph, filtered_ids=["PVTI_1"], passed_ids=[])
-    assert state["todo_waits"] == {"PVTI_1": {"reason": REASON_WAITING_ON, "blockers": ["#42"], "detail": None}}
+    assert state["todo_waits"] == {"PVTI_1": _entry(REASON_WAITING_ON, ["#42"], "dependency")}
 
 
 def test_a_foreign_blocker_is_named_with_its_repository() -> None:
-    state = _state(selected=set())
+    state = _state()
     graph = _graph(PVTI_1=[_dep("PVTI_1", 7, DependencyStatus.PENDING, repo="org/other")])
     record_dependency_waits(state, dep_graph=graph, filtered_ids=["PVTI_1"], passed_ids=[])
     assert state["todo_waits"]["PVTI_1"]["blockers"] == ["org/other#7"]
 
 
-def test_an_unresolvable_blocker_is_not_claimed_as_a_wait() -> None:
-    state = _state(selected=set())
-    state["todo_waits"] = {"PVTI_1": {"reason": REASON_WAITING_ON, "blockers": ["#9"]}}
-    graph = _graph(PVTI_1=[_dep("PVTI_1", 9, DependencyStatus.UNRESOLVABLE)])
+def test_an_unresolvable_blocker_is_a_known_wait_after_the_filter_has_run() -> None:
+    state = _state()
+    graph = _graph(PVTI_1=[_dep("PVTI_1", 77, DependencyStatus.UNRESOLVABLE)])
     record_dependency_waits(state, dep_graph=graph, filtered_ids=["PVTI_1"], passed_ids=[])
-    assert state["todo_waits"] == {}
+    assert state["todo_waits"] == {"PVTI_1": _entry(REASON_WAITING_ON, ["#77"], "dependency")}
 
 
-def test_a_card_that_clears_its_dependencies_takes_the_budget_hold() -> None:
-    state = _state(selected=set())
-    state["todo_waits"] = {"PVTI_1": {"reason": REASON_WAITING_ON, "blockers": ["#42"]}}
-    state["todo_capacity"] = {"in_use": 1, "limit": 1, "waiting_on_review": 0, "review_limit": None,
-                              "hold": REASON_QUEUED}
-    record_dependency_waits(state, dep_graph=_graph(), filtered_ids=[], passed_ids=["PVTI_1"])
-    assert state["todo_waits"] == {"PVTI_1": {"reason": REASON_QUEUED, "blockers": [], "detail": None}}
-
-    state["todo_capacity"]["hold"] = None
+def test_a_card_the_filter_lets_through_has_no_dependency_wait() -> None:
+    state = _state()
+    state["todo_waits"] = {"PVTI_1": _entry(REASON_WAITING_ON, ["#42"], "estimate")}
     record_dependency_waits(state, dep_graph=_graph(), filtered_ids=[], passed_ids=["PVTI_1"])
     assert state["todo_waits"] == {}
 
 
-def test_a_review_hold_carries_its_detail_through_the_dependency_verdict() -> None:
-    state = _state(selected=set())
-    state["todo_capacity"] = {"in_use": 0, "limit": 2, "waiting_on_review": 2, "review_limit": 2,
-                              "hold": REASON_REVIEW_CAPACITY}
-    record_dependency_waits(state, dep_graph=_graph(), filtered_ids=[], passed_ids=["PVTI_1"])
-    assert state["todo_waits"]["PVTI_1"]["detail"] == "max_cards_in_review is 2: 2 waiting on review"
+def test_a_blocked_card_keeps_the_dependency_it_was_moved_for() -> None:
+    state = _state()
+    state["todo_waits"] = {
+        "PVTI_1": _entry(REASON_WAITING_ON, ["#77"], "dependency"),
+        "PVTI_2": _entry(REASON_WAITING_ON, ["#5"], "estimate"),
+    }
+    waits = _refresh(state, [], blocked=["PVTI_1", "PVTI_2"])
+    assert waits == {"PVTI_1": _entry(REASON_WAITING_ON, ["#77"], "dependency")}
 
 
-def test_a_full_board_says_waiting_on_for_a_card_with_a_pending_blocker(monkeypatch) -> None:
-    graph = _graph(PVTI_1=[_dep("PVTI_1", 42, DependencyStatus.PENDING)])
-    monkeypatch.setattr(todo_waits, "_dependency_graph", lambda _state, _board: graph)
-    waits = _refresh(_full(_state()), ["PVTI_1", "PVTI_2"])
-    assert waits == {"PVTI_1": {"reason": REASON_WAITING_ON, "blockers": ["#42"], "detail": None},
-                     "PVTI_2": {"reason": REASON_QUEUED, "blockers": [], "detail": None}}
+# --- the pickup's outcome ------------------------------------------------- #
 
 
-def test_a_failed_dependency_read_leaves_the_queue_reason_blank(monkeypatch) -> None:
-    def broken(_state, _board):
-        raise ValueError("board shape")
+def test_the_pickup_records_the_cards_it_held_back_as_queued() -> None:
+    state = _state()
+    record_pickup_outcome(state, held=["PVTI_2"], admitted=["PVTI_1"], in_use=1, limit=1)
+    assert state["todo_waits"] == {"PVTI_2": _entry(REASON_QUEUED, [], "pickup")}
+    assert state["todo_capacity"]["in_use"] == 1 and state["todo_capacity"]["hold"] == REASON_QUEUED
 
-    monkeypatch.setattr(todo_waits, "_dependency_graph", broken)
-    state = _full(_state())
-    state["advocate_escalation_label"] = "needs-human"
-    waits = _refresh(state, ["PVTI_1", "PVTI_2"], labels={"PVTI_2": ["needs-human"]})
-    assert waits == {"PVTI_2": {"reason": REASON_ESCALATED, "blockers": [], "detail": None}}
+
+def test_an_admitted_card_has_no_todo_wait() -> None:
+    state = _state()
+    state["todo_waits"] = {"PVTI_1": _entry(REASON_QUEUED, [], "estimate")}
+    record_pickup_outcome(state, held=[], admitted=["PVTI_1"], in_use=1, limit=2)
+    assert state["todo_waits"] == {}
+    assert state["todo_capacity"]["hold"] is None
 
 
 # --- the daemon keeps them ------------------------------------------------ #
@@ -254,9 +231,16 @@ def test_the_fanout_merge_carries_the_todo_waits_across_session_ticks() -> None:
 
 def test_the_skip_record_carries_the_numbers_behind_each_queue(monkeypatch) -> None:
     monkeypatch.setattr(daemon_module, "_review_wait_logged", {})
-    sessions = {"p1": _parked("p1"), "p2": _parked("p2"), "fresh": {
-        "current_card": {"id": "fresh", "status": "TODO"}, "phase": "dispatching", "performer_stage": "assessing"}}
-    state = _state(sessions, limit=2, review_limit=2)
+    sessions = {
+        "p1": {"current_card": {"id": "p1", "status": "IN_REVIEW", "pr_number": 95}, "phase": "monitoring_pr",
+               "performer_stage": "closing_review", "pipeline_admitted": True},
+        "p2": {"current_card": {"id": "p2", "status": "IN_REVIEW", "pr_number": 96}, "phase": "monitoring_pr",
+               "performer_stage": "closing_review", "pipeline_admitted": True},
+        "fresh": {"current_card": {"id": "fresh", "status": "TODO"}, "phase": "dispatching",
+                  "performer_stage": "assessing"},
+    }
+    state = _state(sessions, limit=2)
+    state["config"] = SimpleNamespace(max_concurrent_cards=2, max_cards_in_review=2)
     _compute_session_eligibilities(state, sessions, 2)
     record = state["session_skip_reasons"]["fresh"]
     assert record["reason"] == "review_capacity"
@@ -266,8 +250,10 @@ def test_the_skip_record_carries_the_numbers_behind_each_queue(monkeypatch) -> N
 
 def test_the_symphony_snapshot_carries_each_boards_waits_and_slots() -> None:
     sym_state = SimpleNamespace(
-        board_snapshot={"TODO": ["PVTI_65"]}, todo_waits={"PVTI_65": {"reason": REASON_QUEUED, "blockers": []}},
+        board_snapshot={"TODO": ["PVTI_65"]},
+        todo_waits={"PVTI_65": _entry(REASON_QUEUED, [], "pickup")},
         todo_capacity={"in_use": 1, "limit": 1, "waiting_on_review": 0, "review_limit": None, "hold": "queued"},
+        session_skip_reasons={"run": {"reason": "pipeline_capacity", "capacity": {"in_use": 1, "limit": 1}}},
         active_sessions={}, active_card=None,
     )
     daemon = SimpleNamespace(state={
@@ -275,8 +261,9 @@ def test_the_symphony_snapshot_carries_each_boards_waits_and_slots() -> None:
         "symphony_states": {"board-a": sym_state},
     })
     (entry,) = DashboardStore._build_symphonies_data(daemon)
-    assert entry["state"]["todo_waits"] == {"PVTI_65": {"reason": REASON_QUEUED, "blockers": []}}
+    assert entry["state"]["todo_waits"] == {"PVTI_65": _entry(REASON_QUEUED, [], "pickup")}
     assert entry["state"]["todo_capacity"]["in_use"] == 1
+    assert entry["state"]["session_skip_reasons"]["run"]["reason"] == "pipeline_capacity"
 
 
 def test_a_symphony_with_no_waits_yet_has_an_empty_map_and_no_slots() -> None:
@@ -286,6 +273,7 @@ def test_a_symphony_with_no_waits_yet_has_an_empty_map_and_no_slots() -> None:
     })
     (entry,) = DashboardStore._build_symphonies_data(daemon)
     assert entry["state"]["todo_waits"] == {}
+    assert entry["state"]["session_skip_reasons"] == {}
     assert entry["state"]["todo_capacity"] is None
 
 
@@ -309,6 +297,7 @@ def test_the_waiting_script_is_shipped_before_the_application_script() -> None:
     assert "waitingLineHtml(waitingReason(" in performers
     assert "todoHeaderTitle(" in performers
     assert "queueLimitLabel(skip)" in performers
+    assert "sessionSkipReasons(s)" in performers
 
 
 def test_waiting_client_js(tmp_path: Path) -> None:

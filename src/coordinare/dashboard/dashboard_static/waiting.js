@@ -100,6 +100,13 @@ function waitingReason(card, snapshot) {
     if (skip && skip.reason === 'dependency_blocked' && waitBlockersText(skip.blockers)) {
       return dependencyReason(skip.blockers);
     }
+    // A card the dependency check moved here (no session) keeps the wait it was moved for.
+    if (!c.has_session) {
+      var moved = waitHas(snap.todo_waits, id) ? snap.todo_waits[id] : null;
+      if (moved && moved.reason === 'waiting_on' && waitBlockersText(moved.blockers)) {
+        return dependencyReason(moved.blockers);
+      }
+    }
     return none;
   }
 
@@ -120,9 +127,6 @@ function waitingReason(card, snapshot) {
   if (!wait) return none;
   if (wait.reason === 'queued') {
     return queuedReason('pipeline_capacity', {capacity: capacity}, null);
-  }
-  if (wait.reason === 'review_capacity') {
-    return queuedReason('review_capacity', {waiting: capacity && capacity.waiting_on_review}, wait.detail);
   }
   if (wait.reason === 'waiting_on') {
     if (!waitBlockersText(wait.blockers)) return none;

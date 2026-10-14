@@ -1,16 +1,23 @@
-"""Why a To Do card has no session (#149).
+"""Why a To Do or Blocked card has no session (#149).
 
-``check_board`` is the one place the conductor decides whether a To Do card is
-picked up. Three things keep a card out: the advocate escalated it to a
-person, the ownership filter does not admit it, or a dependency has not
-reached DONE. When none of those applies and the pipeline budget does not
-admit a new card, the card is queued. The budget verdict is the one the
-dispatch gate uses (``pipeline_budget``): the daemon's selected set, and the
-review cap. The helpers here write each decision into the per-symphony state
-where it is made, so the dashboard names it instead of re-deriving it.
+Each entry reports the decision that actually holds the card. For a card with
+no session there are three such decisions, all made in ``check_board``:
 
-A card with a session never gets an entry here; its wait is the session's
-``session_skip_reasons`` entry, written by the daemon.
+- escalated, assigned_elsewhere, unassigned: the pickup's own escalation and
+  ownership tests, applied in the same order.
+- waiting_on: a dependency that has not reached DONE. The dependency filter
+  (``record_dependency_waits``) is the real verdict. Until it runs in a cycle,
+  ``refresh_todo_waits`` estimates it from the cached board, and only
+  PENDING blockers count there because an off-board closed issue is not known
+  to be closed without the filter's IO.
+- queued: the pickup admits no new card. ``open_slots`` is the one count
+  ``_pickup_todo_cards`` uses, so the reason cannot disagree with the pickup.
+  A card the pickup did not admit is recorded by ``record_pickup_outcome``.
+
+The review cap (``max_cards_in_review``) and the dispatch gate decide only
+cards that already have a session. Those carry ``session_skip_reasons`` from
+the daemon, not an entry here. A To Do card with a free pickup slot is
+admitted, and the review cap is then named on its new session.
 """
 from __future__ import annotations
 
@@ -21,13 +28,7 @@ import structlog
 from coordinare.models.dependency import DependencyStatus
 from coordinare.services.card_ownership import owns_card
 from coordinare.services.dependency import build_graph
-from coordinare.services.pipeline_budget import (
-    configured_review_limit,
-    parked_in_review,
-    review_cap_allows_new_card,
-    review_cap_detail,
-    select_pipelines,
-)
+from coordinare.services.pipeline_budget import configured_review_limit, parked_in_review
 
 if TYPE_CHECKING:
     from coordinare.models.dependency import DependencyGraph
@@ -36,25 +37,29 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 REASON_QUEUED = "queued"
-REASON_REVIEW_CAPACITY = "review_capacity"
 REASON_WAITING_ON = "waiting_on"
 REASON_ESCALATED = "escalated"
 REASON_ASSIGNED_ELSEWHERE = "assigned_elsewhere"
 REASON_UNASSIGNED = "unassigned"
 
+VERDICT_ESTIMATE = "estimate"
+VERDICT_DEPENDENCY = "dependency"
+VERDICT_PICKUP = "pickup"
 
-def _pending_blockers(dep_graph: DependencyGraph, card_id: str) -> list[str]:
-    """Blockers still on the board and not done, as display labels.
+_warned_for_cycle: dict[str, object] = {}
 
-    An unresolvable blocker is left out on purpose: the conductor does not
-    wait on it, it moves the card to Blocked with a comment instead, so naming
-    it here would be a guess about what happens next.
-    """
-    return [
-        f"{dep.blocker_repo}#{dep.blocker_issue_number}" if dep.blocker_repo else f"#{dep.blocker_issue_number}"
-        for dep in dep_graph.by_dependent.get(card_id, [])
-        if dep.status == DependencyStatus.PENDING
-    ]
+
+def open_slots(in_use: int, limit: int) -> int:
+    """How many new cards the pickup may admit. ``_pickup_todo_cards`` calls this too."""
+    return max(0, limit - in_use)
+
+
+def _label(dep: Any) -> str:
+    return f"{dep.blocker_repo}#{dep.blocker_issue_number}" if dep.blocker_repo else f"#{dep.blocker_issue_number}"
+
+
+def _blockers(dep_graph: DependencyGraph, card_id: str, statuses: frozenset[DependencyStatus]) -> list[str]:
+    return [_label(dep) for dep in dep_graph.by_dependent.get(card_id, []) if dep.status in statuses]
 
 
 def _dependency_graph(state: Any, board: dict[str, Any]) -> DependencyGraph:
@@ -66,7 +71,7 @@ def _dependency_graph(state: Any, board: dict[str, Any]) -> DependencyGraph:
 
 
 def _dependency_graph_or_none(state: Any, board: dict[str, Any]) -> DependencyGraph | None:
-    """A failed graph build leaves the queue reason blank, never a guessed one."""
+    """A failed graph build leaves the dependency reason blank, never a guessed one."""
     try:
         return _dependency_graph(state, board)
     except Exception:
@@ -74,31 +79,23 @@ def _dependency_graph_or_none(state: Any, board: dict[str, Any]) -> DependencyGr
         return None
 
 
-def _budget_hold(
-    state: Any, sessions: dict[str, Any], limit: int, review_limit: int | None,
-) -> tuple[str | None, int]:
-    """Why a new card is not admitted right now, and the slots in use.
-
-    The same two tests the dispatch gate applies, in the same order: a full
-    set of slots queues the card; with slots free, a review cap that is reached
-    holds it back. ``None`` means a new card would be admitted.
-    """
-    selected = state.get("_pipeline_selected")
-    if selected is None:
-        # Single-card callers have no daemon-selected set; compute it on copies
-        # so select_pipelines' bookkeeping cannot touch the live sessions.
-        selected = select_pipelines({cid: dict(s) for cid, s in sessions.items()}, limit, review_limit=review_limit)
-    in_use = len(selected)
-    if in_use >= limit:
-        return REASON_QUEUED, in_use
-    if not review_cap_allows_new_card(sessions, review_limit):
-        return REASON_REVIEW_CAPACITY, in_use
-    return None, in_use
+def _entry(reason: str, blockers: list[str], verdict: str) -> dict[str, Any]:
+    return {"reason": reason, "blockers": blockers, "verdict": verdict}
 
 
-def _hold_entry(hold: str, waiting: int, review_limit: int | None) -> dict[str, Any]:
-    detail = review_cap_detail(review_limit, waiting) if hold == REASON_REVIEW_CAPACITY else None
-    return {"reason": hold, "blockers": [], "detail": detail}
+def clear_waits(state: Any) -> None:
+    """Forget every verdict. Used when the board is unreadable or a recorder fails."""
+    state["todo_waits"] = {}
+    state["todo_capacity"] = None
+
+
+def warn_once_per_cycle(state: Any, failure: str) -> None:
+    """A display bug is logged once per cycle, not once per session tick."""
+    token = state.get("orphan_sweep_cycle_token")
+    if _warned_for_cycle.get("token") == token:
+        return
+    _warned_for_cycle["token"] = token
+    logger.warning("check_board.todo_waits_failed", failure=failure, exc_info=True)
 
 
 def refresh_todo_waits(
@@ -106,49 +103,54 @@ def refresh_todo_waits(
     *,
     board: dict[str, Any],
     todo: list[str],
+    blocked: list[str],
     active_card_ids: set[str],
     ownership: OwnershipPolicy,
     assignees: dict[str, Any],
+    in_use: int,
     limit: int,
 ) -> None:
-    """Record the wait for every To Do card, before any pickup is attempted.
+    """Record the estimated wait for every To Do card, and keep the real dependency
+    verdicts already recorded for cards that have since moved to Blocked.
 
-    Escalation and ownership are the same tests the pickup applies, in the
-    same order. Dependencies are read from the cached board only, which is
-    enough when the budget holds the card: it could not be admitted either way,
-    so the only question left is which reason to show. When the budget admits a
-    new card, the card's dependency verdict comes from the dependency filter
-    itself (``record_dependency_waits``) and this step records nothing for it.
+    ``in_use`` is the count ``_pickup_todo_cards`` will use, passed in by
+    check_board so both read the same number.
     """
     sessions = state.get("active_sessions") or {}
     review_limit = configured_review_limit(state.get("config"))
-    hold, in_use = _budget_hold(state, sessions, limit, review_limit)
     waiting = parked_in_review(sessions)
     labels = board.get("item_labels", {}) if isinstance(board, dict) else {}
     escalation = str(state.get("advocate_escalation_label", "") or "")
-    dep_graph = _dependency_graph_or_none(state, board) if hold is not None else None
+    prev = state.get("todo_waits") or {}
+    blocked_set = set(blocked)
     waits: dict[str, dict[str, Any]] = {}
+    for card_id in blocked:
+        old = prev.get(card_id)
+        if card_id not in active_card_ids and isinstance(old, dict) and old.get("verdict") == VERDICT_DEPENDENCY:
+            waits[card_id] = old
+    full = open_slots(in_use, limit) == 0
+    dep_graph = _dependency_graph_or_none(state, board)
     for card_id in todo:
-        if card_id in active_card_ids:
+        if card_id in active_card_ids or card_id in blocked_set:
             continue
         if escalation and escalation in (labels.get(card_id) or []):
-            waits[card_id] = {"reason": REASON_ESCALATED, "blockers": [], "detail": None}
+            waits[card_id] = _entry(REASON_ESCALATED, [], VERDICT_ESTIMATE)
         elif not owns_card(ownership, card_id, assignees):
             reason = REASON_ASSIGNED_ELSEWHERE if assignees.get(card_id) else REASON_UNASSIGNED
-            waits[card_id] = {"reason": reason, "blockers": [], "detail": None}
-        elif hold is not None and dep_graph is not None:
-            blockers = _pending_blockers(dep_graph, card_id)
-            waits[card_id] = (
-                {"reason": REASON_WAITING_ON, "blockers": blockers, "detail": None}
-                if blockers else _hold_entry(hold, waiting, review_limit)
-            )
+            waits[card_id] = _entry(reason, [], VERDICT_ESTIMATE)
+        elif dep_graph is not None:
+            pending = _blockers(dep_graph, card_id, frozenset({DependencyStatus.PENDING}))
+            if pending:
+                waits[card_id] = _entry(REASON_WAITING_ON, pending, VERDICT_ESTIMATE)
+            elif full:
+                waits[card_id] = _entry(REASON_QUEUED, [], VERDICT_ESTIMATE)
     state["todo_waits"] = waits
     state["todo_capacity"] = {
         "in_use": in_use,
         "limit": limit,
         "waiting_on_review": waiting,
         "review_limit": review_limit,
-        "hold": hold,
+        "hold": REASON_QUEUED if full else None,
     }
 
 
@@ -159,27 +161,41 @@ def record_dependency_waits(
     filtered_ids: list[str],
     passed_ids: list[str],
 ) -> None:
-    """Write the dependency filter's verdict over the pre-pickup estimate.
+    """Write the dependency filter's verdict, which replaces the estimate.
 
-    The filter has read comments and resolved off-board blockers by the time it
-    runs, so its verdict replaces whatever the estimate said. A card it held
-    back is waiting on its pending blockers, or shows no reason if the only
-    blocker is unresolvable. A card it let through takes the budget's hold
-    (queued or review capacity) when there is one, and no reason when a slot is
-    free.
+    The filter has read comments and resolved off-board blockers by now, so an
+    UNRESOLVABLE blocker is a known wait here (the card is moved to Blocked
+    with a comment). A card the filter lets through has no dependency wait; the
+    pickup records its queued verdict.
     """
     waits = dict(state.get("todo_waits") or {})
-    capacity = state.get("todo_capacity") or {}
-    hold = capacity.get("hold")
+    statuses = frozenset({DependencyStatus.PENDING, DependencyStatus.UNRESOLVABLE})
     for card_id in filtered_ids:
-        blockers = _pending_blockers(dep_graph, card_id)
+        blockers = _blockers(dep_graph, card_id, statuses)
         if blockers:
-            waits[card_id] = {"reason": REASON_WAITING_ON, "blockers": blockers, "detail": None}
+            waits[card_id] = _entry(REASON_WAITING_ON, blockers, VERDICT_DEPENDENCY)
         else:
             waits.pop(card_id, None)
     for card_id in passed_ids:
-        if hold is not None:
-            waits[card_id] = _hold_entry(hold, int(capacity.get("waiting_on_review", 0)), capacity.get("review_limit"))
-        else:
-            waits.pop(card_id, None)
+        waits.pop(card_id, None)
     state["todo_waits"] = waits
+
+
+def record_pickup_outcome(
+    state: Any,
+    *,
+    held: list[str],
+    admitted: list[str],
+    in_use: int,
+    limit: int,
+) -> None:
+    """Record what ``_pickup_todo_cards`` decided: held cards are queued, admitted cards have a session."""
+    waits = dict(state.get("todo_waits") or {})
+    for card_id in admitted:
+        waits.pop(card_id, None)
+    for card_id in held:
+        waits[card_id] = _entry(REASON_QUEUED, [], VERDICT_PICKUP)
+    state["todo_waits"] = waits
+    capacity = dict(state.get("todo_capacity") or {})
+    capacity.update(in_use=in_use, limit=limit, hold=REASON_QUEUED if held else None)
+    state["todo_capacity"] = capacity

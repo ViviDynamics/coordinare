@@ -3196,10 +3196,13 @@ class CoordinareDaemon:
         sym_state: Any,
         _sym_sessions: dict[str, Any],
         _effective_cfg: Any,
-    ) -> tuple[Any, Any, Any, Any, Any]:
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
         """Swap the per-symphony graph keys into the flat state.  Returns the
         previous values needed by _restore_symphony_swaps: (prev_config,
-        prev_github, prev_workspace_manager, sym_github, sym_workspace_manager)."""
+        prev_github, prev_workspace_manager, sym_github, sym_workspace_manager,
+        prev_todo_waits, prev_todo_capacity)."""
+        _prev_todo_waits = self._state.get("todo_waits")
+        _prev_todo_capacity = self._state.get("todo_capacity")
         # Swap state["config"] to the per-symphony effective config so that
         # graph nodes and _invoke_multi_session() see the symphony's limits.
         _prev_config = self._state.get("config")
@@ -3223,12 +3226,12 @@ class CoordinareDaemon:
                 self._state["board_snapshot"] = sym_state.board_snapshot
             if sym_state.session_skip_reasons is not None:
                 self._state["session_skip_reasons"] = sym_state.session_skip_reasons
-            if sym_state.todo_waits is not None:
-                self._state["todo_waits"] = sym_state.todo_waits
-            if sym_state.todo_capacity is not None:
-                self._state["todo_capacity"] = sym_state.todo_capacity
             if sym_state.previous_phase is not None:
                 self._state["phase"] = sym_state.previous_phase
+        # 149: always assigned, so a symphony with no stored verdicts never
+        # inherits the previous symphony's (its first check may fail).
+        self._state["todo_waits"] = dict(sym_state.todo_waits or {}) if sym_state is not None else {}
+        self._state["todo_capacity"] = sym_state.todo_capacity if sym_state is not None else None
         if _effective_cfg is not None and _effective_cfg is not _prev_config:
             self._state["config"] = _effective_cfg
         if _sym_github is not None:
@@ -3245,6 +3248,8 @@ class CoordinareDaemon:
             _prev_workspace_manager,
             _sym_github,
             _sym_workspace_manager,
+            _prev_todo_waits,
+            _prev_todo_capacity,
         )
 
     def _restore_symphony_swaps(
@@ -3255,8 +3260,14 @@ class CoordinareDaemon:
         prev_workspace_manager: Any,
         sym_github: Any,
         sym_workspace_manager: Any,
+        prev_todo_waits: Any,
+        prev_todo_capacity: Any,
     ) -> None:
         """Inner-finally restore of the per-symphony graph-key swaps."""
+        # 149: the To Do verdicts belong to the symphony that recorded them, so a
+        # cycle that fails puts back what it found.
+        self._state["todo_waits"] = prev_todo_waits or {}
+        self._state["todo_capacity"] = prev_todo_capacity
         self._state["config"] = prev_config
         if sym_github is not None:
             self._state["github_service"] = prev_github
@@ -3329,6 +3340,8 @@ class CoordinareDaemon:
                 _prev_workspace_manager,
                 _sym_github,
                 _sym_workspace_manager,
+                _prev_todo_waits,
+                _prev_todo_capacity,
             ) = self._swap_symphony_state_in(
                 symphony_name, sym_state, _sym_sessions, _effective_cfg,
             )
@@ -3348,6 +3361,8 @@ class CoordinareDaemon:
                     _prev_workspace_manager,
                     _sym_github,
                     _sym_workspace_manager,
+                    _prev_todo_waits,
+                    _prev_todo_capacity,
                 )
 
             # Update symphony state on success

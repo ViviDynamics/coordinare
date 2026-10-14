@@ -67,11 +67,18 @@ check("the review hold keeps the daemon's detail as its title",
   "max_cards_in_review is 3: 3 waiting on review");
 check("a single card waiting on review is singular",
   queuedWaitText("review_capacity", { waiting: 1 }), "Queued: 1 card waiting on review");
-check("the review hold for a To Do card uses the detail the budget recorded",
+check("a To Do card with no recorded wait says nothing, even when the review cap is reached",
   waitingReason({ id: "PVTI_59", column: "TODO" },
-    { todo_waits: { PVTI_59: { reason: "review_capacity", blockers: [], detail: "max_cards_in_review is 2: 2 waiting on review" } },
-      todo_capacity: { in_use: 0, limit: 2, waiting_on_review: 2, review_limit: 2, hold: "review_capacity" } }).text,
-  "Queued: 2 cards waiting on review");
+    { todo_capacity: { in_use: 0, limit: 2, waiting_on_review: 2, review_limit: 2, hold: null } }).kind,
+  "none");
+check("a Blocked card with no session keeps the dependency it was moved for",
+  waitingReason({ id: "PVTI_60", column: "BLOCKED", has_session: false },
+    { todo_waits: { PVTI_60: { reason: "waiting_on", blockers: ["#77"], verdict: "dependency" } } }).text,
+  "Waiting on #77");
+check("a Blocked card with a session does not take a To Do wait",
+  waitingReason({ id: "PVTI_61", column: "BLOCKED", has_session: true },
+    { todo_waits: { PVTI_61: { reason: "waiting_on", blockers: ["#78"] } } }).kind,
+  "none");
 check("queueLimitLabel and the swimlane read the same words",
   queuedWaitText("pipeline_capacity", { capacity: { in_use: 1, limit: 1 } }), "Queued: 1 of 1 card slots in use");
 check("an unknown reason has no queued words", queuedWaitText("mystery", {}), null);

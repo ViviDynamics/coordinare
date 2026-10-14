@@ -167,6 +167,18 @@ function costHtml(sess, s) {
   return '<span title="' + esc(est.basis) + '">' + fmtCost(est.value) + '</span>';
 }
 
+// 149: every session skip reason on the page. The top-level map is restored to
+// its pre-cycle value after a symphony runs, so in symphony mode each board's
+// own map (symphonies[].state.session_skip_reasons) holds the live reasons.
+// Card ids are unique across boards, so the maps merge without collisions.
+function sessionSkipReasons(s) {
+  var merged = Object.assign({}, (s && s.session_skip_reasons) || {});
+  ((s && s.symphonies) || []).forEach(function(sym) {
+    Object.assign(merged, (sym && sym.state && sym.state.session_skip_reasons) || {});
+  });
+  return merged;
+}
+
 // Which limit is keeping a card queued, in plain words. null for any other
 // skip reason, so callers keep their ordinary label. The words are shared with
 // the swimlane's wait line (waiting.js queuedWaitText), so they cannot differ.
@@ -288,8 +300,9 @@ function renderActiveWorkPanels(s) {
   }
 
   // 149: the snapshot the wait reasons read. The slot count is the selected board's.
+  var skipAll = sessionSkipReasons(s);
   var waitSnapshot = {
-    session_skip_reasons: s.session_skip_reasons || {},
+    session_skip_reasons: skipAll,
     open_questions: s.open_questions || [],
     todo_waits: todoWaits,
     todo_capacity: _swimlaneTab ? (todoCapacityBySym[_swimlaneTab] || null) : null,
@@ -364,7 +377,7 @@ function renderActiveWorkPanels(s) {
 
     var liveLine = '';
     if (sess) {
-      var skip = (s.session_skip_reasons || {})[iid];
+      var skip = skipAll[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
       var phaseLabel = queueLimitLabel(skip) || queuedLabel || formatPhaseLabel(sess.phase || '');
@@ -743,7 +756,7 @@ function renderPerformersPage(s) {
   }
 
   // Build skip-reason diagnostics for sessions associated with this role only.
-  var skipReasons = s.session_skip_reasons || {};
+  var skipReasons = sessionSkipReasons(s);
   var roleSkips = [];
   selectedSessions.forEach(function(sess) {
     var reason = skipReasons[sess.card_id];

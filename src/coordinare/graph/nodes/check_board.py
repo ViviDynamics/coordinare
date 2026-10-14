@@ -56,7 +56,14 @@ from coordinare.services.orphan_pr import run_per_cycle_sweep
 from coordinare.services.pipeline_budget import has_live_side_writer
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.review_staleness import classify_review_staleness
-from coordinare.services.todo_waits import record_dependency_waits, refresh_todo_waits
+from coordinare.services.todo_waits import (
+    clear_waits,
+    open_slots,
+    record_dependency_waits,
+    record_pickup_outcome,
+    refresh_todo_waits,
+    warn_once_per_cycle,
+)
 from coordinare.session import create_session_from_card, session_to_state, state_to_session
 
 if TYPE_CHECKING:
@@ -1886,9 +1893,13 @@ async def _apply_todo_dependencies(
     state["blocked_by_dependencies"] = []
     if eligible_todo:
         eligible_todo, filtered_ids, dep_graph = await _dep_filter_cards(state, board, eligible_todo)
-        record_dependency_waits(
-            state, dep_graph=dep_graph, filtered_ids=filtered_ids, passed_ids=list(eligible_todo),
-        )
+        try:
+            record_dependency_waits(
+                state, dep_graph=dep_graph, filtered_ids=filtered_ids, passed_ids=list(eligible_todo),
+            )
+        except Exception:
+            clear_waits(state)
+            warn_once_per_cycle(state, "dependency")
         if filtered_ids:
             logger.info(
                 "check_board.dependency_filtered",
@@ -2046,13 +2057,14 @@ async def _pickup_todo_cards(
     # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
     # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
     active_count = _count_slot_consuming_sessions(state)
-    slots_available = max(0, max_cards - active_count)
+    slots_available = open_slots(active_count, max_cards)
     lifecycle_seq = [
         str(s) for s in (state.get("lifecycle_sequence") or ["implementing"])
         if isinstance(s, str) and s
     ]
     _start_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
     picked = 0
+    admitted: list[str] = []
     for item in eligible_todo:
         if picked >= slots_available:
             break
@@ -2065,7 +2077,17 @@ async def _pickup_todo_cards(
         sess["performer_stage"] = _start_stage
         active_sessions[item] = sess
         already_active_ids.add(item)
+        admitted.append(item)
         picked += 1
+    # 149: the cards this pickup held back are queued, by this decision.
+    held = [cid for cid in eligible_todo if cid not in already_active_ids]
+    try:
+        record_pickup_outcome(
+            state, held=held, admitted=admitted, in_use=active_count + picked, limit=max_cards,
+        )
+    except Exception:
+        clear_waits(state)
+        warn_once_per_cycle(state, "pickup")
 
     state["active_sessions"] = active_sessions
 
@@ -2110,20 +2132,30 @@ def _record_todo_waits(
     state: CoordinareState,
     board: dict[str, Any],
     todo: list[str],
+    blocked: list[str],
     ownership: OwnershipPolicy,
     assignees: dict[str, Any],
     max_cards: int,
 ) -> None:
-    """149: the wait for each To Do card with no session, from this check's view."""
-    refresh_todo_waits(
-        state,
-        board=board,
-        todo=todo,
-        active_card_ids=set((state.get("active_sessions") or {}).keys()),
-        ownership=ownership,
-        assignees=assignees,
-        limit=max_cards,
-    )
+    """149: the wait for each To Do card with no session, from this check's view.
+
+    A bug here is a display bug: it clears the waits and never aborts the cycle.
+    """
+    try:
+        refresh_todo_waits(
+            state,
+            board=board,
+            todo=todo,
+            blocked=blocked,
+            active_card_ids=set((state.get("active_sessions") or {}).keys()),
+            ownership=ownership,
+            assignees=assignees,
+            in_use=_count_slot_consuming_sessions(state),
+            limit=max_cards,
+        )
+    except Exception:
+        clear_waits(state)
+        warn_once_per_cycle(state, "refresh")
 
 
 async def _check_board_impl(state: CoordinareState) -> CoordinareState:
@@ -2156,6 +2188,8 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     max_cards = _raw_max if isinstance(_raw_max, int) else 1
     board = await _poll_board_once(state, github, board_provider, config, max_cards)
     if board is None:
+        # 149: no board this check, so last check's To Do waits are not current.
+        clear_waits(state)
         return state
 
     # 553 — per-cycle janitor sweep (opt-in). The daemon stamps a fresh
@@ -2206,7 +2240,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     todo = [cid for cid in todo if cid not in paused_ids]
     # 149: name each To Do card's wait before any handler can return early
     # (an in-progress card filling the last slot returns before the pickup).
-    _record_todo_waits(state, board, todo, _ownership, _assignees, max_cards)
+    _record_todo_waits(state, board, todo, blocked, _ownership, _assignees, max_cards)
     result = await _handle_in_review_cards(state, board, in_review, _ownership, _assignees, max_cards)
     if result is not None:
         return result
