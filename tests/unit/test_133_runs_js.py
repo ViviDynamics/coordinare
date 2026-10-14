@@ -28,7 +28,14 @@ def test_runs_checks_under_node(tmp_path: Path) -> None:
     assert node is not None, "node is required for the dashboard JS gates"
     js_path = tmp_path / "runs.js"
     js_path.write_text(
-        "\n\n".join([shipped_function("helpers", "esc"), run_id_js(), _DASHBOARD_JS_SOURCES["runs"]]),
+        # 211: the header reads the ledger through usage.js, so its readouts and fmtCost load with runs.js.
+        "\n\n".join([
+            shipped_function("helpers", "esc"),
+            shipped_function("helpers", "fmtCost"),
+            run_id_js(),
+            _DASHBOARD_JS_SOURCES["usage"],
+            _DASHBOARD_JS_SOURCES["runs"],
+        ]),
         encoding="utf-8",
     )
     checks = _REPO / "tests" / "js" / "runs_checks.js"

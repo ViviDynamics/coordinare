@@ -33,7 +33,13 @@ from coordinare.services.conductor_calls import (
 )
 from coordinare.services.run_transcript import TranscriptCollector
 from coordinare.services.run_viewer import RunRef, list_runs, run_detail
-from coordinare.services.token_usage import ModelPrice, PriceTable, TokenLedger, usage_block
+from coordinare.services.token_usage import (
+    ModelPrice,
+    PriceTable,
+    TokenLedger,
+    usage_block,
+    usage_summary,
+)
 
 CARD = "PVTI_131"
 MODEL = "claude-test-131"
@@ -457,11 +463,19 @@ async def test_the_viewer_opens_a_conductor_call_and_the_card_lists_it(tmp_path:
     assert row["conductor"] == {"kind": "persona_scope", "decision": "scope: developer full",
                                 "symphony": "coordinare"}
 
-    detail = run_detail(root, RunRef(symphony=CONDUCTOR_FOLDER, card=CARD, run=call_id))
+    assert log._collector is not None
+    # 211: the header takes the call's figures from the ledger, the same figures the card shows.
+    usage = {"tracked": True, "reason": None, **usage_summary(
+        log._collector.usage.totals(run_id=call_id), PriceTable(rules={}, source="none"),
+    )}
+    detail = run_detail(root, RunRef(symphony=CONDUCTOR_FOLDER, card=CARD, run=call_id), usage=usage)
     assert detail["header"]["type"] == "run_header"
     assert detail["summary"]["outcome"]["status"] == "completed"
     assert detail["summary"]["outcome"]["text"] == "scope: developer full"
-    assert detail["summary"]["tokens"]["input"] == 120
+    assert detail["summary"]["usage"]["tracked"] is True
+    assert detail["summary"]["usage"]["tokens"]["input"] == 120
+    assert "tokens" not in detail["summary"]
+    assert "cost" not in detail["summary"]
 
 
 def test_the_header_summary_of_a_performer_run_keeps_its_persona_stage() -> None:

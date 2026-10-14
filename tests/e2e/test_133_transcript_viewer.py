@@ -23,6 +23,7 @@ from playwright.sync_api import Page, Route, expect
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services import run_viewer
+from coordinare.services.activity_log import EventLink
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
 from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
 
@@ -354,7 +355,7 @@ def test_an_activity_entry_links_to_the_event_it_was_recorded_at(
     event_at = datetime.now(UTC) - timedelta(seconds=ACTIVITY_LAG_SECONDS)
     store.activity_log.record(
         activity_type="progress", card_id=ACTIVITY_CARD, card_number=133, card_title="Transcript viewer",
-        stage="implementing", text=ACTIVITY_TEXT, session_id=ACTIVITY_RUN, event_at=event_at.isoformat(),
+        stage="implementing", text=ACTIVITY_TEXT, session_id=ACTIVITY_RUN, link=EventLink(event_at=event_at.isoformat()),
     )
     _activity_run(transcript_root, event_at)
     page.goto(run_server_url + "/")

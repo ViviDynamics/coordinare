@@ -12,7 +12,7 @@
 - **D8 Search.** Server-side and streaming: `GET .../search?q=&types=&errors=&after=&limit=` returns matching lines with seq, type and preview. Matching runs over the full text of each record, so nothing is missed in a preview. Jump-to-error uses `errors=1`.
 - **D9 Virtualisation.** The client keeps one contiguous loaded window of records (a line range, filtered by type on the server). Rows are measured after render and cached by line, and only the visible range plus a margin is in the DOM. Tool output and full text are fetched when a row is expanded.
 - **D10 Registration.** `dashboard_static/runs.js` joins `_DASHBOARD_JS_FILES` before `app`. Styles go in `shell.css`. The page section in `dashboard.html` is markup only.
-- **D11 Tokens and cost.** Tokens come from the usage records. Cost is null with a reason, since the #134 ledger is not on main.
+- **D11 Tokens and cost.** Superseded by #211. The run header takes tokens and cost from the #134 token ledger (`summary.usage`, keyed by run id), with the breakdown and pricing date on hover. A run with no usage records, or a model with no price, says why in place of a figure. The transcript's own usage records are no longer summed in the header.
 
 ## Files
 

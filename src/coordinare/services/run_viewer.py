@@ -82,13 +82,7 @@ UNREADABLE_TYPE = "unreadable"
 TOOL_CALL_TYPE = "tool_call"
 TOOL_RESULT_TYPE = "tool_result"
 RESULT_TYPE = "result"
-USAGE_TYPE = "usage"
 TRUNCATED_TYPE = "truncated"
-USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read", "cache_write")
-NO_COST_REASON = (
-    "the transcript records no cost; the cost ledger (#134) is not on main, so no cost is shown"
-)
-NO_USAGE_REASON = "no usage records in this transcript"
 NO_OUTCOME_REASON = "no result record in this transcript (the run may still be going, or was cut off)"
 NO_HEADER_REASON = "the first line is not a run header (an older run, or one whose header was not written)"
 
@@ -145,8 +139,6 @@ class _Summary:
     counts: dict[str, int] = field(default_factory=dict)
     first_ts: str | None = None
     last_ts: str | None = None
-    usage_message: dict[str, int] = field(default_factory=dict)
-    usage_run: dict[str, int] | None = None
     result_is_error: bool | None = None
     result_text: str | None = None
     pr_url: str | None = None
@@ -532,9 +524,7 @@ def _scan_summary(handle: BinaryIO) -> _Summary:
             summary.last_ts = ts
         if _is_error(parsed):
             summary.error_count += 1
-        if kind == USAGE_TYPE:
-            _add_usage(summary, parsed)
-        elif kind == RESULT_TYPE:
+        if kind == RESULT_TYPE:
             summary.result_is_error = parsed.get("is_error") is True
             text = _as_text(parsed.get("text") or "")
             summary.result_text = text[:OUTCOME_PREVIEW_CHARS]
@@ -544,39 +534,6 @@ def _scan_summary(handle: BinaryIO) -> _Summary:
         elif kind == TRUNCATED_TYPE:
             summary.truncated = True
     return summary
-
-
-def _add_usage(summary: _Summary, parsed: dict[str, Any]) -> None:
-    usage = parsed.get("usage")
-    if not isinstance(usage, dict):
-        return
-    values = {
-        name: int(usage[name])
-        for name in USAGE_FIELDS
-        if isinstance(usage.get(name), int) and not isinstance(usage.get(name), bool)
-    }
-    if parsed.get("scope") == "run":
-        summary.usage_run = values
-        return
-    for name, value in values.items():
-        summary.usage_message[name] = summary.usage_message.get(name, 0) + value
-
-
-def _usage_totals(summary: _Summary) -> dict[str, Any]:
-    """Run-scope totals when the run recorded them, otherwise the sum of the turns."""
-    source = summary.usage_run if summary.usage_run is not None else summary.usage_message
-    scope = "run" if summary.usage_run is not None else ("message" if source else None)
-    if scope is None:
-        return {"scope": None, "reason": NO_USAGE_REASON, "input": None, "output": None,
-                "cache_read": None, "cache_write": None}
-    return {
-        "scope": scope,
-        "reason": None,
-        "input": source.get("input_tokens"),
-        "output": source.get("output_tokens"),
-        "cache_read": source.get("cache_read"),
-        "cache_write": source.get("cache_write"),
-    }
 
 
 def _duration_seconds(start: str | None, end: str | None) -> float | None:
@@ -608,8 +565,12 @@ def _summary_for(path: Path, handle: BinaryIO) -> _Summary:
     return summary
 
 
-def run_detail(root: Path, ref: RunRef) -> dict[str, Any]:
-    """The header and the summary of one run. Raises the lookup errors for a missing run."""
+def run_detail(root: Path, ref: RunRef, *, usage: dict[str, Any]) -> dict[str, Any]:
+    """The header and the summary of one run. Raises the lookup errors for a missing run.
+
+    211: ``usage`` is the ledger's block for this run (store.run_usage_block), the one source of
+    tokens and cost in the header. The transcript's own usage records are not summed here.
+    """
     path = run_file(root, ref)
     with open_run(path, ref) as handle:
         header = read_header(handle)
@@ -639,8 +600,7 @@ def run_detail(root: Path, ref: RunRef) -> dict[str, Any]:
             "started_at": (header or {}).get("ts") or summary.first_ts,
             "ended_at": ended,
             "duration_seconds": _duration_seconds((header or {}).get("ts") or summary.first_ts, ended),
-            "tokens": _usage_totals(summary),
-            "cost": {"value": None, "reason": NO_COST_REASON},
+            "usage": usage,
             "outcome": outcome,
             "pr_url": summary.pr_url,
             "pr_reason": None if summary.pr_url else "no pull request link in the transcript",

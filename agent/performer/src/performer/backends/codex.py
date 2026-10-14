@@ -614,7 +614,7 @@ class CodexBackend:
 
     def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
         """Update status and emit events based on server notifications."""
-        self._transcribe_notification(method, params)
+        seq = self._transcribe_notification(method, params)
         if method == "turn/completed":
             turn = params.get("turn", {})
             status = turn.get("status", "")
@@ -660,10 +660,13 @@ class CodexBackend:
             elif status in ("interrupted", "failed"):
                 error = (turn.get("error") or {}).get("message", status)
                 self._status = BackendStatus(state="error", error_reason=error)
-                self._emit(BackendEventType.error, error)
-                self._transcribe_turn_end(
+                # The turn-end transcriber writes the error record and returns its seq (211).
+                error_seq = self._transcribe_turn_end(
                     status, final_text=error, error_text=error,
                 )
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.error, text=clip_event_text(error), transcript_seq=error_seq,
+                ))
 
         elif method == "item/agentMessage/delta":
             delta = params.get("delta", "")
@@ -691,6 +694,7 @@ class CodexBackend:
                     detail="shell", tool="shell",
                     arg=primary_argument("Bash", {"command": command}),
                     status="ok" if exit_code in (0, None) else "error",
+                    transcript_seq=seq,
                 ))
             elif item_type == "fileChange":
                 path = str(item.get("path", "file"))
@@ -698,6 +702,7 @@ class CodexBackend:
                     type=BackendEventType.tool_use, text=f"edit {redact_command(path)}"[:_MAX_TEXT],
                     detail=redact_command(path), tool="Edit",
                     arg=primary_argument("Edit", {"file_path": path}),
+                    transcript_seq=seq,
                 ))
 
         elif method == "thread/tokenUsage/updated":
@@ -710,7 +715,9 @@ class CodexBackend:
         elif method == "error":
             error_msg = (params.get("error") or {}).get("message", str(params))
             # Non-fatal errors are emitted as events; fatal ones update status
-            self._emit(BackendEventType.error, error_msg)
+            self._event_buffer.append(BackendEvent(
+                type=BackendEventType.error, text=clip_event_text(error_msg), transcript_seq=seq,
+            ))
             if not params.get("willRetry", False):
                 self._status = BackendStatus(state="error", error_reason=error_msg)
 
@@ -728,7 +735,12 @@ class CodexBackend:
     # ------------------------------------------------------------------
 
     @transcript.best_effort
-    def _transcribe_notification(self, method: str, params: dict[str, Any]) -> None:
+    def _transcribe_notification(self, method: str, params: dict[str, Any]) -> int | None:
+        """Returns the seq of the record that the notification's own BackendEvent describes.
+
+        211: a completed tool item gives its tool_result seq, an error gives its error seq.
+        None for every other notification.
+        """
         if method == "item/started":
             item = params.get("item") or {}
             if str(item.get("type", "")) in _TRANSCRIPT_TOOL_ITEM_TYPES:
@@ -741,7 +753,7 @@ class CodexBackend:
                     input_data=item,
                 )
         elif method == "item/completed":
-            self._transcribe_item_completed(params.get("item") or {})
+            return self._transcribe_item_completed(params.get("item") or {})
         elif method == "item/reasoning/textDelta":
             delta = str(params.get("delta", ""))
             if delta:
@@ -753,10 +765,12 @@ class CodexBackend:
                 self._transcript_total = total
         elif method == "error":
             error_msg = (params.get("error") or {}).get("message", str(params))
-            transcript.emit("error", text=str(error_msg))
+            return transcript.emit("error", text=str(error_msg))
+        return None
 
     @transcript.best_effort
-    def _transcribe_item_completed(self, item: dict[str, Any]) -> None:
+    def _transcribe_item_completed(self, item: dict[str, Any]) -> int | None:
+        """Returns the tool_result seq for a completed tool item, None otherwise (211)."""
         item_type = str(item.get("type", ""))
         if item_type == "agentMessage":
             text = str(item.get("text", ""))
@@ -781,13 +795,14 @@ class CodexBackend:
                     input_data=item,
                 )
             self._transcript_started.discard(item_id)
-            transcript.emit(
+            return transcript.emit(
                 "tool_result",
                 tool_name=_transcript_tool_name(item),
                 call_id=item_id or None,
                 output_data=item,
                 is_error=_transcript_tool_error(item),
             )
+        return None
 
     @transcript.best_effort
     def _transcribe_turn_end(
@@ -796,14 +811,16 @@ class CodexBackend:
         *,
         final_text: str | None,
         error_text: str | None = None,
-    ) -> None:
+    ) -> int | None:
+        """Returns the seq of the error record written for this turn, or None (211)."""
         # Reasoning whose item never completed is flushed so it is not lost.
         for item_id in list(self._transcript_reasoning):
             text = "".join(self._transcript_reasoning.pop(item_id))
             if text:
                 transcript.emit("thinking", text=text)
+        error_seq: int | None = None
         if error_text:
-            transcript.emit("error", text=error_text)
+            error_seq = transcript.emit("error", text=error_text)
         if self._transcript_total is not None:
             # thread/tokenUsage/updated.total is cumulative for the thread, so
             # this record is a run total (cumulative to this turn), not a
@@ -826,6 +843,7 @@ class CodexBackend:
             input_data={"status": status},
             is_error=status != "completed",
         )
+        return error_seq
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
               is_delta: bool = False, stream_id: str = "") -> None:

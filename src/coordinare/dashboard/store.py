@@ -29,6 +29,7 @@ from coordinare.services.token_usage import (
     price_table_from_config,
     session_usage,
     usage_block,
+    usage_summary,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +74,23 @@ def _session_usage(daemon: Any, *, run_id: str, card_id: str) -> dict[str, Any]:
     if ledger is None:
         return {"tracked": False, "reason": "transcripts disabled", "run": None, "card": None}
     return session_usage(ledger, _price_table(daemon), run_id=run_id, card=card_id)
+
+
+def run_usage_block(daemon: Any, *, run_id: str) -> dict[str, Any]:
+    """211: one run's ledger figures for the transcript viewer header, or why they are not tracked."""
+    ledger = _usage_ledger(daemon)
+    if ledger is None:
+        return {"tracked": False, "reason": "transcripts disabled"}
+    totals = ledger.totals(run_id=run_id)
+    # A run with no usage records is not in the live ledger, but a restart rebuilds it empty. Both
+    # read the same way here, so the header never shows tracked zeros for a run with no usage.
+    if sum(counts.total for counts in totals.values()) == 0:
+        return {"tracked": False, "reason": "no usage records in this run"}
+    return {
+        "tracked": True,
+        "reason": None,
+        **usage_summary(totals, _price_table(daemon)),
+    }
 
 
 def _pending_control(raw: Any) -> dict[str, str] | None:

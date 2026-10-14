@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -83,13 +84,21 @@ def _write_run(root: Path, *, run: str = RUN, records: list[dict[str, object]] |
     return path
 
 
-def _client(root: Path | None, *, token: str | None = None) -> TestClient:
+def _usage_records() -> list[dict[str, Any]]:
+    """The usage records of _records(): what the ledger counts for RUN (211)."""
+    return [record for record in _records() if record.get("type") == "usage"]
+
+
+def _client(root: Path | None, *, token: str | None = None,
+            observed: list[dict[str, Any]] | None = None) -> TestClient:
     daemon = MagicMock()
     daemon.state = {"phase": "idle", "error_count": 0}
     if root is not None:
-        daemon.state["transcript_collector"] = TranscriptCollector(
-            root, enabled=True, max_bytes_per_run=10**9, retention_days=0,
-        )
+        collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**9, retention_days=0)
+        daemon.state["transcript_collector"] = collector
+        if observed is not None:
+            # 211: the usage ledger is fed by the collector after each accepted batch; feed it directly.
+            collector.usage.observe(RUN, symphony=SYMPHONY, card=CARD, stage="implementing", records=observed)
     daemon.state_store.last_snapshot = None
     app = create_dashboard_app(
         DashboardStore(), daemon, MagicMock(), MagicMock(),
@@ -179,7 +188,7 @@ def test_run_lookup_resolves_a_run_id_to_its_address(root: Path) -> None:
 
 def test_the_detail_carries_the_header_and_the_summary(root: Path) -> None:
     _write_run(root)
-    body = _client(root).get(_run_url()).json()
+    body = _client(root, observed=_usage_records()).get(_run_url()).json()
     header = body["header_summary"]
     assert header["stage"] == "implementing"
     assert header["persona"]["version"] == 3
@@ -188,24 +197,18 @@ def test_the_detail_carries_the_header_and_the_summary(root: Path) -> None:
     summary = body["summary"]
     assert summary["records"] == len(_records())  # the header is not an event
     assert summary["errors"] == 1
-    assert summary["tokens"]["scope"] == "message"
-    assert summary["tokens"]["input"] == 150
-    assert summary["tokens"]["output"] == 30
-    assert summary["tokens"]["cache_read"] == 5
-    assert summary["cost"]["value"] is None
-    assert "#134" in summary["cost"]["reason"]
+    # 211: tokens and cost come from the ledger for this run, not from the transcript's usage records.
+    usage = summary["usage"]
+    assert usage["tracked"] is True
+    assert usage["reason"] is None
+    assert usage["tokens"] == {"input": 150, "output": 30, "cache_read": 5, "cache_write": 2, "total": 187}
+    assert usage["cost"]["usd"] is None  # the fixture configures no price
+    assert "claude-test-model" in usage["cost"]["unknown_reason"]
+    assert "tokens" not in summary
+    assert "cost" not in summary
     assert summary["outcome"]["status"] == "completed"
     assert summary["pr_url"] == "https://github.com/vividynamics/coordinare/pull/9"
     assert summary["duration_seconds"] == 9.0
-
-
-def test_run_scope_usage_wins_over_the_sum_of_the_turns(root: Path) -> None:
-    records = [*_records(), {"seq": 9, "type": "usage", "scope": "run",
-                             "usage": {"input_tokens": 999, "output_tokens": 1}}]
-    _write_run(root, records=records)
-    tokens = _client(root).get(_run_url()).json()["summary"]["tokens"]
-    assert tokens["scope"] == "run"
-    assert tokens["input"] == 999
 
 
 def test_a_run_with_no_result_says_why_there_is_no_outcome(root: Path) -> None:

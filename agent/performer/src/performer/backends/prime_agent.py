@@ -326,8 +326,8 @@ class PrimeAgentBackend:
                     transcript.emit("system", text=line, input_data={"raw_line": line})
                     continue
                 if isinstance(event, dict):
-                    self._transcribe(event)
-                    self._handle_event(event)
+                    transcript_seq = self._transcribe(event)
+                    self._handle_event(event, transcript_seq=transcript_seq)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # defensive; surface as error
@@ -372,9 +372,14 @@ class PrimeAgentBackend:
     # ------------------------------------------------------------------
 
     @transcript.best_effort
-    def _transcribe(self, event: dict[str, Any]) -> None:
-        """Record one parsed event with its full content, before any 200-char cut."""
+    def _transcribe(self, event: dict[str, Any]) -> int | None:
+        """Record one parsed event with its full content, before any 200-char cut.
+
+        Returns the seq of the record that describes the event (211): the tool_call,
+        or the error for an error-shaped event. None when the event has no such record.
+        """
         etype = str(event.get("type", ""))
+        seq: int | None = None
         if etype == "message_update":
             ame = event.get("assistantMessageEvent")
             if isinstance(ame, dict) and ame.get("type") == "text_delta":
@@ -386,7 +391,7 @@ class PrimeAgentBackend:
             self._flush_text()
         elif etype == "tool_execution_start":
             self._flush_text()
-            transcript.emit(
+            seq = transcript.emit(
                 "tool_call",
                 tool_name=str(event.get("toolName", "tool")),
                 call_id=_call_id(event),
@@ -406,19 +411,19 @@ class PrimeAgentBackend:
             self._flush_text()
             failure = _failed_assistant_reason(event.get("messages", []))
             if failure is not None:
-                transcript.emit("error", text=failure, input_data=event)
+                seq = transcript.emit("error", text=failure, input_data=event)
         elif etype == "auto_retry_start":
             msg = str(event.get("errorMessage") or "auto retry")
             text = f"retry {event.get('attempt')}/{event.get('maxAttempts')}: {msg}"
-            transcript.emit("error", text=text, input_data=event)
+            seq = transcript.emit("error", text=text, input_data=event)
         elif etype == "auto_retry_end" and not event.get("success", False):
-            transcript.emit(
+            seq = transcript.emit(
                 "error",
                 text=str(event.get("finalError") or "auto retry exhausted"),
                 input_data=event,
             )
         elif etype == "compaction_end" and event.get("aborted", False):
-            transcript.emit(
+            seq = transcript.emit(
                 "error",
                 text=str(event.get("errorMessage") or "compaction aborted"),
                 input_data=event,
@@ -427,7 +432,8 @@ class PrimeAgentBackend:
             err = event.get("error")
             msg = str(err.get("message") or "") if isinstance(err, dict) else ""
             msg = msg or str(event.get("message") or "") or etype
-            transcript.emit("error", text=msg, input_data=event)
+            seq = transcript.emit("error", text=msg, input_data=event)
+        return seq
 
     @transcript.best_effort
     def _flush_text(self) -> None:
@@ -457,7 +463,9 @@ class PrimeAgentBackend:
             is_error=is_error,
         )
 
-    def _handle_event(self, event: dict[str, Any]) -> None:
+    def _handle_event(
+        self, event: dict[str, Any], *, transcript_seq: int | None = None,
+    ) -> None:
         etype = str(event.get("type", ""))
 
         if etype == "message_update":
@@ -475,6 +483,7 @@ class PrimeAgentBackend:
             self._event_buffer.append(BackendEvent(
                 type=BackendEventType.tool_use, text=tool, detail=tool, tool=tool,
                 arg=primary_argument(tool, event.get("args")),
+                transcript_seq=transcript_seq,
             ))
 
         elif etype == "agent_end":
@@ -491,7 +500,7 @@ class PrimeAgentBackend:
                 # and EOF without that recovery turns it into the error below.
                 self._pending_failure = failure
                 self._status = BackendStatus(state="working", progress=failure[:_MAX_TEXT])
-                self._emit(BackendEventType.error, failure)
+                self._emit(BackendEventType.error, failure, transcript_seq=transcript_seq)
                 return
             output = _extract_final_assistant_text(event.get("messages", []))
             if not output:
@@ -512,6 +521,7 @@ class PrimeAgentBackend:
             self._emit(
                 BackendEventType.error,
                 f"retry {attempt}/{max_attempts}: {msg}",
+                transcript_seq=transcript_seq,
             )
 
         elif etype == "auto_retry_end":
@@ -521,7 +531,7 @@ class PrimeAgentBackend:
                 final = str(event.get("finalError") or "auto retry exhausted")
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=final)
-                self._emit(BackendEventType.error, final)
+                self._emit(BackendEventType.error, final, transcript_seq=transcript_seq)
             else:
                 # The CLI recovered — drop the failure held from the agent_end
                 # that preceded the retry, and keep the run working.
@@ -534,7 +544,7 @@ class PrimeAgentBackend:
                 msg = str(event.get("errorMessage") or "compaction aborted")
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=msg)
-                self._emit(BackendEventType.error, msg)
+                self._emit(BackendEventType.error, msg, transcript_seq=transcript_seq)
 
         elif etype == "error":
             msg = ""
@@ -542,13 +552,18 @@ class PrimeAgentBackend:
             if isinstance(err, dict):
                 msg = str(err.get("message") or "")
             msg = msg or str(event.get("message") or "") or etype
-            self._emit(BackendEventType.error, msg)
+            self._emit(BackendEventType.error, msg, transcript_seq=transcript_seq)
             if not event.get("willRetry", False):
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=msg)
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *,
+        transcript_seq: int | None = None,
+    ) -> None:
+        self._event_buffer.append(BackendEvent(
+            type=type, text=clip_event_text(text), detail=detail, transcript_seq=transcript_seq,
+        ))
 
 
 def _failed_assistant_reason(messages: Any) -> str | None:

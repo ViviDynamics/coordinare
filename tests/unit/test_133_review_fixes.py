@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.localhost_guard import build_permitted
 from coordinare.services import run_viewer
-from coordinare.services.activity_log import ActivityLog
+from coordinare.services.activity_log import ActivityLog, EventLink
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
 
 BASE = "http://127.0.0.1:8090"
@@ -316,7 +316,7 @@ def test_an_activity_entry_keeps_the_performer_event_time_beside_the_daemon_time
     log = ActivityLog()
     entry = log.record(
         activity_type="tool_use", card_id=CARD, text="Bash", summary="Bash · ls",
-        event_at="2026-10-01T10:00:04+00:00",
+        link=EventLink(event_at="2026-10-01T10:00:04+00:00"),
     )
     assert entry is not None
     body = log.snapshot()[-1]

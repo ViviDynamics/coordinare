@@ -288,7 +288,11 @@ class TranscriptBuffer:
             record = record.model_copy(update={"input": withheld, "output": withheld})
         return record
 
-    def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
+    def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> int | None:
+        """Store one record. Returns its seq, or None when the byte cap dropped it (211).
+
+        A withheld record is still stored under its seq, so it returns that seq.
+        """
         # Stored raw. Redaction happens in ``after()``, on the worker thread that
         # serves the batch, so the event loop that runs the backends never does
         # regex work over a large tool output (129 review, item 2).
@@ -302,9 +306,10 @@ class TranscriptBuffer:
             size = _line_bytes(record)
         if self._truncated or self._bytes + size > self._max_bytes:
             self._drop(record, size)
-            return
+            return None
         self._records.append(record)
         self._bytes += size
+        return seq
 
     def _drop(self, record: TranscriptRecord, size: int) -> None:
         if not self._truncated:
@@ -407,16 +412,20 @@ def transcript_enabled() -> bool:
 
 
 @best_effort
-def emit(record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
+def emit(record_type: TranscriptType, **fields: Unpack[RecordFields]) -> int | None:
     """Append one record to the active job's transcript. No-op when disabled.
 
     Keyword fields: text, tool_name, call_id, input_data, output_data, is_error,
     usage, scope. Never raises: a capture failure is logged and dropped.
+
+    Returns the record's seq (211), so the backend can attach it to the activity event
+    it built from the same step. None when no buffer is active, when the byte cap
+    dropped the record, or when capture failed.
     """
     buffer = _transcript_var.get()
     if buffer is None:
-        return
-    buffer.append(record_type, **fields)
+        return None
+    return buffer.append(record_type, **fields)
 
 
 __all__ = [

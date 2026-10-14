@@ -532,9 +532,13 @@ class HermesBackend:
                 suffix=suffix, error=str(exc), dir=log_dir,
             )
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
+    def _emit(
+        self, type: BackendEventType, text: str, detail: str = "", *, transcript_seq: int | None = None,
+    ) -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=clip_event_text(text), detail=detail),
+            BackendEvent(
+                type=type, text=clip_event_text(text), detail=detail, transcript_seq=transcript_seq,
+            ),
         )
 
     @transcript.best_effort
@@ -585,15 +589,21 @@ class HermesBackend:
         stderr_text: str,
         reason: str | None,
         output_text: str | None,
-    ) -> None:
+    ) -> dict[str, int | None]:
         """Spec 129: the final reply (stdout, full) and the terminal outcome.
 
         ``reason`` is set on failure paths; ``output_text`` on success.
+
+        Returns the seq of each record that a backend event mirrors (211), keyed
+        by ``error`` and ``assistant_text``. A missing key means no such record.
         """
+        seqs: dict[str, int | None] = {}
         if reason is not None:
             detail = stderr_text.strip() or stdout_text.strip()
             failure_text = f"{reason}: {detail}" if detail else reason
-            transcript.emit("error", text=failure_text, input_data={"rc": rc, "reason": reason})
+            seqs["error"] = transcript.emit(
+                "error", text=failure_text, input_data={"rc": rc, "reason": reason},
+            )
             transcript.emit(
                 "result",
                 text=f"failed: {reason}",
@@ -601,13 +611,14 @@ class HermesBackend:
                 is_error=True,
                 input_data={"rc": rc, "stderr": stderr_text},
             )
-            return
+            return seqs
         if stdout_text.strip():
-            transcript.emit("assistant_text", text=stdout_text.strip())
+            seqs["assistant_text"] = transcript.emit("assistant_text", text=stdout_text.strip())
         transcript.emit(
             "result", text="done", output_data=output_text, is_error=False,
             input_data={"rc": rc},
         )
+        return seqs
 
     def _fail_start(self, reason: str) -> None:
         """Spec 129: a start-time failure (missing env). Status, error record, cleanup."""
@@ -672,12 +683,16 @@ class HermesBackend:
                     stderr=stderr_text[-1000:],
                     stdout=stdout_text[-500:],
                 )
-                if snippet:
-                    self._emit(BackendEventType.error, snippet)
-                self._record_outcome(
+                # 211: records first, so the event carries the seq of its record.
+                record_seqs = self._record_outcome(
                     rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
                     reason=reason, output_text=None,
-                )
+                ) or {}
+                if snippet:
+                    self._emit(
+                        BackendEventType.error, snippet,
+                        transcript_seq=record_seqs.get("error"),
+                    )
                 self._finalize()
                 return
 
@@ -693,10 +708,13 @@ class HermesBackend:
                     state="error",
                     error_reason="malformed_output",
                 )
-                self._emit(BackendEventType.error, "malformed_output")
-                self._record_outcome(
+                record_seqs = self._record_outcome(
                     rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
                     reason="malformed_output", output_text=None,
+                ) or {}
+                self._emit(
+                    BackendEventType.error, "malformed_output",
+                    transcript_seq=record_seqs.get("error"),
                 )
                 self._finalize()
                 return
@@ -725,13 +743,18 @@ class HermesBackend:
                 tokens_processed=tokens,
                 output=output_text,
             )
-            event_text = summary or (output_text or "")
-            if event_text:
-                self._emit(BackendEventType.progress, event_text)
-            self._record_outcome(
+            # 211: the progress event is the final reply, so it carries the
+            # assistant_text record's seq (the full stdout).
+            record_seqs = self._record_outcome(
                 rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
                 reason=None, output_text=output_text,
-            )
+            ) or {}
+            event_text = summary or (output_text or "")
+            if event_text:
+                self._emit(
+                    BackendEventType.progress, event_text,
+                    transcript_seq=record_seqs.get("assistant_text"),
+                )
             self._finalize()
         except asyncio.CancelledError:
             raise
