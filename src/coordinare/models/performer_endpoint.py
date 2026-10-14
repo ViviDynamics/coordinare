@@ -7,7 +7,7 @@ from pathlib import (  # noqa: TC003 — needed at runtime for pydantic type res
     Path,
     PurePosixPath,
 )
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -19,6 +19,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PerformerMode = Literal["subprocess", "ephemeral", "persistent"]
 Availability = Literal["unknown", "starting", "idle", "busy", "draining", "unreachable"]
@@ -294,6 +297,28 @@ class JobResult(BaseModel):
     error_code: str | None = None
 
 
+def _valid_transcript_batch(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
+
+def _valid_transcript_last_seq(value: object) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_transcript_error(value: object) -> bool:
+    return value is None or isinstance(value, str)
+
+
+# The transcript fields a status may carry, each with its validity test (129 review 5).
+_TRANSCRIPT_FIELD_RULES: tuple[tuple[str, Callable[[object], bool]], ...] = (
+    ("transcript", _valid_transcript_batch),
+    ("transcript_last_seq", _valid_transcript_last_seq),
+    ("transcript_error", _valid_transcript_error),
+)
+
+
 class JobStatus(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -312,6 +337,32 @@ class JobStatus(BaseModel):
     # 129: set when the transcript batch could not be served. The status itself is
     # still returned; the batch is empty and the run carries on.
     transcript_error: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient_transcript_fields(cls, data: Any) -> Any:
+        """A malformed transcript field never fails the status (review 5, blocker 1).
+
+        The transcript is best effort, so a field of the wrong type is replaced by its
+        empty value and the batch is marked errored for this poll. The status itself
+        is still read, so the run can reach its terminal state. Other fields are
+        validated as before.
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned = dict(data)
+        problems = [
+            field
+            for field, valid in _TRANSCRIPT_FIELD_RULES
+            if field in cleaned and not valid(cleaned[field])
+        ]
+        for field in problems:
+            cleaned[field] = [] if field == "transcript" else None
+        if problems:
+            described = "malformed transcript field: " + ", ".join(problems)
+            existing = cleaned.get("transcript_error")
+            cleaned["transcript_error"] = f"{existing}; {described}" if existing else described
+        return cleaned
 
     @field_validator("progress_pct")
     @classmethod

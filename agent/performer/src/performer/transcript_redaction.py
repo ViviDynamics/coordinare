@@ -87,9 +87,16 @@ NAME_STEMS = (
 )
 
 # A name ending in one of these describes a secret rather than holding it:
-# ``token_count``, ``token_limit``, ``session_type``. The exemption does not apply
-# when the name also carries a strong stem (``db_password_name`` is still redacted).
-DESCRIPTIVE_SUFFIX = r"_(?:counts?|limits?|budgets?|usage|types?|names?)$"
+# ``token_count``, ``token_limit``, ``token_ttl``, ``password_reset_sent``. The
+# exemption does not apply when the name also carries a strong stem
+# (``db_password_name`` is still redacted, see ``_non_secret_shape``).
+DESCRIPTIVE_SUFFIX = (
+    r"_(?:counts?|limits?|budgets?|usage|types?|names?|caches?|ttls?|expir(?:y|ies)"
+    r"|expires|expires_in|timeouts?|timeout_ms|resets?|reset_sent|files?|paths?|dirs?"
+    r"|directories|urls?|uris?|endpoints?|headers?|fields?|key_names?|enabled|required"
+    r"|lengths?|len|sizes?|max|min|prefix(?:es)?|suffix(?:es)?|formats?|regex(?:es)?"
+    r"|patterns?)$"
+)
 
 # Stems that always mean a credential, whatever suffix follows them.
 STRONG_STEMS = r"passw(?:or)?d|pass_?word|passphrase|secrets?|private[_-]?key"
@@ -145,11 +152,32 @@ _ASSIGN_AFTER_RE = re.compile(r"[ \t]*=(?!=)[ \t]*")
 # An unquoted ``:`` value runs to whitespace or a structural character.
 _UNQUOTED_RE = re.compile(r"[^\s\"',;}\])]*")
 _BARE_RE = re.compile(r"(?:[0-9]+(?:\.[0-9]+)?|true|false|null|none)", re.IGNORECASE)
-# URL userinfo: ``scheme://user:password@host``. The password is redacted.
-_USERINFO_RE = re.compile(r"(://[^/\s:@]+:)[^/\s@]+@")
+# Values that cannot be credentials by their shape (see ``_non_secret_shape``).
+_NON_SECRET_LITERALS = frozenset({"{}", "[]", "null", "none", "~"})
+_BOOLEAN_RE = re.compile(r"true|false", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+# A path starts ``/``, ``~/``, ``./``, ``../`` or a Windows drive. Matched with .match().
+_PATH_RE = re.compile(r"(?:~|\.{1,2})?/|[A-Za-z]:[\\/]")
+# A plain identifier or dotted name with no digits (``path``, ``self.cache``).
+_IDENTIFIER_VALUE_RE = re.compile(r"[A-Za-z_]+(?:\.[A-Za-z_]+)*")
+# URL userinfo: ``scheme://user:password@host``. The password is redacted. The user may
+# be empty (``redis://:password@host``).
+_USERINFO_RE = re.compile(r"(://[^/\s:@]*:)[^/\s@]+@")
+# ``--token VALUE`` and ``--password VALUE``: a secret flag followed by a space and value.
+# A value that is itself a flag (``--token --verbose``) is not a credential.
+_FLAG_VALUE_RE = re.compile(
+    r"(?P<head>(?<![\w-])--(?:token|passw(?:or)?d|secret|api[_-]?key)[ \t]+)(?!-)\S+",
+    re.IGNORECASE,
+)
+# Clients that take ``-pVALUE`` (no space) for the password.
+_MYSQL_CLIENTS = frozenset({"mysql", "mysqldump", "mysqladmin", "mariadb", "mariadb-dump"})
+# A YAML block value: the next line holds one token and nothing else.
+_BLOCK_VALUE_RE = re.compile(r"[ \t]*([^\s:=\"',;}\])]+)[ \t]*(?=\r?\n|\Z)")
 # ``curl -u user:password`` and ``--user user:password``.
 _CURL_USER_RE = re.compile(r"(-u\s+|--user[ =]|--user\s+)([^\s:'\"]+):([^\s'\"]+)")
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization[\"']?\s*[=:]\s*)[^\r\n\"',}]+")
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(authorization(?:_[a-z]+)?[\"']?\s*[=:]\s*)[^\r\n\"',}]+",
+)
 _PEM_BEGIN_RE = re.compile(r"-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----")
 _PEM_END_RE = re.compile(r"-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----")
 _BASE64_LINE_RE = re.compile(r"[A-Za-z0-9+/=]{16,}")
@@ -428,19 +456,156 @@ def _annotation_assignment(text: str, annotation_end: int) -> int | None:
     return None if assigned is None else assigned.end()
 
 
-def _value_is_credential(name: str, value: str, *, bare_only: bool, quoted: bool) -> bool:
-    """False for a bare value that is not a credential under ``name``.
+def _non_secret_shape(value: str, *, strong: bool, descriptive: bool) -> bool:
+    """True when ``value`` cannot be a credential, judged by its shape alone.
 
-    Quoted and non-bare values are credentials. A bare value is one only under a
-    credential stem, by the bare-value rule. ``bare_only`` names (``pin``, ``otp``,
-    ``auth``) are credentials only as bare values.
+    * ``{}``, ``[]``, ``null``, ``None`` and an empty value are never credentials.
+    * A boolean is not a credential unless the name is a strong stem that does not
+      describe something else (``PASSWORD=true`` is redacted; ``password_reset_sent``
+      and ``bearer_auth = True`` are not).
+    * Under a descriptive suffix that is not a strong stem, a number, a path or a plain
+      identifier is not a credential (``token_ttl: 3600``, ``credentials_file: path``).
+      A strong stem keeps these: ``db_password_name=hunter2hunter2`` stays redacted,
+      because its value has digits and is not a plain identifier.
     """
+    if value == "" or value.lower() in _NON_SECRET_LITERALS:
+        return True
+    if _BOOLEAN_RE.fullmatch(value) is not None:
+        return not (strong and not descriptive)
+    if not descriptive or strong:
+        return False
+    if _NUMBER_RE.fullmatch(value) is not None:
+        return True
+    if _PATH_RE.match(value) is not None:
+        return True
+    return _IDENTIFIER_VALUE_RE.fullmatch(value) is not None
+
+
+def _value_is_credential(name: str, value: str, *, bare_only: bool, quoted: bool) -> bool:
+    """False for a value that is not a credential under ``name``.
+
+    The shape of the value comes first (``_non_secret_shape``). Then quoted and
+    non-bare values are credentials. A bare value is one only under a credential stem,
+    by the bare-value rule. ``bare_only`` names (``pin``, ``otp``, ``auth``) are
+    credentials only as bare values.
+    """
+    inner = value.strip("\"'\\")
+    strong = _STRONG_RE.search(name) is not None
+    descriptive = _DESCRIPTIVE_RE.search(name) is not None
+    if _non_secret_shape(inner, strong=strong, descriptive=descriptive):
+        return False
     if bare_only:
-        inner = value.strip("\"'")
         return _BARE_RE.fullmatch(inner) is not None and _bare_credential_value(name, inner)
     if quoted or _BARE_RE.fullmatch(value) is None:
         return True
     return _bare_credential_value(name, value)
+
+
+def _yaml_block_value(text: str, after_colon: int) -> tuple[int, int] | None:
+    """Span of a YAML block value on the line after a bare ``key:``, or None.
+
+    The key's line must end after the colon. The next line must hold one token and
+    nothing else, so ``password:`` followed by ``  hunter2hunter2`` is a value, and
+    ``password:`` followed by another key is not.
+    """
+    eol = _line_end(text, after_colon)
+    if text[after_colon:eol].strip():
+        return None
+    if eol >= len(text):
+        return None
+    start = eol + 2 if text.startswith("\r\n", eol) else eol + 1
+    match = _BLOCK_VALUE_RE.match(text, start)
+    if match is None:
+        return None
+    return match.start(1), match.end(1)
+
+
+def _flag_and_client_values(text: str) -> str:
+    """Redact ``mysql -pVALUE`` passwords and ``--token VALUE`` style flags.
+
+    ``--token VALUE`` and ``--password VALUE`` are one regular expression with fixed
+    literals, so each match is local. ``-pVALUE`` is a token pass: a ``-p`` token is a
+    password only on a line that names a MySQL-family client before it.
+    """
+    text = _FLAG_VALUE_RE.sub(lambda m: m.group("head") + REDACTED, text)
+    if "-p" not in text:
+        return text
+    out: list[str] = []
+    cursor = 0
+    in_client_line = False
+    previous_end = 0
+    for token in _NETRC_TOKEN_RE.finditer(text):
+        word = token.group()
+        if "\n" in text[previous_end : token.start()]:
+            in_client_line = False
+        previous_end = token.end()
+        if word.startswith("-p") and word[2:3] not in ("", "-") and in_client_line:
+            out.append(text[cursor : token.start() + 2])
+            out.append(REDACTED)
+            cursor = token.end()
+        elif word.rsplit("/", 1)[-1] in _MYSQL_CLIENTS:
+            in_client_line = True
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _is_bare_only_name(name: str) -> bool:
+    """``pin``, ``otp`` and ``auth`` are credentials only as bare values.
+
+    A credential value under them is not redacted unless the value is bare.
+    """
+    return (
+        not _is_secret_name(name)
+        and _BARE_CREDENTIAL_RE.search(name) is not None
+        and _DESCRIPTIVE_RE.search(name) is None
+    )
+
+
+def _assignment_value_start(text: str, sep: re.Match[str], operator: str) -> int | None:
+    """Where the value after a separator starts, or None when the match is code (``==``)."""
+    value_start = sep.end()
+    if operator == "=" and text[value_start : value_start + 1] == "=":
+        return _comparison_value_start(text, sep.start(1))
+    return value_start
+
+
+def _annotated_value(text: str, annotation_end: int) -> tuple[int, int, str, str] | None:
+    """The value assigned after a type annotation, or None when nothing is assigned."""
+    assigned = _annotation_assignment(text, annotation_end)
+    if assigned is None:
+        return None  # a pure annotation: nothing is assigned
+    value_end, open_q, close_q = _value_span(text, assigned, "=")
+    if (value_end == assigned and not open_q) or text.startswith("[REDACTED", assigned):
+        return None
+    return assigned, value_end, open_q, close_q
+
+
+def _locate_assignment(text: str, separator_at: int) -> tuple[int, int, str, str] | None:
+    """Where the value after a key ends at ``separator_at`` lies, or None when it is code.
+
+    Returns ``(value_start, value_end, opening_quote, closing_quote)``. The separator
+    is ``=`` or ``:``. A ``==`` comparison, a pure type annotation and a value that is
+    already redacted are not assignments and give None.
+    """
+    sep = _SEP_RE.match(text, separator_at)
+    if sep is None:
+        return None
+    operator = sep.group(1)
+    value_start = _assignment_value_start(text, sep, operator)
+    if value_start is None:
+        return None
+    value_end, open_q, close_q = _value_span(text, value_start, operator)
+    if value_end == value_start and not open_q:
+        # ``password:`` alone on its line may hold its value on the next line.
+        block = _yaml_block_value(text, value_start) if operator == ":" else None
+        if block is None:
+            return None
+        value_start, value_end = block
+    if operator == ":" and not open_q and _is_annotation_word(text[value_start:value_end]):
+        return _annotated_value(text, value_end)
+    if text.startswith("[REDACTED", value_start):
+        return None
+    return value_start, value_end, open_q, close_q
 
 
 def _redact_assignments(text: str) -> str:
@@ -474,40 +639,13 @@ def _redact_assignments(text: str) -> str:
         name = word.group()
         if word.start() < cursor:
             continue
-        # ``pin``, ``otp`` and ``auth`` are credentials only as bare numbers: a
-        # credential value under them is not redacted unless the value is bare.
-        bare_only = (
-            not _is_secret_name(name)
-            and _BARE_CREDENTIAL_RE.search(name) is not None
-            and _DESCRIPTIVE_RE.search(name) is None
-        )
+        bare_only = _is_bare_only_name(name)
         if not bare_only and not _is_secret_name(name):
             continue
-        sep = _SEP_RE.match(text, word.end())
-        if sep is None:
+        located = _locate_assignment(text, word.end())
+        if located is None:
             continue
-        operator = sep.group(1)
-        value_start = sep.end()
-        if operator == "=" and text[value_start : value_start + 1] == "=":
-            comparison = _comparison_value_start(text, sep.start(1))
-            if comparison is None:
-                continue
-            value_start = comparison
-        value_end, open_q, close_q = _value_span(text, value_start, operator)
-        if value_end == value_start and not open_q:
-            continue
-        if text.startswith("[REDACTED", value_start):
-            continue
-        if operator == ":" and not open_q and _is_annotation_word(text[value_start:value_end]):
-            assigned = _annotation_assignment(text, value_end)
-            if assigned is None:
-                continue  # a pure annotation: nothing is assigned
-            value_start = assigned
-            value_end, open_q, close_q = _value_span(text, value_start, "=")
-            if (value_end == value_start and not open_q) or text.startswith(
-                "[REDACTED", value_start
-            ):
-                continue
+        value_start, value_end, open_q, close_q = located
         value = text[value_start:value_end].strip()
         if not _value_is_credential(name, value, bare_only=bare_only, quoted=bool(open_q)):
             continue
@@ -540,6 +678,7 @@ def redact_text(text: str, secrets: Iterable[str] = ()) -> str:
     text = _USERINFO_RE.sub(lambda m: m.group(1) + REDACTED + "@", text)
     text = _CURL_USER_RE.sub(lambda m: m.group(1) + m.group(2) + ":" + REDACTED, text)
     text = _redact_netrc(text)
+    text = _flag_and_client_values(text)
     text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + REDACTED, text)
     return _redact_assignments(text)
 
@@ -568,7 +707,12 @@ def _redact(value: Any, secrets: tuple[str, ...], depth: int) -> Any:
             clean_key = redact_text(key_text, secrets)
             if is_sensitive_key(key_text) and item is not None:
                 if isinstance(item, bool | int | float):
-                    keep = not _bare_credential_value(key_text, str(item))
+                    keep = not _value_is_credential(
+                        key_text,
+                        str(item),
+                        bare_only=False,
+                        quoted=False,
+                    )
                     out[clean_key] = item if keep else REDACTED
                 else:
                     out[clean_key] = REDACTED
