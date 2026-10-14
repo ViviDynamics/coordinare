@@ -88,6 +88,10 @@ class CardSession(TypedDict, total=False):
     pending_reviews: list[dict[str, Any]]
     system_error_count: int
     system_error_last_at: datetime | None
+    # 103: consecutive byte-identical format failures. Compared against
+    # system_error_reason, which already round-trips. Absent (cleared) when the
+    # card has no streak. Not durable: a restart restarts the streak at 1.
+    system_error_identical_count: int
     system_error_reason: str | None
     system_error_notified: bool
     commit_summary: str | None
@@ -326,6 +330,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "pending_reviews",
     "system_error_count",
     "system_error_last_at",
+    "system_error_identical_count",
     "system_error_reason",
     "system_error_notified",
     "commit_summary",
@@ -443,6 +448,8 @@ _SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
     # a stale one from the flat state a previous card's step left behind.
     "observer_correction",
     "observer_verdicts",
+    # 103: absent means no failure streak, never a stale count from another card.
+    "system_error_identical_count",
 )
 
 

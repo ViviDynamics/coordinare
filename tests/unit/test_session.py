@@ -384,9 +384,10 @@ def test_session_fields_match_card_session_keys() -> None:
     # initialized by create_session_from_card — a fresh session must keep
     # them absent so the default-off observer path stays byte-identical.
     # 426: observer_correction joins that family (pended on demand).
+    # 103: the failure streak is absent until a format failure starts one.
     session_optional = {
         "observer_repetition_count", "observer_verdict", "observer_correction",
-        "observer_verdicts",
+        "observer_verdicts", "system_error_identical_count",
     }
     for field in _SESSION_FIELDS:
         if field in session_optional:
@@ -435,6 +436,7 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "observer_correction",
         # 429: written on the monitor's first verdict; absent until then.
         "observer_verdicts",
+        "system_error_identical_count",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

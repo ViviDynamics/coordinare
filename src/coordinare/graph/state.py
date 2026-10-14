@@ -210,6 +210,10 @@ class CoordinareState(TypedDict, total=False):
     agent_dispatch: dict[str, Any]
     system_error_count: int
     system_error_last_at: datetime | None
+    # 103: consecutive format failures with a byte-identical reason. Transient
+    # (not persisted); exhaustion names the failure class only when it equals
+    # system_error_count.
+    system_error_identical_count: int
     system_error_reason: str | None
     system_error_notified: bool
     agent_dispatch_at: datetime | None
