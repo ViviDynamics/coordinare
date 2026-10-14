@@ -34,6 +34,7 @@ const context = {
   afSyncRun() {},
   renderState(state) { messages.push(state); },
   renderPerformersPage() {}, renderHistoryPage() {}, renderSymphoniesPage() {}, renderDashboardExtras() {},
+  updateAttention() {},
 };
 vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
 assert.equal(streams.length, 1);

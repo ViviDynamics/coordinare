@@ -413,8 +413,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <span class="nav-brand"><button id="navbar-hamburger" type="button" onclick="toggleNavMenu()" aria-label="Collapse navigation" title="Collapse navigation" aria-controls="navbar-menu" aria-expanded="true"><span class="mascot-art" aria-hidden="true"><img class="nav-mascot mascot-body" src="/static/coordinare-conductor.webp" width="48" height="48" alt=""><img class="nav-mascot mascot-baton" src="/static/coordinare-conductor.webp" width="48" height="48" alt=""></span></button><span class="nav-brand-name">Coordiñare</span></span>
   </div>
   <div id="navbar-menu">
-    <a href="/" class="nav-link" onclick="navigate(event,'/')" aria-label="Dashboard" title="Dashboard"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="nav-link-label">Dashboard</span></a>
-    <a href="/performers" class="nav-link" onclick="navigate(event,'/performers')" aria-label="Performers" title="Performers"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="nav-link-label">Performers</span></a>
+    <a href="/" class="nav-link" data-attention="dashboard" onclick="navigate(event,'/')" aria-label="Dashboard" title="Dashboard"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="nav-link-label">Dashboard</span><span class="nav-badge" hidden aria-hidden="true"></span></a>
+    <a href="/performers" class="nav-link" data-attention="performers" onclick="navigate(event,'/performers')" aria-label="Performers" title="Performers"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span class="nav-link-label">Performers</span><span class="nav-badge" hidden aria-hidden="true"></span></a>
     <a href="/personas" class="nav-link" onclick="navigate(event,'/personas')" aria-label="Personas" title="Personas"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><span class="nav-link-label">Personas</span></a>
     <a href="/history" class="nav-link" onclick="navigate(event,'/history')" aria-label="History" title="History"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg><span class="nav-link-label">History</span></a>
     <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')" aria-label="Symphonies" title="Symphonies"><svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13"/><circle cx="3" cy="5" r="1"/><circle cx="3" cy="12" r="1"/><circle cx="3" cy="19" r="1"/></svg><span class="nav-link-label">Symphonies</span></a>
@@ -439,6 +439,13 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <div id="main-content" tabindex="-1">
 <!-- 049: Dashboard page -->
 <div id="dashboard-page">
+<!-- 153: needs-attention banner. A polite live region; app.js fills the list only when the set changes. -->
+<section id="attention-banner" aria-live="polite" aria-label="Needs attention">
+  <div id="attention-panel" class="attention-panel" hidden>
+    <div class="attention-head"><strong id="attention-count"></strong><button type="button" class="action-btn" onclick="dismissAttention()" aria-label="Dismiss this needs-attention list">Dismiss</button></div>
+    <ul id="attention-list" class="attention-list"></ul>
+  </div>
+</section>
 <main class="grid dashboard-grid">
 
 <div class="card" id="phase-card">
