@@ -2971,10 +2971,12 @@ class CoordinareDaemon:
         """
         while True:
             try:
+                # The live set is taken on the loop; the sweep never removes those files.
                 await asyncio.to_thread(
                     prune_expired,
                     collector.root,
                     retention_days=collector.retention_days,
+                    keep=collector.live_paths(),
                 )
             except Exception as exc:  # best effort: retention must never end the loop
                 logger.warning(

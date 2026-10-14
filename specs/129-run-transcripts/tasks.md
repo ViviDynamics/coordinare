@@ -42,6 +42,18 @@ Checked items are done and verified by running. Unchecked items are open, and ea
 - [x] R019 Specs, plan and tasks updated for location, redaction scope, best-effort guarantee, loss window and seq validation
 - [x] R020 Lint, mypy, ratchet, quality guard
 
+## Second adversarial review
+
+- [x] S001 Item 1, quadratic redaction: linear word tokeniser (`_redact_assignments`). `test_one_megabyte_unbroken_alphanumeric_run_redacts_in_well_under_a_second`, `test_long_runs_containing_key_stems_are_linear`
+- [x] S002 Item 2, I/O on the loop: writer lazy, tail-only cursor read, writes and loads on worker threads, performer redaction at serve time on a thread. `test_cursor_is_read_from_the_tail_not_the_whole_file`, `test_batch_writes_run_on_a_worker_thread_not_the_event_loop`, performer `test_transcript_batches_are_served_on_a_worker_thread`
+- [x] S003 Item 3, retention and validation: exact layout, live-file skip, `~` expansion, equal-or-contains protected dirs, env-cache and mount checks, case-insensitive compare, dispatch-time mount conflict. `test_retention_only_removes_the_writers_layout_and_live_files`, `test_expanduser_applies_to_the_transcripts_dir`, `test_root_equal_to_or_containing_a_protected_directory_is_refused`, `test_root_inside_an_env_cache_root_is_refused`, `test_case_insensitive_filesystem_matches_names_case_insensitively`, `test_dispatch_with_a_mount_inside_the_root_is_not_transcribed`
+- [x] S004 Item 4, hard links: `st_nlink` checked on load and write. `test_hard_link_inside_the_root_is_refused_and_the_outside_file_untouched`, `test_torn_line_is_not_trimmed_through_a_hard_link`
+- [x] S005 Item 5, redaction leaks and over-redaction: escaped JSON, URL userinfo, PEM, unquoted `=` to end of line, whole-word stems. `test_escaped_json_inside_a_string_is_redacted`, `test_url_userinfo_password_is_redacted_and_the_host_kept`, `test_pem_private_key_block_is_redacted_whole`, `test_unquoted_equals_value_is_redacted_to_end_of_line`, `test_tokenizer_and_plural_tokens_are_not_treated_as_credentials`, `test_prose_token_colon_redacts_one_word_by_design`
+- [x] S006 Item 6, per-run state: released on every teardown path. `test_cleanup_releases_every_per_run_daemon_record`
+- [x] S007 Item 7, finished runs and no-id usage: no writer after release, cursor-ahead logged, last chunk only for no-id messages. `test_finished_run_never_gets_a_writer_again`, `test_cursor_ahead_of_the_performer_is_logged`, `test_chunks_without_a_message_id_are_written_once_with_the_last_usage`
+- [x] S008 Item 8, disabled payload restored: `test_disabled_transcripts_leave_the_payload_exactly_as_before`, `test_enabled_transcripts_use_the_session_id_as_the_job_id`
+- [x] S009 Item 9, deployment note in the spec (no compose change)
+
 ## Open items
 
 - [ ] O001 Fails-without-fix was not verified by reverting each fix and running its test. The old writer signature is gone, so the old code cannot run these tests unchanged. Each test is written against the behaviour it changes.

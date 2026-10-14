@@ -15,6 +15,7 @@ probe liveness without a token.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -92,7 +93,13 @@ def register_routes(app: FastAPI) -> None:
         transcript_limit: int = Query(default=200, ge=1, le=500),
     ) -> JobStatus:
         try:
-            return _runner(request).get(
+            if transcript_after is None:
+                return _runner(request).get(job_id)
+            # 129 item 2: a transcript batch is redacted while it is served. That work
+            # runs on a worker thread, so the status endpoint and the running backend
+            # share the loop without the regex work stalling either.
+            return await asyncio.to_thread(
+                _runner(request).get,
                 job_id,
                 transcript_after=transcript_after,
                 transcript_limit=transcript_limit,

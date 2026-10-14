@@ -5,6 +5,7 @@ symlink refusal, best-effort failure), redaction on disk, the root placement
 rules, the byte cap, retention, and HTTP delivery (incremental, re-delivery,
 drain, teardown bound, disabled).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +24,7 @@ from coordinare.services import http_performer_service as hps
 from coordinare.services import run_transcript as rt
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.run_transcript import (
+    RootGuard,
     RunTranscriptWriter,
     TranscriptCollector,
     make_collector,
@@ -98,7 +100,9 @@ def test_default_root_is_daemon_only_state_dir(tmp_path: Path) -> None:
 
 def test_relative_override_resolves_against_config_dir(tmp_path: Path) -> None:
     root = resolve_transcripts_root(
-        Path("custom/t"), config_dir=tmp_path / "cfg", state_dir=tmp_path / "state",
+        Path("custom/t"),
+        config_dir=tmp_path / "cfg",
+        state_dir=tmp_path / "state",
     )
     assert root == tmp_path / "cfg" / "custom" / "t"
 
@@ -108,8 +112,11 @@ def test_root_inside_a_performer_mount_is_refused(tmp_path: Path) -> None:
     log_dir = tmp_path / "perf-logs"
     root = log_dir / "transcripts"
     collector = make_collector(
-        enabled=True, root=root, max_bytes_per_run=10**6, retention_days=30,
-        performer_mounts=[log_dir],
+        enabled=True,
+        root=root,
+        max_bytes_per_run=10**6,
+        retention_days=30,
+        guard=RootGuard(performer_mounts=(log_dir,)),
     )
     assert collector.enabled is False
 
@@ -117,14 +124,18 @@ def test_root_inside_a_performer_mount_is_refused(tmp_path: Path) -> None:
 def test_mount_inside_the_root_is_refused_too(tmp_path: Path) -> None:
     root = tmp_path / "state" / "transcripts"
     mount = root / "shared"
-    assert transcript_root_conflicts(root, [mount]) == [mount.resolve()]
+    guard = RootGuard(performer_mounts=(mount,))
+    assert transcript_root_conflicts(root, guard) == [mount.resolve()]
 
 
 def test_clean_root_stays_enabled_and_is_not_created(tmp_path: Path) -> None:
     root = tmp_path / "state" / "transcripts"
     collector = make_collector(
-        enabled=True, root=root, max_bytes_per_run=10**6, retention_days=30,
-        performer_mounts=[tmp_path / "perf-logs"],
+        enabled=True,
+        root=root,
+        max_bytes_per_run=10**6,
+        retention_days=30,
+        guard=RootGuard(performer_mounts=(tmp_path / "perf-logs",)),
     )
     assert collector.enabled is True
     assert not root.exists(), "construction must not create the root"
@@ -134,8 +145,11 @@ def test_disabled_touches_nothing_on_disk(tmp_path: Path) -> None:
     """LOW 8: enabled false creates no directory, no probe file, no retention sweep."""
     root = tmp_path / "state" / "transcripts"
     collector = make_collector(
-        enabled=False, root=root, max_bytes_per_run=10**6, retention_days=30,
-        performer_mounts=[],
+        enabled=False,
+        root=root,
+        max_bytes_per_run=10**6,
+        retention_days=30,
+        guard=RootGuard(),
     )
     assert collector.enabled is False
     assert not (tmp_path / "state").exists()
@@ -174,6 +188,7 @@ def test_restarted_writer_resumes_from_file_without_loss_or_duplicates(tmp_path:
     root = tmp_path / "t"
     _writer(root).append_batch([_rec(1), _rec(2), _rec(3)], last_seq=3)
     second = _writer(root)  # a new daemon process over the same file
+    second.ensure_loaded()
     assert second.cursor == 3
     assert second.append_batch([_rec(2), _rec(3), _rec(4), _rec(5)], last_seq=5) == 2
     assert [r["seq"] for r in _lines(_file(root))] == [1, 2, 3, 4, 5]
@@ -185,6 +200,7 @@ def test_torn_final_line_is_trimmed_before_appending(tmp_path: Path) -> None:
     with _file(root).open("ab") as handle:
         handle.write(b'{"seq":3,"type":"assistant_te')  # crash mid-write
     writer = _writer(root)
+    writer.ensure_loaded()
     assert writer.cursor == 2
     writer.append_batch([_rec(3)], last_seq=3)
     assert [r["seq"] for r in _lines(_file(root))] == [1, 2, 3]
@@ -215,7 +231,10 @@ def test_non_increasing_seq_within_a_batch_is_rejected(tmp_path: Path) -> None:
     assert [r["seq"] for r in _lines(_file(root))] == [1, 3]
 
 
-def test_oversize_record_becomes_a_truncation_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_oversize_record_becomes_a_truncation_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(rt, "MAX_RECORD_BYTES", 400)
     root = tmp_path / "t"
     writer = _writer(root)
@@ -227,7 +246,8 @@ def test_oversize_record_becomes_a_truncation_marker(tmp_path: Path, monkeypatch
 
 
 def test_batch_byte_limit_defers_the_rest_to_the_next_poll(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(rt, "MAX_BATCH_BYTES", 300)
     root = tmp_path / "t"
@@ -257,7 +277,9 @@ def test_byte_cap_writes_one_truncated_marker_and_counts_drops(tmp_path: Path) -
     assert writer.dropped_records == 10 - (len(records) - 1)
     assert writer.append_batch([_rec(11, text="late")], last_seq=11) == 0
     assert sum(1 for r in _lines(_file(root)) if r["type"] == "truncated") == 1
-    assert _writer(root, max_bytes=700).truncated is True
+    reloaded = _writer(root, max_bytes=700)
+    reloaded.ensure_loaded()
+    assert reloaded.truncated is True
 
 
 def test_full_text_is_never_truncated_on_disk(tmp_path: Path) -> None:
@@ -282,7 +304,10 @@ def test_usage_scope_is_kept_on_disk(tmp_path: Path) -> None:
     root = tmp_path / "t"
     usage = {"input_tokens": 3, "output_tokens": 40, "model": "m"}
     _writer(root).append_batch(
-        [_rec(1, "usage", usage=usage, scope="message"), _rec(2, "usage", usage=usage, scope="run")],
+        [
+            _rec(1, "usage", usage=usage, scope="message"),
+            _rec(2, "usage", usage=usage, scope="run"),
+        ],
         last_seq=2,
     )
     scopes = [r["scope"] for r in _lines(_file(root))]
@@ -362,25 +387,55 @@ def test_every_secret_shape_is_absent_from_the_bytes_on_disk(tmp_path: Path) -> 
     writer.append_batch(
         [
             _rec(1, text=f"push with {GH_TOKEN} now"),
-            _rec(2, "tool_call", tool_name="Bash", call_id="c1",
-                 input={"command": f"curl -H 'Authorization: {BEARER}' https://api"}),
-            _rec(3, "tool_result", call_id="c1",
-                 output=f"key={ANTHROPIC_KEY} aws={AWS_KEY} {GH_TOKEN} {OPENAI_PROJ_KEY}"),
-            _rec(4, "assistant_text", text="sensitive key masked",
-                 input={"api_key": "plain-value", "api-key": "dash-value",
-                        "ANTHROPIC_AUTH_TOKEN": "anth-value-1234", "github_token": "gh-value-5678",
-                        "input_tokens": 12}),
+            _rec(
+                2,
+                "tool_call",
+                tool_name="Bash",
+                call_id="c1",
+                input={"command": f"curl -H 'Authorization: {BEARER}' https://api"},
+            ),
+            _rec(
+                3,
+                "tool_result",
+                call_id="c1",
+                output=f"key={ANTHROPIC_KEY} aws={AWS_KEY} {GH_TOKEN} {OPENAI_PROJ_KEY}",
+            ),
+            _rec(
+                4,
+                "assistant_text",
+                text="sensitive key masked",
+                input={
+                    "api_key": "plain-value",
+                    "api-key": "dash-value",
+                    "ANTHROPIC_AUTH_TOKEN": "anth-value-1234",
+                    "github_token": "gh-value-5678",
+                    "input_tokens": 12,
+                },
+            ),
             _rec(5, "tool_result", output={"s": json.dumps({"password": "pw-in-json-99"})}),
-            _rec(6, "tool_result", output="env dump:\nANTHROPIC_AUTH_TOKEN=env-token-abc123\nPATH=/bin"),
+            _rec(
+                6,
+                "tool_result",
+                output="env dump:\nANTHROPIC_AUTH_TOKEN=env-token-abc123\nPATH=/bin",
+            ),
             _rec(7, "tool_result", output=f"leaked {EXACT_JOB_SECRET} in a log line"),
         ],
         last_seq=7,
     )
     raw = _file(root).read_bytes()
     for secret in (
-        GH_TOKEN, BEARER, ANTHROPIC_KEY, AWS_KEY, OPENAI_PROJ_KEY, EXACT_JOB_SECRET,
-        b"plain-value", b"dash-value", b"anth-value-1234", b"gh-value-5678",
-        b"pw-in-json-99", b"env-token-abc123",
+        GH_TOKEN,
+        BEARER,
+        ANTHROPIC_KEY,
+        AWS_KEY,
+        OPENAI_PROJ_KEY,
+        EXACT_JOB_SECRET,
+        b"plain-value",
+        b"dash-value",
+        b"anth-value-1234",
+        b"gh-value-5678",
+        b"pw-in-json-99",
+        b"env-token-abc123",
     ):
         needle = secret if isinstance(secret, bytes) else secret.encode()
         assert needle not in raw, needle
@@ -394,7 +449,9 @@ def test_every_secret_shape_is_absent_from_the_bytes_on_disk(tmp_path: Path) -> 
 def test_daemon_collector_redacts_ambient_credentials(tmp_path: Path) -> None:
     root = tmp_path / "t"
     collector = TranscriptCollector(
-        root, enabled=True, max_bytes_per_run=10**6,
+        root,
+        enabled=True,
+        max_bytes_per_run=10**6,
         ambient_secrets={"MY_SERVICE_PASSWORD": "ambient-value-xyz"},
     )
     writer = collector.writer_for(run_id="run-1", symphony="alpha", card_id="PVTI_1")
@@ -482,10 +539,17 @@ class _FakeClient:
 
 def _service(client: _FakeClient, collector: TranscriptCollector | None) -> HTTPPerformerService:
     config = PerformerEndpointConfig(
-        id="perf-129", mode="persistent", image="performer:full",
-        endpoint="http://127.0.0.1:9", roles=["implementer"],
+        id="perf-129",
+        mode="persistent",
+        image="performer:full",
+        endpoint="http://127.0.0.1:9",
+        roles=["implementer"],
     )
-    return HTTPPerformerService(config, client=cast("PerformerHTTPClient", client), transcripts=collector)
+    return HTTPPerformerService(
+        config,
+        client=cast("PerformerHTTPClient", client),
+        transcripts=collector,
+    )
 
 
 async def test_status_poll_writes_incrementally_and_dedupes_redelivery(tmp_path: Path) -> None:
@@ -522,7 +586,11 @@ async def test_terminal_drain_takes_the_tail(tmp_path: Path) -> None:
             transcript_after: int | None = None,
             transcript_limit: int = 200,
         ) -> JobStatus:
-            return await super().get_job(job_id, transcript_after=transcript_after, transcript_limit=2)
+            return await super().get_job(
+                job_id,
+                transcript_after=transcript_after,
+                transcript_limit=2,
+            )
 
     client = _Paged([_rec(i) for i in range(1, 8)], last_seq=7)
     collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**6)
@@ -544,7 +612,8 @@ async def test_older_performer_without_transcript_fields_writes_nothing(tmp_path
 
 
 async def test_writer_exception_never_escapes_the_status_poll(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HIGH 3: a transcript failure must not break the status poll."""
     client = _FakeClient([_rec(1)], last_seq=1)
@@ -568,7 +637,8 @@ async def test_release_session_drains_before_teardown(tmp_path: Path) -> None:
     collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**6)
     service = _service(client, collector)
     await service.check_status(
-        "sess-rel", payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_r"}},
+        "sess-rel",
+        payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_r"}},
     )
     client._records.extend(_rec(i) for i in range(6, 9))
     client._last_seq = 8
@@ -578,7 +648,8 @@ async def test_release_session_drains_before_teardown(tmp_path: Path) -> None:
 
 
 async def test_hanging_performer_cannot_delay_teardown_beyond_its_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """MEDIUM 6: the teardown drain is time-bounded and never prevents the teardown."""
     monkeypatch.setattr(hps, "_TRANSCRIPT_TEARDOWN_SECONDS", 0.05)
@@ -591,7 +662,8 @@ async def test_hanging_performer_cannot_delay_teardown_beyond_its_bound(
     collector = TranscriptCollector(tmp_path / "t", enabled=True, max_bytes_per_run=10**6)
     service = _service(_FakeClient([], last_seq=3), collector)
     await service.check_status(
-        "sess-hang", payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_h"}},
+        "sess-hang",
+        payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_h"}},
     )
     # The performer now stops answering. Only the teardown path is exercised below.
     service._injected_client = cast("PerformerHTTPClient", _Hanging([], last_seq=3))
@@ -601,7 +673,8 @@ async def test_hanging_performer_cannot_delay_teardown_beyond_its_bound(
 
 
 async def test_terminal_drain_has_a_wall_clock_bound(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HIGH 3: a drain that keeps returning new records is cut off by time, not rounds."""
     monkeypatch.setattr(hps, "_TRANSCRIPT_DRAIN_SECONDS", 0.2)
@@ -611,16 +684,22 @@ async def test_terminal_drain_has_a_wall_clock_bound(
             await asyncio.sleep(0.02)
             after = int(kwargs.get("transcript_after") or 0)
             return JobStatus(
-                job_id=job_id, state="running", started_at=datetime.now(UTC),
-                transcript=[_rec(after + 1)], transcript_last_seq=10**9,
+                job_id=job_id,
+                state="running",
+                started_at=datetime.now(UTC),
+                transcript=[_rec(after + 1)],
+                transcript_last_seq=10**9,
             )
 
     collector = TranscriptCollector(tmp_path / "t", enabled=True, max_bytes_per_run=10**6)
     service = _service(_Endless([], last_seq=None), collector)
     writer = collector.writer_for(run_id="sess-e", symphony="alpha", card_id="PVTI_e")
     start_status = JobStatus(
-        job_id="sess-e", state="running", started_at=datetime.now(UTC),
-        transcript=[], transcript_last_seq=10**9,
+        job_id="sess-e",
+        state="running",
+        started_at=datetime.now(UTC),
+        transcript=[],
+        transcript_last_seq=10**9,
     )
     started = time.monotonic()
     await service._drain_transcript(

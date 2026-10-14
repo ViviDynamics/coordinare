@@ -34,7 +34,7 @@ Every performer run leaves behind one JSON Lines file on the coordinare host. Th
 - **FR-006 Full content.** Content is never truncated. `text`, `input` and `output` carry the full value. Only the size bounds in FR-017 apply.
 - **FR-007 Claude Code.** Every stream-json event type is mapped: system init and other system events, user prompt, assistant text, thinking, every `tool_use` with full input, every `tool_result` with full output and `is_error`, per-message usage, the run total, and errors. A `stream_event` (emitted with `--include-partial-messages`) and any unknown type are recorded as a `system` record carrying the raw type name and payload. Nothing is silently dropped.
 - **FR-008 Other backends.** Every other backend maps what its output stream provides. A backend that cannot provide a record type declares it in one `capability` record per run. A backend never fills a field it cannot know.
-- **FR-009 Redaction scope.** Records are redacted in the performer before they are stored, and again in the daemon before any line is written. Redaction covers:
+- **FR-009 Redaction scope.** Records are redacted in the performer before any batch leaves it (at serve time, on a worker thread), and again in the daemon before any line is written. Redaction covers:
   - values under credential-named keys, matched case-insensitively as substrings (`token`, `secret`, `password`, `passwd`, `api_key` / `api-key` / `apikey`, `authorization`, `credential`, `private_key`, `cookie`), applied recursively to dicts and lists. `token` excludes plural counts (`input_tokens`, `max_tokens`), so usage numbers are kept;
   - `NAME=value`, `NAME: value` and `"NAME": "value"` forms whose name matches those stems;
   - strings that hold JSON, parsed and redacted inside;
@@ -64,6 +64,22 @@ Every performer run leaves behind one JSON Lines file on the coordinare host. Th
 - **SC-006** A planted symlink at a directory or the run file never redirects a write, never raises, and leaves the target untouched. Verified by tests.
 - **SC-007** A root inside a performer mount disables transcription with an error log. Verified by a test.
 - **SC-008** A failing writer does not break a status poll or a teardown, and a hanging drain does not delay a teardown beyond its bound. Verified by tests.
+
+## Second review revisions
+
+A second adversarial review found further defects. These revisions change the following behaviour:
+
+- Redaction is linear. A regex that retried from every position of a long word run was quadratic (1 MB of alphanumerics took well over a second at 24 KB). Assignments are now found by tokenising words once and matching separators and values at fixed positions. A 1 MB word redacts in tens of milliseconds, and a test asserts it (FR-009).
+- Redaction covers escaped JSON inside strings, URL userinfo passwords, whole PEM private key blocks, and unquoted `=` values to the end of the line. Usage keys such as `tokenizer` and `tokens` are not credential stems, because stems match whole words. The prose case `token: the cache is stale` redacts one word by design: redacting an unquoted `:` value to the end of the line would hide `Authorization: Basic xyz`.
+- File I/O is off the event loop. The writer does no I/O at construction. The cursor is read from the file's last line only, on a worker thread, before the first poll. Batches are written on a worker thread, under a per-run lock. On the performer, redaction runs while a batch is served, on a worker thread, so the backend and the status endpoint are not blocked by regex work.
+- A file reachable through a second hard link is refused, both when its cursor is read and when it is appended to (FR-020).
+- Retention only considers the exact layout the writer creates (`<root>/<symphony>/<card>/<run>.jsonl`), with names the writer could have produced, and never removes a live writer's file.
+- `transcripts.dir` is validated: `~` is expanded, and the root may not equal or contain the state directory, the config directory, the attempt log directory, or an env-cache root. It may not lie inside or contain a performer mount. Comparisons are case-insensitive on case-insensitive filesystems, detected by probing. A run whose per-symphony env-cache mounts overlap the root is not transcribed.
+- Per-run daemon state is released on every terminal path, including system-error teardown (which goes through the ephemeral cleanup). Secrets, targets and markers are dropped. A finished run is remembered, in a bounded set, so a late poll or release never recreates its writer. A cursor ahead of the performer's last seq is logged (`run_transcript.cursor_ahead_of_performer`).
+- A message without an id is written once, with its last chunk's usage.
+- With transcripts disabled, the dispatch payload is exactly the pre-129 payload. The session id is not copied into the job id.
+
+Deployment note: the default root is `<state directory>/transcripts`. `docker-compose.yml` mounts only `config.yaml` into the coordinare container, so the state directory, and with it the default transcripts root, lives in the container layer and is lost when that container is recreated. Point `transcripts.dir` at a mounted volume that is outside every performer mount to keep transcripts across container recreation. No compose change is made in this issue.
 
 ## Known loss window
 

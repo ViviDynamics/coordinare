@@ -9,11 +9,16 @@ The performer cannot import coordinare, so the module is copied rather than
 imported. ``tests/unit/test_129_redaction_parity.py`` fails if the two copies
 differ, which keeps the value patterns and the key stems from drifting apart.
 
-The module is stdlib only. It does not change ``coordinare.lib.redaction``,
-which other callers rely on. Transcripts need a wider net: structured keys with
-substring stems, ``NAME=value`` assignments, embedded JSON, and exact values
-the job was handed.
+Every scan here is linear in the input length. A pattern with a leading
+character class that is retried at each start position is quadratic on a long
+run of word characters, so assignments are found by tokenising words once and
+then matching the separator and value at fixed positions. Keep it that way: a
+new rule must not retry from every position of a long run.
+
+Stdlib only. This module does not change ``coordinare.lib.redaction``, which
+other callers rely on.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,33 +46,33 @@ VALUE_PATTERNS: tuple[str, ...] = (
     r"AKIA[0-9A-Z]{16}",
 )
 
-# Name stems that mark a key or variable as holding a credential, matched
-# case-insensitively as substrings. ``token(?!s)`` keeps usage counts
-# (input_tokens, max_tokens, tokens_processed) out of scope while still
-# catching auth_token, github_token and ANTHROPIC_AUTH_TOKEN.
+# Credential-name stems, matched case-insensitively against one whole word.
+# The trailing ``(?![a-z])`` makes each stem end at a word boundary: ``tokenizer``,
+# ``tokens`` (usage counts), ``passwordless`` and ``cookiejar`` are not stems.
+# ``token`` still matches inside ``auth_token``, ``GITHUB_TOKEN`` and ``authToken``.
 NAME_STEMS = (
-    r"(?:token(?!s)|secret|passw(?:or)?d|api[_-]?key|authorization"
-    r"|credential|private[_-]?key|cookie)"
+    r"(?:token|secrets?|passw(?:or)?d|api[_-]?key|authorization"
+    r"|credentials?|private[_-]?key|cookies?)(?![a-z])"
 )
 
-_VALUE_RES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in VALUE_PATTERNS)
 _KEY_RE = re.compile(NAME_STEMS, re.IGNORECASE)
-# NAME=value, NAME: value, "NAME": "value". The value is either quoted or runs
-# to whitespace or a structural character.
-_ASSIGN_RE = re.compile(
-    r"(?P<name>[A-Za-z0-9_\-]*" + NAME_STEMS + r"[A-Za-z0-9_\-]*)"
-    r"(?P<sep>[\"']?\s*[=:]\s*)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s\"',;}\])]+)",
-    re.IGNORECASE,
-)
-# An Authorization header takes the rest of its value, whatever scheme it uses.
-_AUTH_HEADER_RE = re.compile(
-    r"(?i)(authorization[\"']?\s*[=:]\s*)[^\r\n\"',}]+",
-)
+_WORD_RE = re.compile(r"[A-Za-z0-9_\-]+")
+# Separator after a key: optional closing quote (JSON), optional escaped quote
+# (a JSON string inside a string), then ``=`` or ``:``. Anchored with .match().
+_SEP_RE = re.compile(r"(?:\\)?[\"']?[ \t]*([=:])[ \t]*")
+# An unquoted ``:`` value runs to whitespace or a structural character.
+_UNQUOTED_RE = re.compile(r"[^\s\"',;}\])]*")
+# URL userinfo: ``scheme://user:password@host``. The password is redacted.
+_USERINFO_RE = re.compile(r"(://[^/\s:@]+:)[^/\s@]+@")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization[\"']?\s*[=:]\s*)[^\r\n\"',}]+")
+_PEM_BEGIN_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+_PEM_END = "-----END "
+
+_VALUE_RES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in VALUE_PATTERNS)
 
 
 def is_sensitive_key(key: object) -> bool:
-    """True when a structured key names a credential (case-insensitive stem match)."""
+    """True when a structured key names a credential (whole-word stem match)."""
     return isinstance(key, str) and _KEY_RE.search(key) is not None
 
 
@@ -80,29 +85,107 @@ def secret_values_from_env(environ: Mapping[str, str]) -> list[str]:
     ]
 
 
-def _assign_repl(match: re.Match[str]) -> str:
-    value = match.group("value")
-    if value.startswith("[REDACTED"):
-        return match.group(0)
-    head = match.group("name") + match.group("sep")
-    if value[:1] in ("'", '"'):
-        quote = value[0]
-        return head + quote + REDACTED + quote
-    return head + REDACTED
+def _line_end(text: str, start: int) -> int:
+    for index in range(start, len(text)):
+        if text[index] in "\r\n":
+            return index
+    return len(text)
+
+
+def _redact_pem(text: str) -> str:
+    """Replace each PEM private key block, BEGIN line through END line, with the marker."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        begin = _PEM_BEGIN_RE.search(text, pos)
+        if begin is None:
+            break
+        end_marker = text.find(_PEM_END, begin.end())
+        if end_marker == -1:
+            stop = len(text)
+        else:
+            close = text.find("-----", end_marker + len(_PEM_END))
+            stop = len(text) if close == -1 else close + len("-----")
+        out.append(text[pos : begin.start()])
+        out.append(REDACTED)
+        pos = stop
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _value_span(text: str, value_start: int, separator: str) -> tuple[int, str, str]:
+    """End offset, opening quote and closing quote of the value starting at ``value_start``.
+
+    Quotes are part of the replaced span, so they are written back around the marker.
+    """
+    if text.startswith('\\"', value_start):
+        close = text.find('\\"', value_start + 2)
+        if close == -1:
+            return _line_end(text, value_start), "", ""
+        return close + 2, '\\"', '\\"'
+    if value_start < len(text) and text[value_start] in "\"'":
+        quote = text[value_start]
+        close = text.find(quote, value_start + 1)
+        if close == -1:
+            return _line_end(text, value_start + 1), quote, ""
+        return close + 1, quote, quote
+    if separator == "=":
+        return _line_end(text, value_start), "", ""
+    unquoted = _UNQUOTED_RE.match(text, value_start)
+    return (unquoted.end() if unquoted is not None else value_start), "", ""
+
+
+def _redact_assignments(text: str) -> str:
+    """Redact the value of each ``NAME=value`` / ``NAME: value`` whose NAME is a credential stem.
+
+    Linear: words are tokenised once, and each value is found by a scan that
+    starts after the previous replacement, so no region is scanned twice.
+
+    Value rules:
+    * a JSON-escaped string (``\\"...\\"``) and a quoted string keep their quotes;
+    * an unquoted ``=`` value runs to the end of the line, so ``FOO_SECRET=two words``
+      is fully redacted;
+    * an unquoted ``:`` value is a single run of non-space characters. Prose such as
+      ``token: the cache is stale`` therefore redacts only ``the``. Redacting to the
+      end of the line would hide the value of ``Authorization: Basic xyz`` and of
+      ``token: abc def``, so the single-run rule is kept on purpose.
+    """
+    out: list[str] = []
+    cursor = 0
+    for word in _WORD_RE.finditer(text):
+        if word.start() < cursor or _KEY_RE.search(word.group()) is None:
+            continue
+        sep = _SEP_RE.match(text, word.end())
+        if sep is None:
+            continue
+        value_start = sep.end()
+        value_end, open_q, close_q = _value_span(text, value_start, sep.group(1))
+        if value_end == value_start and not open_q:
+            continue
+        if text.startswith("[REDACTED", value_start):
+            continue
+        out.append(text[cursor:value_start])
+        out.append(open_q + REDACTED + close_q)
+        cursor = value_end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def redact_text(text: str, secrets: Iterable[str] = ()) -> str:
-    """Redact one string: exact secret values, token shapes, auth headers, assignments."""
+    """Redact one string: exact secret values, PEM keys, token shapes, URL userinfo,
+    auth headers and credential assignments. Linear in ``len(text)``."""
     for secret in sorted(
         (s for s in secrets if len(s) >= MIN_EXACT_SECRET_LENGTH),
         key=len,
         reverse=True,
     ):
         text = text.replace(secret, REDACTED)
+    text = _redact_pem(text)
     for pattern in _VALUE_RES:
         text = pattern.sub(REDACTED, text)
+    text = _USERINFO_RE.sub(lambda m: m.group(1) + REDACTED + "@", text)
     text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + REDACTED, text)
-    return _ASSIGN_RE.sub(_assign_repl, text)
+    return _redact_assignments(text)
 
 
 def _redact_string(text: str, secrets: tuple[str, ...]) -> str:

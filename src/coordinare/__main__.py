@@ -66,6 +66,7 @@ from coordinare.services.notification_config import (
     sanitize_notifications,
 )
 from coordinare.services.run_transcript import (
+    RootGuard,
     TranscriptCollector,
     make_collector,
     resolve_transcripts_root,
@@ -899,6 +900,8 @@ def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
         hosts.append(Path(log_dir))
     for endpoint in config.performer_endpoints:
         hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
+    # Per-symphony env caches live under this root and are mounted into performers.
+    hosts.append(Path(config.env_cache_root).expanduser())
     return hosts
 
 
@@ -919,12 +922,20 @@ def _build_transcript_collector(
             config_dir=config_dir,
             state_dir=state_dir,
         )
+        guard = RootGuard(
+            performer_mounts=tuple(_performer_mount_hosts(config)),
+            protected=(
+                state_dir,
+                config_dir,
+                _resolve_attempt_log_dir(config, config_path),
+            ),
+        )
         collector = make_collector(
             enabled=config.transcripts.enabled,
             root=root,
             max_bytes_per_run=config.transcripts.max_bytes_per_run,
             retention_days=config.transcripts.retention_days,
-            performer_mounts=_performer_mount_hosts(config),
+            guard=guard,
         )
         collector.add_ambient_secrets(os.environ)
         return collector

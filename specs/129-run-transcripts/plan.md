@@ -58,7 +58,9 @@ Rules, in order, on each string:
 
 Structured values: a dict value under a stem-matching key is replaced whole. Dict keys are also redacted as text. A string that parses as a JSON object or array is redacted inside and re-encoded. `token(?!s)` keeps counts such as `input_tokens` and `max_tokens`.
 
-Placement: the performer redacts in `TranscriptBuffer.append`, using the job's secret values (`secrets` provider, read per record so mid-run refreshes apply) and the performer process's credential-named environment variables, read once at buffer creation. The daemon redacts in `RunTranscriptWriter._prepare` with the same rules (exact values from the dispatch payload, refreshed tokens, and the daemon process's credential-named environment), then runs `redact_text` on each serialized line as a last pass.
+Placement (second review revision, item 2): the performer stores records raw and redacts in `TranscriptBuffer.after()`, when a batch is served. The serving route runs that work on a worker thread, so it never runs on the loop that drives the backends. The secret provider is read at that time, so mid-run refreshes apply to every record served afterwards. Records held in the performer's memory are raw; nothing leaves the performer unredacted. The daemon redacts in `RunTranscriptWriter._prepare` with the same rules (exact values from the dispatch payload, refreshed tokens, and the daemon process's credential-named environment), then runs `redact_text` on each serialized line as a last pass.
+
+Second review (items 1 and 5): the rules are linear. Assignments are found by tokenising words, not by a regex with a leading class retried at each position. Credential stems match whole words (`(?![a-z])`), so `tokenizer` and `tokens` are not stems. Additional rules: escaped JSON inside a string (`\"KEY\": \"value\"`), URL userinfo (`scheme://user:password@host`, password redacted), whole PEM private key blocks, and unquoted `=` values to end of line. The prose case `token: the cache is stale` redacts one word by design (see the comment in `_redact_assignments`).
 
 Known limit: the daemon does not hold its minted GitHub App installation token in an environment variable. Exact-value redaction of that token covers only the values the daemon sent at dispatch and the refreshed values the monitor passes on each poll.
 
@@ -136,6 +138,16 @@ With `enabled: false`: no buffer, no cap in the payload, no query parameters on 
 ### D14. Config (review revisions, LOW 9)
 
 `TranscriptsConfig` (`extra="forbid"`, `populate_by_name=True`): `enabled` (default true), `dir` (alias of `directory`, default none), `retention_days` (default 30, 0 to 3650), `max_bytes_per_run` (default 50 MiB, 1 KiB to 1 GiB).
+
+### D15. Second review: I/O, links, retention, validation, release
+
+- **I/O off the loop.** `RunTranscriptWriter` does no I/O at construction, so `writer_for` is memory-only. `ensure_loaded()` reads the cursor from the file's tail: the last complete line holds the highest seq, and a cap marker is always the last line, so the file is never read whole. The tail is read in 64 KiB chunks backward. Both `ensure_loaded` and `append_batch` run on a worker thread (`asyncio.to_thread`), under a per-run `threading.Lock`. The service awaits `ensure_loaded` before it first reads the cursor.
+- **Hard links.** `os.fstat` must report `st_nlink == 1` before the file is truncated (torn line) or appended to. The check runs on the descriptor, so a path swapped after `lstat` cannot defeat it.
+- **Retention layout.** `prune_expired` walks exactly three levels: `<root>/<symphony>/<card>/<run>.jsonl`. A directory counts only if `sanitize_segment(name) == name`, and a file only if its stem is a sanitized name. Symlinks and anything at another depth are never touched. Files in `keep` (live writers' paths, from `TranscriptCollector.live_paths()`, read on the loop) are skipped.
+- **Root validation.** `RootGuard(performer_mounts, protected)`. Performer mounts are the log dir, endpoint volume host paths, and the env-cache root. A root inside a mount, or containing one, is refused. Protected directories (state, config, attempt log) are refused when the root equals or contains them. Inside them is allowed, because the default root is inside the state directory. Comparison is case-insensitive when `_case_insensitive` says the filesystem is, probed by swapping the case of an existing name and asking the filesystem whether it is the same file. Per-run env-cache mounts are checked at dispatch (`_transcript_identity`): an overlapping run gets no cap and no writer.
+- **Release.** `_release_transcript_run(session_id)` drops secrets, targets, failure and support markers, and refusal markers, and releases the writer. It runs on the terminal branch, in `_cleanup_ephemeral_job_by_id` (which every container teardown reaches, including system-error teardown), and in the teardown drain's `finally`. The finished run id is kept in a dict bounded at 4096. `_transcript_writer` returns None for a finished run, so a late poll or release never recreates a writer, and never creates `unattributed/`.
+- **Disabled payload.** With transcripts disabled, `_transcript_identity` returns the payload object unchanged. Dispatch is byte-identical to the pre-129 path.
+- **Claude Code usage without a message id.** Chunks with no id are keyed by `None` and replace one another, so only the last is written.
 
 ## Wire and contract changes
 

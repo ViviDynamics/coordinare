@@ -37,12 +37,15 @@ Guarantees the writer provides:
 The performer-side mirror of this schema is ``performer.transcript``. The two
 packages do not import each other; the field names are the contract.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import stat
+import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
@@ -160,30 +163,72 @@ def resolve_transcripts_root(
 ) -> Path:
     """Where transcripts live. Pure: touches nothing on disk.
 
-    ``transcripts_dir`` (``transcripts.dir``) overrides the default. A relative
-    override is taken from the config directory. The default is
-    ``<state directory>/transcripts``, a daemon-only area beside the state store.
+    ``transcripts.dir`` overrides the default. ``~`` is expanded, and a relative
+    value is taken from the config directory. The default is
+    ``<state directory>/transcripts``.
     """
     if transcripts_dir is None:
         return state_dir / "transcripts"
-    base = Path(transcripts_dir)
+    base = Path(transcripts_dir).expanduser()
     return base if base.is_absolute() else config_dir / base
 
 
-def transcript_root_conflicts(root: Path, mounts: Iterable[Path]) -> list[Path]:
-    """Mounted host directories that would expose ``root`` to a performer.
+@dataclass(frozen=True)
+class RootGuard:
+    """What the transcripts root must not overlap (129 review, item 3).
 
-    A conflict is a mount that contains the root, or that lies inside it.
-    Both directions expose transcripts: the first puts the root inside a mount,
-    the second puts a mount (and so a container) inside the root.
+    ``performer_mounts``: host directories a performer container can see (the
+    performer log dir, endpoint volume host paths, env-cache roots). The root may
+    not lie inside one of them, nor contain one.
+
+    ``protected``: daemon-owned directories (state, config, attempt log). The root
+    may not equal one of them or contain one. Lying inside one is allowed, because
+    the default root is inside the state directory.
     """
-    resolved_root = root.resolve()
-    conflicts: list[Path] = []
-    for mount in mounts:
-        resolved = mount.resolve()
-        if resolved_root.is_relative_to(resolved) or resolved.is_relative_to(resolved_root):
-            conflicts.append(resolved)
-    return conflicts
+
+    performer_mounts: tuple[Path, ...] = ()
+    protected: tuple[Path, ...] = ()
+
+
+def _case_insensitive(path: Path) -> bool:
+    """Probe, not guess: is the filesystem that holds ``path`` case-insensitive?
+
+    The nearest existing ancestor is tested by swapping its name's case and asking
+    the filesystem whether that name is the same file.
+    """
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    if not probe.name:
+        return False
+    alternate = probe.parent / probe.name.swapcase()
+    if alternate.name == probe.name:
+        return False
+    try:
+        return alternate.exists() and alternate.samefile(probe)
+    except OSError:
+        return False
+
+
+def _within(child: Path, parent: Path) -> bool:
+    """True when ``child`` equals ``parent`` or lies inside it (compared case-insensitively
+    where the filesystem is case-insensitive)."""
+    insensitive = _case_insensitive(parent) or _case_insensitive(child)
+    child_parts = child.resolve().parts
+    parent_parts = parent.resolve().parts
+    if insensitive:
+        child_parts = tuple(part.casefold() for part in child_parts)
+        parent_parts = tuple(part.casefold() for part in parent_parts)
+    return child_parts[: len(parent_parts)] == parent_parts
+
+
+def transcript_root_conflicts(root: Path, guard: RootGuard) -> list[Path]:
+    """The guarded directories that conflict with ``root``. Empty means the root is safe."""
+    conflicts = [
+        mount for mount in guard.performer_mounts if _within(root, mount) or _within(mount, root)
+    ]
+    conflicts.extend(directory for directory in guard.protected if _within(directory, root))
+    return [path.resolve() for path in conflicts]
 
 
 def _seq_of(raw: object) -> int | None:
@@ -223,12 +268,54 @@ def _check_chain(root: Path, parts: Sequence[str], *, create: bool) -> Path:
     return current
 
 
-class RunTranscriptWriter:
-    """Appends one run's records to its JSONL file. Not thread-safe; one per run.
+_TAIL_CHUNK = 64 * 1024
 
-    Never raises from :meth:`append_batch` or the constructor. A failure marks
-    the writer failed, logs ``run_transcript.run_failed`` once, and every later
-    call returns 0 without touching the disk.
+
+def _refuse_unless_private_regular(info: os.stat_result, path: Path) -> None:
+    """Refuse anything but a regular file with exactly one name (no hard links).
+
+    A second hard link would make the file reachable from another location, so an
+    append could land in a file the root does not own (129 review, item 4).
+    """
+    if not stat.S_ISREG(info.st_mode):
+        message = f"transcript file is not a regular file: {path}"
+        raise _RefusedError(message)
+    if info.st_nlink != 1:
+        message = f"transcript file has {info.st_nlink} hard links: {path}"
+        raise _RefusedError(message)
+
+
+def _rfind_newline(fd: int, end: int) -> int:
+    """Index of the last newline before ``end`` in the open file, or -1. Reads backward in chunks."""
+    pos = end
+    while pos > 0:
+        start = max(0, pos - _TAIL_CHUNK)
+        chunk = os.pread(fd, pos - start, start)
+        index = chunk.rfind(b"\n")
+        if index != -1:
+            return start + index
+        pos = start
+    return -1
+
+
+def _parse_line(data: bytes) -> object | None:
+    try:
+        parsed: object = json.loads(data)
+    except ValueError:
+        return None
+    return parsed
+
+
+class RunTranscriptWriter:
+    """Appends one run's records to its JSONL file.
+
+    Construction does no I/O. The cursor is read from the file's tail on the first
+    append, and every append runs on a worker thread (the daemon calls it through
+    ``asyncio.to_thread``), so neither the file nor redaction ever blocks the event
+    loop. A lock serialises appends for one run.
+
+    Never raises from :meth:`append_batch`. A failure marks the writer failed,
+    logs ``run_transcript.run_failed`` once, and every later call returns 0.
     """
 
     def __init__(
@@ -249,13 +336,11 @@ class RunTranscriptWriter:
         self._bytes = 0
         self._truncated = False
         self._failed = False
+        self._loaded = False
         self._dropped_records = 0
         self._dropped_bytes = 0
         self._secrets: tuple[str, ...] = ()
-        try:
-            self._load_existing()
-        except Exception as exc:  # best effort: a broken file fails this run only
-            self._fail(exc)
+        self._lock = threading.Lock()
 
     @property
     def path(self) -> Path:
@@ -309,44 +394,48 @@ class RunTranscriptWriter:
         )
 
     def _existing_fd(self) -> int | None:
-        """Open the existing run file for reading and truncation, or None if absent."""
+        """Open the existing run file read-write, refusing links, or None if absent."""
         directory = _check_chain(self._root, self._parts, create=False)
         try:
             return os.open(directory / self._file_name, os.O_RDWR | _NOFOLLOW)
         except FileNotFoundError:
             return None
 
-    def _load_existing(self) -> None:
+    def _load_tail(self) -> None:
+        """Read the cursor and the cap state from the file's last line only.
+
+        Records are written in seq order, so the last complete line carries the
+        highest seq. A cap marker is always the last line too: after it nothing
+        content-bearing is written. The file is never read whole.
+        """
         try:
             fd = self._existing_fd()
         except FileNotFoundError:
-            return
+            return  # no directory yet: a first write creates it
         if fd is None:
             return
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                message = f"transcript file is not a regular file: {self.path}"
-                raise _RefusedError(message)
-            with os.fdopen(os.dup(fd), "rb") as handle:
-                data = handle.read()
-            complete = data.rfind(b"\n") + 1
-            if complete != len(data):
+            info = os.fstat(fd)
+            _refuse_unless_private_regular(info, self.path)
+            size = info.st_size
+            newline = _rfind_newline(fd, size)
+            complete = newline + 1
+            if complete != size:
                 os.ftruncate(fd, complete)
-                data = data[:complete]
+                size = complete
                 logger.warning("run_transcript.torn_line_trimmed", run_id=self._run_id)
+            if complete:
+                start = _rfind_newline(fd, newline) + 1
+                last = os.pread(fd, newline - start, start)
+                obj = _parse_line(last)
+                seq = _seq_of(obj)
+                if seq is not None:
+                    self._cursor = seq
+                if isinstance(obj, dict) and obj.get("type") == "truncated":
+                    self._truncated = True
+            self._bytes = size
         finally:
             os.close(fd)
-        for raw_line in data.splitlines():
-            try:
-                obj = json.loads(raw_line)
-            except ValueError:
-                continue
-            seq = _seq_of(obj)
-            if seq is not None and seq > self._cursor:
-                self._cursor = seq
-            if isinstance(obj, dict) and obj.get("type") == "truncated":
-                self._truncated = True
-        self._bytes = len(data)
 
     def _prepare(self, raw: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -373,6 +462,26 @@ class RunTranscriptWriter:
             "input": {"max_bytes": self._max_bytes, "written_bytes": self._bytes},
         }
 
+    @property
+    def loaded(self) -> bool:
+        """True once the cursor has been read from the file (or the file is known absent)."""
+        return self._loaded
+
+    def ensure_loaded(self) -> None:
+        """Read the cursor and cap state from the file's tail, once.
+
+        Blocking: the daemon calls it through ``asyncio.to_thread`` before it first
+        needs ``cursor``. Never raises: a failure marks the writer failed.
+        """
+        with self._lock:
+            if self._loaded or self._failed:
+                return
+            self._loaded = True
+            try:
+                self._load_tail()
+            except Exception as exc:  # best effort: a broken file fails this run only
+                self._fail(exc)
+
     def append_batch(self, records: list[dict[str, Any]], *, last_seq: int | None = None) -> int:
         """Write the records that pass validation, in order. Returns lines written.
 
@@ -380,14 +489,18 @@ class RunTranscriptWriter:
         window ``cursor < seq <= cursor + len(records)``, at most ``last_seq``,
         and strictly above the previous accepted seq in this batch. Anything else
         is logged and skipped without moving the cursor past it.
+
+        Blocking: call it from a worker thread (``asyncio.to_thread``).
         """
         if self._failed:
             return 0
-        try:
-            return self._append(records, last_seq)
-        except Exception as exc:  # capture is best effort; never raise into a poll
-            self._fail(exc)
-            return 0
+        self.ensure_loaded()
+        with self._lock:
+            try:
+                return self._append(records, last_seq)
+            except Exception as exc:  # capture is best effort; never raise into a poll
+                self._fail(exc)
+                return 0
 
     def _append(self, records: list[dict[str, Any]], last_seq: int | None) -> int:
         base = self._cursor
@@ -453,7 +566,11 @@ class RunTranscriptWriter:
         if len(line) > MAX_RECORD_BYTES:
             return self._cap_marker(seq, len(line), "record exceeded the per-record limit")
         if self._bytes + len(line) > self._max_bytes:
-            return self._cap_marker(seq, len(line), f"transcript byte cap reached ({self._max_bytes} bytes)")
+            return self._cap_marker(
+                seq,
+                len(line),
+                f"transcript byte cap reached ({self._max_bytes} bytes)",
+            )
         return line
 
     def _cap_marker(self, seq: int, dropped_len: int, reason: str) -> bytes:
@@ -468,9 +585,7 @@ class RunTranscriptWriter:
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW
         fd = os.open(directory / self._file_name, flags, 0o600)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                message = f"transcript file is not a regular file: {self.path}"
-                raise _RefusedError(message)
+            _refuse_unless_private_regular(os.fstat(fd), self.path)
             os.write(fd, payload)
         finally:
             os.close(fd)
@@ -534,6 +649,10 @@ class TranscriptCollector:
         """Exact values of credential-named environment variables, for future writers."""
         self._ambient_secrets = secret_values_from_env(environ)
 
+    def live_paths(self) -> frozenset[Path]:
+        """Files of runs with a live writer. The retention sweep never removes these."""
+        return frozenset(writer.path for writer in self._writers.values())
+
     def release(self, run_id: str) -> None:
         """Forget a finished run's writer. The file stays on disk."""
         writer = self._writers.pop(run_id, None)
@@ -553,23 +672,23 @@ def make_collector(
     root: Path,
     max_bytes_per_run: int,
     retention_days: int,
-    performer_mounts: Sequence[Path],
+    guard: RootGuard,
 ) -> TranscriptCollector:
-    """Build the collector, refusing a root a performer can reach.
+    """Build the collector, refusing a root that overlaps a guarded directory.
 
-    When the root sits inside (or contains) a directory mounted into a performer,
-    transcription is switched off for this process and an error is logged. The
-    daemon keeps running: transcripts are diagnostics, and refusing to start
-    would take the orchestrator down over an optional setting. The error is
+    On conflict, transcription is switched off for this process and an error is
+    logged. The daemon keeps running: transcripts are diagnostics, and refusing to
+    start would take the orchestrator down over an optional setting. The error is
     logged at error level, so the condition is visible rather than silent.
+    Construction touches nothing on disk.
     """
-    conflicts = transcript_root_conflicts(root, performer_mounts) if enabled else []
+    conflicts = transcript_root_conflicts(root, guard) if enabled else []
     if conflicts:
         logger.error(
             "run_transcript.root_mounted_into_performer",
             root=str(root),
-            mounts=[str(c) for c in conflicts],
-            action="transcripts disabled for this process; set transcripts.dir outside every performer mount",
+            conflicts=[str(c) for c in conflicts],
+            action="transcripts disabled for this process; set transcripts.dir outside these paths",
         )
         enabled = False
     return TranscriptCollector(
@@ -580,37 +699,60 @@ def make_collector(
     )
 
 
-def prune_expired(root: Path, *, retention_days: int, now: datetime | None = None) -> int:
-    """Delete transcript files whose mtime is older than ``retention_days``.
+def _layout_dirs(parent: Path) -> list[Path]:
+    """Immediate subdirectories whose names the writer could have created."""
+    found: list[Path] = []
+    for entry in parent.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        if sanitize_segment(entry.name) == entry.name:
+            found.append(entry)
+    return found
 
-    ``retention_days == 0`` keeps everything. Only regular ``.jsonl`` files
-    inside ``root`` are candidates; symlinks are never followed or removed.
-    Directories left empty by the sweep are removed, but ``root`` itself is not.
+
+def _is_run_file(entry: Path) -> bool:
+    """A file the writer could have named: ``<sanitized run id>.jsonl`` and nothing else."""
+    if not entry.name.endswith(_TRANSCRIPT_SUFFIX):
+        return False
+    stem = entry.name[: -len(_TRANSCRIPT_SUFFIX)]
+    return sanitize_segment(stem) == stem
+
+
+def prune_expired(
+    root: Path,
+    *,
+    retention_days: int,
+    keep: frozenset[Path] = frozenset(),
+    now: datetime | None = None,
+) -> int:
+    """Delete run files older than ``retention_days``, within the writer's exact layout.
+
+    Only ``<root>/<symphony>/<card>/<run>.jsonl`` is considered, at exactly that depth,
+    and only names the writer could have produced (129 review, item 3). Symlinks are
+    never followed or removed. A file in ``keep`` (a live writer's file) is never
+    removed. Folders left empty are removed, but the root is not.
     Returns the number of files deleted.
     """
     if retention_days <= 0 or not root.is_dir():
         return 0
     base = root.resolve()
+    keep_resolved = {path.resolve() for path in keep}
     cutoff = ((now or datetime.now(UTC)) - timedelta(days=retention_days)).timestamp()
     removed = 0
-    for dirpath, _dirnames, filenames in os.walk(base, followlinks=False):
-        for name in filenames:
-            if not name.endswith(_TRANSCRIPT_SUFFIX):
-                continue
-            candidate = Path(dirpath) / name
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            if not candidate.resolve().is_relative_to(base):
-                continue
-            if candidate.stat().st_mtime < cutoff:
-                candidate.unlink()
-                removed += 1
-    for dirpath, _dirnames, _filenames in os.walk(base, topdown=False, followlinks=False):
-        folder = Path(dirpath)
-        if folder == base:
-            continue
-        if not any(folder.iterdir()):
-            folder.rmdir()
+    for symphony in _layout_dirs(base):
+        for card in _layout_dirs(symphony):
+            for entry in card.iterdir():
+                if entry.is_symlink() or not entry.is_file() or not _is_run_file(entry):
+                    continue
+                if entry.resolve() in keep_resolved:
+                    continue
+                if entry.stat().st_mtime < cutoff:
+                    entry.unlink()
+                    removed += 1
+            if not any(card.iterdir()):
+                card.rmdir()
+        if symphony.exists() and not any(symphony.iterdir()):
+            symphony.rmdir()
     logger.info("run_transcript.retention_pruned", removed=removed, retention_days=retention_days)
     return removed
 
@@ -620,6 +762,7 @@ __all__ = [
     "MAX_RECORD_BYTES",
     "TRANSCRIPT_TYPES",
     "UNATTRIBUTED",
+    "RootGuard",
     "RunTranscriptWriter",
     "TranscriptCollector",
     "TranscriptRecord",

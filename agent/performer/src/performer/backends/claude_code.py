@@ -94,7 +94,7 @@ class ClaudeCodeBackend:
         # The usage of the message currently streaming: (message id, usage, model).
         # Each chunk replaces it, so the record written when the message ends is
         # the last usage seen for that message, not the first.
-        self._transcript_pending_usage: tuple[str, TranscriptUsage, str | None] | None = None
+        self._transcript_pending_usage: tuple[str | None, TranscriptUsage, str | None] | None = None
         self._git_env: dict[str, str] = {}
         self._cache_env: dict[str, str] = {}
         self._tool_env: dict[str, str] = {}
@@ -690,8 +690,7 @@ class ClaudeCodeBackend:
                         )
                 except Exception as exc:  # pragma: no cover
                     self._status = BackendStatus(state="error", error_reason=str(exc))
-            if self._status is not status_before_finally and self._status.state == "error":
-                transcript.emit("error", text=self._status.error_reason or "claude run failed")
+            _record_new_error(self._status, status_before_finally)
 
     @transcript.best_effort
     def _transcribe_event(self, event: dict[str, Any]) -> None:
@@ -752,24 +751,20 @@ class ClaudeCodeBackend:
         message_id = message.get("id")
         usage = message.get("usage")
         if isinstance(usage, dict):
-            if message_id is None:
-                transcript.emit(
-                    "usage",
-                    text="message usage",
-                    usage=_usage_from_claude(usage, model),
-                    scope="message",
-                )
-            else:
-                current = self._transcript_pending_usage
-                if current is not None and current[0] != str(message_id):
-                    self._flush_pending_usage()
-                # Replace, do not keep the first: a later chunk of the same
-                # message can carry higher output token counts.
-                self._transcript_pending_usage = (
-                    str(message_id),
-                    _usage_from_claude(usage, model),
-                    model if isinstance(model, str) else None,
-                )
+            # Without a message id, consecutive chunks cannot be told apart, so they
+            # are treated as one message and only the last one is written. Writing
+            # each chunk would count the same tokens once per chunk.
+            key = str(message_id) if message_id is not None else None
+            current = self._transcript_pending_usage
+            if current is not None and current[0] != key:
+                self._flush_pending_usage()
+            # Replace, do not keep the first: a later chunk of the same
+            # message can carry higher output token counts.
+            self._transcript_pending_usage = (
+                key,
+                _usage_from_claude(usage, model),
+                model if isinstance(model, str) else None,
+            )
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue
@@ -1023,6 +1018,12 @@ _RESULT_TOKEN_FIELDS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
+
+
+def _record_new_error(now: BackendStatus, before: BackendStatus) -> None:
+    """129: record an error the reader's finally block produced (not one recorded earlier)."""
+    if now is not before and now.state == "error":
+        transcript.emit("error", text=now.error_reason or "claude run failed")
 
 
 def _token_field(value: object) -> int | None:

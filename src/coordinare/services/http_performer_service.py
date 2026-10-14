@@ -27,6 +27,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -36,7 +37,11 @@ from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
-from coordinare.services.run_transcript import UNATTRIBUTED
+from coordinare.services.run_transcript import (
+    UNATTRIBUTED,
+    RootGuard,
+    transcript_root_conflicts,
+)
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
@@ -72,6 +77,9 @@ _TRANSCRIPT_DRAIN_MAX_ROUNDS = 5000
 # removed, and may delay that removal by at most this long.
 _TRANSCRIPT_DRAIN_SECONDS = 30.0
 _TRANSCRIPT_TEARDOWN_SECONDS = 5.0
+# How many finished runs are remembered, so that a late poll or teardown never
+# recreates a writer for them (129 review, item 7).
+_TRANSCRIPT_FINALISED_MEMORY = 4096
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -242,6 +250,10 @@ class HTTPPerformerService:
         self._transcript_unsupported_runs: set[str] = set()
         self._transcript_secrets: dict[str, list[str]] = {}
         self._transcript_failed_runs: set[str] = set()
+        # Runs whose extra mounts overlap the transcripts root: never transcribed.
+        self._transcript_refused: set[str] = set()
+        # Runs already finished. Their writers are never recreated (item 7).
+        self._transcript_finalised: dict[str, None] = {}
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -502,10 +514,7 @@ class HTTPPerformerService:
         # id means the performer's transcript run id and the daemon's transcript
         # file name agree without a second id. Persistent mode already set
         # session_id = job_id, so this is the same value there.
-        payload = payload.model_copy(
-            update={"job_id": session_id, "transcript_max_bytes": self._transcript_max_bytes()},
-        )
-        self._remember_transcript_secrets(session_id, payload)
+        payload = self._transcript_identity(session_id, payload, extra_volumes)
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
@@ -677,9 +686,6 @@ class HTTPPerformerService:
             # 129: the job is about to be torn down. Take every remaining record
             # first, because the performer's transcript dies with the container.
             await self._drain_transcript(client, url_job_id, writer, status)
-            self._transcript_targets.pop(session_id, None)
-            if self._transcripts is not None:
-                self._transcripts.release(session_id)
         if is_terminal:
             error_reason: str | None = None
             if (
@@ -721,6 +727,7 @@ class HTTPPerformerService:
                 await self._cleanup_ephemeral_job_by_id(session_id)
             elif self._config.mode == "persistent":
                 await self.call_reset()
+            self._release_transcript_run(session_id)
 
         # Translate JobStatus → PerformerResponse-style dict that monitor_performer.py
         # expects (it reads `status.get("status", "working")`).
@@ -768,16 +775,49 @@ class HTTPPerformerService:
             "state": status.state,
         }
 
-    def _transcript_max_bytes(self) -> int | None:
-        """129: the per-run cap sent in the job payload, or None when transcripts are off."""
+    def _transcript_identity(
+        self,
+        session_id: str,
+        payload: JobInitPayload,
+        extra_volumes: list[VolumeMount] | None,
+    ) -> JobInitPayload:
+        """129: the job payload for one dispatch.
+
+        With transcripts disabled the payload is returned untouched, exactly as it was
+        before spec 129 (item 8). Enabled, the coordinare session id becomes the job id,
+        so the performer's run id and the transcript file name agree, and the byte cap
+        is sent.
+
+        A run whose extra mounts (per-symphony env caches) overlap the transcripts root
+        is not transcribed. The performer gets no cap, and no writer is created for it.
+        """
         if self._transcripts is None or not self._transcripts.enabled:
-            return None
-        return self._transcripts.max_bytes_per_run
+            return payload
+        mounts = [Path(volume.host_path) for volume in extra_volumes or []]
+        conflicts = (
+            transcript_root_conflicts(self._transcripts.root, RootGuard(performer_mounts=tuple(mounts)))
+            if mounts
+            else []
+        )
+        if conflicts:
+            self._transcript_refused.add(session_id)
+            logger.warning(
+                "run_transcript.run_mount_conflict",
+                performer_id=self._config.id,
+                session_id=session_id,
+                conflicts=[str(path) for path in conflicts],
+            )
+            return payload
+        self._remember_transcript_secrets(session_id, payload)
+        return payload.model_copy(
+            update={
+                "job_id": session_id,
+                "transcript_max_bytes": self._transcripts.max_bytes_per_run,
+            },
+        )
 
     def _remember_transcript_secrets(self, session_id: str, payload: JobInitPayload) -> None:
         """129: keep the job's secret values so the run's records are redacted by exact value."""
-        if self._transcripts is None or not self._transcripts.enabled:
-            return
         self._transcript_secrets[session_id] = [
             secret.get_secret_value() for secret in payload.secrets.values()
         ]
@@ -812,13 +852,16 @@ class HTTPPerformerService:
         session_id: str,
         payload: dict[str, Any] | None,
     ) -> RunTranscriptWriter | None:
-        """129: the run's writer, or None when transcripts are off or unusable.
+        """129: the run's writer, or None when transcripts are off, refused, or finished.
 
         The monitor passes ``transcript_target`` (symphony and card id) on every
         poll. A target seen once is remembered for the run, so polls that do not
         carry one (observer probes, bootstrap polls) still write to the same file.
+        A finished run never gets a writer again (item 7).
         """
         if self._transcripts is None or not self._transcripts.enabled:
+            return None
+        if session_id in self._transcript_finalised or session_id in self._transcript_refused:
             return None
         try:
             target = payload.get("transcript_target") if payload else None
@@ -840,6 +883,24 @@ class HTTPPerformerService:
             return None
         return writer
 
+    def _release_transcript_run(self, session_id: str) -> None:
+        """129 item 6: drop every per-run daemon record once the run has finished.
+
+        Secrets, targets, failure and support markers are kept only while the run is
+        live. The run id is remembered, bounded, so a late poll or teardown cannot
+        recreate its writer (item 7). Safe to call repeatedly.
+        """
+        self._transcript_targets.pop(session_id, None)
+        self._transcript_secrets.pop(session_id, None)
+        self._transcript_failed_runs.discard(session_id)
+        self._transcript_unsupported_runs.discard(session_id)
+        self._transcript_refused.discard(session_id)
+        if self._transcripts is not None:
+            self._transcripts.release(session_id)
+        self._transcript_finalised[session_id] = None
+        while len(self._transcript_finalised) > _TRANSCRIPT_FINALISED_MEMORY:
+            del self._transcript_finalised[next(iter(self._transcript_finalised))]
+
     async def _get_job_status(
         self,
         client: PerformerHTTPClient,
@@ -850,18 +911,23 @@ class HTTPPerformerService:
         """Poll the job. With a transcript writer, the same request carries the cursor."""
         if writer is None:
             return await client.get_job(job_id)
+        if not writer.loaded:
+            # The first poll reads the cursor from the file's tail, on a worker thread.
+            await asyncio.to_thread(writer.ensure_loaded)
         status = await client.get_job(
             job_id, transcript_after=writer.cursor, transcript_limit=_TRANSCRIPT_BATCH_LIMIT,
         )
-        self._absorb_transcript(writer, status, session_id)
+        await self._absorb_transcript(writer, status, session_id)
         return status
 
-    def _absorb_transcript(
+    async def _absorb_transcript(
         self,
         writer: RunTranscriptWriter,
         status: JobStatus,
         session_id: str,
     ) -> None:
+        """Write one batch on a worker thread (129 item 2). The file and the redaction
+        never run on the event loop."""
         try:
             if status.transcript_last_seq is None:
                 # Transcripts are on but the performer returned no transcript fields:
@@ -874,8 +940,19 @@ class HTTPPerformerService:
                         session_id=session_id,
                     )
                 return
+            if writer.cursor > status.transcript_last_seq:
+                logger.warning(
+                    "run_transcript.cursor_ahead_of_performer",
+                    session_id=session_id,
+                    cursor=writer.cursor,
+                    performer_last_seq=status.transcript_last_seq,
+                )
             if status.transcript:
-                writer.append_batch(status.transcript, last_seq=status.transcript_last_seq)
+                await asyncio.to_thread(
+                    writer.append_batch,
+                    status.transcript,
+                    last_seq=status.transcript_last_seq,
+                )
         except Exception as exc:  # best effort: see _transcript_failed
             self._transcript_failed(session_id, "absorb", exc, writer)
 
@@ -888,6 +965,8 @@ class HTTPPerformerService:
     ) -> None:
         """Fetch until the performer's last seq is on disk. ``status`` is already absorbed, or None."""
         session_id = writer.run_id
+        if not writer.loaded:
+            await asyncio.to_thread(writer.ensure_loaded)
         for _ in range(_TRANSCRIPT_DRAIN_MAX_ROUNDS):
             if writer.failed:
                 return
@@ -901,7 +980,7 @@ class HTTPPerformerService:
                 transcript_after=writer.cursor,
                 transcript_limit=_TRANSCRIPT_DRAIN_LIMIT,
             )
-            self._absorb_transcript(writer, status, session_id)
+            await self._absorb_transcript(writer, status, session_id)
             if status.transcript_last_seq is None or writer.cursor >= status.transcript_last_seq:
                 return
             if writer.cursor == cursor_before:
@@ -976,6 +1055,8 @@ class HTTPPerformerService:
             )
         except Exception as exc:  # best effort: never block the teardown
             self._transcript_failed(session_id, "teardown_drain", exc)
+        finally:
+            self._release_transcript_run(session_id)
 
     def _log_upstream_http_error(self, response: dict[str, Any]) -> None:
         """Emit verbatim upstream-body log line when the performer reports a
@@ -1175,6 +1256,9 @@ class HTTPPerformerService:
 
     async def _cleanup_ephemeral_job_by_id(self, job_id: str) -> None:
         """Look up and clean up an ephemeral job by its job_id."""
+        # 129 item 6: the run is over, so its per-run daemon state goes too. Every
+        # path that tears a container down ends here (terminal, system error, stop).
+        self._release_transcript_run(job_id)
         task = self._log_poll_tasks.pop(job_id, None)
         if task is not None:
             task.cancel()

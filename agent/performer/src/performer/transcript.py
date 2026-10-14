@@ -28,6 +28,7 @@ Design rules:
   dropped. :meth:`TranscriptBuffer.after` returns at most ``MAX_BATCH_BYTES`` per
   delivery (always at least one record).
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -208,21 +209,20 @@ class TranscriptBuffer:
         return values
 
     def append(self, record_type: TranscriptType, **fields: Unpack[RecordFields]) -> None:
+        # Stored raw. Redaction happens in ``after()``, on the worker thread that
+        # serves the batch, so the event loop that runs the backends never does
+        # regex work over a large tool output (129 review, item 2).
         seq = self.last_seq + 1
-        secrets = self._secret_values()
-        text = fields.get("text")
-        tool_name = fields.get("tool_name")
-        call_id = fields.get("call_id")
         record = TranscriptRecord(
             ts=datetime.now(UTC).isoformat(),
             run_id=self._run_id,
             seq=seq,
             type=record_type,
-            text=redact_text(text, secrets) if text is not None else None,
-            tool_name=redact_text(tool_name, secrets) if tool_name is not None else None,
-            call_id=redact_text(call_id, secrets) if call_id is not None else None,
-            input=redact_value(_jsonable(fields.get("input_data")), secrets),
-            output=redact_value(_jsonable(fields.get("output_data")), secrets),
+            text=fields.get("text"),
+            tool_name=fields.get("tool_name"),
+            call_id=fields.get("call_id"),
+            input=_jsonable(fields.get("input_data")),
+            output=_jsonable(fields.get("output_data")),
             is_error=fields.get("is_error"),
             usage=fields.get("usage"),
             scope=fields.get("scope"),
@@ -263,23 +263,39 @@ class TranscriptBuffer:
         large record cannot stall delivery.
         """
         start = max(seq, 0)
+        secrets = self._secret_values()
         batch: list[dict[str, Any]] = []
         total = 0
-        for record in self._records[start:start + limit]:
+        for record in self._records[start : start + limit]:
             size = _line_bytes(record)
             if batch and total + size > self._max_batch_bytes:
                 break
-            batch.append(record.model_dump(exclude_none=True))
+            batch.append(_redacted_dump(record, secrets))
             total += size
         return batch
 
 
+def _redacted_dump(record: TranscriptRecord, secrets: list[str]) -> dict[str, Any]:
+    """The record as it leaves the performer: every free-form field redacted."""
+    data = record.model_dump(exclude_none=True)
+    for key in ("text", "tool_name", "call_id"):
+        if isinstance(data.get(key), str):
+            data[key] = redact_text(data[key], secrets)
+    for key in ("input", "output"):
+        if key in data:
+            data[key] = redact_value(data[key], secrets)
+    return data
+
+
 _transcript_var: contextvars.ContextVar[TranscriptBuffer | None] = contextvars.ContextVar(
-    "_transcript", default=None,
+    "_transcript",
+    default=None,
 )
 
 
-def set_active_buffer(buffer: TranscriptBuffer | None) -> contextvars.Token[TranscriptBuffer | None]:
+def set_active_buffer(
+    buffer: TranscriptBuffer | None,
+) -> contextvars.Token[TranscriptBuffer | None]:
     """Install ``buffer`` for the current context. Called by the job runner."""
     return _transcript_var.set(buffer)
 

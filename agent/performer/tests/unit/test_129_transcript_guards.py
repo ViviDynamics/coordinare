@@ -1,4 +1,5 @@
 """Spec 129 review fixes, performer side: best-effort capture, redaction, bounded batches."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,9 @@ GH_TOKEN = "ghp_" + "d" * 36
 @pytest.fixture
 def buffer() -> Iterator[transcript.TranscriptBuffer]:
     buf = transcript.TranscriptBuffer(
-        "run-g", max_bytes=10_000_000, secrets=lambda: [JOB_SECRET],
+        "run-g",
+        max_bytes=10_000_000,
+        secrets=lambda: [JOB_SECRET],
     )
     transcript.set_active_buffer(buf)
     yield buf
@@ -24,7 +27,8 @@ def buffer() -> Iterator[transcript.TranscriptBuffer]:
 
 
 def test_emit_never_raises_when_capture_breaks(
-    buffer: transcript.TranscriptBuffer, monkeypatch: pytest.MonkeyPatch,
+    buffer: transcript.TranscriptBuffer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HIGH 3 (performer side): a capture failure must not reach a backend's reader loop."""
 
@@ -67,16 +71,24 @@ def test_job_secrets_and_credential_keys_never_reach_the_stored_record(
     assert stored["github_token"] == "[REDACTED]"
 
 
-def test_secret_provider_is_read_per_record(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A token refreshed mid-run is redacted from its first use after the refresh."""
+def test_secret_provider_is_read_at_serve_time() -> None:
+    """Redaction runs when a batch is served, so a token refreshed mid-run is masked
+    in every record that leaves the performer after the refresh, earlier ones too."""
     current: list[str] = []
     buf = transcript.TranscriptBuffer("run-r", max_bytes=10_000_000, secrets=lambda: current)
     buf.append("assistant_text", text="before refresh: fresh-token-value-99")
     current.append("fresh-token-value-99")
     buf.append("assistant_text", text="after refresh: fresh-token-value-99")
     texts = [r["text"] for r in buf.after(0, 10)]
-    assert "fresh-token-value-99" in texts[0]
-    assert "fresh-token-value-99" not in texts[1]
+    assert all("fresh-token-value-99" not in text for text in texts)
+
+
+def test_records_are_stored_raw_and_redacted_only_when_served() -> None:
+    """The buffer's append path does no regex work. The raw value is held in memory."""
+    buf = transcript.TranscriptBuffer("run-raw", max_bytes=10_000_000, secrets=lambda: [JOB_SECRET])
+    buf.append("tool_result", output_data=f"leak {JOB_SECRET}")
+    assert JOB_SECRET in str(buf._records[0].output)
+    assert JOB_SECRET not in json.dumps(buf.after(0, 10))
 
 
 def test_batches_are_byte_bounded_and_always_progress() -> None:
