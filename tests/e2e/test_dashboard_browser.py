@@ -267,7 +267,8 @@ def test_active_card_details_render(
     )
 
     expect(page.locator("#swimlane-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
-    expect(page.locator("#swimlane-section a")).to_have_attribute(
+    # 146: the card also carries a View run link, so name the issue link.
+    expect(page.locator("#swimlane-section a:not(.view-run-link)")).to_have_attribute(
         "href", "https://github.com/org/repo/issues/42", timeout=_WAIT_LIVE,
     )
 

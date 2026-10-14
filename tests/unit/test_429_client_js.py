@@ -65,7 +65,8 @@ def _extract_detail_js() -> str:
     cost_helpers.append(shipped_function("helpers", "fmtCost"))
     # 145: the detail renderer offers the card action menu.
     cost_helpers.append(_DASHBOARD_JS_SOURCES["actions"])
-    for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "isStageRunning", "costHtml"):
+    # 146: the renderer links to the run.
+    for name in ("parseTokenCount", "derivePerformerTokenTotal", "estimateCost", "isStageRunning", "costHtml", "viewRunLinkHtml"):
         helper = re.search(rf"function {name}\(.*?\n\}}", performers, re.DOTALL)
         if helper is None:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
