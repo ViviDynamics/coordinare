@@ -260,6 +260,19 @@ def _withheld_record(run_id: str, seq: int) -> dict[str, Any]:
     }
 
 
+def _reseal_persona_hash(header: dict[str, Any]) -> None:
+    """Hash the persona text the header carries after every redaction (spec 130, review item 3).
+
+    The builder hashes the text after pattern redaction. Exact job secrets are removed
+    here, so the hash is recomputed over what reaches the file. Anyone can then reproduce
+    ``sent_text_sha256`` from the transcript line alone.
+    """
+    persona = header.get("persona")
+    if isinstance(persona, dict) and isinstance(persona.get("sent_text"), str):
+        sent = persona["sent_text"]
+        persona["sent_text_sha256"] = hashlib.sha256(sent.encode("utf-8", "surrogatepass")).hexdigest()
+
+
 def _seq_of(raw: object) -> int | None:
     if not isinstance(raw, dict):
         return None
@@ -514,6 +527,7 @@ class RunTranscriptWriter:
             return False
         try:
             redacted: dict[str, Any] = redact_value(header, self._secrets)
+            _reseal_persona_hash(redacted)
             line = _to_line(redacted)
             self._write(line)
             self._bytes += len(line)

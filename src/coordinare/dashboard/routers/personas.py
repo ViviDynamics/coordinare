@@ -15,13 +15,14 @@ from fastapi.responses import JSONResponse, Response
 from coordinare.dashboard.guards import _version_headers, _version_refusal
 from coordinare.dashboard_oidc import SESSION_COOKIE
 from coordinare.services.persona_history import (
-    LOCAL_ACTOR,
-    PERSONA_HISTORY_MAX_VERSIONS,
-    SOURCE_DASHBOARD,
-    SOURCE_DASHBOARD_RESET,
-    effective_persona_text,
-    history_for,
-    persona_history_root,
+        BEARER_ACTOR,
+        LOCAL_ACTOR,
+        PERSONA_HISTORY_MAX_VERSIONS,
+        SOURCE_DASHBOARD,
+        SOURCE_DASHBOARD_RESET,
+        effective_persona_text,
+        history_for,
+        persona_history_root,
 )
 from coordinare.services.persona_service import VALID_ROLES
 
@@ -35,28 +36,45 @@ _log = structlog.get_logger(__name__)
 
 
 def _session_actor(request: Request) -> str:
-    """Who is changing a persona: the OIDC session identity, else ``local`` (spec 130 FR-008)."""
+    """Who is changing a persona (spec 130 FR-008).
+
+    The signed-in OIDC session names the user. Without one, a bearer-token request is
+    ``token`` (the token maps to no user), and anything else is ``local``.
+    """
     flow: OidcFlow | None = getattr(request.app.state, "oidc", None)
-    if flow is None:
-        return LOCAL_ACTOR
-    identity = flow.sessions.identity(request.cookies.get(SESSION_COOKIE, ""))
-    if identity is None:
-        return LOCAL_ACTOR
-    actor: str = identity.name or identity.email or identity.subject
-    return actor
+    if flow is not None:
+        identity = flow.sessions.identity(request.cookies.get(SESSION_COOKIE, ""))
+        if identity is not None:
+            actor: str = identity.name or identity.email or identity.subject
+            return actor
+    if request.headers.get("authorization", "").startswith("Bearer "):
+        return BEARER_ACTOR
+    return LOCAL_ACTOR
 
 
 def _record_persona_version(
     config: object, role: str, text: str, *, actor: str, source: str,
-) -> None:
-    """Keep the saved persona text as a version. The save already happened, so this never raises."""
+) -> str | None:
+    """Keep the saved persona text as a version. Returns a warning when that failed.
+
+    The save has already happened and is not undone. A write that fails is logged and
+    reported to the caller, which says so in its response. The next dispatch records the
+    text as an ``unknown`` change, so the history catches up.
+    """
     root = persona_history_root(config)
     if root is None:
-        return
+        return None
     try:
         history_for(root).record(role, text, changed_by=actor, source=source)
+    except OSError as exc:
+        _log.warning("persona_history.write_failed", role=role, exc_type=type(exc).__name__)
+        return (
+            "the change was saved, but its version could not be written to the persona "
+            "history (disk error); the next dispatch records it as an unknown change"
+        )
     except ValueError as exc:
         _log.warning("persona_history.refused", role=role, error=str(exc))
+    return None
 
 
 def _version_meta(version: PersonaVersion) -> dict[str, Any]:
@@ -188,7 +206,7 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
                     status_code=500,
                 )
 
-            _record_persona_version(
+            warning = _record_persona_version(
                 daemon.state.get("config"), role,
                 effective_persona_text(role, instructions),
                 actor=_session_actor(request), source=SOURCE_DASHBOARD,
@@ -203,10 +221,10 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             personas = load_personas_hot(config_path, daemon.state.get("config"))
             effective = get_effective_instructions(role, personas)
             is_default = not getattr(personas, role).instructions.strip()
-            return JSONResponse(
-                {"role": role, "instructions": effective, "is_default": is_default},
-                headers=_version_headers(config_path),
-            )
+            response_body: dict[str, Any] = {"role": role, "instructions": effective, "is_default": is_default}
+            if warning is not None:
+                response_body["warning"] = warning
+            return JSONResponse(response_body, headers=_version_headers(config_path))
 
 
 def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> None:

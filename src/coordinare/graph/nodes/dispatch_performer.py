@@ -34,7 +34,7 @@ from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.pr_lifecycle import retained_pr_is_open
-from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs
+from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs_bounded
 from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
@@ -2084,19 +2084,19 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
     return card_context, role
 
 
-def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> dict[str, Any]:
+async def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> dict[str, Any]:
     """130: the daemon-side inputs of the run header (persona version, routing rule).
 
     The persona text sent is the card context's ``persona_instructions``. The language
     directive appended to it is removed again, so the persona history versions the text
     the persona itself holds. The transcript folder matches the monitor's
-    ``transcript_target``, so the header and the later records land in one file.
-    Never raises.
+    ``transcript_target``, so the header and the later records land in one file. The
+    persona history runs off the event loop under a bound. Never raises.
     """
     card_context = ctx["card_context"]
     role = ctx.get("role")
     sent = card_context.get("persona_instructions") if role else None
-    return build_run_inputs(
+    return await build_run_inputs_bounded(
         config=state.get("config"),
         role=role,
         persona_sent=sent if isinstance(sent, str) else None,
@@ -2559,7 +2559,7 @@ async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_
         if isinstance(service, HTTPPerformerService):
             # 130: the daemon-side inputs of the run header. Not on the wire: the service
             # uses them for the transcript header only, so the payload is unchanged.
-            _dispatch_kwargs["run_inputs"] = _dispatch_run_inputs(state, ctx)
+            _dispatch_kwargs["run_inputs"] = await _dispatch_run_inputs(state, ctx)
         result = await service.dispatch_card(card_context, **_dispatch_kwargs)
     except PerformerAuthError as exc:
         return await _dispatch_auth_error(state, exc, ctx, _release_slot_on_error)

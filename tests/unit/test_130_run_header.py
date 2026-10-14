@@ -250,7 +250,7 @@ def test_builder_shape_and_sources() -> None:
         "id": "perf-1", "backend": "claude_code", "transport": "persistent", "endpoint": "http://perf:8080",
     }
     assert header["model"]["model"] == "claude-sonnet"
-    assert header["model"]["api_key_env"] == "ANTHROPIC_API_KEY"
+    assert header["model"]["env_var_names"]["api"] == "ANTHROPIC_API_KEY"
     assert header["card"]["title"] == "Run header"
     assert header["card"]["acceptance_criteria"] == ["header first", "versions kept"]
     assert header["card"]["truncated"] is False

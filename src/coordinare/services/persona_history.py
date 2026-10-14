@@ -29,6 +29,7 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from coordinare.lib.transcript_redaction import redact_text
 from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 
 logger = structlog.get_logger(__name__)
@@ -39,6 +40,9 @@ PERSONA_HISTORY_DIRNAME = "persona_history"
 
 #: Who changed a persona when no dashboard session identifies them.
 LOCAL_ACTOR = "local"
+#: Who changed a persona with the dashboard token, when no signed-in session names them.
+#: The token is shared and maps to no user, so the history says so rather than guess.
+BEARER_ACTOR = "token"
 #: Who changed a persona when the change was not made through the dashboard.
 UNKNOWN_ACTOR = "unknown"
 
@@ -65,8 +69,19 @@ class PersonaVersion(BaseModel):
     source: str
 
 
+def stored_text(text: str) -> str:
+    """The text the history keeps: the persona text with credential patterns redacted.
+
+    Persona text is operator-written, and an operator can paste a secret into it. The
+    history is served by the API for as long as the version is retained, so a secret that
+    was later removed from the persona must not stay readable there. Only the redacted text
+    is stored, and only its hash is compared or served.
+    """
+    return redact_text(text)
+
+
 def persona_text_sha256(text: str) -> str:
-    """The content hash of a persona text (SHA-256, hex)."""
+    """The content hash of a persona text as it is stored (SHA-256, hex)."""
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
@@ -83,7 +98,7 @@ def persona_history_root(config: object) -> Path | None:
     state_path = getattr(config, "state_file_path", None)
     if state_path is None:
         return None
-    return Path(state_path).parent / PERSONA_HISTORY_DIRNAME
+    return Path(state_path).resolve().parent / PERSONA_HISTORY_DIRNAME
 
 
 class PersonaHistory:
@@ -107,23 +122,26 @@ class PersonaHistory:
         changed_by: str,
         source: str,
     ) -> PersonaVersion | None:
-        """Append ``text`` as a new version, unless it is the latest version already.
+        """Append the redacted ``text`` as a new version, unless it is the latest already.
 
-        Returns the new version, or None when nothing changed or the write failed (the
-        failure is logged). Raises ValueError for a role name that could not be a file.
+        Returns the new version, or None when nothing changed. A write that fails raises
+        ``OSError`` (after a log line), so the caller can say so: the save it follows has
+        already happened and is not undone. Raises ValueError for a role name that could
+        not be a file.
         """
         path = self._path(role)
+        stored = stored_text(text)
         with self._lock:
             try:
                 versions = self._load(role)
-                if versions and versions[-1].sha256 == persona_text_sha256(text):
+                if versions and versions[-1].sha256 == persona_text_sha256(stored):
                     return None
                 next_id = versions[-1].version + 1 if versions else 1
                 version = PersonaVersion(
                     role=role,
                     version=next_id,
-                    sha256=persona_text_sha256(text),
-                    text=text,
+                    sha256=persona_text_sha256(stored),
+                    text=stored,
                     changed_at=datetime.now(UTC).isoformat(),
                     changed_by=changed_by,
                     source=source,
@@ -140,7 +158,7 @@ class PersonaHistory:
                     role=role,
                     exc_type=type(exc).__name__,
                 )
-                return None
+                raise
         logger.info("persona_history.recorded", role=role, version=version.version, source=source)
         return version
 
@@ -174,8 +192,10 @@ class PersonaHistory:
         path = self._path(role)
         loaded: list[PersonaVersion] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                parsed = _parse_version(line)
+            # Read bytes and judge each line on its own: one corrupt byte costs one line,
+            # never the whole history (a UnicodeDecodeError here would hide every version).
+            for raw_line in path.read_bytes().split(b"\n"):
+                parsed = _parse_version(raw_line)
                 if parsed is not None:
                     loaded.append(parsed)
         self._cache[role] = loaded
@@ -209,12 +229,12 @@ class PersonaHistory:
         temp.replace(path)
 
 
-def _parse_version(line: str) -> PersonaVersion | None:
-    """One stored line, or None for a torn or foreign line (skipped, never fatal)."""
-    if not line.strip():
+def _parse_version(raw: bytes) -> PersonaVersion | None:
+    """One stored line, or None for a torn, corrupt or foreign line (skipped, never fatal)."""
+    if not raw.strip():
         return None
     try:
-        data: Any = json.loads(line)
+        data: Any = json.loads(raw.decode("utf-8"))
         return PersonaVersion.model_validate(data)
     except (ValueError, ValidationError):
         return None
@@ -254,12 +274,13 @@ def reference_for_dispatch(root: Path | None, role: str, effective: str) -> dict
             "version": None,
             "reason": "no daemon configuration: persona history is unavailable",
         }
+    stored_hash = persona_text_sha256(stored_text(effective))
     try:
         store = history_for(root)
         latest = store.latest(role)
         if latest is None:
             store.record(role, effective, changed_by=UNKNOWN_ACTOR, source=SOURCE_FIRST_SEEN)
-        elif latest.sha256 != persona_text_sha256(effective):
+        elif latest.sha256 != stored_hash:
             store.record(role, effective, changed_by=UNKNOWN_ACTOR, source=SOURCE_OUTSIDE_DASHBOARD)
         latest = store.latest(role)
     except (OSError, ValueError) as exc:
@@ -267,7 +288,7 @@ def reference_for_dispatch(root: Path | None, role: str, effective: str) -> dict
             "version": None,
             "reason": f"persona history is unavailable: {type(exc).__name__}",
         }
-    if latest is None or latest.sha256 != persona_text_sha256(effective):
+    if latest is None or latest.sha256 != stored_hash:
         return {"version": None, "reason": "persona history could not record this text"}
     return {
         "version": latest.version,

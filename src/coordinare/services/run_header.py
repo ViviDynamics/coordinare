@@ -6,9 +6,10 @@ the header never shifts that numbering. The writer redacts it like every record.
 
 Two builders feed it:
 
-* :func:`build_run_inputs` runs in the dispatch node. It resolves what only the daemon
-  knows: the persona version the run is given, and the routing rule that picked the
-  role's mode and model.
+* :func:`build_run_inputs_bounded` runs in the dispatch node. It resolves what only the
+  daemon knows: the persona version the run is given, and the routing rule that picked the
+  role's mode and model. The persona history touches the disk, so it runs on a worker
+  thread under a bound, and the event loop never waits on it.
 * :func:`build_run_header` runs in the HTTP performer service after acceptance. It reads
   the card context the job was sent with, and the performer endpoint.
 
@@ -16,16 +17,22 @@ Neither builder raises. A value the daemon cannot know is null with a reason, ne
 guessed. The rendered task prompt is not in the header: each performer backend builds it
 inside the performer container, and most backends record it as the run's first ``user``
 record. The header says so and points there.
+
+Env var names are recorded under keys that carry no credential stem (``env_var_names``),
+so the transcript redactor leaves them as the names they are. The redactor would replace
+the value of a key such as ``api_key_env`` with ``[REDACTED]``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.transcript_redaction import redact_text
 from coordinare.services.persona_history import (
     persona_history_root,
     persona_text_sha256,
@@ -58,9 +65,16 @@ FEEDBACK_TOTAL_CHARS = 65_536
 FEEDBACK_DEPTH = 4
 FEEDBACK_LIST_LIMIT = 20
 FEEDBACK_KEY_LIMIT = 50
-#: The writer writes ASCII JSON, where a non-ASCII character costs up to six bytes. The
-#: character bounds above therefore stay well inside this byte bound.
+
+#: The header's encoded size bound. It is measured on the bytes the writer puts on disk
+#: (ASCII JSON, where a non-ASCII character costs up to six bytes). A header over the bound
+#: has its fields cut further, in steps of these divisors, until it fits.
 RUN_HEADER_MAX_BYTES = 1024 * 1024
+_SHRINK_DIVISORS = (1, 2, 4, 8, 16, 32, 64, 128)
+
+#: How long a dispatch waits for the persona history. Past it, the header says the version
+#: was not recorded in time and the dispatch goes on.
+PERSONA_RECORD_WAIT_SECONDS = 2.0
 
 _PROMPT_REASON = (
     "the task prompt is built inside the performer by the backend, not by the daemon, "
@@ -90,28 +104,38 @@ def _str_or_none(value: object) -> str | None:
     return str(value)
 
 
-def _bound_value(value: Any, depth: int) -> Any:
+def _ascii_bytes(header: dict[str, Any]) -> int:
+    """The header's size as the writer puts it on disk: one ASCII JSON line."""
+    encoded = json.dumps(header, ensure_ascii=True, separators=(",", ":"), default=str)
+    return len(encoded.encode("ascii")) + 1
+
+
+def _bound_value(value: Any, depth: int, item_limit: int) -> Any:
     """A JSON-safe copy of ``value`` with every string, list and mapping bounded."""
     if isinstance(value, str):
-        return _cut(value, FEEDBACK_ITEM_LIMIT_CHARS)[0]
+        return _cut(value, item_limit)[0]
     if value is None or isinstance(value, bool | int | float):
         return value
     if depth >= FEEDBACK_DEPTH:
-        return _cut(str(value), FEEDBACK_ITEM_LIMIT_CHARS)[0]
+        return _cut(str(value), item_limit)[0]
     if isinstance(value, dict):
         return {
-            str(key): _bound_value(item, depth + 1)
+            str(key): _bound_value(item, depth + 1, item_limit)
             for key, item in list(value.items())[:FEEDBACK_KEY_LIMIT]
         }
     if isinstance(value, list | tuple):
-        return [_bound_value(item, depth + 1) for item in list(value)[:FEEDBACK_LIST_LIMIT]]
-    return _cut(str(value), FEEDBACK_ITEM_LIMIT_CHARS)[0]
+        return [
+            _bound_value(item, depth + 1, item_limit) for item in list(value)[:FEEDBACK_LIST_LIMIT]
+        ]
+    return _cut(str(value), item_limit)[0]
 
 
-def _feedback_block(raw: object) -> dict[str, Any]:
+def _feedback_block(raw: object, divisor: int) -> dict[str, Any]:
     """The relayed feedback, bounded item by item and in total."""
     if not isinstance(raw, list):
         return {"items": [], "omitted": 0}
+    item_limit = FEEDBACK_ITEM_LIMIT_CHARS // divisor
+    total_limit = FEEDBACK_TOTAL_CHARS // divisor
     items: list[Any] = []
     omitted = 0
     used = 0
@@ -119,9 +143,9 @@ def _feedback_block(raw: object) -> dict[str, Any]:
         if not isinstance(entry, dict):
             omitted += 1
             continue
-        bounded = _bound_value(entry, 0)
+        bounded = _bound_value(entry, 0, item_limit)
         size = len(json.dumps(bounded, default=str))
-        if used + size > FEEDBACK_TOTAL_CHARS:
+        if used + size > total_limit:
             omitted += 1
             continue
         used += size
@@ -129,16 +153,16 @@ def _feedback_block(raw: object) -> dict[str, Any]:
     return {"items": items, "omitted": omitted}
 
 
-def _card_block(card_context: dict[str, Any]) -> dict[str, Any]:
+def _card_block(card_context: dict[str, Any], divisor: int) -> dict[str, Any]:
     description, cut_description = _cut(
-        str(card_context.get("description") or ""), CARD_TEXT_LIMIT_CHARS,
+        str(card_context.get("description") or ""), CARD_TEXT_LIMIT_CHARS // divisor,
     )
     raw_criteria = card_context.get("acceptance_criteria")
     criteria_source = raw_criteria if isinstance(raw_criteria, list) else []
     criteria: list[str] = []
     cut_criteria = len(criteria_source) > CRITERIA_LIMIT
     for criterion in criteria_source[:CRITERIA_LIMIT]:
-        text, was_cut = _cut(str(criterion), CRITERION_LIMIT_CHARS)
+        text, was_cut = _cut(str(criterion), CRITERION_LIMIT_CHARS // divisor)
         criteria.append(text)
         cut_criteria = cut_criteria or was_cut
     issue_number = card_context.get("issue_number")
@@ -152,11 +176,13 @@ def _card_block(card_context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _persona_block(persona: object, card_context: dict[str, Any]) -> dict[str, Any]:
-    """The persona version and the exact persona text the performer was sent."""
+def _persona_block(persona: object, card_context: dict[str, Any], divisor: int) -> dict[str, Any]:
+    """The persona version, and the persona text the performer was sent, redacted.
+
+    The text is redacted before it is cut, so a cut never leaves half of a secret. The
+    hash names exactly the text the header carries, so it can be reproduced from the line.
+    """
     record: dict[str, Any] = persona if isinstance(persona, dict) else {}
-    sent = card_context.get("persona_instructions")
-    sent_text = sent if isinstance(sent, str) else None
     version = record.get("version")
     block: dict[str, Any] = {
         "name": _str_or_none(record.get("name")),
@@ -167,10 +193,14 @@ def _persona_block(persona: object, card_context: dict[str, Any]) -> dict[str, A
         "source": _str_or_none(record.get("source")),
         "sent_text": None,
         "sent_text_sha256": None,
+        "sent_text_truncated": False,
     }
-    if sent_text is not None:
-        block["sent_text"] = _cut(sent_text, PERSONA_TEXT_LIMIT_CHARS)[0]
-        block["sent_text_sha256"] = persona_text_sha256(sent_text)
+    sent = card_context.get("persona_instructions")
+    if isinstance(sent, str):
+        carried, cut = _cut(redact_text(sent), PERSONA_TEXT_LIMIT_CHARS // divisor)
+        block["sent_text"] = carried
+        block["sent_text_sha256"] = persona_text_sha256(carried)
+        block["sent_text_truncated"] = cut
     if block["version"] is None:
         block["reason"] = _str_or_none(record.get("reason")) or (
             "no persona version was recorded for this dispatch"
@@ -186,18 +216,22 @@ def _model_block(card_context: dict[str, Any]) -> dict[str, Any]:
         "model": model,
         "reasoning_policy": _str_or_none(card_context.get("reasoning_policy")),
         "base_url": _str_or_none(card_context.get("base_url")),
-        "api_key_env": _str_or_none(card_context.get("api_key_env")),
-        "auth_token_env": _str_or_none(card_context.get("auth_token_env")),
+        "env_var_names": {
+            "api": _str_or_none(card_context.get("api_key_env")),
+            "auth": _str_or_none(card_context.get("auth_token_env")),
+        },
     }
 
 
-_UPSTREAM_KEYS = ("name", "model", "wire_format", "base_url", "auth_env", "auth_style", "reasoning_policy")
+_UPSTREAM_KEYS = ("name", "model", "wire_format", "base_url", "auth_style", "reasoning_policy")
 
 
 def _upstream_block(ref: object) -> dict[str, Any] | None:
     if not isinstance(ref, dict):
         return None
-    return {key: ref.get(key) for key in _UPSTREAM_KEYS}
+    block: dict[str, Any] = {key: ref.get(key) for key in _UPSTREAM_KEYS}
+    block["env_var_names"] = {"auth": _str_or_none(ref.get("auth_env"))}
+    return block
 
 
 def _model_endpoints_block(orchestration: object) -> dict[str, Any]:
@@ -243,41 +277,36 @@ def _routing_block(routing: object) -> dict[str, Any]:
     return block
 
 
-def build_run_header(
+def _assemble(
     *,
-    run_id: str,
+    identity: Mapping[str, str],
     card_context: dict[str, Any],
-    run_inputs: dict[str, Any] | None,
+    inputs: dict[str, Any] | None,
     performer: Mapping[str, str | None],
-    now: datetime | None = None,
+    divisor: int,
 ) -> dict[str, Any]:
-    """The header record for one run. Plain JSON, bounded, and never raises.
+    """The header at one level of truncation. ``divisor`` 1 is the full bounds.
 
-    ``performer`` carries ``id``, ``transport`` and ``endpoint`` (the endpoint is None
-    when the performer has none). ``run_inputs`` is what :func:`build_run_inputs`
-    returned at dispatch. ``None`` means the dispatcher did not supply it, and the
-    header says so for every field that came from it.
+    ``inputs`` is None when the dispatcher supplied no run inputs; every field that would
+    have come from them then says so.
     """
-    inputs: dict[str, Any] = run_inputs if isinstance(run_inputs, dict) else {}
-    stamp = (now or datetime.now(UTC)).isoformat()
     missing = "not supplied with this dispatch"
-    persona_source: object = inputs.get("persona")
-    if run_inputs is None:
-        persona_source = {"version": None, "reason": missing}
-    routing_source: object = inputs.get("routing")
-    if run_inputs is None:
-        routing_source = {"rule": None, "reason": missing}
-    mode_source: object = inputs.get("mode")
-    if run_inputs is None:
-        mode_source = {"name": None, "reason": missing}
+    if inputs is None:
+        persona_source: object = {"version": None, "reason": missing}
+        routing_source: object = {"rule": None, "reason": missing}
+        mode_source: object = {"name": None, "reason": missing}
+    else:
+        persona_source = inputs.get("persona")
+        routing_source = inputs.get("routing")
+        mode_source = inputs.get("mode")
     return {
         "type": RUN_HEADER_TYPE,
         "seq": 0,
         "header_version": RUN_HEADER_VERSION,
-        "ts": stamp,
-        "run_id": run_id,
+        "ts": identity["ts"],
+        "run_id": identity["run_id"],
         "prompt": {"rendered": None, "reason": _PROMPT_REASON, "see": _PROMPT_SEE},
-        "persona": _persona_block(persona_source, card_context),
+        "persona": _persona_block(persona_source, card_context, divisor),
         "performer": {
             "id": _str_or_none(performer.get("id")),
             "backend": _str_or_none(card_context.get("backend")),
@@ -288,9 +317,40 @@ def build_run_header(
         "model_endpoints": _model_endpoints_block(card_context.get("orchestration")),
         "mode": _mode_block(mode_source, card_context),
         "routing": _routing_block(routing_source),
-        "card": _card_block(card_context),
-        "feedback": _feedback_block(card_context.get("relay_feedback")),
+        "card": _card_block(card_context, divisor),
+        "feedback": _feedback_block(card_context.get("relay_feedback"), divisor),
     }
+
+
+def build_run_header(
+    *,
+    run_id: str,
+    card_context: dict[str, Any],
+    run_inputs: dict[str, Any] | None,
+    performer: Mapping[str, str | None],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """The header record for one run. Plain JSON, bounded on its encoded bytes, never raises.
+
+    ``performer`` carries ``id``, ``transport`` and ``endpoint`` (the endpoint is None
+    when the performer has none). ``run_inputs`` is what :func:`build_run_inputs` returned
+    at dispatch. ``None`` means the dispatcher did not supply it, and the header says so
+    for every field that came from it.
+    """
+    inputs = run_inputs if isinstance(run_inputs, dict) else None
+    identity = {"run_id": run_id, "ts": (now or datetime.now(UTC)).isoformat()}
+    header: dict[str, Any] = {}
+    for divisor in _SHRINK_DIVISORS:
+        header = _assemble(
+            identity=identity,
+            card_context=card_context,
+            inputs=inputs,
+            performer=performer,
+            divisor=divisor,
+        )
+        if _ascii_bytes(header) <= RUN_HEADER_MAX_BYTES:
+            break
+    return header
 
 
 def build_run_inputs(
@@ -304,7 +364,8 @@ def build_run_inputs(
 
     Records the persona version the dispatch runs with (recording a change first, see
     :func:`persona_history.reference_for_dispatch`), the mode and the routing rule that
-    picked the role's model, and the transcript folder the run belongs to.
+    picked the role's model, and the transcript folder the run belongs to. This is the
+    blocking form. Dispatch calls :func:`build_run_inputs_bounded`.
     """
     try:
         return {
@@ -321,6 +382,44 @@ def build_run_inputs(
             "mode": {"name": None, "reason": reason},
             "routing": {"role": role, "rule": None, "reason": reason},
         }
+
+
+async def build_run_inputs_bounded(
+    *,
+    config: object,
+    role: str | None,
+    persona_sent: str | None,
+    transcript_target: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """:func:`build_run_inputs` off the event loop, under ``PERSONA_RECORD_WAIT_SECONDS``.
+
+    The persona history reads and may write (with an fsync) a file, so it can be slow on
+    a slow disk. Past the bound, or on any error, the persona version is reported as not
+    recorded, with the reason, and the dispatch goes on. Never raises.
+    """
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                build_run_inputs,
+                config=config,
+                role=role,
+                persona_sent=persona_sent,
+                transcript_target=transcript_target,
+            ),
+            timeout=PERSONA_RECORD_WAIT_SECONDS,
+        )
+    except TimeoutError:
+        reason = (
+            f"persona history did not answer within {PERSONA_RECORD_WAIT_SECONDS:g} s, "
+            "so this persona version was not recorded in time"
+        )
+        logger.warning("run_header.persona_deferred", role=role, wait_seconds=PERSONA_RECORD_WAIT_SECONDS)
+    except Exception as exc:  # diagnostics never fail a dispatch
+        reason = f"persona history failed ({type(exc).__name__}), so this persona version was not recorded"
+        logger.warning("run_header.persona_failed", role=role, exc_type=type(exc).__name__)
+    inputs = build_run_inputs(config=config, role=role, persona_sent=None, transcript_target=transcript_target)
+    inputs["persona"] = {"name": role, "version": None, "reason": reason}
+    return inputs
 
 
 def _persona_inputs(config: object, role: str | None, persona_sent: str | None) -> dict[str, Any]:
