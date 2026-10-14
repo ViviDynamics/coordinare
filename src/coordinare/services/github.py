@@ -15,9 +15,16 @@ from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
+from coordinare.resilience import CircuitOpenError
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.issue_comment_service import normalize_logins
-from coordinare.services.system_health import SYSTEM_HEALTH
+from coordinare.services.system_health import (
+    FAILURE_AUTH,
+    FAILURE_CIRCUIT,
+    FAILURE_OTHER,
+    FAILURE_TRANSIENT,
+    SYSTEM_HEALTH,
+)
 
 logger = structlog.get_logger(__name__)
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
@@ -667,6 +674,18 @@ async def _rate_limited(exc: aiohttp.ClientResponseError) -> RateLimitedGitHubEr
     return RateLimitedGitHubError(retry_after=retry_after)
 
 
+def _failure_kind(exc: BaseException) -> str:
+    """151: how a failed call counts toward the System health card. An auth failure, including a
+    permanent error that wraps one after the refresh gave up, and an open circuit are each down at once."""
+    if isinstance(exc, AuthGitHubError) or isinstance(exc.__cause__, AuthGitHubError):
+        return FAILURE_AUTH
+    if isinstance(exc, CircuitOpenError):
+        return FAILURE_CIRCUIT
+    if isinstance(exc, TransientGitHubError):
+        return FAILURE_TRANSIENT
+    return FAILURE_OTHER
+
+
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -815,7 +834,7 @@ class GitHubService(CardIdentityMap):
                 self._last_token = token
             try:
                 return await self._execute_request(self._client, query, variables)
-            except AuthGitHubError:
+            except AuthGitHubError as auth_exc:
                 # 085: a recognized auth failure (401 / UNAUTHORIZED). The
                 # cached credential may be stale — discard it, mint a fresh
                 # one, and retry exactly once. Bounded to ≤1 invalidate,
@@ -829,7 +848,7 @@ class GitHubService(CardIdentityMap):
                     logger.info("github.auth.refresh_retry", outcome="failed")
                     raise PermanentGitHubError(
                         "GitHub auth failed and the credential could not be refreshed",
-                    ) from None
+                    ) from auth_exc
                 self._client = self._build_client(fresh_token)
                 self._last_token = fresh_token
                 try:
@@ -948,10 +967,9 @@ class GitHubService(CardIdentityMap):
                 action="execute",
                 outcome="failure",
             ).inc()
-            # 151: only a transient failure says anything about GitHub's health. The class name
-            # is recorded, never the message, which can carry credentials.
-            if isinstance(exc, TransientGitHubError):
-                SYSTEM_HEALTH.record_github_call(ok=False, error=type(exc).__name__)
+            # 151: every failure is recorded by class name, never by message (which can carry
+            # credentials). Only the kind decides the status: see _failure_kind.
+            SYSTEM_HEALTH.record_github_call(ok=False, error=type(exc).__name__, kind=_failure_kind(exc))
             raise
 
     @staticmethod

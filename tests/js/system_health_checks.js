@@ -120,7 +120,30 @@ checkContains('an unknown row says not checked yet', unknownRow, 'not checked ye
 
 const healthyRow = systemHealthRowHtml(row('github_api', 'GitHub API', 'healthy'));
 checkContains('a healthy row says healthy in words, not only in colour', healthyRow, '>healthy<');
-check('the status words cover every status', Object.keys(SYSTEM_HEALTH_WORDS).sort(), ['degraded', 'down', 'healthy', 'not_monitored', 'unknown']);
+check('the status words cover every status', Object.keys(SYSTEM_HEALTH_WORDS).sort(), ['degraded', 'down', 'healthy', 'not_monitored', 'stale', 'unknown']);
+
+// --- stale rows are neutral -----------------------------------------------------------------
+const staleCard = {overall: 'unknown', rows: [row('performer_runtime', 'Performer runtime', 'stale', {summary: 'Docker · 0 performers in flight'}), row('github_api', 'GitHub API', 'healthy')]};
+const staleSum = systemHealthSummary(staleCard);
+check('a stale row does not open the card', staleSum.open, false);
+check('a stale row is counted on the line, neutrally', staleSum.text, 'No problems seen · 1 stale');
+check('a stale row is not tone healthy', staleSum.tone, 'note');
+checkContains('a stale row says stale in words', systemHealthRowHtml(staleCard.rows[0]), '>stale<');
+
+// --- the user's own open or closed choice survives re-renders -------------------------------
+const degradedCard = {overall: 'degraded', rows: [row('board_check', 'Board check', 'degraded', {reason: 'x'}), row('github_api', 'GitHub API', 'healthy')]};
+const degradedChanged = {overall: 'degraded', rows: [row('board_check', 'Board check', 'degraded', {reason: 'x', summary: 'changed'}), row('github_api', 'GitHub API', 'healthy')]};
+const greenCard = {overall: 'healthy', rows: [row('github_api', 'GitHub API', 'healthy'), row('board_check', 'Board check', 'healthy')]};
+SYSTEM_HEALTH_CHOICE.overall = null;
+SYSTEM_HEALTH_CHOICE.open = null;
+checkContains('a degraded card opens by default', systemHealthHtml(degradedCard), '<details open>');
+systemHealthRemember(false);
+checkAbsent('a user who closed the card keeps it closed across a re-render', systemHealthHtml(degradedChanged), '<details open');
+checkAbsent('and on the next re-render with the same status', systemHealthHtml(degradedCard), '<details open');
+checkAbsent('a healthy card is closed by default when the status changed', systemHealthHtml(greenCard), '<details open');
+systemHealthRemember(true);
+checkContains('a user who opened a healthy card keeps it open across re-renders', systemHealthHtml(greenCard), '<details open>');
+checkContains('a status change drops the choice, so a degraded card opens again', systemHealthHtml(degradedCard), '<details open>');
 
 // --- escaping ---------------------------------------------------------------------------
 const hostile = '<img src=x onerror=alert(1)>';

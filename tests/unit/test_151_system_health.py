@@ -8,7 +8,6 @@ from typing import Any
 from coordinare.services.system_health import (
     BOARD_FAILURE_STREAK_DOWN,
     BOARD_STALE_POLL_INTERVALS,
-    BOARD_STALE_WITHOUT_POLL_SECONDS,
     DEGRADED,
     DISK_FREE_DEGRADED_FRACTION,
     DISK_FREE_DOWN_FRACTION,
@@ -226,9 +225,9 @@ def test_board_stale_after_the_named_number_of_poll_intervals_is_degraded() -> N
     assert "no successful board check" in row["reason"]
 
 
-def test_board_without_polling_uses_the_webhook_fallback_threshold() -> None:
+def test_with_polling_off_a_board_check_never_goes_stale() -> None:
     rec = SystemHealthRecorder()
-    rec.record_board_poll("acme/1", ok=True, at=NOW - timedelta(seconds=BOARD_STALE_WITHOUT_POLL_SECONDS - 1))
+    rec.record_board_poll("acme/1", ok=True, at=NOW - timedelta(days=3))
     assert _rows(build_system_health(rec, _inputs(poll_interval_seconds=None)))["board_check"]["status"] == HEALTHY
 
 
@@ -260,10 +259,11 @@ def test_webhooks_enabled_with_no_delivery_yet_is_unknown() -> None:
     assert row["status"] == UNKNOWN
 
 
-def test_webhook_rejection_after_the_last_good_delivery_is_degraded() -> None:
+def test_a_flood_of_rejections_after_the_last_good_delivery_is_degraded() -> None:
     rec = SystemHealthRecorder()
-    rec.record_webhook(accepted=True, at=NOW - timedelta(seconds=60))
-    rec.record_webhook(accepted=False, at=NOW - timedelta(seconds=10))
+    rec.record_webhook(accepted=True, at=NOW - timedelta(seconds=600))
+    for offset in range(5):
+        rec.record_webhook(accepted=False, at=NOW - timedelta(seconds=10 - offset))
     row = _rows(build_system_health(rec, _inputs(webhooks_enabled=True)))["github_webhooks"]
     assert row["status"] == DEGRADED
     assert "signature" in row["reason"]
@@ -369,7 +369,8 @@ def test_disk_unreadable_is_unknown() -> None:
 def test_env_cache_bootstrap_failure_names_the_symphony_and_degrades_the_row() -> None:
     row = _rows(build_system_health(SystemHealthRecorder(), _inputs(env_symphonies=2, env_failed=("alpha",), env_ready=1)))["disk_env_cache"]
     assert row["status"] == DEGRADED
-    assert "alpha" in row["reason"]
+    assert "alpha" not in row["reason"]
+    assert "env cache bootstrap failed for 1 symphony" in row["reason"]
 
 
 def test_env_cache_summary_counts_ready_symphonies() -> None:

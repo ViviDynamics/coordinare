@@ -158,3 +158,47 @@ def test_rows_awaiting_a_first_check_are_counted_on_a_closed_card(
     expect(summary).to_contain_text("No problems seen · 1 awaiting first check", timeout=_WAIT_LIVE)
     expect(card.locator("details")).not_to_have_attribute("open", "")
     expect(summary).to_have_class(re.compile(r"sh-tone-note"))
+
+
+@pytest.mark.e2e
+def test_a_stale_performer_row_is_counted_neutrally_and_does_not_open_the_card(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    _open_idle(page, live_server_url)
+    rows = _all_green_rows()
+    rows[3] = _row("performer_runtime", "Performer runtime", "stale", summary="Docker · 0 performers in flight",
+                   fresh_label="last start", checked_at=_ago(7200), last_success_at=_ago(7200),
+                   reason="no performer is running, and the last start is older than the freshness threshold")
+    store.broadcaster.broadcast(_with_system_health(rows, "unknown"))
+
+    card = page.locator("#subsystems-section")
+    expect(card.locator("summary")).to_contain_text("No problems seen · 1 stale", timeout=_WAIT_LIVE)
+    expect(card.locator("details")).not_to_have_attribute("open", "")
+    expect(card.locator(".sh-row.sh-stale").first).to_contain_text("stale")
+
+
+@pytest.mark.e2e
+def test_a_card_the_user_opened_stays_open_across_a_re_render_until_the_status_changes(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    _open_idle(page, live_server_url)
+    degraded_rows = _all_green_rows()
+    degraded_rows[2] = _row("board_check", "Board check", "degraded", summary="1 failed in a row",
+                            checked_at=_ago(4), reason=_BOARD_REASON)
+    store.broadcaster.broadcast(_with_system_health(degraded_rows, "degraded"))
+    card = page.locator("#subsystems-section")
+    expect(card.locator("details")).to_have_attribute("open", "", timeout=_WAIT_LIVE)
+
+    # The user closes it. A fresh snapshot with the same status re-renders the card.
+    card.locator("summary").click()
+    expect(card.locator("details")).not_to_have_attribute("open", "")
+    degraded_rows[2] = _row("board_check", "Board check", "degraded", summary="2 failed in a row",
+                            checked_at=_ago(2), reason=_BOARD_REASON)
+    store.broadcaster.broadcast(_with_system_health(degraded_rows, "degraded"))
+    expect(card.locator(".sh-row").nth(2)).to_contain_text("2 failed in a row", timeout=_WAIT_LIVE)
+    expect(card.locator("details")).not_to_have_attribute("open", "")
+
+    # The overall status changes to healthy, which drops the choice: a healthy card is closed by default.
+    store.broadcaster.broadcast(_with_system_health(_all_green_rows(), "healthy"))
+    expect(card.locator("summary")).to_contain_text("All systems healthy", timeout=_WAIT_LIVE)
+    expect(card.locator("details")).not_to_have_attribute("open", "")

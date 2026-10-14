@@ -63,7 +63,7 @@ class _Transport:
     response_headers: ClassVar[dict[str, str]] = {
         "X-RateLimit-Remaining": "4321",
         "X-RateLimit-Limit": "5000",
-        "X-RateLimit-Reset": str(int(_NOW.timestamp())),
+        "X-RateLimit-Reset": str(int(datetime.now(UTC).timestamp()) + 3600),
     }
 
 
@@ -162,7 +162,8 @@ def test_webhook_deliveries_are_recorded_as_accepted_or_rejected() -> None:
 
     bad = client.post("/webhook/github", content=body, headers={"X-Hub-Signature-256": "sha256=nope"})
     assert bad.status_code == 401
-    assert _row("github_webhooks")["status"] == DEGRADED
+    # One bad signature is noted on the row, never degrades it (151 review, block 1).
+    assert _row("github_webhooks")["status"] != DEGRADED
 
 
 # --- Model backends: the outcome of a performer turn ------------------------------------
@@ -178,7 +179,8 @@ async def test_a_turn_that_ends_in_a_system_error_is_recorded_as_a_model_failure
     state: Any = {"phase": "monitoring_performer"}
     await monitor_node.monitor_performer(state)
     row = _row("model_backends")
-    assert row["status"] == DEGRADED
+    # One failed turn is below the minimum sample: it does not read as a 100% error rate.
+    assert row["status"] != DEGRADED
     assert row["summary"].startswith("1 of last")
 
 

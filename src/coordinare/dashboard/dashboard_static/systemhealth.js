@@ -1,10 +1,29 @@
 // 151: the System health card. The server builds one row per subsystem (system_health in
 // the snapshot); these functions turn it into markup. The card is one line unless a
-// subsystem is degraded or down, and opens itself only then. Unknown and not-monitored rows
-// are counted on the line, neutrally. Every value goes
+// subsystem is degraded or down, and opens itself only then. Unknown, stale and
+// not-monitored rows are counted on the line, neutrally. Every value goes
 // through esc(). Freshness is marked up for refreshElapsedReadouts, so it keeps counting.
 
-var SYSTEM_HEALTH_WORDS = {healthy: 'healthy', degraded: 'degraded', down: 'down', unknown: 'not checked yet', not_monitored: 'not monitored'};
+var SYSTEM_HEALTH_WORDS = {healthy: 'healthy', degraded: 'degraded', down: 'down', unknown: 'not checked yet', stale: 'stale', not_monitored: 'not monitored'};
+
+// The user's own open or closed choice. It survives re-renders, and is dropped when the
+// overall status changes, because a change in status is news that should open the card.
+var SYSTEM_HEALTH_CHOICE = {overall: null, open: null};
+
+// Whether the card is open: the user's choice if they made one for this overall status,
+// otherwise what the summary says.
+function systemHealthOpen(sh, sum) {
+  if (SYSTEM_HEALTH_CHOICE.overall !== sh.overall) {
+    SYSTEM_HEALTH_CHOICE.overall = sh.overall;
+    SYSTEM_HEALTH_CHOICE.open = null;
+  }
+  return SYSTEM_HEALTH_CHOICE.open === null ? sum.open : SYSTEM_HEALTH_CHOICE.open;
+}
+
+// Called when the user opens or closes the card.
+function systemHealthRemember(open) {
+  SYSTEM_HEALTH_CHOICE.open = !!open;
+}
 
 // The one-line summary: its text, its tone, and whether the card opens by itself.
 function systemHealthSummary(sh) {
@@ -13,8 +32,10 @@ function systemHealthSummary(sh) {
   var countOf = function(status) { return rows.filter(function(r) { return r.status === status; }).length; };
   var notMonitored = countOf('not_monitored');
   var unknown = countOf('unknown');
+  var stale = countOf('stale');
   // Neutral counts for rows that are not problems: they are named on the line but never open the card.
   var notes = (unknown > 0 ? ' · ' + unknown + ' awaiting first check' : '') +
+    (stale > 0 ? ' · ' + stale + ' stale' : '') +
     (notMonitored > 0 ? ' · ' + notMonitored + ' not monitored' : '');
   var problems = rows.filter(function(r) { return r.status === 'down' || r.status === 'degraded'; });
   if (problems.length > 0) {
@@ -23,7 +44,7 @@ function systemHealthSummary(sh) {
     var tone = countOf('down') > 0 ? 'down' : 'degraded';
     return {tone: tone, open: true, text: problems.length + verb + ' attention: ' + named + notes};
   }
-  if (unknown > 0) {
+  if (unknown > 0 || stale > 0) {
     return {tone: 'note', open: false, text: 'No problems seen' + notes};
   }
   if (notMonitored > 0) {
@@ -58,8 +79,9 @@ function systemHealthRowHtml(row) {
 // The whole card: the summary line, and the rows inside it.
 function systemHealthHtml(sh) {
   var sum = systemHealthSummary(sh);
+  var open = systemHealthOpen(sh, sum);
   var rows = (Array.isArray(sh.rows) ? sh.rows : []).map(systemHealthRowHtml).join('');
-  return '<details' + (sum.open ? ' open' : '') + '>' +
+  return '<details' + (open ? ' open' : '') + '>' +
     '<summary class="sh-summary sh-tone-' + esc(sum.tone) + '" style="cursor:pointer;list-style:none;padding:2px 0">' +
       '<span class="sh-dot" aria-hidden="true">&#9679;</span> ' + esc(sum.text) +
     '</summary>' +

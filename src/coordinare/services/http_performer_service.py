@@ -574,6 +574,11 @@ class HTTPPerformerService:
                     error=str(exc),
                 )
                 return {"status": "error", "reason": f"container start failed: {exc}"}
+            except Exception as exc:
+                # 151: a start that fails outside LifecycleError (a missing docker binary, for one)
+                # is recorded and raised unchanged, so the failure is visible and not swallowed.
+                SYSTEM_HEALTH.record_performer_start(type(self._runtime).__name__, ok=False, error=type(exc).__name__)
+                raise
 
             # Use the injected client if present (tests); otherwise create one per container.
             ep_client = self._injected_client or PerformerHTTPClient(

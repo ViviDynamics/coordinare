@@ -64,8 +64,9 @@ def test_a_symphony_whose_env_cache_failed_degrades_the_disk_and_env_row(tmp_pat
     }
     row = _rows(DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health([])))["disk_env_cache"]
     assert row["status"] == DEGRADED
-    assert "alpha" in row["reason"]
+    assert "alpha" not in row["reason"]
     assert "beta" not in row["reason"]
+    assert "env cache bootstrap failed for 1 symphony" in row["reason"]
     assert "env cache ready for 1 of 2" in row["summary"]
 
 

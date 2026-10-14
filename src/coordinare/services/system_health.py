@@ -23,21 +23,31 @@ from coordinare.lib.redaction import redact_state_value
 __all__ = [
     "BOARD_FAILURE_STREAK_DOWN",
     "BOARD_STALE_POLL_INTERVALS",
-    "BOARD_STALE_WITHOUT_POLL_SECONDS",
     "DEGRADED",
     "DISK_FREE_DEGRADED_FRACTION",
     "DISK_FREE_DOWN_FRACTION",
     "DOWN",
+    "FAILURE_AUTH",
+    "FAILURE_CIRCUIT",
+    "FAILURE_OTHER",
+    "FAILURE_TRANSIENT",
     "GITHUB_FAILURE_STREAK_DOWN",
     "GITHUB_RATE_LOW_FRACTION",
     "HEALTHY",
     "MODEL_ERROR_RATE_DEGRADED",
+    "MODEL_ERROR_STREAK_DEGRADED",
     "MODEL_ERROR_STREAK_DOWN",
+    "MODEL_MIN_SAMPLE_TURNS",
     "MODEL_WINDOW_TURNS",
     "NOT_MONITORED",
     "PERFORMER_FAILURE_STREAK_DOWN",
+    "PERFORMER_START_FRESH_SECONDS",
+    "STALE",
     "SYSTEM_HEALTH",
     "UNKNOWN",
+    "WEBHOOK_REJECTIONS_DEGRADED",
+    "WEBHOOK_REJECTION_RECORD_MAX",
+    "WEBHOOK_REJECTION_WINDOW_SECONDS",
     "SystemHealthInputs",
     "SystemHealthRecorder",
     "build_system_health",
@@ -47,7 +57,16 @@ HEALTHY = "healthy"
 DEGRADED = "degraded"
 DOWN = "down"
 UNKNOWN = "unknown"
+STALE = "stale"
 NOT_MONITORED = "not_monitored"
+
+# How a failed call is classified when it is recorded. Only transient failures count
+# toward a streak; an auth failure or an open circuit is down at once; any other error
+# is recorded by class name and leaves the status alone.
+FAILURE_TRANSIENT = "transient"
+FAILURE_AUTH = "auth"
+FAILURE_CIRCUIT = "circuit"
+FAILURE_OTHER = "other"
 
 # Named thresholds. Where a number can come from config it does (the board read
 # is stale after N poll intervals); the rest are the defaults this card is judged by.
@@ -55,16 +74,22 @@ GITHUB_RATE_LOW_FRACTION = 0.10
 GITHUB_FAILURE_STREAK_DOWN = 5
 BOARD_FAILURE_STREAK_DOWN = 3
 BOARD_STALE_POLL_INTERVALS = 3
-BOARD_STALE_WITHOUT_POLL_SECONDS = 900
 PERFORMER_FAILURE_STREAK_DOWN = 3
+PERFORMER_START_FRESH_SECONDS = 3600
 MODEL_WINDOW_TURNS = 20
+MODEL_MIN_SAMPLE_TURNS = 5
 MODEL_ERROR_RATE_DEGRADED = 0.25
+MODEL_ERROR_STREAK_DEGRADED = 2
 MODEL_ERROR_STREAK_DOWN = 3
 DISK_FREE_DEGRADED_FRACTION = 0.10
 DISK_FREE_DOWN_FRACTION = 0.02
+WEBHOOK_REJECTIONS_DEGRADED = 5
+WEBHOOK_REJECTION_WINDOW_SECONDS = 3600
+WEBHOOK_REJECTION_RECORD_MAX = 100
 
-_SEVERITY: dict[str, int] = {HEALTHY: 0, UNKNOWN: 1, DEGRADED: 2, DOWN: 3}
+_SEVERITY: dict[str, int] = {HEALTHY: 0, UNKNOWN: 1, STALE: 1, DEGRADED: 2, DOWN: 3}
 _RUNTIME_NAMES: dict[str, str] = {"DockerRuntime": "Docker", "KubernetesRuntime": "Kubernetes"}
+_MODEL_CAVEAT = "system errors also cover container and transport failures"
 _NAMES: dict[str, str] = {
     "github_api": "GitHub API",
     "github_webhooks": "GitHub webhooks",
@@ -87,16 +112,21 @@ class Track:
     last_success_at: datetime | None = None
     streak: int = 0
     last_error: str | None = None
+    last_kind: str | None = None
 
-    def record(self, *, ok: bool, at: datetime, error: str | None) -> None:
+    def record(self, *, ok: bool, at: datetime, error: str | None, kind: str = FAILURE_TRANSIENT) -> None:
         self.last_at = at
         if ok:
             self.last_success_at = at
             self.streak = 0
             self.last_error = None
-        else:
-            self.streak += 1
-            self.last_error = redact_state_value(error or "error")
+            self.last_kind = None
+            return
+        self.last_error = redact_state_value(error or "error")
+        if kind == FAILURE_OTHER:
+            return
+        self.last_kind = kind
+        self.streak += 1
 
 
 @dataclass
@@ -119,7 +149,7 @@ class SystemHealthRecorder:
         self.github = Track()
         self.rate = Rate()
         self.webhook_accepted_at: datetime | None = None
-        self.webhook_rejected_at: datetime | None = None
+        self.webhook_rejections: deque[datetime] = deque(maxlen=WEBHOOK_REJECTION_RECORD_MAX)
         self.boards: dict[str, Track] = {}
         self.performer = Track()
         self.runtime: str | None = None
@@ -141,15 +171,17 @@ class SystemHealthRecorder:
             read_at=at or _utc_now(),
         )
 
-    def record_github_call(self, *, ok: bool, error: str | None = None, at: datetime | None = None) -> None:
-        self.github.record(ok=ok, at=at or _utc_now(), error=error)
+    def record_github_call(
+        self, *, ok: bool, error: str | None = None, kind: str = FAILURE_TRANSIENT, at: datetime | None = None,
+    ) -> None:
+        self.github.record(ok=ok, at=at or _utc_now(), error=error, kind=kind)
 
     def record_webhook(self, *, accepted: bool, at: datetime | None = None) -> None:
         stamp = at or _utc_now()
         if accepted:
             self.webhook_accepted_at = stamp
         else:
-            self.webhook_rejected_at = stamp
+            self.webhook_rejections.append(stamp)
 
     def record_board_poll(self, board: str, *, ok: bool, error: str | None = None, at: datetime | None = None) -> None:
         self.boards.setdefault(board, Track()).record(ok=ok, at=at or _utc_now(), error=error)
@@ -248,11 +280,19 @@ def _count(n: int, singular: str, plural: str | None = None) -> str:
 def _github_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[str, Any]:
     track, rate = rec.github, rec.rate
     findings: list[tuple[str, str]] = []
-    if track.streak >= GITHUB_FAILURE_STREAK_DOWN:
+    if track.streak and track.last_kind == FAILURE_AUTH:
+        findings.append((DOWN, "GitHub rejected the token"))
+    elif track.streak and track.last_kind == FAILURE_CIRCUIT:
+        findings.append((DOWN, "circuit open"))
+    elif track.streak >= GITHUB_FAILURE_STREAK_DOWN:
         findings.append((DOWN, f"last {track.streak} calls failed ({track.last_error})"))
     elif track.streak:
         findings.append((DEGRADED, f"last call failed ({track.last_error})"))
-    if rate.remaining == 0 and rate.reset_at is not None and rate.reset_at > inputs.now:
+
+    reset_passed = rate.reset_at is not None and rate.reset_at <= inputs.now
+    if rate.remaining is not None and reset_passed:
+        findings.append((STALE, "rate reading is stale: its reset time has passed"))
+    elif rate.remaining == 0 and rate.reset_at is not None:
         findings.append((DOWN, "rate limit exhausted until it resets"))
     elif rate.remaining is not None and rate.limit and rate.remaining < rate.limit * GITHUB_RATE_LOW_FRACTION:
         findings.append((DEGRADED, "rate limit nearly used up"))
@@ -276,22 +316,35 @@ def _github_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[s
 
 
 def _webhook_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[str, Any]:
-    accepted, rejected = rec.webhook_accepted_at, rec.webhook_rejected_at
+    accepted = rec.webhook_accepted_at
     if not inputs.webhooks_enabled:
         return _row(
             "github_webhooks", NOT_MONITORED, "not in use", _Fresh("last delivery", None),
             "coordinare polls the board on a timer (webhooks.enabled is false), "
             "so GitHub changes are seen on the next check",
         )
-    if rejected is not None and (accepted is None or rejected >= accepted):
+    window_start = inputs.now - timedelta(seconds=WEBHOOK_REJECTION_WINDOW_SECONDS)
+    recent = [stamp for stamp in rec.webhook_rejections if stamp >= window_start]
+    newest_rejection = max(recent) if recent else None
+    note = (
+        f"; {len(recent)} rejected in the last {WEBHOOK_REJECTION_WINDOW_SECONDS // 60} min" if recent else ""
+    )
+    fresh = _Fresh("last delivery", _newest(accepted, newest_rejection), accepted)
+    if (
+        newest_rejection is not None
+        and len(recent) >= WEBHOOK_REJECTIONS_DEGRADED
+        and (accepted is None or accepted < newest_rejection)
+    ):
         return _row(
-            "github_webhooks", DEGRADED, "deliveries are failing the signature check",
-            _Fresh("last delivery", rejected, accepted), "the latest delivery failed its signature check",
+            "github_webhooks", DEGRADED, "deliveries are failing the signature check" + note, fresh,
+            f"{len(recent)} bad signatures in the window and no valid delivery since them",
         )
     if accepted is not None:
-        return _row("github_webhooks", HEALTHY, "deliveries are arriving", _Fresh("last delivery", accepted, accepted))
+        return _row("github_webhooks", HEALTHY, "deliveries are arriving" + note, fresh)
+    if recent:
+        return _row("github_webhooks", UNKNOWN, "no valid delivery since this daemon started" + note, fresh)
     return _row(
-        "github_webhooks", UNKNOWN, "no delivery since this daemon started", _Fresh("last delivery", None),
+        "github_webhooks", UNKNOWN, "no delivery since this daemon started", fresh,
         "nothing observed since this daemon started",
     )
 
@@ -303,9 +356,6 @@ def _board_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[st
             "nothing observed since this daemon started",
         )
     poll = inputs.poll_interval_seconds
-    threshold = timedelta(
-        seconds=poll * BOARD_STALE_POLL_INTERVALS if poll else BOARD_STALE_WITHOUT_POLL_SECONDS,
-    )
     findings: list[tuple[str, str]] = []
     worst_streak = max(track.streak for track in rec.boards.values())
     worst_error = next(
@@ -315,7 +365,10 @@ def _board_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[st
         findings.append((DOWN, f"{worst_streak} board checks failed in a row ({worst_error})"))
     elif worst_streak:
         findings.append((DEGRADED, f"last board check failed ({worst_error})"))
-    else:
+    elif poll:
+        # Staleness only means something while polling is on. With polling off a quiet repo
+        # is simply quiet, so the last check time is shown neutrally and never degrades the row.
+        threshold = timedelta(seconds=poll * BOARD_STALE_POLL_INTERVALS)
         for track in rec.boards.values():
             if track.last_success_at is None or inputs.now - track.last_success_at > threshold:
                 findings.append((DEGRADED, f"no successful board check in the last {int(threshold.total_seconds())}s"))
@@ -327,7 +380,7 @@ def _board_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[st
     elif poll:
         summary = f"reads the board every {poll}s"
     else:
-        summary = "reads the board on webhook events"
+        summary = "reads the board on webhook events; polling is off"
     fresh = _Fresh(
         "last checked",
         _newest(*(track.last_at for track in rec.boards.values())),
@@ -364,10 +417,19 @@ def _performer_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dic
         findings.append((DEGRADED, f"last start failed ({track.last_error})"))
     if inputs.health.get("agent") == DEGRADED:
         findings.append((DEGRADED, "the daemon's agent probe is degraded"))
-    status, reason = _worst(findings)
     runtime = _RUNTIME_NAMES.get(rec.runtime or "", rec.runtime or "runtime")
+    summary = f"{runtime} · {in_flight}"
+    status, reason = _worst(findings)
+    # Nothing running now and a last success that is not recent: neutral, never green-fresh.
+    idle_too_long = (
+        track.last_success_at is not None
+        and inputs.now - track.last_success_at > timedelta(seconds=PERFORMER_START_FRESH_SECONDS)
+    )
+    if status == HEALTHY and inputs.active_performers == 0 and idle_too_long:
+        status = STALE
+        reason = "no performer is running, and the last start is older than the freshness threshold"
     fresh = _Fresh("last start", track.last_at, track.last_success_at)
-    return _row("performer_runtime", status, f"{runtime} · {in_flight}", fresh, reason)
+    return _row("performer_runtime", status, summary, fresh, reason)
 
 
 def _model_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[str, Any]:
@@ -384,9 +446,14 @@ def _model_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[st
     findings: list[tuple[str, str]] = []
     if track.streak >= MODEL_ERROR_STREAK_DOWN:
         findings.append((DOWN, f"last {track.streak} turns ended in a system error"))
-    if total and failed / total >= MODEL_ERROR_RATE_DEGRADED:
+    elif track.streak >= MODEL_ERROR_STREAK_DEGRADED:
+        findings.append((DEGRADED, f"last {track.streak} turns ended in a system error"))
+    # The rate is only meaningful once there is a sample; below it, only the streak rules apply.
+    if total >= MODEL_MIN_SAMPLE_TURNS and failed / total >= MODEL_ERROR_RATE_DEGRADED:
         findings.append((DEGRADED, summary))
     status, reason = _worst(findings)
+    if reason is not None:
+        reason = f"{reason}; {_MODEL_CAVEAT}"
     fresh = _Fresh("last turn", track.last_at, track.last_success_at)
     return _row("model_backends", status, summary, fresh, reason)
 
@@ -398,8 +465,9 @@ def _disk_env_row(inputs: SystemHealthInputs) -> dict[str, Any]:
         findings.append((DOWN, "disk is almost full"))
     elif free is not None and free < DISK_FREE_DEGRADED_FRACTION:
         findings.append((DEGRADED, "disk is running low"))
+    # This row is shown to every scope, so it counts failing symphonies and never names one.
     if inputs.env_failed:
-        findings.append((DEGRADED, f"env cache bootstrap failed for {', '.join(sorted(inputs.env_failed))}"))
+        findings.append((DEGRADED, f"env cache bootstrap failed for {_count(len(inputs.env_failed), 'symphony', 'symphonies')}"))
 
     summary = f"{round(free * 100)}% of disk free" if free is not None else "disk usage unknown"
     if inputs.env_symphonies == 0:

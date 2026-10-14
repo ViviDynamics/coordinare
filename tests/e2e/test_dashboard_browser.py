@@ -229,6 +229,9 @@ def test_subsystem_health_table_renders(page: Page, live_server_url: str) -> Non
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     expect(page.locator("#subsystems-section")).to_contain_text("GitHub API")
+    # The old guarantee still holds: the 'github' probe is registered and reaches the page.
+    registered = page.evaluate("() => _lastState.subsystems.some(function(s) { return s.name === 'github'; })")
+    assert registered is True
 
 
 # ---------------------------------------------------------------------------
