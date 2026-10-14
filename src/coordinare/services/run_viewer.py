@@ -35,11 +35,11 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import structlog
 
+from coordinare.lib.path_segments import is_conductor_folder
 from coordinare.services.run_header import RUN_HEADER_MAX_BYTES, RUN_HEADER_TYPE
 from coordinare.services.run_transcript import (
     TRANSCRIPT_TYPES,
     sanitize_segment,
-    transcript_path,
 )
 
 if TYPE_CHECKING:
@@ -169,13 +169,26 @@ def _valid_segment(value: str) -> bool:
     return bool(value) and sanitize_segment(value) == value
 
 
+def _valid_symphony_segment(value: str) -> bool:
+    """A symphony address: the sanitized form, or the conductor's own folder (spec 131).
+
+    The conductor's folder is the one admitted name that sanitize_segment never produces, so
+    the address cannot name a symphony's runs.
+    """
+    return is_conductor_folder(value) or _valid_segment(value)
+
+
 def run_file(root: Path, ref: RunRef) -> Path:
     """The run's file under ``root``, after every segment and every folder on the way is checked."""
-    for segment in (ref.symphony, ref.card, ref.run):
+    if not _valid_symphony_segment(ref.symphony):
+        message = f"not a run address: {ref.symphony!r}"
+        raise RunLookupError(message)
+    for segment in (ref.card, ref.run):
         if not _valid_segment(segment):
             message = f"not a run address: {segment!r}"
             raise RunLookupError(message)
-    path = transcript_path(root, symphony=ref.symphony, card_id=ref.card, run_id=ref.run)
+    # The symphony folder is already a valid folder name here, so it is joined as it is.
+    path = root / ref.symphony / ref.card / f"{ref.run}{_TRANSCRIPT_SUFFIX}"
     current = root
     for part in path.relative_to(root).parts:
         current = current / part
@@ -371,10 +384,17 @@ def _header_summary(header: dict[str, Any] | None) -> dict[str, Any]:
     performer = _section(header, "performer")
     model = _section(header, "model")
     card = _section(header, "card")
+    # 131: a conductor call's stage is its kind, and its decision is shown in the run lists.
+    conductor = _section(header, "conductor")
     return {
         "available": True,
         "started_at": header.get("ts"),
-        "stage": persona.get("name"),
+        "stage": f"conductor:{conductor['kind']}" if conductor.get("kind") else persona.get("name"),
+        "conductor": {
+            "kind": conductor.get("kind"),
+            "decision": conductor.get("decision"),
+            "symphony": conductor.get("symphony"),
+        } if conductor else None,
         "agent": performer.get("backend"),
         "transport": performer.get("transport"),
         "endpoint": performer.get("endpoint"),
@@ -401,34 +421,37 @@ def list_runs(root: Path, *, symphony: str | None, card: str) -> dict[str, Any]:
     Only folder names the writer could have created are read, and no link is followed.
     Each run costs one header read and one ``stat``, so a listing never scans a transcript.
     """
-    if not _valid_segment(card) or (symphony is not None and not _valid_segment(symphony)):
+    if not _valid_segment(card) or (symphony is not None and not _valid_symphony_segment(symphony)):
         message = "not a card address"
         raise RunLookupError(message)
-    folders = _card_folders(root, card, symphony)
-    rows: list[dict[str, Any]] = []
-    for sym, folder in folders:
+    # Stat every file first (cheap), keep the newest LIST_MAX_RUNS, and read headers only for those.
+    candidates: list[tuple[float, RunRef, Path, os.stat_result]] = []
+    for sym, folder in _card_folders(root, card, symphony):
         for entry in _run_files(folder):
             run = entry.name[: -len(_TRANSCRIPT_SUFFIX)]
             ref = RunRef(symphony=sym, card=card, run=run)
             try:
                 path = run_file(root, ref)
                 info = path.stat()
-                header = _header_of(path, ref)
             except (RunLookupError, RunRefusedError, OSError):
                 continue
-            rows.append({
-                "symphony": sym,
-                "card": card,
-                "run": run,
-                "bytes": info.st_size,
-                "modified_at": datetime.fromtimestamp(info.st_mtime, UTC).isoformat(),
-                "_mtime": info.st_mtime,
-                **_header_summary(header),
-            })
-    rows.sort(key=lambda r: float(r["_mtime"]), reverse=True)
-    for row in rows:
-        row.pop("_mtime", None)
-    return {"runs": rows[:LIST_MAX_RUNS], "truncated": len(rows) > LIST_MAX_RUNS}
+            candidates.append((info.st_mtime, ref, path, info))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    rows: list[dict[str, Any]] = []
+    for mtime, ref, path, info in candidates[:LIST_MAX_RUNS]:
+        try:
+            header = _header_of(path, ref)
+        except (RunLookupError, RunRefusedError, OSError):
+            continue
+        rows.append({
+            "symphony": ref.symphony,
+            "card": card,
+            "run": ref.run,
+            "bytes": info.st_size,
+            "modified_at": datetime.fromtimestamp(mtime, UTC).isoformat(),
+            **_header_summary(header),
+        })
+    return {"runs": rows, "truncated": len(candidates) > LIST_MAX_RUNS}
 
 
 def _symphony_folders(root: Path) -> list[Path]:
@@ -436,7 +459,7 @@ def _symphony_folders(root: Path) -> list[Path]:
         return []
     folders: list[Path] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if entry.is_symlink() or not entry.is_dir() or not _valid_segment(entry.name):
+        if entry.is_symlink() or not entry.is_dir() or not _valid_symphony_segment(entry.name):
             continue
         folders.append(entry)
     return folders

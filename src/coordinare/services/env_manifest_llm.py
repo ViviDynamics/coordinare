@@ -20,11 +20,18 @@ from collections.abc import Awaitable, Callable
 import structlog
 
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
+from coordinare.services.conductor_calls import ConductorCallLog, conductor_call
 
 logger = structlog.get_logger(__name__)
 
 # async (messages) -> assistant text.  Caller wires this to the coordinare's LLM.
 ChatJson = Callable[[list[dict[str, str]]], Awaitable[str]]
+
+
+def _calls_of(chat_json: ChatJson | None) -> ConductorCallLog | None:
+    """The call log of the backend a bound ``chat_json`` belongs to (131). None for any other callable."""
+    calls = getattr(getattr(chat_json, "__self__", None), "calls", None)
+    return calls if isinstance(calls, ConductorCallLog) else None
 
 _SYSTEM_PROMPT = (
     "You extract OS-level system package requirements from a project's README. "
@@ -98,13 +105,19 @@ async def enrich_from_readme(
     """Augment ``manifest`` with README-derived system packages. Best-effort."""
     if chat_json is None or not (readme_text or "").strip():
         return manifest
-    try:
-        reply = await chat_json(build_messages(readme_text, manifest))
-    except Exception as exc:  # enrichment must never fail the bootstrap
-        logger.warning("env_manifest.readme_llm_failed", error=str(exc))
-        return manifest
-    known = {i.name for i in manifest.items}
-    new_items = parse_system_items(reply, known=known)
+    async with conductor_call(_calls_of(chat_json), kind="env_manifest") as call:
+        try:
+            reply = await chat_json(build_messages(readme_text, manifest))
+        except Exception as exc:  # enrichment must never fail the bootstrap
+            call.decide("env manifest: model call failed")
+            logger.warning("env_manifest.readme_llm_failed", error=str(exc))
+            return manifest
+        known = {i.name for i in manifest.items}
+        new_items = parse_system_items(reply, known=known)
+        call.decide(
+            f"env manifest: {len(new_items)} system package(s) from README" if new_items
+            else "env manifest: none added",
+        )
     if not new_items:
         return manifest
     logger.info(

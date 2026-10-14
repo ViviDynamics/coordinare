@@ -435,7 +435,7 @@ async def test_stalled_classifier_cannot_hold_monitor_cycle(monkeypatch):
     monkeypatch.setattr(module, '_CLASSIFIER_TIMEOUT_SECONDS', 0.01)
     cancelled = asyncio.Event()
 
-    async def stuck(*args):
+    async def stuck(*args, **kwargs):
         try:
             await asyncio.Event().wait()
         finally:

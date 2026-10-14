@@ -52,6 +52,7 @@ from coordinare.config_descriptors import (
     build_snapshot,
     scalar_field_names,
 )
+from coordinare.services.conductor_calls import conductor_call
 
 logger = structlog.get_logger(__name__)
 
@@ -428,21 +429,26 @@ async def run_turn(
         f"operator: {message}"
     )
 
-    try:
-        raw = await backend.prompt(prompt, response_format="json")
-    except Exception as exc:
-        logger.warning("config_assistant.backend_error", error=str(exc))
-        return Turn(error=f"the assistant's model endpoint failed: {exc}")
+    async with conductor_call(backend, kind="config_assistant") as call:
+        try:
+            raw = await backend.prompt(prompt, response_format="json")
+        except Exception as exc:
+            logger.warning("config_assistant.backend_error", error=str(exc))
+            call.decide("assistant: model endpoint failed")
+            return Turn(error=f"the assistant's model endpoint failed: {exc}")
 
-    turn, problem = _parse(raw)
-    if turn is None:
-        logger.info("config_assistant.unparseable", problem=problem)
-        return Turn(error=problem or "the model's response could not be understood")
+        turn, problem = _parse(raw)
+        if turn is None:
+            logger.info("config_assistant.unparseable", problem=problem)
+            call.decide("assistant: unparseable reply")
+            return Turn(error=problem or "the model's response could not be understood")
 
-    if turn.proposal is not None:
-        rejection = validate_proposal(config, turn.proposal)
-        if rejection is not None:
-            logger.info("config_assistant.rejected_proposal", reason=rejection)
-            return Turn(reply=turn.reply, error=rejection)
+        call.decide("assistant: proposal" if turn.proposal is not None else "assistant: reply")
+        if turn.proposal is not None:
+            rejection = validate_proposal(config, turn.proposal)
+            if rejection is not None:
+                logger.info("config_assistant.rejected_proposal", reason=rejection)
+                call.decide("assistant: proposal rejected")
+                return Turn(reply=turn.reply, error=rejection)
 
-    return turn
+        return turn

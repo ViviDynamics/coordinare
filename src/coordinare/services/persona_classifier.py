@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 
 import structlog
 
+from coordinare.services.conductor_calls import conductor_call
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -440,6 +442,15 @@ def _validate_and_coerce_slice(raw: Any) -> PersonaScopeSlice | None:
     return slice_
 
 
+def _scope_decision(filled: dict[str, Any], expected: list[str]) -> str:
+    """The decision a classified scope reached, for its conductor transcript (131). Never raises."""
+    try:
+        depths = ", ".join(f"{name} {filled[name]['depth']}" for name in expected if name in filled)
+    except (KeyError, TypeError):
+        return "scope: decision unavailable"
+    return f"scope: {depths}"
+
+
 async def classify(
     *,
     session: dict[str, Any],
@@ -571,7 +582,10 @@ async def classify(
 
     budget = float(getattr(persona_scope_cfg, "classifier_latency_budget_seconds", 30.0))
 
+    decisions: list[str] = []
+
     def _fail(reason: str) -> PersonaScope:
+        decisions.append(f"scope: fallback ({reason})")
         return _fallback_scope(
             session=session,
             reason=reason,
@@ -592,66 +606,73 @@ async def classify(
         persona_count=len(expected_personas),
         model=classifier_model,
     )
-    t0 = time.monotonic()
-    try:
-        result = await asyncio.wait_for(
-            conducting_backend.prompt(prompt_body, response_format="json"),
-            timeout=budget,
-        )
-    except TimeoutError:
-        return _fail("timeout")
-    except Exception as exc:
-        return _fail(f"backend_error:{type(exc).__name__}")
-    latency_ms = int((time.monotonic() - t0) * 1000)
+    async with conductor_call(
+        conducting_backend, kind="persona_scope", card_id=card_id or None,
+    ) as call:
+        try:
+            t0 = time.monotonic()
+            try:
+                result = await asyncio.wait_for(
+                    conducting_backend.prompt(prompt_body, response_format="json"),
+                    timeout=budget,
+                )
+            except TimeoutError:
+                return _fail("timeout")
+            except Exception as exc:
+                return _fail(f"backend_error:{type(exc).__name__}")
+            latency_ms = int((time.monotonic() - t0) * 1000)
 
-    data = result.get("data") if isinstance(result, dict) else None
-    if not isinstance(data, dict):
-        return _fail("parse_failed")
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, dict):
+                return _fail("parse_failed")
 
-    raw_personas = data.get("personas")
-    if not isinstance(raw_personas, dict):
-        return _fail("schema_invalid")
+            raw_personas = data.get("personas")
+            if not isinstance(raw_personas, dict):
+                return _fail("schema_invalid")
 
-    # Validate + coerce each slice.
-    coerced: dict[str, PersonaScopeSlice] = {}
-    for name, raw in raw_personas.items():
-        slice_ = _validate_and_coerce_slice(raw)
-        if slice_ is not None:
-            coerced[name] = slice_
+            # Validate + coerce each slice.
+            coerced: dict[str, PersonaScopeSlice] = {}
+            for name, raw in raw_personas.items():
+                slice_ = _validate_and_coerce_slice(raw)
+                if slice_ is not None:
+                    coerced[name] = slice_
 
-    if not coerced:
-        # Every slice rejected (e.g. unknown depth values across the board).
-        return _fail("all_slices_invalid")
+            if not coerced:
+                # Every slice rejected (e.g. unknown depth values across the board).
+                return _fail("all_slices_invalid")
 
-    cleaned = _drop_unknown_personas(coerced, expected_personas, card_id)
-    filled = _fill_missing_personas(cleaned, expected_personas)
-    forced_full_cfg: dict[str, list[str]] = dict(
-        getattr(persona_scope_cfg, "forced_full_on_path_classes", {}) or {},
-    )
-    _apply_forced_full(filled, files_summary, forced_full_cfg, card_id)
-    if pr_truncated:
-        # Beyond 300 files the classifier saw only a prefix — lean to full so we
-        # don't ship a skim decision based on a partial view of the PR.
-        for name in expected_personas:
-            if name in filled and filled[name]["depth"] != "skip":
-                if filled[name]["depth"] != "full":
-                    filled[name]["overrides"].append("pr_files_truncated")
-                filled[name]["depth"] = "full"
-    _apply_closer_invariant(filled)
+            cleaned = _drop_unknown_personas(coerced, expected_personas, card_id)
+            filled = _fill_missing_personas(cleaned, expected_personas)
+            forced_full_cfg: dict[str, list[str]] = dict(
+                getattr(persona_scope_cfg, "forced_full_on_path_classes", {}) or {},
+            )
+            _apply_forced_full(filled, files_summary, forced_full_cfg, card_id)
+            if pr_truncated:
+                # Beyond 300 files the classifier saw only a prefix, so lean to full so we
+                # don't ship a skim decision based on a partial view of the PR.
+                for name in expected_personas:
+                    if name in filled and filled[name]["depth"] != "skip":
+                        if filled[name]["depth"] != "full":
+                            filled[name]["overrides"].append("pr_files_truncated")
+                        filled[name]["depth"] = "full"
+            _apply_closer_invariant(filled)
 
-    scope: PersonaScope = {
-        "computed_at": datetime.now(UTC).isoformat(),
-        "cycle_index": cycle_index,
-        "classifier_model": classifier_model or "",
-        "head_sha": head_sha,
-        "files_summary": files_summary,
-        "personas": filled,
-    }
-    logger.info(
-        "persona_scope.classifier.complete",
-        card_id=card_id,
-        cycle_index=cycle_index,
-        latency_ms=latency_ms,
-        depths={name: filled[name]["depth"] for name in expected_personas if name in filled},
-    )
-    return scope
+            scope: PersonaScope = {
+                "computed_at": datetime.now(UTC).isoformat(),
+                "cycle_index": cycle_index,
+                "classifier_model": classifier_model or "",
+                "head_sha": head_sha,
+                "files_summary": files_summary,
+                "personas": filled,
+            }
+            logger.info(
+                "persona_scope.classifier.complete",
+                card_id=card_id,
+                cycle_index=cycle_index,
+                latency_ms=latency_ms,
+                depths={name: filled[name]["depth"] for name in expected_personas if name in filled},
+            )
+            decisions.append(_scope_decision(filled, expected_personas))
+            return scope
+        finally:
+            call.decide(decisions[-1] if decisions else "scope: no decision")

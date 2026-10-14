@@ -7,6 +7,7 @@ import structlog
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.redaction import redact_state_value
 from coordinare.services.board_provider import board_of
+from coordinare.services.conductor_calls import assessment_decision, conductor_call
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 
 if TYPE_CHECKING:
@@ -98,7 +99,9 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
         personas = load_personas_hot(state.get("config_path"), state.get("config"))
         details["persona_instructions"] = get_effective_instructions("assessor", personas)
 
-        assessment = await backend.assess(details)
+        async with conductor_call(backend, kind="assess", card_id=str(card.get("id", "")) or None) as call:
+            assessment = await backend.assess(details)
+            call.decide(assessment_decision(assessment))
     except Exception as exc:
         logger.error(
             "assess_card.service_failure",

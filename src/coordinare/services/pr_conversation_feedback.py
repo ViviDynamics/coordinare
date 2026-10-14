@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.models.review import ReviewerType, classify_reviewer
+from coordinare.services.conductor_calls import conductor_call
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -68,20 +69,22 @@ def _since(tracking: dict[str, Any]) -> str | None:
     return (_timestamp(str(raw)) - timedelta(seconds=1)).isoformat().replace('+00:00', 'Z') if raw else None
 
 
-async def _classify(body: str, author: str, backend: Any) -> bool:
+async def _classify(body: str, author: str, backend: Any, card_id: str | None = None) -> bool:
     """Use inference when available; explicit work verbs are the safe fallback."""
     label = None
     if backend is not None:
-        try:
-            result = await backend.prompt(_PROMPT.format(body=body, author=author), response_format='json')
-            if isinstance(result, dict):
-                data = result.get('data')
-                if data is None:
-                    data = json.loads(result.get('text') or '{}')
-                if isinstance(data, dict):
-                    label = data.get('classification')
-        except Exception as exc:
-            logger.warning('pr_comments.classification_failed', error_type=type(exc).__name__)
+        async with conductor_call(backend, kind="pr_comment_classify", card_id=card_id) as call:
+            try:
+                result = await backend.prompt(_PROMPT.format(body=body, author=author), response_format='json')
+                if isinstance(result, dict):
+                    data = result.get('data')
+                    if data is None:
+                        data = json.loads(result.get('text') or '{}')
+                    if isinstance(data, dict):
+                        label = data.get('classification')
+            except Exception as exc:
+                logger.warning('pr_comments.classification_failed', error_type=type(exc).__name__)
+            call.decide(f"comment: {label}" if isinstance(label, str) and label else "comment: unclassified")
     return label == 'request' if isinstance(label, str) and label in {'request', 'acknowledgement', 'noise'} else bool(_REQUEST.search(body))
 
 
@@ -134,7 +137,9 @@ async def _process_comment(
     ignored = author_type == ReviewerType.BOT or not body.strip() or bool(_STATUS.search(body))
     ignored = ignored or (author_type == ReviewerType.TRUSTED_BOT and bool(_BOT_STATUS.search(body)))
     classified = not accepted and not ignored
-    request = classified and await _classify(body, author, state.get('conducting_backend'))
+    current = state.get('current_card')
+    card_id = str(current.get('id', '')) if isinstance(current, dict) else ''
+    request = classified and await _classify(body, author, state.get('conducting_backend'), card_id or None)
     if not request:
         tracking['versions'][cid] = digest
         return None, True, classified
