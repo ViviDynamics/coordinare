@@ -90,6 +90,15 @@ def _register_dashboard_personas(app: FastAPI, ctx: DashboardContext) -> None:
             return HTMLResponse(_page_html(_assistant_on))
 
 
+def _register_dashboard_run_detail(app: FastAPI, ctx: DashboardContext) -> None:
+        _assistant_on = ctx.assistant_on
+
+        @app.get("/performers/{role}", response_class=HTMLResponse)
+        async def dashboard_run_detail(role: str) -> HTMLResponse:
+            """146: the run detail for one role. The client checks the role against the live roles."""
+            return HTMLResponse(_page_html(_assistant_on))
+
+
 def _register_dashboard_history(app: FastAPI, ctx: DashboardContext) -> None:
         _assistant_on = ctx.assistant_on
 
@@ -152,6 +161,7 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_dashboard_static_script(app, ctx)
     _register_dashboard(app, ctx)
     _register_dashboard_performers(app, ctx)
+    _register_dashboard_run_detail(app, ctx)
     _register_dashboard_personas(app, ctx)
     _register_dashboard_history(app, ctx)
     _register_dashboard_glossary(app, ctx)

@@ -40,6 +40,7 @@ DEFERRED_PAGE_PATHS = (
     "/",
     "/login",
     "/performers",
+    "/performers/{role}",
     "/personas",
     "/history",
     "/glossary",

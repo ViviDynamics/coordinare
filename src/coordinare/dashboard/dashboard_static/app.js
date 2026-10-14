@@ -472,8 +472,6 @@ function selectSwimlaneTab(name) {
 // parseTokenCount + derivePerformerTokenTotal: /static/performers.js (#349)
 // Refresh session age counter every 10s while monitoring_agent
 var _lastState = null;
-var _performersSelectedRole = null;
-var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
@@ -500,7 +498,7 @@ function updateNavActive(path) {
   var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   document.getElementById('workspace-title').textContent = activeLink ? activeLink.textContent.trim() : 'Dashboard';
-  document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
+  document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : 'Coordinare');
 }
 
 function renderSymphoniesPage(s) {
@@ -906,7 +904,7 @@ async function submitAddSymphony() {
 function router() {
   var path = location.pathname;
   updateNavActive(path);
-  if (path === '/performers') {
+  if (isPerformersPath(path)) {
     showPage('performers-page');
     if (_lastState) renderPerformersPage(_lastState);
   } else if (path === '/personas') {
@@ -1416,7 +1414,7 @@ function connectEventStream() {
       renderState(_lastState);
       // 049: re-render current page with new state
       var path = location.pathname;
-      if (path === '/performers') renderPerformersPage(_lastState);
+      if (isPerformersPath(path)) renderPerformersPage(_lastState);
       else if (path === '/history') renderHistoryPage(_lastState);
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
       else renderDashboardExtras(_lastState);
