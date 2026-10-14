@@ -10,6 +10,7 @@ import pytest
 import stamina
 
 from coordinare.models.card import Card, CardStatus
+from coordinare.services import run_header
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -54,6 +55,20 @@ def _disable_stamina_retries():
     stamina.set_active(False)
     yield
     stamina.set_active(True)
+
+
+@pytest.fixture(autouse=True)
+def _persona_history_in_tmp(tmp_path, monkeypatch):
+    """Spec 130: dispatch-time persona history goes to a temp dir, never the cwd.
+
+    Tests build real configurations whose state path is relative, so the root would
+    otherwise resolve into the working tree.
+    """
+    monkeypatch.setattr(
+        run_header,
+        "persona_history_root",
+        lambda config: None if config is None else tmp_path / "persona_history",
+    )
 
 
 @pytest.fixture

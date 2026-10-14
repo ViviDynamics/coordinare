@@ -30,6 +30,7 @@ DEFERRED_REST_PREFIXES = (
     "/webhook",
     "/api/assistant",
     "/api/vocabulary",  # 136: display labels for the human dashboard, static data.
+    "/api/personas/{role}/history",  # 130: persona version history, read by the transcript viewer (#133).
     "/health",
     "/live",
     "/ready",
