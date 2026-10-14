@@ -8,8 +8,9 @@ from coordinare.dashboard.routers import (
     pages,
     personas,
     run_logs,
+    runs,
     state,
     symphonies,
 )
 
-__all__ = ["assistant", "config", "controls", "pages", "personas", "run_logs", "state", "symphonies"]
+__all__ = ["assistant", "config", "controls", "pages", "personas", "run_logs", "runs", "state", "symphonies"]

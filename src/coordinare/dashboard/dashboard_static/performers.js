@@ -476,7 +476,10 @@ function renderCardDetailContent(sess, s) {
     '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' + fullLogLinkHtml(sess) +
     '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>' +
     '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Progress checks (recent)</div>' +
-    '<div class="ov-list">' + verdictsHtml + '</div>';
+    '<div class="ov-list">' + verdictsHtml + '</div>' +
+    // 133: the card's runs per stage, filled in by hydrateCardRuns after this HTML is set.
+    '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Runs (transcripts)</div>' +
+    '<div class="card-runs" data-card-id="' + esc(sess.card_id || '') + '"></div>';
 }
 
 // 132: the Live Log shows the tail; the full log for this run is one click away, once the
@@ -504,7 +507,7 @@ function showPerformerDetail(cardId) {
     var sessions = Array.isArray(_lastState.active_sessions) ? _lastState.active_sessions : [];
     var sess = sessions.find(function(s) { return s.card_id === cardId; });
     if (sess) {
-      if (content) content.innerHTML = renderCardDetailContent(sess, _lastState);
+      if (content) { content.innerHTML = renderCardDetailContent(sess, _lastState); hydrateCardRuns(content); }
     }
   }
 }
@@ -786,7 +789,7 @@ function renderPerformersPage(s) {
     '<div><strong>' + roleOrStageLabel(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">' + esc(busyText(row.active, row.max, row.queued)) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
-    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
+    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + (sel.session_id ? ' &middot; ' + runSessionLinkHtml(sel.session_id) : '') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
     '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';

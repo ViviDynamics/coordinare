@@ -114,3 +114,41 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .af-row-agent .af-narration { font-family: inherit; white-space: pre-wrap; color: var(--color-text-primary); }
 .af-result { padding-left: 8px; font-family: var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-muted); }
 .af-result-error { color: var(--color-accent-red); }
+
+/* 133: the transcript viewer. Text from a transcript is plain text: white-space keeps the
+   line breaks, and nothing here renders markup. */
+.runs-page { max-width: 1100px; }
+.runs-header { margin-bottom: 12px; }
+.runs-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; font-size: 13px; }
+.run-fact { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.run-fact-label { font-size: 11px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.run-downloads { margin-top: 8px; font-size: 12px; }
+.runs-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 8px; font-size: 13px; }
+.runs-search { display: inline-flex; gap: 6px; }
+.runs-search-results { font-size: 12px; max-height: 160px; overflow-y: auto; }
+.run-match { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 2px 0; color: var(--color-text-primary); cursor: pointer; overflow-wrap: anywhere; }
+.runs-diff { font-size: 12px; }
+.runs-notice { font-size: 12px; color: var(--color-text-muted); min-height: 16px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.runs-scroll { height: 70vh; overflow-y: auto; border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 10px; background: var(--color-bg-surface); }
+.runs-scroll:focus { outline: 2px solid var(--color-accent-blue); outline-offset: 2px; }
+.run-spacer { width: 100%; }
+.run-row { border-bottom: 1px solid var(--color-border); padding: 6px 0; font-size: 13px; }
+.run-row.run-focus { background: var(--color-bg-row-selected); }
+.run-row-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.run-row-seq { font-family: monospace; font-size: 11px; color: var(--color-text-muted); min-width: 56px; }
+.run-row-title { overflow-wrap: anywhere; color: var(--color-text-primary); }
+.run-kind { font-size: 11px; padding: 0 5px; border-radius: 3px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+.run-kind-error, .run-kind-unreadable { color: var(--color-accent-red); border-color: var(--color-accent-red); }
+.run-kind-tool { color: var(--color-accent-blue); }
+.run-prose { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-primary); margin: 4px 0; }
+.run-pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: monospace; font-size: 12px; background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px; max-height: 320px; overflow-y: auto; margin: 4px 0; }
+.run-io-label { font-size: 11px; color: var(--color-text-muted); text-transform: uppercase; margin-top: 6px; }
+.run-tool summary, .run-think summary { cursor: pointer; overflow-wrap: anywhere; }
+.run-usage, .run-error { font-size: 12px; color: var(--color-text-muted); margin: 3px 0; }
+.run-error { color: var(--color-accent-red); }
+.run-unreadable p { font-size: 12px; color: var(--color-accent-red); margin: 4px 0; }
+.run-more, .run-copy, .run-match { font: inherit; font-size: 12px; }
+.run-copy { margin-left: auto; }
+.run-entry-link { font-size: 12px; margin-left: 6px; }
+.card-runs-stage { margin-bottom: 6px; font-size: 12px; }
+.card-runs-stage .detail-list li { overflow-wrap: anywhere; }
