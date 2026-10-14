@@ -176,7 +176,7 @@ function afPlainRowHtml(e, id, where) {
     '<span class="af-time">' + esc(afTime(e.timestamp)) + '</span>' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span>' +
-    '<span class="af-plain-text">' + esc(text || afSummary(e)) + '</span></div>';
+    '<span class="af-plain-text">' + esc(text || afSummary(e)) + '</span>' + runEntryLinkHtml(e) + '</div>';
 }
 function afRowHtml(e, group) {
   var entries = group ? group.entries : [e];
@@ -200,7 +200,7 @@ function afRowHtml(e, group) {
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
     '<span class="af-summary">' + esc(preview) + ' (' + count +
-    (count === 1 ? ' update)' : ' updates)') + '</span>' + badge + '</summary>' +
+    (count === 1 ? ' update)' : ' updates)') + '</span>' + badge + runEntryLinkHtml(latest) + '</summary>' +
     '<div class="af-raw-label">Raw output (may contain other languages; retained text only)</div>' +
     '<div class="af-raw">' + afRawHtml(entries) + '</div>' +
     '</details></div>';

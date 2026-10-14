@@ -21,7 +21,11 @@ _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_detail_check
 def _sliced_js(tmp_path: Path) -> Path:
     path = tmp_path / "activity_detail.js"
     path.write_text(
-        "\n\n".join([shipped_function("helpers", "esc"), _ACTIVITY_STREAM_JS]),
+        "\n\n".join([
+            shipped_function("helpers", "esc"),
+            shipped_function("runs", "runEntryLinkHtml"),
+            _ACTIVITY_STREAM_JS,
+        ]),
         encoding="utf-8",
     )
     return path

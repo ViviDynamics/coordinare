@@ -177,7 +177,7 @@ function renderState(s) {
     var activeSess = sessions.find(function(ss) { return ss.card_id === _selectedCardId; });
     if (activeSess) {
       var detailContent = document.getElementById('card-detail-content');
-      if (detailContent) detailContent.innerHTML = renderCardDetailContent(activeSess, s);
+      if (detailContent) { detailContent.innerHTML = renderCardDetailContent(activeSess, s); hydrateCardRuns(detailContent); }
     } else {
       // Session ended while detail was open — close back to the list.
       closeCardDetail();
@@ -469,7 +469,7 @@ var _lastState = null;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','admin-config-page','config-page','assistant-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','admin-config-page','config-page','assistant-page','runs-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -495,7 +495,7 @@ function updateNavActive(path) {
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
   document.getElementById('workspace-title').textContent = activeLabel ? activeLabel.textContent.trim() : 'Dashboard';
   // 153: setPageTitle keeps the "(N)" attention prefix across navigation.
-  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : 'Coordinare'));
+  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : isRunsPath(path) ? 'Transcript | Coordinare' : 'Coordinare'));
 }
 
 function renderSymphoniesPage(s) {
@@ -945,6 +945,10 @@ function router() {
   } else if (path === '/assistant') {
     showPage('assistant-page');
     if (typeof initAssistant === 'function') initAssistant();
+  } else if (isRunsPath(path)) {
+    // 133: the transcript viewer. Its own address, so Back and reload both work.
+    showPage('runs-page');
+    runsPageRoute(path, location.search);
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);

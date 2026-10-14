@@ -35,7 +35,7 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # 134: "usage" (token and cost formatting) follows helpers, so the figures load before
 # performers and app call them.
 _DASHBOARD_JS_FILES = (
-    "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention", "app",
+    "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention", "runs", "app",
 )
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from
