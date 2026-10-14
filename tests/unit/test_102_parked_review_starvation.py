@@ -39,6 +39,7 @@ def _parked_and_running() -> dict[str, dict[str, Any]]:
             },
             "phase": "monitoring_pr",
             "performer_stage": "closing_review",
+            "review_wait": "human",
             "pipeline_admitted": True,
         },
         "running": {

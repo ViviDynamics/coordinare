@@ -25,8 +25,10 @@ from coordinare.services.pipeline_budget import (
 
 
 def _parked(cid: str, **extra: Any) -> dict[str, Any]:
+    # #186: a card releases its slot only once monitor_pr has said it waits on a human.
     return {"current_card": {"id": cid, "status": "IN_REVIEW", "pr_number": 95},
-            "phase": "monitoring_pr", "performer_stage": "closing_review", "pipeline_admitted": True, **extra}
+            "phase": "monitoring_pr", "performer_stage": "closing_review", "pipeline_admitted": True,
+            "review_wait": "human", **extra}
 
 
 def _todo(cid: str) -> dict[str, Any]:

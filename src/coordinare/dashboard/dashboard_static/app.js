@@ -621,7 +621,7 @@ async function loadSymphonyDetail(name, el) {
   var personas = data.personas || {};
   var overrideFields = [
     {key:'max_concurrent_cards', label:'Max concurrent cards', type:'number', placeholder:'1'},
-    {key:'max_cards_in_review', label:'Max cards waiting on review', type:'number', placeholder:'3'},
+    {key:'max_cards_in_review', label:'Max cards waiting on review', type:'number', placeholder:'3', noCapOption:true},
     {key:'poll_interval_seconds', label:'Poll interval (seconds)', type:'number', placeholder:'30'},
     {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
     {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
@@ -640,9 +640,18 @@ async function loadSymphonyDetail(name, el) {
   }).join('');
   var overrideInputs = overrideFields.map(function(f) {
     var val = ov[f.key] != null ? ov[f.key] : '';
+    // #186: null is an explicit "no cap". An absent key (or an empty input) means
+    // "use the global default", so the checkbox is the only way to set null.
+    var noCap = f.noCapOption && Object.prototype.hasOwnProperty.call(ov, f.key) && ov[f.key] === null;
+    var noCapBox = f.noCapOption
+      ? '<label style="font-size:11px;color:var(--color-text-muted);display:inline-flex;align-items:center;gap:4px;margin-top:4px">'
+        + '<input data-override-nocap="' + esc(f.key) + '" type="checkbox"' + (noCap ? ' checked' : '') + '> No cap (unlimited)</label>'
+        + '<div style="font-size:11px;color:var(--color-text-muted);margin-top:2px">Empty uses the global default.</div>'
+      : '';
     return '<div style="margin-bottom:8px">'
       + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(f.label) + '</label>'
-      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(val)) + '" placeholder="' + esc(f.placeholder) + '" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px">'
+      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(noCap ? '' : val)) + '" placeholder="' + esc(f.placeholder) + '"' + (noCap ? ' disabled' : '') + ' style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px">'
+      + noCapBox
       + '</div>';
   }).join('');
   var enabledChecked = data.enabled !== false ? 'checked' : '';
@@ -812,6 +821,13 @@ async function loadSymphonyDetail(name, el) {
       }
     });
   }
+  el.querySelectorAll('[data-override-nocap]').forEach(function(box) {
+    box.addEventListener('change', function() {
+      var key = box.getAttribute('data-override-nocap');
+      var inp = el.querySelector('[data-override-key="' + key + '"]');
+      if (inp) inp.disabled = box.checked;
+    });
+  });
   document.getElementById('sym-spec-file-add-btn').addEventListener('click', function() {
     var inp = document.getElementById('sym-spec-file-input');
     var val = inp.value.trim();
@@ -830,6 +846,9 @@ async function loadSymphonyDetail(name, el) {
     el.querySelectorAll('[data-override-key]').forEach(function(inp) {
       var k = inp.getAttribute('data-override-key');
       var v = inp.value.trim();
+      // #186: "No cap" saves null; the input is disabled while it is ticked.
+      var noCap = el.querySelector('[data-override-nocap="' + k + '"]');
+      if (noCap && noCap.checked) { overrides[k] = null; return; }
       if (v === '') return;
       var numFields = ['max_concurrent_cards','max_cards_in_review','poll_interval_seconds','max_feedback_cycles','max_closed_pr_attempts_per_issue'];
       overrides[k] = numFields.includes(k) ? Number(v) : v;

@@ -232,10 +232,11 @@ def test_the_fanout_merge_carries_the_todo_waits_across_session_ticks() -> None:
 def test_the_skip_record_carries_the_numbers_behind_each_queue(monkeypatch) -> None:
     monkeypatch.setattr(daemon_module, "_review_wait_logged", {})
     sessions = {
+        # #186: a card counts toward the review cap only once monitor_pr has said it waits on a human.
         "p1": {"current_card": {"id": "p1", "status": "IN_REVIEW", "pr_number": 95}, "phase": "monitoring_pr",
-               "performer_stage": "closing_review", "pipeline_admitted": True},
+               "performer_stage": "closing_review", "pipeline_admitted": True, "review_wait": "human"},
         "p2": {"current_card": {"id": "p2", "status": "IN_REVIEW", "pr_number": 96}, "phase": "monitoring_pr",
-               "performer_stage": "closing_review", "pipeline_admitted": True},
+               "performer_stage": "closing_review", "pipeline_admitted": True, "review_wait": "human"},
         "fresh": {"current_card": {"id": "fresh", "status": "TODO"}, "phase": "dispatching",
                   "performer_stage": "assessing"},
     }

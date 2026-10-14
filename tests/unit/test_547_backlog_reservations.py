@@ -19,7 +19,11 @@ def test_paused_reservation_releases_capacity_one_for_sibling(status, phase, nex
         record = _persist_one_session("paused", paused)
         record = PersistedSession.model_validate_json(record.model_dump_json())
         paused = _restored_session_dict("paused", record, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase=phase, active_card_id="paused"), card)
-    work = {"paused": paused, "sibling": {"current_card": {"id": "sibling", "status": "TODO" if next_phase == "dispatching" else "IN_REVIEW"}, "phase": next_phase}}
+    # #186: a sibling in review releases its slot only once it is known to be waiting on a human.
+    sibling = {"current_card": {"id": "sibling", "status": "TODO" if next_phase == "dispatching" else "IN_REVIEW"}, "phase": next_phase}
+    if next_phase == "monitoring_pr":
+        sibling["review_wait"] = "human"
+    work = {"paused": paused, "sibling": sibling}
     # 179: a sibling waiting on review needs no slot, so none is reserved for it.
     expected = {"sibling"} if next_phase == "dispatching" else set()
     assert select_pipelines(work, 1) == expected

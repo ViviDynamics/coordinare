@@ -97,7 +97,8 @@ async def _apply_assessor_decline(
     reason = str(assessment.get("expected_behavior") or assessment.get("goal") or "the assessor declined this card").strip()
     verdict = "not_work" if marker == "assessment_not_work" else "needs_split"
 
-    recorded = dict(assessment)
+    # #186: a declined card is not started work, so the record says it was declined.
+    recorded = {**assessment, "declined": verdict}
     if assessment:
         recorded["recorded_at"] = datetime.now(UTC).isoformat()
     state["assessment"] = recorded

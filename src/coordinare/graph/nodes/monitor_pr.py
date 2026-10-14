@@ -28,9 +28,15 @@ from coordinare.models.review import (
     StalenessClass,
     classify_reviewer,
 )
+from coordinare.services import pipeline_budget
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
+from coordinare.services.pipeline_budget import (
+    REVIEW_WAIT_AUTOMATION,
+    REVIEW_WAIT_HUMAN,
+    has_live_work,
+)
 from coordinare.services.pr_conversation_feedback import (
     conversation_pr_number,
     poll_pr_conversation_feedback,
@@ -213,6 +219,61 @@ def _log_merge_decision(card_id: str, outcome: str, reason: str, **observed: obj
             "monitor_pr.merge_wait_repeated",
             card_id=card_id, reason=reason, consecutive_checks=count, **observed,
         )
+
+
+def _record_review_wait(
+    state: CoordinareState, card_id: str, wait: str | None, *, reason: str, head: str,
+) -> None:
+    """#186: record what the card is waiting on, and the clock of its non-human hold.
+
+    One clock per hold episode. An episode starts when the card enters a non-human
+    hold from any other state, and it ends only when the card reaches a human wait,
+    dispatches a performer (wait None), or leaves review. A new head or a new reason
+    does not restart it; both are kept for the log. An expired hold
+    (``pipeline_budget.expire_review_holds``) stays a human wait until the card's
+    wait is cleared, so it cannot be re-armed by a new head.
+
+    A human wait releases the card's place in this cycle's selection at once, so a
+    later claimant in the same pass is not refused on its account. The card is not
+    released while it has live work (a side writer or a performer outlives its stage).
+    """
+    expired = bool(state.get("review_wait_expired"))
+    if wait == REVIEW_WAIT_AUTOMATION and expired:
+        wait = REVIEW_WAIT_HUMAN
+    if wait == REVIEW_WAIT_AUTOMATION:
+        episode_open = state.get("review_wait") == REVIEW_WAIT_AUTOMATION and isinstance(
+            state.get("review_wait_since"), float,
+        )
+        if not episode_open:
+            state["review_wait_since"] = pipeline_budget.hold_clock()
+        state["review_wait_expired"] = False
+    else:
+        state["review_wait_since"] = None
+        state["review_wait_expired"] = expired and wait == REVIEW_WAIT_HUMAN
+    state["review_wait"] = wait
+    state["review_wait_reason"] = reason
+    state["review_wait_head"] = head
+    if wait == REVIEW_WAIT_HUMAN and not has_live_work(cast("dict[str, Any]", state)):
+        selected = state.get("_pipeline_selected")
+        if isinstance(selected, set):
+            selected.discard(card_id)
+
+
+def _record_approved_merge(state: CoordinareState, card_id: str, *, head: str) -> None:
+    """#186: an approved PR whose merge has not happened is still in its hold episode.
+
+    A merge that fails sends the card back through merging, check_board and
+    monitor_pr again, so this branch runs on every retry. If an episode is open (a
+    non-human hold, or an expired merge hold), it is kept whole: the clock, the
+    expiry and the human wait all continue. Only with no open episode does an approval
+    start from a clean slate. Dispatch, relay, a human wait that ends, and leaving review
+    clear the episode elsewhere.
+    """
+    if isinstance(state.get("review_wait_since"), float):
+        state["review_wait_reason"] = "approved"
+        state["review_wait_head"] = head
+        return
+    _record_review_wait(state, card_id, None, reason="approved", head=head)
 
 
 def _latest_human_change_request(
@@ -579,6 +640,12 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
         logger.warning("monitor_pr.get_reviews_failed", error=str(exc))
         state["phase"] = "monitoring_pr"  # stay in current phase, retry next cycle
+        # #186: an error that is not an outage will not clear by itself, so the card
+        # is parked as a wait on a human now, not held for the bound.
+        _record_review_wait(
+            state, str(card.get("id", "")), REVIEW_WAIT_HUMAN,
+            reason="monitor_pr_error", head=str(state.get("review_wait_head") or ""),
+        )
         return state
     if _closed_pr_resume_pending(state, card, live_pr_state):
         return await _park_closed_pr(state, card)
@@ -612,8 +679,13 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                 _set_current_card(state, card)
             else:
                 # HOLD — gate returned monitoring_performer; we are in the PR
-                # phase, so stay there and poll again next tick.
+                # phase, so stay there and poll again next tick. The checks are
+                # the wait, not a person (#186).
                 state["phase"] = "monitoring_pr"
+                _record_review_wait(
+                    state, card_id, REVIEW_WAIT_AUTOMATION,
+                    reason="checks_pending", head=_pr_head_oid,
+                )
             return state
         # FORWARD or gate disabled — apply any cache updates and continue.
         state.update(cast("CoordinareState", gate_updates))
@@ -737,6 +809,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             actionable=len(actionable), **_observed,
         )
         state["phase"] = "relay_feedback"
+        _record_review_wait(state, _decision_card, None, reason="actionable_feedback", head=_pr_head_oid)
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
         # the PR's *base* branch is red.  Default-off and fail-open, so when the
@@ -753,6 +826,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             for key, value in base_updates.items():
                 state[key] = value  # type: ignore[literal-required]
             _log_merge_decision(_decision_card, "waiting", "base_branch_checks_failing", **_observed)
+            # #186: a red base branch needs a person to fix main, so it is a human wait
+            # at once. Waiting on the bound would only delay the same answer.
+            _record_review_wait(state, card_id, REVIEW_WAIT_HUMAN, reason="base_branch_checks_failing", head=_pr_head_oid)
             return state
         # 510 — refuse to advance to merge while GitHub's aggregate
         # reviewDecision still says CHANGES_REQUESTED. The 064 checks gate
@@ -777,6 +853,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             )
             _log_merge_decision(_decision_card, "waiting", "changes_requested_outstanding", **_observed)
             state["phase"] = "monitoring_pr"
+            _record_review_wait(state, card_id, REVIEW_WAIT_HUMAN, reason="changes_requested_outstanding", head=_pr_head_oid)
             # 510 (round 2): surface the stale-review state the same way the
             # no-approval branch does before parking, so an addressed stale
             # review is re-requested rather than silently blocking forever.
@@ -797,6 +874,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
         _log_merge_decision(_decision_card, "merge", "approved", **_observed)
         state["phase"] = "merging"
+        _record_approved_merge(state, _decision_card, head=_pr_head_oid)
     else:
         # 128: no fresh-actionable feedback and no approval. If GitHub still
         # gates on an outstanding human CHANGES_REQUESTED, surface it —
@@ -829,4 +907,14 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             _wait_reason = "no_human_approval"
         _log_merge_decision(_decision_card, "waiting", _wait_reason, **_observed)
         state["phase"] = "monitoring_pr"
+        # #186: unread comments are the daemon's to read again, so they hold for
+        # the bound. A poll that cannot complete at all (no PR number) will never
+        # clear, so it is a wait on a human now.
+        unreadable_for_ever = conversation_pr_number(card) <= 0
+        _wait = (
+            REVIEW_WAIT_AUTOMATION
+            if _wait_reason == "pr_comments_not_fully_read" and not unreadable_for_ever
+            else REVIEW_WAIT_HUMAN
+        )
+        _record_review_wait(state, _decision_card, _wait, reason=_wait_reason, head=_pr_head_oid)
     return state

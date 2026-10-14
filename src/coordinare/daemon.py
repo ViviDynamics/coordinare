@@ -49,10 +49,13 @@ from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
+    configured_hold_seconds,
     configured_review_limit,
+    expire_review_holds,
     has_live_side_writer,
-    has_open_pr,
+    has_started,
     is_parked_in_review,
+    is_released_merge,
     parked_in_review,
     review_cap_allows_new_card,
     review_cap_detail,
@@ -1605,11 +1608,19 @@ def _log_review_waits(
 
 def _compute_session_eligibilities(
     state: CoordinareState, active_sessions: dict[str, Any], max_cards: int,
+    *, admit_unstarted: bool = True,
 ) -> dict[str, SessionEligibility]:
     """Build the dependency graph from the pre-fetched board (when cached),
     compute eligibility for every session, apply pipeline-budget selection,
     and record skip reasons for ineligible sessions.
+
+    ``admit_unstarted=False`` is the first pass of a cycle (#186): it sets the
+    selection to started work only and records nothing else, so the full pass
+    that follows is the one that reports skip reasons and review waits.
     """
+    # #186: a non-human hold in monitoring_pr that outlived its bound is a human
+    # wait before anything is selected, so it releases its slot this cycle.
+    expire_review_holds(active_sessions, hold_seconds=configured_hold_seconds(state.get("config")))
     # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
     # so sessions blocked by a now-closed off-board issue may be conservatively skipped
     # this cycle.  The full resolution runs inside each session's check_board tick and
@@ -1640,8 +1651,11 @@ def _compute_session_eligibilities(
         active_sessions, max_cards,
         {cid for cid, eligibility in eligibilities.items() if eligibility.eligible},
         review_limit,
+        admit_unstarted=admit_unstarted,
     )
     state["_pipeline_selected"] = selected
+    if not admit_unstarted:
+        return eligibilities
     held_by_review_cap = not review_cap_allows_new_card(active_sessions, review_limit)
     waiting = parked_in_review(active_sessions)
     details: dict[str, str] = {}
@@ -1653,12 +1667,18 @@ def _compute_session_eligibilities(
         session = active_sessions[cid]
         # #102: a card parked in monitoring_pr launches no performer. It holds
         # no slot (#179) and is still ticked every cycle so its merge evaluation
-        # (the closer) runs.
-        if not eligibility.eligible or cid in selected or session.get("phase") == "monitoring_pr":
+        # (the closer) runs. #186: a merge held past its bound is ticked the same
+        # way, so it is retried every cycle without holding a slot.
+        if (
+            not eligibility.eligible
+            or cid in selected
+            or session.get("phase") == "monitoring_pr"
+            or is_released_merge(session)
+        ):
             continue
         # #179: say which limit is holding the card. The review cap only holds
-        # back cards that have not started.
-        if held_by_review_cap and not has_open_pr(session) and len(selected) < max_cards:
+        # back cards that have not started (#186: a started card is returning work).
+        if held_by_review_cap and not has_started(session) and len(selected) < max_cards:
             reason: EligibilityReason = "review_capacity"
             details[cid] = review_cap_detail(review_limit, waiting)
             facts[cid] = {"waiting_on_review": waiting, "review_limit": review_limit}
@@ -3117,22 +3137,48 @@ class CoordinareDaemon:
         await _poll_held_backlog_comments(self._state, backlog_to_poll)
         # Commands accepted during comment IO stay authoritative for fanout.
         active_sessions = self._state.get("active_sessions") or {}
-        eligibilities = _compute_session_eligibilities(
-            self._state, active_sessions, self._max_concurrent_cards(),
-        )
+        max_cards = self._max_concurrent_cards()
+        # #186: cards parked in monitoring_pr go first. A parked card only learns
+        # that it needs a performer in its own tick, so its claim must come before
+        # a not-yet-started card is admitted. The first pass selects started work
+        # only, which leaves a free slot for a returning card to claim; the full
+        # selection then runs over what the first pass left, and the rest of the
+        # sessions are ticked in a second pass.
+        first_pass = [cid for cid, sess in active_sessions.items() if sess.get("phase") == "monitoring_pr"]
+        if first_pass:
+            first_eligibilities = _compute_session_eligibilities(
+                self._state, active_sessions, max_cards, admit_unstarted=False,
+            )
+            first_ctx = _FanoutContext(
+                state=self._state,
+                active_sessions=active_sessions,
+                eligibilities=first_eligibilities,
+                blocked_to_poll=set(),
+                graph=self._graph,
+                semaphore=asyncio.Semaphore(max_cards),
+            )
+            first_results: list[AsyncSessionTickResult] = list(
+                await asyncio.gather(
+                    *[_invoke_session_tick(first_ctx, cid, active_sessions[cid]) for cid in first_pass],
+                ),
+            )
+            await _merge_fanout_results(self._state, active_sessions, first_eligibilities, first_results)
+            active_sessions = self._state.get("active_sessions") or {}
+        eligibilities = _compute_session_eligibilities(self._state, active_sessions, max_cards)
         ctx = _FanoutContext(
             state=self._state,
             active_sessions=active_sessions,
             eligibilities=eligibilities,
             blocked_to_poll=self._blocked_sessions_to_poll(eligibilities),
             graph=self._graph,
-            semaphore=asyncio.Semaphore(self._max_concurrent_cards()),
+            semaphore=asyncio.Semaphore(max_cards),
         )
         results: list[AsyncSessionTickResult] = list(
             await asyncio.gather(
                 *[
                     _invoke_session_tick(ctx, cid, sess)
                     for cid, sess in list(active_sessions.items())
+                    if cid not in first_pass
                 ],
             ),
         )

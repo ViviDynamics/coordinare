@@ -302,6 +302,17 @@ class CardSession(TypedDict, total=False):
     # MUST round-trip through session ↔ state or the queued wait resets every
     # cycle and the board row loses its elapsed time.
     slot_queued_since: datetime | None
+    # 186: what monitor_pr says a card in monitoring_pr is waiting on ("human",
+    # "automation"). Only a human wait releases the pipeline slot. Absent means
+    # not evaluated yet, and it is dropped when the card leaves monitoring_pr.
+    review_wait: str | None
+    # #186: when the current non-human hold began, the reason and PR head it was
+    # recorded against, and whether it expired into a human wait. A new reason or
+    # head restarts the clock. All four are dropped when the card leaves review.
+    review_wait_since: float | None
+    review_wait_reason: str | None
+    review_wait_head: str | None
+    review_wait_expired: bool
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -436,6 +447,13 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "observer_correction",
     # 429: recent observer verdicts with evidence summaries.
     "observer_verdicts",
+    # 186: the monitoring_pr wait and its hold bound (see CardSession note). Not
+    # persisted: after a restart the hold is timed again from the first sighting.
+    "review_wait",
+    "review_wait_since",
+    "review_wait_reason",
+    "review_wait_head",
+    "review_wait_expired",
 )
 
 # 425: fields that round-trip when present but may be absent from a session
@@ -450,6 +468,12 @@ _SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "observer_verdicts",
     # 103: absent means no failure streak, never a stale count from another card.
     "system_error_identical_count",
+    # 186: absent means not evaluated, never another card's wait or hold.
+    "review_wait",
+    "review_wait_since",
+    "review_wait_reason",
+    "review_wait_head",
+    "review_wait_expired",
 )
 
 
@@ -600,4 +624,12 @@ def state_to_session(state: CoordinareState) -> CardSession:
     for field in _SESSION_FIELDS:
         if field in state:
             session[field] = state[field]  # type: ignore[literal-required]
+    # 186: a wait and its hold describe one stint in review or in merge. Any other
+    # phase has none, so a card that left them cannot carry an old hold into its next stint.
+    if state.get("phase") not in ("monitoring_pr", "merging"):
+        session.pop("review_wait", None)
+        session.pop("review_wait_since", None)
+        session.pop("review_wait_reason", None)
+        session.pop("review_wait_head", None)
+        session.pop("review_wait_expired", None)
     return session
