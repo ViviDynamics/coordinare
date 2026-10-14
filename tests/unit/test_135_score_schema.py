@@ -75,7 +75,7 @@ class TestScoreSchema:
 
 class TestScalar:
     def test_formula_matches_clarifications(self) -> None:
-        comps = ComponentVector(correctness_rate=1.0, cost_usd=0.5, wall_clock_seconds=60.0)
+        comps = ComponentVector(correctness_rate=1.0, cost_usd=0.5, cost_priced=True, wall_clock_seconds=60.0)
         scalar, cost_missing = compute_scalar(comps, Weights())
         # 1.0*1.0 - 0.1*(0.5/1.0) - 0.1*(60/600) = 1.0 - 0.05 - 0.01
         assert scalar == pytest.approx(0.94)
@@ -97,7 +97,7 @@ class TestScalar:
 
     def test_partial_cost_withholds_the_scalar(self) -> None:
         comps = ComponentVector(
-            correctness_rate=1.0, cost_usd=0.5, cost_partial=True, wall_clock_seconds=60.0,
+            correctness_rate=1.0, cost_usd=0.5, cost_priced=True, cost_partial=True, wall_clock_seconds=60.0,
         )
         scalar, cost_missing = compute_scalar(comps, Weights())
         assert scalar is None

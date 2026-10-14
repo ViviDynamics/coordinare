@@ -78,7 +78,7 @@ def test_compute_scalar_formula_is_unchanged() -> None:
       = 0.8 - 0.05 - 0.05 = 0.70
     """
     components = ComponentVector(
-        correctness_rate=0.8, cost_usd=0.5, wall_clock_seconds=300.0,
+        correctness_rate=0.8, cost_usd=0.5, cost_priced=True, wall_clock_seconds=300.0,
     )
     scalar, cost_missing = compute_scalar(components, Weights())
 

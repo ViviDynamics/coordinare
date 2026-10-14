@@ -359,10 +359,10 @@ def test_sweep_point_with_unknown_cost_ranks_last_with_the_reason() -> None:
 
 
 def test_unknown_or_partial_cost_is_never_a_number_in_a_component_mean() -> None:
-    assert numeric_component(ComponentVector(cost_usd=None), "cost_usd") is None
-    assert numeric_component(ComponentVector(cost_usd=2.0, cost_partial=True), "cost_usd") is None
-    assert numeric_component(ComponentVector(cost_usd=2.0), "cost_usd") == pytest.approx(2.0)
-    assert cost_is_known(ComponentVector(cost_usd=2.0)) is True
+    assert numeric_component(ComponentVector(cost_usd=None, cost_priced=True), "cost_usd") is None
+    assert numeric_component(ComponentVector(cost_usd=2.0, cost_priced=True, cost_partial=True), "cost_usd") is None
+    assert numeric_component(ComponentVector(cost_usd=2.0, cost_priced=True), "cost_usd") == pytest.approx(2.0)
+    assert cost_is_known(ComponentVector(cost_usd=2.0, cost_priced=True)) is True
 
 
 def test_noise_report_counts_the_unpriced_repeats() -> None:
@@ -371,7 +371,7 @@ def test_noise_report_counts_the_unpriced_repeats() -> None:
     def _score(cost: float | None) -> ScoreObject:
         return ScoreObject(
             run_id="r", artifact_schema_version=1, scored_at=now,
-            components=ComponentVector(correctness_rate=1.0, cost_usd=cost,
+            components=ComponentVector(correctness_rate=1.0, cost_usd=cost, cost_priced=True,
                                        wall_clock_seconds=60.0),
             scalar=0.9 if cost is not None else None,
         )
@@ -392,7 +392,10 @@ def test_flat_estimator_is_gone() -> None:
 # --- compatibility: files written before spec 206 still load -----------------------------
 
 
-def test_old_score_file_with_a_numeric_cost_still_loads_and_keeps_its_scalar() -> None:
+def test_old_score_file_with_a_numeric_cost_loads_as_unknown_not_a_price() -> None:
+    """A numeric cost with no pricing marker is the retired flat rate (review of 206). The
+    file still loads and keeps its stored scalar, but the cost is unknown with the legacy
+    reason, and a rescore cannot read it as a price."""
     legacy = (
         '{"schema_version": 2, "run_id": "old", "artifact_schema_version": 1, '
         '"scored_at": "2026-01-01T00:00:00Z", "scalar": 0.7, '
@@ -402,17 +405,17 @@ def test_old_score_file_with_a_numeric_cost_still_loads_and_keeps_its_scalar() -
 
     loaded = ScoreObject.model_validate_json(legacy)
 
-    assert loaded.scalar == pytest.approx(0.7)
-    assert loaded.components.cost_usd == pytest.approx(0.5)
-    assert loaded.components.cost_partial is False  # additive default
-    assert loaded.components.cost_unknown_reason is None
+    assert loaded.scalar == pytest.approx(0.7)  # the stored scalar is not recomputed
+    assert loaded.components.cost_usd is None
+    assert cost_is_known(loaded.components) is False
+    assert loaded.components.cost_unknown_reason == LEGACY_REASON
 
 
 def test_new_score_fields_round_trip() -> None:
     now = datetime(2026, 10, 14, tzinfo=UTC)
     score = ScoreObject(
         run_id="r", artifact_schema_version=1, scored_at=now,
-        components=ComponentVector(correctness_rate=1.0, cost_usd=1.0, cost_partial=True,
+        components=ComponentVector(correctness_rate=1.0, cost_usd=1.0, cost_priced=True, cost_partial=True,
                                    cost_unknown_reason=f"no price for {MYSTERY}",
                                    wall_clock_seconds=60.0),
     )
@@ -432,7 +435,8 @@ def test_old_run_file_with_a_numeric_card_cost_is_not_read_as_a_price() -> None:
     run = RunArtifact.model_validate(raw)
     totals = run.compute_totals()
 
-    assert run.cards[0].cost.cost_usd == pytest.approx(3.0)  # loads unchanged
+    assert run.cards[0].cost.cost_usd is None  # the flat-rate figure is not kept as a price
+    assert run.cards[0].cost.cost_unknown_reason == LEGACY_REASON
     assert totals.cost_usd is None
     assert totals.cost_partial is True
     assert totals.cost_unknown_reason == LEGACY_REASON

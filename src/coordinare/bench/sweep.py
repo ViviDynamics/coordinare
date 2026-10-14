@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import Weights, cost_is_known, numeric_component
+from coordinare.bench.score import Weights, cost_is_known, numeric_component, repeat_mean
 from coordinare.bench.space import config_fingerprint, materialize, resolve_path
 
 if TYPE_CHECKING:
@@ -79,6 +79,8 @@ class AblationDelta(BaseModel):
     point_id: str
     scalar_delta: float | None = None
     component_deltas: dict[str, float] = {}
+    #: Spec 206 review: why there is no ``scalar_delta``, for example "baseline unpriced: ...".
+    note: str = ""
 
 
 class DroppedPoint(BaseModel):
@@ -164,14 +166,14 @@ class SweepArtifact(BaseModel):
             )
         if self.deltas:
             lines += ["", "## Ablation — marginal effect vs baseline", "",
-                      "| dimension | value | Δ scalar | Δ correctness | Δ wall clock (s) |",
-                      "|---|---|---|---|---|"]
+                      "| dimension | value | Δ scalar | Δ correctness | Δ wall clock (s) | note |",
+                      "|---|---|---|---|---|---|"]
             for dl in self.deltas:
                 lines.append(
                     f"| {dl.dimension} | {dl.value!r} | "
                     f"{'' if dl.scalar_delta is None else f'{dl.scalar_delta:+.6g}'} | "
                     f"{dl.component_deltas.get('correctness_rate', 0.0):+.3f} | "
-                    f"{dl.component_deltas.get('wall_clock_seconds', 0.0):+.2f} |",
+                    f"{dl.component_deltas.get('wall_clock_seconds', 0.0):+.2f} | {dl.note} |",
                 )
         if self.ranking:
             lines += ["", "## Ranking", ""]
@@ -229,18 +231,33 @@ def enumerate_candidates(loaded: LoadedSpace) -> list[PointSpec]:
     ]
 
 
+def _baseline_note(baseline: PointResult) -> str:
+    if baseline.failed:
+        return f"baseline failed: {baseline.error}"
+    return f"baseline unpriced: {baseline.cost_unknown_reason or 'no scalar'}"
+
+
 def compute_deltas(baseline: PointResult, points: list[PointResult]) -> list[AblationDelta]:
-    """Marginal effect of each scored ablation point vs the same sweep's baseline."""
-    if baseline.failed or baseline.mean_scalar is None:
-        return []
+    """Marginal effect of each ablation point vs the same sweep's baseline.
+
+    Spec 206 review: a point with no delta says why in ``note`` (an unpriced baseline or
+    point), and is never dropped silently.
+    """
     deltas: list[AblationDelta] = []
     for p in points:
-        if p.failed or p.mean_scalar is None or p.dimension is None:
+        if p.failed or p.dimension is None:
+            continue
+        head = {"dimension": p.dimension, "value": p.value, "point_id": p.point_id}
+        if baseline.failed or baseline.mean_scalar is None:
+            deltas.append(AblationDelta(**head, note=_baseline_note(baseline)))
+            continue
+        if p.mean_scalar is None:
+            deltas.append(AblationDelta(
+                **head, note=f"point unpriced: {p.cost_unknown_reason or 'no scalar'}",
+            ))
             continue
         deltas.append(AblationDelta(
-            dimension=p.dimension,
-            value=p.value,
-            point_id=p.point_id,
+            **head,
             scalar_delta=round(p.mean_scalar - baseline.mean_scalar, 9),
             component_deltas={
                 k: round(p.mean_components[k] - baseline.mean_components[k], 9)
@@ -388,8 +405,8 @@ async def _run_point(
             score.write(repeat_dir)
             scores.append(score)
             result.score_refs.append(str(repeat_dir.relative_to(session) / "score.json"))
-        scalars = [s.scalar for s in scores if s.scalar is not None]
-        result.mean_scalar = statistics.fmean(scalars) if scalars else None
+        # Spec 206 review: an unpriced repeat withholds the mean, never a mean of the rest.
+        result.mean_scalar, _withheld = repeat_mean(scores)
         result.mean_components = _mean_components(scores)
         unpriced = [s for s in scores if not cost_is_known(s.components)]
         result.cost_unpriced_repeats = len(unpriced)

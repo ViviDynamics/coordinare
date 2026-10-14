@@ -103,10 +103,13 @@ class TestDeltas:
         failed = _point("a=1", None, failed=True, error="boom", dimension="a", value=1)
         assert compute_deltas(base, [failed]) == []
 
-    def test_no_deltas_when_baseline_failed(self) -> None:
+    def test_no_scalar_delta_when_baseline_failed_but_says_why(self) -> None:
+        """Spec 206 review: a point with no delta is reported with a note, never silently."""
         base = _point("baseline", None, kind="baseline", failed=True, error="x")
         pt = _point("a=1", 0.5, dimension="a", value=1)
-        assert compute_deltas(base, [pt]) == []
+        (delta,) = compute_deltas(base, [pt])
+        assert delta.scalar_delta is None
+        assert delta.note == "baseline failed: x"
 
 
 class TestRanking:

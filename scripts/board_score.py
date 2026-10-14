@@ -27,7 +27,7 @@ from coordinare.bench.fixtures import load_manifest, tiny_fixture
 from coordinare.bench.grader import GradingError, score_run
 from coordinare.bench.judge import make_judge
 from coordinare.bench.noise import NoiseError, run_repeats
-from coordinare.bench.score import Weights
+from coordinare.bench.score import Weights, describe_scalar
 
 
 def _add_shared_flags(p: argparse.ArgumentParser) -> None:
@@ -115,7 +115,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     )
     path = score.write(run_dir)
     mode = "judged" if score.judged else "deterministic-only"
-    scalar = "unrankable" if score.scalar is None else f"{score.scalar:.6g}"
+    scalar = describe_scalar(score)
     print(f"score ({mode}): scalar={scalar} "
           f"correctness={score.components.correctness_rate} "
           f"harness_failure_rate={score.components.harness_failure_rate} -> {path}")

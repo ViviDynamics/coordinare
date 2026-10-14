@@ -67,3 +67,10 @@ explicit, and downstream consumers must treat it as unrankable.
   (`None`). It is no longer scored as zero cost. With `w_cost == 0`, the scalar is computed
   and `cost_component_missing` is `True`.
 - Score files written before spec 206 load unchanged. Their `cost_usd` value is kept.
+
+- `ComponentVector.cost_priced` (spec 206 review): `True` when the cost came from the price
+  table. A score with a numeric `cost_usd` and no marker loads as unknown with the legacy
+  reason, and a rescore cannot read it as a price.
+- Repeats (sweep points, noise, optimizer evaluations): if any repeat's cost is unknown and
+  `w_cost > 0`, the mean scalar is withheld and the reason is recorded. A mean is never taken
+  over only the priced repeats.

@@ -15,7 +15,7 @@ from datetime import datetime  # noqa: TC003 — needed at runtime for pydantic 
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -44,6 +44,15 @@ class Cost(BaseModel):
     cost_estimated: bool = True
     cost_unknown_reason: str | None = None
     cost_basis: str | None = None
+
+    @model_validator(mode="after")
+    def _unmarked_cost_is_unknown(self) -> Cost:
+        """A numeric cost with no basis is the retired flat rate, not a price. It loads as
+        unknown with the legacy reason (spec 206 review)."""
+        if self.cost_usd is not None and self.cost_basis is None:
+            self.cost_usd = None
+            self.cost_unknown_reason = self.cost_unknown_reason or LEGACY_REASON
+        return self
 
 
 class Timing(BaseModel):
@@ -130,12 +139,25 @@ class RunTotals(BaseModel):
     tokens_processed: int | None = None
     cost_usd: float | None = None
     cost_estimated: bool = True
+    #: Spec 206 review: True on every run priced by this spec. None on a run written before it,
+    #: whose ``cost_usd`` was the retired flat rate and loads as unknown (see the validator).
+    cost_priced: bool | None = None
     cost_partial: bool = False
     cost_unpriced_cards: int = 0
     cost_unknown_reason: str | None = None
     cards_total: int = 0
     cards_merged: int = 0
     cards_terminal_nonmerge: int = 0
+
+    @model_validator(mode="after")
+    def _unmarked_cost_is_unknown(self) -> RunTotals:
+        """A run total with no pricing marker is a flat-rate figure: unknown, with the legacy
+        reason, never a price (spec 206 review)."""
+        if self.cost_priced is None and self.cost_usd is not None:
+            self.cost_usd = None
+            self.cost_partial = True
+            self.cost_unknown_reason = self.cost_unknown_reason or LEGACY_REASON
+        return self
 
 
 def is_priced(cost: Cost) -> bool:
@@ -192,6 +214,7 @@ class RunArtifact(BaseModel):
             tokens_processed=sum(tokens) if tokens else None,
             cost_usd=round(sum(costs), 6) if costs else None,
             cost_estimated=True,
+            cost_priced=True,
             cost_partial=bool(unpriced),
             cost_unpriced_cards=len(unpriced),
             cost_unknown_reason="; ".join(reasons) if reasons else None,

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import cost_is_known, numeric_component
+from coordinare.bench.score import cost_is_known, numeric_component, scalar_withheld_reason
 
 if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
@@ -75,6 +75,8 @@ class NoiseReport(BaseModel):
     #: 206: repeats whose cost was unknown or partial. The cost_usd stats cover only the
     #: priced repeats, so a nonzero count means the cost figure is partial.
     cost_unpriced_repeats: int = 0
+    #: Spec 206 review: set when an unpriced repeat withholds ``scalar_stats``.
+    scalar_withheld_reason: str | None = None
 
     def to_validated_json(self) -> str:
         """Round-trip guard before the report is declared written (134/135 convention)."""
@@ -115,6 +117,8 @@ class NoiseReport(BaseModel):
                 f"| {name} | {s.mean:.6g} | {s.variance:.6g} | {s.stdev:.6g} "
                 f"| {s.min:.6g} | {s.max:.6g} | {s.n}{flag} |",
             )
+        if self.scalar_withheld_reason:
+            lines.append(f"- scalar withheld: {self.scalar_withheld_reason}")
         if self.cost_unpriced_repeats:
             lines.append(
                 f"- cost unpriced in {self.cost_unpriced_repeats} repeat(s): cost_usd covers "
@@ -172,16 +176,20 @@ def aggregate(
         for fx, cats in verdicts_by_fixture.items()
     }
 
+    withheld = scalar_withheld_reason(scores)
     return NoiseReport(
         config_fingerprint=next(iter(fingerprints), ""),
         requested_repeats=requested_repeats,
         effective_repeats=len(runs),
         failures=failures,
         component_stats=comp_stats,
-        scalar_stats=component_stats([s.scalar for s in scores if s.scalar is not None]),
+        scalar_stats=None if withheld else component_stats(
+            [s.scalar for s in scores if s.scalar is not None],
+        ),
         card_agreement=agreement,
         score_refs=[ref for _, _, ref in runs],
         cost_unpriced_repeats=sum(1 for s in scores if not cost_is_known(s.components)),
+        scalar_withheld_reason=withheld,
     )
 
 

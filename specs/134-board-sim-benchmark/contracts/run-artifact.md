@@ -72,3 +72,8 @@ below are additive and default to `None` or `False`, so every earlier document s
   with only a total token count is unknown, with the reason `token split by kind not
   reported`. A bare total is never priced at a single rate. A cost with no basis was written
   before spec 206 and is reported as unknown, never as a price.
+
+- `RunTotals.cost_priced` (spec 206 review): `True` on every run priced by this spec. A run
+  or card with a numeric cost and no marker is a retired flat-rate figure. It loads as
+  unknown with the reason `run recorded before per-model pricing (spec 206); re-run to
+  price it`, and its number is dropped. The 161 evidence loads this way.

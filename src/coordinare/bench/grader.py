@@ -148,6 +148,7 @@ def score_run(
         tokens_processed=artifact.totals.tokens_processed,
         cost_usd=artifact.totals.cost_usd,
         cost_estimated=artifact.totals.cost_estimated,
+        cost_priced=artifact.totals.cost_priced,
         cost_partial=artifact.totals.cost_partial,
         cost_unknown_reason=artifact.totals.cost_unknown_reason,
         wall_clock_seconds=artifact.wall_clock_seconds,
