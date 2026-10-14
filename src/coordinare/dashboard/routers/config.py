@@ -11,7 +11,9 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.config_usage import routing_used_by
 from coordinare.config_validation import validate_raw_config
+from coordinare.dashboard.guards import routing_expected_refusal, save_response
 from coordinare.dashboard.routers.config_write import (
     _atomic_write_yaml,
     _global_cfg_editable,
@@ -472,7 +474,7 @@ def _register_put_config_section(app: FastAPI, ctx: DashboardContext) -> None:
                         "coordinare to apply this change."
                     )
 
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_get_config_catalog(app: FastAPI, ctx: DashboardContext) -> None:
@@ -551,7 +553,7 @@ def _register_post_config_catalog(app: FastAPI, ctx: DashboardContext) -> None:
                 catalog, body.get("item", {}), body.get("base_hash", ""), config_path,
             )
             _apply_reload_or_stage(daemon, result, f"catalog POST {catalog}")
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_put_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> None:
@@ -589,7 +591,7 @@ def _register_put_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> No
                 catalog, item_id, body.get("changes", {}), body.get("base_hash", ""), config_path,
             )
             _apply_reload_or_stage(daemon, result, f"catalog PUT {catalog}/{item_id}")
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_delete_config_catalog_item(app: FastAPI, ctx: DashboardContext) -> None:
@@ -624,7 +626,7 @@ def _register_delete_config_catalog_item(app: FastAPI, ctx: DashboardContext) ->
                 catalog, item_id, body.get("base_hash", ""), config_path,
             )
             _apply_reload_or_stage(daemon, result, f"catalog DELETE {catalog}/{item_id}")
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_get_config_routing(app: FastAPI, ctx: DashboardContext) -> None:
@@ -637,7 +639,15 @@ def _register_get_config_routing(app: FastAPI, ctx: DashboardContext) -> None:
 
             location = _routing_location(daemon)
             view = routing_config_service.read_routing(location)
-            return JSONResponse(view.model_dump(mode="json"))
+            payload = view.model_dump(mode="json")
+            # 143: each entry says which stages and symphonies it applies to.
+            coordinare_cfg = daemon.state.get("coordinare_config")
+            for entry in payload.get("entries", []):
+                users = [] if coordinare_cfg is None else routing_used_by(
+                    coordinare_cfg, str(entry.get("backend", "")), str(entry.get("model", "")),
+                )
+                entry["used_by"] = [item.model_dump(mode="json") for item in users]
+            return JSONResponse(payload)
 
 
 def _register_post_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> None:
@@ -666,7 +676,7 @@ def _register_post_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> 
             result = routing_config_service.create_routing_entry(
                 location, body.get("entry", {}), body.get("base_hash", ""),
             )
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_put_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> None:
@@ -692,10 +702,13 @@ def _register_put_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> N
                     "code": "validation", "message": "Request body must be a JSON object."}]},
                     status_code=422)
 
+            refusal = routing_expected_refusal(location, index, body.get("expected"))
+            if refusal is not None:
+                return refusal
             result = routing_config_service.update_routing_entry(
                 location, index, body.get("changes", {}), body.get("base_hash", ""),
             )
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _register_delete_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> None:
@@ -718,10 +731,13 @@ def _register_delete_config_routing_entry(app: FastAPI, ctx: DashboardContext) -
             if not isinstance(body, dict):
                 body = {}
 
+            refusal = routing_expected_refusal(location, index, body.get("expected"))
+            if refusal is not None:
+                return refusal
             result = routing_config_service.delete_routing_entry(
                 location, index, body.get("base_hash", ""),
             )
-            return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+            return save_response(result, _save_status_code(result))
 
 
 def _serialize_config_validation(result: Any) -> dict[str, Any]:

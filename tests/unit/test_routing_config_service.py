@@ -308,7 +308,8 @@ def test_create_routing_entry_rechecks_conflict_just_before_write(
         return real_validate(entries)
 
     monkeypatch.setattr(rcs, "_validate_table", mutate_then_validate)
-    result = rcs.create_routing_entry(location, _entry(), base_hash)
+    # A pair of its own: the existing (vllm, qwen2.5-coder) would be refused as a duplicate first.
+    result = rcs.create_routing_entry(location, {**_entry(), "model": "other-model"}, base_hash)
     assert result.ok is False
     assert result.errors[0].code == "conflict"
 

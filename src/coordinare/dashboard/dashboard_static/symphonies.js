@@ -203,8 +203,8 @@ var SCOPE_UNSCOPED_READS = [
   {file: 'symphonies.js', text: "var s = typeof _lastState !== 'undefined' ? _lastState : null;", why: 'the switcher lists every symphony to offer its choices'},
   {file: 'symphonies.js', text: "symphonyNames(typeof _lastState !== 'undefined' ? _lastState : null)", why: 'the switcher resolves a choice against every symphony'},
   {file: 'symphonies.js', text: "if (typeof _lastState === 'undefined' || !_lastState) return;", why: 'the one place a scoped refresh starts'},
-  {file: 'symphonies.js', text: "if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target;", why: 'a link carries the choice, which needs every symphony'},
-  {file: 'symphonies.js', text: 'if (symphonyNames(_lastState).length < 2) return target;', why: 'a link carries the choice, which needs every symphony'},
+  {file: 'symphonies.js', text: "if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target + hash;", why: 'a link carries the choice, which needs every symphony'},
+  {file: 'symphonies.js', text: 'if (symphonyNames(_lastState).length < 2) return target + hash;', why: 'a link carries the choice, which needs every symphony'},
   {file: 'symphonies.js', text: 'var choice = currentSymphonyChoice(_lastState);', why: 'a link carries the choice, which needs every symphony'}
 ];
 
@@ -543,9 +543,13 @@ function refreshScopedViews() {
 // query, or a deployment with one symphony, is returned as it is.
 function pathWithSymphony(path) {
   var target = String(path || '');
-  if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target;
-  if (symphonyNames(_lastState).length < 2) return target;
+  // 143 second review: the query belongs before the hash, so a deep link keeps its hash.
+  var hash = '';
+  var at = target.indexOf('#');
+  if (at !== -1) { hash = target.slice(at); target = target.slice(0, at); }
+  if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target + hash;
+  if (symphonyNames(_lastState).length < 2) return target + hash;
   var choice = currentSymphonyChoice(_lastState);
-  if (!choice) return target;
-  return target + '?' + SYMPHONY_PARAM + '=' + encodeURIComponent(choice);
+  if (!choice) return target + hash;
+  return target + '?' + SYMPHONY_PARAM + '=' + encodeURIComponent(choice) + hash;
 }

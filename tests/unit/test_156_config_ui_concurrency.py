@@ -141,12 +141,14 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
         """
         from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        # 349: the guarded save lives in the extracted /static/config.js.
+        # 349: the guarded save lives in the extracted /static/config.js. 143 moved the
+        # General editor from the retired Global Config page into Settings, which keeps
+        # the same guard under its section baseline.
         page = _DASHBOARD_JS_SOURCES["config"]
-        assert "_adminCfgHash = res.headers.get('ETag')" in page, (
+        assert "_cfgHash = (data.content_hashes || {}).config_yaml || null;" in page, (
             "the page never captures the version it is editing"
         )
-        assert "payload.expected_hash = _adminCfgHash;" in page, (
+        assert "base_hash: _cfgHash" in page, (
             "the page captures a hash and then does not send it"
         )
 
@@ -154,7 +156,7 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
         """FR-005 — a raw 409 is not an explanation."""
         from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "the configuration changed since this page loaded" in _DASHBOARD_JS_SOURCES["config"]
+        assert "Someone else changed these settings after this page loaded" in _DASHBOARD_JS_SOURCES["config"]
 
 
 class TestTheRemainingGapIsVisible:
@@ -264,7 +266,7 @@ class TestTheGuardHoldsForEverySaveNotJustTheFirst:
     def test_the_page_carries_the_new_hash_forward(self) -> None:
         from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
-        assert "_adminCfgHash = d.new_hash || null;" in _DASHBOARD_JS_SOURCES["config"], (
+        assert "else _cfgHash = body.new_hash;" in _DASHBOARD_JS_SOURCES["config"], (
             "the page drops its baseline after saving, so its next save is unguarded"
         )
 
