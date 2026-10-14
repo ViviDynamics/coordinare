@@ -1799,11 +1799,13 @@ class TestReviewerPerformer:
     async def test_reviewer_empty_rejection_retries_backend(self) -> None:
         """153: a parsed ``{"approved": false}`` with no comments and no body is
         not actionable — it must trigger a JSON-repair retry (status=working)
-        against the same warm backend, NOT a contentless changes_requested that
-        the coordinare can only re-review-then-block on."""
+        in a fresh backend session (223), NOT a contentless changes_requested
+        that the coordinare can only re-review-then-block on."""
         import json
         perf = self._make_perf()
         perf.backend.relay_feedback = AsyncMock()
+        perf.backend.stop = AsyncMock()
+        perf.backend.start = AsyncMock()
         output = json.dumps({"approved": False, "comments": [], "body": ""})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         settings = Settings(
@@ -1818,7 +1820,8 @@ class TestReviewerPerformer:
         # Retry scheduled — backend nudged for a real verdict, nothing posted.
         assert resp.status == "working"
         assert perf.parse_retry_count == 1
-        perf.backend.relay_feedback.assert_called_once()
+        perf.backend.start.assert_awaited_once()
+        perf.backend.relay_feedback.assert_not_called()
         mock_post.assert_not_called()
         # NEVER auto-approve on ambiguity.
         assert perf.state != "approved"
@@ -3715,13 +3718,14 @@ class TestAssessorRole:
         perf.backend.relay_feedback = AsyncMock()
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=1)
 
-        # First call: parse fails, JSON repair requested → working.
+        # First call: parse fails, backend restarts in a fresh session with the
+        # repair prompt on the score (223) → working.
         resp1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
         assert resp1.status == "working"
         assert perf.parse_retry_count == 1
-        assert "requested JSON repair" in (resp1.progress or "")
-        assert perf.backend.relay_feedback.await_count == 1
-        assert perf.backend.start.await_count == 0
+        assert "fresh session" in (resp1.progress or "")
+        assert perf.backend.relay_feedback.await_count == 0
+        assert perf.backend.start.await_count == 1
 
         # Second call: parse fails again, budget exhausted. 077: the assessor now
         # falls back to sufficient (lenient) instead of a terminal format error —
@@ -3746,8 +3750,8 @@ class TestAssessorRole:
 
         resp1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
         assert resp1.status == "working"
-        assert perf.backend.relay_feedback.await_count == 1
-        assert perf.backend.start.await_count == 0
+        assert perf.backend.relay_feedback.await_count == 0
+        assert perf.backend.start.await_count == 1
 
         resp2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
         assert resp2.status == "assessment_complete"

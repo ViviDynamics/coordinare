@@ -337,6 +337,9 @@ class CodexBackend:
         self._ws = await self._ws_session.ws_connect(f"http://127.0.0.1:{port}")
 
         # Start background message router before any RPC calls
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         self._recv_task = asyncio.create_task(
             self._recv_loop(), name="codex-recv",
         )

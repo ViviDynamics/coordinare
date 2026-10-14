@@ -193,12 +193,22 @@ def format_repair_hint(reason: str | None, stage_label: str) -> str | None:
 
     The quoted output is the model's own earlier text. It is fenced as data, so a
     line inside it cannot pass for an instruction.
+
+    223: a head_cut output is not quoted, matching the performer's retry prompt.
+    Its head was lost in transport, and quoting the fragment invites the model to
+    continue or mirror it instead of emitting the whole object.
     """
     if not reason or not reason.startswith(_FORMAT_ERROR_PREFIX):
         return None
     shape = format_failure_shape(reason)
     if shape is None:
         return None
+    if shape == "head_cut":
+        return (
+            f"Your previous {stage_label} output could not be parsed as a JSON object. "
+            f"{_SHAPE_GUIDANCE[shape]}\n"
+            "Return ONLY one complete JSON object that matches the required schema."
+        )
     excerpt = format_failure_excerpt(reason) or "<empty>"
     return (
         f"Your previous {stage_label} output could not be parsed as a JSON object. "

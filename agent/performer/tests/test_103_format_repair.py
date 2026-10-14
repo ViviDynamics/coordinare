@@ -119,10 +119,17 @@ async def test_secret_is_redacted_before_the_capture_is_sliced() -> None:
     assert "AAAA" not in reason
 
 
-@pytest.mark.asyncio
-async def test_retry_repair_prompt_carries_the_tail_of_the_malformed_output() -> None:
+def _restartable_backend() -> MagicMock:
     backend = MagicMock()
     backend.relay_feedback = AsyncMock()
+    backend.stop = AsyncMock()
+    backend.start = AsyncMock()
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_retry_repair_prompt_carries_the_tail_of_the_malformed_output() -> None:
+    backend = _restartable_backend()
     raw = "{" + "a" * 500 + "ENDMARK" + "}"
     perf = _perf(parse_retry_count=0, backend=backend)
     result = await _handle_backend_parse_failure(
@@ -133,19 +140,17 @@ async def test_retry_repair_prompt_carries_the_tail_of_the_malformed_output() ->
         "could not be parsed as a JSON object",
     )
     assert result.status == "working"
-    backend.relay_feedback.assert_awaited_once()
-    prompt = backend.relay_feedback.await_args.args[0]
+    backend.start.assert_awaited_once()
+    prompt = backend.start.await_args.args[1].relay_feedback[-1]["body"]
     assert "Previous output tail:" in prompt
     assert "ENDMARK" in prompt
     assert "could not be parsed" in prompt
 
 
 @pytest.mark.asyncio
-async def test_identical_restart_is_changed_by_a_repair_hint_on_the_score() -> None:
-    backend = MagicMock()
-    backend.relay_feedback = AsyncMock(side_effect=RuntimeError("no interactive channel"))
-    backend.stop = AsyncMock()
-    backend.start = AsyncMock()
+async def test_format_retry_starts_a_fresh_session_instead_of_resuming() -> None:
+    # 223: a resumed retry of a head-cut output failed every time; a fresh one recovered.
+    backend = _restartable_backend()
     perf = _perf(parse_retry_count=0, backend=backend)
     result = await _handle_backend_parse_failure(
         perf,
@@ -155,16 +160,44 @@ async def test_identical_restart_is_changed_by_a_repair_hint_on_the_score() -> N
         "could not be parsed as a JSON object",
     )
     assert result.status == "working"
+    assert "fresh session" in (result.progress or "")
+    backend.relay_feedback.assert_not_awaited()
+    backend.stop.assert_awaited_once()
     backend.start.assert_awaited_once()
     started_score = backend.start.await_args.args[1]
     hints = [item for item in started_score.relay_feedback if isinstance(item, dict)]
     assert hints, "the restarted backend must receive a repair hint"
     body = hints[-1]["body"]
-    assert _HEAD_CUT in body
     assert "opening brace" in body
+    # 223: the fragment lost its head in transport, so it is not quoted back.
+    assert _HEAD_CUT not in body
+    assert "Previous output" not in body
 
 
-def test_recovery_prompt_names_the_head_cut_and_includes_tail() -> None:
+@pytest.mark.asyncio
+async def test_repeated_format_retries_carry_one_repair_hint() -> None:
+    backend = _restartable_backend()
+    perf = _perf(parse_retry_count=0, backend=backend)
+    perf.score.relay_feedback = [
+        {"body": "daemon hint", "kind": "format_repair"},
+        {"body": "human review", "author_login": "octocat"},
+    ]
+    for _ in range(2):
+        await _handle_backend_parse_failure(
+            perf,
+            _HEAD_CUT,
+            "assessment",
+            _settings(2),
+            "could not be parsed as a JSON object",
+        )
+    feedback = perf.score.relay_feedback
+    repairs = [item for item in feedback if item.get("kind") == "format_repair"]
+    assert len(repairs) == 1
+    assert repairs[0]["author_login"] == "performer"
+    assert {"body": "human review", "author_login": "octocat"} in feedback
+
+
+def test_recovery_prompt_names_the_head_cut_without_quoting_it() -> None:
     prompt = _json_recovery_prompt(
         role="assessing",
         stage_label="assessment",
@@ -173,5 +206,21 @@ def test_recovery_prompt_names_the_head_cut_and_includes_tail() -> None:
         output_tail="ENDMARK}",
         output_shape="head_cut",
     )
-    assert "Previous output tail: ENDMARK}" in prompt
     assert "opening brace" in prompt
+    assert "Required top-level keys: sufficient, questions" in prompt
+    assert "ufficient\"" not in prompt
+    assert "ENDMARK" not in prompt
+    assert "Previous output" not in prompt
+
+
+def test_recovery_prompt_quotes_other_shapes() -> None:
+    prompt = _json_recovery_prompt(
+        role="assessing",
+        stage_label="assessment",
+        failure_reason="could not be parsed as a JSON object",
+        output_preview="{bad",
+        output_tail="ENDMARK",
+        output_shape="tail_cut",
+    )
+    assert "Previous output preview: {bad" in prompt
+    assert "Previous output tail: ENDMARK" in prompt

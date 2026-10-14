@@ -182,6 +182,9 @@ class PrimeAgentBackend:
             start_new_session=True,
             env=env,
         )
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         self._reader_task = asyncio.create_task(
             self._read_loop(), name="prime-agent-reader"
         )
