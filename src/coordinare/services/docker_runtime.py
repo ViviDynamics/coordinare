@@ -16,15 +16,22 @@ Two reasons it wraps rather than absorbs:
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
+from coordinare.services.run_log import LOG_CHUNK_BYTES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import AsyncGenerator
     from pathlib import Path
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
+
+_log = structlog.get_logger(__name__)
 
 
 class DockerRuntime:
@@ -94,6 +101,32 @@ class DockerRuntime:
         except (OSError, TimeoutError):
             return []
         return stdout.decode(errors="replace").splitlines()[-lines:]
+
+    async def iter_logs(self, handle: str) -> AsyncGenerator[bytes, None]:
+        """132: the container's complete output, read from ``docker logs`` in chunks.
+
+        stderr is merged into the stream, as the live tail merges it. A reader that
+        stops early kills the ``docker logs`` process.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "logs",
+            handle,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            if proc.stdout is None:
+                return
+            while chunk := await proc.stdout.read(LOG_CHUNK_BYTES):
+                yield chunk
+            returncode = await proc.wait()
+            if returncode != 0:
+                _log.warning("docker_runtime.logs_failed", container_id=handle, rc=returncode)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
 
     async def cleanup_orphaned(self, performer_id: str | None = None) -> int:
         return await performer_lifecycle.cleanup_orphaned_containers(performer_id)

@@ -493,6 +493,8 @@ class CoordinareState(TypedDict, total=False):
     attempt_log: Any
     # 129: the run-transcript collector (None when transcripts are not wired).
     transcript_collector: Any
+    # 132: the full run log collector (None when it cannot be built).
+    run_log_collector: Any
 
     # 064: Closer PR-checks gate — per-card cache of last poll for tick fast-path.
     # Keyed by card_id; resets when PR HEAD SHA changes.

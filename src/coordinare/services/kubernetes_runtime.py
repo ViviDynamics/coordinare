@@ -33,8 +33,11 @@ import structlog
 
 from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
+from coordinare.services.run_log import LOG_CHUNK_BYTES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import AsyncGenerator
+
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
 
 _log = structlog.get_logger(__name__)
@@ -696,6 +699,27 @@ class KubernetesRuntime:
             )
             return []
         return [_ANSI_ESCAPE.sub("", line) for line in _decode_pod_log(raw).splitlines()[-lines:]]
+
+    async def iter_logs(self, handle: str) -> AsyncGenerator[bytes, None]:
+        """132: the Pod's complete log, read from the API in chunks.
+
+        ``_preload_content=False`` returns the raw response, so the bytes arrive as
+        they are read and the writer decodes them. There is no ``tail_lines``: this
+        is the whole log. The Pod's logs vanish with the Pod, so the caller reads
+        this before the delete.
+        """
+        response = await asyncio.to_thread(
+            self._api.read_namespaced_pod_log,
+            name=handle,
+            namespace=self._namespace,
+            _preload_content=False,
+        )
+        chunks = response.stream(LOG_CHUNK_BYTES)
+        try:
+            while chunk := await asyncio.to_thread(next, chunks, b""):
+                yield chunk
+        finally:
+            response.close()
 
     async def cleanup_orphaned(self, performer_id: str | None = None) -> int:
         """Delete Pods left by a previous coordinare.

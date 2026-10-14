@@ -124,6 +124,7 @@ def create_dashboard_app(
         routers.config,
         routers.personas,
         routers.assistant,
+        routers.run_logs,
     ):
         area.register(app, ctx)
     return app

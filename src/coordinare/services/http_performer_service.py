@@ -34,6 +34,8 @@ import httpx
 import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
+from coordinare.lib.redaction import redact_command_text
+from coordinare.lib.transcript_redaction import redact_text
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
@@ -52,7 +54,7 @@ from coordinare.transport.http_transport import (
 from coordinare.upstream_errors import UpstreamHTTPError, strip_base_url_credentials
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import AsyncGenerator, Awaitable
 
     from coordinare.models.performer_endpoint import (
         JobAcceptResponse,
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
         VolumeMount,
     )
     from coordinare.services.performer_runtime import PerformerRuntime
+    from coordinare.services.run_log import RunLogCollector, RunLogWriter
     from coordinare.services.run_transcript import RunTranscriptWriter, TranscriptCollector
     from coordinare.workspace import WorkspaceInfo
 
@@ -97,6 +100,10 @@ _TRANSCRIPT_POLL_SECONDS = 2.0
 # small append. A slow disk delays the header (the first poll still writes it first),
 # never the dispatch.
 RUN_HEADER_WAIT_SECONDS = 2.0
+# 132: the most the teardown waits for a run's full log before the container is
+# stopped anyway. A large log that is still arriving is kept only as far as it got
+# (the partial is dropped), so the bound delays the stop, never prevents it.
+_RUN_LOG_TEARDOWN_SECONDS = 20.0
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -212,6 +219,11 @@ class _EphemeralJob:
     endpoint: str
     client: PerformerHTTPClient
     job_id: str | None = None
+    # 132: the coordinare session id, which is also the run id of the transcript and
+    # of the full log. None for a job that never got that far.
+    run_id: str | None = None
+    # 132: set once the full log has been collected, so one job collects once.
+    log_collected: bool = False
 
 
 def _inject_driver_secrets(
@@ -257,12 +269,16 @@ class HTTPPerformerService:
         client: PerformerHTTPClient | None = None,
         runtime: PerformerRuntime | None = None,
         transcripts: TranscriptCollector | None = None,
+        run_logs: RunLogCollector | None = None,
     ) -> None:
         self._config = config
         self._injected_client = client
         # 129: where the per-run transcript records go. None (the default) keeps
         # the wire and the disk exactly as before.
         self._transcripts = transcripts
+        # 132: where the complete log of each run is written at teardown. None keeps
+        # the teardown exactly as before.
+        self._run_logs = run_logs
         self._transcript_targets: dict[str, tuple[str, str, str]] = {}
         self._transcript_unsupported_runs: set[str] = set()
         self._transcript_secrets: dict[str, list[str]] = {}
@@ -542,6 +558,7 @@ class HTTPPerformerService:
                 container_id=started.handle,
                 endpoint=started.endpoint,
                 client=ep_client,
+                run_id=session_id,
             )
             try:
                 await performer_lifecycle.wait_ready(
@@ -566,6 +583,10 @@ class HTTPPerformerService:
         # file name agree without a second id. Persistent mode already set
         # session_id = job_id, so this is the same value there.
         payload = self._transcript_identity(session_id, payload, extra_volumes)
+        if self._config.mode == "ephemeral":
+            # 132: a refused ephemeral run still has a container whose full log is collected
+            # at teardown, so its secrets are known from the moment the payload exists.
+            self._remember_transcript_secrets(session_id, payload)
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
@@ -620,12 +641,16 @@ class HTTPPerformerService:
         # 129 (review 5, blocker 3; review 6, blocker 2): the job's secrets are kept only
         # once it is accepted, and under the run id the polls, the writer and the release
         # use. In persistent mode that is the job id, never the pre-dispatch id.
+        # 132: kept for every accepted run, not only transcribed ones: the live tail and
+        # the full log are redacted by the same exact values. Persistent runs are keyed
+        # by the job id only here, because their session id changes on accept.
+        self._remember_transcript_secrets(session_id, payload)
         if transcribed:
-            self._remember_transcript_secrets(session_id, payload)
             endpoint = ephemeral_job.endpoint if ephemeral_job is not None else self._config.endpoint
             await self._write_run_header(
                 session_id, card_context, run_inputs, str(endpoint) if endpoint else None,
             )
+
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
@@ -682,6 +707,9 @@ class HTTPPerformerService:
         if payload:
             refreshed_token = payload.get("github_token")
             if refreshed_token:
+                # 132: a refreshed token is a secret too: the live tail and the full log
+                # must redact it as well.
+                self._remember_refreshed_secret(session_id, refreshed_token)
                 # 088 US6 (FR-012): retry once immediately on failure; a
                 # second failure marks the session degraded so
                 # monitor_performer can attribute later auth failures to
@@ -958,6 +986,16 @@ class HTTPPerformerService:
                 run_id=run_id,
                 exc_type=type(exc).__name__,
             )
+    def _remember_refreshed_secret(self, session_id: str, value: str) -> None:
+        """132: a refreshed secret joins the run's exact values, once."""
+        values = self._transcript_secrets.setdefault(session_id, [])
+        if value not in values:
+            values.append(value)
+
+    def _redact_tail(self, lines: list[str], session_id: str) -> list[str]:
+        """132: the live tail is the same text as the full log, so it is redacted the same way."""
+        secrets = self._transcript_secrets.get(session_id, [])
+        return [redact_command_text(redact_text(line, secrets)) for line in lines]
 
     def _transcript_failed(
         self,
@@ -1455,7 +1493,8 @@ class HTTPPerformerService:
             try:
                 lines = await self._runtime.tail_logs(container_id, lines=200)
                 if lines:
-                    self._log_buffer = lines
+                    # 132: redacted before it is stored, so the snapshot never holds the raw text.
+                    self._log_buffer = self._redact_tail(lines, job_id)
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.debug(
                     "http_performer.log_poll_failed",
@@ -1468,7 +1507,7 @@ class HTTPPerformerService:
         try:
             lines = await self._runtime.tail_logs(container_id, lines=200)
             if lines:
-                self._log_buffer = lines
+                self._log_buffer = self._redact_tail(lines, job_id)
         except Exception:  # pragma: no cover
             pass
 
@@ -1509,7 +1548,12 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
-            await self._runtime.stop(handle)
+            try:
+                # 132: the full log is read before the stop removes it.
+                if job is not None:
+                    await self._capture_run_log(job)
+            finally:
+                await self._runtime.stop(handle)
             if await find(session_id) is not None:
                 return False
         elif not await _stop_docker_session_confirmed(self._runtime, session_id):
@@ -1550,6 +1594,9 @@ class HTTPPerformerService:
             if str(vol.container_path) == "/var/log/performer":
                 host_log_dir = vol.host_path
                 break
+        # 132: the full log is read first, because the stop removes it. The capture never
+        # raises for a runtime fault, so the stop below always follows it.
+        await self._capture_run_log(job)
         try:
             await self._runtime.stop(
                 job.container_id,
@@ -1566,6 +1613,64 @@ class HTTPPerformerService:
         if self._injected_client is None:
             with contextlib.suppress(Exception):
                 await job.client.aclose()
+        # 132: the job is gone, so its secret values are no longer needed. This also
+        # frees the values of a refused dispatch, which never reaches the terminal release.
+        if job.run_id is not None:
+            self._transcript_secrets.pop(job.run_id, None)
+
+    async def _capture_run_log(self, job: _EphemeralJob) -> None:
+        """132: write the run's complete log before its container or Pod is removed.
+
+        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS``: a runtime that hangs
+        or fails leaves no file, and the caller stops the container regardless. Never
+        raises for a runtime fault. A cancellation still removes the partial file and
+        then propagates.
+        """
+        collector = self._run_logs
+        if collector is None or not collector.enabled or job.run_id is None or job.log_collected:
+            return
+        iter_logs = getattr(self._runtime, "iter_logs", None)
+        if not callable(iter_logs):
+            return
+        job.log_collected = True
+        run_id = job.run_id
+        writer = collector.writer_for(
+            run_id=run_id,
+            secrets=self._transcript_secrets.get(run_id, []),
+        )
+        done = False
+        try:
+            done = await asyncio.wait_for(
+                self._copy_run_log(iter_logs(job.container_id), writer),
+                timeout=_RUN_LOG_TEARDOWN_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "run_log.collect_timeout",
+                run_id=run_id,
+                performer_id=self._config.id,
+                timeout_s=_RUN_LOG_TEARDOWN_SECONDS,
+            )
+        except Exception as exc:  # best effort: the stop follows regardless
+            logger.warning(
+                "run_log.collect_failed",
+                run_id=run_id,
+                performer_id=self._config.id,
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
+        finally:
+            if not done:
+                writer.abort()
+
+    async def _copy_run_log(self, chunks: AsyncGenerator[bytes, None], writer: RunLogWriter) -> bool:
+        """Stream the runtime's output into the writer, one chunk on a worker thread at a time."""
+        try:
+            async for chunk in chunks:
+                await asyncio.to_thread(writer.feed, chunk)
+            return await asyncio.to_thread(writer.finish)
+        finally:
+            await chunks.aclose()
 
     async def _cleanup_ephemeral_job_by_id(self, job_id: str) -> None:
         """Look up and clean up an ephemeral job by its job_id."""

@@ -909,6 +909,19 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   retention_days: 30                  # delete transcripts older than this; 0 = keep forever
 #   max_bytes_per_run: 52428800         # 50 MiB per run; at the cap one "truncated" marker is written
 
+# --- Full Run Logs (132) ---
+# The complete stdout and stderr of each containerized run, written by the daemon
+# at teardown (before the container or Pod is removed) to
+# <state directory>/run-logs/<run_id>.log, and served from the card's Live Log
+# ("Open full log"). The root is outside performer_log_dir for the same reason as
+# transcripts. The file keeps the first and last parts of an over-long log, with
+# a marker saying how many bytes were dropped. On by default.
+# run_logs:
+#   enabled: true
+#   dir: null                           # optional root override; must be outside every performer mount
+#   retention_days: 30                  # delete run logs older than this; 0 = keep forever
+#   max_bytes: 16777216                 # 16 MiB per run; the middle is dropped and marked past this
+
 # --- Stuck Card Alerts ---
 # stuck_alerts:
 #   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled

@@ -65,6 +65,11 @@ from coordinare.services.notification_config import (
     describe_notification_posture,
     sanitize_notifications,
 )
+from coordinare.services.run_log import (
+    RunLogCollector,
+    make_run_logs_collector,
+    resolve_run_logs_root,
+)
 from coordinare.services.run_transcript import (
     RootGuard,
     TranscriptCollector,
@@ -669,6 +674,7 @@ def _build_http_performer_services(
     config: ProjectConfiguration,
     *,
     transcripts: TranscriptCollector | None = None,
+    run_logs: RunLogCollector | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
@@ -730,6 +736,7 @@ def _build_http_performer_services(
             cfg,
             runtime=_build_performer_runtime(config),
             transcripts=transcripts,
+            run_logs=run_logs,
         )
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
@@ -967,6 +974,50 @@ def _rebuild_usage_ledger(collector: TranscriptCollector) -> None:
         )
 
 
+def _build_run_logs_collector(
+    config: ProjectConfiguration,
+    config_path: Path | None,
+) -> RunLogCollector | None:
+    """132: the full run log collector. Touches nothing on disk (see ``make_run_logs_collector``).
+
+    Guarded exactly as the transcripts are: the root may not sit inside a performer
+    mount (``performer_log_dir`` is one, read-write, so it is never the default).
+    Returns None if the collector cannot be built, so logging never stops the daemon.
+    """
+    try:
+        state_dir = config.state_file_path.resolve().parent
+        config_dir = config_path.resolve().parent if config_path is not None else state_dir
+        root = resolve_run_logs_root(
+            config.run_logs.directory,
+            config_dir=config_dir,
+            state_dir=state_dir,
+        )
+        guard = RootGuard(
+            performer_mounts=tuple(_performer_mount_hosts(config)),
+            protected=(
+                state_dir,
+                config_dir,
+                _resolve_attempt_log_dir(config, config_path),
+            ),
+        )
+        collector = make_run_logs_collector(
+            enabled=config.run_logs.enabled,
+            root=root,
+            max_bytes=config.run_logs.max_bytes,
+            retention_days=config.run_logs.retention_days,
+            guard=guard,
+        )
+        collector.add_ambient_secrets(os.environ)
+        return collector
+    except Exception as exc:  # best effort: run logs must never stop the daemon
+        logger.exception(
+            "run_log.collector_unavailable",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return None
+
+
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
@@ -1096,9 +1147,11 @@ async def _bootstrap_services(
                 hint="performers left by a previous coordinare crash",
             )
     transcript_collector = _build_transcript_collector(config, config_path)
+    run_log_collector = _build_run_logs_collector(config, config_path)
     http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(
         config,
         transcripts=transcript_collector,
+        run_logs=run_log_collector,
     )
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
@@ -1173,6 +1226,8 @@ async def _bootstrap_services(
         # 141: attempt telemetry singleton
         "attempt_log": attempt_log,
         "transcript_collector": transcript_collector,
+        # 132: the full run log collector (None when it cannot be built).
+        "run_log_collector": run_log_collector,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
