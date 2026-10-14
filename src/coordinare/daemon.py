@@ -49,6 +49,7 @@ from coordinare.services.board_provider import (
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
     configured_hold_seconds,
@@ -86,6 +87,7 @@ from coordinare.state_store import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
@@ -3790,7 +3792,14 @@ class CoordinareDaemon:
         """
         from coordinare.services.env_cache import verify_env_cache_clean
 
-        return await verify_env_cache_clean(self._state, symphony_name, svc)
+        return await verify_env_cache_clean(
+            self._state, symphony_name, svc, performer_mounts=self._performer_mounts(),
+        )
+
+    def _performer_mounts(self) -> tuple[Path, ...]:
+        """Every host directory a performer can see, from the loaded config (219 review)."""
+        cfg = self._state.get("coordinare_config")
+        return loaded_performer_mounts(cfg.global_config if cfg is not None else None)
 
     async def _poll_bootstrap_completion(
         self,
@@ -4576,6 +4585,7 @@ class CoordinareDaemon:
             self._state.get("env_cache") or {},
             is_bootstrap=True,
             container_devenv_root=devenv_root,
+            performer_mounts=self._performer_mounts(),
         )
         extra = [ec_result[0]] if ec_result is not None else []
         dispatch_kw: dict[str, Any] = {}

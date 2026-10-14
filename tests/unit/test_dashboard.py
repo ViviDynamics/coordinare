@@ -2061,8 +2061,9 @@ def test_put_global_config_persists_valid_field(tmp_path) -> None:
     """PUT /api/config/global writes updated fields to config.yaml."""
     import yaml
     config_file = tmp_path / "config.yaml"
+    # project_name is required to load the file; without it the save is refused (219 review).
     config_file.write_text(
-        "github_org: testorg\ngithub_project_number: 1\n"
+        "project_name: Demo\ngithub_org: testorg\ngithub_project_number: 1\n"
         "poll_interval_seconds: 30\nhuman_reviewers:\n  - reviewer1\n"
         "github_token: dummy_token\n",
     )

@@ -16,10 +16,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from coordinare.daemon import CoordinareDaemon
+from tests.unit.env_mount_stub import mount_config
 
 
 def _daemon() -> CoordinareDaemon:
-    return CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon._state["coordinare_config"] = mount_config()
+    return daemon
 
 
 def test_signature_changes_when_stage_advances_with_phase_constant() -> None:
@@ -179,7 +182,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
 
     svc = EnvCacheService(
-        SimpleNamespace(global_config=SimpleNamespace(env_bootstrap_max_attempts=3)),
+        mount_config(env_bootstrap_max_attempts=3),
     )
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
     # Drain the flush task scheduled by the completion handler.

@@ -21,10 +21,17 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from coordinare.services.mounted_file import mounted_file_refusal, read_mounted_file
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from coordinare.config import TestEnvConfig
 
 __all__ = ["TestEnvFileError", "load_test_env", "parse_test_env"]
+
+# 219: a test-env file is a few KB of dotenv. The bound stops an endless or huge host file.
+_TEST_ENV_MAX_BYTES = 1024 * 1024
 
 
 class TestEnvFileError(Exception):
@@ -112,21 +119,30 @@ def parse_test_env(text: str) -> dict[str, str]:
     return _parse_dotenv(text)
 
 
-def load_test_env(cfg: TestEnvConfig, *, repo_root: Path) -> dict[str, str]:
+def load_test_env(
+    cfg: TestEnvConfig,
+    *,
+    repo_root: Path,
+    performer_mounts: Sequence[Path],
+) -> dict[str, str]:
     """Parse the configured test-env file and return literal ``KEY -> value`` pairs.
 
     Args:
         cfg: A ``TestEnvConfig`` naming exactly one of ``repo_path`` / ``host_path``.
         repo_root: The cloned symphony repo root (used to resolve ``repo_path``).
+        performer_mounts: Every host directory a performer can see. A ``host_path`` inside
+            one is read through the anchored reader (no links below the outermost mount).
 
     Returns:
         A plain ``dict[str, str]``. An existing-but-empty file yields ``{}``.
 
     Raises:
-        TestEnvFileError: The configured file is missing/unreadable, or a ``repo_path``
+        TestEnvFileError: The configured file is missing/unreadable/refused, or a ``repo_path``
             escapes ``repo_root``. The message names the resolved path and the field.
     """
     resolved, field = _resolve_source(cfg, repo_root=repo_root)
+    if field == "host_path":
+        return _parse_dotenv(_read_host_test_env(resolved, performer_mounts))
     try:
         text = resolved.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -139,3 +155,27 @@ def load_test_env(cfg: TestEnvConfig, *, repo_root: Path) -> dict[str, str]:
         msg = f"test_env file unreadable: {resolved} (configured via {field}): {exc}"
         raise TestEnvFileError(msg) from exc
     return _parse_dotenv(text)
+
+
+def _read_host_test_env(resolved: Path, performer_mounts: Sequence[Path]) -> str:
+    """Read a ``host_path`` test-env file, anchored when it lies inside a performer mount (219)."""
+    field = "host_path"
+    reason = mounted_file_refusal(resolved, mounts=performer_mounts)
+    if reason == "missing":
+        msg = (
+            f"test_env file not found: {resolved} "
+            f"(configured via {field}); a configured test-env file must exist"
+        )
+        raise TestEnvFileError(msg)
+    if reason is not None:
+        msg = f"test_env file refused: {resolved} (configured via {field}): {reason}"
+        raise TestEnvFileError(msg)
+    data = read_mounted_file(resolved, max_bytes=_TEST_ENV_MAX_BYTES, mounts=performer_mounts)
+    if data is None:
+        msg = f"test_env file unreadable: {resolved} (configured via {field})"
+        raise TestEnvFileError(msg)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        msg = f"test_env file unreadable: {resolved} (configured via {field}): not UTF-8"
+        raise TestEnvFileError(msg) from exc

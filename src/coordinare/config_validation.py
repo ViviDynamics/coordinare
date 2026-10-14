@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from pydantic import ValidationError
 
+from coordinare.config import expand_config_text
 from coordinare.dashboard_oidc import validate_dashboard_oidc
 
 if TYPE_CHECKING:
@@ -155,7 +156,7 @@ def _load_raw_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
     try:
-        loaded = yaml.safe_load(os.path.expandvars(path.read_text()))
+        loaded = yaml.safe_load(expand_config_text(path.read_text()))
     except (yaml.YAMLError, OSError) as exc:
         raise OSError(f"Failed to read config file {path}: {exc}") from exc
     if not isinstance(loaded, dict):

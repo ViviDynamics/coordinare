@@ -125,6 +125,7 @@ class TestDiscoveredTestEnvFallback:
         # reloading the SAME persisted path.
         loaded = await resolve_test_env_vars(
             symphony_name="website",
+            performer_mounts=(),
             test_env=None,
             github_org=ORG,
             repo=REPO,
@@ -148,6 +149,7 @@ class TestDiscoveredTestEnvFallback:
 
         loaded = await resolve_test_env_vars(
             symphony_name="website",
+            performer_mounts=(),
             test_env=TestEnvConfig(host_path=str(host_file)),
             github_org=ORG,
             repo=REPO,
@@ -167,6 +169,7 @@ class TestDiscoveredTestEnvFallback:
 
         loaded = await resolve_test_env_vars(
             symphony_name="website",
+            performer_mounts=(),
             test_env=None,
             github_org=ORG,
             repo=REPO,

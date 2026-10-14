@@ -6,6 +6,7 @@ import pytest
 
 from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services.http_performer_service import HTTPPerformerService
+from tests.unit.env_mount_stub import mount_config
 
 
 @pytest.mark.parametrize(
@@ -96,6 +97,7 @@ async def test_daemon_bootstrap_forwards_selected_roles_orchestration(monkeypatc
     orchestration = {"strategy": "conditional", **refs}
     resolve_orchestration = MagicMock(return_value=orchestration)
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
+    daemon._state["coordinare_config"] = mount_config()
     daemon._state["config"] = SimpleNamespace(
         performers=PerformersConfig(
             **{configured_role: PerformerRoleConfig(backend="claude_code")},
