@@ -39,9 +39,13 @@ def _docker(*args: str, timeout: int = 900) -> subprocess.CompletedProcess:
 
 
 def _docker_available() -> bool:
+    """Never raises: a hung or unrunnable docker is "no daemon" (issue #229)."""
     if shutil.which("docker") is None:
         return False
-    return _docker("info", timeout=30).returncode == 0
+    try:
+        return _docker("info", timeout=30).returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
 
 pytestmark = [

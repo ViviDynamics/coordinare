@@ -60,10 +60,17 @@ def _cluster_available() -> bool:
     A missing image is not a reason to skip anyway. Skipping is for a developer
     who has no cluster; a cluster that is missing the image is a *failure*, and
     ``_require_image`` below makes it a legible one.
+
+    Never raises. A kubectl that hangs past its timeout, or a binary that cannot
+    be executed, is "no cluster". An escaped ``TimeoutExpired`` here aborted the
+    whole Tests job during collection (issue #229).
     """
     if not shutil.which("helm") or not shutil.which("kubectl"):
         return False
-    return _run("kubectl", "get", "nodes", check=False, timeout=15).returncode == 0
+    try:
+        return _run("kubectl", "get", "nodes", check=False, timeout=15).returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
 
 pytestmark = [

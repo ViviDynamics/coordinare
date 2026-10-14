@@ -33,14 +33,16 @@ SKIP_REASON = (
 
 
 def _cluster_available() -> bool:
+    """Never raises: a hung or unrunnable kubectl is "no cluster" (issue #229)."""
     if shutil.which("kubectl") is None:
         return False
-    return (
-        subprocess.run(
+    try:
+        result = subprocess.run(
             ["kubectl", "get", "nodes"], capture_output=True, text=True, timeout=15,
-        ).returncode
-        == 0
-    )
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return result.returncode == 0
 
 
 pytestmark = [
