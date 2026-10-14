@@ -11,10 +11,10 @@ import pytest
 
 from coordinare.dashboard import (
     _ACTIVITY_STREAM_JS,
-    _DASHBOARD_HTML,
     _DASHBOARD_JS_SOURCES,
     DashboardStore,
 )
+from tests.unit.dashboard_js_slices import app_js
 
 
 def _snapshot(store: DashboardStore) -> dict:
@@ -51,9 +51,9 @@ def test_native_activity_run_browser_recovery(tmp_path: Path, case: str) -> None
     wire_path.write_text(json.dumps(wire))
     start = "// 138: activity feed"
     end = "document.addEventListener('DOMContentLoaded', function() {"
-    assert _DASHBOARD_HTML.count(start) == _DASHBOARD_HTML.count(end) == 1
+    assert app_js().count(start) == app_js().count(end) == 1
     script = tmp_path / "client.js"
-    script.write_text(_DASHBOARD_JS_SOURCES["helpers"] + "\n" + _ACTIVITY_STREAM_JS + "\n" + start + _DASHBOARD_HTML.split(start)[1].split(end)[0])
+    script.write_text(_DASHBOARD_JS_SOURCES["helpers"] + "\n" + _ACTIVITY_STREAM_JS + "\n" + start + app_js().split(start)[1].split(end)[0])
     node = shutil.which("node")
     assert node is not None, "Node is required for dashboard checks"
     checks = Path(__file__).resolve().parents[1] / "js" / "activity_run_checks.js"

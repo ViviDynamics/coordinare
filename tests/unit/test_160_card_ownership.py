@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import structlog.testing
 
-from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES, ownership_hint
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES, ownership_hint
 from coordinare.graph.nodes import check_board as cb_mod
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.state import initial_state
@@ -22,6 +22,7 @@ from coordinare.services.card_ownership import (
     ownership_policy,
     owns_card,
 )
+from tests.unit.dashboard_js_slices import page_source
 
 BOT = "coordinare-bot"
 HUMAN = "human-engineer"
@@ -647,8 +648,8 @@ class TestDashboardReadsOnlyTheHint:
     def test_neither_site_re_derives_the_policy(self) -> None:
         # 349: both render sites moved to /static/performers.js; the page
         # string must not carry them again either.
-        assert "s.assignee_filter ?" not in _DASHBOARD_HTML
-        assert "s.assignee_filter\n" not in _DASHBOARD_HTML
+        assert "s.assignee_filter ?" not in page_source()
+        assert "s.assignee_filter\n" not in page_source()
         assert "s.assignee_filter ?" not in _DASHBOARD_JS_SOURCES["performers"]
         assert "s.assignee_filter\n" not in _DASHBOARD_JS_SOURCES["performers"]
 
@@ -658,7 +659,7 @@ class TestDashboardReadsOnlyTheHint:
         # card-detail filter site moved to /static/performers.js.
         assert (
             "var idleFilterText = s.ownership_hint ? esc(s.ownership_hint) : '';"
-            in _DASHBOARD_HTML
+            in page_source()
         )
         assert (
             "var filterHint = s.ownership_hint ? esc(s.ownership_hint) : '';"

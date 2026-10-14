@@ -14,9 +14,10 @@ from pathlib import Path
 import pytest
 
 from coordinare import vocabulary
-from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 from coordinare.lifecycle import ROLE_TO_STAGE
 from coordinare.services import persona_service
+from tests.unit.dashboard_js_slices import page_source
 
 _HELPERS = _DASHBOARD_JS_SOURCES["helpers"]
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
@@ -91,10 +92,10 @@ def test_payload_carries_the_kind_maps() -> None:
 
 
 def test_no_call_site_labels_a_stage_or_role_through_the_phase_lookup() -> None:
-    shipped = _DASHBOARD_HTML + _PERFORMERS
+    shipped = page_source() + _PERFORMERS
     assert not re.findall(r"(?:humanPhase|formatPhaseLabel)\([^)]*(?:performer_stage|selectedRole|\.role)[^)]*\)", shipped)
     assert "esc(r.role) + '</td>'" not in _PERFORMERS
-    assert "' + esc(p.role) + '</label>'" not in _DASHBOARD_HTML
+    assert "' + esc(p.role) + '</label>'" not in page_source()
 
 
 def test_closer_persona_no_longer_calls_the_documenter_tech_writer() -> None:

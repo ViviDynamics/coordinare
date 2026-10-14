@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 DASHBOARD = Path(__file__).resolve().parents[3] / "src" / "coordinare" / "dashboard" / "templates"
+DASHBOARD_STATIC = DASHBOARD.parent / "dashboard_static"
 
 
 def _js_object_keys(var_name: str) -> set[str]:
@@ -30,8 +31,10 @@ def _js_object_keys(var_name: str) -> set[str]:
     dashboard package templates, so the scan reads every template the browser
     is actually served.
     """
+    # 176: the application script moved from the page to dashboard_static/app.js.
     source = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(DASHBOARD.glob("*"))
+        path.read_text(encoding="utf-8")
+        for path in [*sorted(DASHBOARD.glob("*")), *sorted(DASHBOARD_STATIC.glob("*.js"))]
     )
     match = re.search(rf"var {re.escape(var_name)} = \{{(.*?)\n\}};", source, re.DOTALL)
     assert match, f"{var_name} object literal not found in dashboard.py"

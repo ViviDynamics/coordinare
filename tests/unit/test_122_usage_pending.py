@@ -11,7 +11,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import page_source
 
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
 _HELPERS = _DASHBOARD_JS_SOURCES["helpers"]
@@ -52,9 +53,9 @@ def test_usage_pending_client_js(tmp_path: Path) -> None:
 
 
 def test_metrics_card_uses_the_pending_readout() -> None:
-    assert "tokenReadout(cardTokensTotal, !!activeSess)" in _DASHBOARD_HTML
-    assert "cardTokensTotal.toLocaleString();" not in _DASHBOARD_HTML
-    assert "tokenView.pending ? '—' : fmtCost(costEstimate.value)" in _DASHBOARD_HTML
+    assert "tokenReadout(cardTokensTotal, !!activeSess)" in page_source()
+    assert "cardTokensTotal.toLocaleString();" not in page_source()
+    assert "tokenView.pending ? '—' : fmtCost(costEstimate.value)" in page_source()
 
 
 def test_performer_detail_uses_the_pending_readout() -> None:

@@ -15,7 +15,7 @@ from coordinare.config import ProjectConfiguration
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.helpers import format_phase_label
 from coordinare.dashboard.store import _poll_interval
-from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function
+from tests.unit.dashboard_js_slices import label_helpers_js, page_source, shipped_function
 
 _PERFORMERS = _DASHBOARD_JS_SOURCES["performers"]
 _WORKFLOW = _DASHBOARD_JS_SOURCES["workflow"]
@@ -47,8 +47,8 @@ def test_the_word_phase_is_gone_from_the_card_ui() -> None:
 
 
 def test_headline_is_built_by_the_sentence_helper_with_the_state_in_a_tooltip() -> None:
-    assert "phaseEl.textContent = conductorHeadline(s, activeSess);" in _DASHBOARD_HTML
-    assert "phaseEl.title = 'Conductor state: '" in _DASHBOARD_HTML
+    assert "phaseEl.textContent = conductorHeadline(s, activeSess);" in page_source()
+    assert "phaseEl.title = 'Conductor state: '" in page_source()
 
 
 def test_snapshot_poll_interval() -> None:
@@ -86,20 +86,20 @@ def test_feedback_loops_are_called_revision_rounds() -> None:
 
 
 def test_small_labels() -> None:
-    assert ">Check Board Now<" not in _SHIPPED and ">Check now</button>" in _DASHBOARD_HTML
+    assert ">Check Board Now<" not in _SHIPPED and ">Check now</button>" in page_source()
     assert "Last poll" not in _SHIPPED and "Last checked" in _SHIPPED
     assert "Active / Idle / Max" not in _SHIPPED
-    assert '<label for="af-filter">Card</label>' not in _DASHBOARD_HTML
-    assert 'aria-label="Filter activity by card"' in _DASHBOARD_HTML
+    assert '<label for="af-filter">Card</label>' not in page_source()
+    assert 'aria-label="Filter activity by card"' in page_source()
     assert "Observer Verdicts" not in _SHIPPED and "Progress checks (recent)" in _PERFORMERS
     assert "progress_check" in vocabulary.CONCEPTS
-    assert "Card Tokens" not in _SHIPPED and 'id="card-tokens-label"' in _DASHBOARD_HTML
+    assert "Card Tokens" not in _SHIPPED and 'id="card-tokens-label"' in page_source()
     assert "toFixed(4)" not in _SHIPPED
 
 
 def test_activity_panel_no_longer_repeats_live() -> None:
-    assert 'aria-live="polite"></span>' in _DASHBOARD_HTML
-    assert "el.textContent = live ? '' : 'Not live';" in _DASHBOARD_HTML
+    assert 'aria-live="polite"></span>' in page_source()
+    assert "el.textContent = live ? '' : 'Not live';" in page_source()
 
 
 def test_naming_batch_client_js(tmp_path: Path) -> None:

@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES
+from tests.unit.dashboard_js_slices import app_js, page_source
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
 
@@ -44,15 +45,15 @@ _EXPECTED_FUNCTIONS = frozenset({
 
 def _extract_feed_js() -> str:
     """Return the shipped feed JS plus the shared `esc` helper it calls."""
-    if _DASHBOARD_HTML.count(_FEED_START) != 1:
-        raise AssertionError(f"marker {_FEED_START!r} is not unique in _DASHBOARD_HTML")
-    if _DASHBOARD_HTML.count(_FEED_END) != 1:
-        raise AssertionError(f"marker {_FEED_END!r} is not unique in _DASHBOARD_HTML")
+    if app_js().count(_FEED_START) != 1:
+        raise AssertionError(f"marker {_FEED_START!r} is not unique in app_js()")
+    if app_js().count(_FEED_END) != 1:
+        raise AssertionError(f"marker {_FEED_END!r} is not unique in app_js()")
 
-    marker = _DASHBOARD_HTML.index(_FEED_START)
-    start = _DASHBOARD_HTML.rindex("// ---", 0, marker)
-    end = _DASHBOARD_HTML.index(_FEED_END)
-    feed_js = _DASHBOARD_HTML[start:end]
+    marker = app_js().index(_FEED_START)
+    start = app_js().rindex("// ---", 0, marker)
+    end = app_js().index(_FEED_END)
+    feed_js = app_js()[start:end]
 
     esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:
@@ -71,7 +72,7 @@ def test_feed_js_slice_is_complete() -> None:
 def test_empty_state_names_the_current_daemon_run() -> None:
     """C11 / FR-018: an empty feed after a restart must not read as 'nothing
     is happening'. Asserted here rather than in JS — it is static markup."""
-    assert "covers only the current daemon run" in _DASHBOARD_HTML
+    assert "covers only the current daemon run" in page_source()
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed — the JS gate cannot run")
