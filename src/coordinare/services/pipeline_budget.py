@@ -159,8 +159,25 @@ def has_started(session: dict[str, Any]) -> bool:
     return has_open_pr(session) or accepted or bool(session.get('blueprint')) or past_assessing
 
 
+def is_waiting_on_review(session: dict[str, Any]) -> bool:
+    """#171: waiting on a human review, whether or not a documenter side run is live for it.
+
+    The review cap counts these. A side writer is not a reason to stop counting: a
+    card that a side run admitted is still waiting on a person, so the cap must not
+    free up because of it. A lifecycle performer is the only thing that moves a
+    card off review.
+    """
+    card = session.get('current_card') or {}
+    return (
+        session.get('phase') == 'monitoring_pr'
+        and session.get('review_wait') == REVIEW_WAIT_HUMAN
+        and card.get('status') not in _RELEASED_STATUSES
+        and not has_live_performer(session)
+    )
+
+
 def parked_in_review(sessions: dict[str, Any]) -> int:
-    return sum(1 for session in sessions.values() if is_parked_in_review(session))
+    return sum(1 for session in sessions.values() if is_waiting_on_review(session))
 
 
 def review_cap_allows_new_card(sessions: dict[str, Any], review_limit: int | None) -> bool:
@@ -252,7 +269,7 @@ def select_pipelines(
 
 
 def admitted_side_runs(
-    sessions: dict[str, Any], wanted: Collection[str], *, limit: int,
+    sessions: dict[str, Any], wanted: Collection[str], *, limit: int, eligible: Collection[str],
 ) -> set[str]:
     """#171: the cards wanting a documenter side run that may start this cycle.
 
@@ -271,19 +288,21 @@ def admitted_side_runs(
     """
     if not wanted:
         return set()
+    # The same eligible set select_pipelines is given: a paused or otherwise
+    # ineligible card is never admitted, so it cannot hold a slot nobody will use.
     selected = {cid for cid, session in sessions.items() if has_live_work(session)}
-    candidates = [cid for cid, session in sessions.items() if _is_candidate(session)]
+    candidates = [cid for cid, session in sessions.items() if cid in eligible and _is_candidate(session)]
     retained = [cid for cid in candidates if sessions[cid].get('pipeline_admitted')]
     returning = [cid for cid in candidates if has_started(sessions[cid])]
     side = [
         cid for cid in sessions
-        if cid in wanted and cid not in selected and not has_live_performer(sessions[cid])
+        if cid in wanted and cid in eligible and cid not in selected and not has_live_performer(sessions[cid])
     ]
     for cid in [*retained, *returning, *side]:
         if len(selected) >= max(1, limit):
             break
         selected.add(cid)
-    return {cid for cid in wanted if cid in selected and not has_live_performer(sessions[cid])}
+    return {cid for cid in wanted if cid in selected and cid in eligible and not has_live_performer(sessions[cid])}
 
 
 def dispatch_has_pipeline_slot(state: CoordinareState, card_id: str) -> bool:

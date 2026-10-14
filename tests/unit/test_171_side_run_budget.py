@@ -241,13 +241,13 @@ async def test_no_more_side_runs_than_free_slots_in_one_cycle() -> None:
 def test_a_returning_card_keeps_its_slot_ahead_of_a_side_run() -> None:
     sessions = {"H": _holding("H"), "P": _parked("P")}
     assert select_pipelines(sessions, 1) == {"H"}
-    assert admitted_side_runs(sessions, {"P"}, limit=1) == set()
+    assert admitted_side_runs(sessions, {"P"}, limit=1, eligible={"H", "P"}) == set()
 
 
 def test_a_side_run_ranks_ahead_of_a_card_that_has_not_started() -> None:
     sessions = {"P": _parked("P"), "F": _fresh("F")}
-    assert admitted_side_runs(sessions, {"P"}, limit=1) == {"P"}
-    assert admitted_side_runs(sessions, set(), limit=1) == set()
+    assert admitted_side_runs(sessions, {"P"}, limit=1, eligible={"P", "F"}) == {"P"}
+    assert admitted_side_runs(sessions, set(), limit=1, eligible={"P", "F"}) == set()
 
 
 def test_a_running_side_writer_holds_the_slot_and_a_fresh_card_waits_then_gets_it() -> None:

@@ -57,7 +57,9 @@ from coordinare.services.pipeline_budget import (
     configured_hold_seconds,
     configured_review_limit,
     expire_review_holds,
+    has_live_performer,
     has_live_side_writer,
+    has_live_work,
     has_started,
     is_parked_in_review,
     is_released_merge,
@@ -128,6 +130,11 @@ def get_daemon_started_at() -> str:
 EligibilityReason = Literal[
     "eligible", "blocked_column", "backlog_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity", "review_capacity",
 ]
+
+#: 171: a documenter side run waits for a free pipeline slot. A skip record, not an
+#: eligibility verdict: the card is eligible, it is just parked behind the budget.
+SIDE_RUN_WAITING = "side_run_waiting"
+SIDE_RUN_WAITING_DETAIL = "documentation update waiting for a free slot"
 
 ELIGIBLE: EligibilityReason = "eligible"
 BLOCKED_COLUMN: EligibilityReason = "blocked_column"
@@ -1629,21 +1636,12 @@ def _log_review_waits(
         )
 
 
-def _compute_session_eligibilities(
-    state: CoordinareState, active_sessions: dict[str, Any], max_cards: int,
-    *, admit_unstarted: bool = True,
-) -> dict[str, SessionEligibility]:
-    """Build the dependency graph from the pre-fetched board (when cached),
-    compute eligibility for every session, apply pipeline-budget selection,
-    and record skip reasons for ineligible sessions.
+def _eligibility_map(state: CoordinareState, active_sessions: dict[str, Any]) -> dict[str, SessionEligibility]:
+    """Eligibility for every session, from the cached board. No side effects.
 
-    ``admit_unstarted=False`` is the first pass of a cycle (#186): it sets the
-    selection to started work only and records nothing else, so the full pass
-    that follows is the one that reports skip reasons and review waits.
+    Shared by the pipeline selection and by the documenter side-run admission (#171),
+    so both see the same eligible set.
     """
-    # #186: a non-human hold in monitoring_pr that outlived its bound is a human
-    # wait before anything is selected, so it releases its slot this cycle.
-    expire_review_holds(active_sessions, hold_seconds=configured_hold_seconds(state.get("config")))
     # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
     # so sessions blocked by a now-closed off-board issue may be conservatively skipped
     # this cycle.  The full resolution runs inside each session's check_board tick and
@@ -1663,11 +1661,28 @@ def _compute_session_eligibilities(
             logger.warning("multi_session.dep_graph_failed", exc_info=True)
 
     board_snapshot: dict[str, list[str]] = state.get("board_snapshot") or {}
-
-    eligibilities: dict[str, SessionEligibility] = {
+    return {
         card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
         for card_id, session in active_sessions.items()
     }
+
+
+def _compute_session_eligibilities(
+    state: CoordinareState, active_sessions: dict[str, Any], max_cards: int,
+    *, admit_unstarted: bool = True,
+) -> dict[str, SessionEligibility]:
+    """Build the dependency graph from the pre-fetched board (when cached),
+    compute eligibility for every session, apply pipeline-budget selection,
+    and record skip reasons for ineligible sessions.
+
+    ``admit_unstarted=False`` is the first pass of a cycle (#186): it sets the
+    selection to started work only and records nothing else, so the full pass
+    that follows is the one that reports skip reasons and review waits.
+    """
+    # #186: a non-human hold in monitoring_pr that outlived its bound is a human
+    # wait before anything is selected, so it releases its slot this cycle.
+    expire_review_holds(active_sessions, hold_seconds=configured_hold_seconds(state.get("config")))
+    eligibilities = _eligibility_map(state, active_sessions)
 
     review_limit = configured_review_limit(state.get("config"))
     selected = select_pipelines(
@@ -1722,6 +1737,12 @@ def _compute_session_eligibilities(
                 **facts.get(card_id, {}),
             }
             _log_session_skip(card_id, active_sessions[card_id], elig)
+    # 171: a documenter side run waiting for a slot is a reason the card has not
+    # moved, so the dashboard shows it beside the card. Set by the side-run admission
+    # earlier in the same cycle.
+    for card_id, detail in (state.get("_side_run_waiting") or {}).items():
+        if card_id in active_sessions:
+            skip_reasons[card_id] = {"reason": SIDE_RUN_WAITING, "detail": detail}
     state["session_skip_reasons"] = skip_reasons
     return eligibilities
 
@@ -3172,6 +3193,8 @@ class CoordinareDaemon:
         """
         active_sessions: dict[str, Any] = self._state.get("active_sessions") or {}
         self._state.pop("_pipeline_selected", None)
+        # 171: the waiting side runs are re-derived each cycle by the side-run admission.
+        self._state["_side_run_waiting"] = {}
 
         # 048: Sync SlotManager with current sessions to free stale slots
         # from crashed/expired performers before dispatching new ones.
@@ -4231,7 +4254,9 @@ class CoordinareDaemon:
             for card_id, session in list(sessions.items()):
                 if card_id not in (dispatchable_card_ids or set()) or session.get("board_paused"):
                     continue
-                if not _ds.should_dispatch(session)[0]:
+                # A card whose own lifecycle performer is live is not waiting for a
+                # slot; its side run starts once that performer has finished.
+                if has_live_performer(session) or not _ds.should_dispatch(session)[0]:
                     continue
                 try:
                     found = await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
@@ -4240,7 +4265,12 @@ class CoordinareDaemon:
                     continue
                 if found is not None:
                     resolved[card_id] = found
-            admit = admitted_side_runs(sessions, set(resolved), limit=self._max_concurrent_cards())
+            eligible = {cid for cid, elig in _eligibility_map(self._state, sessions).items() if elig.eligible}
+            admit = admitted_side_runs(
+                sessions, set(resolved), limit=self._max_concurrent_cards(), eligible=eligible,
+            )
+            if dispatchable_card_ids is not None:
+                self._record_side_run_waiting(sessions, set(resolved) - admit)
 
             async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
                 return resolved.get(card_id)
@@ -4253,6 +4283,37 @@ class CoordinareDaemon:
                                 admit=admit)
         except Exception as exc:
             logger.warning("documenting_side.cycle_failed", error=str(exc)[:200])
+
+    def _record_side_run_waiting(self, sessions: dict[str, Any], waiting: set[str]) -> None:
+        """171: make a side run that waits for a slot visible, without repeating it each cycle.
+
+        Logs once at info when a card starts waiting. Records the reason for the
+        dashboard snapshot (``_side_run_waiting``, read by the eligibility pass that
+        follows in the same cycle). The activity feed dedupes the same entry on its own.
+        """
+        if not hasattr(self, "_side_run_waiting_logged"):
+            self._side_run_waiting_logged: set[str] = set()
+        logged = self._side_run_waiting_logged
+        logged.intersection_update(waiting)
+        self._state["_side_run_waiting"] = dict.fromkeys(waiting, SIDE_RUN_WAITING_DETAIL)
+        for card_id in sorted(waiting - logged):
+            logged.add(card_id)
+            logger.info(
+                "documenting_side.waiting_for_slot",
+                card_id=card_id,
+                limit=self._max_concurrent_cards(),
+                in_use=sum(1 for s in sessions.values() if has_live_work(s)),
+            )
+        activity = self._state.get("activity_log")
+        if activity is not None:
+            for card_id in sorted(waiting):
+                activity.record(
+                    activity_type="side_run_waiting",
+                    card_id=card_id,
+                    card_title=str((sessions.get(card_id, {}).get("current_card") or {}).get("title") or ""),
+                    stage="documenting",
+                    text=SIDE_RUN_WAITING_DETAIL,
+                )
 
     async def _resolve_documenting_side(
         self, card_id: str, session: dict[str, Any], sym_gh_svcs: dict[str, Any],

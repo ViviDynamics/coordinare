@@ -137,6 +137,12 @@ function waitingReason(card, snapshot) {
     return needsHumanReason(cause, cause ? 'The conductor stopped this card: ' + cause + '.' : undefined);
   }
 
+  // 171: a card in review whose documentation run waits for a free slot. Not a To Do
+  // card, so it is handled before the To Do branch below.
+  if (c.has_session && skip && skip.reason === 'side_run_waiting') {
+    return {kind: 'queued', text: 'Documentation update waiting for a free slot', title: String(skip.detail || '')};
+  }
+
   if (c.column !== 'TODO') return none;
 
   // A card with a session takes its reason from the session's skip record.

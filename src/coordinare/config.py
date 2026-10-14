@@ -1371,9 +1371,11 @@ class ProjectConfiguration(BaseSettings):
         description=(
             "How many cards may hold a pipeline slot at once. A card holds its slot while it has "
             "work under way. Its documenter side run shares that slot, or takes a free one when the "
-            "card is parked on review, and waits while none is free. Env bootstrap, the advocate and "
-            "curator intake, and wiki-init run outside this budget: each is a card-less container, "
-            "gated by its own in-flight marker, so at most one run of each is in flight per symphony. "
+            "card is parked on review. A side run waits while no slot is free, and also while its own "
+            "card's performer is live; it starts once that has finished. A waiting side run is shown on "
+            "the card. Env bootstrap, the advocate and curator intake, and wiki-init run outside this "
+            "budget: each is a card-less container gated by an in-flight marker, so at most one run of "
+            "each kind is in flight per symphony, per daemon process (a restart clears the marker). "
             "Architect and assessor intake run inside it, as lifecycle stages."
         ),
     )

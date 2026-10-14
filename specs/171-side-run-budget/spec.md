@@ -64,6 +64,14 @@ An operator sets `max_concurrent_cards: 1`. One card is running its lifecycle pe
 3. **Given** the budget is full, **When** an env bootstrap is due, **Then** it dispatches.
 4. **Given** the field description, **When** an operator reads `max_concurrent_cards`, **Then** it names all four card-less runs and says they sit outside the budget.
 
+## Review fixes
+
+An independent review of the first cut found three things, now fixed and pinned by tests.
+
+- **The review cap.** A card waiting on a human review that a side run admitted was no longer counted toward `max_cards_in_review`, so a fresh card could be admitted while two cards were in review. The cap now counts every card waiting on a review, whether or not a side writer runs for it (`is_waiting_on_review`). Test: `test_171_review_cap_and_eligibility.py`.
+- **Ineligible cards.** The side-run admission ignored eligibility, so a paused, started card kept the one slot and the waiting side run never started. The admission now uses the same eligible set as the lifecycle selection (`_eligibility_map`). Test: `test_171_review_cap_and_eligibility.py`.
+- **Visibility.** A waiting side run logged only at debug, and nothing showed it. It now logs once at info (`documenting_side.waiting_for_slot`), records the skip reason `side_run_waiting` for the snapshot (`session_skip_reasons`), and adds an activity-feed entry. The dashboard shows the reason on a card in review. Test: `test_171_side_run_waiting_visibility.py`.
+
 ## Requirements
 
 - **FR-001**: A documenter side run MUST be admitted through the pipeline budget before it is dispatched. A card that is not admitted MUST NOT be dispatched, and MUST NOT be recorded as failed.
@@ -77,7 +85,13 @@ An operator sets `max_concurrent_cards: 1`. One card is running its lifecycle pe
 
 ## Known residual
 
-A side writer whose termination cannot be confirmed keeps `writer_active` and so keeps its card's slot. This is the existing owned-writer rule (spec 165 and `owned_writers`), which fails closed so that two writers never share a worktree. It was already true before this spec. The slot is released when the writer's termination is confirmed, or when the card is reset. A bounded override is out of scope here.
+A side writer keeps `writer_active` and so keeps its card's slot until its termination is confirmed. This is the owned-writer rule (spec 165), which fails closed so that two writers never share a worktree. It was already true before this spec.
+
+Poll errors are not held until restart. A transient poll error records the run as failed with `writer_active` set. The next cycle asks `recover_documenting_side_session` again. A writer that is still reachable is polled again, and the slot frees when the run completes. This is pinned by `tests/unit/test_171_transient_poll_error.py`. `stop_owned_writers` is not on this path: it runs only when the card is paused or moved out of its column, and it clears a writer only when the service confirms the stop.
+
+The hold does last until restart in one case: when `recover` cannot confirm the writer at all (a runtime with no confirmation path, where `recover` returns False). With `max_concurrent_cards: 1` that stalls the pipeline for that card. This predates spec 171. Making that path retry or give up is a follow-up, not part of this change.
+
+Side-run waits are not bounded by `review_slot_hold_seconds`. That bound applies to a card's automation hold in `monitoring_pr` (spec 186). A waiting side run holds no slot and is not on a hold. A running side writer holds its slot until its poll ends, at most one hour (`DEFAULT_POLL_TIMEOUT_S`).
 
 Because a card-less run is outside the budget, the number of performer containers can exceed `max_concurrent_cards` by the number of card-less runs in flight. Each is bounded to one per symphony by its own marker, and the documentation says so.
 
