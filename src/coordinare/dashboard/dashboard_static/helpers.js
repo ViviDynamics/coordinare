@@ -148,10 +148,9 @@ function conductorHeadline(s, activeSess) {
 // only once per check, so the page's one-second timer re-renders it.
 function refreshConductorHeadline() {
   var el = document.getElementById('phase');
-  var state = typeof _lastState !== 'undefined' ? _lastState : null;
-  if (!el || !state) return;
   // 139: the headline reads the symphony the header has chosen, like every other panel.
-  if (typeof scopedView === 'function') state = scopedView(state);
+  var state = typeof currentScopedState === 'function' ? currentScopedState() : null;
+  if (!el || !state) return;
   var active = typeof findActivePerformerSession === 'function' ? findActivePerformerSession(state) : null;
   var text = conductorHeadline(state, active);
   if (el.textContent !== text) el.textContent = text;
@@ -201,7 +200,8 @@ function refreshFreshness() {
   var stateAt = Number(_lastStateAt) || 0;
   var has = stateAt > 0;
   var last = stateAt;
-  var state = typeof _lastState !== 'undefined' ? _lastState : null;
+  // The poll interval the freshness line counts down is the selected symphony's (139).
+  var state = typeof currentScopedState === 'function' ? currentScopedState() : null;
   detail.textContent = freshnessText(label, last, has, state, Date.now());
   var status = document.getElementById('connection-status');
   if (status) status.classList.toggle('conn-stale', has && label !== 'Live');

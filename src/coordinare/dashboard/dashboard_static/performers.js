@@ -470,14 +470,16 @@ function showPerformerDetail(cardId) {
   if (detailView) {
     detailView.style.display = '';
     var content = document.getElementById('card-detail-content');
-    if (!_lastState) {
+    // 139: the card detail reads the selected symphony's view, like every other panel.
+    var scopedNow = currentScopedState();
+    if (!scopedNow) {
       if (content) content.innerHTML = '<span class="empty-state">Loading&hellip;</span>';
       return;
     }
-    var sessions = Array.isArray(_lastState.active_sessions) ? _lastState.active_sessions : [];
+    var sessions = Array.isArray(scopedNow.active_sessions) ? scopedNow.active_sessions : [];
     var sess = sessions.find(function(s) { return s.card_id === cardId; });
     if (sess) {
-      if (content) { content.innerHTML = renderCardDetailContent(sess, _lastState); hydrateCardRuns(content); }
+      if (content) { content.innerHTML = renderCardDetailContent(sess, scopedNow); hydrateCardRuns(content); }
     }
   }
 }

@@ -294,6 +294,9 @@ function renderState(s) {
       var sha = j.post_rebase_sha ? j.post_rebase_sha.substring(0, 8) : '';
       var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ' — ' + esc(j.outcome);
       if (sha) label += ' (' + esc(sha) + ')';
+      // 139: a branch that needs a person names its symphony, or says it covers all of them.
+      if (j.unattributed) label += ' · covers all symphonies';
+      else if (j.symphony) label += ' · ' + esc(j.symphony);
       if (j.conflicted_files && j.conflicted_files.length > 0) {
         label += ' [' + j.conflicted_files.map(esc).join(', ') + ']';
       }
@@ -919,7 +922,8 @@ function router() {
     loadPersonasPage();
   } else if (path === '/history') {
     showPage('history-page');
-    if (_lastState) renderHistoryPage(_lastState);
+    var historyNow = currentScopedState();
+    if (historyNow) renderHistoryPage(historyNow);
   } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
     showPage('symphonies-page');
     if (_lastState) renderSymphoniesPage(_lastState);
@@ -961,8 +965,11 @@ window.addEventListener('popstate', function() { router(); });
 // 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
 // BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
 // performers-page + active-work rendering: /static/performers.js (#349)
+// s is the scoped view: under a symphony the checks are not known per symphony, so the note
+// replaces them, the same note the dashboard panel shows.
 function renderHistoryPage(s) {
   renderCycleHistoryInto(document.getElementById('history-page-section'), s.cycle_history);
+  applyScopeNotes(s);
 }
 
 // 049: Personas page
@@ -1235,6 +1242,7 @@ function afAppend(entries) {
   while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
   if (_afGroupingActive) {
     afSyncGroups(false);
+    _afShownSig = afVisibleSig();
     afUpdateEmpty();
     afUpdateFilterOptions();
     return;
@@ -1246,14 +1254,33 @@ function afAppend(entries) {
     while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
     while (feed.childElementCount > AF_MAX_ROWS) feed.removeChild(feed.lastElementChild);
   }
+  _afShownSig = afVisibleSig();
   afUpdateEmpty();
   afUpdateFilterOptions();
 }
 
+// The keys of the rows the feed shows now, in order. afAppend and afRender keep _afShownSig
+// equal to it, so a snapshot that changes nothing on screen does not re-render the feed.
+var _afShownSig = '';
+function afVisibleSig() {
+  var keys = [];
+  for (var i = 0; i < _afEntries.length; i++) {
+    if (afMatches(_afEntries[i])) keys.push(String(_afEntries[i].seq));
+  }
+  return keys.join('|');
+}
+
+// 139: on every snapshot, re-render only if the rows on screen would change (a scope or a
+// filter change). A full re-render re-announces every row, so it is not done for nothing.
+function afSyncVisible() {
+  if (afVisibleSig() !== _afShownSig) afRender();
+}
+
 function afRender() {
-  // Full re-render — filter changes only, never a live update.
+  // Full re-render: a filter or scope change, or a snapshot that changes the rows on screen.
   var feed = document.getElementById('activity-feed');
   if (!feed) return;
+  _afShownSig = afVisibleSig();
   if (_afGroupingActive) {
     afSyncGroups(true);
     afUpdateEmpty();
@@ -1342,7 +1369,8 @@ function afNoteMessage() {
 }
 
 function afQuietTick() {
-  var s = _lastState;
+  // 139: the quiet markers and the tiles follow the selected symphony, like every other view.
+  var s = currentScopedState();
   if (!s) return;
   var threshold = s.activity_quiet_threshold_seconds;
   var sessions = (Array.isArray(s.active_sessions) ? s.active_sessions : []).filter(function(sess) {
@@ -1440,9 +1468,12 @@ function connectEventStream() {
       // 049: re-render current page with new state
       var path = location.pathname;
       if (isPerformersPath(path)) renderPerformersPage(scoped);
-      else if (path === '/history') renderHistoryPage(_lastState);
+      else if (path === '/history') renderHistoryPage(scoped);
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
       else renderDashboardExtras(scoped);
+      // 139: the feed follows the scope on every snapshot, so rows that arrived before it cannot linger.
+      afUpdateFilterOptions();
+      afSyncVisible();
     } catch(err) { console.error('parse error', err); }
   });
   source.onerror = function() {

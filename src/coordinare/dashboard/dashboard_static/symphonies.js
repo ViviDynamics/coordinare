@@ -153,6 +153,8 @@ var SNAPSHOT_FIELD_SCOPE = {
   cycles_completed: 'derived',
   last_cycle_duration_seconds: 'hidden',
   consecutive_error_count: 'derived',
+  // Branches that need a person stay under every scope, attributed or labelled as covering all
+  // symphonies; the healthy ones are hidden under a symphony.
   daemon_start_time: 'shared',
   poll_interval_seconds: 'derived',
   token_usage: 'scoped',
@@ -161,7 +163,7 @@ var SNAPSHOT_FIELD_SCOPE = {
   cycle_active: 'shared',
   daemon_running: 'shared',
   blocked_by_dependencies: 'hidden',
-  last_rebase_round: 'hidden',
+  last_rebase_round: 'derived',
   role_utilization: 'shared',
   assignee_filter: 'shared',
   include_unassigned: 'shared',
@@ -174,6 +176,37 @@ var SNAPSHOT_FIELD_SCOPE = {
   symphonies: 'scoped',
   coordinare: 'shared'
 };
+
+// The fields of one session row (active_sessions[], built by _session_summary and
+// _top_state_summary). A row is filtered with its session, so these are declared once,
+// here, rather than per scope. tests/js/snapshot_scope_checks.js fails on a row key that
+// is missing from this list.
+var SESSION_ROW_FIELDS = [
+  'agent_dispatch_at', 'backend_ui_url', 'card_cost_estimate', 'card_id', 'card_title',
+  'card_tokens_total', 'container_id', 'feedback_cycle_count', 'full_log_available', 'issue_number',
+  'issue_url', 'observer_verdicts', 'pending_control', 'performer_backend', 'performer_events',
+  'performer_logs', 'performer_metrics', 'performer_stage', 'phase', 'pr_url', 'session_id',
+  'session_stats', 'slot_queued_since', 'total_feedback_cycles', 'triage_blocks', 'usage',
+  'workflow_step', 'workflow_step_entered_at', 'workflow_step_trail'
+];
+
+// Every read of the full snapshot, _lastState, in the shipped scripts. A read goes through
+// scopedView() or currentScopedState(); the reads listed here must see every symphony, and
+// each says why. tests/js/last_state_scope_checks.js fails on an unlisted read and on an
+// entry that no longer matches a line.
+var SCOPE_UNSCOPED_READS = [
+  {file: 'app.js', text: 'var _lastState = null;', why: 'the one holder of the full snapshot'},
+  {file: 'app.js', text: '_lastState = JSON.parse(e.data);', why: 'the arrival of each snapshot, from which every scope is built'},
+  {file: 'app.js', text: 'afSyncRun(_lastState.activity_run_id);', why: 'the feed run belongs to the daemon, not to a symphony'},
+  {file: 'app.js', text: 'renderSymphoniesPage(_lastState)', why: 'the Symphonies page lists every symphony by design'},
+  {file: 'app.js', text: "var s = typeof _lastState !== 'undefined' ? _lastState : null;", why: 'the feed must know every symphony to tell whose card an item is'},
+  {file: 'symphonies.js', text: "var s = typeof _lastState !== 'undefined' ? _lastState : null;", why: 'the switcher lists every symphony to offer its choices'},
+  {file: 'symphonies.js', text: "symphonyNames(typeof _lastState !== 'undefined' ? _lastState : null)", why: 'the switcher resolves a choice against every symphony'},
+  {file: 'symphonies.js', text: "if (typeof _lastState === 'undefined' || !_lastState) return;", why: 'the one place a scoped refresh starts'},
+  {file: 'symphonies.js', text: "if (target.indexOf('?') !== -1 || typeof _lastState === 'undefined' || !_lastState) return target;", why: 'a link carries the choice, which needs every symphony'},
+  {file: 'symphonies.js', text: 'if (symphonyNames(_lastState).length < 2) return target;', why: 'a link carries the choice, which needs every symphony'},
+  {file: 'symphonies.js', text: 'var choice = currentSymphonyChoice(_lastState);', why: 'a link carries the choice, which needs every symphony'}
+];
 
 // The phases that make a session the one the conductor is watching.
 var SYMPHONY_FOCUS_PHASES = ['monitoring_performer', 'monitoring_agent', 'relay_feedback'];
@@ -269,14 +302,51 @@ function symphonyScope(s, choice) {
 
   // Hidden: values the snapshot does not carry per symphony. Each is cleared and named.
   scoped.scope_hidden = ['backend_ui_url', 'blocked_by_dependencies', 'cycle_history',
-    'last_cycle_duration_seconds', 'last_rebase_round', 'session_stats'];
+    'last_cycle_duration_seconds', 'session_stats'];
   scoped.backend_ui_url = null;
   scoped.blocked_by_dependencies = [];
   scoped.cycle_history = [];
   scoped.last_cycle_duration_seconds = null;
-  scoped.last_rebase_round = null;
+  scoped.last_rebase_round = symphonyRebaseAttention(s, s.last_rebase_round);
   scoped.session_stats = null;
   return scoped;
+}
+
+// The branch-divergence round under a symphony. A blocked or failed branch needs a person, so
+// it stays under every scope: attributed to its symphony when its card is known, and marked
+// unattributed when no symphony claims it. A healthy branch is informational, so it is dropped
+// and the round says some were (partial). Null when nothing needs a person.
+function symphonyRebaseAttention(s, round) {
+  if (!round || typeof round !== 'object' || !Array.isArray(round.jobs)) return round || null;
+  var needing = [];
+  var healthy = 0;
+  round.jobs.forEach(function(job) {
+    if (!job || typeof job !== 'object') return;
+    if (job.outcome !== 'blocked' && job.outcome !== 'failed') { healthy += 1; return; }
+    var owner = symphonyOfCard(s, job.card_id);
+    var copy = {};
+    for (var key in job) {
+      if (symphonyHas(job, key)) copy[key] = job[key];
+    }
+    copy.symphony = owner;
+    copy.unattributed = owner === '';
+    needing.push(copy);
+  });
+  if (needing.length === 0) return null;
+  var out = {};
+  for (var field in round) {
+    if (symphonyHas(round, field)) out[field] = round[field];
+  }
+  out.jobs = needing;
+  out.partial = healthy > 0;
+  return out;
+}
+
+// The full snapshot as the views read it: the snapshot narrowed to the symphony the header
+// chose. Every render takes this, so no view can show another symphony's data by reading the
+// unscoped snapshot. Null before the first snapshot arrives.
+function currentScopedState() {
+  return typeof _lastState !== 'undefined' && _lastState ? scopedView(_lastState) : null;
 }
 
 // A count from a symphony entry, or null when the snapshot does not carry it.
@@ -284,37 +354,44 @@ function symphonyNumber(value) {
   return typeof value === 'number' && isFinite(value) ? value : null;
 }
 
-// The notes that say a panel covers every symphony, or that it is not shown per symphony.
-var SCOPE_NOTE_HIDDEN = 'Shown for all symphonies only.';
+// The notes under the panels: what is known for every symphony, and what is not known per symphony.
 var SCOPE_NOTE_SHARED = 'Covers all symphonies.';
+var SCOPE_NOTE_CAPACITY = 'Capacity and busy counts are shared by all symphonies.';
+var SCOPE_NOTE_CHECKS = 'Recent checks are shown for all symphonies only.';
+var SCOPE_NOTE_DEPENDENCIES = 'Dependency blockers are shown for all symphonies only.';
+var SCOPE_NOTE_HEALTHY_BRANCHES = 'Healthy branches are shown for all symphonies only.';
+var SCOPE_NOTE_DURATION = 'Shown for all symphonies only.';
 
+// Writes the notes for one snapshot: the dashboard panels and the History page share the
+// recent-checks note, so a panel the scope hides says the same thing wherever it is.
 function applyScopeNotes(s) {
   var scoped = !!(s && Array.isArray(s.scope_hidden));
   var hidden = scoped ? s.scope_hidden : [];
-  function note(id, text) {
+  function setText(id, text) {
     var el = document.getElementById(id);
     if (el) el.textContent = text;
-    return el;
   }
-  note('health-scope-note', scoped ? SCOPE_NOTE_SHARED : '');
-  note('capacity-scope-note', scoped ? 'Capacity is shared by all symphonies.' : '');
+  setText('health-scope-note', scoped ? SCOPE_NOTE_SHARED : '');
+  setText('capacity-scope-note', scoped ? SCOPE_NOTE_CAPACITY : '');
   var last = document.getElementById('last-duration');
-  if (last) last.title = hidden.indexOf('last_cycle_duration_seconds') !== -1 ? SCOPE_NOTE_HIDDEN : '';
-  var history = document.getElementById('history-section');
-  if (history && hidden.indexOf('cycle_history') !== -1) {
-    history.innerHTML = '<span class="empty-state">Recent checks cover all symphonies. ' + SCOPE_NOTE_HIDDEN + '</span>';
+  if (last) last.title = hidden.indexOf('last_cycle_duration_seconds') !== -1 ? SCOPE_NOTE_DURATION : '';
+  if (hidden.indexOf('cycle_history') !== -1) {
+    ['history-section', 'history-page-section'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = '<span class="empty-state">' + SCOPE_NOTE_CHECKS + '</span>';
+    });
   }
   var depList = document.getElementById('dependency-blockers-list');
   var depCard = document.getElementById('dependency-blockers-card');
   if (depList && depCard && hidden.indexOf('blocked_by_dependencies') !== -1) {
     depCard.style.display = '';
-    depList.innerHTML = '<li class="empty-state">Dependency blockers cover all symphonies. ' + SCOPE_NOTE_HIDDEN + '</li>';
+    depList.innerHTML = '<li class="empty-state">' + SCOPE_NOTE_DEPENDENCIES + '</li>';
   }
   var rebaseList = document.getElementById('rebase-status-list');
   var rebaseCard = document.getElementById('rebase-status-card');
-  if (rebaseList && rebaseCard && hidden.indexOf('last_rebase_round') !== -1) {
-    rebaseCard.style.display = '';
-    rebaseList.innerHTML = '<li class="empty-state">Branch divergence covers all symphonies. ' + SCOPE_NOTE_HIDDEN + '</li>';
+  var round = s && s.last_rebase_round;
+  if (rebaseList && rebaseCard && round && round.partial && round.jobs && round.jobs.length > 0) {
+    rebaseList.insertAdjacentHTML('beforeend', '<li class="empty-state">' + SCOPE_NOTE_HEALTHY_BRANCHES + '</li>');
   }
 }
 
