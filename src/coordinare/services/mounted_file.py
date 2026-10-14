@@ -1,24 +1,23 @@
-"""Reads and writes in a directory a performer can write (spec 208).
+"""Reads and writes of files the daemon takes from disk (spec 208).
 
-A file under ``performer_log_dir``, or under any other directory mounted read-write
-into a performer, holds whatever the performer put there. Every path component below
-the trusted anchor can be a link the performer made, so each one is opened with
-``O_NOFOLLOW`` relative to the directory descriptor before it, and the leaf is opened
-relative to the last one. A link above the leaf is refused the same way a link at the
-leaf is. Nothing is resolved by name after a check, so a component swapped after the
-check is still refused at open.
+There are two kinds of path, and the rule depends on which one a file is:
 
-Two anchors:
+* **Inside a performer mount** (performer log dir, endpoint volume, env-cache root). A
+  performer can write there, so it can plant a link at any level. The walk starts at the
+  mount's root, which the operator configured and which is resolved once. Every component
+  below it is opened with ``O_NOFOLLOW`` relative to the directory descriptor before it,
+  and the leaf is opened relative to the last one. A link anywhere below the mount root
+  is refused. Links above the mount root are not refused: they are the operator's.
+* **Outside every performer mount.** The operator controls the path, so it is opened
+  normally and links in it are followed. Non-regular files (a FIFO is refused by a
+  non-blocking open and the type check), and files over the caller's bound, are still
+  refused.
 
-* ``root`` given: the directory is trusted (the operator's configured mount host, or a
-  clone the daemon made). It may itself be a link. Components below it are checked.
-* ``root`` omitted: the whole parent path is checked. A parent that contains any link
-  is refused, because nothing above it is trusted.
+A clone is the same as a mount: its contents are performer-authored, so the caller anchors
+the walk at the clone root (:func:`anchor_at`), and links below it are refused.
 
-Reads are bounded and refuse anything that is not a plain single-name regular file
-(a FIFO would block, a directory is not content). A refusal is logged and reads as
-"no file". The bytes are untrusted: callers redact them before showing them and never
-execute or import them.
+A refusal is logged and reads as "no file". The bytes are untrusted: callers redact them
+before showing them and never execute or import them.
 """
 
 from __future__ import annotations
@@ -28,14 +27,23 @@ import errno
 import os
 import stat
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 
-from coordinare.services.run_transcript import _NOFOLLOW, _NONBLOCK, _write_all
+from coordinare.services.run_transcript import (
+    _NOFOLLOW,
+    _NONBLOCK,
+    _case_insensitive,
+    _write_all,
+)
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Iterable
+
+    from coordinare.config import ProjectConfiguration
 
 logger = structlog.get_logger(__name__)
 
@@ -44,50 +52,82 @@ _DEFAULT_FILE_MODE = 0o644
 
 
 class MountedFileRefusedError(OSError):
-    """A write or read the daemon will not perform on a performer-writable path."""
+    """A read or write the daemon will not perform on a performer-writable path."""
 
 
-def _classify(info: os.stat_result) -> str | None:
-    """Why an lstat result is not a plain single-name regular file, or None when it is one."""
-    if stat.S_ISLNK(info.st_mode):
-        return "symlink"
-    if not stat.S_ISREG(info.st_mode):
-        return "not a regular file"
-    if info.st_nlink != 1:
-        return "hard linked"
-    return None
+@dataclass(frozen=True)
+class Anchor:
+    """A directory below which every component is checked for links.
+
+    ``start`` is the resolved directory the walk opens first. ``base`` is the same directory
+    spelled the way the caller's paths spell it, so a path can be measured against it.
+    """
+
+    start: Path
+    base: Path
 
 
-def _open_parent(path: Path, root: Path | None) -> tuple[int, str]:
-    """Open the directory that holds *path* and return ``(dir_fd, leaf_name)``.
+def anchor_at(root: Path) -> Anchor:
+    """An anchor at *root*, which is trusted (operator config or a clone the daemon made).
 
-    Raises ``FileNotFoundError`` when a directory on the way is missing, and
-    :class:`MountedFileRefusedError` when a directory on the way is a link or is not a
-    directory. The caller closes ``dir_fd``.
+    *root* itself may be a link. Components below it are checked.
+    """
+    return Anchor(start=root.resolve(), base=root.absolute())
+
+
+def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
+    """Every host directory a performer container can see (129, 208).
+
+    The performer log dir is bind-mounted into ephemeral containers, each endpoint may
+    declare more volumes, and the env-cache root holds per-symphony caches mounted into
+    performers. Used by the transcript and run-log guards and by the file readers here.
+    """
+    hosts: list[Path] = []
+    log_dir = getattr(config, "performer_log_dir", None)
+    if log_dir is not None:
+        hosts.append(Path(log_dir))
+    for endpoint in config.performer_endpoints:
+        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
+    hosts.append(Path(config.env_cache_root).expanduser())
+    return hosts
+
+
+def _parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
+    """The components of *path* below *base*, or None when *base* is not an ancestor.
+
+    Compared case-insensitively where the filesystem that holds *base* is case-insensitive.
+    """
+    insensitive = _case_insensitive(base)
+    path_parts = path.parts
+    base_parts = base.parts
+    if len(path_parts) < len(base_parts):
+        return None
+    head = path_parts[: len(base_parts)]
+    if insensitive:
+        same = tuple(p.casefold() for p in head) == tuple(p.casefold() for p in base_parts)
+    else:
+        same = head == base_parts
+    return path_parts[len(base_parts) :] if same else None
+
+
+def mount_anchor(path: Path, mounts: Iterable[Path]) -> Anchor | None:
+    """The anchor of the deepest performer mount that holds *path*, or None.
+
+    A path is inside a mount when it lies strictly below the mount's root, spelled either
+    as the operator wrote it or resolved. Containment is decided on the path as given, not
+    on its resolved form, so a link planted inside a mount cannot move a path out of it.
     """
     absolute = path.absolute()
-    parent = absolute.parent
-    if root is None:
-        if parent.resolve() != parent:
-            message = "a parent directory is a link"
-            raise MountedFileRefusedError(message)
-        start, parts = "/", parent.parts[1:]
-    else:
-        anchor = root.absolute()
-        if not absolute.is_relative_to(anchor):
-            message = "outside its root"
-            raise MountedFileRefusedError(message)
-        start, parts = str(anchor), parent.relative_to(anchor).parts
-    fd = os.open(start, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in parts:
-            nxt = _open_dir(part, fd)
-            os.close(fd)
-            fd = nxt
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd, absolute.name
+    best: Anchor | None = None
+    best_depth = 0
+    for mount in mounts:
+        resolved = mount.resolve()
+        for base in (mount.absolute(), resolved):
+            below = _parts_below(absolute, base)
+            if below and len(base.parts) > best_depth:
+                best = Anchor(start=resolved, base=base)
+                best_depth = len(base.parts)
+    return best
 
 
 def _open_dir(name: str, dir_fd: int) -> int:
@@ -100,15 +140,71 @@ def _open_dir(name: str, dir_fd: int) -> int:
         raise MountedFileRefusedError(message) from exc
 
 
-def mounted_file_refusal(path: Path, *, root: Path | None = None) -> str | None:
-    """Why *path* is not a plain single-name regular file, or None when it is one.
+def _open_parent(path: Path, anchor: Anchor) -> tuple[int, str]:
+    """Open the directory that holds *path*, component by component, under *anchor*.
 
-    ``"missing"`` when nothing is there or a directory on the way is missing. Uses
-    ``lstat`` relative to the directory descriptor and never opens the file, so it is
-    safe to call before a write as well as before a read.
+    Returns ``(dir_fd, leaf_name)``. Raises ``FileNotFoundError`` when a directory on the way
+    is missing and :class:`MountedFileRefusedError` when one is a link or not a directory.
+    The caller closes ``dir_fd``.
     """
+    absolute = path.absolute()
+    below = _parts_below(absolute.parent, anchor.base)
+    if below is None:
+        message = "outside its anchor"
+        raise MountedFileRefusedError(message)
+    fd = os.open(anchor.start, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        dir_fd, leaf = _open_parent(path, root)
+        for part in below:
+            nxt = _open_dir(part, fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, absolute.name
+
+
+def _check_regular(info: os.stat_result, max_bytes: int) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        message = "not a regular file"
+        raise MountedFileRefusedError(message)
+    if info.st_size > max_bytes:
+        message = f"larger than {max_bytes} bytes"
+        raise MountedFileRefusedError(message)
+
+
+def _check_anchored(info: os.stat_result, max_bytes: int) -> None:
+    if info.st_nlink != 1:
+        message = "hard linked"
+        raise MountedFileRefusedError(message)
+    _check_regular(info, max_bytes)
+
+
+def _drain(fd: int, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(fd, _CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > max_bytes:
+            message = f"larger than {max_bytes} bytes"
+            raise MountedFileRefusedError(message)
+        chunks.append(chunk)
+
+
+def mounted_file_refusal(path: Path, *, anchor: Anchor | None) -> str | None:
+    """Why *path* cannot be read or replaced, or None when it can.
+
+    ``"missing"`` when nothing is there or a directory on the way is missing. With an
+    anchor, the check is link-refusing below it. Without one (an operator path), only the
+    type is checked, and links are followed. Never opens the file.
+    """
+    if anchor is None:
+        return _operator_refusal(path)
+    try:
+        dir_fd, leaf = _open_parent(path, anchor)
     except FileNotFoundError:
         return "missing"
     except MountedFileRefusedError as exc:
@@ -119,24 +215,36 @@ def mounted_file_refusal(path: Path, *, root: Path | None = None) -> str | None:
         os.close(dir_fd)
 
 
+def _operator_refusal(path: Path) -> str | None:
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return "missing"
+    return None if stat.S_ISREG(info.st_mode) else "not a regular file"
+
+
 def _leaf_refusal(dir_fd: int, leaf: str) -> str | None:
     try:
         info = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
         return "missing"
-    return _classify(info)
+    if stat.S_ISLNK(info.st_mode):
+        return "symlink"
+    if not stat.S_ISREG(info.st_mode):
+        return "not a regular file"
+    return "hard linked" if info.st_nlink != 1 else None
 
 
-def read_mounted_file(path: Path, *, max_bytes: int, root: Path | None = None) -> bytes | None:
-    """Read a performer-writable file, or None when it is missing or refused.
+def read_mounted_file(path: Path, *, max_bytes: int, anchor: Anchor | None) -> bytes | None:
+    """Read a file, or None when it is missing or refused.
 
-    The open uses ``O_NOFOLLOW`` and ``O_NONBLOCK``, so a planted link or FIFO is refused
-    without being followed or waited on. The descriptor is then checked as a regular file
-    with one name, and the size is bounded while reading, so a file that grows after the
-    ``fstat`` still cannot exceed *max_bytes*.
+    *anchor* decides the rule: an anchor (see :func:`mount_anchor` and :func:`anchor_at`)
+    means the walk refuses links below it; ``None`` means an operator path, opened normally.
+    Both refuse a non-regular file, a FIFO (the open is non-blocking, and the type is then
+    checked) and a file larger than *max_bytes*, and the size is bounded while reading.
     """
     try:
-        return _read_checked(path, max_bytes, root)
+        return _read(path, max_bytes, anchor)
     except FileNotFoundError:
         return None
     except MountedFileRefusedError as exc:
@@ -147,12 +255,19 @@ def read_mounted_file(path: Path, *, max_bytes: int, root: Path | None = None) -
         return None
 
 
-def _read_checked(path: Path, max_bytes: int, root: Path | None) -> bytes:
-    dir_fd, leaf = _open_parent(path, root)
+def _read(path: Path, max_bytes: int, anchor: Anchor | None) -> bytes:
+    if anchor is None:
+        fd = os.open(path, os.O_RDONLY | _NONBLOCK)
+        try:
+            _check_regular(os.fstat(fd), max_bytes)
+            return _drain(fd, max_bytes)
+        finally:
+            os.close(fd)
+    dir_fd, leaf = _open_parent(path, anchor)
     try:
         fd = _open_leaf(dir_fd, leaf)
         try:
-            _check_descriptor(os.fstat(fd), max_bytes)
+            _check_anchored(os.fstat(fd), max_bytes)
             return _drain(fd, max_bytes)
         finally:
             os.close(fd)
@@ -173,64 +288,46 @@ def _open_leaf(dir_fd: int, leaf: str) -> int:
         raise MountedFileRefusedError(message) from exc
 
 
-def _check_descriptor(info: os.stat_result, max_bytes: int) -> None:
-    reason = _classify(info)
-    if reason is not None:
-        raise MountedFileRefusedError(reason)
-    if info.st_size > max_bytes:
-        message = f"larger than {max_bytes} bytes"
-        raise MountedFileRefusedError(message)
+def replace_mounted_file(path: Path, data: bytes, *, anchor: Anchor | None) -> None:
+    """Atomically replace a file with *data*.
 
-
-def _drain(fd: int, max_bytes: int) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = os.read(fd, _CHUNK_BYTES)
-        if not chunk:
-            return b"".join(chunks)
-        total += len(chunk)
-        if total > max_bytes:
-            message = f"larger than {max_bytes} bytes"
-            raise MountedFileRefusedError(message)
-        chunks.append(chunk)
-
-
-def replace_mounted_file(path: Path, data: bytes, *, root: Path | None = None) -> None:
-    """Atomically replace a performer-writable file with *data*, through the directory fd.
-
-    The leaf must be a plain regular file or absent (a new file gets 0644; an existing one
-    keeps its mode). The temporary file is created ``O_EXCL`` and ``O_NOFOLLOW`` in the
-    same directory and renamed over the leaf with ``dir_fd`` arguments, so no step follows
-    a name. Raises :class:`MountedFileRefusedError` (an ``OSError``) on a refusal.
+    Under an anchor, the leaf must be a plain regular file or absent, and every step goes
+    through directory descriptors with ``O_NOFOLLOW``. The temporary file is created
+    ``O_EXCL`` and renamed over the leaf by descriptor. Without an anchor (an operator
+    path) the parent is opened normally and the rename is by name, as before 208. An
+    existing file keeps its mode. Raises an ``OSError`` on failure, including
+    :class:`MountedFileRefusedError` for a refusal.
     """
-    dir_fd, leaf = _open_parent(path, root)
+    if anchor is None:
+        dir_fd = os.open(path.absolute().parent, os.O_RDONLY | os.O_DIRECTORY)
+        leaf = path.name
+        follow = True
+    else:
+        dir_fd, leaf = _open_parent(path, anchor)
+        follow = False
     try:
-        mode = _existing_mode(dir_fd, leaf)
-        tmp = f".{leaf}.{uuid.uuid4().hex}.tmp"
-        _write_tmp(dir_fd, tmp, data, mode)
-        try:
-            os.replace(tmp, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp, dir_fd=dir_fd)
-            raise
+        mode = _existing_mode(dir_fd, leaf, follow=follow, operator=anchor is None)
+        _rename_into(dir_fd, leaf, data, mode)
     finally:
         os.close(dir_fd)
 
 
-def _existing_mode(dir_fd: int, leaf: str) -> int:
+def _existing_mode(dir_fd: int, leaf: str, *, follow: bool, operator: bool) -> int:
     try:
-        info = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=False)
+        info = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=follow)
     except FileNotFoundError:
         return _DEFAULT_FILE_MODE
-    reason = _classify(info)
-    if reason is not None:
-        raise MountedFileRefusedError(reason)
+    if not stat.S_ISREG(info.st_mode):
+        message = "not a regular file"
+        raise MountedFileRefusedError(message)
+    if not operator and info.st_nlink != 1:
+        message = "hard linked"
+        raise MountedFileRefusedError(message)
     return stat.S_IMODE(info.st_mode)
 
 
-def _write_tmp(dir_fd: int, tmp: str, data: bytes, mode: int) -> None:
+def _rename_into(dir_fd: int, leaf: str, data: bytes, mode: int) -> None:
+    tmp = f".{leaf}.{uuid.uuid4().hex}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600, dir_fd=dir_fd)
     try:
         os.fchmod(fd, mode)
@@ -242,6 +339,12 @@ def _write_tmp(dir_fd: int, tmp: str, data: bytes, mode: int) -> None:
             os.unlink(tmp, dir_fd=dir_fd)
         raise
     os.close(fd)
+    try:
+        os.replace(tmp, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp, dir_fd=dir_fd)
+        raise
 
 
 def _refused(path: Path, reason: str) -> None:

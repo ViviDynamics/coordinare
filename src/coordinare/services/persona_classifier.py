@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 import structlog
 
 from coordinare.services.conductor_calls import conductor_call
-from coordinare.services.mounted_file import read_mounted_file
+from coordinare.services.mounted_file import anchor_at, read_mounted_file
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -253,7 +253,9 @@ def _read_project_context(workspace_path: Path | None) -> dict[str, str]:
     try:
         for name, key in (("CLAUDE.md", "claude_md_head"), ("AGENTS.md", "agents_md_head")):
             data = read_mounted_file(
-                workspace_path / name, max_bytes=_PROJECT_CONTEXT_MAX_BYTES, root=workspace_path,
+                workspace_path / name,
+                max_bytes=_PROJECT_CONTEXT_MAX_BYTES,
+                anchor=anchor_at(workspace_path),
             )
             if data is not None:
                 out[key] = data.decode("utf-8", errors="replace")[:PROJECT_CONTEXT_BYTES]

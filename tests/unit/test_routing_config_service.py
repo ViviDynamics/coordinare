@@ -36,12 +36,12 @@ from coordinare.services.config_write_service import compute_content_hash
 
 def _deny_open(monkeypatch, denied: Path) -> None:
     """Make opening *denied* fail with EACCES, as an unreadable mounted file does (208 reads
-    go through ``os.open``, not ``Path.read_bytes``). The leaf is opened relative to its
-    directory descriptor, so the match is on the leaf name."""
+    go through ``os.open``, not ``Path.read_bytes``). An operator path is opened by its full
+    name, a mount-anchored one by its leaf name relative to a directory descriptor."""
     real_open = os.open
 
     def _unreadable(path, flags, mode=0o777, *args, **kwargs):
-        if os.fspath(path) == denied.name:
+        if os.fspath(path) in (str(denied), denied.name):
             raise PermissionError(errno.EACCES, "permission denied", str(denied))
         return real_open(path, flags, mode, *args, **kwargs)
 

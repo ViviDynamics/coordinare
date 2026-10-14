@@ -21,7 +21,11 @@ import coordinare.__main__ as app_main
 from coordinare import routing_config_service as rcs
 from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
 from coordinare.services import env_cache
-from coordinare.services.mounted_file import mounted_file_refusal, read_mounted_file
+from coordinare.services.mounted_file import (
+    anchor_at,
+    mounted_file_refusal,
+    read_mounted_file,
+)
 from coordinare.services.persona_classifier import _read_project_context
 
 VICTIM_TEXT = "KEEP: daemon-owned content\n"
@@ -82,6 +86,7 @@ def test_routing_read_refuses_symlinked_ancestor(tmp_path: Path) -> None:
         endpoint_id="e",
         host_path=_perf / "sub" / "routing.yaml",
         container_path="/r.yaml",
+        mounts=(_perf,),
     )
     view = rcs.read_routing(location)
     assert view.routing_available is False
@@ -96,6 +101,7 @@ def test_routing_write_refuses_symlinked_ancestor(tmp_path: Path) -> None:
         endpoint_id="e",
         host_path=perf / "sub" / "routing.yaml",
         container_path="/r.yaml",
+        mounts=(perf,),
     )
     # The base hash is the victim's real hash, so only the link check can refuse the write.
     base = "sha256:" + hashlib.sha256(ROUTING_BODY.encode()).hexdigest()
@@ -108,8 +114,8 @@ def test_routing_write_refuses_symlinked_ancestor(tmp_path: Path) -> None:
 def test_read_refuses_symlinked_ancestor_below_a_trusted_root(tmp_path: Path) -> None:
     perf, victim_dir = _ancestor_swap(tmp_path)
     target = perf / "sub" / "routing.yaml"
-    assert read_mounted_file(target, max_bytes=4096, root=perf) is None
-    assert mounted_file_refusal(target, root=perf) is not None
+    assert read_mounted_file(target, max_bytes=4096, anchor=anchor_at(perf)) is None
+    assert mounted_file_refusal(target, anchor=anchor_at(perf)) is not None
     assert (victim_dir / "routing.yaml").read_text() == ROUTING_BODY
 
 
@@ -117,7 +123,7 @@ def test_read_through_a_real_subdirectory_below_the_root_still_works(tmp_path: P
     perf = tmp_path / "perf"
     (perf / "sub").mkdir(parents=True)
     (perf / "sub" / "routing.yaml").write_text(ROUTING_BODY)
-    assert read_mounted_file(perf / "sub" / "routing.yaml", max_bytes=4096, root=perf) == (
+    assert read_mounted_file(perf / "sub" / "routing.yaml", max_bytes=4096, anchor=anchor_at(perf)) == (
         ROUTING_BODY.encode()
     )
 
@@ -126,7 +132,9 @@ def test_routing_write_round_trips_and_keeps_the_file_mode(tmp_path: Path) -> No
     path = tmp_path / "routing.yaml"
     path.write_text(ROUTING_BODY)
     os.chmod(path, 0o640)
-    location = rcs.RoutingLocation(endpoint_id="e", host_path=path, container_path="/r.yaml")
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=path, container_path="/r.yaml", mounts=(path.parent,),
+    )
     base = rcs.routing_content_hash(location)
     result = rcs.create_routing_entry(location, NEW_ENTRY, cast("str", base))
     assert result.ok is True
@@ -140,7 +148,9 @@ def test_routing_hash_matches_the_file_bytes(tmp_path: Path) -> None:
 
     path = tmp_path / "routing.yaml"
     path.write_text(ROUTING_BODY)
-    location = rcs.RoutingLocation(endpoint_id="e", host_path=path, container_path="/r.yaml")
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=path, container_path="/r.yaml", mounts=(path.parent,),
+    )
     expected = "sha256:" + hashlib.sha256(ROUTING_BODY.encode()).hexdigest()
     assert rcs.routing_content_hash(location) == expected
 
@@ -151,7 +161,9 @@ def test_routing_hash_refuses_a_link_instead_of_hashing_its_target(tmp_path: Pat
     victim.write_text("HOST-SECRET\n")
     link = tmp_path / "routing.yaml"
     link.symlink_to(victim)
-    location = rcs.RoutingLocation(endpoint_id="e", host_path=link, container_path="/r.yaml")
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=link, container_path="/r.yaml", mounts=(tmp_path,),
+    )
     assert rcs.routing_content_hash(location) is None
 
 
@@ -159,7 +171,9 @@ def test_routing_hash_refuses_an_oversize_file_without_reading_it(tmp_path: Path
     path = tmp_path / "routing.yaml"
     with open(path, "wb") as fh:
         fh.truncate(2 * 1024**3)
-    location = rcs.RoutingLocation(endpoint_id="e", host_path=path, container_path="/r.yaml")
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=path, container_path="/r.yaml", mounts=(path.parent,),
+    )
     done, value = _bounded(rcs.routing_content_hash, location)
     assert done is True
     assert value is None
@@ -396,3 +410,115 @@ def test_fallback_row_lands_in_state_when_the_mount_forbids_the_config_dir(tmp_p
     (row,) = resolved.glob("*.jsonl")
     assert json.loads(row.read_text().splitlines()[0])["task_id"] == "c8"
     assert not any(mount.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# Review round 3: the rule is decided by whether the file is inside a performer mount.
+# A link above a mount root is the operator's and is followed. A link below a mount root
+# is the performer's and is refused. Operator paths follow links, but a FIFO, a directory
+# and an oversize file are still refused.
+# ---------------------------------------------------------------------------
+
+
+def _operator_link_to(tmp: Path, name: str, target: Path) -> Path:
+    link = tmp / name
+    os.symlink(target, link)
+    return link
+
+
+def test_routing_under_a_symlinked_operator_directory_above_the_mount_reads(tmp_path: Path) -> None:
+    """``/tmp``-style: the operator's mount root is reached through a link above it."""
+    real = tmp_path / "real"
+    (real / "perf").mkdir(parents=True)
+    (real / "perf" / "routing.yaml").write_text(ROUTING_BODY)
+    mount = _operator_link_to(tmp_path, "operator-link", real) / "perf"
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=mount / "routing.yaml", container_path="/r.yaml",
+        mounts=(mount,),
+    )
+    view = rcs.read_routing(location)
+    assert view.routing_available is True
+    assert len(view.entries) == 1
+    base = "sha256:" + hashlib.sha256(ROUTING_BODY.encode()).hexdigest()
+    assert rcs.create_routing_entry(location, NEW_ENTRY, base).ok is True
+
+
+def test_routing_with_a_link_planted_below_the_mount_root_is_refused(tmp_path: Path) -> None:
+    """Same operator link above the mount root, plus a performer link below it: refused."""
+    real = tmp_path / "real"
+    (real / "perf").mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "routing.yaml").write_text(ROUTING_BODY)
+    os.symlink(victim, real / "perf" / "sub")
+    mount = _operator_link_to(tmp_path, "operator-link", real) / "perf"
+    location = rcs.RoutingLocation(
+        endpoint_id="e", host_path=mount / "sub" / "routing.yaml", container_path="/r.yaml",
+        mounts=(mount,),
+    )
+    assert rcs.read_routing(location).routing_available is False
+    assert rcs.routing_content_hash(location) is None
+    assert rcs.create_routing_entry(location, NEW_ENTRY, "sha256:" + "1" * 64).ok is False
+    assert (victim / "routing.yaml").read_text() == ROUTING_BODY
+
+
+def test_mount_anchor_matches_the_mount_in_either_spelling(tmp_path: Path) -> None:
+    from coordinare.services.mounted_file import mount_anchor
+
+    real = tmp_path / "real"
+    (real / "perf").mkdir(parents=True)
+    mount = _operator_link_to(tmp_path, "operator-link", real) / "perf"
+    resolved_file = (real / "perf" / "routing.yaml").resolve()
+    anchor = mount_anchor(resolved_file, [mount])
+    assert anchor is not None
+    assert anchor.start == (real / "perf").resolve()
+    assert mount_anchor(tmp_path / "elsewhere.yaml", [mount]) is None
+
+
+def test_operator_path_follows_a_link_to_a_regular_file(tmp_path: Path) -> None:
+    operator_dir = tmp_path / "operator"
+    operator_dir.mkdir()
+    (operator_dir / "routing.yaml").write_text(ROUTING_BODY)
+    link = _operator_link_to(tmp_path, "op-link", operator_dir) / "routing.yaml"
+    location = rcs.RoutingLocation(endpoint_id="e", host_path=link, container_path="/r.yaml")
+    assert rcs.read_routing(location).routing_available is True
+
+
+def test_operator_path_still_refuses_a_fifo(tmp_path: Path) -> None:
+    fifo = tmp_path / "routing.yaml"
+    os.mkfifo(fifo)
+    location = rcs.RoutingLocation(endpoint_id="e", host_path=fifo, container_path="/r.yaml")
+    done, value = _bounded(rcs.routing_content_hash, location)
+    assert done is True
+    assert value is None
+
+
+def test_operator_path_still_refuses_an_oversize_file(tmp_path: Path) -> None:
+    path = tmp_path / "routing.yaml"
+    with open(path, "wb") as fh:
+        fh.truncate(2 * 1024**3)
+    location = rcs.RoutingLocation(endpoint_id="e", host_path=path, container_path="/r.yaml")
+    done, value = _bounded(rcs.routing_content_hash, location)
+    assert done is True
+    assert value is None
+
+
+def test_env_cache_root_reached_through_an_operator_link_is_read(tmp_path: Path) -> None:
+    env_real = tmp_path / "env-real"
+    (env_real / "sym" / "services").mkdir(parents=True)
+    (env_real / "sym" / "services" / "services.json").write_text("{}")
+    env_root = _operator_link_to(tmp_path, "env-link", env_real)
+    data = read_mounted_file(
+        env_root / "sym" / "services" / "services.json",
+        max_bytes=1024,
+        anchor=anchor_at(env_root),
+    )
+    assert data == b"{}"
+
+
+def test_clone_reached_through_an_operator_link_is_read(tmp_path: Path) -> None:
+    real = tmp_path / "ws-real"
+    real.mkdir()
+    (real / "CLAUDE.md").write_text("claude rules\n")
+    ws = _operator_link_to(tmp_path, "ws-link", real)
+    assert _read_project_context(ws)["claude_md_head"] == "claude rules\n"

@@ -73,13 +73,18 @@ stated gap above, and it stays.
 
 Changes made in response to the review:
 
-1. **Links above the leaf.** Every performer-writable read, write and hash walks the
-   directory chain with `O_NOFOLLOW` per component, and opens the leaf relative to the last
-   directory descriptor. Anchor: the operator's root where one is known (env-cache root,
-   clone), so the root itself may be a link. Without a root, the whole parent must resolve
-   to itself, or the read is refused. Routing writes go through `replace_mounted_file`
-   (temporary file `O_EXCL`, rename by directory descriptor, mode preserved), not
-   `atomic_write_yaml`.
+1. **Links, by where the file is.** A file inside a performer mount (performer log dir,
+   endpoint volume, env-cache root, compared lexically and on resolved paths) is read and
+   written with an anchored walk: the mount root is resolved once, and every component below
+   it is opened with `O_NOFOLLOW` relative to the directory descriptor before it, then the
+   leaf relative to the last one. A link below a mount root is refused. A link above a mount
+   root is the operator's and is followed. A file outside every mount is an operator path:
+   opened normally, links followed, but a non-regular file, a FIFO (non-blocking open, then a
+   type check) and an oversize file are still refused. Clones (`CLAUDE.md`, `AGENTS.md`) and
+   the env-cache root (`services.json`) are anchored at their roots, so links below them are
+   refused and links above them are not. Routing writes go through `replace_mounted_file`
+   (temporary file `O_EXCL`, rename by directory descriptor, mode preserved, anchored only
+   inside a mount).
 2. **Prior manifest.** `env_cache.load_prior_manifest_bounded` reads
    `<cache dir>/services/services.json` with the bounded reader (1 MiB, anchored at the env
    cache root) and runs on a worker thread. The package keeps `parse_prior_manifest`. The

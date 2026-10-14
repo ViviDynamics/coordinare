@@ -60,6 +60,7 @@ from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
+from coordinare.services.mounted_file import performer_mount_hosts
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
     SkippedChannel,
@@ -897,21 +898,12 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
 
 
 def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
-    """Every host directory a performer container can see (129 HIGH 1).
+    """Every host directory a performer container can see (129 HIGH 1, 208).
 
-    The performer log dir is bind-mounted into ephemeral containers, and each
-    endpoint can declare more volumes. A transcript root inside any of these
-    would be readable and writable by performers, so the collector checks it.
+    Delegates to :func:`performer_mount_hosts`, the single list the transcript and run-log
+    guards and the performer-file readers all use.
     """
-    hosts: list[Path] = []
-    log_dir = getattr(config, "performer_log_dir", None)
-    if log_dir is not None:
-        hosts.append(Path(log_dir))
-    for endpoint in config.performer_endpoints:
-        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
-    # Per-symphony env caches live under this root and are mounted into performers.
-    hosts.append(Path(config.env_cache_root).expanduser())
-    return hosts
+    return performer_mount_hosts(config)
 
 
 def _build_transcript_collector(

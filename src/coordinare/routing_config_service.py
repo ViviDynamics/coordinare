@@ -27,13 +27,17 @@ from pydantic import BaseModel, Field
 from coordinare.lib.redaction import redact_secrets
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
+    mount_anchor,
     mounted_file_refusal,
     read_mounted_file,
     replace_mounted_file,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
+    from coordinare.services.mounted_file import Anchor
 
 # Env var a performer reads at job start to locate its mounted routing table.
 ROUTING_ENV_VAR = "SELFHOSTED_ROUTING_CONFIG"
@@ -43,11 +47,17 @@ ROUTING_MAX_BYTES = 1024 * 1024
 
 
 class RoutingLocation(BaseModel):
-    """Resolved host-side routing file + the endpoint that mounts it."""
+    """Resolved host-side routing file + the endpoint that mounts it.
+
+    ``mounts`` is every performer mount host (208). A routing file inside one of them is read
+    and written with the link-refusing walk anchored at that mount's root. A file outside
+    all of them is an operator path.
+    """
 
     endpoint_id: str
     host_path: Path
     container_path: str
+    mounts: tuple[Path, ...] = ()
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -62,6 +72,7 @@ class RoutingView(BaseModel):
 
 def locate_routing_file(
     endpoints: list[PerformerEndpointConfig],
+    mounts: Iterable[Path] = (),
 ) -> RoutingLocation | None:
     """Resolve the host-side routing YAML path from performer-endpoint configs.
 
@@ -80,13 +91,21 @@ def locate_routing_file(
                     endpoint_id=endpoint.id,
                     host_path=volume.host_path,
                     container_path=container_path,
+                    mounts=tuple(mounts),
                 )
     return None
 
 
+def _anchor(location: RoutingLocation) -> Anchor | None:
+    """The walk anchor for a routing file: its performer mount's root, or None (208)."""
+    return mount_anchor(location.host_path, location.mounts)
+
+
 def _is_writable_location(location: RoutingLocation | None) -> TypeGuard[RoutingLocation]:
-    """A mounted routing table the CRUD writers may replace: a plain, single-name file (208)."""
-    return location is not None and mounted_file_refusal(location.host_path) is None
+    """A routing table the CRUD writers may replace: a regular file, not a link below a mount (208)."""
+    return location is not None and mounted_file_refusal(
+        location.host_path, anchor=_anchor(location),
+    ) is None
 
 
 def routing_content_hash(location: RoutingLocation) -> str | None:
@@ -97,10 +116,10 @@ def routing_content_hash(location: RoutingLocation) -> str | None:
     file, or load a large one on every fetch. None means the file is missing, a link,
     not a regular file, or too large. The caller reports that as the read-only state.
     """
-    return _readable_content_hash(location.host_path)
+    return _readable_content_hash(location)
 
 
-def _readable_content_hash(host_path: Path) -> str | None:
+def _readable_content_hash(location: RoutingLocation) -> str | None:
     """Return ``host_path``'s content hash when it is a present, *readable* file;
     ``None`` when it is missing, a non-file, a link, or too large (208).
 
@@ -114,13 +133,17 @@ def _readable_content_hash(host_path: Path) -> str | None:
     ``/api/config/all`` could present routing as editable while the routing endpoint
     reports it unavailable.
     """
-    data = read_mounted_file(host_path, max_bytes=ROUTING_MAX_BYTES)
+    data = read_mounted_file(
+        location.host_path, max_bytes=ROUTING_MAX_BYTES, anchor=_anchor(location),
+    )
     if data is None:
         return None
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def routing_available(endpoints: list[PerformerEndpointConfig]) -> bool:
+def routing_available(
+    endpoints: list[PerformerEndpointConfig], mounts: Iterable[Path] = (),
+) -> bool:
     """True when a performer endpoint mounts a routing YAML that is present and
     readable on disk.
 
@@ -131,18 +154,20 @@ def routing_available(endpoints: list[PerformerEndpointConfig]) -> bool:
     state (T019). Shares ``_readable_content_hash`` with ``read_routing()`` so the
     two always agree (Copilot round 27).
     """
-    location = locate_routing_file(endpoints)
-    return location is not None and _readable_content_hash(location.host_path) is not None
+    location = locate_routing_file(endpoints, mounts)
+    return location is not None and _readable_content_hash(location) is not None
 
 
-def _read_entries(host_path: Path) -> list[dict[str, Any]]:
+def _read_entries(location: RoutingLocation) -> list[dict[str, Any]]:
     """Return the raw entry dicts from the routing YAML (mapping- or list-rooted).
 
     Tolerant on read so a display fetch never 500s on a slightly malformed table;
     hard validation happens on write via the spec-078 models. A linked, oversize or
     unreadable file yields no entries (208).
     """
-    data_bytes = read_mounted_file(host_path, max_bytes=ROUTING_MAX_BYTES)
+    data_bytes = read_mounted_file(
+        location.host_path, max_bytes=ROUTING_MAX_BYTES, anchor=_anchor(location),
+    )
     if data_bytes is None:
         return []
     try:
@@ -186,12 +211,12 @@ def read_routing(location: RoutingLocation | None) -> RoutingView:
     # a missing / non-file / present-but-unreadable mounted file yields ``None`` and
     # degrades to the read-only empty state rather than being reported editable with
     # a spurious empty-file sentinel hash.
-    content_hash = _readable_content_hash(location.host_path)
+    content_hash = _readable_content_hash(location)
     if content_hash is None:
         return RoutingView(routing_available=False)
     return RoutingView(
         routing_available=True,
-        entries=_redact_for_display(_read_entries(location.host_path)),
+        entries=_redact_for_display(_read_entries(location)),
         content_hash=content_hash,
     )
 
@@ -248,7 +273,7 @@ def _validate_table(entries: list[dict[str, Any]]) -> None:
         raise ValueError(msg) from exc
 
 
-def _routing_conflict(host_path: Path, base_hash: str) -> Any:
+def _routing_conflict(location: RoutingLocation, base_hash: str) -> Any:
     """Guard the optimistic-concurrency baseline before a routing write.
 
     Returns a ``validation`` ``SaveResult`` if ``base_hash`` is missing/empty (a
@@ -271,7 +296,7 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
                 ),
             ],
         )
-    current = _readable_content_hash(host_path)
+    current = _readable_content_hash(location)
     if current is None:
         return SaveResult(
             ok=False,
@@ -332,7 +357,7 @@ def _readonly_guard(location: RoutingLocation | None) -> Any:
 
 
 def _write_entries(
-    host_path: Path, entries: list[dict[str, Any]], base_hash: str,
+    location: RoutingLocation, entries: list[dict[str, Any]], base_hash: str,
 ) -> Any:
     """Atomically write the routing table and return a ``staged_next_job`` result.
 
@@ -356,7 +381,7 @@ def _write_entries(
 
     # FR-016: re-check the on-disk hash here, right before the swap, to close the
     # window where the routing file changed since the caller's baseline check.
-    conflict = _routing_conflict(host_path, base_hash)
+    conflict = _routing_conflict(location, base_hash)
     if conflict is not None:
         return conflict
 
@@ -364,7 +389,7 @@ def _write_entries(
         {"entries": entries}, sort_keys=False, default_flow_style=False, allow_unicode=True,
     ).encode("utf-8")
     try:
-        replace_mounted_file(host_path, payload)
+        replace_mounted_file(location.host_path, payload, anchor=_anchor(location))
     except (OSError, MountedFileRefusedError) as exc:
         return SaveResult(
             ok=False,
@@ -390,11 +415,11 @@ def create_routing_entry(
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.
     if not base_hash:
-        return _routing_conflict(location.host_path, base_hash)
+        return _routing_conflict(location, base_hash)
 
-    entries = _read_entries(location.host_path)
+    entries = _read_entries(location)
     entries.append(entry)
-    return _write_entries(location.host_path, entries, base_hash)
+    return _write_entries(location, entries, base_hash)
 
 
 def update_routing_entry(
@@ -416,7 +441,7 @@ def update_routing_entry(
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.
     if not base_hash:
-        return _routing_conflict(location.host_path, base_hash)
+        return _routing_conflict(location, base_hash)
 
     # Reject a non-mapping ``changes`` up front. A client sending a list/string
     # would otherwise hit ``dict(changes)`` below and raise TypeError/ValueError
@@ -433,7 +458,7 @@ def update_routing_entry(
             ],
         )
 
-    entries = _read_entries(location.host_path)
+    entries = _read_entries(location)
     if index < 0 or index >= len(entries):
         return SaveResult(
             ok=False,
@@ -460,7 +485,7 @@ def update_routing_entry(
             existing_target = {}
         merged["target"] = {**existing_target, **target_changes}
     entries[index] = merged
-    return _write_entries(location.host_path, entries, base_hash)
+    return _write_entries(location, entries, base_hash)
 
 
 def delete_routing_entry(
@@ -475,9 +500,9 @@ def delete_routing_entry(
     # Reject a missing/empty base_hash up front (a client error, not a race). The
     # *stale-hash* guard is deferred to just before the swap inside _write_entries.
     if not base_hash:
-        return _routing_conflict(location.host_path, base_hash)
+        return _routing_conflict(location, base_hash)
 
-    entries = _read_entries(location.host_path)
+    entries = _read_entries(location)
     if index < 0 or index >= len(entries):
         return SaveResult(
             ok=False,
@@ -491,4 +516,4 @@ def delete_routing_entry(
         )
 
     del entries[index]
-    return _write_entries(location.host_path, entries, base_hash)
+    return _write_entries(location, entries, base_hash)

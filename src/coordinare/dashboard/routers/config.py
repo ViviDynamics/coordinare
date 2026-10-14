@@ -19,6 +19,7 @@ from coordinare.dashboard.routers.config_write import (
     _guard_global_hash,
     _validate_global_config,
 )
+from coordinare.services.mounted_file import performer_mount_hosts
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -68,8 +69,9 @@ def _build_config_snapshot_inputs(daemon: Any, config_path: Path | None) -> tupl
     routing_mounted = False
     if coordinare_cfg is not None:
         endpoints = coordinare_cfg.global_config.performer_endpoints
-        routing_avail = routing_config_service.routing_available(endpoints)
-        location = routing_config_service.locate_routing_file(endpoints)
+        mounts = performer_mount_hosts(coordinare_cfg.global_config)
+        routing_avail = routing_config_service.routing_available(endpoints, mounts)
+        location = routing_config_service.locate_routing_file(endpoints, mounts)
         routing_mounted = location is not None
         # 208: the bounded, link-refusing reader. A refused table (a link, a directory,
         # too large) has no hash, so it is never returned to the browser as a content
@@ -145,7 +147,8 @@ def _routing_location(daemon: Any) -> Any:
     if coordinare_cfg is None:
         return None
     endpoints = coordinare_cfg.global_config.performer_endpoints
-    return routing_config_service.locate_routing_file(endpoints)
+    mounts = performer_mount_hosts(coordinare_cfg.global_config)
+    return routing_config_service.locate_routing_file(endpoints, mounts)
 
 def _register_get_config_all(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
