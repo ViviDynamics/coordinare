@@ -13,12 +13,19 @@ from typing import Any
 import pytest
 import structlog
 
+from coordinare import daemon as daemon_module
 from coordinare.daemon import (
     _compute_session_eligibilities,
     _FanoutContext,
     _invoke_session_tick,
 )
+from coordinare.graph.nodes.check_board import _shares_cycle_reads
 from coordinare.graph.state import initial_state
+
+
+@pytest.fixture(autouse=True)
+def _forget_logged_waits() -> None:
+    daemon_module._review_wait_reserved.clear()
 
 
 def _parked_and_running() -> dict[str, dict[str, Any]]:
@@ -122,3 +129,26 @@ def test_logs_distinguish_healthy_review_wait_from_capacity_starvation() -> None
         _compute_session_eligibilities(alone_state, alone, 1)
     assert [e["card_id"] for e in healthy if e["event"] == "session.awaiting_review"] == ["parked"]
     assert not [e for e in healthy if e["event"] == "session.review_starved_by_capacity"]
+
+
+def test_a_wait_is_logged_when_it_starts_and_not_again_every_cycle() -> None:
+    sessions = _parked_and_running()
+    state = _state_for(sessions)
+    with structlog.testing.capture_logs() as captured:
+        for _ in range(3):
+            _compute_session_eligibilities(state, sessions, 1)
+    assert len([e for e in captured if e["event"] == "session.review_starved_by_capacity"]) == 1
+
+    # The running card finishes: the parked card now holds the reservation.
+    del sessions["running"]
+    with structlog.testing.capture_logs() as after:
+        _compute_session_eligibilities(state, sessions, 1)
+    assert [e["card_id"] for e in after if e["event"] == "session.awaiting_review"] == ["parked"]
+
+
+def test_ticks_share_one_board_read_when_cards_wait_beside_the_running_one() -> None:
+    """With a cap of one, each parked card's tick must not poll the board again."""
+    assert _shares_cycle_reads(_state_for(_parked_and_running()), 1)
+    alone = _state_for({"running": _parked_and_running()["running"]})
+    assert not _shares_cycle_reads(alone, 1)
+    assert _shares_cycle_reads(alone, 2)

@@ -1563,6 +1563,48 @@ async def _preflight_poll_board(
             logger.warning("multi_session.pre_poll_failed", exc_info=True)
 
 
+# #102: whether each card parked on review held a pipeline reservation the last
+# time it was logged, so a wait is reported when it starts or changes and not
+# on every cycle.
+_review_wait_reserved: dict[str, bool] = {}
+
+
+def _log_review_waits(
+    active_sessions: dict[str, Any],
+    eligibilities: dict[str, SessionEligibility],
+    selected: set[str],
+    max_cards: int,
+) -> None:
+    """Say which cards wait on review, and which of them hold no reservation.
+
+    A card without a reservation is still evaluated for merge every cycle. It
+    cannot start another performer (for review feedback, say) until running
+    work frees a slot, which is worth a warning.
+    """
+    parked = {
+        cid for cid, session in active_sessions.items()
+        if session.get("phase") == "monitoring_pr" and eligibilities[cid].eligible
+    }
+    for cid in set(_review_wait_reserved) - parked:
+        del _review_wait_reserved[cid]
+    for cid in sorted(parked):
+        reserved = cid in selected
+        if _review_wait_reserved.get(cid) == reserved:
+            continue
+        _review_wait_reserved[cid] = reserved
+        pr_number = (active_sessions[cid].get("current_card") or {}).get("pr_number")
+        if reserved:
+            logger.info("session.awaiting_review", card_id=cid, pr_number=pr_number)
+        else:
+            logger.warning(
+                "session.review_starved_by_capacity",
+                card_id=cid,
+                pr_number=pr_number,
+                max_concurrent_cards=max_cards,
+                reserved_by=sorted(selected),
+            )
+
+
 def _compute_session_eligibilities(
     state: CoordinareState, active_sessions: dict[str, Any], max_cards: int,
 ) -> dict[str, SessionEligibility]:
@@ -1611,20 +1653,7 @@ def _compute_session_eligibilities(
             eligibilities[cid] = SessionEligibility(
                 card_id=cid, eligible=False, reason="pipeline_capacity",
             )
-    for cid, session in active_sessions.items():
-        if session.get("phase") != "monitoring_pr" or not eligibilities[cid].eligible:
-            continue
-        pr_number = (session.get("current_card") or {}).get("pr_number")
-        if cid in selected:
-            logger.info("session.awaiting_review", card_id=cid, pr_number=pr_number)
-        else:
-            logger.warning(
-                "session.review_starved_by_capacity",
-                card_id=cid,
-                pr_number=pr_number,
-                max_concurrent_cards=max_cards,
-                reserved_by=sorted(selected),
-            )
+    _log_review_waits(active_sessions, eligibilities, selected, max_cards)
 
     # Record skip reasons for ineligible sessions.
     skip_reasons: dict[str, dict[str, Any]] = {}
