@@ -409,6 +409,31 @@ function safeHttpUrl(url) {
   return /^https?:\/\//i.test(text) ? text : '';
 }
 
+// 155: a symphony that has never been polled and holds no cards. Its config has not been
+// checked, so the switcher and the Symphonies page say so. It is greyed out, not hidden,
+// because hiding it would also hide the config problem that keeps it empty.
+var SYMPHONY_NEVER_CHECKED_TEXT = 'Never checked: check config';
+
+// The cards on one symphony's board, over every column. 0 when the board has not been read.
+function symphonyCardCount(sym) {
+  var snap = sym && sym.state && sym.state.board_snapshot;
+  if (!snap || typeof snap !== 'object') return 0;
+  var total = 0;
+  for (var col in snap) {
+    if (symphonyHas(snap, col) && Array.isArray(snap[col])) total += snap[col].length;
+  }
+  return total;
+}
+
+// True when the snapshot says the symphony has never been polled and holds no cards. A field the
+// snapshot does not carry is unknown, not zero, so it never makes a symphony inactive.
+function symphonyIsInactive(sym) {
+  if (!sym || typeof sym !== 'object') return false;
+  if (!symphonyHas(sym, 'cycle_count') || !symphonyHas(sym, 'last_poll_at')) return false;
+  var polled = !!sym.last_poll_at || (typeof sym.cycle_count === 'number' && sym.cycle_count > 0);
+  return !polled && symphonyCardCount(sym) === 0;
+}
+
 // The identity of one symphony: "name", "GitHub Project #16" and "owner/repo".
 // A part the snapshot does not know is left out, never shown as a placeholder.
 function symphonyIdentity(sym) {
@@ -468,7 +493,9 @@ function symphonySwitcherHtml(s, choice) {
   }
   var options = '<option value="' + esc(SYMPHONY_ALL) + '"' + (choice === SYMPHONY_ALL ? ' selected' : '') + '>All symphonies</option>';
   names.forEach(function(name) {
-    options += '<option value="' + esc(name) + '"' + (name === choice ? ' selected' : '') + '>' + esc(name) + '</option>';
+    // 155: a select cannot grey out one option, so an inactive symphony says so in its label.
+    var note = symphonyIsInactive(symphonyEntry(s, name)) ? ' (' + SYMPHONY_NEVER_CHECKED_TEXT + ')' : '';
+    options += '<option value="' + esc(name) + '"' + (name === choice ? ' selected' : '') + '>' + esc(name + note) + '</option>';
   });
   var identity = choice === SYMPHONY_ALL ? '' : symphonyIdentityHtml(symphonyEntry(s, choice));
   return '<label for="symphony-select" class="muted">Symphony</label>' +

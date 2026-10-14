@@ -199,6 +199,70 @@ function viewRunLinkHtml(sess) {
     'onclick="event.stopPropagation();navigate(event,this.pathname)" onkeydown="event.stopPropagation()">View run</a>';
 }
 
+// 155: the PR checks icon and the Done lane. The functions above the markup are pure: they read
+// the scoped snapshot and return data or HTML, so tests/js/board_155_checks.js can run them.
+
+// The Done lane counts the last 24 hours, in milliseconds.
+var DONE_LANE_WINDOW_MS = 86400000;
+var DONE_LANE_NOTE = 'Counts merges coordinare recorded in the last 24 hours. Earlier merges are not counted.';
+
+// The checks states a card's icon shows. "unknown" is a card no CI gate has judged yet.
+var CHECKS_ICONS = {
+  pass: {glyph: '&#10003;', label: 'PR checks: passing'},
+  fail: {glyph: '&#10007;', label: 'PR checks: failing'},
+  running: {glyph: '&#9679;', label: 'PR checks: running'},
+  unknown: {glyph: '?', label: 'PR checks: unknown, no CI gate has judged this card yet'}
+};
+
+// The icon beside a card's PR chip. A state the snapshot does not name shows as unknown.
+function checksIconHtml(state) {
+  var key = Object.prototype.hasOwnProperty.call(CHECKS_ICONS, state) ? String(state) : 'unknown';
+  var icon = CHECKS_ICONS[key];
+  return '<span class="checks-icon checks-' + esc(key) + '" role="img" aria-label="' + esc(icon.label) +
+    '" title="' + esc(icon.label) + '">' + icon.glyph + '</span>';
+}
+
+// A timestamp in milliseconds, or NaN. A fraction of a second is dropped first, since not every
+// browser reads the microseconds the daemon writes.
+function isoMs(iso) {
+  return Date.parse(String(iso || '').replace(/\.\d+/, ''));
+}
+
+// The cards in a symphony's Done column that coordinare merged within the window, newest first.
+// A card with no merge in the lifecycle log is not counted, so the lane claims no merge it did not see.
+function doneLaneEntries(s, nowMs) {
+  var entries = [];
+  var syms = s && Array.isArray(s.symphonies) ? s.symphonies : [];
+  var pipelines = s && s.card_pipeline && typeof s.card_pipeline === 'object' ? s.card_pipeline : {};
+  syms.forEach(function(sym) {
+    var name = sym && sym.name ? String(sym.name) : '';
+    var st = sym && sym.state ? sym.state : {};
+    var done = st.board_snapshot && Array.isArray(st.board_snapshot.DONE) ? st.board_snapshot.DONE : [];
+    var strips = symphonyHas(pipelines, name) && pipelines[name] ? pipelines[name] : {};
+    done.forEach(function(iid) {
+      var strip = symphonyHas(strips, iid) ? strips[iid] : null;
+      var at = strip && strip.merged_at ? isoMs(strip.merged_at) : NaN;
+      if (isNaN(at) || nowMs - at > DONE_LANE_WINDOW_MS) return;
+      var title = symphonyHas(st.board_titles || {}, iid) ? st.board_titles[iid] : '';
+      entries.push({iid: String(iid), symphony: name, label: title || String(iid), mergedAt: strip.merged_at, at: at});
+    });
+  });
+  entries.sort(function(a, b) { return b.at - a.at; });
+  return entries;
+}
+
+// The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
+function doneLaneHtml(entries) {
+  var rows = entries.map(function(e) {
+    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAge(e.mergedAt) || '') + ' ago</span></li>';
+  }).join('');
+  return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
+    '<span class="swimlane-col-count">' + entries.length + '</span></summary>' +
+    '<p class="muted done-lane-note">' + esc(DONE_LANE_NOTE) + '</p>' +
+    (entries.length > 0 ? '<ul class="done-lane-list">' + rows + '</ul>' : '<p class="muted">No merges in the last 24 hours.</p>') +
+    '</details>';
+}
+
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var workCard = document.getElementById('active-work-card');
@@ -288,6 +352,12 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
+    // 155: a symphony that was never checked says so, rather than waiting for cards that may never come.
+    if (symphonies.length > 0 && symphonies.every(symphonyIsInactive)) {
+      workEl.innerHTML = '<span class="empty-state">' + esc(SYMPHONY_NEVER_CHECKED_TEXT) + '. Its board has not been read yet.</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
     var receivedBoards = symphonies.filter(function(sym) { return boardSnapshots[sym.name || '']; });
     if (receivedBoards.length > 0) {
       var backlogCount = 0, doneCount = 0;
@@ -296,7 +366,8 @@ function renderActiveWorkPanels(s) {
         backlogCount += Array.isArray(snap.BACKLOG) ? snap.BACKLOG.length : 0;
         doneCount += Array.isArray(snap.DONE) ? snap.DONE.length : 0;
       });
-      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
+      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>' +
+        doneLaneHtml(doneLaneEntries(s, Date.now()));
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
@@ -321,6 +392,7 @@ function renderActiveWorkPanels(s) {
     var issueUrl = issueUrls[iid] || '';
     var prUrl = prUrls[iid] || '';
     var sess = sessionsByCard[iid];
+    var pipeline = cardPipelineOf(s, iid);
 
     var label = num ? ('#' + num + ' ' + title) : (title || iid);
     var titleHtml = issueUrl && /^https?:\/\//i.test(issueUrl)
@@ -330,6 +402,9 @@ function renderActiveWorkPanels(s) {
     var prBadge = '';
     if (prUrl && /^https?:\/\//i.test(prUrl)) {
       prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;text-decoration:none">PR &#8599;</a>';
+      // 155: the checks state, read from the card's strip (no GitHub call). It sits beside the PR chip only.
+      var checksState = pipeline ? pipeline.checks : null;
+      prBadge += ' ' + checksIconHtml(checksState);
     }
 
     var liveLine = '';
@@ -374,7 +449,7 @@ function renderActiveWorkPanels(s) {
     var symphonyLine = multiView && entry.symphony
       ? '<div class="swimlane-card-symphony">' + esc(entry.symphony) + '</div>' : '';
     // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
-    var pipelineDots = timelineDotsHtml(cardPipelineOf(s, iid));
+    var pipelineDots = timelineDotsHtml(pipeline);
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
       '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + prBadge + '</div>' +
       pipelineDots +
@@ -405,6 +480,7 @@ function renderActiveWorkPanels(s) {
       '</div>';
   });
   html += '</div>';
+  html += doneLaneHtml(doneLaneEntries(s, Date.now()));
   workEl.innerHTML = html;
 }
 

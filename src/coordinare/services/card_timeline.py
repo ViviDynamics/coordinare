@@ -186,12 +186,48 @@ def stage_statuses(
     return {stage: _status_of(index, stage, frame) for index, stage in enumerate(PIPELINE_STAGES)}
 
 
+#: The PR checks states a board card shows. "running" covers checks that have not finished.
+CHECKS_GREEN = "pass"
+CHECKS_RED = "fail"
+CHECKS_RUNNING = "running"
+#: The CI gate's result (a ci_result event's detail) and the checks state it stands for.
+_GATE_RESULT_CHECKS: dict[str, str] = {"FORWARD": CHECKS_GREEN, "BOUNCE": CHECKS_RED, "HOLD": CHECKS_RUNNING}
+
+
+def checks_state(events: list[dict[str, Any]]) -> str | None:
+    """The PR checks state of a card, from its latest CI gate result. None when no gate has run.
+
+    The gate runs at the implementer-to-reviewer boundary, so this is the checks state as of that
+    gate. A later push is not seen until the gate runs again.
+    """
+    for event in reversed(events):
+        if event.get("kind") != "ci_result":
+            continue
+        detail = event.get("detail") or {}
+        return _GATE_RESULT_CHECKS.get(str(detail.get("result")))
+    return None
+
+
+def merged_at(events: list[dict[str, Any]]) -> str | None:
+    """When coordinare recorded the card's merge, or None when the card has no merge in its history."""
+    for event in reversed(events):
+        if event.get("kind") == "merged" and isinstance(event.get("at"), str):
+            return str(event["at"])
+    return None
+
+
 def pipeline_strip(events: list[dict[str, Any]], live: LiveStage) -> dict[str, Any]:
-    """The compact form a board card's dots read: the current stage and each stage's status, in order."""
+    """The compact form a board card's dots read: the current stage and each stage's status, in order.
+
+    ``checks`` is the PR checks state (None when no gate ran) and ``merged_at`` the merge time (None
+    when the card was not merged here). Both are read from the history the strip is built from.
+    """
     statuses = stage_statuses(events, current_stage=live.current, lifecycle=list(live.lifecycle))
     return {
         "current": live.current if live.current in PIPELINE_STAGES else None,
         "statuses": [{"stage": stage, "status": statuses[stage]} for stage in PIPELINE_STAGES],
+        "checks": checks_state(events),
+        "merged_at": merged_at(events),
     }
 
 
