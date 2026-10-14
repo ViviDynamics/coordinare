@@ -1477,7 +1477,7 @@ function connectEventStream() {
 connectEventStream();
 
 document.addEventListener('DOMContentLoaded', function() {
-  afApplyChipState();   // 148: the chips show the choice this browser remembered
+  if (typeof afApplyChipState === 'function') afApplyChipState();   // 148: the chips show the choice this browser remembered
   router(); // initial route
   if (typeof assistantAvailable === 'function') assistantAvailable();
   setInterval(afTick, 5000);   // 138: silence timer + quiet detection
