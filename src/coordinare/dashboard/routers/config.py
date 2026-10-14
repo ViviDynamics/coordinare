@@ -381,6 +381,12 @@ def _register_update_global_config(app: FastAPI, ctx: DashboardContext) -> None:
             if validation_failure is not None:
                 return validation_failure
 
+            # Re-check the guard right before the write (219 final check): a concurrent save
+            # that landed while the candidate was being read and validated is not overwritten.
+            refusal = _guard_global_hash(config_path, expected_hash)
+            if refusal is not None:
+                return refusal
+
             _atomic_write_yaml(config_path, loaded)
 
             if hasattr(daemon, "_config_reload_trigger"):

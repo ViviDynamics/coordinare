@@ -106,6 +106,20 @@ Unchanged for every existing file in practice: the scripts are 0755, and an exis
   `RuntimeError` when there is no loaded config, in the daemon and in dispatch alike.
   `performer_mount_hosts` expands `~` the way the validator does.
 
+## Re-review, final narrow check
+
+- **NFC and NFD**: every compared path component is NFC-normalised before any casefold, in the
+  overlap rule, the runtime walk and the shared `_within`. APFS treats the two spellings as one
+  name. I did not add an `os.path.samestat` comparison of ancestors; the normalised comparison
+  closes the reported bypass.
+- **Validate what loads**: every write path (`PUT /api/config/global`, `save_section`, the
+  catalog writers) validates the written text after `os.path.expandvars`, the same expansion as
+  `ProjectConfiguration.from_yaml` (`config.expand_config_text`). The literal `${VAR}` text is
+  still what gets written.
+- **Case probe fails closed**: when the probe cannot tell (the filesystem root, a name with no
+  letters, an error), the filesystem is treated as case-insensitive.
+- **Global save re-checks its guard** just before the write, as `save_section` already did.
+
 ## Tests
 `tests/unit/test_219_env_cache_safe_writes.py`: a link at each written file, at `services/`
 and at the cache dir (also at `initialise`); a hard link at a target; a FIFO at a target (run

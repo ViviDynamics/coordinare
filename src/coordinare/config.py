@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import string
 from collections import Counter
@@ -1204,6 +1205,15 @@ class RunLogsConfig(BaseModel):
     max_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=1024 * 1024 * 1024)
 
 
+def expand_config_text(text: str) -> str:
+    """The text the daemon parses for a config file: ``${VAR}`` expanded (219 final check).
+
+    Every reader of config.yaml goes through this (the loader, the preflight, the dashboard
+    saves), so a save is validated on exactly the bytes the daemon will load.
+    """
+    return os.path.expandvars(text)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1723,8 +1733,7 @@ class ProjectConfiguration(BaseSettings):
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
-            expanded = os.path.expandvars(config_path.read_text())
-            loaded = yaml.safe_load(expanded)
+            loaded = yaml.safe_load(expand_config_text(config_path.read_text()))
             if isinstance(loaded, dict):
                 raw = loaded
         # 062 — assessment_backend was replaced by the structured ``conducting`` block.

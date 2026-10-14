@@ -44,6 +44,7 @@ from coordinare.services.run_transcript import (
     _NONBLOCK,
     _case_insensitive,
     _write_all,
+    comparable_part,
 )
 
 if TYPE_CHECKING:
@@ -111,12 +112,9 @@ def _parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
     base_parts = base.parts
     if len(path_parts) < len(base_parts):
         return None
-    head = path_parts[: len(base_parts)]
-    if insensitive:
-        same = tuple(p.casefold() for p in head) == tuple(p.casefold() for p in base_parts)
-    else:
-        same = head == base_parts
-    return path_parts[len(base_parts) :] if same else None
+    head = tuple(comparable_part(p, insensitive=insensitive) for p in path_parts[: len(base_parts)])
+    base_key = tuple(comparable_part(p, insensitive=insensitive) for p in base_parts)
+    return path_parts[len(base_parts) :] if head == base_key else None
 
 
 def _mount_entered(current: Path, mounts: Sequence[Path]) -> Path | None:

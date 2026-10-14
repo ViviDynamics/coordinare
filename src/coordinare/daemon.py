@@ -49,6 +49,7 @@ from coordinare.services.board_provider import (
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
     configured_hold_seconds,
@@ -3797,8 +3798,6 @@ class CoordinareDaemon:
 
     def _performer_mounts(self) -> tuple[Path, ...]:
         """Every host directory a performer can see, from the loaded config (219 review)."""
-        from coordinare.services.mounted_file import loaded_performer_mounts
-
         cfg = self._state.get("coordinare_config")
         return loaded_performer_mounts(cfg.global_config if cfg is not None else None)
 
