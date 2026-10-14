@@ -20,7 +20,7 @@ const cases={
   missing(){const html=render([sym('sample',null)]);assert.ok(html.includes('Waiting for cards'));},
   selected(){const syms=[sym('unpolled',null),sym('sample',held)];assert.ok(render(syms,'blocked','unpolled').includes('Waiting for cards'));assert.ok(!render(syms,'blocked','sample').includes('Waiting for cards'));},
   populated(){const html=render([sym('sample',{TODO:['new-card']})]);assert.ok(html.includes('new-card'));assert.ok(!html.includes('Waiting for cards'));},
-  idleMissing(){const html=render([sym('sample',null)],'idle');assert.ok(html.includes('Waiting for cards'),'A missing snapshot must wait, not claim an empty TODO column');},
+  idleMissing(){const html=render([sym('sample',null)],'idle');assert.ok(html.includes('Waiting for cards'),'A selected board with a missing snapshot must wait, not claim an empty TODO column');assert.ok(!html.includes('No cards in the TODO column'),'Global idle does not prove the selected board is empty');},
 };
 const name=process.argv[3];
 assert.ok(cases[name],'unknown case '+name);
