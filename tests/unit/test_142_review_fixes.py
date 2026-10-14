@@ -29,7 +29,7 @@ from coordinare.services.block_cause import (
 )
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX
-from coordinare.services.issue_comment_service import is_coordinare_author
+from coordinare.services.issue_comment_service import normalize_logins
 
 _DOCS = Path(__file__).resolve().parents[2] / "docs" / "operators" / "ci-infrastructure-holds.md"
 
@@ -114,15 +114,11 @@ def test_the_classification_survives_secret_redaction(raw: str) -> None:
 # --- 4. coordinare's own comments are never human input ------------------------------------- #
 
 
-def test_the_coordinare_app_is_recognised_under_both_logins() -> None:
-    assert is_coordinare_author("vivi-coordinare")
-    assert is_coordinare_author("vivi-coordinare[bot]")
-    assert not is_coordinare_author("alice")
-    assert not is_coordinare_author("vivi-coordinare-fan")
-
-
 class _GitHub(CardIdentityMap):
-    """The comment read the route node makes, as the existing route tests stub it."""
+    """The comment read the route node makes, as the existing route tests stub it.
+
+    The stub is this deployment's App, whose identity the service resolves as its slug.
+    """
 
     def __init__(self, comments: list[dict[str, Any]]) -> None:
         self._comments = comments
@@ -133,6 +129,9 @@ class _GitHub(CardIdentityMap):
 
     async def get_issue_comments(self, issue_number: int, since_id: int | None = None) -> list[dict[str, Any]]:
         return [c for c in self._comments if since_id is None or c["id"] > since_id]
+
+    async def self_logins(self) -> frozenset[str]:
+        return normalize_logins(["vivi-coordinare", "vivi-coordinare[bot]"])
 
 
 _OLD_TEXT = "**Waiting on #42**: unresolvable dependency\n\nAdd them to the board."

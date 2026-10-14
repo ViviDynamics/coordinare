@@ -124,6 +124,40 @@ class AppAuth:
         expires_monotonic = time.monotonic() + remaining
         return token, expires_monotonic
 
+    async def get_app_slug(self) -> str:
+        """The App's slug, from ``GET /app`` signed with the App JWT (#142).
+
+        The slug names the App's comment author, ``<slug>[bot]``. Raises the same
+        permanent/transient errors as the token exchange.
+        """
+        from coordinare.services.github import PermanentGitHubError, TransientGitHubError
+
+        headers = {
+            "Authorization": f"Bearer {self._make_jwt()}",
+            "Accept": "application/vnd.github+json",
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{self._api_url}/app", headers=headers)
+
+        if response.is_success:
+            pass  # success — parse below
+        elif response.is_client_error:
+            msg = f"app lookup rejected (HTTP {response.status_code}): check app_id and private key"
+            raise PermanentGitHubError(msg)
+        else:
+            msg = f"app lookup failed (HTTP {response.status_code})"
+            raise TransientGitHubError(msg)
+
+        try:
+            slug = response.json()["slug"]
+        except (KeyError, ValueError) as exc:
+            msg = f"app lookup response malformed: {exc}"
+            raise TransientGitHubError(msg) from exc
+        if not isinstance(slug, str) or not slug:
+            msg = "app lookup response has no slug"
+            raise TransientGitHubError(msg)
+        return slug
+
     async def get_token(self) -> str:
         """Return a cached or freshly acquired installation access token."""
         # Fast path: cached and not near expiry
