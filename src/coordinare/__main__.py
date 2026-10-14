@@ -1012,12 +1012,6 @@ def _build_run_logs_collector(
         return None
 
 
-def _performer_mount_dirs_for_attempts(config: ProjectConfiguration) -> tuple[Path, ...]:
-    """Directories a performer can write, whose persisted attempt paths are not trusted (208)."""
-    log_dir = getattr(config, "performer_log_dir", None)
-    return (Path(log_dir),) if log_dir is not None else ()
-
-
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
@@ -1215,10 +1209,7 @@ async def _bootstrap_services(
             role_timeouts[stage] = role_config.timeout_seconds
 
     # 141: attempt telemetry singleton, resolved at the module seam above
-    attempt_log = AttemptLog(
-        log_dir=_resolve_attempt_log_dir(config, config_path),
-        untrusted_dirs=_performer_mount_dirs_for_attempts(config),
-    )
+    attempt_log = AttemptLog(log_dir=_resolve_attempt_log_dir(config, config_path))
 
     service_state: CoordinareState = {
         "config": config,

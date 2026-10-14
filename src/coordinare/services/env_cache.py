@@ -28,7 +28,7 @@ from coordinare.services.env_manifest import (
     render_verify_sh,
 )
 from coordinare.services.env_manifest_llm import enrich_from_readme
-from coordinare.services.mounted_file import anchor_at, read_mounted_file
+from coordinare.services.mounted_file import read_mounted_file
 from coordinare.services.test_env_loader import (
     TestEnvFileError,
     load_test_env,
@@ -73,7 +73,7 @@ def load_prior_manifest_bounded(cache_dir: Path) -> ServicesManifest | None:
     data = read_mounted_file(
         cache_dir / SERVICES_SUBDIR / "services.json",
         max_bytes=_PRIOR_MANIFEST_MAX_BYTES,
-        anchor=anchor_at(cache_dir.parent),
+        mounts=(cache_dir.parent,),
     )
     if data is None:
         return None

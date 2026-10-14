@@ -10,7 +10,6 @@ from datetime import (
     UTC,
     datetime,
 )
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
@@ -24,7 +23,7 @@ from coordinare.services.run_transcript import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from pathlib import Path
 
 logger = structlog.get_logger(__name__)
 
@@ -126,6 +125,15 @@ def resolve_writable_log_dir(candidate: Path, fallback: Path) -> Path:
     return fallback
 
 
+def _is_lexically_under(child: Path, parent: Path) -> bool:
+    """True when *child* is *parent* or lies below it, judged on the path text alone."""
+    if ".." in child.parts:
+        return False
+    child_parts = child.absolute().parts
+    parent_parts = parent.absolute().parts
+    return child_parts[: len(parent_parts)] == parent_parts
+
+
 def _append_private(path: Path, line: bytes) -> None:
     """Append one JSONL row without following a link (spec 208).
 
@@ -167,11 +175,8 @@ class AttemptLog:
     can never interrupt card processing.
     """
 
-    def __init__(self, log_dir: Path, untrusted_dirs: Sequence[Path] = ()) -> None:
+    def __init__(self, log_dir: Path) -> None:
         self._log_dir = log_dir
-        # Directories a performer can write (spec 208). A log path persisted under one of
-        # them, from before attempts moved to the daemon-only directory, is not reused.
-        self._untrusted_dirs = tuple(Path(d).resolve() for d in untrusted_dirs)
         self._open_attempts: dict[str, _OpenAttempt] = {}
 
     def reopen_attempt(self, attempt_id: str, task_id: str, log_path: Path) -> None:
@@ -180,13 +185,13 @@ class AttemptLog:
         started_at is unknown after restart — wall_time_s in the end row will be null.
         No-ops if the attempt_id is already registered (idempotent).
 
-        A persisted path under a performer-writable directory is not reused (spec 208):
-        attempts used to be written under ``performer_log_dir``, so the end row goes to
-        today's file in the daemon-only directory instead.
+        A persisted path is reused only when it lies lexically under this log's own directory
+        and has no ``..`` (spec 208). Anything else, such as a path from before attempts moved
+        out of ``performer_log_dir``, gets a fresh file under the log directory. The test is on
+        the path text: a performer can make a persisted path resolve somewhere else.
         """
         if attempt_id not in self._open_attempts:
-            resolved = Path(log_path).resolve()
-            if any(resolved.is_relative_to(parent) for parent in self._untrusted_dirs):
+            if not _is_lexically_under(log_path, self._log_dir):
                 log_path = self._log_path()
             self._open_attempts[attempt_id] = _OpenAttempt(
                 started_at=None,  # unknown after restart; wall_time_s will be null

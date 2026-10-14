@@ -37,7 +37,7 @@ from coordinare.services import http_performer_service as hps
 from coordinare.services import performer_lifecycle as lifecycle
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_runtime import KubernetesRuntime
-from coordinare.services.mounted_file import anchor_at, mounted_file_refusal, read_mounted_file
+from coordinare.services.mounted_file import mounted_file_refusal, read_mounted_file
 
 GH_TOKEN = "ghp_" + "d" * 36
 CONTAINER = "abcdef1234567890"
@@ -249,21 +249,12 @@ def test_attempt_dir_is_not_the_performer_directory(tmp_path: Path) -> None:
     assert not resolved.is_relative_to(performer_dir)
 
 
-def test_performer_log_dir_is_the_untrusted_attempt_directory(tmp_path: Path) -> None:
-    """Bootstrap hands the performer mount to AttemptLog, so persisted paths under it are dropped."""
-    performer_dir = tmp_path / "performer-logs"
-    config = SimpleNamespace(performer_log_dir=performer_dir)
-    assert app_main._performer_mount_dirs_for_attempts(cast("Any", config)) == (performer_dir,)
-    unset = SimpleNamespace(performer_log_dir=None)
-    assert app_main._performer_mount_dirs_for_attempts(cast("Any", unset)) == ()
-
-
 def test_reopened_attempt_from_the_performer_dir_writes_daemon_side(tmp_path: Path) -> None:
     """A pre-208 persisted path under performer_log_dir is not reused for the end row."""
     performer_dir = tmp_path / "performer-logs" / "attempts"
     daemon_dir = tmp_path / "daemon" / "logs" / "attempts"
     old_path = performer_dir / _today_name()
-    log = AttemptLog(log_dir=daemon_dir, untrusted_dirs=(performer_dir.parent,))
+    log = AttemptLog(log_dir=daemon_dir)
     log.reopen_attempt("att-1", "card-208", old_path)
     log.close_attempt("att-1", verdict="pass", verdict_source="qa_role")
 
@@ -281,48 +272,48 @@ def test_reopened_attempt_from_the_performer_dir_writes_daemon_side(tmp_path: Pa
 def test_regular_file_is_read(tmp_path: Path) -> None:
     path = tmp_path / "table.yaml"
     path.write_bytes(b"entries: []\n")
-    assert read_mounted_file(path, max_bytes=1024, anchor=anchor_at(path.parent)) == b"entries: []\n"
-    assert mounted_file_refusal(path, anchor=anchor_at(path.parent)) is None
+    assert read_mounted_file(path, max_bytes=1024, mounts=(path.parent,)) == b"entries: []\n"
+    assert mounted_file_refusal(path, mounts=(path.parent,)) is None
 
 
 def test_symlink_is_refused(tmp_path: Path) -> None:
     victim = _victim(tmp_path)
     link = tmp_path / "table.yaml"
     link.symlink_to(victim)
-    assert read_mounted_file(link, max_bytes=1024, anchor=anchor_at(link.parent)) is None
-    assert mounted_file_refusal(link, anchor=anchor_at(link.parent)) == "symlink"
+    assert read_mounted_file(link, max_bytes=1024, mounts=(link.parent,)) is None
+    assert mounted_file_refusal(link, mounts=(link.parent,)) == "symlink"
 
 
 def test_hard_link_is_refused(tmp_path: Path) -> None:
     victim = _victim(tmp_path)
     link = tmp_path / "table.yaml"
     os.link(victim, link)
-    assert read_mounted_file(link, max_bytes=1024, anchor=anchor_at(link.parent)) is None
-    assert mounted_file_refusal(link, anchor=anchor_at(link.parent)) == "hard linked"
+    assert read_mounted_file(link, max_bytes=1024, mounts=(link.parent,)) is None
+    assert mounted_file_refusal(link, mounts=(link.parent,)) == "hard linked"
 
 
 def test_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
     fifo = tmp_path / "table.yaml"
     os.mkfifo(fifo)
-    assert read_mounted_file(fifo, max_bytes=1024, anchor=anchor_at(fifo.parent)) is None
+    assert read_mounted_file(fifo, max_bytes=1024, mounts=(fifo.parent,)) is None
 
 
 def test_directory_is_refused(tmp_path: Path) -> None:
     directory = tmp_path / "table.yaml"
     directory.mkdir()
-    assert read_mounted_file(directory, max_bytes=1024, anchor=anchor_at(directory.parent)) is None
+    assert read_mounted_file(directory, max_bytes=1024, mounts=(directory.parent,)) is None
 
 
 def test_oversize_file_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "table.yaml"
     path.write_bytes(b"x" * 11)
-    assert read_mounted_file(path, max_bytes=10, anchor=anchor_at(path.parent)) is None
+    assert read_mounted_file(path, max_bytes=10, mounts=(path.parent,)) is None
     path.write_bytes(b"x" * 10)
-    assert read_mounted_file(path, max_bytes=10, anchor=anchor_at(path.parent)) == b"x" * 10
+    assert read_mounted_file(path, max_bytes=10, mounts=(path.parent,)) == b"x" * 10
 
 
 def test_missing_file_is_none_not_an_error(tmp_path: Path) -> None:
-    assert read_mounted_file(tmp_path / "absent.yaml", max_bytes=1024, anchor=anchor_at(tmp_path)) is None
+    assert read_mounted_file(tmp_path / "absent.yaml", max_bytes=1024, mounts=(tmp_path,)) is None
 
 
 # ---------------------------------------------------------------------------

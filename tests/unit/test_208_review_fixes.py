@@ -22,7 +22,6 @@ from coordinare import routing_config_service as rcs
 from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
 from coordinare.services import env_cache
 from coordinare.services.mounted_file import (
-    anchor_at,
     mounted_file_refusal,
     read_mounted_file,
 )
@@ -114,8 +113,8 @@ def test_routing_write_refuses_symlinked_ancestor(tmp_path: Path) -> None:
 def test_read_refuses_symlinked_ancestor_below_a_trusted_root(tmp_path: Path) -> None:
     perf, victim_dir = _ancestor_swap(tmp_path)
     target = perf / "sub" / "routing.yaml"
-    assert read_mounted_file(target, max_bytes=4096, anchor=anchor_at(perf)) is None
-    assert mounted_file_refusal(target, anchor=anchor_at(perf)) is not None
+    assert read_mounted_file(target, max_bytes=4096, mounts=(perf,)) is None
+    assert mounted_file_refusal(target, mounts=(perf,)) is not None
     assert (victim_dir / "routing.yaml").read_text() == ROUTING_BODY
 
 
@@ -123,7 +122,7 @@ def test_read_through_a_real_subdirectory_below_the_root_still_works(tmp_path: P
     perf = tmp_path / "perf"
     (perf / "sub").mkdir(parents=True)
     (perf / "sub" / "routing.yaml").write_text(ROUTING_BODY)
-    assert read_mounted_file(perf / "sub" / "routing.yaml", max_bytes=4096, anchor=anchor_at(perf)) == (
+    assert read_mounted_file(perf / "sub" / "routing.yaml", max_bytes=4096, mounts=(perf,)) == (
         ROUTING_BODY.encode()
     )
 
@@ -323,27 +322,6 @@ def test_fifo_at_the_attempt_file_does_not_block(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_reopen_compares_resolved_paths_for_a_relative_untrusted_dir(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    performer_attempts = tmp_path / "perf-logs" / "attempts"
-    performer_attempts.mkdir(parents=True)
-    persisted = performer_attempts / "2026-10-14.jsonl"
-    daemon_dir = tmp_path / "daemon" / "attempts"
-    log = AttemptLog(log_dir=daemon_dir, untrusted_dirs=(Path("perf-logs"),))
-    log.reopen_attempt("att-7", "card-7", persisted)
-    log.close_attempt("att-7", verdict="pass", verdict_source="qa_role")
-    assert list(performer_attempts.iterdir()) == []
-    assert len(list(daemon_dir.glob("*.jsonl"))) == 1
-
-
-# ---------------------------------------------------------------------------
-# 8. The attempt directory is never inside a performer mount.
-# ---------------------------------------------------------------------------
-
-
 def _mount_config(state: Path, mount: Path) -> Any:
     return SimpleNamespace(
         state_file_path=state / "coordinare.state.json",
@@ -462,17 +440,18 @@ def test_routing_with_a_link_planted_below_the_mount_root_is_refused(tmp_path: P
     assert (victim / "routing.yaml").read_text() == ROUTING_BODY
 
 
-def test_mount_anchor_matches_the_mount_in_either_spelling(tmp_path: Path) -> None:
-    from coordinare.services.mounted_file import mount_anchor
-
+def test_a_mount_is_matched_in_either_spelling(tmp_path: Path) -> None:
+    """An operator link above the mount root: the file is read through the lexical spelling and
+    the resolved one alike, and a link planted below the root is refused in both."""
     real = tmp_path / "real"
     (real / "perf").mkdir(parents=True)
+    (real / "perf" / "routing.yaml").write_text(ROUTING_BODY)
     mount = _operator_link_to(tmp_path, "operator-link", real) / "perf"
-    resolved_file = (real / "perf" / "routing.yaml").resolve()
-    anchor = mount_anchor(resolved_file, [mount])
-    assert anchor is not None
-    assert anchor.start == (real / "perf").resolve()
-    assert mount_anchor(tmp_path / "elsewhere.yaml", [mount]) is None
+    lexical = mount / "routing.yaml"
+    resolved = (real / "perf" / "routing.yaml").resolve()
+    assert read_mounted_file(lexical, max_bytes=4096, mounts=(mount,)) == ROUTING_BODY.encode()
+    assert read_mounted_file(resolved, max_bytes=4096, mounts=(mount,)) == ROUTING_BODY.encode()
+    assert read_mounted_file(tmp_path / "elsewhere.yaml", max_bytes=4096, mounts=(mount,)) is None
 
 
 def test_operator_path_follows_a_link_to_a_regular_file(tmp_path: Path) -> None:
@@ -511,7 +490,7 @@ def test_env_cache_root_reached_through_an_operator_link_is_read(tmp_path: Path)
     data = read_mounted_file(
         env_root / "sym" / "services" / "services.json",
         max_bytes=1024,
-        anchor=anchor_at(env_root),
+        mounts=(env_root,),
     )
     assert data == b"{}"
 

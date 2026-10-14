@@ -1,20 +1,26 @@
 """Reads and writes of files the daemon takes from disk (spec 208).
 
-There are two kinds of path, and the rule depends on which one a file is:
+A performer can write inside a performer mount (performer log dir, endpoint volume, env-cache
+root, a clone). It can rename a directory there and plant links at any level. The daemon
+decides where a path lands in two stages, and only the first one touches the operator's side:
 
-* **Inside a performer mount** (performer log dir, endpoint volume, env-cache root). A
-  performer can write there, so it can plant a link at any level. The walk starts at the
-  mount's root, which the operator configured and which is resolved once. Every component
-  below it is opened with ``O_NOFOLLOW`` relative to the directory descriptor before it,
-  and the leaf is opened relative to the last one. A link anywhere below the mount root
-  is refused. Links above the mount root are not refused: they are the operator's.
-* **Outside every performer mount.** The operator controls the path, so it is opened
-  normally and links in it are followed. Non-regular files (a FIFO is refused by a
-  non-blocking open and the type check), and files over the caller's bound, are still
-  refused.
+1. **Operator side.** Every component of the path is resolved from ``/`` one at a time.
+   A link is followed only while the walk is outside every performer mount. Operator links
+   (system links such as macOS ``/tmp``, a directory alias, a config symlink) are followed
+   normally, and the walk checks whether it has reached a mount.
+2. **Inside a mount.** The walk stops at the outermost mount it reaches. That mount root is
+   resolved from the operator's config (a path the performer has not yet touched) and is
+   opened as a trusted start. Every component below it, the leaf included, is opened with
+   ``O_NOFOLLOW`` relative to the directory descriptor before it, and ``..`` is refused.
+   A link anywhere below a mount root is refused, including a link that sits inside a mount
+   nested in another one, because the walk reaches the outer mount first.
 
-A clone is the same as a mount: its contents are performer-authored, so the caller anchors
-the walk at the clone root (:func:`anchor_at`), and links below it are refused.
+A path that never reaches a mount is an operator path. It is opened normally, links followed,
+and only the file type and size are checked. A non-regular file, a FIFO (opened non-blocking,
+then type-checked) and a file over the bound are still refused.
+
+Clones and the env-cache root are mounts too: their contents are performer-authored. Callers
+pass them as the mount list.
 
 A refusal is logged and reads as "no file". The bytes are untrusted: callers redact them
 before showing them and never execute or import them.
@@ -41,7 +47,7 @@ from coordinare.services.run_transcript import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from coordinare.config import ProjectConfiguration
 
@@ -49,38 +55,19 @@ logger = structlog.get_logger(__name__)
 
 _CHUNK_BYTES = 64 * 1024
 _DEFAULT_FILE_MODE = 0o644
+_MAX_LINKS = 40
 
 
 class MountedFileRefusedError(OSError):
     """A read or write the daemon will not perform on a performer-writable path."""
 
 
-@dataclass(frozen=True)
-class Anchor:
-    """A directory below which every component is checked for links.
-
-    ``start`` is the resolved directory the walk opens first. ``base`` is the same directory
-    spelled the way the caller's paths spell it, so a path can be measured against it.
-    """
-
-    start: Path
-    base: Path
-
-
-def anchor_at(root: Path) -> Anchor:
-    """An anchor at *root*, which is trusted (operator config or a clone the daemon made).
-
-    *root* itself may be a link. Components below it are checked.
-    """
-    return Anchor(start=root.resolve(), base=root.absolute())
-
-
 def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
     """Every host directory a performer container can see (129, 208).
 
-    The performer log dir is bind-mounted into ephemeral containers, each endpoint may
-    declare more volumes, and the env-cache root holds per-symphony caches mounted into
-    performers. Used by the transcript and run-log guards and by the file readers here.
+    The performer log dir is bind-mounted into ephemeral containers, each endpoint may declare
+    more volumes, and the env-cache root holds per-symphony caches mounted into performers.
+    Used by the transcript and run-log guards and by the file readers here.
     """
     hosts: list[Path] = []
     log_dir = getattr(config, "performer_log_dir", None)
@@ -92,8 +79,16 @@ def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
     return hosts
 
 
+@dataclass(frozen=True)
+class _Walk:
+    """A path inside a mount: open ``start`` (a trusted, resolved directory), then walk ``parts``."""
+
+    start: Path
+    parts: tuple[str, ...]
+
+
 def _parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
-    """The components of *path* below *base*, or None when *base* is not an ancestor.
+    """The components of *path* below *base*, or None when *base* is not an ancestor of it.
 
     Compared case-insensitively where the filesystem that holds *base* is case-insensitive.
     """
@@ -110,24 +105,60 @@ def _parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
     return path_parts[len(base_parts) :] if same else None
 
 
-def mount_anchor(path: Path, mounts: Iterable[Path]) -> Anchor | None:
-    """The anchor of the deepest performer mount that holds *path*, or None.
+def _mount_entered(current: Path, mounts: Sequence[Path]) -> Path | None:
+    """The outermost mount root that *current* is at or below, resolved now, or None."""
+    found: Path | None = None
+    for mount in mounts:
+        root = mount.resolve()
+        if _parts_below(current, root) is None:
+            continue
+        if found is None or len(root.parts) < len(found.parts):
+            found = root
+    return found
 
-    A path is inside a mount when it lies strictly below the mount's root, spelled either
-    as the operator wrote it or resolved. Containment is decided on the path as given, not
-    on its resolved form, so a link planted inside a mount cannot move a path out of it.
+
+def _classify(path: Path, mounts: Sequence[Path]) -> tuple[_Walk | None, Path]:
+    """Resolve *path* on the operator side. Returns ``(walk, resolved)``.
+
+    ``walk`` is set when the path reaches a performer mount, and is then the walk to take from
+    the mount root. Otherwise ``resolved`` is the operator path to open. Links are followed only
+    while outside every mount: a link found on the way into a mount is the operator's, and a
+    link below a mount root is never followed here (it is left for the ``O_NOFOLLOW`` walk).
     """
     absolute = path.absolute()
-    best: Anchor | None = None
-    best_depth = 0
-    for mount in mounts:
-        resolved = mount.resolve()
-        for base in (mount.absolute(), resolved):
-            below = _parts_below(absolute, base)
-            if below and len(base.parts) > best_depth:
-                best = Anchor(start=resolved, base=base)
-                best_depth = len(base.parts)
-    return best
+    current = Path(absolute.anchor)
+    queue = list(absolute.parts[1:])
+    links = 0
+    while queue:
+        root = _mount_entered(current, mounts)
+        if root is not None:
+            inside = _parts_below(current, root) or ()
+            rest = [part for part in queue if part not in ("", ".")]
+            if not rest or ".." in rest:
+                message = "'..' or an empty leaf below a performer mount"
+                raise MountedFileRefusedError(message)
+            return _Walk(start=root, parts=(*inside, *rest)), current
+        part = queue.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            continue
+        candidate = current / part
+        if candidate.is_symlink():
+            links += 1
+            if links > _MAX_LINKS:
+                message = "too many links"
+                raise MountedFileRefusedError(message)
+            target = candidate.readlink()
+            if target.is_absolute():
+                current = Path(target.anchor)
+                queue = [*target.parts[1:], *queue]
+            else:
+                queue = [*target.parts, *queue]
+            continue
+        current = candidate
+    return None, current
 
 
 def _open_dir(name: str, dir_fd: int) -> int:
@@ -136,32 +167,26 @@ def _open_dir(name: str, dir_fd: int) -> int:
     except FileNotFoundError:
         raise
     except OSError as exc:
-        message = "a parent directory is a link or not a directory"
+        message = "a directory below a performer mount is a link or not a directory"
         raise MountedFileRefusedError(message) from exc
 
 
-def _open_parent(path: Path, anchor: Anchor) -> tuple[int, str]:
-    """Open the directory that holds *path*, component by component, under *anchor*.
+def _open_walk(walk: _Walk) -> tuple[int, str]:
+    """Open the directory holding the leaf, walking every component below the trusted start.
 
-    Returns ``(dir_fd, leaf_name)``. Raises ``FileNotFoundError`` when a directory on the way
-    is missing and :class:`MountedFileRefusedError` when one is a link or not a directory.
-    The caller closes ``dir_fd``.
+    Returns ``(dir_fd, leaf_name)``. The caller closes ``dir_fd``. Raises ``FileNotFoundError``
+    for a missing directory, and :class:`MountedFileRefusedError` for a link on the way.
     """
-    absolute = path.absolute()
-    below = _parts_below(absolute.parent, anchor.base)
-    if below is None:
-        message = "outside its anchor"
-        raise MountedFileRefusedError(message)
-    fd = os.open(anchor.start, os.O_RDONLY | os.O_DIRECTORY)
+    fd = os.open(walk.start, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for part in below:
+        for part in walk.parts[:-1]:
             nxt = _open_dir(part, fd)
             os.close(fd)
             fd = nxt
     except BaseException:
         os.close(fd)
         raise
-    return fd, absolute.name
+    return fd, walk.parts[-1]
 
 
 def _check_regular(info: os.stat_result, max_bytes: int) -> None:
@@ -194,21 +219,27 @@ def _drain(fd: int, max_bytes: int) -> bytes:
         chunks.append(chunk)
 
 
-def mounted_file_refusal(path: Path, *, anchor: Anchor | None) -> str | None:
+def mounted_file_refusal(path: Path, *, mounts: Iterable[Path]) -> str | None:
     """Why *path* cannot be read or replaced, or None when it can.
 
-    ``"missing"`` when nothing is there or a directory on the way is missing. With an
-    anchor, the check is link-refusing below it. Without one (an operator path), only the
-    type is checked, and links are followed. Never opens the file.
+    ``"missing"`` when nothing is there. Any other refusal, including a mount root that is not
+    a directory, is returned as a reason rather than raised. Never opens the file for reading.
     """
-    if anchor is None:
-        return _operator_refusal(path)
     try:
-        dir_fd, leaf = _open_parent(path, anchor)
+        walk, resolved = _classify(path, tuple(mounts))
+        if walk is None:
+            return _operator_refusal(resolved)
+        return _walk_refusal(walk)
     except FileNotFoundError:
         return "missing"
     except MountedFileRefusedError as exc:
         return str(exc)
+    except OSError:
+        return "unreadable"
+
+
+def _walk_refusal(walk: _Walk) -> str | None:
+    dir_fd, leaf = _open_walk(walk)
     try:
         return _leaf_refusal(dir_fd, leaf)
     finally:
@@ -235,16 +266,15 @@ def _leaf_refusal(dir_fd: int, leaf: str) -> str | None:
     return "hard linked" if info.st_nlink != 1 else None
 
 
-def read_mounted_file(path: Path, *, max_bytes: int, anchor: Anchor | None) -> bytes | None:
+def read_mounted_file(path: Path, *, max_bytes: int, mounts: Iterable[Path]) -> bytes | None:
     """Read a file, or None when it is missing or refused.
 
-    *anchor* decides the rule: an anchor (see :func:`mount_anchor` and :func:`anchor_at`)
-    means the walk refuses links below it; ``None`` means an operator path, opened normally.
-    Both refuse a non-regular file, a FIFO (the open is non-blocking, and the type is then
-    checked) and a file larger than *max_bytes*, and the size is bounded while reading.
+    *mounts* decides the rule (see the module docstring). Both rules refuse a non-regular file,
+    a FIFO (opened non-blocking, then type-checked) and a file over *max_bytes*. The size is
+    bounded while reading as well as before it.
     """
     try:
-        return _read(path, max_bytes, anchor)
+        return _read(path, max_bytes, tuple(mounts))
     except FileNotFoundError:
         return None
     except MountedFileRefusedError as exc:
@@ -255,15 +285,16 @@ def read_mounted_file(path: Path, *, max_bytes: int, anchor: Anchor | None) -> b
         return None
 
 
-def _read(path: Path, max_bytes: int, anchor: Anchor | None) -> bytes:
-    if anchor is None:
-        fd = os.open(path, os.O_RDONLY | _NONBLOCK)
+def _read(path: Path, max_bytes: int, mounts: tuple[Path, ...]) -> bytes:
+    walk, resolved = _classify(path, mounts)
+    if walk is None:
+        fd = os.open(resolved, os.O_RDONLY | _NONBLOCK)
         try:
             _check_regular(os.fstat(fd), max_bytes)
             return _drain(fd, max_bytes)
         finally:
             os.close(fd)
-    dir_fd, leaf = _open_parent(path, anchor)
+    dir_fd, leaf = _open_walk(walk)
     try:
         fd = _open_leaf(dir_fd, leaf)
         try:
@@ -288,33 +319,33 @@ def _open_leaf(dir_fd: int, leaf: str) -> int:
         raise MountedFileRefusedError(message) from exc
 
 
-def replace_mounted_file(path: Path, data: bytes, *, anchor: Anchor | None) -> None:
+def replace_mounted_file(path: Path, data: bytes, *, mounts: Iterable[Path]) -> None:
     """Atomically replace a file with *data*.
 
-    Under an anchor, the leaf must be a plain regular file or absent, and every step goes
-    through directory descriptors with ``O_NOFOLLOW``. The temporary file is created
-    ``O_EXCL`` and renamed over the leaf by descriptor. Without an anchor (an operator
-    path) the parent is opened normally and the rename is by name, as before 208. An
-    existing file keeps its mode. Raises an ``OSError`` on failure, including
-    :class:`MountedFileRefusedError` for a refusal.
+    Inside a mount, every step goes through directory descriptors with ``O_NOFOLLOW``: the
+    temporary file is created ``O_EXCL`` and renamed over the leaf by descriptor, and an
+    existing leaf must be a plain single-name regular file. On an operator path the resolved
+    path is written by name. An existing file keeps its mode. Raises an ``OSError`` on failure,
+    including :class:`MountedFileRefusedError`.
     """
-    if anchor is None:
-        dir_fd = os.open(path.absolute().parent, os.O_RDONLY | os.O_DIRECTORY)
-        leaf = path.name
-        follow = True
+    walk, resolved = _classify(path, tuple(mounts))
+    if walk is None:
+        dir_fd = os.open(resolved.parent, os.O_RDONLY | os.O_DIRECTORY)
+        leaf = resolved.name
+        operator = True
     else:
-        dir_fd, leaf = _open_parent(path, anchor)
-        follow = False
+        dir_fd, leaf = _open_walk(walk)
+        operator = False
     try:
-        mode = _existing_mode(dir_fd, leaf, follow=follow, operator=anchor is None)
+        mode = _existing_mode(dir_fd, leaf, operator=operator)
         _rename_into(dir_fd, leaf, data, mode)
     finally:
         os.close(dir_fd)
 
 
-def _existing_mode(dir_fd: int, leaf: str, *, follow: bool, operator: bool) -> int:
+def _existing_mode(dir_fd: int, leaf: str, *, operator: bool) -> int:
     try:
-        info = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=follow)
+        info = os.stat(leaf, dir_fd=dir_fd, follow_symlinks=operator)
     except FileNotFoundError:
         return _DEFAULT_FILE_MODE
     if not stat.S_ISREG(info.st_mode):

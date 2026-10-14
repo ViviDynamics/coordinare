@@ -384,7 +384,13 @@ def test_reopen_attempt_wall_time_is_null_after_restart(tmp_path: Path) -> None:
     assert end_row["wall_time_s"] is None
 
 
-def test_restored_attempt_uses_saved_directory_when_current_log_dir_is_unwritable(tmp_path: Path) -> None:
+def test_restored_attempt_does_not_reuse_a_path_outside_the_log_dir(tmp_path: Path) -> None:
+    """Spec 208 (PR #217 BLOCK 3): a persisted path outside this log's directory is not reused.
+
+    The end row must not reach the saved file. Before, a restored path was reused whenever the
+    current directory was unwritable. A persisted path under the daemon's own directory is still
+    reused (see test_208_path_safety.py).
+    """
     original = AttemptLog(tmp_path / "original")
     attempt_id = original.open_attempt("card-1", "default_policy")
     saved_path = Path(original.log_path_for(attempt_id))
@@ -394,5 +400,4 @@ def test_restored_attempt_uses_saved_directory_when_current_log_dir_is_unwritabl
     restored.reopen_attempt(attempt_id, "card-1", saved_path)
     restored.close_attempt(attempt_id, "pass", "human", "merged")
     rows = [json.loads(line) for line in saved_path.read_text().splitlines()]
-    assert len(rows) == 2
-    assert rows[-1]["verdict"] == "pass"
+    assert len(rows) == 1, "the end row must not be written into a path outside the log dir"

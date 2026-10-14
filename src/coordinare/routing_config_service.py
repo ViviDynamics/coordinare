@@ -27,7 +27,6 @@ from pydantic import BaseModel, Field
 from coordinare.lib.redaction import redact_secrets
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
-    mount_anchor,
     mounted_file_refusal,
     read_mounted_file,
     replace_mounted_file,
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
-    from coordinare.services.mounted_file import Anchor
 
 # Env var a performer reads at job start to locate its mounted routing table.
 ROUTING_ENV_VAR = "SELFHOSTED_ROUTING_CONFIG"
@@ -50,7 +48,7 @@ class RoutingLocation(BaseModel):
     """Resolved host-side routing file + the endpoint that mounts it.
 
     ``mounts`` is every performer mount host (208). A routing file inside one of them is read
-    and written with the link-refusing walk anchored at that mount's root. A file outside
+    and written with the link-refusing walk from the outermost mount root. A file outside
     all of them is an operator path.
     """
 
@@ -96,15 +94,10 @@ def locate_routing_file(
     return None
 
 
-def _anchor(location: RoutingLocation) -> Anchor | None:
-    """The walk anchor for a routing file: its performer mount's root, or None (208)."""
-    return mount_anchor(location.host_path, location.mounts)
-
-
 def _is_writable_location(location: RoutingLocation | None) -> TypeGuard[RoutingLocation]:
     """A routing table the CRUD writers may replace: a regular file, not a link below a mount (208)."""
     return location is not None and mounted_file_refusal(
-        location.host_path, anchor=_anchor(location),
+        location.host_path, mounts=location.mounts,
     ) is None
 
 
@@ -134,7 +127,7 @@ def _readable_content_hash(location: RoutingLocation) -> str | None:
     reports it unavailable.
     """
     data = read_mounted_file(
-        location.host_path, max_bytes=ROUTING_MAX_BYTES, anchor=_anchor(location),
+        location.host_path, max_bytes=ROUTING_MAX_BYTES, mounts=location.mounts,
     )
     if data is None:
         return None
@@ -166,7 +159,7 @@ def _read_entries(location: RoutingLocation) -> list[dict[str, Any]]:
     unreadable file yields no entries (208).
     """
     data_bytes = read_mounted_file(
-        location.host_path, max_bytes=ROUTING_MAX_BYTES, anchor=_anchor(location),
+        location.host_path, max_bytes=ROUTING_MAX_BYTES, mounts=location.mounts,
     )
     if data_bytes is None:
         return []
@@ -389,7 +382,7 @@ def _write_entries(
         {"entries": entries}, sort_keys=False, default_flow_style=False, allow_unicode=True,
     ).encode("utf-8")
     try:
-        replace_mounted_file(location.host_path, payload, anchor=_anchor(location))
+        replace_mounted_file(location.host_path, payload, mounts=location.mounts)
     except (OSError, MountedFileRefusedError) as exc:
         return SaveResult(
             ok=False,

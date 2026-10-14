@@ -111,3 +111,25 @@ Changes made in response to the review:
 
 Out of scope, reported to the coordinator: the bootstrap trust issue (`verify.sh` and
 populated-cache checks rely on performer-writable files).
+
+## Review round 3 (PR #217 path-safety re-review)
+
+The rule is one operator-side walk, `mounted_file._classify`, used by every read, write and
+refusal. It walks the path from `/`. Links are followed only while the walk is outside every
+performer mount. The walk stops at the outermost mount it reaches, resolves that mount root
+from operator config, and opens everything below it with `O_NOFOLLOW` relative to a directory
+descriptor, the leaf included. `..` below a mount is refused. Consequences:
+
+- **Nested mounts** (a performer log dir inside the env-cache root): the walk enters the outer
+  mount first, so a link the performer plants at the inner mount's path is refused. The inner
+  mount's root is never resolved on its own.
+- **Operator aliases** into a mount (`/x/alias -> /x/mnt`): followed on the operator side, then
+  the walk is inside the mount. A link planted there is refused.
+- **Persisted attempt paths**: reused only when lexically under the daemon's own log
+  directory and without `..`. Otherwise a fresh file is opened under that directory. This
+  narrows the A-008 reuse of a saved path when the current directory is unwritable.
+- **A mount root that is a file**: the refusal is returned as a reason (`unreadable`), and
+  routing saves return `forbidden` instead of raising.
+
+Deferred to a follow-up issue: the `CLAUDE.md` and `AGENTS.md` reads in the classifier still
+run on the event loop, as on main, and the `/api/config/all` reads are synchronous.
