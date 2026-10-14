@@ -150,6 +150,8 @@ function refreshConductorHeadline() {
   var el = document.getElementById('phase');
   var state = typeof _lastState !== 'undefined' ? _lastState : null;
   if (!el || !state) return;
+  // 139: the headline reads the symphony the header has chosen, like every other panel.
+  if (typeof scopedView === 'function') state = scopedView(state);
   var active = typeof findActivePerformerSession === 'function' ? findActivePerformerSession(state) : null;
   var text = conductorHeadline(state, active);
   if (el.textContent !== text) el.textContent = text;

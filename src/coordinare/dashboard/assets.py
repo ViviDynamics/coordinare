@@ -34,8 +34,11 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # progressing) likewise.
 # 134: "usage" (token and cost formatting) follows helpers, so the figures load before
 # performers and app call them.
+# 139: "symphonies" (the symphony switcher and its scope) defines functions only, and
+# performers, app and attention call them, so it loads before app.
 _DASHBOARD_JS_FILES = (
-    "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention", "runs", "app",
+    "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
+    "runs", "symphonies", "app",
 )
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from

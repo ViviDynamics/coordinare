@@ -259,7 +259,13 @@ function renderAttentionBanner(items, sig) {
   var panel = document.getElementById('attention-panel');
   if (!panel) return;
   // Nothing left to show: forget the dismissal, so the next item shows again.
-  if (items.length === 0) storeAttentionDismissed('');
+  // 139: and drop the rows, so a list hidden here never keeps what the scope removed.
+  if (items.length === 0) {
+    storeAttentionDismissed('');
+    var emptied = document.getElementById('attention-list');
+    if (emptied) emptied.innerHTML = '';
+    _attentionRenderedSig = null;
+  }
   var show = items.length > 0 && sig !== attentionDismissedSignature();
   panel.hidden = !show;
   if (!show || sig === _attentionRenderedSig) return;

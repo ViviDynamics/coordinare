@@ -61,7 +61,9 @@ def _token_usage_block(daemon: Any) -> dict[str, Any]:
         return disabled_usage_block(reason="transcripts disabled")
     today = datetime.now(UTC).date()
     ledger.prune(today)
-    return usage_block(ledger, _price_table(daemon), today=today)
+    # 139: the spend strip can show one symphony's figures, so each configured name gets its own.
+    names = list(daemon.state.get("symphony_configs") or {})
+    return usage_block(ledger, _price_table(daemon), today=today, symphonies=names)
 
 
 def _session_usage(daemon: Any, *, run_id: str, card_id: str) -> dict[str, Any]:
@@ -1006,19 +1008,41 @@ class DashboardStore:
         return summary
 
     @staticmethod
+    def _symphony_repository(sym_name: str, sym_cfg: Any, global_cfg: Any) -> tuple[str, str]:
+        """139: the owner and repository a symphony works against, as the config resolves them.
+
+        Mirrors ``SymphonyConfig.effective_config``: an override wins, then the global
+        value, and the repository falls back to the symphony name. Unknown parts are "".
+        """
+        overrides = getattr(sym_cfg, "overrides", None)
+        overrides = overrides if isinstance(overrides, dict) else {}
+
+        def _text(value: Any) -> str:
+            return value if isinstance(value, str) else ""
+
+        org = _text(overrides.get("github_org")) or _text(getattr(global_cfg, "github_org", ""))
+        repo = _text(overrides.get("project_name")) or _text(getattr(global_cfg, "project_name", ""))
+        return org, repo or sym_name
+
+    @staticmethod
     def _build_symphonies_data(daemon: Any) -> list[dict[str, Any]]:
         """Build symphony state for the dashboard snapshot (spec 057)."""
         symphony_configs = daemon.state.get("symphony_configs") or {}
         symphony_states = daemon.state.get("symphony_states") or {}
+        global_cfg = daemon.state.get("config")
         symphonies_data = []
         for i, (sym_name, sym_cfg) in enumerate(symphony_configs.items()):
             sym_state = symphony_states.get(sym_name)
             last_poll_raw = getattr(sym_state, "last_poll_at", None) if sym_state else None
             cache = (daemon.state.get("env_cache") or {}).get(sym_name)
+            github_org, repo = DashboardStore._symphony_repository(sym_name, sym_cfg, global_cfg)
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
                 "github_project_number": getattr(sym_cfg, "github_project_number", None),
+                # 139: the identity line reads "GitHub Project #N · owner/repo".
+                "github_org": github_org,
+                "repo": repo,
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),

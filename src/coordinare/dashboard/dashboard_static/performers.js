@@ -64,7 +64,7 @@ function cardRefHtml(sess) {
   var inner = safeUrl
     ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
     : esc(label);
-  var html = '<span class="ap-pill ap-pill-card" title="' + esc(nodeId ? 'Board item ' + nodeId : '') + '"><strong>' + inner + '</strong></span>';
+  var html = '<span class="ap-pill ap-pill-card" title="' + esc(nodeId ? 'Card ' + nodeId : '') + '"><strong>' + inner + '</strong></span>';
   if (sess.pr_url && /^https?:\/\//i.test(sess.pr_url)) {
     var prNumber = (String(sess.pr_url).match(/\/pull\/(\d+)/) || [])[1];
     html += '<span class="ap-pill ap-pill-pr"><strong><a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">PR' + (prNumber ? ' #' + esc(prNumber) : '') + '</a></strong></span>';
@@ -193,8 +193,6 @@ function queuedPhaseLabel(sess) {
   return 'Queued for ' + (sess.performer_stage ? (agentLabel(agentForStage(sess.performer_stage)) || stageLabel(sess.performer_stage)) : 'performer');
 }
 
-// in-flight work the coordinare is reasoning about.
-var _swimlaneTabExplicit = false;
 // 146: the link to the run for the stage a card is in. Only a live session has
 // one. The link sits inside clickable rows, so its clicks and keys stop there.
 function viewRunLinkHtml(sess) {
@@ -208,7 +206,6 @@ function viewRunLinkHtml(sess) {
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var workCard = document.getElementById('active-work-card');
-  var tabsEl = document.getElementById('swimlane-tabs');
   if (!workEl) return;
 
   var COLUMNS = ['TODO', 'BLOCKED', 'IN_PROGRESS', 'IN_REVIEW'];
@@ -219,11 +216,10 @@ function renderActiveWorkPanels(s) {
   var sessionsByCard = {};
   sessions.forEach(function(sess) { if (sess && sess.card_id) sessionsByCard[sess.card_id] = sess; });
 
-  // Aggregate per-card data across all symphonies (item_id is globally unique).
-  // Track which symphony each card belongs to for tab filtering.
+  // Aggregate per-card data across the symphonies in view (item_id is globally unique).
+  // Each card keeps the symphony it belongs to, so a multi-symphony view can name it.
   var titles = {}, issueNums = {}, issueUrls = {}, prUrls = {};
   var symphonies = Array.isArray(s.symphonies) ? s.symphonies : [];
-  var perSymCounts = {};  // symphony name → total card count
   var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
   var hasBoardSnapshot = false;
   var boardSnapshots = {};
@@ -245,61 +241,28 @@ function renderActiveWorkPanels(s) {
       boardSnapshots[sym.name || ''] = st.board_snapshot;
     }
     var symName = sym.name || '';
-    perSymCounts[symName] = 0;
     COLUMNS.forEach(function(col) {
       var items = Array.isArray(snap[col]) ? snap[col] : [];
       items.forEach(function(iid) {
         allEntries[col].push({iid: iid, symphony: symName});
-        perSymCounts[symName] += 1;
       });
     });
   });
 
-  // Prefer a received board until the operator explicitly chooses a tab.
-  var symphonyNames = symphonies.map(function(sym) { return sym.name || ''; }).filter(Boolean);
-  if (symphonyNames.length > 0) {
-    if (!_swimlaneTab || symphonyNames.indexOf(_swimlaneTab) === -1) {
-      _swimlaneTabExplicit = false;
-      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || symphonyNames[0];
-    } else if (!_swimlaneTabExplicit && !boardSnapshots[_swimlaneTab]) {
-      _swimlaneTab = symphonyNames.find(function(name) { return boardSnapshots[name]; }) || _swimlaneTab;
-    }
-  } else {
-    _swimlaneTab = null;
-    _swimlaneTabExplicit = false;
-  }
-
-  // Filter to the active tab (only one symphony's cards visible at a time).
+  // 139: the choice in the header has already narrowed the snapshot, so every card
+  // here belongs to the symphonies shown. With several in view each card names its own.
   var columnItems = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
-  COLUMNS.forEach(function(col) {
-    columnItems[col] = _swimlaneTab
-      ? allEntries[col].filter(function(e) { return e.symphony === _swimlaneTab; })
-      : allEntries[col].slice();
-  });
+  COLUMNS.forEach(function(col) { columnItems[col] = allEntries[col].slice(); });
+  var multiView = symphonies.length > 1;
+  var todoCapacity = symphonies.length === 1 ? (todoCapacityBySym[symphonies[0].name || ''] || null) : null;
 
-  // Render tab bar when there are 2+ symphonies; hide otherwise.
-  if (tabsEl) {
-    if (symphonyNames.length > 1) {
-      tabsEl.style.display = '';
-      tabsEl.innerHTML = symphonyNames.map(function(name) {
-        var cls = 'swimlane-tab' + (name === _swimlaneTab ? ' active' : '');
-        var count = perSymCounts[name] || 0;
-        return '<button type="button" class="' + cls + '" data-symphony="' + esc(name) + '" onclick="selectSwimlaneTab(this.getAttribute(&quot;data-symphony&quot;))">' +
-          esc(name) + '<span class="swimlane-tab-count">' + count + '</span></button>';
-      }).join('');
-    } else {
-      tabsEl.style.display = 'none';
-      tabsEl.innerHTML = '';
-    }
-  }
-
-  // 149: the snapshot the wait reasons read. The slot count is the selected board's.
+  // 149: the snapshot the wait reasons read. The slot count is the one board's, when there is one.
   var skipAll = sessionSkipReasons(s);
   var waitSnapshot = {
     session_skip_reasons: skipAll,
     open_questions: s.open_questions || [],
     todo_waits: todoWaits,
-    todo_capacity: _swimlaneTab ? (todoCapacityBySym[_swimlaneTab] || null) : null,
+    todo_capacity: todoCapacity,
     now: Date.now()
   };
 
@@ -329,23 +292,27 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
-    var selectedSnapshot = _swimlaneTab ? boardSnapshots[_swimlaneTab] : null;
-    if (selectedSnapshot) {
-      var backlogCount = Array.isArray(selectedSnapshot.BACKLOG) ? selectedSnapshot.BACKLOG.length : 0;
-      var doneCount = Array.isArray(selectedSnapshot.DONE) ? selectedSnapshot.DONE.length : 0;
-      workEl.innerHTML = '<span class="empty-state">No active cards in this board. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
+    var receivedBoards = symphonies.filter(function(sym) { return boardSnapshots[sym.name || '']; });
+    if (receivedBoards.length > 0) {
+      var backlogCount = 0, doneCount = 0;
+      receivedBoards.forEach(function(sym) {
+        var snap = boardSnapshots[sym.name || ''];
+        backlogCount += Array.isArray(snap.BACKLOG) ? snap.BACKLOG.length : 0;
+        doneCount += Array.isArray(snap.DONE) ? snap.DONE.length : 0;
+      });
+      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
-    if (_swimlaneTab) {
-      workEl.innerHTML = '<span class="empty-state">Waiting for board snapshot&hellip;</span>';
+    if (symphonies.length > 0) {
+      workEl.innerHTML = '<span class="empty-state">Waiting for cards&hellip;</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
     var idleAndEmpty = s.phase === 'idle';
     workEl.innerHTML = idleAndEmpty
-      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
-      : '<span class="empty-state">Waiting for board snapshot&hellip;</span>';
+      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project with status <code>TODO</code> to start work.</span>'
+      : '<span class="empty-state">Waiting for cards&hellip;</span>';
     if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
     return;
   }
@@ -402,7 +369,10 @@ function renderActiveWorkPanels(s) {
     // 149: why a To Do or Blocked card is not progressing (empty for the rest).
     var waitLine = waitingLineHtml(waitingReason({id: iid, column: col, has_session: !!sess}, waitSnapshot));
 
-    return '<div class="swimlane-card"' + clickAttrs + '>' +
+    // 139: with all symphonies in view, each card says which one it belongs to.
+    var symphonyLine = multiView && entry.symphony
+      ? '<div class="swimlane-card-symphony">' + esc(entry.symphony) + '</div>' : '';
+    return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
       '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
       waitLine +
       liveLine +

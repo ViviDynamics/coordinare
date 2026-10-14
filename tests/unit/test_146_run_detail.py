@@ -96,7 +96,9 @@ def test_run_detail_is_a_glossary_concept() -> None:
 def test_the_router_treats_every_performers_path_as_the_performers_page() -> None:
     app = app_js()
     assert "if (isPerformersPath(path)) {" in app
-    assert "if (isPerformersPath(path)) renderPerformersPage(_lastState);" in app
+    # 139: both renders take the snapshot the symphony choice leaves, not the whole of it.
+    assert "if (isPerformersPath(path)) renderPerformersPage(scoped);" in app
+    assert "if (_lastState) renderPerformersPage(scopedView(_lastState));" in app
     assert "path === '/performers') renderPerformersPage" not in app
 
 

@@ -23,7 +23,7 @@ The naming is deliberate and worth internalizing — it maps cleanly onto the ar
 | Music | Coordinare | Meaning |
 |---|---|---|
 | **Coordinare** | the daemon | one coordinator directing everything |
-| **Symphony** | a project | a complete work being performed (one repo + board) |
+| **Symphony** | a project | a complete work being performed (one repo + GitHub Project) |
 | **Score** | the dispatch payload | what a performer is told to play (card, persona, context) |
 | **Performer** | an agent instance | one player executing one part |
 | **Harness** | the CLI backend | the *instrument* a performer plays on |

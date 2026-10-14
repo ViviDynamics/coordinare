@@ -767,8 +767,14 @@ def usage_summary(totals: Mapping[str | None, UsageCounts], table: PriceTable) -
     }
 
 
-def usage_block(ledger: TokenLedger, table: PriceTable, *, today: date) -> dict[str, Any]:
-    """The top-level ``token_usage`` snapshot block (tracked): today and the rolling UTC week."""
+def usage_block(
+    ledger: TokenLedger, table: PriceTable, *, today: date, symphonies: Iterable[str] = (),
+) -> dict[str, Any]:
+    """The top-level ``token_usage`` snapshot block (tracked): today and the rolling UTC week.
+
+    139: ``by_symphony`` repeats the same two figures for each named symphony, so the
+    dashboard can show one symphony's spend without a second request.
+    """
     today_iso = today.isoformat()
     week_start = (today - timedelta(days=WEEK_DAYS - 1)).isoformat()
     return {
@@ -778,6 +784,13 @@ def usage_block(ledger: TokenLedger, table: PriceTable, *, today: date) -> dict[
         "week_start": week_start,
         "today": usage_summary(ledger.totals(days=(today_iso, today_iso)), table),
         "week": usage_summary(ledger.totals(days=(week_start, today_iso)), table),
+        "by_symphony": {
+            name: {
+                "today": usage_summary(ledger.totals(symphony=name, days=(today_iso, today_iso)), table),
+                "week": usage_summary(ledger.totals(symphony=name, days=(week_start, today_iso)), table),
+            }
+            for name in symphonies
+        },
     }
 
 

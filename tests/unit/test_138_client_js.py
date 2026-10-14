@@ -59,8 +59,19 @@ def _extract_feed_js() -> str:
     if esc is None:
         raise AssertionError("the shared esc() helper is no longer in helpers.js")
     # 133: the feed links each entry into its run, so the run link helper is needed too.
+    # 139: the feed filters by the symphony choice, which lives in symphonies.js.
     run_link = shipped_function("runs", "runEntryLinkHtml")
-    return esc.group(0) + "\n\n" + run_link + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
+    return (
+        esc.group(0) + "
+
+" + run_link + "
+
+" + _DASHBOARD_JS_SOURCES["symphonies"] + "
+
+"
+        + _ACTIVITY_STREAM_JS + "
+" + feed_js
+    )
 
 
 def test_feed_js_slice_is_complete() -> None:
