@@ -234,9 +234,11 @@ def _is_stale(gated_head: str, head: str | None, gate_at: object, last_dispatch:
 def checks_view(events: list[dict[str, Any]], head: str | None) -> dict[str, Any] | None:
     """The PR checks of a card as the review hand-off judged them, or None when no gate has run.
 
-    The view is the latest gate's classified result, the head it judged, the time it ran and whether
-    that is stale against ``head``: the card's current PR head when the session knows it (None when
-    it does not). Nothing here calls GitHub. A later push or re-dispatch is shown as stale, not hidden.
+    ``head`` is the card's current PR head as a check of it read it (None when nothing did). The view
+    carries the latest gate's classified result, the head it judged, the time it ran, and two facts
+    about the current commit: ``current_checked``, whether a read of the current head exists at all,
+    and ``stale``, whether the gate judged a different commit. Nothing here calls GitHub. When no read
+    of the current head exists, the view is not current, and the icon must not claim it is.
     """
     gate: dict[str, Any] | None = None
     last_dispatch: dict[str, Any] | None = None
@@ -249,11 +251,13 @@ def checks_view(events: list[dict[str, Any]], head: str | None) -> dict[str, Any
         return None
     detail = gate.get("detail") or {}
     gated = str(detail.get("head") or "")
+    current_checked = bool(head)
     return {
         "state": _GATE_RESULT_CHECKS.get(str(detail.get("result")), CHECKS_UNKNOWN),
         "head": gated,
         "at": str(gate.get("at") or ""),
-        "stale": _is_stale(gated, head, gate.get("at"), last_dispatch),
+        "current_checked": current_checked,
+        "stale": current_checked and _is_stale(gated, head, gate.get("at"), last_dispatch),
     }
 
 

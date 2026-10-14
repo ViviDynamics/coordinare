@@ -21,6 +21,7 @@ from coordinare.dashboard.helpers import (
 )
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
+from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
@@ -1243,7 +1244,12 @@ class DashboardStore:
                     last_poll_raw.isoformat() if isinstance(last_poll_raw, datetime) else None
                 ),
                 "state": {
-                    "last_error": getattr(sym_state, "last_error", None) if sym_state else None,
+                    # 155: clipped again here, so a value stored before the daemon clipped it stays small too.
+                    "last_error": (
+                        clip_session_error(str(sym_state.last_error))
+                        if sym_state is not None and isinstance(getattr(sym_state, "last_error", None), str)
+                        else None
+                    ),
                     "active_card": getattr(sym_state, "active_card", None) if sym_state else None,
                     "board_snapshot": getattr(sym_state, "board_snapshot", None) if sym_state else None,
                     "board_titles": getattr(sym_state, "board_titles", None) or {},

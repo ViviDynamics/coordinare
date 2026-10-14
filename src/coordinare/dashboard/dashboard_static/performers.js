@@ -233,6 +233,12 @@ function checksIconHtml(checks, nowMs) {
   }
   var key = Object.prototype.hasOwnProperty.call(CHECKS_ICONS, checks.state) ? String(checks.state) : 'unknown';
   var icon = CHECKS_ICONS[key];
+  // 155: nothing has read the current commit, so the gate's result is not a claim about it. Neutral, whatever it was.
+  if (checks.current_checked !== true) {
+    var last = 'last gate at review hand-off: ' + icon.word + '; current commit not checked';
+    return '<span class="checks-icon checks-unchecked" role="img" aria-label="' + esc(last) +
+      '" title="' + esc(last) + '">?</span>';
+  }
   var age = fmtAgeAt(checks.at, nowMs);
   var title = 'PR checks at review hand-off: ' + icon.word + (age ? ' (' + age + ' ago)' : '');
   var cls = 'checks-icon checks-' + key;

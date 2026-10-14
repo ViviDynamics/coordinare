@@ -24,11 +24,12 @@ def _now_minus(hours: float) -> str:
     return (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
 
 
-def _checks(state: str | None, *, stale: bool = False, minutes_ago: float = 12) -> dict | None:
+def _checks(state: str | None, *, stale: bool = False, minutes_ago: float = 12,
+            current_checked: bool = True) -> dict | None:
     """A card's checks view as the strip carries it, or None when no gate has judged the card."""
     if state is None:
         return None
-    return {"state": state, "head": _HEAD[:12], "stale": stale,
+    return {"state": state, "head": _HEAD[:12], "stale": stale, "current_checked": current_checked,
             "at": (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()}
 
 
@@ -215,6 +216,25 @@ def test_a_stale_result_is_neutral_and_says_it_is_an_earlier_commit(
     expect(icon).to_have_class("checks-icon checks-fail checks-stale", timeout=_WAIT_LIVE)
     expect(icon).to_have_attribute("title", re.compile(
         r"^PR checks at review hand-off: failing \(\d+m \d+s ago\), checks as of an earlier commit$"))
+
+
+@pytest.mark.e2e
+def test_a_green_gate_on_a_head_nothing_checked_is_neutral_not_green(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # A human pushed after the gate and no per-cycle head was read: the icon must not claim pass.
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(
+        store,
+        symphonies=[_symphony(in_review=["PVTI_81"], titles={"PVTI_81": "Pushed by a human"},
+                              pr_urls={"PVTI_81": "https://github.com/acme/sample/pull/81"})],
+        card_pipeline={_SYMPHONY: {"PVTI_81": _strip(checks=_checks("pass", current_checked=False))}},
+    )
+    icon = page.locator("#swimlane-section .swimlane-card").filter(has_text="Pushed by a human").locator(".checks-icon")
+    expect(icon).to_have_class("checks-icon checks-unchecked", timeout=_WAIT_LIVE)
+    expect(icon).to_have_attribute("title", re.compile(
+        r"^last gate at review hand-off: passing; current commit not checked$"))
 
 
 @pytest.mark.e2e

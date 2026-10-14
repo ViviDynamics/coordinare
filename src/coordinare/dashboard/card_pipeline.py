@@ -85,12 +85,23 @@ def live_stage(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | N
     return stage if stage in PIPELINE_STAGES else None
 
 
+#: The phase in which monitor_pr reads the PR's live head every cycle. It is the only source of a current head.
+_PR_WAIT_PHASE = "monitoring_pr"
+
+
 def live_head(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | None:
-    """The PR head the card's live session last reported, from session state. None when it has no session
-    or the session has not yet seen a PR. Read from memory only: GitHub is never called for this."""
+    """The PR head monitor_pr last read for a card still waiting on its PR, or None.
+
+    monitor_pr reads the live head on every cycle of that phase and mirrors it onto the session as
+    ``pr_live_head``. Outside that phase, or before the first read, there is no current head, and the
+    performer's last report (head_after) is not one: a human push or a coordinare rebase is never
+    reported. Read from memory only; GitHub is never called for this.
+    """
     session = _sessions_of(daemon, symphony).get(card_id)
-    card = session.get("current_card") if isinstance(session, dict) else None
-    head = card.get("head_after") if isinstance(card, dict) else None
+    if not isinstance(session, dict) or session.get("phase") != _PR_WAIT_PHASE:
+        return None
+    read = session.get("pr_live_head")
+    head = read.get("head") if isinstance(read, dict) else None
     return head if isinstance(head, str) and head else None
 
 

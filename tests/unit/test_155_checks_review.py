@@ -88,10 +88,11 @@ def test_a_re_dispatch_with_no_new_push_is_not_stale() -> None:
     assert view is not None and view["stale"] is False
 
 
-def test_an_unknown_current_head_and_a_gate_older_than_the_dispatch_is_stale() -> None:
+def test_an_unknown_current_head_is_not_checked_rather_than_stale() -> None:
+    # 155 final check: with no live head nothing judged the current commit, so the icon says so.
     events = [_gate("FORWARD"), _dispatch(DISPATCH_AT)]
     view = checks_view(events, None)
-    assert view is not None and view["stale"] is True
+    assert view is not None and view["current_checked"] is False and view["stale"] is False
 
 
 def test_an_unknown_current_head_and_a_gate_after_the_dispatch_is_not_stale() -> None:
@@ -121,10 +122,9 @@ def test_the_strip_without_a_live_head_has_the_checks_view_and_no_head() -> None
     assert strip["checks"]["head"] == HEAD_A[:12]
 
 
-def test_live_head_reads_the_session_card_head_after(
-) -> None:
-    session = {"performer_stage": "implementing", "phase": "monitoring_agent",
-               "current_card": {"id": "c1", "head_after": HEAD_B}}
+def test_live_head_reads_the_head_monitor_pr_recorded_on_the_session() -> None:
+    session = {"performer_stage": "implementing", "phase": "monitoring_pr",
+               "pr_live_head": {"head": HEAD_B, "checked_at": DISPATCH_AT}}
     daemon = SimpleNamespace(state={"active_sessions": {"c1": session}, "symphony_states": {}})
     assert live_head(daemon, "alpha", "c1") == HEAD_B
     assert live_head(daemon, "alpha", "missing") is None
@@ -135,8 +135,8 @@ def test_the_snapshot_block_marks_a_bounced_card_stale_after_a_new_push() -> Non
     log.record("alpha", "c1", "ci_result", stage="implementing", at=GATE_AT,
                detail={"result": "BOUNCE", "head": HEAD_A[:12]}, key="x")
     log.record("alpha", "c1", "dispatched", stage="implementing", at=DISPATCH_AT)
-    session = {"performer_stage": "implementing", "phase": "monitoring_agent",
-               "current_card": {"id": "c1", "head_after": HEAD_B}}
+    session = {"performer_stage": "implementing", "phase": "monitoring_pr",
+               "pr_live_head": {"head": HEAD_B, "checked_at": DISPATCH_AT}}
     daemon = SimpleNamespace(state={"card_lifecycle": log, "lifecycle_sequence": [],
                                     "active_sessions": {"c1": session}, "symphony_states": {}})
     checks = card_pipeline_block(daemon)["alpha"]["c1"]["checks"]

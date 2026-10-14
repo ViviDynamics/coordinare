@@ -30,7 +30,7 @@ const HEAD_B = 'b'.repeat(12);
 // --- the PR checks icon: gate-time state, stale, environment, unknown ----------------- //
 
 function checks(state, extra) {
-  return Object.assign({state: state, head: HEAD_A, at: iso(12 * 60000), stale: false}, extra || {});
+  return Object.assign({state: state, head: HEAD_A, at: iso(12 * 60000), stale: false, current_checked: true}, extra || {});
 }
 
 check('a pass, fail or running state gets its own class and a hand-off title with the age', () => {
@@ -64,6 +64,22 @@ check('a recorded unknown result shows the unknown icon with the age, under the 
   const html = checksIconHtml(checks('unknown'), NOW);
   assert.ok(html.indexOf('checks-unknown') !== -1);
   assert.ok(html.indexOf('PR checks at review hand-off: unknown (12m 0s ago)') !== -1, html);
+});
+
+check('a gate result with no current commit checked is neutral, never green or red', () => {
+  for (const state of ['pass', 'fail', 'running']) {
+    const html = checksIconHtml(checks(state, {current_checked: false}), NOW);
+    assert.ok(html.indexOf('checks-unchecked') !== -1, 'neutral class for ' + state);
+    assert.ok(html.indexOf('checks-pass') === -1 && html.indexOf('checks-fail') === -1 && html.indexOf('checks-running') === -1, html);
+    assert.ok(html.indexOf('last gate at review hand-off: ' + ({pass: 'passing', fail: 'failing', running: 'running'})[state] +
+      '; current commit not checked') !== -1, 'title for ' + state + ': ' + html);
+  }
+});
+
+check('an unchecked head that is also stale still says the current commit was not checked', () => {
+  const html = checksIconHtml(checks('fail', {current_checked: false, stale: false}), NOW);
+  assert.ok(html.indexOf('current commit not checked') !== -1, html);
+  assert.ok(html.indexOf('PR checks at review hand-off') === -1, 'no current-tense hand-off title');
 });
 
 check('no gate at all shows the unknown icon with its own title', () => {
