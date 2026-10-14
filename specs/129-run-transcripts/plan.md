@@ -163,6 +163,15 @@ With `enabled: false`: no buffer, no cap in the payload, no query parameters on 
 - **Performer size bound.** `_bounded` cuts strings over 256 KiB with a marker, and a record over 1 MiB has its input and output withheld. Both happen before buffering.
 - **Refreshed secrets.** The runner's refresh writes and the transcript provider's copy both take `_secrets_lock`.
 
+### D17. Fourth review: linear patterns, inline terminal, relief rules
+
+- **Linear shapes.** A pattern that starts with a literal prefix and then scans a shared character class restarts at every occurrence. Those are now found by scanning each token once: `_first_secret_offset` (prefix shapes, `str.find` forward), `_redact_jwts` (one split per dotted token), `_redact_netrc` (one pass over whitespace tokens, skipped when the text has no `password`), and `_redact_pem` (END markers located once, each BEGIN paired by bisection, the line end cached over monotonic BEGIN positions). Remaining regular expressions are anchored at a literal and do not nest quantifiers over a shared class.
+- **Bounded poll.** `after(seq, limit, time_budget_s=1.0)` checks the clock per record. `_bounded_json` checks the encoded size before walking the value. Redaction stays on worker threads on both sides.
+- **Relief rules.** `_annotation_assignment` decides whether an annotation assigns anything. `_comparison_value_start` decides whether an `==` right side is code. `_value_is_credential` decides whether a bare or quoted value is a credential. `bare_only` names (`pin`, `otp`, `auth`) are credentials only as bare values. `_is_secret_name` treats a strong stem as decisive before the descriptive suffix is checked.
+- **Inline terminal ordering.** `check_status` drains (five-second bound) then calls `_finish_terminal`, which tears down and releases. `_defer_terminal_finish` and the task registry are removed. `_cleanup_ephemeral_job_by_id` runs `_teardown_drain` first, which is skipped for a run in `_transcript_drained`, so the terminal path and the system-error path each drain once.
+- **Tail marker.** `RunTranscriptWriter.observe_last_seq` records the performer's last seq from every absorb and drain. `record_tail_lost` writes one `truncated` marker at the next seq when the performer is known to hold more.
+- **Writer failure on an unreadable tail.** `_load_tail` fails the writer when `_last_parsable_record` finds nothing within its bound. `_parse_line` treats `RecursionError` as a parse failure.
+
 ## Wire and contract changes
 
 | Surface | Change | Compatibility |

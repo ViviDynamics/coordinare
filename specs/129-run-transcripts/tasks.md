@@ -68,6 +68,19 @@ Checked items are done and verified by running. Unchecked items are open, and ea
 - [x] T010 Record size bounds on the performer (`test_a_huge_text_field_is_cut_with_a_marker_before_buffering`, `test_a_record_too_large_even_after_field_bounds_has_its_payload_withheld`)
 - [x] T011 Refreshed secrets under a lock (`test_refreshed_secrets_reach_the_redaction_set_of_the_running_job`, `test_a_refresh_during_a_secret_read_does_not_raise`)
 
+## Fourth adversarial review
+
+- [x] F001 Linear prefix shapes and JWTs; 1 MB and 5 MB timing tests (`test_eyj_run_of_one_megabyte_is_linear`, `test_prefix_run_of_one_megabyte_is_linear`, `test_five_megabyte_adversarial_runs_stay_under_five_seconds`)
+- [x] F002 Linear netrc; 1 MB timing test (`test_machine_repeats_of_one_megabyte_are_linear`)
+- [x] F003 Linear PEM: repeated BEGIN on one line, and twenty thousand distinct kinds (`test_begin_repeated_on_one_line_of_one_megabyte_is_linear`, `test_twenty_thousand_distinct_pem_kinds_are_linear`)
+- [x] F004 Bounded poll: per-record time budget, size checked before the walk (performer `test_one_slow_record_ends_the_batch_so_completion_is_not_held_up`, `test_a_huge_value_is_withheld_by_its_encoded_size_before_any_walk`, `test_a_batch_of_adversarial_records_is_served_within_the_budget`, `test_an_adversarial_jwt_field_of_one_megabyte_is_served_quickly`)
+- [x] F005 Relief leaks closed: each leaking example is a test (`test_relief_rules_do_not_leak`, `test_numeric_structured_values_under_a_credential_key_are_redacted`); round-three cases still hold (`test_round_three_over_redaction_cases_still_hold`, `test_short_numbers_and_descriptive_names_are_kept`)
+- [x] F006 Inline terminal drain and teardown; no background finish (`test_terminal_status_is_returned_after_the_drain_finishes`, `test_terminal_drain_completes_before_the_terminal_status_is_returned`)
+- [x] F007 Tail that does not fit is marked truncated (`test_a_tail_that_does_not_fit_the_bound_is_marked_truncated`, `test_record_tail_lost_writes_one_truncated_marker_after_the_last_written_record`)
+- [x] F008 One drain and one teardown per run (`test_a_run_is_drained_once_on_the_terminal_path_and_not_again_on_release`)
+- [x] F009 Unreadable tail fails the run instead of resetting the cursor (`test_more_than_a_thousand_unparsable_lines_fail_the_writer_without_a_write`)
+- [x] F010 OSC escapes, RecursionError in the parser, retention stat guard (`test_osc_sequence_does_not_hide_a_secret`, `test_osc_sequence_with_st_terminator_does_not_hide_a_secret`, `test_a_deeply_nested_tail_line_never_raises_out_of_the_parser`, `test_retention_survives_an_entry_whose_stat_fails`)
+
 ## Open items
 
 - [ ] O001 Fails-without-fix was not verified by reverting each fix and running its test. The old writer signature is gone, so the old code cannot run these tests unchanged. Each test is written against the behaviour it changes.

@@ -78,7 +78,8 @@ async def test_a_failing_batch_still_returns_the_status_with_an_error_flag(
         await client.post("/jobs", json=_payload("job-r3-route"))
         await _wait_terminal(client, "job-r3-route")
         response = await client.get(
-            "/jobs/job-r3-route", params={"transcript_after": 0, "transcript_limit": 10},
+            "/jobs/job-r3-route",
+            params={"transcript_after": 0, "transcript_limit": 10},
         )
         assert response.status_code == 200
         body = response.json()
@@ -92,7 +93,8 @@ async def test_a_failing_batch_still_returns_the_status_with_an_error_flag(
 
 
 def test_a_record_that_cannot_be_redacted_is_served_as_a_withheld_marker_with_its_seq(
-    buffer: transcript.TranscriptBuffer, monkeypatch: pytest.MonkeyPatch,
+    buffer: transcript.TranscriptBuffer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_redact = transcript.redact_value
 
@@ -113,18 +115,19 @@ def test_a_record_that_cannot_be_redacted_is_served_as_a_withheld_marker_with_it
 
 
 def test_a_record_that_cannot_be_captured_keeps_its_seq_and_the_run_goes_on(
-    buffer: transcript.TranscriptBuffer, monkeypatch: pytest.MonkeyPatch,
+    buffer: transcript.TranscriptBuffer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A value that cannot be serialised at capture is withheld, not dropped silently."""
-    real_jsonable = transcript._jsonable
+    real_bounded = transcript._bounded_json
 
     def refuse_marker(value: Any) -> Any:
         if value == "unserialisable-marker":
             message = "cannot serialise"
             raise TypeError(message)
-        return real_jsonable(value)
+        return real_bounded(value)
 
-    monkeypatch.setattr(transcript, "_jsonable", refuse_marker)
+    monkeypatch.setattr(transcript, "_bounded_json", refuse_marker)
     transcript.emit("tool_result", output_data="unserialisable-marker")
     transcript.emit("assistant_text", text="next")
     records = buffer.after(0, 10)

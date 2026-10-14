@@ -346,7 +346,7 @@ def _rfind_newline(fd: int, end: int) -> int:
 def _parse_line(data: bytes) -> object | None:
     try:
         parsed: object = json.loads(data)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return parsed
 
@@ -405,6 +405,9 @@ class RunTranscriptWriter:
         self._dropped_records = 0
         self._dropped_bytes = 0
         self._secrets: tuple[str, ...] = ()
+        # The highest seq the performer has reported. A tail beyond the cursor is known
+        # to exist only when this is larger (review round 4, item 4).
+        self._performer_last: int | None = None
         self._lock = threading.Lock()
 
     @property
@@ -441,6 +444,37 @@ class RunTranscriptWriter:
         merged = set(self._secrets)
         merged.update(v for v in values if isinstance(v, str))
         self._secrets = tuple(sorted(merged))
+
+    def observe_last_seq(self, value: int | None) -> None:
+        """Remember the highest seq the performer has reported (memory only)."""
+        if value is None:
+            return
+        if self._performer_last is None or value > self._performer_last:
+            self._performer_last = value
+
+    def record_tail_lost(self, reason: str) -> None:
+        """Write one ``truncated`` marker for a tail the daemon could not fetch.
+
+        The marker takes the next seq, so the file says where the transcript stops
+        (review round 4, item 4). Only one marker is written, and only when records
+        were actually missed. Blocking: run it on a worker thread.
+        """
+        if self._failed or self._performer_last is None:
+            return
+        self.ensure_loaded()
+        with self._lock:
+            if self._failed or self._truncated:
+                return
+            seq = self._cursor + 1
+            if seq > self._performer_last:
+                return
+            self._truncated = True
+            self._cursor = seq
+            marker_text = f"records after seq {seq - 1} were not retrieved: {reason}"
+            try:
+                self._write(_to_line(self._marker(seq, marker_text)))
+            except Exception as exc:  # best effort: a failed marker fails the run quietly
+                self._fail(exc)
 
     def mark_failed(self, exc: BaseException) -> None:
         """Record that capture for this run failed. The caller has already contained it."""
@@ -495,7 +529,9 @@ class RunTranscriptWriter:
                 if seq is not None:
                     self._cursor = seq
                 else:
-                    logger.warning("run_transcript.tail_unreadable", run_id=self._run_id)
+                    # No parsable record in the scanned tail. Resetting the cursor would
+                    # re-pull the whole run, so the run's transcript fails instead (round 4).
+                    self._fail(ValueError("no parsable record in the transcript tail"))
                 if isinstance(obj, dict) and obj.get("type") == "truncated":
                     self._truncated = True
             self._bytes = size
@@ -882,8 +918,15 @@ def prune_expired(
                     continue
                 if entry.resolve() in keep_resolved:
                     continue
-                mtime = entry.stat().st_mtime
-                if mtime < cutoff and mtime < youngest_allowed and _remove_quietly(entry.unlink, entry):
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if (
+                    mtime < cutoff
+                    and mtime < youngest_allowed
+                    and _remove_quietly(entry.unlink, entry)
+                ):
                     removed += 1
             if not any(card.iterdir()):
                 _remove_quietly(card.rmdir, card)
@@ -891,6 +934,7 @@ def prune_expired(
             _remove_quietly(symphony.rmdir, symphony)
     logger.info("run_transcript.retention_pruned", removed=removed, retention_days=retention_days)
     return removed
+
 
 __all__ = [
     "MAX_BATCH_BYTES",

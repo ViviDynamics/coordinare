@@ -61,7 +61,10 @@ def _rec(seq: int, text: str = "message") -> dict[str, Any]:
 
 def _writer(root: Path, *, max_bytes: int = 10_000_000) -> RunTranscriptWriter:
     return RunTranscriptWriter(
-        root, parts=("alpha", "PVTI_1"), run_id="run-1", max_bytes=max_bytes,
+        root,
+        parts=("alpha", "PVTI_1"),
+        run_id="run-1",
+        max_bytes=max_bytes,
     )
 
 
@@ -112,7 +115,7 @@ NASTY_STRINGS = [
     GITHUB_TOKEN,
     "emoji \U0001f389 and line\u2028sep",
     "x" * 5000,
-    "back\\slash and \"quote\"",
+    'back\\slash and "quote"',
 ]
 
 
@@ -122,17 +125,19 @@ def test_every_line_parses_and_keeps_its_seq_for_nasty_strings(tmp_path: Path) -
     root = tmp_path / "t"
     records: list[dict[str, Any]] = []
     for index, text in enumerate(NASTY_STRINGS, start=1):
-        records.append({
-            "ts": "2026-10-13T00:00:00+00:00",
-            "run_id": "r",
-            "seq": index,
-            "type": "tool_call",
-            "text": text,
-            "tool_name": text,
-            "call_id": text,
-            "input": {"command": text, "nested": [text, {"k": text}]},
-            "output": text,
-        })
+        records.append(
+            {
+                "ts": "2026-10-13T00:00:00+00:00",
+                "run_id": "r",
+                "seq": index,
+                "type": "tool_call",
+                "text": text,
+                "tool_name": text,
+                "call_id": text,
+                "input": {"command": text, "nested": [text, {"k": text}]},
+                "output": text,
+            },
+        )
     _writer(root).append_batch(records, last_seq=len(records))
     raw_lines = _file(root).read_bytes().splitlines()
     assert len(raw_lines) == len(records)
@@ -145,7 +150,15 @@ def test_line_level_pass_no_longer_corrupts_prose_with_a_marker(tmp_path: Path) 
     line was redacted. The value is redacted, and the line stays valid."""
     root = tmp_path / "t"
     _writer(root).append_batch(
-        [{"ts": "x", "run_id": "r", "seq": 1, "type": "assistant_text", "text": "Enter the password:"}],
+        [
+            {
+                "ts": "x",
+                "run_id": "r",
+                "seq": 1,
+                "type": "assistant_text",
+                "text": "Enter the password:",
+            },
+        ],
         last_seq=1,
     )
     [record] = _lines(_file(root))
@@ -186,7 +199,10 @@ def test_fifo_at_the_run_path_fails_the_run_without_hanging(tmp_path: Path) -> N
     assert writer.failed is True
 
 
-def test_a_failed_load_never_reaches_the_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_load_never_reaches_the_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Review item 3a: after a failed load, no write is attempted."""
     root = tmp_path / "t"
     _file(root).parent.mkdir(parents=True)
@@ -240,7 +256,8 @@ def test_failed_write_leaves_no_torn_line(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_a_record_that_cannot_be_recorded_becomes_a_marker_and_the_run_continues(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Daemon side of review item 1: one bad record writes a marker and the rest go on."""
     root = tmp_path / "t"
@@ -294,21 +311,28 @@ class _FakeClient:
 
 def _service(client: _FakeClient, collector: TranscriptCollector | None) -> HTTPPerformerService:
     config = PerformerEndpointConfig(
-        id="perf-review3", mode="persistent", image="performer:full",
-        endpoint="http://127.0.0.1:9", roles=["implementer"],
+        id="perf-review3",
+        mode="persistent",
+        image="performer:full",
+        endpoint="http://127.0.0.1:9",
+        roles=["implementer"],
     )
     return HTTPPerformerService(
-        config, client=cast("PerformerHTTPClient", client), transcripts=collector,
+        config,
+        client=cast("PerformerHTTPClient", client),
+        transcripts=collector,
     )
 
 
 async def test_a_slow_write_does_not_hold_up_the_poll(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review item 3a / 4: one transcript write may not delay the status poll."""
     monkeypatch.setattr(hps, "_TRANSCRIPT_POLL_SECONDS", 0.1)
     monkeypatch.setattr(
-        RunTranscriptWriter, "append_batch",
+        RunTranscriptWriter,
+        "append_batch",
         lambda self, *a, **k: time.sleep(3) or 0,
     )
     client = _FakeClient([_rec(1)], last_seq=1)
@@ -317,7 +341,8 @@ async def test_a_slow_write_does_not_hold_up_the_poll(
     started = time.monotonic()
     with capture_logs() as logs:
         status = await service.check_status(
-            "sess-slow", payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_s"}},
+            "sess-slow",
+            payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_s"}},
         )
     assert time.monotonic() - started < 2
     assert status["status"] == "working"
@@ -325,7 +350,8 @@ async def test_a_slow_write_does_not_hold_up_the_poll(
 
 
 async def test_a_slow_first_cursor_read_falls_back_to_a_plain_poll(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review item 3a: until the cursor is known, the poll asks for no records. Asking
     from a placeholder 0 would re-pull the run."""
@@ -335,25 +361,27 @@ async def test_a_slow_first_cursor_read_falls_back_to_a_plain_poll(
     collector = TranscriptCollector(tmp_path / "t", enabled=True, max_bytes_per_run=10**6)
     service = _service(client, collector)
     await service.check_status(
-        "sess-load", payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_l"}},
+        "sess-load",
+        payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_l"}},
     )
     assert client.calls[0]["transcript_after"] is None
 
 
-async def test_terminal_status_is_returned_before_the_drain_finishes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+async def test_terminal_status_is_returned_after_the_drain_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Review item 4: completion is reported now. The drain runs in the background."""
+    """Round 4 reverses round 3's background finish: the tail is drained before the
+    terminal state is reported, so no new dispatch can replace the job first."""
     client = _FakeClient([_rec(1)], last_seq=1)
     collector = TranscriptCollector(tmp_path / "t", enabled=True, max_bytes_per_run=10**6)
     service = _service(client, collector)
     drained: list[str] = []
 
-    async def slow_drain(self: HTTPPerformerService, *args: Any, **kwargs: Any) -> None:
-        await asyncio.sleep(2)
+    async def drain(self: HTTPPerformerService, *args: Any, **kwargs: Any) -> None:
         drained.append("done")
 
-    monkeypatch.setattr(HTTPPerformerService, "_drain_transcript", slow_drain)
+    monkeypatch.setattr(HTTPPerformerService, "_drain_transcript", drain)
 
     async def terminal_get(job_id: str, **kwargs: Any) -> JobStatus:
         return JobStatus(
@@ -365,16 +393,12 @@ async def test_terminal_status_is_returned_before_the_drain_finishes(
         )
 
     monkeypatch.setattr(client, "get_job", terminal_get)
-    started = time.monotonic()
     status = await service.check_status(
-        "sess-term", payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_t"}},
+        "sess-term",
+        payload={"transcript_target": {"symphony": "alpha", "card_id": "PVTI_t"}},
     )
-    assert time.monotonic() - started < 1
+    assert drained == ["done"], "the drain finished before the terminal state was returned"
     assert "status" in status
-    assert drained == [], "the drain has not finished when the terminal state is returned"
-    await asyncio.gather(*list(service._finish_tasks))
-    assert drained == ["done"]
-    assert not service._finish_tasks
 
 
 # --- finding 5: over-redaction of code and descriptions ------------------------------
@@ -388,7 +412,7 @@ async def test_terminal_status_is_returned_before_the_drain_finishes(
         '"token_count": 5',
         "token=5",
         '"token": 5',
-        'def f(password: Optional[str])',
+        "def f(password: Optional[str])",
         "token_type = 'bearer'",
     ],
 )
@@ -416,7 +440,9 @@ def test_a_pem_block_is_redacted_only_from_begin_to_end() -> None:
 
 
 def test_a_begin_without_end_redacts_only_when_base64_lines_follow() -> None:
-    body = "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8w\nZZZZYYYYXXXXWWWWVVVV\n"
+    body = (
+        "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8w\nZZZZYYYYXXXXWWWWVVVV\n"
+    )
     assert "MIIBVQ" not in redact_text(body)
     prose = "-----BEGIN PRIVATE KEY----- is a marker\nand this is ordinary prose"
     assert redact_text(prose) == prose
@@ -451,13 +477,15 @@ def test_ansi_sequences_between_key_and_value_do_not_hide_the_secret() -> None:
 
 
 def test_structured_key_variants_are_masked() -> None:
-    value = redact_value({
-        "pass_word": "variant-one-1234",
-        "passphrase": "variant-two-1234",
-        "api_key": "variant-three-1234",
-        "apikey": "variant-four-1234",
-        "OPENAI_API_KEY": "variant-five-1234",
-    })
+    value = redact_value(
+        {
+            "pass_word": "variant-one-1234",
+            "passphrase": "variant-two-1234",
+            "api_key": "variant-three-1234",
+            "apikey": "variant-four-1234",
+            "OPENAI_API_KEY": "variant-five-1234",
+        },
+    )
     blob = json.dumps(value)
     for secret in ("variant-one", "variant-two", "variant-three", "variant-four", "variant-five"):
         assert secret not in blob
@@ -500,7 +528,8 @@ def _age(path: Path, days: int) -> None:
 
 
 def test_a_card_folder_racing_a_writer_does_not_abort_the_sweep(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review item 7: rmdir hits ENOTEMPTY because a writer just created a file there."""
     root = tmp_path / "t"
@@ -527,7 +556,8 @@ def test_a_card_folder_racing_a_writer_does_not_abort_the_sweep(
 
 
 def test_the_sweep_skips_files_within_the_minimum_age(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Review item 7: a file that is still young is never removed by the startup sweep."""
     root = tmp_path / "t"
@@ -546,7 +576,8 @@ async def test_the_retention_loop_exits_on_shutdown() -> None:
     fake = SimpleNamespace(_stop_event=stop)
     collector = SimpleNamespace(root=Path("/nonexistent-transcripts-root"), retention_days=30)
     loop = CoordinareDaemon._transcript_retention_loop(
-        cast("CoordinareDaemon", fake), cast("TranscriptCollector", collector),
+        cast("CoordinareDaemon", fake),
+        cast("TranscriptCollector", collector),
     )
     task = asyncio.create_task(loop)
     await asyncio.sleep(0.05)

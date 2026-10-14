@@ -39,6 +39,7 @@ import contextvars
 import functools
 import json
 import os
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict, TypeVar, Unpack, cast, get_args
@@ -71,6 +72,10 @@ TRANSCRIPT_TYPES: frozenset[str] = frozenset(get_args(TranscriptType))
 # Upper bound on the serialized size of one delivery batch. A single record
 # larger than this is still delivered alone, so the stream always makes progress.
 MAX_BATCH_BYTES = 8 * 1024 * 1024
+
+# Wall-clock budget for one ``after()`` call. A record that is slow to redact ends the
+# batch early, so one large record cannot hold up completion detection (review round 4).
+TIME_BUDGET_SECONDS = 1.0
 
 # Size bounds on one record (review item 9). A string field longer than the field
 # limit is cut with a marker. A record still over the record limit has its input
@@ -131,11 +136,21 @@ class TranscriptRecord(BaseModel):
     scope: TranscriptScope | None = None
 
 
-def _jsonable(value: Any) -> Any:
-    """Round-trip through JSON so the stored record is plain data (no objects)."""
+_WITHHELD_PAYLOAD: dict[str, Any] = {"withheld": "value exceeded the per-record size limit"}
+
+
+def _bounded_json(value: Any) -> Any:
+    """A plain-JSON copy of ``value``, or the withheld marker when it is too large.
+
+    The size is checked on the encoded form before any walk over the structure, so a
+    huge value costs one encode and no recursive pass (review round 4, item 1).
+    """
     if value is None:
         return None
-    return json.loads(json.dumps(value, default=str))
+    encoded = json.dumps(value, default=str)
+    if len(encoded) > RECORD_LIMIT_BYTES:
+        return dict(_WITHHELD_PAYLOAD)
+    return _bounded(json.loads(encoded))
 
 
 def _bounded(value: Any) -> Any:
@@ -260,8 +275,8 @@ class TranscriptBuffer:
             text=_bounded(fields.get("text")),
             tool_name=_bounded(fields.get("tool_name")),
             call_id=_bounded(fields.get("call_id")),
-            input=_bounded(_jsonable(fields.get("input_data"))),
-            output=_bounded(_jsonable(fields.get("output_data"))),
+            input=_bounded_json(fields.get("input_data")),
+            output=_bounded_json(fields.get("output_data")),
             is_error=fields.get("is_error"),
             usage=fields.get("usage"),
             scope=fields.get("scope"),
@@ -312,7 +327,13 @@ class TranscriptBuffer:
         self._dropped_records += 1
         self._dropped_bytes += size
 
-    def after(self, seq: int, limit: int) -> list[dict[str, Any]]:
+    def after(
+        self,
+        seq: int,
+        limit: int,
+        *,
+        time_budget_s: float = TIME_BUDGET_SECONDS,
+    ) -> list[dict[str, Any]]:
         """Records with ``seq > seq`` in ascending order, redacted for the wire.
 
         Returns at most ``limit`` records and at most ``max_batch_bytes`` of
@@ -320,11 +341,14 @@ class TranscriptBuffer:
         large record cannot stall delivery. A record that cannot be redacted is
         served as a withheld ``error`` record with the same seq (review item 1).
         """
+        started = time.monotonic()
         start = max(seq, 0)
         secrets = self._secret_values()
         batch: list[dict[str, Any]] = []
         total = 0
         for record in self._records[start : start + limit]:
+            if batch and time.monotonic() - started > time_budget_s:
+                break
             data, size = _serve(record, secrets)
             if batch and total + size > self._max_batch_bytes:
                 break
