@@ -174,14 +174,24 @@ def _seconds_between(start: object, end: object) -> float | None:
     return round((ended - began).total_seconds(), 3)
 
 
-def _tail_facts(root: Path, ref: run_viewer.RunRef, budget: int) -> tuple[str | None, str | None, int]:
-    """(last timestamp, outcome, bytes read) from the end of one run's transcript.
+#: The state of one run's read. "done": its result record is in the tail. "running": the tail holds no
+#: result, so the run has not ended. "budget": the request's byte budget was spent before this run.
+#: "unreadable": the file could not be read.
+READ_DONE = "done"
+READ_RUNNING = "running"
+READ_BUDGET = "budget"
+READ_UNREADABLE = "unreadable"
 
-    Reads at most TIMELINE_TAIL_BYTES and at most ``budget`` bytes. The outcome comes from the last
-    result record in that tail, and is None when the tail holds none.
+
+def _tail_facts(root: Path, ref: run_viewer.RunRef, budget: int) -> tuple[str | None, str | None, int, str]:
+    """(end time, outcome, bytes read, read state) from the end of one run's transcript.
+
+    Reads at most TIMELINE_TAIL_BYTES and at most ``budget`` bytes. An end time and an outcome come
+    only from a terminal result record in that tail. A run with no such record in the tail is still
+    running, and gets neither.
     """
     if budget <= 0:
-        return None, None, 0
+        return None, None, 0, READ_BUDGET
     path = run_viewer.run_file(root, ref)
     with run_viewer.open_run(path, ref) as handle:
         size = handle.seek(0, os.SEEK_END)
@@ -191,22 +201,19 @@ def _tail_facts(root: Path, ref: run_viewer.RunRef, budget: int) -> tuple[str | 
     lines = raw.split(b"\n")
     if want < size:
         lines = lines[1:]  # the first line of a tail may be cut mid-record
-    ended: str | None = None
-    outcome: str | None = None
     for line in reversed(lines):
         try:
             record = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or record.get("type") != "result":
             continue
-        if ended is None and isinstance(record.get("ts"), str):
-            ended = record["ts"]
-        if outcome is None and record.get("type") == "result":
-            outcome = "failed" if record.get("is_error") is True else "completed"
-        if ended is not None and outcome is not None:
+        ts = record.get("ts")
+        if not isinstance(ts, str):
             break
-    return ended, outcome, want
+        outcome = "failed" if record.get("is_error") is True else "completed"
+        return ts, outcome, want, READ_DONE
+    return None, None, want, READ_RUNNING
 
 
 def transcript_runs(
@@ -233,10 +240,10 @@ def transcript_runs(
         ended: str | None = None
         outcome: str | None = None
         try:
-            ended, outcome, used = _tail_facts(root, ref, budget)
+            ended, outcome, used, read_state = _tail_facts(root, ref, budget)
             budget -= used
         except (run_viewer.RunLookupError, run_viewer.RunRefusedError, OSError):
-            ended, outcome = None, None
+            read_state = READ_UNREADABLE
         started = row.get("started_at")
         runs.append({
             "run": ref.run,
@@ -245,6 +252,7 @@ def transcript_runs(
             "ended_at": ended,
             "duration_seconds": _seconds_between(started, ended),
             "outcome": outcome,
+            "read_state": read_state,
         })
     return runs, None, bool(listing.get("truncated"))
 

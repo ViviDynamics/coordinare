@@ -85,6 +85,7 @@ class _Sources:
     events: list[dict[str, Any]]
     runs: list[dict[str, Any]] | None
     usage: UsageLedger
+    dropped: int = 0
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,7 @@ def _run_block(run: dict[str, Any]) -> dict[str, Any]:
         "ended_at": run.get("ended_at"),
         "duration_seconds": run.get("duration_seconds"),
         "outcome": run.get("outcome"),
+        "read_state": run.get("read_state"),
     }
 
 
@@ -222,9 +224,12 @@ def _usage_of(stage: str, usage: UsageLedger) -> tuple[dict[str, Any] | None, st
 
 def _stage_block(stage: str, status: str, sources: _Sources) -> dict[str, Any]:
     dispatches = sum(1 for event in sources.events if event.get("kind") == "dispatched" and event.get("stage") == stage)
+    # A count from the events is a lower bound once the cap has dropped any: the repeatable dispatches may be gone.
+    at_least = False
     if sources.runs is not None:
         run_count, run_source, duration, duration_partial, listed = _runs_of(stage, sources.runs)
     elif dispatches:
+        at_least = sources.dropped > 0
         run_count, run_source, duration, duration_partial, listed = dispatches, "lifecycle", None, False, []
     else:
         run_count, run_source, duration, duration_partial, listed = None, None, None, False, []
@@ -234,6 +239,7 @@ def _stage_block(stage: str, status: str, sources: _Sources) -> dict[str, Any]:
         "status": status,
         "run_count": run_count,
         "run_count_source": run_source,
+        "run_count_at_least": at_least,
         "duration_seconds": duration,
         "duration_partial": duration_partial,
         "verdict": _latest_verdicts(sources.events).get(stage),
@@ -270,9 +276,13 @@ def build_timeline(
     transcript). ``usage`` is the ledger's block per stage (see :class:`UsageLedger`).
     """
     statuses = stage_statuses(events, current_stage=live.current, lifecycle=list(live.lifecycle))
-    sources = _Sources(events=events, runs=runs.runs, usage=usage)
+    dropped = int(events[0].get("dropped") or 0) if events else 0
+    sources = _Sources(events=events, runs=runs.runs, usage=usage, dropped=dropped)
     stages = [_stage_block(stage, statuses[stage], sources) for stage in PIPELINE_STAGES]
     unassigned = sum(1 for run in (runs.runs or []) if run.get("stage") is None)
+    not_recorded = _not_recorded(events, runs, usage)
+    if dropped:
+        not_recorded.insert(0, f"{dropped} earlier events not shown")
     return {
         "symphony": card.symphony,
         "card_id": card.card_id,
@@ -280,10 +290,11 @@ def build_timeline(
         "merged": any(event.get("kind") == "merged" for event in events),
         "stages": stages,
         "events": sorted(events, key=lambda event: str(event.get("at") or "")),
+        "events_not_shown": dropped,
         "runs_available": runs.runs is not None,
         "runs_reason": None if runs.runs is not None else runs.reason,
         "unassigned_runs": unassigned,
-        "not_recorded": _not_recorded(events, runs, usage),
+        "not_recorded": not_recorded,
     }
 
 

@@ -51,6 +51,10 @@ EVENT_KINDS: frozenset[str] = frozenset({
 #: The event kind that ends a card's history. A later dispatch of the same card id starts a new one.
 TERMINAL_KIND = "merged"
 #: The event kind that starts work on a card, and so starts a fresh history after a terminal event.
+#: A reset needs nothing more than this pair. Board lag cannot cause a dispatch after a merge: merge_pr moves
+#: the card to DONE, and check_board dispatches only from TODO, so a dispatch after ``merged`` means a person
+#: moved the card back to TODO (a reopen). A stricter rule (a new PR number) would need the PR at dispatch,
+#: which is not known until the implementer opens it.
 START_KIND = "dispatched"
 MAX_CARDS_PER_SYMPHONY = 100
 MAX_EVENTS_PER_CARD = 40
@@ -110,7 +114,56 @@ def _valid_event(raw: object) -> EventRecord | None:
     epoch = raw.get("epoch")
     if isinstance(epoch, str) and epoch:
         event["epoch"] = epoch
+    dropped = raw.get("dropped")
+    if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+        event["dropped"] = dropped
     return event
+
+
+def _protected_indexes(events: list[EventRecord]) -> set[int]:
+    """The events the cap never drops: the first event (it holds the epoch and the dropped count),
+    the first dispatch of each stage, the latest verdict of each stage, and the latest merge.
+
+    Those define a card's stage history and its reset point. Everything else is the repeatable
+    middle: check results, relayed feedback, review intake, and repeated dispatches and verdicts.
+    """
+    protected: set[int] = {0} if events else set()
+    dispatched_stages: set[str | None] = set()
+    latest_verdict: dict[str | None, int] = {}
+    latest_merge: int | None = None
+    for index, event in enumerate(events):
+        kind = event["kind"]
+        stage = event.get("stage")
+        if kind == START_KIND and stage not in dispatched_stages:
+            dispatched_stages.add(stage)
+            protected.add(index)
+        elif kind == "verdict":
+            latest_verdict[stage] = index
+        elif kind == TERMINAL_KIND:
+            latest_merge = index
+    protected.update(latest_verdict.values())
+    if latest_merge is not None:
+        protected.add(latest_merge)
+    return protected
+
+
+def _trim_card(events: list[EventRecord]) -> None:
+    """Drop the oldest repeatable events until the card is within its bound, counting what was dropped.
+
+    The dropped count is kept on the first event. A card whose protected events alone exceed the bound
+    keeps them all, which the bound makes impossible for eight stages.
+    """
+    excess = len(events) - MAX_EVENTS_PER_CARD
+    if excess <= 0:
+        return
+    protected = _protected_indexes(events)
+    removable = [index for index in range(len(events)) if index not in protected]
+    drop = set(removable[:excess])
+    if not drop:
+        return
+    kept = [event for index, event in enumerate(events) if index not in drop]
+    kept[0]["dropped"] = int(kept[0].get("dropped") or 0) + len(drop)
+    events[:] = kept
 
 
 class CardLifecycleLog:
@@ -122,6 +175,8 @@ class CardLifecycleLog:
         self._over_bound: set[str] = set()
         #: Events refused for having no symphony. The first is logged; the count is kept for tests and metrics.
         self.unnamed_refusals = 0
+        #: Trims where the live provider raised. The first is logged; nothing is evicted on those trims.
+        self.provider_errors = 0
         #: Memo for views derived from the log (the board strips). Keys are owned by the caller.
         self.derived: dict[tuple[str, ...], tuple[object, Any]] = {}
 
@@ -169,7 +224,7 @@ class CardLifecycleLog:
         if not events:
             event["epoch"] = event_at
         events.append(event)
-        del events[:-MAX_EVENTS_PER_CARD]
+        _trim_card(events)
         self._trim(symphony)
         return True
 
@@ -184,7 +239,14 @@ class CardLifecycleLog:
         if len(cards) <= MAX_CARDS_PER_SYMPHONY:
             self._over_bound.discard(symphony)
             return
-        live_now = self._live_provider(symphony) if self._live_provider is not None else set()
+        try:
+            live_now = self._live_provider(symphony) if self._live_provider is not None else set()
+        except Exception as exc:  # the log is written from the graph: a failed provider must not reach it
+            self.provider_errors += 1
+            if self.provider_errors == 1:
+                logger.warning("card_lifecycle.live_provider_failed", symphony=symphony, exc_type=type(exc).__name__)
+            # Treat every card as live for this trim: nothing is evicted on a failed read.
+            return
         live = {card for card in cards if card in live_now}
         if len(live) >= MAX_CARDS_PER_SYMPHONY:
             if symphony not in self._over_bound:
@@ -240,7 +302,8 @@ class CardLifecycleLog:
                     continue
                 cleaned = [e for e in (_valid_event(raw_event) for raw_event in events) if e is not None]
                 if cleaned:
-                    kept[card_id] = cleaned[-MAX_EVENTS_PER_CARD:]
+                    _trim_card(cleaned)
+                    kept[card_id] = cleaned
             if kept:
                 self._cards[symphony] = kept
                 self._trim(symphony)

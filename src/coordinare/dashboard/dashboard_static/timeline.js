@@ -68,7 +68,8 @@ function timelineRunsText(stage) {
   var n = Number(stage.run_count);
   var word = n === 1 ? 'run' : 'runs';
   var source = stage.run_count_source === 'lifecycle' ? ' (from events)' : '';
-  return n + ' ' + word + source;
+  var floor = stage.run_count_at_least ? 'at least ' : '';
+  return floor + n + ' ' + word + source;
 }
 
 // "passed", "changes requested" and the marker, or "no verdict" when none is recorded.
@@ -130,14 +131,23 @@ function timelineRunHref(symphony, card, run) {
   return '/runs/' + encodeURIComponent(symphony) + '/' + encodeURIComponent(card) + '/' + encodeURIComponent(run);
 }
 
+// Why a run has no end time: the byte budget ran out before its file was read, it is still
+// running, or its file could not be read. A finished run with no recorded duration says that.
+var TIMELINE_READ_TEXT = {
+  budget: 'not read (budget)',
+  running: 'still running',
+  unreadable: 'not readable'
+};
+
 function timelineRunRowHtml(tl, run) {
   var href = timelineRunHref(tl.symphony, tl.card_id, run.run);
   var duration = timelineDuration(run.duration_seconds);
+  var readText = timelineOwn(TIMELINE_READ_TEXT, run.read_state) || 'duration not recorded';
   var outcome = run.outcome === 'failed' ? 'failed' : (run.outcome === 'completed' ? 'completed' : 'outcome not recorded');
   return '<li class="tl-run">' + runIdHtml(run.run, { href: href }) +
     ' <span class="muted">' + esc(run.started_at ? fmtTime(run.started_at) : 'start not recorded') + '</span>' +
-    ' <span>' + esc(duration || 'duration not recorded') + '</span>' +
-    ' <span class="muted">' + esc(outcome) + '</span></li>';
+    ' <span>' + esc(duration || readText) + '</span>' +
+    ' <span class="muted">' + esc(run.read_state === 'done' || !run.read_state ? outcome : '') + '</span></li>';
 }
 
 // The detail under the tracker for the stage picked: its runs, verdict, tokens and cost.
