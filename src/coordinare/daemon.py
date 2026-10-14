@@ -66,6 +66,7 @@ from coordinare.services.reconciliation import (
     reconcile_board_state,
     recover_documenting_side_session,
 )
+from coordinare.services.run_transcript import TranscriptCollector, prune_expired
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -1387,6 +1388,8 @@ class RuntimeExecutionError(RuntimeError):
 #: 139 — how often a card that is still stuck is logged again. A stall that
 #: persists is worth repeating occasionally; repeating it every cycle is noise.
 _STALL_LOG_COOLDOWN_SECONDS = 3600.0
+# 129: how often the transcript retention sweep runs (startup, then daily).
+_TRANSCRIPT_RETENTION_INTERVAL_S = 24 * 60 * 60.0
 
 #: 139 — the size at which expired stall keys are swept. Not a hard cap: memory
 #: here is bounded by how many distinct cards can be stuck within the cooldown,
@@ -2390,6 +2393,7 @@ class CoordinareDaemon:
         self._stop_event = asyncio.Event()
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
+        self._transcript_retention_task: asyncio.Task[None] | None = None
         # 139: when each stall key was last logged, so a card that stays stuck
         # reminds rather than reprints every cycle.
         self._logged_stalls: dict[str, float] = {}
@@ -2966,11 +2970,55 @@ class CoordinareDaemon:
             if trigger_task in done:
                 self._webhook_trigger.clear()
 
+    def _start_transcript_retention(self) -> asyncio.Task[None] | None:
+        collector = self._state.get("transcript_collector")
+        # Disabled means nothing touches disk, retention included.
+        if (
+            not isinstance(collector, TranscriptCollector)
+            or not collector.enabled
+            or collector.retention_days <= 0
+        ):
+            return None
+        return asyncio.create_task(
+            self._transcript_retention_loop(collector),
+            name="transcript_retention",
+        )
+
+    async def _transcript_retention_loop(self, collector: TranscriptCollector) -> None:
+        """129: delete transcripts older than retention_days, once at start and daily.
+
+        The filesystem walk runs in a worker thread so it never stalls the cycle.
+        """
+        while not self._stop_event.is_set():
+            try:
+                # The live set is taken on the loop; the sweep never removes those files.
+                await asyncio.to_thread(
+                    prune_expired,
+                    collector.root,
+                    retention_days=collector.retention_days,
+                    keep=collector.live_paths(),
+                )
+            except Exception as exc:  # best effort: retention must never end the loop
+                logger.warning(
+                    "run_transcript.retention_failed",
+                    exc_type=type(exc).__name__,
+                    error=str(exc),
+                    root=str(collector.root),
+                )
+            # Wakes early on shutdown, so the sweep never outlives the daemon (review item 7).
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=_TRANSCRIPT_RETENTION_INTERVAL_S,
+                )
+
     def stop(self) -> None:
         if self._cycle_active:
             self._stop_during_cycle = True
         self._running = False
         self._stop_event.set()
+        if self._transcript_retention_task is not None:
+            self._transcript_retention_task.cancel()
         # Cancel the in-progress cycle only when stop() is called from outside
         # start() — i.e. signal handlers or external code.  When called from
         # within start() itself (max_cycles, mid-cycle graph callbacks) the
@@ -5705,6 +5753,8 @@ class CoordinareDaemon:
         cycle_count = 0
 
         previous_phase, previous_lifecycle_sig = await self._run_startup_sequence()
+        # 129: retention sweeps run beside the cycle loop, never inside it.
+        self._transcript_retention_task = self._start_transcript_retention()
 
         if self._poll_interval_seconds == 0:
             logger.info("polling_disabled")

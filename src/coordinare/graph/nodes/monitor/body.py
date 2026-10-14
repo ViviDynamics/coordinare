@@ -716,7 +716,10 @@ async def _observer_stall_kill(
     if not isinstance(session_id, str) or not session_id or service is None:
         return ("block", None)
     try:
-        status = await service.check_status(session_id, payload={})
+        status = await service.check_status(
+            session_id,
+            payload={"transcript_target": _transcript_target(state, card_id)},
+        )
     except Exception as exc:
         logger.warning(
             "monitor_performer.observer_stall_status_failed",
@@ -747,6 +750,13 @@ async def _observer_stall_kill(
         return ("continue", None)
     return ("short", kill_result)
 
+def _transcript_target(state: CoordinareState, card_id: object) -> dict[str, str]:
+    """129: the symphony and card a run's transcript is filed under."""
+    return {
+        "symphony": str(state.get("current_symphony") or ""),
+        "card_id": str(card_id or ""),
+    }
+
 async def phase_458(
     state: CoordinareState,
     ctx: _BodyCtx,
@@ -763,7 +773,10 @@ async def phase_458(
     # the coupling narrow and testable.  Log failures at warning level
     # with exc_type so repeated silent refresh failures (which would
     # eventually produce 401 cascades from the performer) are visible.
-    status_payload: dict[str, Any] = {}
+    status_payload: dict[str, Any] = {
+        # 129: where this run's transcript belongs (symphony / card folder).
+        "transcript_target": _transcript_target(state, card_id),
+    }
     workspace_manager = state.get("workspace_manager")
     if workspace_manager is not None and hasattr(workspace_manager, "get_fresh_github_token"):
         try:

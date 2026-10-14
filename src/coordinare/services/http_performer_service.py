@@ -27,6 +27,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
@@ -36,6 +37,11 @@ from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
+from coordinare.services.run_transcript import (
+    UNATTRIBUTED,
+    RootGuard,
+    transcript_root_conflicts,
+)
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
@@ -45,19 +51,47 @@ from coordinare.transport.http_transport import (
 from coordinare.upstream_errors import UpstreamHTTPError, strip_base_url_credentials
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from coordinare.models.performer_endpoint import (
         JobAcceptResponse,
         JobInitPayload,
+        JobStatus,
         PerformerEndpointConfig,
         VolumeMount,
     )
     from coordinare.services.performer_runtime import PerformerRuntime
+    from coordinare.services.run_transcript import RunTranscriptWriter, TranscriptCollector
     from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
 
 
 _TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
+
+# 129: records requested per transcript delivery. Ordinary status polls take
+# one batch; the terminal drain loops until the performer's last seq is written.
+_TRANSCRIPT_BATCH_LIMIT = 200
+_TRANSCRIPT_DRAIN_LIMIT = 500
+_TRANSCRIPT_DRAIN_MAX_ROUNDS = 5000
+# Wall-clock bounds. The terminal drain runs inline, before the terminal state is
+# reported and before the container is removed or reset, so no new dispatch can
+# replace the finished job first. The teardown drain runs before a cancelled, reaped
+# or stopped container is removed. Both are short: a tail beyond the bound is
+# recorded as a truncation marker, not waited for (review round 4, items 3 and 4).
+_TRANSCRIPT_DRAIN_SECONDS = 5.0
+_TRANSCRIPT_TEARDOWN_SECONDS = 5.0
+# The share of a drain's bound kept for the truncation marker, so that the drain and
+# its marker together never exceed the bound (review 5, item 4).
+_TRANSCRIPT_MARKER_SECONDS = 1.0
+# The most aclose waits for teardown steps still running (review 6, F2).
+_CLOSE_TEARDOWN_SECONDS = 10.0
+# How many finished runs are remembered, so that a late poll or teardown never
+# recreates a writer for them (129 review, item 7).
+_TRANSCRIPT_FINALISED_MEMORY = 4096
+# The most a status poll waits for one transcript operation (review item 4). A slow
+# disk delays the transcript, never completion detection.
+_TRANSCRIPT_POLL_SECONDS = 2.0
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -217,9 +251,26 @@ class HTTPPerformerService:
         *,
         client: PerformerHTTPClient | None = None,
         runtime: PerformerRuntime | None = None,
+        transcripts: TranscriptCollector | None = None,
     ) -> None:
         self._config = config
         self._injected_client = client
+        # 129: where the per-run transcript records go. None (the default) keeps
+        # the wire and the disk exactly as before.
+        self._transcripts = transcripts
+        self._transcript_targets: dict[str, tuple[str, str]] = {}
+        self._transcript_unsupported_runs: set[str] = set()
+        self._transcript_secrets: dict[str, list[str]] = {}
+        self._transcript_failed_runs: set[str] = set()
+        # Runs whose extra mounts overlap the transcripts root: never transcribed.
+        self._transcript_refused: set[str] = set()
+        # Runs already finished. Their writers are never recreated (item 7).
+        self._transcript_finalised: dict[str, None] = {}
+        # Runs whose transcript was drained on the terminal path. Their teardown does not
+        # drain again, so each run is drained exactly once (review round 4, item 5).
+        self._transcript_drained: set[str] = set()
+        # Shielded teardown steps still running; aclose waits for them (review 6, F2).
+        self._teardown_tasks: set[asyncio.Task[Any]] = set()
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -304,7 +355,32 @@ class HTTPPerformerService:
             )
         return self._persistent_client
 
+    async def _run_teardown[T](self, awaitable: Awaitable[T]) -> T:
+        """Run a teardown step so that a cancellation of the caller cannot skip it.
+
+        The step runs as its own task, recorded so that ``aclose`` can wait for it. If
+        the caller is cancelled while waiting, the cancellation is raised only after the
+        step has finished, so the container is stopped exactly once and the cancellation
+        still propagates (review 5, blocker 2; review 6, F2).
+        """
+        task = asyncio.ensure_future(awaitable)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            if not task.cancelled():
+                # Retrieved here, so a failure of the step is not reported as unhandled.
+                task.exception()
+            raise
+
     async def aclose(self) -> None:
+        # Teardown steps still running are awaited, bounded, so a shutdown does not
+        # abandon a container stop half way (review 6, F2).
+        running = set(self._teardown_tasks)
+        if running:
+            await asyncio.wait(running, timeout=_CLOSE_TEARDOWN_SECONDS)
         if self._persistent_client is not None and self._injected_client is None:
             await self._persistent_client.aclose()
             self._persistent_client = None
@@ -476,11 +552,18 @@ class HTTPPerformerService:
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             return {"status": "error", "reason": str(exc)}
+        # 129: the coordinare session id is the run identity. Using it as the job
+        # id means the performer's transcript run id and the daemon's transcript
+        # file name agree without a second id. Persistent mode already set
+        # session_id = job_id, so this is the same value there.
+        payload = self._transcript_identity(session_id, payload, extra_volumes)
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
             response = await client.post_job(payload)
         except (PerformerAuthError, PerformerUnreachableError, TransportError) as exc:
+            # The run was never accepted, so its refusal marker is dropped (review 6, F8).
+            self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             logger.warning(
@@ -489,11 +572,15 @@ class HTTPPerformerService:
                 error=str(exc),
             )
             return {"status": "error", "reason": str(exc)}
+        except Exception:
+            self._transcript_refused.discard(session_id)
+            raise
 
         # 409 busy → surface as error so the dispatch loop retries next cycle.
         if not getattr(response, "accepted", False):
             reason = getattr(response, "reason", "busy")
             detail = getattr(response, "detail", None)
+            self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             return {
@@ -504,6 +591,8 @@ class HTTPPerformerService:
         # post_job's union collapses to JobAcceptResponse once the accepted=False
         # guard above has returned the only other shape.
         job_id = cast("JobAcceptResponse", response).job_id
+        # Decided under the pre-dispatch id, the key the refusal was recorded under.
+        transcribed = self._transcribes(session_id)
         if ephemeral_job is not None:
             # 076 (T016/T017) — _active_jobs is keyed on coordinare-allocated
             # session_id (not the job-runner's job_id); job_id stays on
@@ -519,6 +608,11 @@ class HTTPPerformerService:
             # Persistent mode: no per-container session.  Use the job-runner's
             # job_id as the session_id (status quo for persistent endpoints).
             session_id = job_id
+        # 129 (review 5, blocker 3; review 6, blocker 2): the job's secrets are kept only
+        # once it is accepted, and under the run id the polls, the writer and the release
+        # use. In persistent mode that is the job id, never the pre-dispatch id.
+        if transcribed:
+            self._remember_transcript_secrets(session_id, payload)
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
@@ -621,8 +715,9 @@ class HTTPPerformerService:
                             session_id=session_id,
                             exc_type=type(exc).__name__,
                         )
+        writer = self._transcript_writer(session_id, payload)
         try:
-            status = await client.get_job(url_job_id)
+            status = await self._get_job_status(client, url_job_id, session_id, writer)
         except TransportTimeoutError:
             # A bare status-poll timeout is NOT evidence the container is dead:
             # during a CPU-heavy build (e.g. a long Ruby native-gem compile) the
@@ -637,8 +732,12 @@ class HTTPPerformerService:
             # Auth failure, unreachability, or other transport error — clean up
             # the stale _active_jobs entry so subsequent check_health() calls
             # aren't blocked by the dead container.
+            # The ephemeral teardown drains, then stops, in a finally (review 5, blocker
+            # 2). A persistent performer keeps its run: its writer stays live.
             if self._config.mode == "ephemeral":
                 await self._cleanup_ephemeral_job_by_id(session_id)
+            else:
+                await self._teardown_drain(session_id)
             raise
         is_terminal = status.state in _TERMINAL_JOB_STATES
         if is_terminal:
@@ -678,10 +777,22 @@ class HTTPPerformerService:
                 terminal_state=status.state,
                 error_reason=error_reason,
             )
-            if self._config.mode == "ephemeral":
-                await self._cleanup_ephemeral_job_by_id(session_id)
-            elif self._config.mode == "persistent":
-                await self.call_reset()
+            # The remaining records are taken before the terminal state is reported,
+            # because the performer keeps them only until the job is replaced or reset.
+            # The teardown and the release sit in the finally, so a cancellation during
+            # the drain still tears the run down (review 5, blocker 2).
+            try:
+                if writer is not None:
+                    # A malformed batch on the terminal poll is not a basis for the
+                    # drain: pull afresh instead.
+                    basis: JobStatus | None = status
+                    if status.transcript_last_seq is None and status.transcript_error:
+                        basis = None
+                    await self._drain_transcript(client, url_job_id, writer, basis)
+            finally:
+                if writer is not None:
+                    self._transcript_drained.add(session_id)
+                await self._finish_terminal(session_id)
 
         # Translate JobStatus → PerformerResponse-style dict that monitor_performer.py
         # expects (it reads `status.get("status", "working")`).
@@ -728,6 +839,434 @@ class HTTPPerformerService:
             "job_id": session_id,
             "state": status.state,
         }
+
+    def _transcript_identity(
+        self,
+        session_id: str,
+        payload: JobInitPayload,
+        extra_volumes: list[VolumeMount] | None,
+    ) -> JobInitPayload:
+        """129: the job payload for one dispatch.
+
+        With transcripts disabled the payload is returned untouched, exactly as it was
+        before spec 129 (item 8). Enabled, the coordinare session id becomes the job id,
+        so the performer's run id and the transcript file name agree, and the byte cap
+        is sent.
+
+        A run whose extra mounts (per-symphony env caches) overlap the transcripts root
+        is not transcribed. The performer gets no cap, and no writer is created for it.
+        """
+        if self._transcripts is None or not self._transcripts.enabled:
+            return payload
+        mounts = [Path(volume.host_path) for volume in extra_volumes or []]
+        conflicts = (
+            transcript_root_conflicts(self._transcripts.root, RootGuard(performer_mounts=tuple(mounts)))
+            if mounts
+            else []
+        )
+        if conflicts:
+            self._transcript_refused.add(session_id)
+            logger.warning(
+                "run_transcript.run_mount_conflict",
+                performer_id=self._config.id,
+                session_id=session_id,
+                conflicts=[str(path) for path in conflicts],
+            )
+            return payload
+        return payload.model_copy(
+            update={
+                "job_id": session_id,
+                "transcript_max_bytes": self._transcripts.max_bytes_per_run,
+            },
+        )
+
+    def _transcribes(self, session_id: str) -> bool:
+        """True when this run's records are captured: transcripts are on and the run is not refused."""
+        if self._transcripts is None or not self._transcripts.enabled:
+            return False
+        return session_id not in self._transcript_refused
+
+    def _remember_transcript_secrets(self, session_id: str, payload: JobInitPayload) -> None:
+        """129: keep the job's secret values so the run's records are redacted by exact value."""
+        self._transcript_secrets[session_id] = [
+            secret.get_secret_value() for secret in payload.secrets.values()
+        ]
+
+    def _transcript_failed(
+        self,
+        session_id: str,
+        stage: str,
+        exc: BaseException,
+        writer: RunTranscriptWriter | None = None,
+    ) -> None:
+        """129 HIGH 3: transcript code failed. Mark the run, log once, carry on.
+
+        Never raises. The caller's status poll or teardown continues regardless.
+        """
+        if writer is not None:
+            writer.mark_failed(exc)
+        if session_id in self._transcript_failed_runs:
+            return
+        self._transcript_failed_runs.add(session_id)
+        logger.warning(
+            "run_transcript.capture_failed",
+            performer_id=self._config.id,
+            session_id=session_id,
+            stage=stage,
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+    def _transcript_writer(
+        self,
+        session_id: str,
+        payload: dict[str, Any] | None,
+    ) -> RunTranscriptWriter | None:
+        """129: the run's writer, or None when transcripts are off, refused, or finished.
+
+        The monitor passes ``transcript_target`` (symphony and card id) on every
+        poll. A target seen once is remembered for the run, so polls that do not
+        carry one (observer probes, bootstrap polls) still write to the same file.
+        A finished run never gets a writer again (item 7).
+        """
+        if self._transcripts is None or not self._transcripts.enabled:
+            return None
+        if session_id in self._transcript_finalised or session_id in self._transcript_refused:
+            return None
+        try:
+            target = payload.get("transcript_target") if payload else None
+            if isinstance(target, dict):
+                self._transcript_targets[session_id] = (
+                    str(target.get("symphony") or ""),
+                    str(target.get("card_id") or ""),
+                )
+            symphony, card_id = self._transcript_targets.get(session_id, (UNATTRIBUTED, ""))
+            writer = self._transcripts.writer_for(
+                run_id=session_id, symphony=symphony, card_id=card_id,
+            )
+            writer.add_secret_values(self._transcript_secrets.get(session_id, []))
+            refreshed = payload.get("github_token") if payload else None
+            if isinstance(refreshed, str) and refreshed:
+                writer.add_secret_values([refreshed])
+        except Exception as exc:  # best effort: a broken run must not break polling
+            self._transcript_failed(session_id, "writer", exc)
+            return None
+        return writer
+
+    def _release_transcript_run(self, session_id: str) -> None:
+        """129 item 6: drop every per-run daemon record once the run has finished.
+
+        Secrets, targets, failure and support markers are kept only while the run is
+        live. The run id is remembered, bounded, so a late poll or teardown cannot
+        recreate its writer (item 7). Safe to call repeatedly.
+        """
+        self._transcript_targets.pop(session_id, None)
+        self._transcript_secrets.pop(session_id, None)
+        self._transcript_failed_runs.discard(session_id)
+        self._transcript_unsupported_runs.discard(session_id)
+        self._transcript_refused.discard(session_id)
+        self._transcript_drained.discard(session_id)
+        if self._transcripts is not None:
+            self._transcripts.release(session_id)
+        self._transcript_finalised[session_id] = None
+        while len(self._transcript_finalised) > _TRANSCRIPT_FINALISED_MEMORY:
+            del self._transcript_finalised[next(iter(self._transcript_finalised))]
+
+    async def _get_job_status(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        session_id: str,
+        writer: RunTranscriptWriter | None,
+    ) -> JobStatus:
+        """Poll the job. With a transcript writer, the same request carries the cursor."""
+        if writer is None:
+            return await client.get_job(job_id)
+        if not writer.loaded and not await self._load_writer(writer, session_id):
+            # The cursor is not known yet. A plain poll keeps completion moving; the
+            # transcript catches up on a later poll.
+            return await client.get_job(job_id)
+        status = await client.get_job(
+            job_id, transcript_after=writer.cursor, transcript_limit=_TRANSCRIPT_BATCH_LIMIT,
+        )
+        await self._absorb_transcript(writer, status, session_id)
+        return status
+
+    async def _absorb_transcript(
+        self,
+        writer: RunTranscriptWriter,
+        status: JobStatus,
+        session_id: str,
+    ) -> None:
+        """Write one batch on a worker thread (129 item 2). The file and the redaction
+        never run on the event loop."""
+        try:
+            if status.transcript_last_seq is None:
+                if status.transcript_error:
+                    # A malformed transcript field (review 5, blocker 1): errored for this
+                    # poll only; the next poll is read afresh.
+                    logger.warning(
+                        "run_transcript.performer_batch_error",
+                        session_id=session_id,
+                        exc_type=status.transcript_error,
+                    )
+                    return
+                # Transcripts are on but the performer returned no transcript fields:
+                # an image that predates spec 129. Say so once per run, write nothing.
+                if session_id not in self._transcript_unsupported_runs:
+                    self._transcript_unsupported_runs.add(session_id)
+                    logger.warning(
+                        "run_transcript.performer_unsupported",
+                        performer_id=self._config.id,
+                        session_id=session_id,
+                    )
+                return
+            writer.observe_last_seq(status.transcript_last_seq)
+            if writer.cursor > status.transcript_last_seq:
+                logger.warning(
+                    "run_transcript.cursor_ahead_of_performer",
+                    session_id=session_id,
+                    cursor=writer.cursor,
+                    performer_last_seq=status.transcript_last_seq,
+                )
+            if status.transcript_error:
+                logger.warning(
+                    "run_transcript.performer_batch_error",
+                    session_id=session_id,
+                    exc_type=status.transcript_error,
+                )
+            if status.transcript:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        writer.append_batch,
+                        status.transcript,
+                        last_seq=status.transcript_last_seq,
+                    ),
+                    timeout=_TRANSCRIPT_POLL_SECONDS,
+                )
+        except TimeoutError:
+            # Slow, not broken: the batch is retried on the next poll.
+            logger.warning(
+                "run_transcript.poll_timeout",
+                session_id=session_id,
+                timeout_s=_TRANSCRIPT_POLL_SECONDS,
+                written_through_seq=writer.cursor,
+            )
+        except Exception as exc:  # best effort: see _transcript_failed
+            self._transcript_failed(session_id, "absorb", exc, writer)
+
+    async def _load_writer(self, writer: RunTranscriptWriter, session_id: str) -> bool:
+        """Read the writer's cursor on a worker thread, bounded. False if it is not ready."""
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(writer.ensure_loaded),
+                timeout=_TRANSCRIPT_POLL_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "run_transcript.load_timeout",
+                session_id=session_id,
+                timeout_s=_TRANSCRIPT_POLL_SECONDS,
+            )
+            return False
+        return writer.loaded
+
+    async def _mark_tail_lost(
+        self,
+        writer: RunTranscriptWriter,
+        reason: str,
+        *,
+        timeout: float = _TRANSCRIPT_MARKER_SECONDS,
+    ) -> None:
+        """Record that records after the cursor were not retrieved (review round 4, item 4).
+
+        Bounded by ``timeout`` and contained: a failure here fails the run's transcript,
+        never the poll.
+        """
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(writer.record_tail_lost, reason),
+                timeout=timeout,
+            )
+        except Exception as exc:  # best effort: see _transcript_failed
+            self._transcript_failed(writer.run_id, "tail_marker", exc, writer)
+
+    async def _fetch_drain_batch(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        writer: RunTranscriptWriter,
+    ) -> JobStatus | None:
+        """One pull of the tail, retried once (review 5, item 5).
+
+        A transport failure or a malformed batch is retried once within the drain's
+        bound. Returns None when both attempts fail. A 404 means the job is gone and is
+        raised for the caller.
+        """
+        failure = "unknown"
+        for attempt in (1, 2):
+            try:
+                status = await client.get_job(
+                    job_id,
+                    transcript_after=writer.cursor,
+                    transcript_limit=_TRANSCRIPT_DRAIN_LIMIT,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == httpx.codes.NOT_FOUND:
+                    raise
+                failure = f"http {exc.response.status_code}"
+            except Exception as exc:  # any failure of one pull is retried (review 6, F6)
+                failure = type(exc).__name__
+            else:
+                if status.transcript_last_seq is not None or not status.transcript_error:
+                    return status
+                failure = status.transcript_error
+            logger.warning(
+                "run_transcript.drain_fetch_failed",
+                session_id=writer.run_id,
+                attempt=attempt,
+                failure=failure,
+            )
+        return None
+
+    async def _drain_rounds(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        writer: RunTranscriptWriter,
+        status: JobStatus | None,
+    ) -> None:
+        """Fetch until the performer's last seq is on disk. ``status`` is already absorbed, or None."""
+        session_id = writer.run_id
+        if not writer.loaded and not await self._load_writer(writer, session_id):
+            return
+        for _ in range(_TRANSCRIPT_DRAIN_MAX_ROUNDS):
+            if writer.failed:
+                return
+            if status is not None and (
+                status.transcript_last_seq is None or writer.cursor >= status.transcript_last_seq
+            ):
+                return
+            cursor_before = writer.cursor
+            fetched = await self._fetch_drain_batch(client, job_id, writer)
+            if fetched is None:
+                # Both attempts failed: the tail after the cursor is lost. The marker says
+                # so, and only when records were actually missed (record_tail_lost).
+                logger.warning(
+                    "run_transcript.drain_tail_lost",
+                    session_id=session_id,
+                    written_through_seq=writer.cursor,
+                )
+                await self._mark_tail_lost(writer, "drain fetch failed")
+                return
+            status = fetched
+            await self._absorb_transcript(writer, status, session_id)
+            if status.transcript_last_seq is None or writer.cursor >= status.transcript_last_seq:
+                return
+            if writer.cursor == cursor_before:
+                # Nothing was accepted (empty or entirely rejected batch). Asking
+                # again would return the same records, so stop and say so.
+                logger.warning(
+                    "run_transcript.drain_stalled",
+                    session_id=session_id,
+                    written_through_seq=writer.cursor,
+                    last_seq=status.transcript_last_seq,
+                )
+                await self._mark_tail_lost(writer, "drain stalled")
+                return
+        logger.warning(
+            "run_transcript.drain_round_limit",
+            session_id=session_id,
+            written_through_seq=writer.cursor,
+        )
+
+    async def _drain_transcript(
+        self,
+        client: PerformerHTTPClient,
+        job_id: str,
+        writer: RunTranscriptWriter,
+        status: JobStatus | None,
+        *,
+        timeout: float = _TRANSCRIPT_DRAIN_SECONDS,
+    ) -> None:
+        """Fetch the remaining records within ``timeout`` in total, marker included.
+
+        The truncation marker is written inside the same bound: the drain gets the
+        bound less a share kept for the marker (review 5, item 4). Never raises except
+        for cancellation, which still records the tail as lost before it propagates.
+        """
+        session_id = writer.run_id
+        if status is not None:
+            writer.observe_last_seq(status.transcript_last_seq)
+        marker = min(_TRANSCRIPT_MARKER_SECONDS, timeout / 2)
+        try:
+            async with asyncio.timeout(timeout - marker):
+                await self._drain_rounds(client, job_id, writer, status)
+        except TimeoutError:
+            logger.warning(
+                "run_transcript.drain_timeout",
+                session_id=session_id,
+                timeout_s=timeout,
+                written_through_seq=writer.cursor,
+            )
+            await self._mark_tail_lost(writer, "drain timed out", timeout=marker)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == httpx.codes.NOT_FOUND:
+                # The performer no longer holds the job: whatever is not yet on disk is lost.
+                logger.debug("run_transcript.drain_job_gone", session_id=session_id)
+                await self._mark_tail_lost(writer, "job gone", timeout=marker)
+                return
+            self._transcript_failed(session_id, "drain", exc, writer)
+        except asyncio.CancelledError:
+            # Cancelled mid-drain (the owner is shutting down or stopping the run). The
+            # tail is recorded as lost, then the cancellation propagates.
+            await self._mark_tail_lost(writer, "drain cancelled", timeout=marker)
+            raise
+        except Exception as exc:  # best effort: a drain failure must not block teardown
+            self._transcript_failed(session_id, "drain", exc, writer)
+
+    async def _finish_terminal(self, session_id: str) -> None:
+        """Tear down a finished run's container (or reset a persistent performer), then
+        drop its per-run daemon state. The release is in the finally, so it happens
+        even when the teardown is cancelled (review 5, blocker 2)."""
+        try:
+            if self._config.mode == "ephemeral":
+                await self._cleanup_ephemeral_job_by_id(session_id)
+            elif self._config.mode == "persistent":
+                await self.call_reset()
+        finally:
+            self._release_transcript_run(session_id)
+
+    async def _teardown_drain(self, session_id: str) -> None:
+        """129 MEDIUM 6: best-effort, time-bounded pull before a teardown that is not terminal.
+
+        A cancelled, reaped or stopped run would otherwise lose everything since
+        its last poll. The bound means the teardown is delayed by at most
+        ``_TRANSCRIPT_TEARDOWN_SECONDS`` and never prevented. It does not release the
+        run: the caller releases it once the container's absence is known (review 5,
+        item 6).
+        """
+        if self._transcripts is None or not self._transcripts.enabled:
+            return
+        if session_id in self._transcript_drained:
+            return
+        try:
+            if self._config.mode == "ephemeral":
+                job = self._active_jobs.get(session_id)
+                if job is None or not job.job_id:
+                    return
+                client, job_id = job.client, job.job_id
+            else:
+                client, job_id = self._ensure_client(), session_id
+            writer = self._transcript_writer(session_id, None)
+            if writer is None:
+                return
+            await self._drain_transcript(
+                client, job_id, writer, None,
+                timeout=_TRANSCRIPT_TEARDOWN_SECONDS,
+            )
+        except Exception as exc:  # best effort: never block the teardown
+            self._transcript_failed(session_id, "teardown_drain", exc)
 
     def _log_upstream_http_error(self, response: dict[str, Any]) -> None:
         """Emit verbatim upstream-body log line when the performer reports a
@@ -848,7 +1387,23 @@ class HTTPPerformerService:
             pass
 
     async def stop_session_confirmed(self, session_id: str) -> bool:
-        """Stop an owned writer; retain clients and identity until absence is proved."""
+        """Stop an owned writer; retain clients and identity until absence is proved.
+
+        The run's transcript is finalised only when the stop is confirmed (review 5,
+        item 6). The confirmation runs in a finally, shielded, so a cancelled drain still
+        stops the container once.
+        """
+        confirmed = False
+        try:
+            await self._teardown_drain(session_id)
+        finally:
+            confirmed = await self._run_teardown(self._confirm_stopped(session_id))
+            if confirmed:
+                self._release_transcript_run(session_id)
+        return confirmed
+
+    async def _confirm_stopped(self, session_id: str) -> bool:
+        """The stop itself. True only once the container's absence is proved."""
         if self._config.mode != "ephemeral":
             client = self._ensure_client()
             try:
@@ -894,7 +1449,10 @@ class HTTPPerformerService:
         """
         if not session_id:
             return
-        await self._cleanup_ephemeral_job_by_id(session_id)
+        try:
+            await self._cleanup_ephemeral_job_by_id(session_id)
+        finally:
+            self._release_transcript_run(session_id)
 
     # ------------------------------------------------------------------
     # Internals
@@ -925,6 +1483,20 @@ class HTTPPerformerService:
 
     async def _cleanup_ephemeral_job_by_id(self, job_id: str) -> None:
         """Look up and clean up an ephemeral job by its job_id."""
+        # Every path that tears a container down ends here (terminal, system error,
+        # stop, release). The transcript is drained first, once. The stop sits in a
+        # finally and is shielded, so a cancelled drain still removes the container
+        # exactly once (review 5, blocker 2).
+        try:
+            await self._teardown_drain(job_id)
+        finally:
+            try:
+                await self._run_teardown(self._stop_ephemeral_job(job_id))
+            finally:
+                self._release_transcript_run(job_id)
+
+    async def _stop_ephemeral_job(self, job_id: str) -> None:
+        """Forget the job and stop its container. Runs once per call, shielded by the caller."""
         task = self._log_poll_tasks.pop(job_id, None)
         if task is not None:
             task.cancel()

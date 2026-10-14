@@ -53,6 +53,7 @@ from typing import Any
 import psutil
 import structlog
 
+from performer import transcript
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.backends.pi import _build_task_prompt, _extract_final_assistant_text
@@ -62,6 +63,20 @@ from performer.models import BackendEvent, BackendEventType, Score, Stand
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+
+_PRIME_CAPABILITY = (
+    "prime-agent --mode json streams assistant text as deltas, and tool execution "
+    "and error events as raw JSON; the transcript holds assistant text per message "
+    "(flushed at message end), tool calls and results as the raw events (field names "
+    "beyond toolName are not confirmed in this repo), errors, and the final result. "
+    "The adapter never reads reasoning or token counts from any event, so thinking "
+    "and usage are not recorded."
+)
+
+
+def _call_id(event: dict[str, Any]) -> str | None:
+    cid = event.get("toolCallId")
+    return str(cid) if cid not in (None, "") else None
 
 # Reasoning-depth levels accepted by ``prime-agent --thinking``. Coordinare's
 # ``effort`` vocabulary overlaps but is not identical, so an unrecognised value
@@ -95,6 +110,9 @@ class PrimeAgentBackend:
         # Reason from an agent_end whose last assistant message failed/aborted,
         # held while the CLI decides whether to retry (see _handle_event).
         self._pending_failure: str | None = None
+        # spec 129: streamed assistant text for the current message, held until
+        # message end (or the next tool/terminal event) so it is one record.
+        self._pending_text: list[str] = []
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -145,6 +163,15 @@ class PrimeAgentBackend:
         task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
         cmd.append(task_text)
 
+        transcript.emit(
+            "capability",
+            text=_PRIME_CAPABILITY,
+            input_data={
+                "unavailable": ["thinking", "usage"],
+                "provided": ["system", "user", "assistant_text", "tool_call", "tool_result", "error", "result"],
+            },
+        )
+        transcript.emit("user", text=task_text)
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,
@@ -184,6 +211,7 @@ class PrimeAgentBackend:
         if self._thinking:
             cmd += ["--thinking", self._thinking]
         cmd.append(feedback)
+        transcript.emit("user", text=feedback)
         self._saw_terminal = False
         self._pending_failure = None
         self._output_accumulator.clear()
@@ -293,8 +321,11 @@ class PrimeAgentBackend:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     self._log_buffer.append(line[:_MAX_TEXT])
+                    self._flush_text()
+                    transcript.emit("system", text=line, input_data={"raw_line": line})
                     continue
                 if isinstance(event, dict):
+                    self._transcribe(event)
                     self._handle_event(event)
         except asyncio.CancelledError:
             raise
@@ -302,6 +333,7 @@ class PrimeAgentBackend:
             log.warning("prime-agent reader error", error=str(exc))
             if self._status.state == "working":
                 self._status = BackendStatus(state="error", error_reason=str(exc))
+            self._record_outcome()
             return
 
         # Stream ended. If the CLI never emitted a terminal (agent_end) event,
@@ -332,6 +364,97 @@ class PrimeAgentBackend:
                         else f"prime-agent exited rc={rc}"
                     ),
                 )
+        self._record_outcome()
+
+    # ------------------------------------------------------------------
+    # Transcript (spec 129). Records only; never changes status or events.
+    # ------------------------------------------------------------------
+
+    @transcript.best_effort
+    def _transcribe(self, event: dict[str, Any]) -> None:
+        """Record one parsed event with its full content, before any 200-char cut."""
+        etype = str(event.get("type", ""))
+        if etype == "message_update":
+            ame = event.get("assistantMessageEvent")
+            if isinstance(ame, dict) and ame.get("type") == "text_delta":
+                self._pending_text.append(str(ame.get("delta", "")))
+        elif etype in ("session", "agent_start"):
+            self._flush_text()
+            transcript.emit("system", text=etype, input_data=event)
+        elif etype in ("message_start", "message_end"):
+            self._flush_text()
+        elif etype == "tool_execution_start":
+            self._flush_text()
+            transcript.emit(
+                "tool_call",
+                tool_name=str(event.get("toolName", "tool")),
+                call_id=_call_id(event),
+                input_data=event,
+            )
+        elif etype == "tool_execution_end":
+            self._flush_text()
+            is_error = event.get("isError")
+            transcript.emit(
+                "tool_result",
+                tool_name=str(event.get("toolName", "tool")),
+                call_id=_call_id(event),
+                output_data=event,
+                is_error=is_error if isinstance(is_error, bool) else None,
+            )
+        elif etype == "agent_end":
+            self._flush_text()
+            failure = _failed_assistant_reason(event.get("messages", []))
+            if failure is not None:
+                transcript.emit("error", text=failure, input_data=event)
+        elif etype == "auto_retry_start":
+            msg = str(event.get("errorMessage") or "auto retry")
+            text = f"retry {event.get('attempt')}/{event.get('maxAttempts')}: {msg}"
+            transcript.emit("error", text=text, input_data=event)
+        elif etype == "auto_retry_end" and not event.get("success", False):
+            transcript.emit(
+                "error",
+                text=str(event.get("finalError") or "auto retry exhausted"),
+                input_data=event,
+            )
+        elif etype == "compaction_end" and event.get("aborted", False):
+            transcript.emit(
+                "error",
+                text=str(event.get("errorMessage") or "compaction aborted"),
+                input_data=event,
+            )
+        elif etype == "error":
+            err = event.get("error")
+            msg = str(err.get("message") or "") if isinstance(err, dict) else ""
+            msg = msg or str(event.get("message") or "") or etype
+            transcript.emit("error", text=msg, input_data=event)
+
+    @transcript.best_effort
+    def _flush_text(self) -> None:
+        if not self._pending_text:
+            return
+        text = "".join(self._pending_text)
+        self._pending_text.clear()
+        if text:
+            transcript.emit("assistant_text", text=text)
+
+    @transcript.best_effort
+    def _record_outcome(self) -> None:
+        """The final result record, written once when the stream ends."""
+        self._flush_text()
+        state = self._status.state
+        is_error = state == "error"
+        transcript.emit(
+            "result",
+            text=self._status.error_reason if is_error else None,
+            output_data=self._status.output,
+            input_data={
+                "state": state,
+                "error_reason": self._status.error_reason,
+                "stop_reason": self._status.stop_reason,
+                "saw_terminal": self._saw_terminal,
+            },
+            is_error=is_error,
+        )
 
     def _handle_event(self, event: dict[str, Any]) -> None:
         etype = str(event.get("type", ""))

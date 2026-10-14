@@ -1069,6 +1069,32 @@ class ImplementerRebaseConfig(BaseModel):
     enabled: bool = True
 
 
+# ---------------------------------------------------------------------------
+# 129: Run transcripts (default on)
+# ---------------------------------------------------------------------------
+
+
+class TranscriptsConfig(BaseModel):
+    """129: a full, untruncated JSONL transcript per performer run.
+
+    Written to ``<state directory>/transcripts/<symphony>/<card>/<run_id>.jsonl``
+    (``transcripts.dir`` overrides the root; it must lie outside every performer mount)
+    (see ``coordinare.services.run_transcript``). ``enabled: false`` means no
+    transcript collection on the wire and no files. ``retention_days: 0`` keeps
+    transcripts forever. ``max_bytes_per_run`` caps one run's file; when reached,
+    one ``truncated`` marker is written and later content records are dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    enabled: bool = True
+    # Optional root override. Default: <state directory>/transcripts. Must not be
+    # inside a directory mounted into a performer (checked at startup).
+    directory: Path | None = Field(default=None, alias="dir")
+    retention_days: int = Field(default=30, ge=0, le=3650)
+    max_bytes_per_run: int = Field(default=50 * 1024 * 1024, ge=1024, le=1024 * 1024 * 1024)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1292,6 +1318,9 @@ class ProjectConfiguration(BaseSettings):
     # honour ``PERFORMER_LOG_DIR`` (e.g. Hermes) write per-job prompt /
     # stdout / stderr artifacts beside the container log.
     performer_log_dir: Path | None = Field(default=None)
+
+    # 129: Full per-run transcripts. Opt-out via ``transcripts.enabled: false``.
+    transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
 
     # 052 — Stale Branch Cleanup
     stale_branch_cleanup: bool = True

@@ -65,6 +65,12 @@ from coordinare.services.notification_config import (
     describe_notification_posture,
     sanitize_notifications,
 )
+from coordinare.services.run_transcript import (
+    RootGuard,
+    TranscriptCollector,
+    make_collector,
+    resolve_transcripts_root,
+)
 from coordinare.state_store import StateStore
 from coordinare.transport.subprocess_transport import SubprocessTransport
 from coordinare.workspace import WorkspaceManager
@@ -661,6 +667,8 @@ def _build_performer_services(
 
 def _build_http_performer_services(
     config: ProjectConfiguration,
+    *,
+    transcripts: TranscriptCollector | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
@@ -718,7 +726,11 @@ def _build_http_performer_services(
             new_env = dict(cfg.env)
             new_env.setdefault("PERFORMER_LOG_DIR", "/var/log/performer")
             cfg = cfg.model_copy(update={"volumes": existing_volumes, "env": new_env})
-        service = HTTPPerformerService(cfg, runtime=_build_performer_runtime(config))
+        service = HTTPPerformerService(
+            cfg,
+            runtime=_build_performer_runtime(config),
+            transcripts=transcripts,
+        )
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
             if stage is None:
@@ -875,6 +887,67 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
+def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
+    """Every host directory a performer container can see (129 HIGH 1).
+
+    The performer log dir is bind-mounted into ephemeral containers, and each
+    endpoint can declare more volumes. A transcript root inside any of these
+    would be readable and writable by performers, so the collector checks it.
+    """
+    hosts: list[Path] = []
+    log_dir = getattr(config, "performer_log_dir", None)
+    if log_dir is not None:
+        hosts.append(Path(log_dir))
+    for endpoint in config.performer_endpoints:
+        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
+    # Per-symphony env caches live under this root and are mounted into performers.
+    hosts.append(Path(config.env_cache_root).expanduser())
+    return hosts
+
+
+def _build_transcript_collector(
+    config: ProjectConfiguration,
+    config_path: Path | None,
+) -> TranscriptCollector | None:
+    """129: the transcripts collector. Touches nothing on disk (see ``make_collector``).
+
+    Returns None if the collector cannot be built at all. Transcription is best
+    effort, so that never stops the daemon from starting.
+    """
+    try:
+        state_dir = config.state_file_path.resolve().parent
+        config_dir = config_path.resolve().parent if config_path is not None else state_dir
+        root = resolve_transcripts_root(
+            config.transcripts.directory,
+            config_dir=config_dir,
+            state_dir=state_dir,
+        )
+        guard = RootGuard(
+            performer_mounts=tuple(_performer_mount_hosts(config)),
+            protected=(
+                state_dir,
+                config_dir,
+                _resolve_attempt_log_dir(config, config_path),
+            ),
+        )
+        collector = make_collector(
+            enabled=config.transcripts.enabled,
+            root=root,
+            max_bytes_per_run=config.transcripts.max_bytes_per_run,
+            retention_days=config.transcripts.retention_days,
+            guard=guard,
+        )
+        collector.add_ambient_secrets(os.environ)
+        return collector
+    except Exception as exc:  # best effort: transcripts must never stop the daemon
+        logger.exception(
+            "run_transcript.collector_unavailable",
+            exc_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return None
+
+
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
@@ -1003,7 +1076,11 @@ async def _bootstrap_services(
                 count=orphan_count,
                 hint="performers left by a previous coordinare crash",
             )
-    http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(config)
+    transcript_collector = _build_transcript_collector(config, config_path)
+    http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(
+        config,
+        transcripts=transcript_collector,
+    )
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
         service_lists=service_lists,
@@ -1076,6 +1153,7 @@ async def _bootstrap_services(
         "activity_log": activity_log,
         # 141: attempt telemetry singleton
         "attempt_log": attempt_log,
+        "transcript_collector": transcript_collector,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,

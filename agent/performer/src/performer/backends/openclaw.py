@@ -49,11 +49,23 @@ import structlog
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.backends.opencode import _build_task_prompt
+from performer import transcript
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+# Spec 129: openclaw writes one JSON object at exit (`--json`), so the adapter
+# only sees the finished turn. Nothing streams, so per-tool, thinking and usage
+# records have no source here.
+_TRANSCRIPT_UNAVAILABLE: tuple[str, ...] = ("tool_call", "tool_result", "thinking", "usage")
+_TRANSCRIPT_PROVIDED: tuple[str, ...] = ("user", "system", "assistant_text", "result", "error")
+_TRANSCRIPT_CAPABILITY_TEXT = (
+    "openclaw is driven as one `openclaw agent --local --json` call that prints a single "
+    "JSON object at exit, so the performer sees only the finished reply and its metadata; "
+    "tool calls, tool results, reasoning and token usage are not in that object as this "
+    "adapter reads it and are unavailable"
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -120,6 +132,7 @@ class OpenClawBackend:
         self._feedback_queue: list[str] = []
         self._stop_requested: bool = False
         self._terminal: bool = False
+        self._transcript_capability_recorded: bool = False
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -141,6 +154,7 @@ class OpenClawBackend:
         self._cache_env = stand.cache_env
         self._tool_env = score.tool_env
         self._model = (model or os.environ.get("OPENCLAW_MODEL", "")).strip() or None
+        self._record_capability_once()
 
         # 088 B1 shared env policy: the openclaw CLI is a Node app requiring
         # Node >=22.19 — it must launch under the IMAGE's node, never the
@@ -217,6 +231,7 @@ class OpenClawBackend:
                     "clarifications are in `CARD.md` at the root of your workspace. "
                     "Read it before acting — it IS the card documentation."
                 )
+            full_prompt = prompt
         finally:
             if persona:
                 score.persona_instructions = persona  # restore for callers/relay
@@ -257,6 +272,21 @@ class OpenClawBackend:
         if effective_model:
             args += ["--model", effective_model]
 
+        transcript.emit(
+            "system",
+            text="openclaw launch configuration",
+            input_data={
+                "session_key": session_key,
+                "model": effective_model,
+                "provider_routed": bool(provider_base_url),
+                "thinking": "off",
+                "local": True,
+                "json": True,
+            },
+        )
+        user_input = {"sent_message": prompt} if prompt != full_prompt else None
+        transcript.emit("user", text=full_prompt, input_data=user_input)
+
         log.info(
             "openclaw starting",
             model=effective_model,
@@ -274,8 +304,10 @@ class OpenClawBackend:
                 start_new_session=True,
                 env=env,
             )
-        except Exception:
+        except Exception as exc:
             log.exception("openclaw subprocess spawn failed", executable=self._executable)
+            spawn_error = f"subprocess_spawn_failed: {exc}"
+            transcript.emit("error", text=spawn_error)
             self._terminal = True
             raise
 
@@ -300,6 +332,10 @@ class OpenClawBackend:
     async def stop(self) -> None:
         self._stop_requested = True
         if self._reader_task and not self._reader_task.done():
+            transcript.emit(
+                "error",
+                text="run stopped by the performer before the openclaw turn finished",
+            )
             self._reader_task.cancel()
             try:
                 await self._reader_task
@@ -471,6 +507,21 @@ class OpenClawBackend:
             BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
+    @transcript.best_effort
+    def _record_capability_once(self) -> None:
+        """Spec 129: one capability record per backend instance (one run)."""
+        if self._transcript_capability_recorded:
+            return
+        self._transcript_capability_recorded = True
+        transcript.emit(
+            "capability",
+            text=_TRANSCRIPT_CAPABILITY_TEXT,
+            input_data={
+                "unavailable": list(_TRANSCRIPT_UNAVAILABLE),
+                "provided": list(_TRANSCRIPT_PROVIDED),
+            },
+        )
+
     async def _wait_and_parse(self) -> None:
         if self._proc is None:
             return
@@ -491,6 +542,11 @@ class OpenClawBackend:
                 log.warning("openclaw failed", rc=rc, stderr=stderr_text[-1000:])
                 if snippet:
                     self._emit(BackendEventType.error, snippet)
+                self._record_failure(
+                    error_text=stderr_text.strip() or stdout_text.strip() or f"subprocess_exit:{rc}",
+                    detail={"rc": rc, "reason": f"subprocess_exit:{rc}", "stderr": stderr_text},
+                    output=stdout_text,
+                )
                 self._terminal = True
                 return
 
@@ -504,6 +560,11 @@ class OpenClawBackend:
                     state="error", error_reason="malformed_output",
                 )
                 self._emit(BackendEventType.error, "malformed_output")
+                self._record_failure(
+                    error_text="malformed_output: stdout was not a JSON object",
+                    detail={"rc": rc, "reason": "malformed_output", "stderr": stderr_text},
+                    output=stdout_text,
+                )
                 self._terminal = True
                 return
 
@@ -519,6 +580,16 @@ class OpenClawBackend:
                     output=output_text or None,
                 )
                 self._emit(BackendEventType.error, str(stop_reason or "aborted"))
+                self._record_failure(
+                    error_text=f"turn ended without a clean stop: {stop_reason or 'aborted'}",
+                    detail={
+                        "rc": rc,
+                        "reason": f"stop_reason:{stop_reason or 'aborted'}",
+                        "stderr": stderr_text,
+                        "meta": meta,
+                    },
+                    output=output_text or stdout_text,
+                )
                 self._terminal = True
                 return
 
@@ -529,10 +600,64 @@ class OpenClawBackend:
             )
             if output_text:
                 self._emit(BackendEventType.progress, output_text[:_MAX_TEXT])
+            self._record_success(parsed=parsed, meta=meta, output_text=output_text)
             self._terminal = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("openclaw reader error", error=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
+            transcript.emit("error", text=f"openclaw reader error: {exc}")
             self._terminal = True
+
+    @transcript.best_effort
+    def _record_failure(
+        self,
+        *,
+        error_text: str,
+        detail: dict[str, object],
+        output: str,
+    ) -> None:
+        """Spec 129: full error text plus a failed result carrying the raw stdout.
+
+        ``detail`` holds rc, reason, stderr and (when present) meta. The result
+        record repeats it without stderr, which the error record already carries.
+        """
+        transcript.emit("error", text=error_text, input_data=detail)
+        result_input = {key: value for key, value in detail.items() if key != "stderr"}
+        transcript.emit(
+            "result",
+            text=f"failed: {detail.get('reason')}",
+            output_data=output,
+            is_error=True,
+            input_data=result_input,
+        )
+
+    @transcript.best_effort
+    def _record_success(
+        self, *, parsed: dict, meta: dict, output_text: str,
+    ) -> None:
+        """Spec 129: each delivered payload is one complete assistant message.
+
+        ``payloads`` are the replies openclaw hands to a channel, so each
+        non-empty payload text is one message. When there are none, the
+        ``meta`` final text is used as the single message.
+        """
+        payloads = parsed.get("payloads")
+        candidates: list[object] = payloads if isinstance(payloads, list) else []
+        messages: list[str] = [
+            item["text"]
+            for item in candidates
+            if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip()
+        ]
+        if not messages and output_text:
+            messages.append(output_text)
+        for message in messages:
+            transcript.emit("assistant_text", text=message)
+        transcript.emit(
+            "result",
+            text="done",
+            output_data=output_text or None,
+            is_error=False,
+            input_data={"meta": meta},
+        )

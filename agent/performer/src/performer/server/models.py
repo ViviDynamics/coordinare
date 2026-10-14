@@ -62,6 +62,9 @@ class JobInitPayload(BaseModel):
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+    # 129: per-run transcript byte cap. None means transcripts are disabled for
+    # this job, so the runner records nothing and the wire carries nothing.
+    transcript_max_bytes: int | None = None
 
     @field_validator("repo_url")
     @classmethod
@@ -112,6 +115,15 @@ class JobStatus(BaseModel):
     result: JobResult | None = None
     events: list[ProgressEvent] = Field(default_factory=list)
     metrics: dict[str, Any] | None = None
+    # 129: transcript delivery. ``transcript_last_seq`` is the highest seq the
+    # performer holds (None when transcripts are disabled for this job).
+    # ``transcript`` holds the records after the caller's cursor, bounded by
+    # the request's transcript_limit. Both are empty unless requested.
+    transcript: list[dict[str, Any]] = Field(default_factory=list)
+    transcript_last_seq: int | None = None
+    # 129: set when the transcript batch could not be served. The status itself is
+    # still returned; the batch is empty and the run carries on.
+    transcript_error: str | None = None
 
     @field_validator("progress_pct")
     @classmethod

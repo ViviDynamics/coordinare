@@ -15,12 +15,15 @@ probe liveness without a token.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+import structlog
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
 
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
@@ -40,6 +43,39 @@ class _RefreshSecretsPayload(BaseModel):
 
 def _runner(request: Request) -> JobRunner:
     return request.app.state.runner  # type: ignore[no-any-return]
+
+
+_logger = structlog.get_logger(__name__)
+
+
+async def _transcript_status(
+    runner: JobRunner,
+    job_id: str,
+    transcript_after: int,
+    transcript_limit: int,
+) -> JobStatus:
+    """The job status with a transcript batch. Never fails because of the transcript.
+
+    The batch is redacted on a worker thread, so the status endpoint and the backend
+    share the loop. If serving the batch fails for any reason, the normal status is
+    returned with an empty batch and ``transcript_error`` set, so job completion is
+    still observed and the daemon can carry on (129 review, item 1).
+    """
+    try:
+        return await asyncio.to_thread(
+            runner.get,
+            job_id,
+            transcript_after=transcript_after,
+            transcript_limit=transcript_limit,
+        )
+    except JobNotFoundError:
+        raise
+    except Exception as exc:  # the status must never fail because of the transcript
+        _logger.exception("transcript.batch_failed", job_id=job_id, exc_type=type(exc).__name__)
+        status = runner.get(job_id)
+        return status.model_copy(
+            update={"transcript": [], "transcript_error": type(exc).__name__},
+        )
 
 
 def _capabilities(request: Request) -> PerformerCapabilities:
@@ -85,9 +121,18 @@ def register_routes(app: FastAPI) -> None:
         )
 
     @app.get("/jobs/{job_id}", response_model=JobStatus)
-    async def get_job(job_id: str, request: Request) -> JobStatus:
+    async def get_job(
+        job_id: str,
+        request: Request,
+        transcript_after: int | None = Query(default=None, ge=0),
+        transcript_limit: int = Query(default=200, ge=1, le=500),
+    ) -> JobStatus:
         try:
-            return _runner(request).get(job_id)
+            if transcript_after is None:
+                return _runner(request).get(job_id)
+            return await _transcript_status(
+                _runner(request), job_id, transcript_after, transcript_limit,
+            )
         except JobNotFoundError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
 
