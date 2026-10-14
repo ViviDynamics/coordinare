@@ -620,6 +620,23 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   </div>
 </div>
 
+<!-- 133: the transcript viewer. Logic in /static/runs.js. -->
+<div id="runs-page" style="display:none" class="runs-page">
+  <div id="runs-header" class="runs-header"></div>
+  <div class="runs-toolbar">
+    <label>Type <select id="runs-type-filter"><option value="">All types</option></select></label>
+    <label><input type="checkbox" id="runs-errors-filter"> Errors only</label>
+    <form id="runs-search-form" class="runs-search"><input type="search" id="runs-search" placeholder="Search this run" aria-label="Search this run"> <button type="submit">Search</button></form>
+    <button type="button" data-action="next-error">Next error</button>
+  </div>
+  <div id="runs-search-results" class="runs-search-results" aria-live="polite"></div>
+  <div id="runs-diff" class="runs-diff"></div>
+  <div id="runs-notice" class="runs-notice" role="status" aria-live="polite"></div>
+  <div id="runs-scroll" class="runs-scroll" tabindex="0" aria-label="Run events">
+    <div id="runs-rows" role="list"></div>
+  </div>
+</div>
+
 <div id="glossary-page" style="display:none"><div class="card"><h2>Glossary</h2><div id="glossary-section"></div></div></div>
 
 <!-- 057: Symphonies page -->

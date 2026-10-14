@@ -31,7 +31,9 @@ DEFERRED_REST_PREFIXES = (
     "/api/assistant",
     "/api/vocabulary",  # 136: display labels for the human dashboard, static data.
     "/api/personas/{role}/history",  # 130: persona version history, read by the transcript viewer (#133).
-    "/api/runs",  # 132: a run's full log, paged or downloaded from the human dashboard card.
+    "/api/runs",  # 132 and 133: a run's full log, and run transcripts for the viewer (human dashboard).
+    "/api/card-runs",  # 133: a card's runs across symphonies, for the card detail.
+    "/api/run-lookup",  # 133: a run id resolved to its address, for activity links.
     "/health",
     "/live",
     "/ready",
@@ -43,6 +45,8 @@ DEFERRED_PAGE_PATHS = (
     "/login",
     "/performers",
     "/performers/{role}",
+    "/runs/{run}",  # 133: the transcript viewer, by run id.
+    "/runs/{symphony}/{card}/{run}",  # 133: the transcript viewer, by address.
     "/personas",
     "/history",
     "/glossary",
