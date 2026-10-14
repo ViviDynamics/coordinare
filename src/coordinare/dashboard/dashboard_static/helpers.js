@@ -228,6 +228,82 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// 141: a run is named the same way on every screen: "run" and the first six characters of
+// its id. A prefix ending in an underscore ("run_", "sess_") is not part of the short name.
+// The full id is in the title, and the Copy button copies it.
+function runIdText(runId) {
+  var bare = String(runId || '').replace(/^[A-Za-z][A-Za-z0-9]*_/, '');
+  var head = bare.slice(0, 6);
+  return head ? 'run ' + head : '';
+}
+
+// 141: a run's name as markup. opts.href makes the short name a link (opts.blank opens it in a
+// new tab, opts.className styles it); opts.copy adds the Copy button. Every value is escaped here.
+function runIdHtml(runId, opts) {
+  opts = opts || {};
+  var full = String(runId || '');
+  var short = runIdText(full);
+  if (!short) return '<span class="muted">-</span>';
+  var title = esc(full);
+  var name;
+  if (opts.href) {
+    var cls = ' class="' + esc(opts.className || 'run-id-link') + '"';
+    var attrs = ' href="' + esc(opts.href) + '" title="' + title + '"' + cls;
+    attrs += opts.blank
+      ? ' target="_blank" rel="noopener"'
+      : ' onclick="event.stopPropagation();navigate(event,this.getAttribute(\'href\'))" onkeydown="event.stopPropagation()"';
+    name = '<a' + attrs + '>' + esc(short) + '</a>';
+  } else {
+    name = '<span class="run-id" title="' + title + '">' + esc(short) + '</span>';
+  }
+  var copy = opts.copy
+    ? ' <button type="button" class="run-id-copy" data-run-id="' + title + '" title="' + title + '"' +
+      ' onclick="event.stopPropagation();copyRunId(this)" onkeydown="event.stopPropagation()">Copy</button>'
+    : '';
+  return name + copy;
+}
+
+// 141: copies a run's full id. The clipboard API is used when the page may use it. Otherwise,
+// or when the browser refuses it (Firefox does without a grant), the id is copied through a
+// selected field instead. The button says what happened, and the title still holds the id.
+function copyRunId(btn) {
+  var full = btn ? btn.getAttribute('data-run-id') || '' : '';
+  if (!full) return;
+  var report = function(ok) {
+    btn.textContent = ok ? 'Copied' : 'Copy failed';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+  };
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(full).then(function() { report(true); }, function() { report(runCopyBySelection(full)); });
+    return;
+  }
+  report(runCopyBySelection(full));
+}
+
+// 141: the fallback copy. The id is selected in a field that is never shown, then the browser's
+// copy command runs on that selection.
+function runCopyBySelection(text) {
+  var field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.style.position = 'fixed';
+  field.style.opacity = '0';
+  document.body.appendChild(field);
+  field.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(field);
+  return ok;
+}
+
+// 141: "Run 2 of Implement", shown only when the daemon has counted the run's place in its stage.
+// Nothing in the snapshot counts runs per stage, so a caller without a count gets ''.
+function runNumberText(stage, attempt) {
+  var n = Number(attempt);
+  if (!(n >= 1) || n !== Math.floor(n)) return '';
+  return 'Run ' + n + ' of ' + stageLabel(stage);
+}
+
 function fmtBytes(b) {
   if (b == null) return '—';
   if (b < 1024) return b + ' B';

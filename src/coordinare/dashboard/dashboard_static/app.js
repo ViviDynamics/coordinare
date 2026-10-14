@@ -391,11 +391,11 @@ function renderState(s) {
     lastCheckedEl.textContent = '';
   }
 
-  // Agent session
+  // Current run (141: the run's short name, with its full id in the title and a Copy button)
   var agentEl = document.getElementById('agent-session');
   if (s.agent_session_id) {
     agentEl.style.display = '';
-    document.getElementById('agent-session-id').textContent = s.agent_session_id;
+    document.getElementById('agent-session-id').innerHTML = runIdHtml(s.agent_session_id, {copy: true});
   } else {
     agentEl.style.display = 'none';
   }
@@ -611,7 +611,7 @@ async function loadSymphonyDetail(name, el) {
     {key:'max_cards_in_review', label:'Max cards waiting on review', type:'number', placeholder:'3', noCapOption:true},
     {key:'poll_interval_seconds', label:'Poll interval (seconds)', type:'number', placeholder:'30'},
     {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
-    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
+    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PRs per issue', type:'number', placeholder:'3'},
     {key:'assignee_filter', label:'Assignee filter (GitHub login)', type:'text', placeholder:'(no filter)'},
   ];
   var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
@@ -680,13 +680,13 @@ async function loadSymphonyDetail(name, el) {
         infRow = '<span style="color:var(--color-accent-green)">ok</span> '
           + esc(svcs)
           + ' <span style="color:var(--color-text-muted)">('
-          + esc(String(ec.last_inference_attempts || '?')) + ' attempt'
-          + ((ec.last_inference_attempts || 0) === 1 ? '' : 's') + ', '
+          + esc(String(ec.last_inference_attempts || '?')) + ' tr'
+          + ((ec.last_inference_attempts || 0) === 1 ? 'y' : 'ies') + ', '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else if (ec.last_inference_succeeded === false) {
         infRow = '<span style="color:var(--color-accent-red)">failed</span> '
           + '<span style="color:var(--color-text-muted)">('
-          + esc(String(ec.last_inference_attempts || '?')) + ' attempts, '
+          + esc(String(ec.last_inference_attempts || '?')) + ' tries, '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else {
         infRow = '—';

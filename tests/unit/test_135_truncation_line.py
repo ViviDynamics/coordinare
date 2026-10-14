@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import app_js, shipped_function
+from tests.unit.dashboard_js_slices import app_js, run_id_js, shipped_function
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "truncation_checks.js"
 
@@ -26,6 +26,7 @@ def _source() -> str:
     return "\n\n".join([
         esc.group(0),
         keep.group(0),
+        run_id_js(),
         shipped_function("runs", "runEntryLinkHtml"),
         _ACTIVITY_STREAM_JS,
     ])

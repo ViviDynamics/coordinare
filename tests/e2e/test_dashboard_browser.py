@@ -1817,7 +1817,8 @@ def test_agent_session_info_visible_when_active(
         ),
     )
     expect(page.locator("#agent-session")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#agent-session-id")).to_contain_text("sess-abc123", timeout=_WAIT_LIVE)
+    expect(page.locator("#agent-session-id")).to_contain_text("run sess-a", timeout=_WAIT_LIVE)
+    expect(page.locator("#agent-session-id .run-id")).to_have_attribute("title", "sess-abc123")
 
 
 # ---------------------------------------------------------------------------

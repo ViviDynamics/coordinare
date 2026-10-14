@@ -13,7 +13,7 @@ from pathlib import Path
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.assets import _DASHBOARD_JS_ORDER, DASHBOARD_HTML_BUDGET_BYTES
 from coordinare.services import run_viewer
-from tests.unit.dashboard_js_slices import shipped_function
+from tests.unit.dashboard_js_slices import run_id_js, shipped_function
 
 _NEW_FILES = (
     "src/coordinare/services/run_viewer.py",
@@ -28,7 +28,7 @@ def test_runs_checks_under_node(tmp_path: Path) -> None:
     assert node is not None, "node is required for the dashboard JS gates"
     js_path = tmp_path / "runs.js"
     js_path.write_text(
-        "\n\n".join([shipped_function("helpers", "esc"), _DASHBOARD_JS_SOURCES["runs"]]),
+        "\n\n".join([shipped_function("helpers", "esc"), run_id_js(), _DASHBOARD_JS_SOURCES["runs"]]),
         encoding="utf-8",
     )
     checks = _REPO / "tests" / "js" / "runs_checks.js"

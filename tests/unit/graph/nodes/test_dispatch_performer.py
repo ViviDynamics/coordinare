@@ -264,7 +264,7 @@ async def test_implementing_stage_blocks_when_closed_pr_limit_reached() -> None:
 
     assert result["phase"] == "blocked"
     assert ("ITEM_1", "BLOCKED") in github.move_calls
-    assert any("closed PR attempts" in q for q in result.get("open_questions", []))
+    assert any("closed PRs" in q for q in result.get("open_questions", []))
     assert len(implementing_svc.dispatched) == 0
 
 
@@ -298,7 +298,7 @@ async def test_closed_pr_limit_logs_move_card_blocked_error_details() -> None:
         result = await dispatch_performer(state)
 
     assert result["phase"] == "blocked"
-    assert any("closed PR attempts" in q for q in result.get("open_questions", []))
+    assert any("closed PRs" in q for q in result.get("open_questions", []))
     assert any(
         call.args and call.args[0] == "dispatch_performer.move_card_to_blocked_failed"
         and call.kwargs.get("card_id") == "ITEM_1"

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _ACTIVITY_STREAM_JS
-from tests.unit.dashboard_js_slices import shipped_function
+from tests.unit.dashboard_js_slices import run_id_js, shipped_function
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_detail_checks.js"
 
@@ -23,6 +23,7 @@ def _sliced_js(tmp_path: Path) -> Path:
     path.write_text(
         "\n\n".join([
             shipped_function("helpers", "esc"),
+            run_id_js(),
             shipped_function("runs", "runEntryLinkHtml"),
             _ACTIVITY_STREAM_JS,
         ]),

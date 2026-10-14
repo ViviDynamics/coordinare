@@ -237,10 +237,10 @@ function personaHistoryPath(role, version) {
   return '/api/personas/' + encodeURIComponent(role) + '/history/' + String(version);
 }
 
-// The activity entry's link into its run. It opens the run at the entry's time. 135: the label
-// is optional, so a cut line can say "Open full transcript" while a row says "Transcript".
-function runEntryLinkHtml(entry, label) {
-  // Self-contained (the pattern is inline), so the activity feed can carry this function alone.
+// The activity entry's link into its run. It opens the run at the entry's time. The link text is
+// the run's short name (141), and the full id is its title.
+function runEntryLinkHtml(entry) {
+  // Self-contained with helpers.js (runIdHtml), so the activity feed can carry these functions alone.
   var session = entry && entry.session_id ? String(entry.session_id) : '';
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(session)) return '';
   // The performer's own event time when the entry has one: the transcript's record times are
@@ -248,17 +248,7 @@ function runEntryLinkHtml(entry, label) {
   var when = entry.event_at || entry.timestamp || '';
   var href = '/runs/' + encodeURIComponent(session) +
     (when ? '?at=' + encodeURIComponent(String(when)) : '');
-  return '<a class="run-entry-link" href="' + esc(href) + '" ' +
-    'onclick="event.stopPropagation();navigate(event,this.getAttribute(\'href\'))" ' +
-    'onkeydown="event.stopPropagation()">' + esc(label || 'Transcript') + '</a>';
-}
-
-// The #146 run detail's link to a session's transcript (the run id is the session id).
-function runSessionLinkHtml(runId) {
-  var run = String(runId || '');
-  if (!RUN_NAME_PATTERN.test(run)) return '';
-  var href = '/runs/' + encodeURIComponent(run);
-  return '<a class="run-entry-link" href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Transcript</a>';
+  return runIdHtml(session, {href: href, className: 'run-entry-link'});
 }
 
 // --- rendering --------------------------------------------------------------- //
@@ -354,7 +344,9 @@ function runHeaderHtml(detail) {
   var list = rows.map(function(row) {
     return '<div class="run-fact"><span class="run-fact-label">' + esc(row[0]) + '</span><span>' + esc(row[1] == null ? '-' : row[1]) + '</span></div>';
   }).join('');
-  return '<div class="run-facts">' + list +
+  return '<div class="run-facts">' +
+    '<div class="run-fact"><span class="run-fact-label">Run</span><span>' + runIdHtml(detail.run, {copy: true}) + '</span></div>' +
+    list +
     '<div class="run-fact"><span class="run-fact-label">Persona version</span><span>' + versionHtml + '</span></div>' +
     '<div class="run-fact"><span class="run-fact-label">Tokens</span><span>' + esc(tokenText) + '</span></div>' +
     '<div class="run-fact"><span class="run-fact-label">Cost</span><span title="' + esc(cost.reason || '') + '">' + esc(cost.value == null ? '-' : String(cost.value)) + '</span></div>' +
@@ -376,12 +368,12 @@ function runCardRunsHtml(runs, card) {
       var outcome = run.outcome ? esc(run.outcome) : '';
       var when = run.started_at ? esc(String(run.started_at).slice(0, 19).replace('T', ' ')) : '-';
       var href = runPathFor(run.symphony, card, run.run);
-      // 131: a conductor call is labelled with its decision; a performer run keeps its short id.
-      var label = run.conductor
-        ? 'Conductor call: ' + (run.conductor.decision || run.conductor.kind || 'no decision recorded')
-        : run.run.slice(0, 12);
-      return '<li><a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">' +
-        esc(label) + '</a> <span class="muted">' + when + '</span> ' + outcome + '</li>';
+      // 131: a conductor call is labelled with its decision; a performer run keeps its short id (141).
+      var name = run.conductor
+        ? '<a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">' +
+          esc('Conductor call: ' + (run.conductor.decision || run.conductor.kind || 'no decision recorded')) + '</a>'
+        : runIdHtml(run.run, {href: href});
+      return '<li>' + name + ' <span class="muted">' + when + '</span> ' + outcome + '</li>';
     }).join('');
     return '<div class="card-runs-stage"><strong>' + esc(group.stage) + '</strong><ul class="detail-list">' + items + '</ul></div>';
   }).join('');
