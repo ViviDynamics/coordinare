@@ -3763,6 +3763,7 @@ class CoordinareDaemon:
                 temperature=cc.temperature,
                 base_url=cc.base_url,
                 effort=cc.effort,
+                calls=self._state.get("conductor_calls"),
             )
             chat = backend.chat_json
         self._manifest_llm_chat = chat

@@ -860,6 +860,16 @@ class TranscriptCollector:
         existing = self._writers.get(run_id)
         if existing is not None:
             return existing
+        writer = self.new_writer(run_id=run_id, symphony=symphony, card_id=card_id)
+        self._writers[run_id] = writer
+        return writer
+
+    def new_writer(self, *, run_id: str, symphony: str, card_id: str) -> RunTranscriptWriter:
+        """A writer for one file that is not kept in the live set (spec 131: one-shot files).
+
+        Built with the same path rules and ambient secrets as :meth:`writer_for`. The caller
+        owns it, so it can be used on a worker thread without touching the live-writer map.
+        """
         writer = RunTranscriptWriter(
             self._root,
             parts=(sanitize_segment(symphony), sanitize_segment(card_id)),
@@ -867,7 +877,6 @@ class TranscriptCollector:
             max_bytes=self._max_bytes_per_run,
         )
         writer.add_secret_values(self._ambient_secrets)
-        self._writers[run_id] = writer
         return writer
 
     def add_ambient_secrets(self, environ: Mapping[str, str]) -> None:

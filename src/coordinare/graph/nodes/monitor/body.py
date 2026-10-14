@@ -626,7 +626,9 @@ async def _observer_stall_judgement(
     backend = state.get("observer_backend")
     if backend is None:
         global_cfg = getattr(state.get("coordinare_config"), "global_config", None)
-        backend = build_model_endpoint_backend(global_cfg, observer_cfg.model_endpoint)
+        backend = build_model_endpoint_backend(
+            global_cfg, observer_cfg.model_endpoint, calls=state.get("conductor_calls"),
+        )
         if backend is None:
             return ("block", None)
 
@@ -3907,7 +3909,9 @@ async def _phase_observer(
     backend = state.get("observer_backend")
     if backend is None:
         global_cfg = getattr(state.get("coordinare_config"), "global_config", None)
-        backend = build_model_endpoint_backend(global_cfg, observer_cfg.model_endpoint)
+        backend = build_model_endpoint_backend(
+            global_cfg, observer_cfg.model_endpoint, calls=state.get("conductor_calls"),
+        )
         if backend is None:
             return None
 

@@ -13,6 +13,11 @@ import re
 # status poll made without a transcript target). The file is still written.
 UNATTRIBUTED = "unattributed"
 
+# The folder the conductor's own model calls are written under (131). The sanitiser
+# strips leading underscores, so the folder is ``conductor``; config refuses a symphony
+# with this name, so the folder is never shared with one.
+CONDUCTOR_FOLDER = "conductor"
+
 _SEGMENT_INVALID = re.compile(r"[^A-Za-z0-9._-]+")
 _SEGMENT_MAX_LEN = 120
 

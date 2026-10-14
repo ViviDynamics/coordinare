@@ -372,8 +372,12 @@ function runCardRunsHtml(runs, card) {
       var outcome = run.outcome ? esc(run.outcome) : '';
       var when = run.started_at ? esc(String(run.started_at).slice(0, 19).replace('T', ' ')) : '-';
       var href = runPathFor(run.symphony, card, run.run);
+      // 131: a conductor call is labelled with its decision; a performer run keeps its short id.
+      var label = run.conductor
+        ? 'Conductor call: ' + (run.conductor.decision || run.conductor.kind || 'no decision recorded')
+        : run.run.slice(0, 12);
       return '<li><a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">' +
-        esc(run.run.slice(0, 12)) + '</a> <span class="muted">' + when + '</span> ' + outcome + '</li>';
+        esc(label) + '</a> <span class="muted">' + when + '</span> ' + outcome + '</li>';
     }).join('');
     return '<div class="card-runs-stage"><strong>' + esc(group.stage) + '</strong><ul class="detail-list">' + items + '</ul></div>';
   }).join('');

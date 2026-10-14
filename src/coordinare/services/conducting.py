@@ -9,6 +9,14 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from coordinare.services.conductor_calls import (
+    NULL_CALL_LOG,
+    ConductorCallLog,
+    ModelReply,
+    ModelRequest,
+    split_messages,
+)
+
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
     from coordinare.services.claude import ClaudeService
@@ -198,6 +206,21 @@ def _parse_prompt_response(text: str, response_format: str | None) -> dict[str, 
     return result
 
 
+def _openai_usage(data: Any) -> dict[str, int] | None:
+    """Usage of a chat completion, in the ledger's kinds (131). Cached prompt tokens are not input."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    details = usage.get("prompt_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    prompt = prompt_tokens if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool) else 0
+    output = completion_tokens if isinstance(completion_tokens, int) and not isinstance(completion_tokens, bool) else 0
+    read = cached if isinstance(cached, int) and not isinstance(cached, bool) else 0
+    return {"input_tokens": max(prompt - read, 0), "output_tokens": output, "cache_read": read, "cache_write": 0}
+
+
 @runtime_checkable
 class ConductingBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
@@ -242,6 +265,8 @@ class OpenAiApiBackend:
         temperature: float | None = None,
         base_url: str | None = None,
         effort: str | None = None,
+        calls: ConductorCallLog | None = None,
+        endpoint_name: str = "openai_api",
     ) -> None:
         self._api_key = api_key or ""
         self._model = model
@@ -249,6 +274,9 @@ class OpenAiApiBackend:
         self._temperature = temperature
         self._effort = effort
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        # 131: every send is recorded on the conductor call that is open, if any.
+        self.calls = calls if calls is not None else NULL_CALL_LOG
+        self._endpoint_name = endpoint_name
 
     # Transient-error retry budget. Three attempts total at 0.5s / 1.5s
     # backoff — enough to ride out a LiteLLM/proxy hiccup or a brief 429
@@ -257,17 +285,39 @@ class OpenAiApiBackend:
     _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
 
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
+        """The reply text of one chat call ('' on any failure), recorded on the open call (131)."""
+        system, user = split_messages(messages)
+        request = ModelRequest(
+            model=self._model,
+            endpoint=self._endpoint_name,
+            system=system,
+            prompt=user,
+            parameters=self._request_parameters(json_mode),
+        )
+        reply = await self.calls.invoke(request, lambda: self._post_chat(messages, json_mode))
+        return reply.text
+
+    def _request_parameters(self, json_mode: bool) -> dict[str, Any]:
+        parameters: dict[str, Any] = {"max_tokens": self._max_tokens, "json_mode": json_mode}
+        if self._effort is not None:
+            parameters["effort"] = self._effort
+        if self._temperature is not None:
+            parameters["temperature"] = self._temperature
+        return parameters
+
+    async def _post_chat(self, messages: list[dict[str, str]], json_mode: bool) -> ModelReply:
+        """The HTTP send with its retries. Failures come back as ``error``, never raised."""
         import httpx
         if not self._api_key:
             log.error("openai_api_missing_key")
-            return ""
+            return ModelReply(error="missing api key")
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
         }
         # Reasoning models (o-series / gpt-5) reject `max_tokens` and `temperature`
         # and require `max_completion_tokens`. Use the presence of `effort` as the
-        # signal — the config layer ties `effort` to reasoning-capable models.
+        # signal: the config layer ties `effort` to reasoning-capable models.
         if self._effort is not None:
             payload["max_completion_tokens"] = self._max_tokens
             payload["reasoning_effort"] = self._effort
@@ -315,20 +365,26 @@ class OpenAiApiBackend:
                     await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
                     continue
                 log.error("openai_api_http_error", error=str(exc))
-                return ""
+                return ModelReply(error=last_error, timed_out=isinstance(exc, httpx.TimeoutException))
             except httpx.HTTPError as exc:
                 # Non-retryable (e.g. 4xx after raise_for_status).
                 log.error("openai_api_http_error", error=str(exc))
-                return ""
+                return ModelReply(error=type(exc).__name__)
 
         if data is None:
             log.error("openai_api_http_error", error=last_error or "retries_exhausted")
-            return ""
+            return ModelReply(error=last_error or "retries_exhausted")
         try:
-            return str(data["choices"][0]["message"]["content"] or "")
+            text = str(data["choices"][0]["message"]["content"] or "")
         except (KeyError, IndexError, TypeError):
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
-            return ""
+            return ModelReply(error="unexpected response")
+        model = data.get("model") if isinstance(data, dict) else None
+        return ModelReply(
+            text=text,
+            model=model if isinstance(model, str) else None,
+            usage=_openai_usage(data),
+        )
 
     async def chat_json(self, messages: list[dict[str, str]]) -> str:
         """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
@@ -359,84 +415,76 @@ class OpenAiApiBackend:
         return _parse_prompt_response(raw, response_format)
 
 
+async def _run_cli(
+    executable: str, args: list[str], prompt: str, *, label: str, limit: float,
+) -> ModelReply:
+    """Pipe ``prompt`` to a model CLI on stdin and return its stdout. The one subprocess model send (131).
+
+    The prompt goes on stdin, not argv: card text may hold user-authored issue bodies and
+    comments, which stay out of process listings and argv length limits. A timeout or a launch
+    failure comes back as ``error``, with a ``note`` for the caller's rationale.
+    """
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            executable,
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=prompt.encode()), timeout=limit,
+        )
+    except TimeoutError:
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=2)
+        log.warning("conductor.cli_timeout", backend=label, timeout=limit)
+        return ModelReply(error="timeout", timed_out=True, note=f"{label} timeout")
+    except OSError as exc:
+        log.error("conductor.cli_launch_failed", backend=label, error=str(exc))
+        return ModelReply(error=f"launch failed: {exc}", note=f"{label} error: {exc}")
+    if proc.returncode and proc.returncode != 0:
+        err = stderr.decode(errors="replace").strip() if stderr else ""
+        log.warning("conductor.cli_nonzero_exit", backend=label, returncode=proc.returncode, stderr_length=len(err))
+    return ModelReply(text=stdout.decode(errors="replace").strip() if stdout else "")
+
+
 class ClaudeCliBackend:
     """Runs `claude --print <prompt>` as a subprocess using local CLI auth."""
 
     _TIMEOUT: int = 30
+    endpoint_name = "claude_cli"
 
-    def __init__(self, executable: str = "claude") -> None:
+    def __init__(self, executable: str = "claude", calls: ConductorCallLog | None = None) -> None:
         self._executable = executable
+        self.calls = calls if calls is not None else NULL_CALL_LOG
+
+    async def _send(self, prompt: str) -> ModelReply:
+        return await _run_cli(
+            self._executable, ["--print", "-"], prompt, label="cli", limit=self._TIMEOUT,
+        )
+
+    def _request(self, prompt: str) -> ModelRequest:
+        # The CLI picks its own model and reports no token usage.
+        return ModelRequest(model=self._executable, endpoint=self.endpoint_name, system="", prompt=prompt)
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
-        # Prompt is piped via stdin (not argv) so card text — which may include
-        # user-authored issue bodies and comments — stays out of process
-        # listings and avoids argv length limits on long clarification chains.
         prompt = _build_assess_prompt(card)
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self._executable,
-                "--print",
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
-            )
-        except TimeoutError:
-            if proc is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=2)
-            log.warning("assessment_cli_timeout", timeout=self._TIMEOUT)
-            return {"sufficient": False, "questions": [], "rationale": "cli timeout"}
-        except OSError as exc:
-            log.error("assessment_cli_launch_failed", error=str(exc))
-            return {"sufficient": False, "questions": [], "rationale": f"cli error: {exc}"}
-
-        text = stdout.decode(errors="replace").strip() if stdout else ""
-        if not text:
-            return {"sufficient": False, "questions": [], "rationale": "empty cli response"}
-        return _parse_assessment_response(text)
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        if not reply.text:
+            return {"sufficient": False, "questions": [], "rationale": reply.note or "empty cli response"}
+        return _parse_assessment_response(reply.text)
 
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
         """Send an arbitrary text prompt via the Claude CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self._executable,
-                "--print",
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=text.encode()), timeout=self._TIMEOUT,
-            )
-        except TimeoutError:
-            if proc is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=2)
-            log.warning("prompt_cli_timeout", timeout=self._TIMEOUT)
-            return {"text": "", "data": None}
-        except OSError as exc:
-            log.error("prompt_cli_launch_failed", error=str(exc))
-            return {"text": "", "data": None}
-
-        if proc.returncode and proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip() if stderr else ""
-            log.warning("prompt_cli_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
-
-        raw = stdout.decode(errors="replace").strip() if stdout else ""
-        return _parse_prompt_response(raw, response_format)
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        return _parse_prompt_response(reply.text, response_format)
 
 
 class OpenCodeBackend:
@@ -446,110 +494,76 @@ class OpenCodeBackend:
     """
 
     _TIMEOUT: int = 60
+    endpoint_name = "opencode_cli"
 
-    def __init__(self, executable: str = "opencode", effort: str | None = None) -> None:
+    def __init__(
+        self,
+        executable: str = "opencode",
+        effort: str | None = None,
+        calls: ConductorCallLog | None = None,
+    ) -> None:
         self._executable = executable
         self._effort = effort
+        self.calls = calls if calls is not None else NULL_CALL_LOG
 
     def _effort_args(self) -> list[str]:
         return ["--effort", self._effort] if self._effort else []
 
-    async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
-        # Prompt is piped via stdin (not argv); see ClaudeCliBackend.assess.
-        prompt = _build_assess_prompt(card)
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self._executable,
-                "run",
-                *self._effort_args(),
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
-            )
-        except TimeoutError:
-            if proc is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=2)
-            log.warning("assessment_opencode_timeout", timeout=self._TIMEOUT)
-            return {"sufficient": False, "questions": [], "rationale": "opencode timeout"}
-        except OSError as exc:
-            log.error("assessment_opencode_launch_failed", error=str(exc))
-            return {"sufficient": False, "questions": [], "rationale": f"opencode error: {exc}"}
+    async def _send(self, prompt: str) -> ModelReply:
+        return await _run_cli(
+            self._executable, ["run", *self._effort_args(), "-"], prompt,
+            label="opencode", limit=self._TIMEOUT,
+        )
 
-        text = stdout.decode(errors="replace").strip() if stdout else ""
-        if not text:
-            return {"sufficient": False, "questions": [], "rationale": "empty opencode response"}
-        return _parse_assessment_response(text)
+    def _request(self, prompt: str) -> ModelRequest:
+        parameters: dict[str, Any] = {"effort": self._effort} if self._effort else {}
+        return ModelRequest(
+            model=self._executable, endpoint=self.endpoint_name, system="", prompt=prompt,
+            parameters=parameters,
+        )
+
+    async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
+        prompt = _build_assess_prompt(card)
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        if not reply.text:
+            return {"sufficient": False, "questions": [], "rationale": reply.note or "empty opencode response"}
+        return _parse_assessment_response(reply.text)
 
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
         """Send an arbitrary text prompt via the opencode CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self._executable,
-                "run",
-                *self._effort_args(),
-                "-",  # read from stdin
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=text.encode()), timeout=self._TIMEOUT,
-            )
-        except TimeoutError:
-            if proc is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=2)
-            log.warning("prompt_opencode_timeout", timeout=self._TIMEOUT)
-            return {"text": "", "data": None}
-        except OSError as exc:
-            log.error("prompt_opencode_launch_failed", error=str(exc))
-            return {"text": "", "data": None}
-
-        if proc.returncode and proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip() if stderr else ""
-            log.warning("prompt_opencode_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
-
-        raw = stdout.decode(errors="replace").strip() if stdout else ""
-        return _parse_prompt_response(raw, response_format)
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        return _parse_prompt_response(reply.text, response_format)
 
 
 class CodexCliBackend:
-    """Runs `codex exec` as a subprocess — pairs with the codex-backed performers.
+    """Runs `codex exec` as a subprocess. It pairs with the codex-backed performers.
 
     Uses the same codex CLI (and OPENAI_API_KEY) the performer fleet already
     relies on, so no new auth is required.
     """
 
     _TIMEOUT: int = 60
+    endpoint_name = "codex_cli"
 
     def __init__(
         self,
         executable: str = "codex",
         model: str | None = None,
         effort: str | None = None,
+        calls: ConductorCallLog | None = None,
     ) -> None:
         self._executable = executable
         self._model = model
         self._effort = effort
+        self.calls = calls if calls is not None else NULL_CALL_LOG
 
     def _build_args(self) -> list[str]:
         # Order: subcommand → options → positional stdin sentinel.
         # `codex exec` parses `[PROMPT]` positionally; `-` means "read from
         # stdin." Flags must precede the positional so clap doesn't bind them
-        # past the sentinel. The -c value is passed unquoted — codex parses it
+        # past the sentinel. The -c value is passed unquoted: codex parses it
         # as TOML and falls back to a literal string when TOML parse fails.
         args = [self._executable, "exec"]
         if self._model:
@@ -559,45 +573,29 @@ class CodexCliBackend:
         args.append("-")
         return args
 
-    async def _run(self, prompt: str) -> str:
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._build_args(),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT,
-            )
-        except TimeoutError:
-            if proc is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=2)
-            log.warning("codex_cli_timeout", timeout=self._TIMEOUT)
-            return ""
-        except OSError as exc:
-            log.error("codex_cli_launch_failed", error=str(exc))
-            return ""
-        if proc.returncode and proc.returncode != 0:
-            err = stderr.decode(errors="replace").strip() if stderr else ""
-            log.warning("codex_cli_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
-        return stdout.decode(errors="replace").strip() if stdout else ""
+    async def _send(self, prompt: str) -> ModelReply:
+        executable, *args = self._build_args()
+        return await _run_cli(executable, args, prompt, label="codex", limit=self._TIMEOUT)
+
+    def _request(self, prompt: str) -> ModelRequest:
+        parameters: dict[str, Any] = {"effort": self._effort} if self._effort else {}
+        return ModelRequest(
+            model=self._model or self._executable, endpoint=self.endpoint_name, system="",
+            prompt=prompt, parameters=parameters,
+        )
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
-        text = await self._run(_build_assess_prompt(card))
-        if not text:
+        prompt = _build_assess_prompt(card)
+        reply = await self.calls.invoke(self._request(prompt), lambda: self._send(prompt))
+        if not reply.text:
             return {"sufficient": False, "questions": [], "rationale": "empty codex response"}
-        return _parse_assessment_response(text)
+        return _parse_assessment_response(reply.text)
 
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
         if not text.strip():
             return {"text": "", "data": None}
-        raw = await self._run(text)
-        return _parse_prompt_response(raw, response_format)
+        reply = await self.calls.invoke(self._request(text), lambda: self._send(text))
+        return _parse_prompt_response(reply.text, response_format)
 
 
 class NullBackend:
@@ -615,6 +613,7 @@ def build_conducting_backend(
     config: ProjectConfiguration,
     circuit_breaker: Any = None,
     retry_kwargs: dict[str, Any] | None = None,
+    calls: ConductorCallLog | None = None,
 ) -> ConductingBackend:
     """Factory: construct the configured conducting backend.
 
@@ -637,6 +636,7 @@ def build_conducting_backend(
                 circuit_breaker=circuit_breaker,
                 retry_kwargs=retry_kwargs,
                 base_url=a.base_url,
+                calls=calls,
             )
             return AnthropicApiBackend(claude)
         case "openai_api":
@@ -648,19 +648,22 @@ def build_conducting_backend(
                 temperature=a.temperature,
                 base_url=a.base_url,
                 effort=a.effort,
+                calls=calls,
             )
         case "claude_cli":
-            return ClaudeCliBackend(executable=a.executable or "claude")
+            return ClaudeCliBackend(executable=a.executable or "claude", calls=calls)
         case "codex_cli":
             return CodexCliBackend(
                 executable=a.executable or "codex",
                 model=a.model,
                 effort=a.effort,
+                calls=calls,
             )
         case "opencode":
             return OpenCodeBackend(
                 executable=a.executable or "opencode",
                 effort=a.effort,
+                calls=calls,
             )
         case "none":
             return NullBackend()
@@ -669,7 +672,11 @@ def build_conducting_backend(
             raise ValueError(msg)
 
 
-def build_model_endpoint_backend(config: ProjectConfiguration | None, name: str | None) -> AnthropicApiBackend | OpenAiApiBackend | None:
+def build_model_endpoint_backend(
+    config: ProjectConfiguration | None,
+    name: str | None,
+    calls: ConductorCallLog | None = None,
+) -> AnthropicApiBackend | OpenAiApiBackend | None:
     """Resolve a named {model @ endpoint} pair (080) into a prompt backend.
 
     Returns None when the name is absent from the catalogs — callers treat that
@@ -692,6 +699,8 @@ def build_model_endpoint_backend(config: ProjectConfiguration | None, name: str 
             api_key=os.getenv(api_key_env),
             model=me.model,
             base_url=None,
+            calls=calls,
+            endpoint_name=name,
         )
         return AnthropicApiBackend(claude)
     api_key_env = ep.auth_env or "OPENAI_API_KEY"
@@ -699,4 +708,6 @@ def build_model_endpoint_backend(config: ProjectConfiguration | None, name: str 
         api_key=os.getenv(api_key_env),
         model=me.model,
         base_url=ep.base_url,
+        calls=calls,
+        endpoint_name=name,
     )

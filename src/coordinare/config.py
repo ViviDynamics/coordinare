@@ -22,6 +22,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+from coordinare.lib.path_segments import CONDUCTOR_FOLDER, sanitize_segment
 from coordinare.models.notification import ChannelType, EventType
 from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
@@ -2451,6 +2452,11 @@ class CoordinareConfiguration(BaseModel):
         names = [s.name for s in v]
         if len(names) != len(set(names)):
             msg = "symphony names must be unique"
+            raise ValueError(msg)
+        # 131: the conductor's own model calls are written under this folder name.
+        reserved = [s.name for s in v if sanitize_segment(s.name) == CONDUCTOR_FOLDER]
+        if reserved:
+            msg = f"symphony name {reserved[0]!r} is reserved for the conductor's transcripts ({CONDUCTOR_FOLDER})"
             raise ValueError(msg)
         return v
 

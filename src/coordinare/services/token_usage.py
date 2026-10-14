@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.lib.path_segments import UNATTRIBUTED, sanitize_segment
+from coordinare.lib.path_segments import CONDUCTOR_FOLDER, UNATTRIBUTED, sanitize_segment
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -801,6 +801,8 @@ def usage_block(
         "week": usage_summary(ledger.totals(days=(week_start, today_iso)), table),
         "by_symphony": {name: _figures(sanitize_segment(name)) for name in symphonies},
         "unattributed": _figures(UNATTRIBUTED),
+        # 131: the conductor's own model calls, by the folder they were written to.
+        "conductor": _figures(CONDUCTOR_FOLDER),
     }
 
 

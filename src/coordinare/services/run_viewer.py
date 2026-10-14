@@ -371,10 +371,17 @@ def _header_summary(header: dict[str, Any] | None) -> dict[str, Any]:
     performer = _section(header, "performer")
     model = _section(header, "model")
     card = _section(header, "card")
+    # 131: a conductor call's stage is its kind, and its decision is shown in the run lists.
+    conductor = _section(header, "conductor")
     return {
         "available": True,
         "started_at": header.get("ts"),
-        "stage": persona.get("name"),
+        "stage": f"conductor:{conductor['kind']}" if conductor.get("kind") else persona.get("name"),
+        "conductor": {
+            "kind": conductor.get("kind"),
+            "decision": conductor.get("decision"),
+            "symphony": conductor.get("symphony"),
+        } if conductor else None,
         "agent": performer.get("backend"),
         "transport": performer.get("transport"),
         "endpoint": performer.get("endpoint"),

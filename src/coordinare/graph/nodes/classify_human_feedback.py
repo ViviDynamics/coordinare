@@ -20,6 +20,7 @@ import structlog
 
 from coordinare.graph.state import _set_current_card
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.conductor_calls import conductor_call
 from coordinare.services.pr_conversation_feedback import acknowledge_pr_conversation_feedback
 
 if TYPE_CHECKING:
@@ -167,6 +168,13 @@ PR comments to classify:
 {comment_text}
 
 Respond with ONLY a JSON array. No explanation."""
+
+
+def _feedback_decision(concern_names: list[str] | None) -> str:
+    """The decision a feedback classification reached, for its conductor transcript (131)."""
+    if concern_names is None:
+        return "feedback: unavailable, keyword fallback"
+    return f"feedback: {', '.join(concern_names)}" if concern_names else "feedback: none"
 
 
 async def _classify_with_ai(
@@ -321,7 +329,11 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     concern_names: list[str] | None = None
 
     if conducting_backend is not None:
-        concern_names = await _classify_with_ai(pending_reviews, conducting_backend)
+        current = state.get("current_card")
+        card_id = str(current.get("id", "")) if isinstance(current, dict) else ""
+        async with conductor_call(conducting_backend, kind="feedback_classify", card_id=card_id or None) as call:
+            concern_names = await _classify_with_ai(pending_reviews, conducting_backend)
+            call.decide(_feedback_decision(concern_names))
         if concern_names is not None:
             classification_method = "ai"
 

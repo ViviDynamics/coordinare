@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from coordinare.services.conductor_calls import conductor_call
+
 if TYPE_CHECKING:
     from coordinare.config import EnvSignaturePattern
     from coordinare.services.conducting import ConductingBackend
@@ -174,18 +176,21 @@ async def match_env_signature_with_model(
             'Respond ONLY with JSON: {{"is_environmental": bool, "pattern_id": "category_name", "reason": "brief explanation"}}'
         )
 
-        response = await backend.prompt(prompt, response_format="json")
-        data = response.get("data")
-        if not isinstance(data, dict):
-            # Model returned non-JSON or unparseable response
-            return None
+        async with conductor_call(backend, kind="env_signature") as call:
+            response = await backend.prompt(prompt, response_format="json")
+            data = response.get("data")
+            if not isinstance(data, dict):
+                # Model returned non-JSON or unparseable response
+                call.decide("env signature: unparseable reply")
+                return None
 
-        is_env = data.get("is_environmental", False)
-        pattern_id = str(data.get("pattern_id", "model_judgment")).strip()
-        explanation = str(data.get("reason", "")).strip()
+            is_env = data.get("is_environmental", False)
+            pattern_id = str(data.get("pattern_id", "model_judgment")).strip()
+            explanation = str(data.get("reason", "")).strip()
+            call.decide("env signature: environmental" if is_env else "env signature: not environmental")
 
-        if not is_env:
-            return None
+            if not is_env:
+                return None
 
         # Environmental failure detected by model; construct EnvCause
         # Use pattern_id from model for tracing, and a generic action

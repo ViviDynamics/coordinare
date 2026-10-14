@@ -15,6 +15,13 @@ from anthropic import (
 
 from coordinare.metrics import METRICS
 from coordinare.observability import get_current_symphony
+from coordinare.services.conductor_calls import (
+    NULL_CALL_LOG,
+    ConductorCallLog,
+    ModelReply,
+    ModelRequest,
+    ToolCall,
+)
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T023)
@@ -121,6 +128,46 @@ def _try_parse_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+_ASSESS_SYSTEM = "Respond ONLY with valid JSON. Do not include any prose, markdown, or code fences."
+
+
+def _usage_of(response: Any) -> dict[str, int] | None:
+    """The four usage counts of a messages response (131). None when none are reported as ints."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    counts = {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+        "cache_read": getattr(usage, "cache_read_input_tokens", None),
+        "cache_write": getattr(usage, "cache_creation_input_tokens", None),
+    }
+    ints = {key: value for key, value in counts.items() if isinstance(value, int) and not isinstance(value, bool)}
+    return ints or None
+
+
+def _reply_from(response: Any) -> ModelReply:
+    """The text, tool calls, usage and model of a messages response (131)."""
+    blocks = list(getattr(response, "content", None) or [])
+    text = str(blocks[0].text) if blocks and hasattr(blocks[0], "text") else ""
+    tools = tuple(
+        ToolCall(
+            name=str(getattr(block, "name", "")),
+            call_id=str(getattr(block, "id", "")),
+            input=getattr(block, "input", None),
+        )
+        for block in blocks
+        if getattr(block, "type", None) == "tool_use"
+    )
+    model = getattr(response, "model", None)
+    return ModelReply(
+        text=text,
+        model=model if isinstance(model, str) else None,
+        usage=_usage_of(response),
+        tool_calls=tools,
+    )
+
+
 class AnthropicCallError(RuntimeError): ...
 
 
@@ -148,6 +195,8 @@ class ClaudeService:
         max_tokens: int = 4096,
         temperature: float | None = None,
         base_url: str | None = None,
+        calls: ConductorCallLog | None = None,
+        endpoint_name: str = "anthropic_api",
     ) -> None:
         client_kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
         if base_url:
@@ -158,6 +207,9 @@ class ClaudeService:
         self._temperature = temperature
         self._circuit_breaker = circuit_breaker
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
+        # 131: every send is recorded on the conductor call that is open, if any.
+        self._calls = calls if calls is not None else NULL_CALL_LOG
+        self._endpoint_name = endpoint_name
 
     async def prompt_text(self, text: str, *, response_format: str | None = None) -> str:
         """Send an arbitrary text prompt and return the model's raw text response.
@@ -168,6 +220,30 @@ class ClaudeService:
         system_msg: str | None = None
         if response_format == "json":
             system_msg = "Respond with valid JSON only."
+        request = self._request(system_msg or "", text, response_format)
+        reply = await self._calls.invoke(
+            request, lambda: self._exchange(system_msg, text, action="prompt"),
+        )
+        return reply.text
+
+    def _request(self, system: str, prompt: str, response_format: str | None) -> ModelRequest:
+        """What a send carries, for the conductor transcript (131)."""
+        parameters: dict[str, Any] = {
+            "max_tokens": self._max_tokens,
+            "response_format": response_format or "text",
+        }
+        if self._temperature is not None:
+            parameters["temperature"] = self._temperature
+        return ModelRequest(
+            model=self._model,
+            endpoint=self._endpoint_name,
+            system=system,
+            prompt=prompt,
+            parameters=parameters,
+        )
+
+    async def _exchange(self, system: str | None, user: str, *, action: str) -> ModelReply:
+        """One messages call with retry, the circuit breaker and metrics. The only send to the SDK."""
 
         @stamina.retry(on=TransientAnthropicError, **self._retry_kwargs)
         async def _retried_create() -> Any:
@@ -175,10 +251,10 @@ class ClaudeService:
                 kwargs: dict[str, Any] = {
                     "model": self._model,
                     "max_tokens": self._max_tokens,
-                    "messages": [{"role": "user", "content": text}],
+                    "messages": [{"role": "user", "content": user}],
                 }
-                if system_msg:
-                    kwargs["system"] = system_msg
+                if system:
+                    kwargs["system"] = system
                 if self._temperature is not None:
                     kwargs["temperature"] = self._temperature
                 return await self._client.messages.create(**kwargs)
@@ -200,23 +276,18 @@ class ClaudeService:
             METRICS.service_calls_total.labels(
                 symphony=get_current_symphony(),
                 service="anthropic",
-                action="prompt",
+                action=action,
                 outcome="success",
             ).inc()
         except Exception:
             METRICS.service_calls_total.labels(
                 symphony=get_current_symphony(),
                 service="anthropic",
-                action="prompt",
+                action=action,
                 outcome="failure",
             ).inc()
             raise
-
-        if getattr(response, "content", None):
-            blocks = response.content
-            if blocks and hasattr(blocks[0], "text"):
-                return str(blocks[0].text)
-        return ""
+        return _reply_from(response)
 
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]:
         clarifications: list[dict[str, Any]] = card.get("clarifications", []) if isinstance(card, dict) else []
@@ -252,53 +323,11 @@ class ClaudeService:
                 'Return JSON: {"sufficient": bool, "questions": [str], "rationale": str}'
             )
 
-        @stamina.retry(on=TransientAnthropicError, **self._retry_kwargs)
-        async def _retried_create() -> Any:
-            try:
-                kwargs: dict[str, Any] = {
-                    "model": self._model,
-                    "max_tokens": self._max_tokens,
-                    "system": "Respond ONLY with valid JSON. Do not include any prose, markdown, or code fences.",
-                    "messages": [{"role": "user", "content": prompt}],
-                }
-                if self._temperature is not None:
-                    kwargs["temperature"] = self._temperature
-                return await self._client.messages.create(**kwargs)
-            except (APIConnectionError, APITimeoutError) as exc:
-                raise TransientAnthropicError(str(exc)) from exc
-            except AuthenticationError as exc:
-                raise PermanentAnthropicError(str(exc)) from exc
-            except APIStatusError as exc:
-                if exc.status_code >= 500 or exc.status_code == 429:
-                    raise TransientAnthropicError(str(exc)) from exc
-                raise PermanentAnthropicError(str(exc)) from exc
-
-        try:
-            if self._circuit_breaker is not None:
-                async with self._circuit_breaker.guard():
-                    response = await _retried_create()
-            else:
-                response = await _retried_create()
-            METRICS.service_calls_total.labels(
-                symphony=get_current_symphony(),
-                service="anthropic",
-                action="assess_card",
-                outcome="success",
-            ).inc()
-        except Exception:
-            METRICS.service_calls_total.labels(
-                symphony=get_current_symphony(),
-                service="anthropic",
-                action="assess_card",
-                outcome="failure",
-            ).inc()
-            raise
-
-        text = ""
-        if getattr(response, "content", None):
-            blocks = response.content
-            if blocks and hasattr(blocks[0], "text"):
-                text = blocks[0].text
+        reply = await self._calls.invoke(
+            self._request(_ASSESS_SYSTEM, prompt, "json"),
+            lambda: self._exchange(_ASSESS_SYSTEM, prompt, action="assess_card"),
+        )
+        text = reply.text
         if not text:
             return {"sufficient": True, "questions": [], "rationale": "empty model response"}
         parsed = _try_parse_json_object(text)

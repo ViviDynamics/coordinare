@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from coordinare.services.conductor_calls import conductor_call
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -150,6 +152,14 @@ async def classify_issue_comment_ai(
         return "noise"
 
     prompt_text = _AI_CLASSIFY_PROMPT.format(author=author or "unknown", body=body)
+    async with conductor_call(conducting_backend, kind="comment_classify") as call:
+        label = await _ask_comment_label(prompt_text, conducting_backend)
+        call.decide(f"comment: {label}" if label else "comment: unclassified")
+    return label
+
+
+async def _ask_comment_label(prompt_text: str, conducting_backend: Any) -> str | None:
+    """The label the model replied with, or None when the reply is not a usable label."""
     try:
         result = await conducting_backend.prompt(prompt_text, response_format="json")
     except Exception as exc:

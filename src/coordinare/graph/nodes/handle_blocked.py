@@ -16,6 +16,7 @@ from coordinare.graph.nodes.github_retry import (
 )
 from coordinare.lib.redaction import redact_state_value
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.conductor_calls import conductor_call
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -209,9 +210,11 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
                     "clarifications": clarifications,
                     "persona_instructions": get_effective_instructions("assessor", personas),
                 }
-                assessment = await backend.assess(card_data)
-                generated = assessment.get("questions") or []
-                questions = [str(q) for q in generated if str(q).strip()]
+                async with conductor_call(backend, kind="assess_questions", card_id=card_id or None) as call:
+                    assessment = await backend.assess(card_data)
+                    generated = assessment.get("questions") or []
+                    questions = [str(q) for q in generated if str(q).strip()]
+                    call.decide(f"questions: {len(questions)} generated")
                 state["open_questions"] = redact_state_value(questions)
             except Exception as exc:
                 logger.warning("handle_blocked_assessment_failed", card_id=card_id, error=str(exc))

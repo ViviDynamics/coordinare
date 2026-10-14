@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.models.review import ReviewerType, classify_reviewer
+from coordinare.services.conductor_calls import conductor_call
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -72,16 +73,18 @@ async def _classify(body: str, author: str, backend: Any) -> bool:
     """Use inference when available; explicit work verbs are the safe fallback."""
     label = None
     if backend is not None:
-        try:
-            result = await backend.prompt(_PROMPT.format(body=body, author=author), response_format='json')
-            if isinstance(result, dict):
-                data = result.get('data')
-                if data is None:
-                    data = json.loads(result.get('text') or '{}')
-                if isinstance(data, dict):
-                    label = data.get('classification')
-        except Exception as exc:
-            logger.warning('pr_comments.classification_failed', error_type=type(exc).__name__)
+        async with conductor_call(backend, kind="pr_comment_classify") as call:
+            try:
+                result = await backend.prompt(_PROMPT.format(body=body, author=author), response_format='json')
+                if isinstance(result, dict):
+                    data = result.get('data')
+                    if data is None:
+                        data = json.loads(result.get('text') or '{}')
+                    if isinstance(data, dict):
+                        label = data.get('classification')
+            except Exception as exc:
+                logger.warning('pr_comments.classification_failed', error_type=type(exc).__name__)
+            call.decide(f"comment: {label}" if isinstance(label, str) and label else "comment: unclassified")
     return label == 'request' if isinstance(label, str) and label in {'request', 'acknowledgement', 'noise'} else bool(_REQUEST.search(body))
 
 
