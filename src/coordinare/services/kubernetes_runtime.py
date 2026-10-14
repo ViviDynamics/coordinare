@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 import structlog
@@ -430,7 +430,7 @@ class KubernetesRuntime:
             # deterministic and owned.
             predecessor_phase = await self._predecessor_phase(pod_name)
             try:
-                await self.stop(pod_name, timeout_s=5, performer_id=config.id)
+                await self.stop(pod_name, timeout_s=5)
             except Exception as exc:
                 # ``stop`` is best-effort for API rejections but lets transport
                 # failures escape, and a dispatch should see a normal start
@@ -483,7 +483,7 @@ class KubernetesRuntime:
             #
             # ``BaseException`` on purpose: cancellation is the likeliest way out of
             # a readiness wait, and it leaks exactly like a failure does.
-            await self.stop(pod_name, performer_id=config.id)
+            await self.stop(pod_name)
             raise
 
         return StartedPerformer(handle=pod_name, endpoint=endpoint_for(pod_ip))
@@ -585,26 +585,16 @@ class KubernetesRuntime:
             raise RuntimeError(_UNREADY_SESSION)
         return StartedPerformer(handle=str(pod.metadata.name), endpoint=endpoint_for(str(pod_ip)))
 
-    async def stop(
-        self,
-        handle: str,
-        *,
-        timeout_s: int = 10,
-        host_log_dir: Path | None = None,
-        performer_id: str | None = None,
-    ) -> None:
-        """Capture logs, then delete the Pod. Best-effort throughout.
+    async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
+        """Delete the Pod. Best-effort throughout.
 
-        The ordering is the requirement, not an optimisation: Pod logs are
-        unreachable the instant the Pod is deleted, so capturing afterwards
-        captures nothing.
+        The output is not copied here (spec 208): the full run log (132) is read through
+        ``iter_logs`` before this call, since Pod logs are unreachable once the Pod is
+        deleted.
         """
         import asyncio
 
         from kubernetes.client.rest import ApiException
-
-        if host_log_dir is not None:
-            await self._dump_pod_logs(handle, host_log_dir, performer_id=performer_id)
 
         try:
             await asyncio.to_thread(
@@ -667,27 +657,6 @@ class KubernetesRuntime:
             pod=pod_name,
             detail="Pod outlived its grace period; a restart of this performer may collide",
         )
-
-    async def _dump_pod_logs(
-        self, pod_name: str, host_log_dir: Path, *, performer_id: str | None,
-    ) -> None:
-        import asyncio
-
-        from kubernetes.client.rest import ApiException
-
-        try:
-            logs = _decode_pod_log(await asyncio.to_thread(
-                self._api.read_namespaced_pod_log, name=pod_name, namespace=self._namespace,
-            ))
-        except ApiException as exc:
-            _log.warning("kubernetes_runtime.logs_unavailable", pod=pod_name, status=exc.status)
-            return
-
-        try:
-            host_log_dir.mkdir(parents=True, exist_ok=True)
-            (host_log_dir / f"{performer_id or pod_name}.log").write_text(logs, encoding="utf-8")
-        except OSError as exc:
-            _log.warning("kubernetes_runtime.log_write_failed", pod=pod_name, error=str(exc))
 
     async def tail_logs(self, handle: str, *, lines: int = 200) -> list[str]:
         """Live log lines from a running Pod, via the same ``pods/log`` grant."""

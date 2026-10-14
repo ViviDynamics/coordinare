@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import AsyncGenerator
-    from pathlib import Path
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
     from coordinare.services.run_log import RunLogIO
@@ -87,20 +86,12 @@ class PerformerRuntime(Protocol):
         """
         ...
 
-    async def stop(
-        self,
-        handle: str,
-        *,
-        timeout_s: int = 10,
-        host_log_dir: Path | None = None,
-        performer_id: str | None = None,
-    ) -> None:
+    async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
         """Stop and remove a performer. Best-effort: failures are logged, not raised.
 
-        When *host_log_dir* is set, the performer's logs MUST be captured
-        **before** it is removed. Under Kubernetes this is not a nicety: Pod logs
-        are unreachable the moment the Pod is deleted, so the ordering is the
-        requirement rather than an optimisation.
+        The performer's output is not copied by ``stop`` (spec 208). The full run log
+        (132) is read through ``iter_logs`` before this call, because Pod logs are
+        unreachable the moment the Pod is deleted.
         """
         ...
 

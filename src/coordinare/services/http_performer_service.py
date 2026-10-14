@@ -1636,15 +1636,10 @@ class HTTPPerformerService:
         cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
         skips the log, which shutdown uses so that every stop happens promptly.
         """
-        host_log_dir = None
-        for vol in self._config.volumes:
-            if str(vol.container_path) == "/var/log/performer":
-                host_log_dir = vol.host_path
-                break
         try:
             await self._capture_run_log(job, collect=collect)
         finally:
-            await self._stop_job_container(job, host_log_dir)
+            await self._stop_job_container(job)
             if self._injected_client is None:
                 with contextlib.suppress(Exception):
                     await job.client.aclose()
@@ -1657,13 +1652,9 @@ class HTTPPerformerService:
         a caller cancelled during the stop does not skip it (review round 3)."""
         await self._run_teardown(self._cleanup_ephemeral_job(job))
 
-    async def _stop_job_container(self, job: _EphemeralJob, host_log_dir: Path | None) -> None:
+    async def _stop_job_container(self, job: _EphemeralJob) -> None:
         try:
-            await self._runtime.stop(
-                job.container_id,
-                host_log_dir=host_log_dir,
-                performer_id=self._config.id,
-            )
+            await self._runtime.stop(job.container_id)
         except Exception as exc:
             logger.warning(
                 "http_performer.stop_failed",

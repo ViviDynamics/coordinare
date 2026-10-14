@@ -70,8 +70,11 @@ async def test_dispatch_survives_snapshot_and_reopen(tmp_path):
     saved = snapshot.active_sessions["ITEM_1"]
     assert saved.last_attempt_id == state["last_attempt_id"]
     assert saved.last_attempt_log_path == state["last_attempt_log_path"]
-    restored = AttemptLog(tmp_path / "different-day")
-    restored.reopen_attempt(saved.last_attempt_id, "ITEM_1", Path(saved.last_attempt_log_path))
+    # A restart keeps the configured attempt directory. Spec 208: a persisted path is reused only
+    # under the daemon's own log directory, so the restored log is the same directory.
+    saved_path = Path(saved.last_attempt_log_path)
+    restored = AttemptLog(saved_path.parent)
+    restored.reopen_attempt(saved.last_attempt_id, "ITEM_1", saved_path)
     restored.close_attempt(saved.last_attempt_id, "pass", "human", "merged")
     rows = _rows(tmp_path)
     assert len(rows) == 2

@@ -205,6 +205,22 @@ volumes:
 
 For persistent containers, you manage mounts yourself via `docker run -v`.
 
+### Where logs and telemetry go
+
+`performer_log_dir` is mounted read-write into every ephemeral container, so the
+daemon writes nothing into it (spec 208). The performer writes its own artifacts there
+(for example, the Hermes backend writes per-job prompt and output files).
+
+- A container's full stdout and stderr: `<state directory>/run-logs/<run_id>.log`,
+  written at teardown and shown on the card's Live Log as "Open full log".
+- Attempt telemetry: `logs/attempts/YYYY-MM-DD.jsonl`, beside the config (or the state
+  directory when the config directory is read-only). It used to be written under
+  `performer_log_dir/attempts/`. Existing rows there are not migrated.
+
+The daemon no longer copies `docker logs` or pod logs into `performer_log_dir`. A shutdown,
+a run with `run_logs.enabled: false`, or a run whose collector could not start keeps no
+daemon-side copy of its output.
+
 ## Troubleshooting
 
 ### Container won't start

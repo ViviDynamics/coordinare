@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -12,6 +13,14 @@ from datetime import (
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
+
+from coordinare.services.run_transcript import (
+    _NOFOLLOW,
+    _NONBLOCK,
+    _refuse_unless_private_regular,
+    _RefusedError,
+    _write_all,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,6 +75,22 @@ def map_verdict(raw: str) -> Verdict:
     return _VERDICT_MAP.get(raw.strip().lower(), "error")
 
 
+def ensure_private_dir(path: Path) -> None:
+    """Create *path* and any missing parents, each owner-only (0700) (spec 208).
+
+    ``Path.mkdir(parents=True, mode=...)`` applies the mode to the leaf only, so the
+    intermediate directories it creates would be 0755. Every level this creates is
+    made here with 0700.
+    """
+    missing: list[Path] = []
+    current = path
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    for level in reversed(missing):
+        level.mkdir(mode=0o700, exist_ok=True)
+
+
 def _dir_is_writable(path: Path) -> bool:
     """Probe real write access by creating and removing a temporary file.
 
@@ -75,7 +100,7 @@ def _dir_is_writable(path: Path) -> bool:
     mount (issue 493), EACCES on a permission-bounded directory.
     """
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(path)
         with tempfile.NamedTemporaryFile(prefix=".coordinare-attempt-probe", dir=path):
             return True
     except OSError:
@@ -98,6 +123,41 @@ def resolve_writable_log_dir(candidate: Path, fallback: Path) -> Path:
         fallback=str(fallback),
     )
     return fallback
+
+
+def _is_lexically_under(child: Path, parent: Path) -> bool:
+    """True when *child* is *parent* or lies below it, judged on the path text alone."""
+    if ".." in child.parts:
+        return False
+    child_parts = child.absolute().parts
+    parent_parts = parent.absolute().parts
+    return child_parts[: len(parent_parts)] == parent_parts
+
+
+def _append_private(path: Path, line: bytes) -> None:
+    """Append one JSONL row without following a link anywhere on the way (spec 208).
+
+    The directory is opened with ``O_NOFOLLOW | O_DIRECTORY``, so a link or a file at the
+    attempts directory itself is refused (a performer can rename and replace it). The row is
+    then appended by name relative to that directory descriptor. The file is created owner-only,
+    and a planted link or hard link at the leaf is refused before anything is written.
+    """
+    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
+    try:
+        # O_NONBLOCK: a FIFO planted at the leaf must not block the append. Opening a FIFO for
+        # write with no reader fails with ENXIO, which the caller logs and drops.
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK
+        fd = os.open(path.name, flags, 0o600, dir_fd=dir_fd)
+        try:
+            try:
+                _refuse_unless_private_regular(os.fstat(fd), path)
+            except _RefusedError as exc:
+                raise OSError(str(exc)) from exc
+            _write_all(fd, line)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
 
 
 @dataclass(frozen=True)
@@ -129,8 +189,15 @@ class AttemptLog:
 
         started_at is unknown after restart — wall_time_s in the end row will be null.
         No-ops if the attempt_id is already registered (idempotent).
+
+        A persisted path is reused only when it lies lexically under this log's own directory
+        and has no ``..`` (spec 208). Anything else, such as a path from before attempts moved
+        out of ``performer_log_dir``, gets a fresh file under the log directory. The test is on
+        the path text: a performer can make a persisted path resolve somewhere else.
         """
         if attempt_id not in self._open_attempts:
+            if not _is_lexically_under(log_path, self._log_dir):
+                log_path = self._log_path()
             self._open_attempts[attempt_id] = _OpenAttempt(
                 started_at=None,  # unknown after restart; wall_time_s will be null
                 task_id=task_id,
@@ -148,9 +215,8 @@ class AttemptLog:
 
     def _append(self, row: dict[str, Any], path: Path) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(row) + "\n")
+            ensure_private_dir(path.parent)
+            _append_private(path, (json.dumps(row) + "\n").encode("utf-8"))
         except Exception as exc:
             logger.warning("attempt_log.write_failed", path=str(path), error=str(exc))
 

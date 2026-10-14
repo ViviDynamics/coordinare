@@ -166,11 +166,13 @@ performers:
 
 # --- Diagnostic Logs (optional) ---
 # When set, every ephemeral performer container is started with this host
-# directory bind-mounted at `/var/log/performer` (PERFORMER_LOG_DIR is set
-# inside the container). The coordinare dumps `docker logs <id>` here before
-# stopping each container, and the Hermes backend writes per-job prompt,
-# stdout, stderr, and response artifacts to the same directory. Useful for
-# attribution when a job emits "needs input" or otherwise surprises you.
+# directory bind-mounted read-write at `/var/log/performer` (PERFORMER_LOG_DIR is
+# set inside the container). The performer writes its own artifacts there: the
+# Hermes backend writes per-job prompt, stdout, stderr, and response files. The
+# daemon writes nothing into this directory (spec 208). A container's full output
+# is kept by the daemon in <state directory>/run-logs/ (132), and attempt
+# telemetry goes to logs/attempts/ beside the config. Useful for attribution when
+# a job emits "needs input" or otherwise surprises you.
 # performer_log_dir: /var/log/coordinare/performer
 
 # 076 — Dispatcher dedup + reconciliation tunables (defaults from spec 076 Q1-Q5).

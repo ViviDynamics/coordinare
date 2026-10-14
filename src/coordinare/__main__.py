@@ -60,6 +60,7 @@ from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
+from coordinare.services.mounted_file import performer_mount_hosts
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
     SkippedChannel,
@@ -74,6 +75,7 @@ from coordinare.services.run_log import (
 from coordinare.services.run_transcript import (
     RootGuard,
     TranscriptCollector,
+    _within,
     make_collector,
     resolve_transcripts_root,
 )
@@ -896,21 +898,12 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
 
 
 def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
-    """Every host directory a performer container can see (129 HIGH 1).
+    """Every host directory a performer container can see (129 HIGH 1, 208).
 
-    The performer log dir is bind-mounted into ephemeral containers, and each
-    endpoint can declare more volumes. A transcript root inside any of these
-    would be readable and writable by performers, so the collector checks it.
+    Delegates to :func:`performer_mount_hosts`, the single list the transcript and run-log
+    guards and the performer-file readers all use.
     """
-    hosts: list[Path] = []
-    log_dir = getattr(config, "performer_log_dir", None)
-    if log_dir is not None:
-        hosts.append(Path(log_dir))
-    for endpoint in config.performer_endpoints:
-        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
-    # Per-symphony env caches live under this root and are mounted into performers.
-    hosts.append(Path(config.env_cache_root).expanduser())
-    return hosts
+    return performer_mount_hosts(config)
 
 
 def _build_transcript_collector(
@@ -935,7 +928,7 @@ def _build_transcript_collector(
             protected=(
                 state_dir,
                 config_dir,
-                _resolve_attempt_log_dir(config, config_path),
+                *_attempt_guard_dirs(config, config_path),
             ),
         )
         collector = make_collector(
@@ -998,7 +991,7 @@ def _build_run_logs_collector(
             protected=(
                 state_dir,
                 config_dir,
-                _resolve_attempt_log_dir(config, config_path),
+                *_attempt_guard_dirs(config, config_path),
             ),
         )
         collector = make_run_logs_collector(
@@ -1019,26 +1012,56 @@ def _build_run_logs_collector(
         return None
 
 
-def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
-    """Resolve the attempt log dir (141), anchored to the config directory or the
-    state location when services are bootstrapped without an on-disk config.
+def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path | None:
+    """Resolve the attempt log dir (141), anchored to the config directory or the state
+    location when services are bootstrapped without an on-disk config.
+
+    Never inside a performer mount (spec 208): ``performer_log_dir``, any endpoint volume and
+    the env-cache root are writable by performers. A config directory in one falls back to the
+    state directory. If the state directory is in one too, there is no safe place to write, so
+    this returns None and attempt telemetry is disabled (fail closed).
     """
     _state_base = config.state_file_path.resolve().parent
     _attempt_base = (
         config_path.resolve().parent if config_path is not None
         else _state_base
     )
-    _performer_logs = getattr(config, "performer_log_dir", None)
-    _attempt_log_dir = (
-        Path(_performer_logs) / "attempts" if _performer_logs is not None
-        else _attempt_base / "logs" / "attempts"
-    )
-    if not _attempt_log_dir.is_absolute():
-        _attempt_log_dir = _attempt_base / _attempt_log_dir
+    _fallback = _state_base / "logs" / "attempts"
+    _attempt_log_dir = _attempt_base / "logs" / "attempts"
+    mounts = _performer_mount_hosts(config)
+    if any(_within(_attempt_log_dir, mount) for mount in mounts):
+        logger.warning("attempt_log.dir_in_performer_mount", path=str(_attempt_log_dir))
+        _attempt_log_dir = _fallback
     # 493: in containerized deployments config.yaml sits on a read-only
     # ConfigMap mount; anchor to the writable state dir when the chosen
     # directory cannot be written.
-    return resolve_writable_log_dir(_attempt_log_dir, _state_base / "logs" / "attempts")
+    chosen = resolve_writable_log_dir(_attempt_log_dir, _fallback)
+    if any(_within(chosen, mount) for mount in mounts):
+        performer_mount = next(mount for mount in mounts if _within(chosen, mount))
+        logger.error(
+            "attempt_log.disabled",
+            path=str(chosen),
+            performer_mount=str(performer_mount),
+            detail=(
+                "attempt telemetry is disabled: its directory would be inside a performer "
+                "mount. Move state.file_path (and the config directory) outside "
+                "performer_log_dir, every endpoint volume and env_cache_root."
+            ),
+        )
+        return None
+    return chosen
+
+
+def _attempt_guard_dirs(config: ProjectConfiguration, config_path: Path | None) -> tuple[Path, ...]:
+    """The attempt directory as a protected root for the collectors' guards, when there is one."""
+    log_dir = _resolve_attempt_log_dir(config, config_path)
+    return () if log_dir is None else (log_dir,)
+
+
+def _build_attempt_log(config: ProjectConfiguration, config_path: Path | None) -> AttemptLog | None:
+    """141: the attempt log, or None when no safe directory exists (spec 208, fail closed)."""
+    log_dir = _resolve_attempt_log_dir(config, config_path)
+    return None if log_dir is None else AttemptLog(log_dir=log_dir)
 
 
 async def _bootstrap_services(
@@ -1211,7 +1234,7 @@ async def _bootstrap_services(
             role_timeouts[stage] = role_config.timeout_seconds
 
     # 141: attempt telemetry singleton, resolved at the module seam above
-    attempt_log = AttemptLog(log_dir=_resolve_attempt_log_dir(config, config_path))
+    attempt_log = _build_attempt_log(config, config_path)
 
     service_state: CoordinareState = {
         "config": config,

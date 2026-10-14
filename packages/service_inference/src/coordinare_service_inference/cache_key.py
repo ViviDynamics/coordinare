@@ -44,6 +44,7 @@ __all__ = [
     "compute_inference_cache_key",
     "forced_regen_cache_key",
     "load_prior_manifest",
+    "parse_prior_manifest",
 ]
 
 
@@ -51,22 +52,31 @@ ContentFetcher = Callable[[str], Awaitable[str | None]]
 """Async callable returning file content (or None if missing) for a repo-relative path."""
 
 
+def parse_prior_manifest(text: str) -> ServicesManifest | None:
+    """Parse persisted services.json text, or return None when it is not a valid manifest.
+
+    Returns None for a JSON parse error or a schema-invalid manifest. Callers treat None
+    as "first run" and fall back to the broader cache-input set.
+    """
+    try:
+        return ServicesManifest.model_validate_json(text)
+    except Exception:
+        return None
+
+
 def load_prior_manifest(cache_dir: Path) -> ServicesManifest | None:
     """Read the persisted services.json from a sealed env-cache, or return None.
 
-    Returns None for any of: missing file, unreadable file, JSON parse error,
-    schema-invalid manifest. Callers treat None as "first run" — they fall back
-    to the broader cache-input set.
+    Plain ``read_text``: it follows links and reads without a bound. The daemon never calls
+    this for a cache dir a performer can write (spec 208). It loads the file through the
+    bounded reader in ``coordinare.services.env_cache`` and calls :func:`parse_prior_manifest`.
     """
     path = cache_dir / SERVICES_SUBDIR / "services.json"
     try:
         text = path.read_text()
     except (FileNotFoundError, NotADirectoryError, PermissionError):
         return None
-    try:
-        return ServicesManifest.model_validate_json(text)
-    except Exception:
-        return None
+    return parse_prior_manifest(text)
 
 
 async def compute_inference_cache_key(

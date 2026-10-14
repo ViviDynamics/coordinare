@@ -205,13 +205,11 @@ def test_performer_pod_starts_serves_and_stops(runtime, config, tmp_path) -> Non
 
     started = asyncio.run(scenario())
 
-    # Logs are captured BEFORE deletion; afterwards they are unreachable.
-    asyncio.run(runtime.stop(started.handle, host_log_dir=tmp_path, performer_id=config.id))
+    asyncio.run(runtime.stop(started.handle))
 
-    log_file = tmp_path / f"{config.id}.log"
-    assert log_file.exists(), (
-        "stop() must capture Pod logs before deleting the Pod — afterwards there is "
-        "nothing left to read (FR-007)"
+    assert not any(tmp_path.iterdir()), (
+        "stop() must not write into performer_log_dir: the daemon keeps pod output in its "
+        "own run log (spec 208)"
     )
 
     core = client.CoreV1Api()

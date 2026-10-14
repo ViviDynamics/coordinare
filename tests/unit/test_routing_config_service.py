@@ -21,6 +21,8 @@ venv for validation parity.
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,20 @@ from coordinare import routing_config_service as rcs
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.services.config_write_service import compute_content_hash
+
+
+def _deny_open(monkeypatch, denied: Path) -> None:
+    """Make opening *denied* fail with EACCES, as an unreadable mounted file does (208 reads
+    go through ``os.open``, not ``Path.read_bytes``). An operator path is opened by its full
+    name, a mount-anchored one by its leaf name relative to a directory descriptor."""
+    real_open = os.open
+
+    def _unreadable(path, flags, mode=0o777, *args, **kwargs):
+        if os.fspath(path) in (str(denied), denied.name):
+            raise PermissionError(errno.EACCES, "permission denied", str(denied))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _unreadable)
 
 
 def _endpoints_from_config(config_path: Path):
@@ -79,14 +95,7 @@ def test_routing_available_false_when_present_file_unreadable(
     # Sanity: the file exists, so the old is_file()-only check returned True.
     assert routing_path.is_file()
 
-    real_read_bytes = Path.read_bytes
-
-    def _unreadable(self, *a, **k):
-        if self == routing_path:
-            raise OSError("permission denied")
-        return real_read_bytes(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_bytes", _unreadable)
+    _deny_open(monkeypatch, routing_path)
     assert rcs.routing_available(endpoints) is False
 
 
@@ -253,12 +262,10 @@ def test_create_routing_entry_oserror_is_forbidden_not_500(
     new = _entry()
     new["model"] = "llama-3"
 
-    from coordinare.services import config_write_service as cws
-
     def _boom(*_a, **_k):
         raise OSError("read-only filesystem")
 
-    monkeypatch.setattr(cws, "atomic_write_yaml", _boom)
+    monkeypatch.setattr(rcs, "replace_mounted_file", _boom)
     result = rcs.create_routing_entry(location, new, _base_hash(routing_path))
     assert result.ok is False
     assert result.errors[0].code == "forbidden"
@@ -437,14 +444,7 @@ def test_read_routing_unreadable_present_file_is_unavailable(tmp_path, monkeypat
         endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
 
-    real_read_bytes = Path.read_bytes
-
-    def _unreadable(self, *a, **k):
-        if self == f:
-            raise OSError("permission denied")
-        return real_read_bytes(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_bytes", _unreadable)
+    _deny_open(monkeypatch, f)
     view = rcs.read_routing(location)
     assert view.routing_available is False
     assert view.entries == []
@@ -547,12 +547,8 @@ def test_routing_conflict_oserror_is_forbidden_not_500(tmp_path, monkeypatch):
     host_path = tmp_path / "routing.yaml"
     host_path.write_text("entries: []\n", encoding="utf-8")
 
-    from coordinare.services import config_write_service as cws
-
-    def _boom(*_a, **_k):
-        raise OSError("simulated unreadable mount")
-
-    monkeypatch.setattr(cws, "guard_concurrency", _boom)
+    # 208: the baseline is read by the bounded reader; an unreadable table reads as None.
+    monkeypatch.setattr(rcs, "_readable_content_hash", lambda _path: None)
     result = rcs._routing_conflict(host_path, "sha256:whatever")
     assert result is not None
     assert result.ok is False
