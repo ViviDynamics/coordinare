@@ -269,6 +269,36 @@ async def test_implementing_stage_blocks_when_closed_pr_limit_reached() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_closed_pr_question_says_one_closed_pr_in_the_singular() -> None:
+    """141: a count of one reads "1 closed PR", not "1 closed PRs"."""
+    from coordinare.config import ProjectConfiguration
+
+    implementing_svc = _Service()
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        max_closed_pr_attempts_per_issue=1,
+    )
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "TODO", "issue_id": "ISSUE_NODE_1"},
+        github_service=_GitHub(closed_pr_count=1),
+        performer_services={"implementing": implementing_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    result = await dispatch_performer(state)
+
+    questions = result.get("open_questions", [])
+    assert any(q.startswith("Card has 1 closed PR (limit: 1).") for q in questions), questions
+    assert not any("1 closed PRs" in q for q in questions)
+
+
+@pytest.mark.asyncio
 async def test_closed_pr_limit_logs_move_card_blocked_error_details() -> None:
     """BLOCKED move failures should log structured error details for triage."""
     from unittest.mock import patch

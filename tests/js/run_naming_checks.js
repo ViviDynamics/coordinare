@@ -68,6 +68,7 @@ function button(fullId) {
     textContent: "Copy",
     attrs: { "data-run-id": fullId },
     getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null; },
+    focus() { this.focused = true; },
   };
 }
 function settle() { return new Promise((resolve) => setImmediate(resolve)); }
@@ -77,6 +78,19 @@ async function main() {
   check("a UUID is named by its first six characters", runIdText("299a8349-6f0e-4b1e-9d2a-0c1f2e3d4a5b"), "run 299a83");
   check("a prefix ending in an underscore is not part of the name", runIdText("sess_abcdefgh"), "run abcdef");
   check("a missing id has no name", runIdText(null), "");
+
+  // 141 review: only the run addresses are links.
+  check("a run link is kept", runIdHtml("abc123def456", { href: "/runs/abc123def456" }).indexOf("<a ") !== -1, true);
+  check("an API run link is kept", runIdHtml("abc123def456", { href: "/api/runs/abc123def456/log" }).indexOf("<a ") !== -1, true);
+  check("a javascript link is refused", runIdHtml("abc123def456", { href: "javascript:alert(1)" }).indexOf("<a ") === -1, true);
+  check("an external link is refused", runIdHtml("abc123def456", { href: "https://evil.example/runs/x" }).indexOf("<a ") === -1, true);
+  check("a path outside the run addresses is refused", runIdHtml("abc123def456", { href: "/performers/implementing" }).indexOf("<a ") === -1, true);
+  check("a refused link still shows the name", runIdHtml("abc123def456", { href: "javascript:alert(1)" }).indexOf(">run abc123</span>") !== -1, true);
+
+  // 141 review: one try is singular, every other count plural.
+  check("one try", tryCountText(1), "1 try");
+  check("three tries", tryCountText(3), "3 tries");
+  check("an unknown count", tryCountText("?"), "? tries");
 
   // The attempt wording: only a known count is shown, and it names the stage.
   check("the second run of a stage", runNumberText("implementing", 2), "Run 2 of Implement");
@@ -107,6 +121,7 @@ async function main() {
   check("a refused clipboard falls back to the selected field", execCalls, ["select:refused-full-id", "copy"]);
   check("the fallback reports the copy", btn.textContent, "Copied");
   check("the temporary field is removed", liveFields, 0);
+  check("the fallback returns focus to the Copy button", btn.focused, true);
 
   // No clipboard API at all, and the copy command also fails: the button says so.
   setNavigator("none");

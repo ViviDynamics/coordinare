@@ -109,6 +109,8 @@ def test_the_copy_button_falls_back_to_a_selected_field_without_the_clipboard(
     copy.click()
     expect(copy).to_have_text("Copied")
     assert page.evaluate("() => window.__copyCommand") == ["copy", _RUN]
+    # The temporary field is removed, and focus goes back to the Copy button.
+    expect(copy).to_be_focused()
 
 
 @pytest.mark.e2e

@@ -80,7 +80,7 @@ def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
         last_error = (cache_state.last_bootstrap_error or "unknown failure").strip()
         return (
             f"Env bootstrap budget exhausted after {cache_state.bootstrap_attempts} "
-            f"failed attempt(s) — no further bootstraps will be dispatched for this "
+            f"failed run(s); no further bootstraps will be dispatched for this "
             f"spec. Last failure: {last_error}. Fix the env spec files (a SHA change "
             f"resets the budget) or repair the cache and restart."
         )
@@ -1286,7 +1286,7 @@ class EnvCacheService:
             payload={
                 "summary": (
                     f"🔌 Env bootstrap for '{symphony_name}' exhausted its "
-                    f"{cache_state.bootstrap_attempts}-attempt budget — no further "
+                    f"{cache_state.bootstrap_attempts}-try budget; no further "
                     f"bootstraps until the env spec changes."
                 ),
                 "symphony": symphony_name,

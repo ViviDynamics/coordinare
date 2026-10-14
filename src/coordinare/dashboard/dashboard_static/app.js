@@ -680,13 +680,12 @@ async function loadSymphonyDetail(name, el) {
         infRow = '<span style="color:var(--color-accent-green)">ok</span> '
           + esc(svcs)
           + ' <span style="color:var(--color-text-muted)">('
-          + esc(String(ec.last_inference_attempts || '?')) + ' tr'
-          + ((ec.last_inference_attempts || 0) === 1 ? 'y' : 'ies') + ', '
+          + esc(tryCountText(ec.last_inference_attempts || '?')) + ', '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else if (ec.last_inference_succeeded === false) {
         infRow = '<span style="color:var(--color-accent-red)">failed</span> '
           + '<span style="color:var(--color-text-muted)">('
-          + esc(String(ec.last_inference_attempts || '?')) + ' tries, '
+          + esc(tryCountText(ec.last_inference_attempts || '?')) + ', '
           + esc(ec.last_inference_agent_version || '?') + ')</span>';
       } else {
         infRow = '—';

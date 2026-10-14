@@ -22,6 +22,7 @@ def _sliced_js(tmp_path: Path) -> Path:
             shipped_function("helpers", "copyRunId"),
             shipped_function("helpers", "runCopyBySelection"),
             shipped_function("helpers", "runNumberText"),
+            shipped_function("helpers", "tryCountText"),
         ]),
         encoding="utf-8",
     )

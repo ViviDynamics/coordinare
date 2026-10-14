@@ -246,7 +246,10 @@ function runIdHtml(runId, opts) {
   if (!short) return '<span class="muted">-</span>';
   var title = esc(full);
   var name;
-  if (opts.href) {
+  // Only the run addresses are links. Any other href renders the name without one.
+  var href = typeof opts.href === 'string' ? opts.href : '';
+  var linkable = href.indexOf('/runs/') === 0 || href.indexOf('/api/runs/') === 0;
+  if (linkable) {
     var cls = ' class="' + esc(opts.className || 'run-id-link') + '"';
     var attrs = ' href="' + esc(opts.href) + '" title="' + title + '"' + cls;
     attrs += opts.blank
@@ -274,15 +277,16 @@ function copyRunId(btn) {
     setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
   };
   if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    navigator.clipboard.writeText(full).then(function() { report(true); }, function() { report(runCopyBySelection(full)); });
+    navigator.clipboard.writeText(full).then(function() { report(true); }, function() { report(runCopyBySelection(full, btn)); });
     return;
   }
-  report(runCopyBySelection(full));
+  report(runCopyBySelection(full, btn));
 }
 
 // 141: the fallback copy. The id is selected in a field that is never shown, then the browser's
-// copy command runs on that selection.
-function runCopyBySelection(text) {
+// copy command runs on that selection. Removing the field drops focus to the body, so focus goes
+// back to the Copy button (back), where a keyboard or screen-reader user left it.
+function runCopyBySelection(text, back) {
   var field = document.createElement('textarea');
   field.value = text;
   field.setAttribute('readonly', '');
@@ -293,7 +297,13 @@ function runCopyBySelection(text) {
   var ok = false;
   try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
   document.body.removeChild(field);
+  if (back && typeof back.focus === 'function') back.focus();
   return ok;
+}
+
+// 141 review: a count of tries, singular for one. Used where the env-cache line counts bootstrap tries.
+function tryCountText(count) {
+  return count === 1 ? '1 try' : String(count) + ' tries';
 }
 
 // 141: "Run 2 of Implement", shown only when the daemon has counted the run's place in its stage.
