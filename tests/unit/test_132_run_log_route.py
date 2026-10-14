@@ -164,8 +164,10 @@ def test_the_card_offers_the_full_log_only_once_it_is_committed(tmp_path: Path) 
     daemon = MagicMock()
     daemon.state = {"run_log_collector": _collector(root)}
 
+    collector = daemon.state["run_log_collector"]
     assert DashboardStore._full_log_available(daemon, RUN) is False  # the run is still going
     _write_log(root)
+    collector.mark_committed(RUN)  # the commit is recorded by the teardown, not read from disk
     assert DashboardStore._full_log_available(daemon, RUN) is True
     assert DashboardStore._full_log_available(daemon, None) is False
     assert DashboardStore._full_log_available(daemon, "../escape") is False

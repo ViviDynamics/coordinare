@@ -39,6 +39,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import AsyncGenerator
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
+    from coordinare.services.run_log import RunLogIO
 
 _log = structlog.get_logger(__name__)
 
@@ -71,6 +72,18 @@ _UNOWNED_PREDECESSOR = "cannot replace performer pod without proof of deployment
 _MAX_NAME = 63
 _INVALID = re.compile(r"[^a-z0-9-]+")
 # 120: CSI and OSC terminal escapes, stripped from live log lines.
+# 132: connect and read timeouts for a Pod log stream. A stream silent for longer than the
+# read timeout fails, so a hung read cannot hold a worker for ever.
+_LOG_REQUEST_TIMEOUT = (10.0, 60.0)
+
+
+async def _run_log_read(io: Any, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """132: one blocking log read, on the run-log pool when one is given, else the default pool."""
+    if io is None:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    return await io.run(fn, *args, **kwargs)
+
+
 _ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 _BYTES_REPR = re.compile(r"""^b(['"]).*\1$""", re.DOTALL)
 
@@ -700,23 +713,27 @@ class KubernetesRuntime:
             return []
         return [_ANSI_ESCAPE.sub("", line) for line in _decode_pod_log(raw).splitlines()[-lines:]]
 
-    async def iter_logs(self, handle: str) -> AsyncGenerator[bytes, None]:
+    async def iter_logs(self, handle: str, *, io: RunLogIO | None = None) -> AsyncGenerator[bytes, None]:
         """132: the Pod's complete log, read from the API in chunks.
 
-        ``_preload_content=False`` returns the raw response, so the bytes arrive as
-        they are read and the writer decodes them. There is no ``tail_lines``: this
-        is the whole log. The Pod's logs vanish with the Pod, so the caller reads
-        this before the delete.
+        ``_preload_content=False`` returns the raw response, so the bytes arrive as they
+        are read and the writer decodes them. There is no ``tail_lines``: this is the
+        whole log. The Pod's logs vanish with the Pod, so the caller reads this before
+        the delete. Every read runs on the run-log pool ``io`` (never the default pool),
+        and carries a read timeout: a silent stream ends its read, so it cannot hold a
+        worker for ever.
         """
-        response = await asyncio.to_thread(
+        response = await _run_log_read(
+            io,
             self._api.read_namespaced_pod_log,
             name=handle,
             namespace=self._namespace,
             _preload_content=False,
+            _request_timeout=_LOG_REQUEST_TIMEOUT,
         )
         chunks = response.stream(LOG_CHUNK_BYTES)
         try:
-            while chunk := await asyncio.to_thread(next, chunks, b""):
+            while chunk := await _run_log_read(io, next, chunks, b""):
                 yield chunk
         finally:
             response.close()

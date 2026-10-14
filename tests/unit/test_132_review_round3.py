@@ -4,7 +4,7 @@ Run-log I/O must never starve the default thread pool or hold a stop; a secret m
 a pattern (not only an exact value) must never be written across a forced cut; a
 refused dispatch's stop must survive cancellation; a Docker stop by label collects the
 log first; an abandoned writer lets go of the secrets; the capture bound and the drain
-fit together; a committed log is known without touching the disk.
+agree; a committed log is known without touching the disk.
 """
 
 from __future__ import annotations
@@ -277,10 +277,10 @@ async def test_a_docker_stop_by_label_collects_the_log_before_the_stop(
     assert final.read_bytes() == b"docker output\n"
 
 
-# --- 5: the capture bound and the drain fit within twenty seconds ------------------------
+# --- 5: the capture bound and the drain stay within twenty seconds ------------------------
 
 
-def test_the_capture_bound_and_the_drain_fit_within_twenty_seconds() -> None:
+def test_the_capture_bound_and_the_drain_stay_within_twenty_seconds() -> None:
     assert hps._RUN_LOG_TEARDOWN_SECONDS + hps._TRANSCRIPT_TEARDOWN_SECONDS <= 20.0
 
 
@@ -306,10 +306,11 @@ async def test_a_committed_log_is_known_without_a_disk_check(
     assert service._run_logs is not None
     assert service._run_logs.is_committed(SESSION) is True
 
-    def no_disk(root: Path, run_id: str) -> bool:
+    def no_disk(*args: object, **kwargs: object) -> object:
         raise AssertionError("the snapshot path touched the disk")
 
-    monkeypatch.setattr(dashboard_store, "run_log_exists", no_disk)
+    monkeypatch.setattr(rl, "run_log_exists", no_disk)
+    monkeypatch.setattr(rl, "open_run_log", no_disk)
     daemon = SimpleNamespace(state={"run_log_collector": service._run_logs})
     assert dashboard_store.DashboardStore._full_log_available(daemon, SESSION) is True
     assert dashboard_store.DashboardStore._full_log_available(daemon, "never-ran") is False

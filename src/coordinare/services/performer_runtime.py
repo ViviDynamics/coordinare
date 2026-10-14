@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
+    from coordinare.services.run_log import RunLogIO
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,12 +122,14 @@ class PerformerRuntime(Protocol):
         """
         ...
 
-    def iter_logs(self, handle: str) -> AsyncGenerator[bytes, None]:
+    def iter_logs(self, handle: str, *, io: RunLogIO | None = None) -> AsyncGenerator[bytes, None]:
         """The performer's complete stdout and stderr, in chunks, oldest first (132).
 
         Read at teardown, before the container or Pod is removed, so the full log
         survives the removal. It is streamed, never returned whole. A runtime that
         cannot reach its log raises; the caller decides what that means for the run.
+        ``io`` is the run-log worker pool: a runtime whose reads block a thread runs them
+        there, never on the default pool.
         """
         ...
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import json
 import os
@@ -38,7 +39,7 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.run_header import build_run_header
-from coordinare.services.run_log import redact_log_text
+from coordinare.services.run_log import RunLogBusyError, redact_log_text
 from coordinare.services.run_transcript import (
     UNATTRIBUTED,
     RootGuard,
@@ -100,9 +101,10 @@ _TRANSCRIPT_POLL_SECONDS = 2.0
 # never the dispatch.
 RUN_HEADER_WAIT_SECONDS = 2.0
 # 132: the most the teardown waits for a run's full log before the container is
-# stopped anyway. A large log that is still arriving is kept only as far as it got
+# stopped anyway. With the teardown drain (_TRANSCRIPT_TEARDOWN_SECONDS, 5 s) that is at
+# most 20 s before a stop. A large log that is still arriving is kept only as far as it got
 # (the partial is dropped), so the bound delays the stop, never prevents it.
-_RUN_LOG_TEARDOWN_SECONDS = 20.0
+_RUN_LOG_TEARDOWN_SECONDS = 15.0
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -187,6 +189,23 @@ def _str_dict(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _open_log_stream(
+    iter_logs: Any,
+    handle: str,
+    io: Any,
+) -> AsyncGenerator[bytes, None]:
+    """132: the runtime's log stream; runtimes that take the run-log pool are given it."""
+    if "io" in inspect.signature(iter_logs).parameters:
+        return cast("AsyncGenerator[bytes, None]", iter_logs(handle, io=io))
+    return cast("AsyncGenerator[bytes, None]", iter_logs(handle))
+
+
+def _record_commit(collector: RunLogCollector, run_id: str, future: asyncio.Future[Any] | Any) -> None:
+    """132: a background finish that committed its file marks the run committed."""
+    if not future.cancelled() and future.exception() is None and future.result() is True:
+        collector.mark_committed(run_id)
 
 
 async def _stop_docker_session_confirmed(runtime: Any, session_id: str) -> bool:
@@ -420,7 +439,7 @@ class HTTPPerformerService:
         self._active_jobs.clear()
         for job in active:
             # Shutdown stops every container promptly: no log collection here.
-            await self._cleanup_ephemeral_job(job, collect=False)
+            await self._run_teardown(self._cleanup_ephemeral_job(job, collect=False))
 
     # ------------------------------------------------------------------
     # AgentServiceProtocol
@@ -575,7 +594,7 @@ class HTTPPerformerService:
                     performer_id=self._config.id,
                 )
             except performer_lifecycle.ReadinessTimeoutError as exc:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
                 return {"status": "error", "reason": f"readiness timeout: {exc}"}
 
         # Build the job-init payload.
@@ -583,7 +602,7 @@ class HTTPPerformerService:
             payload = self._build_job_payload(card_context, workspace_info)
         except ValueError as exc:
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             return {"status": "error", "reason": str(exc)}
         # 129: the coordinare session id is the run identity. Using it as the job
         # id means the performer's transcript run id and the daemon's transcript
@@ -603,7 +622,7 @@ class HTTPPerformerService:
             # The run was never accepted, so its refusal marker is dropped (review 6, F8).
             self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             logger.warning(
                 "http_performer.dispatch_failed",
                 performer_id=self._config.id,
@@ -613,7 +632,7 @@ class HTTPPerformerService:
         except Exception:
             self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             raise
 
         # 409 busy → surface as error so the dispatch loop retries next cycle.
@@ -622,7 +641,7 @@ class HTTPPerformerService:
             detail = getattr(response, "detail", None)
             self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             return {
                 "status": "error",
                 "reason": f"performer busy ({reason})" + (f": {detail}" if detail else ""),
@@ -1569,7 +1588,7 @@ class HTTPPerformerService:
                 await self._runtime.stop(handle)
             if await find(session_id) is not None:
                 return False
-        elif not await _stop_docker_session_confirmed(self._runtime, session_id):
+        elif not await self._stop_by_label_collecting(job, session_id):
             return False
         task = self._log_poll_tasks.pop(session_id, None)
         if task is not None:
@@ -1578,6 +1597,16 @@ class HTTPPerformerService:
         if job is not None and self._injected_client is None:
             await job.client.aclose()
         return True
+
+    async def _stop_by_label_collecting(self, job: _EphemeralJob | None, session_id: str) -> bool:
+        """132: a stop confirmed by container label (Docker without ``find_session``) reads the
+        job's full log first, then stops, exactly as the handle-based path does."""
+        try:
+            if job is not None:
+                await self._capture_run_log(job)
+        finally:
+            confirmed = await _stop_docker_session_confirmed(self._runtime, session_id)
+        return confirmed
 
     async def release_session(self, session_id: str) -> None:
         """Issue #489: release-time teardown for a coordinare session.
@@ -1623,6 +1652,11 @@ class HTTPPerformerService:
             if job.run_id is not None:
                 self._transcript_secrets.pop(job.run_id, None)
 
+    async def _refuse_job(self, job: _EphemeralJob) -> None:
+        """Tear down a job whose dispatch was refused. Shielded, like every other teardown:
+        a caller cancelled during the stop does not skip it (review round 3)."""
+        await self._run_teardown(self._cleanup_ephemeral_job(job))
+
     async def _stop_job_container(self, job: _EphemeralJob, host_log_dir: Path | None) -> None:
         try:
             await self._runtime.stop(
@@ -1641,11 +1675,12 @@ class HTTPPerformerService:
     async def _capture_run_log(self, job: _EphemeralJob, *, collect: bool = True) -> None:
         """132: write the run's complete log before its container or Pod is removed.
 
-        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS``. A runtime that hangs
-        or fails leaves no file. A collection cut short by the bound keeps what it wrote,
-        marked as cut off, and is finished in the background: the stop never waits for
-        it. Never raises for a runtime or disk fault. A cancellation aborts the partial
-        (without waiting for any thread) and propagates.
+        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS`` (with the drain, at most
+        20 s before a stop). Run-log I/O runs on the collector's own pool. A runtime that
+        hangs or fails leaves no file. A collection cut short by the bound keeps what it
+        wrote, marked as cut off, and is finished on the pool without the stop waiting for
+        it. A saturated pool skips the collection, logged once. A cancellation aborts the
+        partial without waiting for any thread, then propagates.
         """
         collector = self._run_logs
         if (
@@ -1667,8 +1702,9 @@ class HTTPPerformerService:
         )
         completed = False
         try:
+            chunks = _open_log_stream(iter_logs, job.container_id, collector.io)
             await asyncio.wait_for(
-                self._copy_run_log(iter_logs(job.container_id), writer),
+                self._copy_run_log(chunks, writer, collector),
                 timeout=_RUN_LOG_TEARDOWN_SECONDS,
             )
             completed = True
@@ -1680,7 +1716,9 @@ class HTTPPerformerService:
                 timeout_s=_RUN_LOG_TEARDOWN_SECONDS,
             )
             writer.request_cut_off()
-            self._schedule_log_finish(writer)
+            self._schedule_log_finish(writer, collector)
+        except RunLogBusyError:
+            logger.info("run_log.collect_skipped", run_id=run_id, reason="run-log workers busy")
         except Exception as exc:  # best effort: the stop follows regardless
             logger.warning(
                 "run_log.collect_failed",
@@ -1693,18 +1731,33 @@ class HTTPPerformerService:
             if not completed and not writer.cut_off:
                 writer.abort()
 
-    def _schedule_log_finish(self, writer: RunLogWriter) -> None:
-        """Finish a cut-off log on a worker thread, without anyone awaiting it."""
-        task = asyncio.ensure_future(asyncio.to_thread(writer.finish))
-        self._log_finishers.add(task)
-        task.add_done_callback(self._log_finishers.discard)
+    def _schedule_log_finish(self, writer: RunLogWriter, collector: RunLogCollector) -> None:
+        """Finish a cut-off log on the run-log pool, without anyone awaiting it."""
+        try:
+            future = collector.io.submit(writer.finish)
+        except RunLogBusyError:
+            writer.abort()
+            return
+        future.add_done_callback(functools.partial(_record_commit, collector, writer.run_id))
+        # Held so the finish is not lost; no teardown awaits it.
+        tracked = asyncio.wrap_future(future)
+        self._log_finishers.add(tracked)
+        tracked.add_done_callback(self._log_finishers.discard)
 
-    async def _copy_run_log(self, chunks: AsyncGenerator[bytes, None], writer: RunLogWriter) -> bool:
-        """Stream the runtime's output into the writer, one chunk on a worker thread at a time."""
+    async def _copy_run_log(
+        self,
+        chunks: AsyncGenerator[bytes, None],
+        writer: RunLogWriter,
+        collector: RunLogCollector,
+    ) -> bool:
+        """Stream the runtime's output into the writer, one chunk on the run-log pool at a time."""
         try:
             async for chunk in chunks:
-                await asyncio.to_thread(writer.feed, chunk)
-            return await asyncio.to_thread(writer.finish)
+                await asyncio.wrap_future(collector.io.submit(writer.feed, chunk))
+            committed = await asyncio.wrap_future(collector.io.submit(writer.finish))
+            if committed:
+                collector.mark_committed(writer.run_id)
+            return committed
         finally:
             await chunks.aclose()
 

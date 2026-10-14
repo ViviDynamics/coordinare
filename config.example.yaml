@@ -921,6 +921,10 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   dir: null                           # optional root override; must be outside every performer mount
 #   retention_days: 30                  # delete run logs older than this; 0 = keep forever
 #   max_bytes: 16777216                 # 16 MiB per run; the middle is dropped and marked past this
+# Limits: collection at teardown is bounded to 15 s (with the 5 s transcript drain that
+# is at most 20 s before a stop). Redaction runs at roughly 2 MB/s, so a log whose head
+# and tail do not finish within that bound is kept as far as it got, with a marker that
+# says it was cut off. The stop always proceeds.
 
 # --- Stuck Card Alerts ---
 # stuck_alerts:

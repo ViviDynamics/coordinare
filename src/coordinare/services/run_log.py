@@ -12,45 +12,49 @@ that overlaps a performer mount or a protected daemon directory, with the same r
 as the transcripts (129).
 
 The service collects the log at teardown, before the container or Pod is removed,
-by streaming the runtime's output into :class:`RunLogWriter` chunk by chunk. The
-writer redacts, caps and commits the file. Collection is a side feature: the writer
-never blocks its caller for longer than a write takes, and a collection cut short by
-the time bound keeps what it wrote, marked as cut off.
+by streaming the runtime's output into :class:`RunLogWriter`. All run-log I/O runs on
+:class:`RunLogIO`, a small bounded pool of its own, never on the default thread pool,
+so a stalled read or write cannot starve the rest of the daemon. When every worker is
+still stuck, new collections are skipped rather than queued.
 
 Guarantees the writer provides:
 
-* Bytes are decoded as UTF-8 with replacement. Text is redacted with the job's exact
-  secret values and then the activity-feed redactor, before it is kept.
-* A line too long to hold is cut only where no known secret straddles the cut, and
-  the text after the cut is carried raw into the next window. A secret split by a
-  cut is therefore redacted whole, never written in pieces.
+* Text is redacted with the pattern set and the job's exact secret values before it
+  is written. A line too long to hold is cut only where the redacted text of both
+  halves equals the redaction of the whole, so no secret (pattern or exact) is split by
+  a cut and written in pieces.
 * The file never exceeds ``max_bytes``. The first part and the last part of the log
-  are kept, and one marker between them says how many bytes were dropped.
+  are kept, and one marker between them says how many bytes were dropped. Only the
+  head is redacted as it arrives; the tail is redacted once, when the log is finished.
 * The run path and the temporary path are created with ``O_EXCL`` and ``O_NOFOLLOW``.
   A symlink or hard link at either is refused, never written through, and an
   existing final file is never overwritten.
 * Writes never raise into the caller. A failure marks the run's log failed, is logged
-  once, and removes the partial file. ``abort`` never waits for a writer thread.
+  once, and removes the partial file. ``abort`` never waits for a worker thread, and
+  an abandoned writer lets go of the job's secret values at once.
 * Reads refuse links and anything that is not a single-name regular file, and pages
   never split a UTF-8 character.
 """
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import contextlib
+import functools
 import os
 import stat
 import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 
-from coordinare.lib.redaction import redact_command_text
+from coordinare.lib.redaction import redact_client_forms, redact_secrets
 from coordinare.lib.transcript_redaction import redact_text, secret_values_from_env
 from coordinare.services.run_transcript import (
     _NOFOLLOW,
@@ -65,16 +69,22 @@ from coordinare.services.run_transcript import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from concurrent.futures import Future
+
+_T = TypeVar("_T")
 
 __all__ = [
     "CUT_OFF_MARKER",
     "LOG_CHUNK_BYTES",
     "MARKER_RESERVE_BYTES",
     "MAX_LINE_CHARS",
+    "RUN_LOG_WORKERS",
     "SECRET_OVERLAP_CHARS",
     "RootGuard",
+    "RunLogBusyError",
     "RunLogCollector",
+    "RunLogIO",
     "RunLogRefusedError",
     "RunLogWindow",
     "RunLogWriter",
@@ -95,16 +105,18 @@ logger = structlog.get_logger(__name__)
 
 LOG_SUFFIX = ".log"
 PARTIAL_SUFFIX = ".log.partial"
-# Read and write granularity for the stream, so memory stays bounded.
+# Read granularity for the stream, so memory stays bounded.
 LOG_CHUNK_BYTES = 64 * 1024
-# A line longer than this is cut (see RunLogWriter._cut_long_pending), so a single huge
-# line without a newline cannot grow the pending buffer without limit.
+# A line longer than this is considered for a cut (see RunLogWriter._cut_long_pending).
 MAX_LINE_CHARS = 64 * 1024
+# Above this, a line with no safe cut is redacted whole and emitted (the documented limit).
+HARD_CAP_CHARS = 1024 * 1024
+# How far back from the end the cut is searched, in steps of CUT_STEP_CHARS.
+CUT_STEP_CHARS = 256
 # Room kept free for the truncation marker, so head, tail and markers stay within the cap.
 MARKER_RESERVE_BYTES = 512
-# The longest exact secret the writer keeps whole across a cut. A secret longer than
-# this is not guaranteed to be redacted when a long line is cut (the job's secrets are
-# tokens and keys, far shorter).
+# The longest secret, pattern or exact, that a cut is guaranteed not to split. Matches
+# are bounded by this: a longer one is the documented limit of the cut.
 SECRET_OVERLAP_CHARS = 8 * 1024
 # UTF-8 sequences are at most four bytes long. A continuation byte is 10xxxxxx; a lead
 # byte says how long its character is (see _drop_partial_character).
@@ -113,17 +125,23 @@ _CONTINUATION_MASK = 0xC0
 _CONTINUATION = 0x80
 _TWO_BYTE_LEAD = 0xE0
 _THREE_BYTE_LEAD = 0xF0
+# The run-log I/O pool: a few threads, owned by the collector, never the default pool.
+RUN_LOG_WORKERS = 4
+# How many committed runs the collector remembers (the snapshot never asks the disk).
+COMMITTED_MEMORY = 4096
 CUT_OFF_MARKER = (
     "[collection cut off at the time bound; the rest of this log was not collected]\n"
 )
 
 
 def redact_log_text(text: str, secrets: Iterable[str] = ()) -> str:
-    """One piece of log text, redacted: exact secret values, then the activity redactor.
+    """One piece of log text, redacted: the pattern set and exact secret values.
 
     The same function redacts the full log and the live tail, so the two never disagree.
     """
-    return redact_command_text(redact_text(text, tuple(secrets)))
+    # The transcript redactor runs once, with the exact values; redact_command_text would run
+    # it a second time over the same text, which costs a third of the time for no change.
+    return redact_client_forms(redact_secrets(redact_text(text, tuple(secrets))))
 
 
 def resolve_run_logs_root(run_logs_dir: Path | None, *, config_dir: Path, state_dir: Path) -> Path:
@@ -155,6 +173,10 @@ class RunLogRefusedError(Exception):
     """A run's log file is a link, a hard link, or not a plain regular file."""
 
 
+class RunLogBusyError(Exception):
+    """Every run-log I/O worker is still busy, so the operation is not queued."""
+
+
 @dataclass(frozen=True)
 class RunLogWindow:
     """One page of a run's log. ``next_offset`` is None on the last page."""
@@ -172,11 +194,75 @@ def _marker(dropped: int, head: int, tail: int) -> bytes:
     return text.encode("utf-8")
 
 
+def _split_lines(text: str) -> list[str]:
+    """``text`` as lines that keep their newline; a final unterminated line is kept too."""
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+class RunLogIO:
+    """A small bounded pool for run-log I/O only, owned by the collector.
+
+    A submitted call that outlives its caller (a stalled disk, a silent socket) keeps its
+    worker until it returns. Once every worker is in that state, ``submit`` refuses new
+    work with :class:`RunLogBusyError` instead of queueing it, so run logs can never fill
+    the daemon's threads. Nothing here blocks the event loop.
+    """
+
+    def __init__(self, workers: int = RUN_LOG_WORKERS) -> None:
+        self._workers = workers
+        self._executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="run-log")
+        self._in_flight = 0
+        self._lock = threading.Lock()
+        self._saturation_logged = False
+
+    @property
+    def workers(self) -> int:
+        return self._workers
+
+    def submit(self, fn: Callable[..., _T], *args: Any) -> Future[_T]:
+        """Run ``fn`` on a run-log worker. Raises :class:`RunLogBusyError` when saturated."""
+        with self._lock:
+            if self._in_flight >= self._workers:
+                if not self._saturation_logged:
+                    self._saturation_logged = True
+                    logger.warning(
+                        "run_log.io_saturated",
+                        workers=self._workers,
+                        detail="every run-log worker is stuck; new collections are skipped",
+                    )
+                message = "run-log workers are all busy"
+                raise RunLogBusyError(message)
+            self._in_flight += 1
+        try:
+            future = self._executor.submit(fn, *args)
+        except RuntimeError as exc:  # the pool is shut down
+            with self._lock:
+                self._in_flight -= 1
+            message = "run-log I/O is shut down"
+            raise RunLogBusyError(message) from exc
+        future.add_done_callback(self._returned)
+        return future
+
+    def _returned(self, _future: Future[Any]) -> None:
+        with self._lock:
+            self._in_flight -= 1
+            if self._in_flight < self._workers:
+                self._saturation_logged = False
+
+    async def run(self, fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+        """Await ``fn(*args, **kwargs)`` on a run-log worker."""
+        return await asyncio.wrap_future(self.submit(functools.partial(fn, *args, **kwargs)))
+
+
 class RunLogWriter:
     """Writes one run's log from a stream of byte chunks.
 
-    Construction does no I/O. The file is created on the first write. Methods that
-    touch the disk are blocking and are called on worker threads; ``abort`` and
+    Construction does no I/O. The file is created on the first write. Methods that touch
+    the disk are blocking and run on :class:`RunLogIO` workers; ``abort`` and
     ``request_cut_off`` never block, so the event loop may call them at any time.
     Nothing here raises: a failure marks the writer failed and removes the partial.
     """
@@ -199,18 +285,21 @@ class RunLogWriter:
         self._head_budget = max(0, max_bytes - MARKER_RESERVE_BYTES) // 2
         self._tail_budget = max(0, max_bytes - MARKER_RESERVE_BYTES - self._head_budget)
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        self._pending = ""
+        self._pending = ""  # the line in progress, raw
+        self._discarding = False  # tail mode: a runaway line is skipped to its newline
         self._fd: int | None = None
-        self._head = 0
-        self._total = 0
-        self._tail: deque[bytes] = deque()
-        self._tail_bytes = 0
+        self._head = 0  # redacted bytes written to the file
+        self._head_raw = 0  # the raw bytes those head bytes stand for
+        self._total = 0  # raw bytes received
         self._in_tail = False
+        self._raw_tail: deque[bytes] = deque()  # raw lines kept for the tail, redacted at finish
+        self._raw_tail_bytes = 0
         self._dropped = 0
         self._failed = False
         self._finished = False
         self._aborted = False
         self._cut_off = False
+        self._cut_retry_at = 0
         # Re-entrant: a failure inside feed or finish cleans up under the same lock.
         self._lock = threading.RLock()
 
@@ -238,6 +327,11 @@ class RunLogWriter:
     def dropped_bytes(self) -> int:
         return self._dropped
 
+    @property
+    def holds_secrets(self) -> bool:
+        """Whether the writer still holds the job's secret values (it lets go of them when done)."""
+        return bool(self._secrets)
+
     def feed(self, chunk: bytes) -> None:
         """Absorb one chunk of the runtime's output. Blocking; never raises."""
         with self._lock:
@@ -251,7 +345,7 @@ class RunLogWriter:
             self._reap()
 
     def finish(self) -> bool:
-        """Flush, mark any cut, and commit the file. True when the final file now exists.
+        """Redact the tail, mark any cut, and commit the file. True when the final file exists.
 
         Blocking; never raises.
         """
@@ -261,24 +355,133 @@ class RunLogWriter:
     def request_cut_off(self) -> None:
         """The time bound has passed: keep what was written and mark the log cut off.
 
-        Non-blocking. The caller then runs ``finish`` on a worker thread; the marker is
-        written at the end, after the content that was collected.
+        Non-blocking. The caller then runs ``finish`` on a worker; the marker goes at the
+        end, after the content that was collected.
         """
         self._cut_off = True
 
     def abort(self) -> None:
-        """Drop the partial file. Non-blocking, safe at any time and more than once.
+        """Drop the partial file and the secret values. Non-blocking, safe at any time.
 
-        When a worker thread holds the writer (a write that has not returned), the abort
-        is recorded and that thread removes the partial when it next releases the lock.
-        Nothing here waits for the thread, so the event loop is never held by a disk.
+        When a worker holds the writer (a write that has not returned), the abort is
+        recorded and that worker removes the partial when it next releases the lock.
         """
         self._aborted = True
+        self._secrets = ()
         if self._lock.acquire(blocking=False):
             try:
-                self._cleanup()
+                self._reap()
             finally:
                 self._lock.release()
+
+    # --- ingestion -----------------------------------------------------------------------
+
+    def _absorb(self, text: str) -> None:
+        if not text:
+            return
+        self._total += len(text.encode("utf-8", errors="replace"))
+        if self._in_tail:
+            self._absorb_tail(text)
+        else:
+            self._absorb_head(text)
+
+    def _absorb_head(self, text: str) -> None:
+        parts = (self._pending + text).split("\n")
+        self._pending = parts.pop()
+        if parts:
+            self._place_block("".join(part + "\n" for part in parts))
+        if (
+            not self._in_tail
+            and len(self._pending) > MAX_LINE_CHARS
+            and len(self._pending) >= self._cut_retry_at
+        ):
+            self._cut_long_pending()
+
+    def _absorb_tail(self, text: str) -> None:
+        if self._discarding:
+            newline = text.find("\n")
+            if newline == -1:
+                return
+            text = text[newline + 1:]
+            self._discarding = False
+        parts = (self._pending + text).split("\n")
+        self._pending = parts.pop()
+        for part in parts:
+            self._keep_raw(part + "\n")
+        if len(self._pending) > self._tail_budget:
+            # A line that cannot be kept whole in the tail: skip it up to its newline.
+            self._pending = ""
+            self._discarding = True
+
+    # --- placement -----------------------------------------------------------------------
+
+    def _place_block(self, raw: str) -> None:
+        """Write a block of complete lines as one redaction pass, if it fits the head."""
+        redacted = self._redact(raw)
+        if not self._in_tail and self._head + len(redacted.encode("utf-8", "replace")) <= self._head_budget:
+            self._place(raw, redacted)
+            return
+        for line in _split_lines(raw):
+            self._place(line, self._redact(line))
+
+    def _place(self, raw: str, redacted: str) -> None:
+        """Write redacted text to the head while it fits; past the head, keep the raw text."""
+        data = redacted.encode("utf-8", errors="replace")
+        if not self._in_tail and self._head + len(data) <= self._head_budget:
+            self._write_head(data)
+            self._head += len(data)
+            self._head_raw += len(raw.encode("utf-8", errors="replace"))
+            return
+        self._in_tail = True
+        self._keep_raw(raw)
+
+    def _keep_raw(self, raw: str) -> None:
+        """Keep raw text for the tail, dropping whole old pieces past the tail budget."""
+        piece = raw.encode("utf-8", errors="replace")
+        self._raw_tail.append(piece)
+        self._raw_tail_bytes += len(piece)
+        while self._raw_tail and self._raw_tail_bytes > self._tail_budget:
+            self._raw_tail_bytes -= len(self._raw_tail.popleft())
+
+    def _cut_long_pending(self) -> None:
+        """Place the start of a line too long to hold; keep the rest raw for later.
+
+        The window is redacted whole first. A cut is accepted only when redacting the two
+        halves separately gives the same text as redacting the whole: then no secret, of
+        any pattern, straddles the cut. A line with no such cut is kept until it has a
+        cut or reaches the hard cap, where it is redacted whole and emitted.
+        """
+        window = self._pending
+        whole = self._redact(window)
+        found = self._safe_cut(window, whole)
+        if found is None:
+            if len(window) >= HARD_CAP_CHARS:
+                self._place(window, whole)
+                self._pending = ""
+                self._cut_retry_at = 0
+            else:
+                self._cut_retry_at = len(window) + MAX_LINE_CHARS
+            return
+        cut, prefix = found
+        self._place(window[:cut], prefix)
+        self._pending = window[cut:]
+        self._cut_retry_at = 0
+
+    def _safe_cut(self, pending: str, whole: str) -> tuple[int, str] | None:
+        """The cut nearest the end that no secret straddles, with the redacted prefix."""
+        for keep in range(SECRET_OVERLAP_CHARS, 2 * SECRET_OVERLAP_CHARS, CUT_STEP_CHARS):
+            cut = len(pending) - keep
+            if cut <= 0:
+                break
+            prefix = self._redact(pending[:cut])
+            if prefix + self._redact(pending[cut:]) == whole:
+                return cut, prefix
+        return None
+
+    def _redact(self, text: str) -> str:
+        return redact_log_text(text, self._secrets)
+
+    # --- finishing -----------------------------------------------------------------------
 
     def _finish(self) -> bool:
         if self._failed or self._finished or self._aborted:
@@ -287,18 +490,15 @@ class RunLogWriter:
         try:
             self._absorb(self._decoder.decode(b"", final=True))
             if self._pending:
-                self._emit(self._pending)
+                if self._in_tail:
+                    if not self._discarding:
+                        self._keep_raw(self._pending)
+                else:
+                    self._place_block(self._pending)
                 self._pending = ""
             fd = self._ensure_open()
-            kept_tail = self._tail_bytes
-            dropped = self._total - self._head - kept_tail
-            if dropped > 0:
-                self._dropped = dropped
-                _write_all(fd, _marker(dropped, self._head, kept_tail))
-            for piece in self._tail:
-                _write_all(fd, piece)
-            self._tail.clear()
-            self._tail_bytes = 0
+            if self._in_tail:
+                self._write_tail(fd)
             if self._cut_off:
                 _write_all(fd, CUT_OFF_MARKER.encode("utf-8"))
             os.close(fd)
@@ -308,6 +508,7 @@ class RunLogWriter:
             self._fail(exc)
             return False
         self._finished = True
+        self._secrets = ()
         logger.info(
             "run_log.collected",
             run_id=self._run_id,
@@ -317,9 +518,45 @@ class RunLogWriter:
         )
         return True
 
+    def _write_tail(self, fd: int) -> None:
+        """Redact the kept raw tail once, then write it with the marker for what was dropped.
+
+        The kept tail is redacted as one block, so the cost is bounded by the tail budget.
+        Redaction can lengthen a short secret, so whole redacted lines are trimmed from the
+        front if the result is over budget; that trim is counted at its redacted size.
+        """
+        kept_raw = self._raw_tail_bytes
+        block = b"".join(self._raw_tail).decode("utf-8", errors="replace")
+        self._raw_tail.clear()
+        self._raw_tail_bytes = 0
+        data = self._redact(block).encode("utf-8", errors="replace")
+        if len(data) > self._tail_budget:
+            pieces = [line.encode("utf-8", errors="replace") for line in _split_lines(data.decode("utf-8"))]
+            size = len(data)
+            first = 0
+            while first < len(pieces) and size > self._tail_budget:
+                size -= len(pieces[first])
+                kept_raw -= len(pieces[first])
+                first += 1
+            data = b"".join(pieces[first:])
+        self._dropped = max(0, self._total - self._head_raw - kept_raw)
+        if self._dropped > 0:
+            _write_all(fd, _marker(self._dropped, self._head, len(data)))
+        _write_all(fd, data)
+
+    # --- files ---------------------------------------------------------------------------
+
+    def _write_head(self, data: bytes) -> None:
+        if self._aborted:
+            return  # an abandoned writer never creates or extends a file
+        _write_all(self._ensure_open(), data)
+
     def _reap(self) -> None:
         """An abort that arrived while this thread held the writer takes effect now."""
         if self._aborted:
+            self._pending = ""
+            self._raw_tail.clear()
+            self._raw_tail_bytes = 0
             self._cleanup()
 
     def _cleanup(self) -> None:
@@ -335,6 +572,7 @@ class RunLogWriter:
         if self._failed:
             return
         self._failed = True
+        self._secrets = ()
         logger.warning(
             "run_log.write_failed",
             run_id=self._run_id,
@@ -343,73 +581,6 @@ class RunLogWriter:
             error=str(exc),
         )
         self._cleanup()
-
-    def _absorb(self, text: str) -> None:
-        if not text:
-            return
-        parts = (self._pending + text).split("\n")
-        self._pending = parts.pop()
-        for part in parts:
-            self._emit(part + "\n")
-        if len(self._pending) > MAX_LINE_CHARS:
-            self._cut_long_pending()
-
-    def _cut_long_pending(self) -> None:
-        """Emit the start of a line too long to hold, keeping the rest raw for later.
-
-        The cut is never inside an exact secret, so each secret before it is complete and
-        redacted whole. The text after the cut stays raw and is redacted with the next
-        window, together with whatever arrives after it.
-        """
-        unfinished = self._pending
-        cut = self._cut_point(unfinished)
-        self._write_content(self._redact(unfinished[:cut]).encode("utf-8", errors="replace"))
-        self._pending = unfinished[cut:]
-
-    def _cut_point(self, unfinished: str) -> int:
-        """A cut that no exact secret straddles, preferably at a whitespace boundary.
-
-        Cuts at least ``SECRET_OVERLAP_CHARS`` from the end, so a secret still arriving
-        starts after the cut. When no whitespace is near, the cut moves back to the start
-        of any secret it would split.
-        """
-        length = len(unfinished)
-        fallback = length - SECRET_OVERLAP_CHARS
-        for cut in range(fallback, max(0, length - 2 * SECRET_OVERLAP_CHARS), -1):
-            if unfinished[cut - 1].isspace() and self._straddle_start(unfinished, cut) is None:
-                return cut
-        cut = fallback
-        while (start := self._straddle_start(unfinished, cut)) is not None:
-            cut = start
-        return cut
-
-    def _straddle_start(self, unfinished: str, cut: int) -> int | None:
-        """The earliest start of a known secret that begins before ``cut`` and ends after it."""
-        for secret in self._secrets:
-            first = max(0, cut - len(secret) + 1)
-            for start in range(first, cut):
-                if unfinished.startswith(secret, start) and start + len(secret) > cut:
-                    return start
-        return None
-
-    def _redact(self, text: str) -> str:
-        return redact_log_text(text, self._secrets)
-
-    def _emit(self, line: str) -> None:
-        self._write_content(self._redact(line).encode("utf-8", errors="replace"))
-
-    def _write_content(self, data: bytes) -> None:
-        """Keep the head as it comes; past the head budget, keep a bounded tail in memory."""
-        self._total += len(data)
-        if not self._in_tail and self._head + len(data) <= self._head_budget:
-            _write_all(self._ensure_open(), data)
-            self._head += len(data)
-            return
-        self._in_tail = True
-        self._tail.append(data)
-        self._tail_bytes += len(data)
-        while self._tail and self._tail_bytes > self._tail_budget:
-            self._tail_bytes -= len(self._tail.popleft())
 
     def _ensure_open(self) -> int:
         if self._fd is not None:
@@ -428,7 +599,7 @@ class RunLogWriter:
 
 
 class RunLogCollector:
-    """Owns the run logs root and makes one writer per run.
+    """Owns the run logs root, the run-log I/O pool and the record of committed runs.
 
     Constructing a collector touches nothing on disk.
     """
@@ -446,6 +617,9 @@ class RunLogCollector:
         self._max_bytes = max_bytes
         self._retention_days = retention_days
         self._ambient: tuple[str, ...] = ()
+        self._io = RunLogIO()
+        self._committed: dict[str, None] = {}
+        self._committed_lock = threading.Lock()
 
     @property
     def root(self) -> Path:
@@ -468,9 +642,25 @@ class RunLogCollector:
         """Exact values of credential-named environment variables (the live tail uses them too)."""
         return self._ambient
 
+    @property
+    def io(self) -> RunLogIO:
+        return self._io
+
     def add_ambient_secrets(self, environ: Mapping[str, str]) -> None:
         """Exact values of credential-named environment variables, for future writers."""
         self._ambient = tuple(secret_values_from_env(environ))
+
+    def mark_committed(self, run_id: str) -> None:
+        """Remember that a run's log is committed. Thread-safe; bounded."""
+        with self._committed_lock:
+            self._committed[run_id] = None
+            while len(self._committed) > COMMITTED_MEMORY:
+                del self._committed[next(iter(self._committed))]
+
+    def is_committed(self, run_id: str) -> bool:
+        """Whether this daemon committed the run's log. Never touches the disk."""
+        with self._committed_lock:
+            return run_id in self._committed
 
     def writer_for(self, *, run_id: str, secrets: Iterable[str] = ()) -> RunLogWriter:
         """A fresh writer for one run, redacting the job's secrets and the ambient ones."""
@@ -539,10 +729,7 @@ def open_run_log(root: Path, run_id: str) -> tuple[int, int] | None:
 
 
 def run_log_exists(root: Path, run_id: str) -> bool:
-    """Whether a run's log has been committed: a plain, single-name regular file.
-
-    Never opens the file, and never follows a link.
-    """
+    """Whether a run's log is committed: a plain, single-name regular file. Never opens it."""
     path = run_log_path(root, run_id)
     if path is None:
         return False
@@ -614,7 +801,7 @@ def read_run_log_window(root: Path, run_id: str, *, offset: int, limit: int) -> 
 
 
 def iter_run_log_file(root: Path, run_id: str) -> Iterator[bytes]:
-    """Stream a run's log in chunks. The file is opened only when iteration starts.
+    """Stream a run's log in chunks, opening the file once when iteration starts.
 
     A stream that is never started holds no descriptor, and one that is abandoned closes
     its descriptor when it is closed or collected.

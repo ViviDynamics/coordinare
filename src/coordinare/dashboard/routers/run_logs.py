@@ -19,7 +19,7 @@ from coordinare.services.run_log import (
     RunLogRefusedError,
     iter_run_log_file,
     read_run_log_window,
-    run_log_size,
+    run_log_exists,
 )
 
 if TYPE_CHECKING:
@@ -64,16 +64,12 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
             if download:
                 # The file is opened only when the stream starts, so a download that is
                 # never read holds no descriptor.
-                size = await asyncio.to_thread(run_log_size, root, run_id)
-                if size is None:
+                if not await asyncio.to_thread(run_log_exists, root, run_id):
                     return _not_found()
                 return StreamingResponse(
                     iter_run_log_file(root, run_id),
                     media_type="text/plain; charset=utf-8",
-                    headers={
-                        "Content-Length": str(size),
-                        "Content-Disposition": f'attachment; filename="{run_id}.log"',
-                    },
+                    headers={"Content-Disposition": f'attachment; filename="{run_id}.log"'},
                 )
             window = await asyncio.to_thread(
                 read_run_log_window, root, run_id, offset=offset, limit=limit,

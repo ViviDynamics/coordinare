@@ -20,7 +20,7 @@ from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
-from coordinare.services.run_log import RunLogCollector, run_log_exists
+from coordinare.services.run_log import RunLogCollector
 from coordinare.services.token_usage import (
     PriceTable,
     TokenLedger,
@@ -916,11 +916,15 @@ class DashboardStore:
 
     @staticmethod
     def _full_log_available(daemon: Any, run_id: object) -> bool:
-        """132: whether this run's complete log is committed (it exists only after teardown)."""
+        """132: whether this run's complete log is committed (it exists only after teardown).
+
+        Answered from the collector's record of commits, never the disk: the snapshot path
+        must not wait on a stuck volume.
+        """
         collector = daemon.state.get("run_log_collector")
         if not run_id or not isinstance(collector, RunLogCollector) or not collector.enabled:
             return False
-        return run_log_exists(collector.root, str(run_id))
+        return collector.is_committed(str(run_id))
 
     @staticmethod
     def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:

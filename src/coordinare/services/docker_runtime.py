@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
+    from coordinare.services.run_log import RunLogIO
 
 _log = structlog.get_logger(__name__)
 
@@ -102,11 +103,12 @@ class DockerRuntime:
             return []
         return stdout.decode(errors="replace").splitlines()[-lines:]
 
-    async def iter_logs(self, handle: str) -> AsyncGenerator[bytes, None]:
+    async def iter_logs(self, handle: str, *, io: RunLogIO | None = None) -> AsyncGenerator[bytes, None]:
         """132: the container's complete output, read from ``docker logs`` in chunks.
 
         stderr is merged into the stream, as the live tail merges it. A reader that
-        stops early kills the ``docker logs`` process.
+        stops early kills the ``docker logs`` process. The pipe is read asynchronously,
+        so ``io`` is not needed and is ignored.
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
