@@ -216,10 +216,12 @@ def _register_run_detail(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({"error": "not_found", "detail": _NOT_CONFIGURED}, status_code=404,
                                 headers=_NO_STORE)
         ref = RunRef(symphony=symphony, card=card, run=run)
+        def _read() -> dict[str, Any]:
+            # 211: the ledger read runs on the same worker thread as the file read.
+            return run_viewer.run_detail(root, ref, usage=run_usage_block(daemon, run_id=ref.run))
+
         try:
-            detail = await asyncio.to_thread(
-                run_viewer.run_detail, root, ref, usage=run_usage_block(daemon, run_id=ref.run),
-            )
+            detail = await asyncio.to_thread(_read)
         except (RunLookupError, RunRefusedError) as exc:
             return _error_response(exc)
         return JSONResponse(detail, headers=_NO_STORE)

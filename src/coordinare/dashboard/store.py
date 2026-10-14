@@ -81,15 +81,15 @@ def run_usage_block(daemon: Any, *, run_id: str) -> dict[str, Any]:
     ledger = _usage_ledger(daemon)
     if ledger is None:
         return {"tracked": False, "reason": "transcripts disabled"}
-    if ledger.run_info(run_id) is None:
-        return {
-            "tracked": False,
-            "reason": "the ledger holds no usage for this run (it may be older than the usage window)",
-        }
+    totals = ledger.totals(run_id=run_id)
+    # A run with no usage records is not in the live ledger, but a restart rebuilds it empty. Both
+    # read the same way here, so the header never shows tracked zeros for a run with no usage.
+    if sum(counts.total for counts in totals.values()) == 0:
+        return {"tracked": False, "reason": "no usage records in this run"}
     return {
         "tracked": True,
         "reason": None,
-        **usage_summary(ledger.totals(run_id=run_id), _price_table(daemon)),
+        **usage_summary(totals, _price_table(daemon)),
     }
 
 

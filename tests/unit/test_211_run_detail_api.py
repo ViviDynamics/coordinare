@@ -129,7 +129,7 @@ def test_a_run_the_ledger_does_not_know_is_not_tracked(tmp_path: Path) -> None:
     assert response.status_code == 200
     usage = response.json()["summary"]["usage"]
     assert usage["tracked"] is False
-    assert "older than the usage window" in usage["reason"]
+    assert usage["reason"] == "no usage records in this run"
 
 
 def test_with_transcripts_disabled_the_header_says_so(tmp_path: Path) -> None:

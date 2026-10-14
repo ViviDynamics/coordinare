@@ -155,3 +155,17 @@ def test_seq_key_round_trips_through_model_dump() -> None:
     dumped = event.model_dump()
     assert dumped["transcript_seq"] == ROUND_TRIP_SEQ
     assert BackendEvent.model_validate(dumped).transcript_seq == ROUND_TRIP_SEQ
+
+
+async def test_a_failure_in_the_status_mapping_keeps_the_outcome_record(tmp_path: Path, buf) -> None:
+    # 211: the outcome records are written before the status mapping runs. When that mapping raises,
+    # the run's result record is still in the transcript (before 211 it was not), and the status is
+    # the same error the reader loop has always reported.
+    with patch.object(JunieBackend, "_apply_parsed_result", side_effect=RuntimeError("boom")):
+        backend = await _launch_and_wait(tmp_path, "t", {"summary": "finished the task"})
+    status = backend.get_status()
+    assert status.state == "error"
+    assert status.error_reason == "boom"
+    records = buf.after(0, 100)
+    assert [r["type"] for r in records if r["type"] == "result"] == ["result"]
+    assert any(r["type"] == "error" and r["text"] == "junie reader error: boom" for r in records)

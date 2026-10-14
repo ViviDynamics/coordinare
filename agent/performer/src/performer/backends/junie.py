@@ -504,7 +504,9 @@ class JunieBackend:
                     self._json_output_path = None
 
             # 211: records first, so each event below can carry the seq of the
-            # record it mirrors. Records and status are independent of each other.
+            # record it mirrors. Records and status are independent of each other. If the
+            # status mapping raises, the outcome records are already in the transcript (before
+            # 211 they were not); the status and the reader error record are as before.
             record_seqs = self._record_outcome(parsed, rc, stdout_text, stderr_text) or {}
             if isinstance(parsed, dict):
                 self._apply_parsed_result(parsed, rc, stderr_text, record_seqs)

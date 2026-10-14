@@ -29,7 +29,7 @@ A run view, reachable from a card, its stage, and any activity entry, that shows
 - **FR-007** Every API route sits under `/api/`, so the dashboard authentication applies. The routes are declared in the MCP deferred lists.
 - **FR-008** The client escapes every interpolated value. Transcript text is shown as plain text. No transcript value becomes markup, a script, a style, or a URL with a scheme other than http(s).
 - **FR-009** Activity entries link into the run. The link lands on the first event at or after the entry's time (see plan, D5).
-- **FR-010** Tokens are summed from the per-turn usage records. Cost is shown as not recorded, because the #134 cost ledger is not on main.
+- **FR-010** Superseded by #211. The run header shows the run's tokens and cost from the #134 token ledger, with the breakdown and pricing date on hover. A model with no price shows "unknown" with the reason, and a run with no usage records shows "not tracked" with the reason.
 
 ## Out of scope
 

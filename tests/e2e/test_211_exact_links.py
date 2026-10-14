@@ -172,7 +172,7 @@ def test_an_activity_row_opens_the_exact_event_it_was_built_from(
     )
     page.goto(ledger_server_url + "/")
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
-    link = page.locator("#activity-feed a.run-entry-link").first
+    link = page.locator(f"#activity-feed a.run-entry-link[href$='#e{MARKER_SEQ}']").first
     expect(link).to_be_attached(timeout=_WAIT_LIVE)
     expect(link).to_have_attribute("href", re.compile(rf"/runs/{ACT_RUN}#e{MARKER_SEQ}$"))
     link.click()
@@ -192,7 +192,7 @@ def test_an_entry_without_a_seq_falls_back_to_the_time_link(
     )
     page.goto(ledger_server_url + "/")
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
-    link = page.locator("#activity-feed a.run-entry-link", has_text="Transcript").first
+    link = page.locator(f"#activity-feed a.run-entry-link[href*='/runs/{ACT_RUN}?at=']").first
     expect(link).to_be_attached(timeout=_WAIT_LIVE)
     expect(link).to_have_attribute("href", re.compile(rf"/runs/{ACT_RUN}\?at="))
     link.click()

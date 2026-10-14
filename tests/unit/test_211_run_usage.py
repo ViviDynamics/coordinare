@@ -21,6 +21,7 @@ AS_OF = "2026-10-01"
 ONE_MILLION = 1_000_000
 OPUS_INPUT_USD = 15.0
 TS = "2026-10-14T10:00:00+00:00"
+NO_USAGE_REASON = "no usage records in this run"
 
 
 def _cost_tracking() -> CostTrackingConfig:
@@ -104,10 +105,17 @@ def test_an_unpriced_model_says_unknown_and_names_the_model(tmp_path: Path) -> N
 def test_a_run_the_ledger_does_not_know_is_not_tracked_with_a_reason(tmp_path: Path) -> None:
     daemon = _daemon(tmp_path)
     block = run_usage_block(daemon, run_id="run-unknown")
-    assert block["tracked"] is False
-    assert "older than the usage window" in block["reason"]
-    assert "tokens" not in block
-    assert "cost" not in block
+    assert block == {"tracked": False, "reason": NO_USAGE_REASON}
+
+
+def test_a_run_with_no_usage_records_reads_the_same_live_and_after_a_rebuild(tmp_path: Path) -> None:
+    # Live: no usage record was ever observed, so the ledger has no entry for the run.
+    live = _daemon(tmp_path)
+    # After a restart: _rebuild observes the file with no usage records, leaving an empty entry.
+    rebuilt = _daemon(tmp_path)
+    _observe(rebuilt, RUN, [])
+    assert run_usage_block(live, run_id=RUN) == {"tracked": False, "reason": NO_USAGE_REASON}
+    assert run_usage_block(rebuilt, run_id=RUN) == {"tracked": False, "reason": NO_USAGE_REASON}
 
 
 def test_with_transcripts_disabled_nothing_is_tracked(tmp_path: Path) -> None:
