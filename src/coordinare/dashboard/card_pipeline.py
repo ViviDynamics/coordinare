@@ -1,13 +1,19 @@
 """147: the card pipeline, read from the daemon for the snapshot and the timeline endpoint.
 
-The board strip is computed in memory from the lifecycle log and the live sessions, so the
-snapshot carries it at no per-card cost. The timeline endpoint adds the transcript index (run
-counts, durations, outcomes) and the token ledger (tokens and cost per stage). Neither reads a
-transcript body. Free text is redacted by the caller before it leaves the server.
+The board strip is computed from the lifecycle log and the live sessions, and cached per card: a
+card whose history and stage have not changed since the last snapshot is not recomputed, so the
+snapshot costs nothing for it. The timeline endpoint reads each run's header from the transcript
+index, and the end of each run's file: a bounded tail, never the whole body. Each request is held to
+a byte budget (TIMELINE_READ_BYTES) across all its runs, and the run count is capped by the listing
+(run_viewer.LIST_MAX_RUNS). A run past the budget is listed with no duration and no outcome. Tokens
+and cost come from the ledger. Free text is redacted by the caller before it leaves the server.
 """
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from coordinare.lib.path_segments import sanitize_segment
@@ -37,6 +43,10 @@ if TYPE_CHECKING:
 
 NOT_CONFIGURED = "run transcripts are not configured on this daemon"
 TRANSCRIPTS_DISABLED = "transcripts are disabled, so token and cost figures are not tracked"
+#: The bytes read from the end of one run's transcript, to find its last timestamp and its outcome.
+TIMELINE_TAIL_BYTES = 64 * 1024
+#: The bytes read across all the runs of one timeline request.
+TIMELINE_READ_BYTES = 4 * 1024 * 1024
 #: A session in this phase has no stage running; any other phase names the stage it is in.
 _IDLE_PHASE = "idle"
 
@@ -93,20 +103,35 @@ def board_cards(daemon: CoordinareDaemon, symphony: str) -> set[str]:
 
 
 def card_pipeline_block(daemon: CoordinareDaemon) -> dict[str, dict[str, dict[str, Any]]]:
-    """Per symphony, each logged card's board strip. Read from memory only."""
+    """Per symphony, each logged card's board strip, from memory.
+
+    A card's strip is cached on the log with the revision of its history, its live stage and the
+    lifecycle it is judged against. An unchanged card returns its cached strip and costs no work.
+    Cache entries for cards the log no longer holds are dropped.
+    """
     log = _log(daemon)
     if log is None:
         return {}
-    lifecycle = _lifecycle(daemon)
+    lifecycle = tuple(_lifecycle(daemon))
     block: dict[str, dict[str, dict[str, Any]]] = {}
+    seen: set[tuple[str, ...]] = set()
     for symphony in log.symphonies():
-        block[symphony] = {
-            card_id: pipeline_strip(
-                log.events(symphony, card_id),
-                LiveStage(current=live_stage(daemon, symphony, card_id), lifecycle=tuple(lifecycle)),
-            )
-            for card_id in log.cards(symphony)
-        }
+        strips: dict[str, dict[str, Any]] = {}
+        for card_id in log.cards(symphony):
+            current = live_stage(daemon, symphony, card_id)
+            key = ("strip", symphony, card_id)
+            seen.add(key)
+            revision = (log.revision(symphony, card_id), current, lifecycle)
+            cached = log.derived.get(key)
+            if cached is not None and cached[0] == revision:
+                strips[card_id] = cached[1]
+                continue
+            strip = pipeline_strip(log.peek(symphony, card_id), LiveStage(current=current, lifecycle=lifecycle))
+            log.derived[key] = (revision, strip)
+            strips[card_id] = strip
+        block[symphony] = strips
+    for stale in [k for k in log.derived if k[0] == "strip" and k not in seen]:
+        del log.derived[stale]
     return block
 
 
@@ -135,14 +160,64 @@ def card_stage_usage(
     return blocks, None
 
 
+def _seconds_between(start: object, end: object) -> float | None:
+    """The seconds from one recorded timestamp to another, or None when either is missing or unreadable."""
+    if not isinstance(start, str) or not isinstance(end, str):
+        return None
+    try:
+        began = datetime.fromisoformat(start)
+        ended = datetime.fromisoformat(end)
+    except ValueError:
+        return None
+    began = began if began.tzinfo else began.replace(tzinfo=UTC)
+    ended = ended if ended.tzinfo else ended.replace(tzinfo=UTC)
+    return round((ended - began).total_seconds(), 3)
+
+
+def _tail_facts(root: Path, ref: run_viewer.RunRef, budget: int) -> tuple[str | None, str | None, int]:
+    """(last timestamp, outcome, bytes read) from the end of one run's transcript.
+
+    Reads at most TIMELINE_TAIL_BYTES and at most ``budget`` bytes. The outcome comes from the last
+    result record in that tail, and is None when the tail holds none.
+    """
+    if budget <= 0:
+        return None, None, 0
+    path = run_viewer.run_file(root, ref)
+    with run_viewer.open_run(path, ref) as handle:
+        size = handle.seek(0, os.SEEK_END)
+        want = min(size, TIMELINE_TAIL_BYTES, budget)
+        handle.seek(size - want)
+        raw = handle.read(want)
+    lines = raw.split(b"\n")
+    if want < size:
+        lines = lines[1:]  # the first line of a tail may be cut mid-record
+    ended: str | None = None
+    outcome: str | None = None
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if ended is None and isinstance(record.get("ts"), str):
+            ended = record["ts"]
+        if outcome is None and record.get("type") == "result":
+            outcome = "failed" if record.get("is_error") is True else "completed"
+        if ended is not None and outcome is not None:
+            break
+    return ended, outcome, want
+
+
 def transcript_runs(
     root: Path | None, *, symphony: str, card_id: str,
 ) -> tuple[list[dict[str, Any]] | None, str | None, bool]:
     """The card's runs from the transcript index, newest first. (runs, reason, truncated).
 
-    ``runs`` is None when the transcripts are not configured. Each run's duration and outcome
-    come from its own recorded timestamps and result record (run_viewer.run_detail). A run that
-    cannot be read is still listed, with no duration and no outcome, rather than hidden.
+    ``runs`` is None when the transcripts are not configured. Each run's start comes from its
+    header (the index); its end and outcome come from the tail of its file, within the request's
+    byte budget. A run past the budget, or one that cannot be read, is listed with no end and no
+    outcome rather than hidden.
     """
     if root is None:
         return None, NOT_CONFIGURED, False
@@ -152,21 +227,23 @@ def transcript_runs(
     except run_viewer.RunLookupError:
         return [], None, False
     runs: list[dict[str, Any]] = []
+    budget = TIMELINE_READ_BYTES
     for row in listing["runs"]:
         ref = run_viewer.RunRef(symphony=str(row["symphony"]), card=card_id, run=str(row["run"]))
-        summary: dict[str, Any] = {}
+        ended: str | None = None
         outcome: str | None = None
         try:
-            summary = run_viewer.run_detail(root, ref, usage={})["summary"]
-            outcome = summary["outcome"].get("status")
+            ended, outcome, used = _tail_facts(root, ref, budget)
+            budget -= used
         except (run_viewer.RunLookupError, run_viewer.RunRefusedError, OSError):
-            outcome = None
+            ended, outcome = None, None
+        started = row.get("started_at")
         runs.append({
             "run": ref.run,
             "stage": stage_for_run(row.get("stage")),
-            "started_at": summary.get("started_at"),
-            "ended_at": summary.get("ended_at"),
-            "duration_seconds": summary.get("duration_seconds"),
+            "started_at": started,
+            "ended_at": ended,
+            "duration_seconds": _seconds_between(started, ended),
             "outcome": outcome,
         })
     return runs, None, bool(listing.get("truncated"))

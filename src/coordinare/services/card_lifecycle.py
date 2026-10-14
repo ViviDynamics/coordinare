@@ -6,10 +6,19 @@ where it happens (dispatch, the stage verdict, the CI gate, PR artefacts, review
 commands, overrides and the merge), keyed by symphony and card, and it outlives the session.
 
 An event is a kind, a stage code, a UTC time and a few small detail values. Free text goes
-through ``redact_state_value`` before it is kept. The log is bounded per symphony (the most
-recently active cards) and per card (the newest events). It is written with the snapshot as
-``card_lifecycle`` (schema v35). A snapshot from before v35 loads as an empty log, so an event
-that was never recorded shows as not recorded, never as a guess.
+through ``redact_state_value`` before it is kept, and each value is clipped. The log is bounded
+per symphony and per card:
+
+- A card with a live session is never evicted. Other cards are ranked by their last activity.
+  When the live cards alone exceed the per-symphony bound, every live card is kept, the fact is
+  logged once, and only finished cards are trimmed.
+- A card's history starts at its first event, which carries an ``epoch``. A card id that
+  dispatches again after its ``merged`` event starts a fresh history rather than inheriting the
+  old one.
+- An event with no symphony is refused and counted, never written under an empty name.
+
+The log is written with the snapshot as ``card_lifecycle`` (schema v35). A snapshot from before
+v35 loads as an empty log, so an event that was never recorded shows as not recorded.
 """
 
 from __future__ import annotations
@@ -18,10 +27,14 @@ import copy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from coordinare.lib.redaction import redact_state_value
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
+
+logger = structlog.get_logger(__name__)
 
 #: The lifecycle events the log keeps. Anything else is refused at record time.
 EVENT_KINDS: frozenset[str] = frozenset({
@@ -35,12 +48,16 @@ EVENT_KINDS: frozenset[str] = frozenset({
     "override",
     "merged",
 })
+#: The event kind that ends a card's history. A later dispatch of the same card id starts a new one.
+TERMINAL_KIND = "merged"
+#: The event kind that starts work on a card, and so starts a fresh history after a terminal event.
+START_KIND = "dispatched"
 MAX_CARDS_PER_SYMPHONY = 100
-MAX_EVENTS_PER_CARD = 100
-MAX_KEY_CHARS = 160
+MAX_EVENTS_PER_CARD = 40
+MAX_KEY_CHARS = 64
 MAX_DETAIL_KEYS = 8
 MAX_DETAIL_KEY_CHARS = 40
-MAX_DETAIL_TEXT_CHARS = 200
+MAX_DETAIL_TEXT_CHARS = 120
 
 EventRecord = dict[str, Any]
 
@@ -90,6 +107,9 @@ def _valid_event(raw: object) -> EventRecord | None:
     key = raw.get("key")
     if isinstance(key, str) and key:
         event["key"] = key[:MAX_KEY_CHARS]
+    epoch = raw.get("epoch")
+    if isinstance(epoch, str) and epoch:
+        event["epoch"] = epoch
     return event
 
 
@@ -98,6 +118,16 @@ class CardLifecycleLog:
 
     def __init__(self) -> None:
         self._cards: dict[str, dict[str, list[EventRecord]]] = {}
+        self._live_provider: Callable[[str], set[str]] | None = None
+        self._over_bound: set[str] = set()
+        #: Events refused for having no symphony. The first is logged; the count is kept for tests and metrics.
+        self.unnamed_refusals = 0
+        #: Memo for views derived from the log (the board strips). Keys are owned by the caller.
+        self.derived: dict[tuple[str, ...], tuple[object, Any]] = {}
+
+    def set_live_provider(self, provider: Callable[[str], set[str]]) -> None:
+        """The cards of a symphony that have a live session. Consulted only when a symphony is trimmed."""
+        self._live_provider = provider
 
     def record(self, symphony: str, card_id: str, kind: str, **fields: Any) -> bool:
         """Append one event. False when it is refused or a same-key event of this kind exists.
@@ -107,6 +137,9 @@ class CardLifecycleLog:
         and not again) and ``at`` (the UTC time, now when omitted). An unknown field is an error.
         Returns True when the event was kept.
         """
+        if not symphony:
+            self._refuse_unnamed()
+            return False
         if kind not in EVENT_KINDS or not card_id:
             return False
         stage = fields.get("stage")
@@ -117,33 +150,69 @@ class CardLifecycleLog:
         if unknown:
             message = f"unknown lifecycle event field: {sorted(unknown)[0]}"
             raise TypeError(message)
-        events = self._cards.setdefault(symphony, {}).setdefault(card_id, [])
+        cards = self._cards.setdefault(symphony, {})
+        events = cards.setdefault(card_id, [])
+        if kind == START_KIND and any(e["kind"] == TERMINAL_KIND for e in events):
+            # A reused card id: the old history belongs to the card that finished, so it is dropped.
+            events.clear()
         if key is not None and any(e["kind"] == kind and e.get("key") == str(key)[:MAX_KEY_CHARS] for e in events):
             return False
+        event_at = str(at) if at else _now_iso()
         event: EventRecord = {
-            "at": str(at) if at else _now_iso(),
+            "at": event_at,
             "kind": kind,
             "stage": str(stage) if stage else None,
             "detail": _clean_detail(detail if isinstance(detail, dict) else None),
         }
         if key:
             event["key"] = str(key)[:MAX_KEY_CHARS]
+        if not events:
+            event["epoch"] = event_at
         events.append(event)
         del events[:-MAX_EVENTS_PER_CARD]
         self._trim(symphony)
         return True
 
+    def _refuse_unnamed(self) -> None:
+        self.unnamed_refusals += 1
+        if self.unnamed_refusals == 1:
+            logger.warning("card_lifecycle.event_without_symphony", refusals=self.unnamed_refusals)
+
     def _trim(self, symphony: str) -> None:
+        """Keep at most MAX_CARDS_PER_SYMPHONY cards: every live card, then the most recently active rest."""
         cards = self._cards.get(symphony, {})
         if len(cards) <= MAX_CARDS_PER_SYMPHONY:
+            self._over_bound.discard(symphony)
             return
-        newest = sorted(cards, key=lambda cid: cards[cid][-1]["at"], reverse=True)
-        for card_id in newest[MAX_CARDS_PER_SYMPHONY:]:
-            del cards[card_id]
+        live_now = self._live_provider(symphony) if self._live_provider is not None else set()
+        live = {card for card in cards if card in live_now}
+        if len(live) >= MAX_CARDS_PER_SYMPHONY:
+            if symphony not in self._over_bound:
+                self._over_bound.add(symphony)
+                logger.warning("card_lifecycle.live_cards_over_bound", symphony=symphony, live=len(live),
+                               bound=MAX_CARDS_PER_SYMPHONY)
+            keep = live
+        else:
+            self._over_bound.discard(symphony)
+            rest = sorted((card for card in cards if card not in live), key=lambda c: cards[c][-1]["at"], reverse=True)
+            keep = live | set(rest[: MAX_CARDS_PER_SYMPHONY - len(live)])
+        for card in [card for card in cards if card not in keep]:
+            del cards[card]
 
     def events(self, symphony: str, card_id: str) -> list[EventRecord]:
         """A copy of the card's events, oldest first. Empty when none were recorded."""
         return copy.deepcopy(self._cards.get(symphony, {}).get(card_id, []))
+
+    def peek(self, symphony: str, card_id: str) -> list[EventRecord]:
+        """The card's events without a copy. Read-only: a caller must not change them."""
+        return self._cards.get(symphony, {}).get(card_id, [])
+
+    def revision(self, symphony: str, card_id: str) -> tuple[str, int, str]:
+        """A value that changes whenever the card's history changes: its epoch, its count and its last time."""
+        events = self._cards.get(symphony, {}).get(card_id, [])
+        if not events:
+            return ("", 0, "")
+        return (str(events[0].get("epoch") or ""), len(events), str(events[-1]["at"]))
 
     def has_card(self, symphony: str, card_id: str) -> bool:
         return card_id in self._cards.get(symphony, {})
@@ -163,7 +232,7 @@ class CardLifecycleLog:
         if not isinstance(raw, dict):
             return
         for symphony, cards in raw.items():
-            if not isinstance(symphony, str) or not isinstance(cards, dict):
+            if not isinstance(symphony, str) or not symphony or not isinstance(cards, dict):
                 continue
             kept: dict[str, list[EventRecord]] = {}
             for card_id, events in cards.items():
@@ -175,6 +244,21 @@ class CardLifecycleLog:
             if kept:
                 self._cards[symphony] = kept
                 self._trim(symphony)
+
+
+def live_card_ids(state: Mapping[str, object], symphony: str) -> set[str]:
+    """The cards of a symphony whose session is not idle: the cards the conductor is working now."""
+    sym_states = state.get("symphony_states")
+    sym_state = sym_states.get(symphony) if isinstance(sym_states, dict) else None
+    sessions = getattr(sym_state, "active_sessions", None) if sym_state is not None else None
+    if not isinstance(sessions, dict):
+        top = state.get("active_sessions")
+        sessions = top if isinstance(top, dict) else {}
+    return {
+        str(card_id)
+        for card_id, session in sessions.items()
+        if isinstance(session, dict) and session.get("phase") not in (None, "idle")
+    }
 
 
 def stage_of(state: Mapping[str, object]) -> str | None:
@@ -207,6 +291,7 @@ __all__ = [
     "MAX_EVENTS_PER_CARD",
     "CardLifecycleLog",
     "card_id_of",
+    "live_card_ids",
     "record_lifecycle",
     "stage_of",
 ]

@@ -57,7 +57,7 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
-from coordinare.services.card_lifecycle import CardLifecycleLog
+from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
@@ -1380,6 +1380,10 @@ async def _run(
             activity_log=dashboard_store.activity_log,
         ),
     )
+    # 147: a card with a live session is never trimmed from the lifecycle log.
+    lifecycle = daemon.state.get("card_lifecycle")
+    if isinstance(lifecycle, CardLifecycleLog):
+        lifecycle.set_live_provider(lambda symphony: live_card_ids(daemon.state, symphony))
 
     # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
     # without requiring a POST /api/config/reload after startup.
