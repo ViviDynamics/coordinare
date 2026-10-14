@@ -23,8 +23,10 @@ import pytest
 from performer.models import Stand
 from performer.workspace import WorkspaceSetupError
 from performer.write_scope import (
-    dirty_paths,
+    TrackedPaths,
     declared_path_refusal,
+    dirty_paths,
+    display_path,
     enforce_write_scope,
     head_paths,
     parse_porcelain_z,
@@ -268,8 +270,57 @@ class TestAgentCommits:
 
 
 async def _refusal(repo: Path, path: object) -> str | None:
-    tracked = await head_paths(Stand(path=repo, branch=BRANCH))
+    tracked = TrackedPaths.of(await head_paths(Stand(path=repo, branch=BRANCH)))
     return declared_path_refusal(path, root=repo, tracked=tracked)
+
+
+class TestDisplaySanitiser:
+    """188 review: model text reaches the report and the log only through display_path."""
+
+    def test_characters_outside_the_allowlist_are_replaced(self) -> None:
+        shown = display_path("tests/test_`<img src=x>`.py")
+
+        assert "`" not in shown
+        assert "<" not in shown
+        assert ">" not in shown
+        assert shown.startswith("tests/test_")
+
+    def test_a_non_string_is_reported_as_not_a_path_and_never_dumped(self) -> None:
+        assert display_path(["tests/test_x.py"]) == "(not a path)"
+        assert display_path(None) == "(not a path)"
+
+    def test_a_long_path_is_capped_and_marked(self) -> None:
+        shown = display_path("tests/" + "a" * 500 + ".py")
+
+        assert len(shown) <= 200
+        assert shown.endswith("...")
+
+    def test_a_non_ascii_letter_is_kept(self) -> None:
+        assert display_path("tests/test_café.py") == "tests/test_café.py"
+
+
+class TestDeclaredPathAllowlist:
+    @pytest.mark.parametrize(
+        "path", ["tests/test_a(1).py", "tests/test_{x}.py", "tests/test_$x.py"]
+    )
+    async def test_characters_outside_the_allowlist_are_refused(
+        self, repo: Path, path: str
+    ) -> None:
+        reason = await _refusal(repo, path)
+
+        assert reason is not None
+        assert "characters outside" in reason
+
+    async def test_a_non_ascii_test_name_is_allowed(self, repo: Path) -> None:
+        assert await _refusal(repo, "tests/test_café.py") is None
+
+    async def test_a_name_too_long_for_the_filesystem_is_refused_not_raised(
+        self, repo: Path
+    ) -> None:
+        reason = await _refusal(repo, "tests/test_" + "a" * 300 + ".py")
+
+        assert reason is not None
+        assert "too long" in reason
 
 
 class TestDeclaredPathRules:
