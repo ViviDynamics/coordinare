@@ -99,6 +99,8 @@ def test_the_back_button_on_the_run_returns_to_the_list(
     page.locator("#performers-page-back").click()
     expect(page).to_have_url(re.compile(r"/performers$"))
     expect(page.locator("#performers-page-list-view")).to_be_visible()
+    # Focus returns to the row the run was opened from, not to the top of the page.
+    expect(page.locator('#performers-page-tbody tr[data-role="implementing"]')).to_be_focused()
 
 
 @pytest.mark.e2e

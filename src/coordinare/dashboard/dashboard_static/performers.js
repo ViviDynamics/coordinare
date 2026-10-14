@@ -187,6 +187,7 @@ function viewRunLinkHtml(sess) {
   var stage = sess ? sess.performer_stage : '';
   if (!stage) return '';
   return '<a class="view-run-link" href="' + esc('/performers/' + encodeURIComponent(stage)) + '" ' +
+    'aria-label="' + esc('View run: ' + stageAgentLabel(stage)) + '" ' +
     'onclick="event.stopPropagation();navigate(event,this.pathname)" onkeydown="event.stopPropagation()">View run</a>';
 }
 
@@ -567,8 +568,15 @@ function openPerformerRole(role, fromKeyboard) {
   }
 }
 
+// Back returns to the list and puts focus on the row the run was opened from,
+// so a keyboard user carries on where they were.
 function hidePerformerRoleDetail() {
+  var role = performerRoleFromPath(location.pathname);
   navigate(null, '/performers');
+  var rows = document.querySelectorAll('#performers-page-tbody tr[data-role]');
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].getAttribute('data-role') === role) { rows[i].focus(); return; }
+  }
 }
 
 // 049 + 053: Performers page list + drilldown detail
