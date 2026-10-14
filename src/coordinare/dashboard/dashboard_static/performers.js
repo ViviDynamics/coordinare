@@ -479,11 +479,12 @@ function renderCardDetailContent(sess, s) {
     '<div class="ov-list">' + verdictsHtml + '</div>';
 }
 
-// 132: the Live Log shows the tail; the full log for this run is one click away. The
-// run id is the session id, the same value the run's log file is named after.
+// 132: the Live Log shows the tail; the full log for this run is one click away, once the
+// run has ended. The run id is the session id, the same value the log file is named after.
 function fullLogLinkHtml(sess) {
+  // Offered only once the run's log exists: it is written at teardown, not during the run.
   var runId = sess && sess.session_id ? String(sess.session_id) : '';
-  if (!runId) return '';
+  if (!runId || !sess.full_log_available) return '';
   return '<a class="full-log-link" href="' + esc('/api/runs/' + encodeURIComponent(runId) + '/log') + '" ' +
     'target="_blank" rel="noopener">Open full log &#8599;</a>';
 }

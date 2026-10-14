@@ -12,6 +12,7 @@ import asyncio
 import os
 import threading
 import time
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -85,9 +86,9 @@ def _service(tmp: Path, runtime: Any, *, run_id: str = SESSION) -> HTTPPerformer
 
 
 async def _drain_finishers(service: HTTPPerformerService) -> None:
-    pending = list(service._log_finishers)
-    if pending:
-        await asyncio.wait(pending, timeout=WAIT)
+    finishers = list(service._log_finishers)
+    if finishers:
+        await asyncio.wait(finishers, timeout=WAIT)
 
 
 # --- 1: a cancelled capture must not skip the stop (direct, unshielded path) ---------------
@@ -157,7 +158,7 @@ async def test_a_write_that_never_returns_is_abandoned_at_the_bound_and_the_loop
         started = time.monotonic()
         await asyncio.wait_for(service._cleanup_ephemeral_job_by_id(SESSION), WAIT)
         elapsed = time.monotonic() - started
-        gap = max(b - a for a, b in zip(ticks, ticks[1:]))
+        gap = max(later - earlier for earlier, later in pairwise(ticks))
     finally:
         ticking.cancel()
         release.set()
@@ -301,7 +302,7 @@ async def test_a_refused_dispatch_keeps_no_secret_and_stops_its_container(
     )
 
     if expects_raise:
-        with pytest.raises(Exception):  # any failure of the post is the refusal
+        with pytest.raises((httpx.HTTPStatusError, RuntimeError)):  # the refusal propagates
             await service.dispatch_card(_card(), _workspace())
     else:
         result = await service.dispatch_card(_card(), _workspace())
@@ -397,3 +398,27 @@ async def test_a_large_log_cut_off_at_the_bound_keeps_what_was_written(
     assert "cut off" in text
     assert "never" not in text
     assert rl.run_log_exists(tmp_path / "run-logs", SESSION)
+
+
+# --- 10: a page never splits a UTF-8 character ---------------------------------------------
+
+
+def test_pages_never_split_a_character(tmp_path: Path) -> None:
+    root = tmp_path / "run-logs"
+    root.mkdir()
+    body = ("aé€\U0001f600" * 50).encode("utf-8")
+    (root / "r10.log").write_bytes(body)
+
+    pages: list[str] = []
+    offset: int | None = 0
+    while offset is not None and len(pages) < 1000:
+        window = read_run_log_window(root, "r10", offset=offset, limit=4)
+        assert window is not None
+        assert "�" not in window.text
+        pages.append(window.text)
+        offset = window.next_offset
+
+    assert "".join(pages) == body.decode("utf-8")
+    inside = read_run_log_window(root, "r10", offset=2, limit=4)  # offset 2 is mid-character
+    assert inside is not None
+    assert "�" not in inside.text

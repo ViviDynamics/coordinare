@@ -155,3 +155,17 @@ def test_a_disabled_collector_serves_nothing(tmp_path: Path) -> None:
 
 def test_the_run_log_route_is_deferred_from_the_mcp_tools() -> None:
     assert is_deferred("/api/runs/{run_id}/log")
+
+
+def test_the_card_offers_the_full_log_only_once_it_is_committed(tmp_path: Path) -> None:
+    from coordinare.dashboard.store import DashboardStore
+
+    root = tmp_path / "run-logs"
+    daemon = MagicMock()
+    daemon.state = {"run_log_collector": _collector(root)}
+
+    assert DashboardStore._full_log_available(daemon, RUN) is False  # the run is still going
+    _write_log(root)
+    assert DashboardStore._full_log_available(daemon, RUN) is True
+    assert DashboardStore._full_log_available(daemon, None) is False
+    assert DashboardStore._full_log_available(daemon, "../escape") is False

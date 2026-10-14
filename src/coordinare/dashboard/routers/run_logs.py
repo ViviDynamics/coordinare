@@ -15,12 +15,11 @@ from fastapi import Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from coordinare.services.run_log import (
-    LOG_CHUNK_BYTES,
     RunLogCollector,
     RunLogRefusedError,
-    iter_run_log,
-    open_run_log,
+    iter_run_log_file,
     read_run_log_window,
+    run_log_size,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +30,9 @@ if TYPE_CHECKING:
 
 # The largest page a client may ask for. A download is the whole file, streamed.
 MAX_PAGE_BYTES = 1024 * 1024
+# The smallest page: a UTF-8 character is at most four bytes, so every page makes progress.
+MIN_PAGE_BYTES = 4
+DEFAULT_PAGE_BYTES = 64 * 1024
 _NOT_FOUND_TEXT = "No full log is kept for this run.\n"
 
 
@@ -45,7 +47,7 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     async def run_log(
         run_id: str,
         offset: Annotated[int, Query(ge=0)] = 0,
-        limit: Annotated[int, Query(ge=1, le=MAX_PAGE_BYTES)] = LOG_CHUNK_BYTES,
+        limit: Annotated[int, Query(ge=MIN_PAGE_BYTES, le=MAX_PAGE_BYTES)] = DEFAULT_PAGE_BYTES,
         download: bool = False,
     ) -> Response:
         """A run's full log: a page of text at ``offset``, or the whole file with ``download=1``.
@@ -60,12 +62,13 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
         root = collector.root
         try:
             if download:
-                opened = await asyncio.to_thread(open_run_log, root, run_id)
-                if opened is None:
+                # The file is opened only when the stream starts, so a download that is
+                # never read holds no descriptor.
+                size = await asyncio.to_thread(run_log_size, root, run_id)
+                if size is None:
                     return _not_found()
-                fd, size = opened
                 return StreamingResponse(
-                    iter_run_log(fd),
+                    iter_run_log_file(root, run_id),
                     media_type="text/plain; charset=utf-8",
                     headers={
                         "Content-Length": str(size),

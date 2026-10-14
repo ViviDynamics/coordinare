@@ -34,12 +34,11 @@ import httpx
 import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
-from coordinare.lib.redaction import redact_command_text
-from coordinare.lib.transcript_redaction import redact_text
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.run_header import build_run_header
+from coordinare.services.run_log import redact_log_text
 from coordinare.services.run_transcript import (
     UNATTRIBUTED,
     RootGuard,
@@ -224,6 +223,9 @@ class _EphemeralJob:
     run_id: str | None = None
     # 132: set once the full log has been collected, so one job collects once.
     log_collected: bool = False
+    # 132: the job's secret values, known from the payload. Held only for this job's life:
+    # they are dropped in cleanup, so a refused dispatch keeps no copy.
+    secrets: tuple[str, ...] = ()
 
 
 def _inject_driver_secrets(
@@ -315,6 +317,10 @@ class HTTPPerformerService:
         self._log_buffer: list[str] = []
         # Per-job background poll tasks: job_id → Task (mirrors _active_jobs).
         self._log_poll_tasks: dict[str, asyncio.Task[None]] = {}
+        # 132: background log finishes for collections cut off at the time bound. Held so
+        # they are not garbage collected; they run on worker threads and are never awaited
+        # by a teardown.
+        self._log_finishers: set[asyncio.Future[Any]] = set()
 
     @property
     def mode(self) -> str:
@@ -413,7 +419,8 @@ class HTTPPerformerService:
         active = list(self._active_jobs.values())
         self._active_jobs.clear()
         for job in active:
-            await self._cleanup_ephemeral_job(job)
+            # Shutdown stops every container promptly: no log collection here.
+            await self._cleanup_ephemeral_job(job, collect=False)
 
     # ------------------------------------------------------------------
     # AgentServiceProtocol
@@ -583,10 +590,11 @@ class HTTPPerformerService:
         # file name agree without a second id. Persistent mode already set
         # session_id = job_id, so this is the same value there.
         payload = self._transcript_identity(session_id, payload, extra_volumes)
-        if self._config.mode == "ephemeral":
-            # 132: a refused ephemeral run still has a container whose full log is collected
-            # at teardown, so its secrets are known from the moment the payload exists.
-            self._remember_transcript_secrets(session_id, payload)
+        if ephemeral_job is not None:
+            # 132: a refused run's container still gets its full log collected at teardown,
+            # so the job carries its secrets. They are not kept in the per-run table until
+            # the job is accepted.
+            ephemeral_job.secrets = tuple(secret.get_secret_value() for secret in payload.secrets.values())
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
@@ -604,6 +612,8 @@ class HTTPPerformerService:
             return {"status": "error", "reason": str(exc)}
         except Exception:
             self._transcript_refused.discard(session_id)
+            if ephemeral_job is not None:
+                await self._cleanup_ephemeral_job(ephemeral_job)
             raise
 
         # 409 busy → surface as error so the dispatch loop retries next cycle.
@@ -988,14 +998,17 @@ class HTTPPerformerService:
             )
     def _remember_refreshed_secret(self, session_id: str, value: str) -> None:
         """132: a refreshed secret joins the run's exact values, once."""
-        values = self._transcript_secrets.setdefault(session_id, [])
-        if value not in values:
+        values = self._transcript_secrets.get(session_id)
+        if values is not None and value not in values:
             values.append(value)
 
     def _redact_tail(self, lines: list[str], session_id: str) -> list[str]:
         """132: the live tail is the same text as the full log, so it is redacted the same way."""
-        secrets = self._transcript_secrets.get(session_id, [])
-        return [redact_command_text(redact_text(line, secrets)) for line in lines]
+        secrets = [
+            *self._transcript_secrets.get(session_id, []),
+            *(self._run_logs.ambient_secrets if self._run_logs is not None else ()),
+        ]
+        return [redact_log_text(line, secrets) for line in lines]
 
     def _transcript_failed(
         self,
@@ -1587,47 +1600,61 @@ class HTTPPerformerService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    async def _cleanup_ephemeral_job(self, job: _EphemeralJob) -> None:
-        """Stop and release a specific ephemeral container + its client."""
+    async def _cleanup_ephemeral_job(self, job: _EphemeralJob, *, collect: bool = True) -> None:
+        """Stop and release a specific ephemeral container + its client.
+
+        The stop is in a finally: nothing that happens while the log is read (a
+        cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
+        skips the log, which shutdown uses so that every stop happens promptly.
+        """
         host_log_dir = None
         for vol in self._config.volumes:
             if str(vol.container_path) == "/var/log/performer":
                 host_log_dir = vol.host_path
                 break
-        # 132: the full log is read first, because the stop removes it. The capture never
-        # raises for a runtime fault, so the stop below always follows it.
-        await self._capture_run_log(job)
+        try:
+            await self._capture_run_log(job, collect=collect)
+        finally:
+            await self._stop_job_container(job, host_log_dir)
+            if self._injected_client is None:
+                with contextlib.suppress(Exception):
+                    await job.client.aclose()
+            job.secrets = ()
+            if job.run_id is not None:
+                self._transcript_secrets.pop(job.run_id, None)
+
+    async def _stop_job_container(self, job: _EphemeralJob, host_log_dir: Path | None) -> None:
         try:
             await self._runtime.stop(
                 job.container_id,
                 host_log_dir=host_log_dir,
                 performer_id=self._config.id,
             )
-        except Exception as exc:  # pragma: no cover — best effort
+        except Exception as exc:
             logger.warning(
                 "http_performer.stop_failed",
                 performer_id=self._config.id,
                 container_id=job.container_id,
                 error=str(exc),
             )
-        if self._injected_client is None:
-            with contextlib.suppress(Exception):
-                await job.client.aclose()
-        # 132: the job is gone, so its secret values are no longer needed. This also
-        # frees the values of a refused dispatch, which never reaches the terminal release.
-        if job.run_id is not None:
-            self._transcript_secrets.pop(job.run_id, None)
 
-    async def _capture_run_log(self, job: _EphemeralJob) -> None:
+    async def _capture_run_log(self, job: _EphemeralJob, *, collect: bool = True) -> None:
         """132: write the run's complete log before its container or Pod is removed.
 
-        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS``: a runtime that hangs
-        or fails leaves no file, and the caller stops the container regardless. Never
-        raises for a runtime fault. A cancellation still removes the partial file and
-        then propagates.
+        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS``. A runtime that hangs
+        or fails leaves no file. A collection cut short by the bound keeps what it wrote,
+        marked as cut off, and is finished in the background: the stop never waits for
+        it. Never raises for a runtime or disk fault. A cancellation aborts the partial
+        (without waiting for any thread) and propagates.
         """
         collector = self._run_logs
-        if collector is None or not collector.enabled or job.run_id is None or job.log_collected:
+        if (
+            not collect
+            or collector is None
+            or not collector.enabled
+            or job.run_id is None
+            or job.log_collected
+        ):
             return
         iter_logs = getattr(self._runtime, "iter_logs", None)
         if not callable(iter_logs):
@@ -1636,14 +1663,15 @@ class HTTPPerformerService:
         run_id = job.run_id
         writer = collector.writer_for(
             run_id=run_id,
-            secrets=self._transcript_secrets.get(run_id, []),
+            secrets=(*job.secrets, *self._transcript_secrets.get(run_id, [])),
         )
-        done = False
+        completed = False
         try:
-            done = await asyncio.wait_for(
+            await asyncio.wait_for(
                 self._copy_run_log(iter_logs(job.container_id), writer),
                 timeout=_RUN_LOG_TEARDOWN_SECONDS,
             )
+            completed = True
         except TimeoutError:
             logger.warning(
                 "run_log.collect_timeout",
@@ -1651,6 +1679,8 @@ class HTTPPerformerService:
                 performer_id=self._config.id,
                 timeout_s=_RUN_LOG_TEARDOWN_SECONDS,
             )
+            writer.request_cut_off()
+            self._schedule_log_finish(writer)
         except Exception as exc:  # best effort: the stop follows regardless
             logger.warning(
                 "run_log.collect_failed",
@@ -1660,8 +1690,14 @@ class HTTPPerformerService:
                 error=str(exc),
             )
         finally:
-            if not done:
+            if not completed and not writer.cut_off:
                 writer.abort()
+
+    def _schedule_log_finish(self, writer: RunLogWriter) -> None:
+        """Finish a cut-off log on a worker thread, without anyone awaiting it."""
+        task = asyncio.ensure_future(asyncio.to_thread(writer.finish))
+        self._log_finishers.add(task)
+        task.add_done_callback(self._log_finishers.discard)
 
     async def _copy_run_log(self, chunks: AsyncGenerator[bytes, None], writer: RunLogWriter) -> bool:
         """Stream the runtime's output into the writer, one chunk on a worker thread at a time."""

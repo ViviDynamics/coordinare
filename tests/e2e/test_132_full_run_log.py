@@ -14,21 +14,27 @@ from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_sess
 _CARD = "PVTI_132"
 _RUN = "run-132-e2e"
 _LINK = "#card-detail-content a.full-log-link"
+NOT_FOUND = 404
 
 
-def _broadcast(store: DashboardStore, session_id: str | None) -> None:
+def _broadcast(store: DashboardStore, session_id: str | None, *, ended: bool) -> None:
     store.broadcaster.broadcast(_full_snapshot(
         phase="monitoring_performer",
         phase_label="Monitoring Performer",
         agent_dispatch_at="2026-10-13T10:00:00+00:00",
-        active_sessions=[_active_session(_CARD, "Keep the full log", "implementing", session_id=session_id)],
+        active_sessions=[_active_session(
+            _CARD, "Keep the full log", "implementing",
+            session_id=session_id, full_log_available=ended,
+        )],
     ))
 
 
-def _open_card_detail(page: Page, live_server_url: str, store: DashboardStore, session_id: str | None) -> None:
+def _open_card_detail(
+    page: Page, live_server_url: str, store: DashboardStore, session_id: str | None, *, ended: bool = True,
+) -> None:
     page.goto(live_server_url)
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
-    _broadcast(store, session_id)
+    _broadcast(store, session_id, ended=ended)
     row = page.locator(f"#swimlane-section .swimlane-card[data-card-id='{_CARD}']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     row.click()
@@ -48,10 +54,21 @@ def test_the_live_log_links_to_the_full_log_of_the_run(
 
 
 @pytest.mark.e2e
+def test_the_link_is_hidden_while_the_run_is_still_going(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # The log is written at teardown, so a live run has no full log to open yet.
+    _open_card_detail(page, live_server_url, store, _RUN, ended=False)
+
+    expect(page.locator("#card-detail-content")).to_contain_text("Live Log", timeout=_WAIT_LIVE)
+    expect(page.locator(_LINK)).to_have_count(0)
+
+
+@pytest.mark.e2e
 def test_there_is_no_full_log_link_without_a_run(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    _open_card_detail(page, live_server_url, store, None)
+    _open_card_detail(page, live_server_url, store, None, ended=True)
 
     expect(page.locator("#card-detail-content")).to_contain_text("No log entries yet.", timeout=_WAIT_LIVE)
     expect(page.locator(_LINK)).to_have_count(0)
@@ -62,7 +79,7 @@ def test_a_hostile_run_id_reaches_the_page_as_text_only(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     hostile = '"><img src=x onerror="window.__pwned=1">/../'
-    _open_card_detail(page, live_server_url, store, hostile)
+    _open_card_detail(page, live_server_url, store, hostile, ended=True)
 
     link = page.locator(_LINK)
     expect(link).to_have_count(1, timeout=_WAIT_LIVE)
@@ -81,5 +98,5 @@ def test_the_full_log_route_is_served_by_the_dashboard(
     # point is that the route is mounted and answers in the dashboard app.
     response = page.request.get(f"{live_server_url}/api/runs/{_RUN}/log")
 
-    assert response.status == 404
+    assert response.status == NOT_FOUND
     assert "No full log" in response.text()

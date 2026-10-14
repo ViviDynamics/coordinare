@@ -20,18 +20,23 @@ from coordinare.services.run_log import (
     RootGuard,
     RunLogRefusedError,
     RunLogWriter,
-    iter_run_log,
+    iter_run_log_file,
     make_run_logs_collector,
     open_run_log,
     prune_run_logs,
     read_run_log_window,
     resolve_run_logs_root,
     run_log_path,
+    run_log_size,
 )
 
 GH_TOKEN = "ghp_" + "c" * 36
 EXACT_JOB_SECRET = "jobsecret-7f3a91c2"  # matches no pattern: only exact-value redaction removes it
 RUN = "run-132-a"
+
+
+def rl_size(root: Path, run_id: str) -> int | None:
+    return run_log_size(root, run_id)
 
 
 def _feed_in_pieces(writer: RunLogWriter, data: bytes, piece: int = 37) -> None:
@@ -347,11 +352,8 @@ def test_iter_run_log_streams_the_whole_file(tmp_path: Path) -> None:
     writer.feed(body)
     writer.finish()
 
-    opened = open_run_log(root, RUN)
-    assert opened is not None
-    fd, size = opened
-    assert size == len(body)
-    assert b"".join(iter_run_log(fd)) == body
+    assert rl_size(root, RUN) == len(body)
+    assert b"".join(iter_run_log_file(root, RUN)) == body
 
 
 def test_prune_removes_only_old_run_logs_in_the_writers_layout(tmp_path: Path) -> None:

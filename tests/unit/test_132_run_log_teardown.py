@@ -124,6 +124,13 @@ def _partial(tmp: Path) -> Path:
     return tmp / "run-logs" / f"{SESSION}.log.partial"
 
 
+async def _drain_finishers(service: HTTPPerformerService) -> None:
+    """Wait for background finishes of cut-off logs, so their file is in place to check."""
+    finishers = list(service._log_finishers)
+    if finishers:
+        await asyncio.wait(finishers, timeout=WAIT_FOR_CAPTURE)
+
+
 async def test_the_full_log_is_written_before_the_container_is_stopped(tmp_path: Path) -> None:
     runtime = _Runtime(tmp_path)
     service = _service(tmp_path, runtime)
@@ -146,7 +153,7 @@ async def test_the_collection_runs_once_per_job(tmp_path: Path) -> None:
     assert runtime.events.count("logs") == 1
 
 
-async def test_a_log_stream_that_hangs_is_abandoned_and_the_container_still_stops(
+async def test_a_log_stream_that_hangs_is_cut_off_at_the_bound_and_the_container_still_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(hps, "_RUN_LOG_TEARDOWN_SECONDS", TEARDOWN_BOUND)
@@ -155,10 +162,13 @@ async def test_a_log_stream_that_hangs_is_abandoned_and_the_container_still_stop
 
     started = time.monotonic()
     await asyncio.wait_for(service._cleanup_ephemeral_job_by_id(SESSION), WAIT_FOR_CAPTURE)
-
-    assert runtime.stops == 1
     assert time.monotonic() - started < WAIT_FOR_CAPTURE
-    assert not _final(tmp_path).exists()
+    await _drain_finishers(service)
+
+    # What arrived before the bound is kept, and the log says it was cut off.
+    assert runtime.stops == 1
+    assert _final(tmp_path).exists()
+    assert "cut off" in _final(tmp_path).read_text(encoding="utf-8")
     assert not _partial(tmp_path).exists()
 
 
@@ -207,7 +217,6 @@ async def test_cancelling_the_teardown_still_stops_the_container_once(
         await task
 
     assert runtime.stops == 1
-    assert not _final(tmp_path).exists()
 
 
 async def test_a_disabled_run_log_collector_collects_nothing(tmp_path: Path) -> None:
