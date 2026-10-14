@@ -1416,7 +1416,7 @@ class TestPollBootstrapCompletion:
         monkeypatch.setattr(
             CoordinareDaemon,
             "_verify_bootstrap_in_clean_context",
-            AsyncMock(return_value=(True, None)),
+            AsyncMock(return_value=(True, None, False)),
         )
 
     @pytest.mark.asyncio
@@ -1687,6 +1687,8 @@ class TestPollBootstrapCompletion:
                 stop_calls.append(argv)
 
             class _P:
+                returncode = 0
+
                 async def communicate(self):
                     # New meaningful (non-poll) line every iteration -> progress.
                     counter["n"] += 1
@@ -1712,7 +1714,9 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-slow")
 
-        assert not stop_calls  # never reaped
+        # 218: the one `docker stop` is the completion quiesce (before the clean verify), not an
+        # idle reap. Progress kept the idle reap from firing.
+        assert len(stop_calls) == 1
         ec_svc.on_bootstrap_complete.assert_called_once()
         assert ec_svc.on_bootstrap_complete.call_args.args[1] is True  # completed successfully
 
@@ -1859,8 +1863,13 @@ class TestPollBootstrapCompletion:
 
         # Stub create_subprocess_exec to return a fake proc with snapshot output.
         class _FakeProc:
+            returncode = 0
+
             async def communicate(self):
                 return (b"snap-line-1\nsnap-line-2\n", b"")
+
+            async def wait(self):
+                return 0
 
         async def _make_proc(*_a, **_kw):
             return _FakeProc()

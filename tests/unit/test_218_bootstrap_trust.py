@@ -192,7 +192,7 @@ async def test_completion_fails_when_the_clean_verify_cannot_run(
         daemon, "_verify_env_cache_clean", AsyncMock(return_value=(None, "docker down")),
     )
 
-    ok, err = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
+    ok, err, _infra = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
 
     assert ok is False
     assert err is not None
@@ -406,8 +406,8 @@ async def test_honest_bootstrap_passes_end_to_end(
     daemon = CoordinareDaemon(AsyncMock(), max_cycles=1, sleep_func=AsyncMock())
     daemon._state["coordinare_config"] = mount_config()
     daemon._state["env_cache"] = _ctx(state)["env_cache"]
-    ok, err = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
-    assert (ok, err) == (True, None)
+    ok, err, _infra = await daemon._verify_bootstrap_in_clean_context("sym", SVC, "job-1")
+    assert (ok, err, _infra) == (True, None, False)
     assert fake.stdin_seen == [state.rendered_verify_sh.encode()]
 
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)

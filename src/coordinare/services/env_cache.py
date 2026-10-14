@@ -469,8 +469,16 @@ async def verify_env_cache_clean(
     container_path = f"{devenv_root}/{ec.sanitised_name}"
     # 218: the daemon's script is piped on stdin (bash -s), so the cache copy of verify.sh is
     # never run. The cache is mounted read-only, as a consumer sees it.
+    # 218 (review): the image's BASH_ENV is the devenv profile. Bash sources it before `bash -s` reads
+    # stdin, and it unpacks the cache's debs, symlinks /usr/bin entries and sources the cache's
+    # activate.sh. Empty BASH_ENV and ENV stop that for bash and sh. _DEVENV_SOURCED makes the profile
+    # a no-op even if a variable is re-exported, and _DEVENV_SKIP_SERVICES stops any service start.
     cmd = [
         "docker", "run", "--rm", "-i",
+        "-e", "BASH_ENV=",
+        "-e", "ENV=",
+        "-e", "_DEVENV_SOURCED=1",
+        "-e", "_DEVENV_SKIP_SERVICES=1",
         "-v", f"{cache_dir}:{container_path}:ro",
         "--entrypoint", "bash", str(image),
         "-s",
@@ -1367,12 +1375,13 @@ class EnvCacheService:
         mounts = _env_cache_mounts(cache_dir, performer_mounts)
         # 218: the text is rendered once, kept daemon-side (EnvCacheState) and written to the
         # cache only as a copy. Verification and the activate.sh gate use the daemon's text.
+        activate_text = render_activate_sh(manifest, cache_mount_path=cache_mount_path)
         verify_text = render_verify_sh(
             manifest,
             cache_mount_path=cache_mount_path,
             services=service_models,
+            activate_text=activate_text,
         )
-        activate_text = render_activate_sh(manifest, cache_mount_path=cache_mount_path)
         try:
             anchored_mkdir(cache_dir, mounts=mounts)
             replace_mounted_file(
@@ -1560,12 +1569,38 @@ class EnvCacheService:
         self._notify_tasks.add(task)
         task.add_done_callback(self._notify_tasks.discard)
 
+    def _spend_breaker_attempt(
+        self, symphony_name: str, cache_state: EnvCacheState, state: dict[str, Any],
+    ) -> None:
+        """088 (FR-009): one real bootstrap failure spends the attempt budget; exhaustion trips it."""
+        cache_state.bootstrap_attempts += 1
+        max_attempts = int(
+            getattr(
+                getattr(self._coordinare_config, "global_config", None),
+                "env_bootstrap_max_attempts",
+                3,
+            )
+            or 3,
+        )
+        if cache_state.bootstrap_attempts >= max_attempts and not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            logger.warning(
+                "env_cache.bootstrap_exhausted",
+                symphony=symphony_name,
+                attempts=cache_state.bootstrap_attempts,
+                max_attempts=max_attempts,
+                last_error=cache_state.last_bootstrap_error,
+            )
+            self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
         success: bool,
         state: dict[str, Any],
         error: str | None = None,
+        *,
+        infra_failure: bool = False,
     ) -> None:
         """Called when a bootstrap performer session ends.
 
@@ -1633,29 +1668,18 @@ class EnvCacheService:
         # With the SHA retained, retries flow through check_and_trigger's
         # escalating-cooldown branch (readme_sha == current ∧ succeeded=False),
         # and the consumer gate still holds (last_bootstrap_succeeded=False).
-        if not success:
-            cache_state.bootstrap_attempts += 1
-            max_attempts = int(
-                getattr(
-                    getattr(self._coordinare_config, "global_config", None),
-                    "env_bootstrap_max_attempts",
-                    3,
-                )
-                or 3,
+        if not success and infra_failure:
+            # 218 (review): docker could not run the clean verify. That is an outage, not a
+            # bootstrap that ran and failed, so the attempt budget is not spent. The reason
+            # stays on the cache state for the operator, and the cooldown retries it.
+            logger.error(
+                "env_cache.bootstrap_infra_failed",
+                symphony=symphony_name,
+                detail=error,
+                hint="docker could not run the clean verify; check the docker daemon. The attempt is not counted, so the bootstrap is retried after the cooldown.",
             )
-            if (
-                cache_state.bootstrap_attempts >= max_attempts
-                and not cache_state.bootstrap_exhausted
-            ):
-                cache_state.bootstrap_exhausted = True
-                logger.warning(
-                    "env_cache.bootstrap_exhausted",
-                    symphony=symphony_name,
-                    attempts=cache_state.bootstrap_attempts,
-                    max_attempts=max_attempts,
-                    last_error=cache_state.last_bootstrap_error,
-                )
-                self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+        elif not success:
+            self._spend_breaker_attempt(symphony_name, cache_state, state)
 
         logger.info(
             "env_cache.bootstrap_complete",

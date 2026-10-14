@@ -3936,7 +3936,7 @@ class CoordinareDaemon:
 
     async def _verify_bootstrap_in_clean_context(
         self, symphony_name: str, svc: Any, job_id: str,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, bool]:
         """077 authoritative clean-context verify: re-run the daemon-rendered verify.sh in a
         clean consumer container. Returns the (ok, boot_err) pair to record.
 
@@ -3955,10 +3955,64 @@ class CoordinareDaemon:
                 detail=_clean_detail,
                 could_not_run=_clean_ok is None,
             )
+            # 218 (review): a verify docker could not run is an infrastructure failure (not
+            # counted against the breaker). A verify that ran and failed is a real failure.
             return False, (
                 f"env verification failed in a clean consumer context: {_clean_detail}"
+            ), _clean_ok is None
+        return True, None, False
+
+    async def _quiesce_bootstrap_container(self, container_id: str | None, symphony_name: str) -> bool:
+        """218 (review): True when the bootstrap container can no longer write the cache.
+
+        The performer reports terminal while its container may still run, and the clean verify
+        reads the cache. ``docker stop`` returns once the container has exited. A failed stop is still
+        quiet when the container is gone (``--rm`` removes it on exit), and ``docker container
+        inspect`` says so. A container still running is not quiet, and the verify must not run.
+        With no container id (a transport that does not expose one) nothing can be confirmed, and that
+        is logged.
+        """
+        if not container_id:
+            logger.warning(
+                "env_cache.bootstrap_container_unknown",
+                symphony=symphony_name,
+                detail="no container id for this bootstrap; its exit cannot be confirmed",
             )
-        return True, None
+            return True
+        try:
+            stop = await asyncio.create_subprocess_exec(
+                "docker", "stop", "--time", "5", container_id,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(stop.wait(), timeout=20.0)
+            if stop.returncode == 0:
+                return True
+            inspect = await asyncio.create_subprocess_exec(
+                "docker", "container", "inspect", "--format", "{{.State.Running}}", container_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(inspect.communicate(), timeout=20.0)
+        except Exception as exc:
+            logger.error(
+                "env_cache.bootstrap_quiesce_failed",
+                symphony=symphony_name,
+                container_id=container_id[:12],
+                error=str(exc),
+            )
+            return False
+        if inspect.returncode != 0:
+            return True  # no such container: it exited and was removed
+        running = out.decode(errors="replace").strip() == "true"
+        if running:
+            logger.error(
+                "env_cache.bootstrap_container_still_running",
+                symphony=symphony_name,
+                container_id=container_id[:12],
+                detail="verification not run; the bootstrap container could not be stopped",
+            )
+        return not running
 
     async def _bootstrap_idle_reap(
         self,
@@ -4074,11 +4128,22 @@ class CoordinareDaemon:
                 or status_result.get("reason")
                 or "bootstrap performer reported a terminal failure"
             )
+        # 218 (review): the verify reads the cache, so it runs only after the bootstrap container has
+        # exited or been removed. A container that is still running fails the bootstrap (not counted).
+        infra = False
+        if ok and not await self._quiesce_bootstrap_container(container_id, symphony_name):
+            ok, infra = False, True
+            _boot_err = "bootstrap container could not be confirmed stopped; verification was not run"
         if ok:
-            ok, _boot_err = await self._verify_bootstrap_in_clean_context(
+            ok, _boot_err, infra = await self._verify_bootstrap_in_clean_context(
                 symphony_name, svc, job_id,
             )
-        env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state, error=_boot_err)
+        if infra:
+            env_cache_svc.on_bootstrap_complete(
+                symphony_name, ok, self._state, error=_boot_err, infra_failure=True,
+            )
+        else:
+            env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state, error=_boot_err)
         if ok:
             from coordinare.services.http_performer_service import HTTPPerformerService
 
