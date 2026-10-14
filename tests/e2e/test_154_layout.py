@@ -27,7 +27,6 @@ from tests.e2e.test_dashboard_browser import (
 
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 800
-MIN_DESCRIPTION_WIDTH = 240  # the 47-character sentence at 11px, uncut
 DESCRIPTION_LINE_HEIGHT = 16
 RUNNING_CARDS = 2
 BOARD_CARDS = 6
@@ -479,11 +478,19 @@ def test_the_conductor_description_sits_on_its_own_line_and_shows_about_sixty_ch
     box = desc.bounding_box()
     assert phase is not None and box is not None
     assert box["y"] >= phase["y"] + phase["height"] - 1, (phase, box)
-    # The sentence is 47 characters: it must show in full, with no ellipsis, on one line.
-    assert box["width"] >= MIN_DESCRIPTION_WIDTH, box
+    # The sentence is 47 characters: it must show in full, with no ellipsis, on one line. Pixel
+    # widths differ between font stacks (CI renders it narrower), so the check is "not cut".
     assert box["height"] <= DESCRIPTION_LINE_HEIGHT + 2, box
     fits = desc.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
     assert fits, "the description is cut"
+    # Room for about sixty characters: a sixty-character sentence also fits uncut.
+    sixty = "Performer agent is actively working on the card, still going."
+    room = desc.evaluate(
+        "(el, text) => { const old = el.textContent; el.textContent = text;"
+        " const ok = el.scrollWidth <= el.clientWidth + 1; el.textContent = old; return ok; }",
+        sixty,
+    )
+    assert room, "a sixty-character description would be cut"
 
 
 @pytest.mark.e2e
