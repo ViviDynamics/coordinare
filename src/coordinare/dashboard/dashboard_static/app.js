@@ -930,7 +930,8 @@ function pushRoute(url) {
 // moves there, keeping the query string.
 function redirectRetiredPages() {
   if (location.pathname !== '/admin/config') return;
-  history.replaceState(null, '', '/config' + location.search + '#global');
+  // 143 second review: the redirected entry keeps a sequence number, so a later Back can return to it exactly.
+  history.replaceState({seq: _navSeq}, '', '/config' + location.search + '#global');
 }
 function router() {
   tagRouteEntry();

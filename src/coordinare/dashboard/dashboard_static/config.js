@@ -13,10 +13,13 @@ function cfgDiffText(value) {
 
 // 143: one row per setting whose value differs, old to new. A secret is reported as
 // changed, never with either value. Pure, so the node check runs it as it ships.
+// 143: one row per setting whose value differs, old to new. A secret is never shown; a
+// cleared secret says so. Pure, so the node check runs it as it ships.
 function cfgDiffRows(items) {
   return (items || []).filter(function(it) {
-    return JSON.stringify(it.before) !== JSON.stringify(it.after);
+    return it.cleared || JSON.stringify(it.before) !== JSON.stringify(it.after);
   }).map(function(it) {
+    if (it.cleared) return {label: it.label, before: '(hidden)', after: '(cleared)', secret: true};
     if (it.secret) return {label: it.label, before: '(hidden)', after: '(hidden)', secret: true};
     return {label: it.label, before: cfgDiffText(it.before), after: cfgDiffText(it.after), secret: false};
   });
@@ -219,6 +222,13 @@ function cfgInput(s) {
     return '<textarea ' + base + ' rows="2" style="' + CFG_INPUT + '">' + esc(scalar) + '</textarea>';
   }
   var ph = s.secret ? ' placeholder="leave masked to keep current"' : '';
+  if (s.secret) {
+    // 143 second review: a secret is a password field, and it has its own Clear action.
+    return '<div style="display:flex;gap:6px;align-items:center">'
+      + '<input type="password" autocomplete="off" ' + base + ph + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">'
+      + '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc(field) + '">Clear</button>'
+      + '</div>';
+  }
   return '<input type="text" ' + base + ph + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">';
 }
 
@@ -254,15 +264,18 @@ function cfgSecretChanged(now) {
   return now !== null && now !== undefined && now !== '' && now !== CFG_SECRET_MASK;
 }
 
+// 143 second review: a cleared secret is sent as the empty string the server accepts.
 function cfgCollectChanges(container) {
   var changes = {};
   container.querySelectorAll('[data-field]').forEach(function(el) {
     if (el.closest('[data-create]')) return;
+    var field = el.getAttribute('data-field');
+    if (el.getAttribute('data-clear') === 'true') { changes[field] = ''; return; }
     var coerced = cfgCoerce(el);
     var changed = el.getAttribute('data-secret') === 'true'
       ? cfgSecretChanged(coerced)
       : !cfgSameValue(coerced, cfgParseSaved(el.getAttribute('data-orig')));
-    if (changed) changes[el.getAttribute('data-field')] = coerced;
+    if (changed) changes[field] = coerced;
   });
   return changes;
 }
@@ -280,19 +293,22 @@ function cfgParseSaved(text) {
 // create form is left out unless withCreate is set, because it has nothing saved.
 // 143: every setting in a container, with its saved value and its value now. A create
 // form is left out unless withCreate is set.
+// 143: every setting in a container, with its saved value and its value now. A create
+// form is left out unless withCreate is set. A cleared secret is a change to ''.
 function cfgEntries(container, withCreate) {
   var out = [];
   function inScope(el) { return withCreate || !el.closest('[data-create]'); }
   container.querySelectorAll('[data-field]').forEach(function(el) {
     if (!inScope(el)) return;
-    var now = cfgCoerce(el);
-    var saved = cfgParseSaved(el.getAttribute('data-orig'));
     var secret = el.getAttribute('data-secret') === 'true';
+    var cleared = el.getAttribute('data-clear') === 'true';
+    var now = cleared ? '' : cfgCoerce(el);
+    var saved = cfgParseSaved(el.getAttribute('data-orig'));
     out.push({
       key: el.getAttribute('data-field'),
       label: el.getAttribute('data-label') || el.getAttribute('data-field'),
-      before: saved, after: now, secret: secret,
-      changed: secret ? cfgSecretChanged(now) : !cfgSameValue(now, saved),
+      before: saved, after: now, secret: secret, cleared: cleared,
+      changed: secret ? (cleared || cfgSecretChanged(now)) : !cfgSameValue(now, saved),
     });
   });
   container.querySelectorAll('[data-rkey]').forEach(function(el) {
@@ -301,7 +317,7 @@ function cfgEntries(container, withCreate) {
     var saved = cfgParseSaved(el.getAttribute('data-rorig'));
     out.push({
       key: el.getAttribute('data-rkey'), label: el.getAttribute('data-rkey'),
-      before: saved, after: now, secret: false,
+      before: saved, after: now, secret: false, cleared: false,
       changed: !cfgSameValue(now, saved),
     });
   });
@@ -331,6 +347,8 @@ function cfgNewRows(container) {
 // 143: after a save, what is on screen is what is saved, so the next change is measured
 // from here. A secret is never kept: its baseline is the masked marker and its input is
 // cleared. A create form that was just submitted is measured from its current values.
+// 143: after a save, what is on screen is what is saved, so the next change is measured
+// from here. A secret is never kept: its baseline is the masked marker and its input is cleared.
 function cfgRebaseline(container) {
   var own = container.hasAttribute('data-create');
   function inScope(el) { return own || !el.closest('[data-create]'); }
@@ -339,6 +357,7 @@ function cfgRebaseline(container) {
     if (el.getAttribute('data-secret') === 'true') {
       el.setAttribute('data-orig', JSON.stringify(CFG_SECRET_MASK));
       el.value = '';
+      el.removeAttribute('data-clear');
       return;
     }
     el.setAttribute('data-orig', JSON.stringify(cfgCoerce(el)));
@@ -449,23 +468,83 @@ function cfgSetControl(el, value) {
 // form, against the current values, for the reader to check and save again.
 // 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
 // the current values. A New form that was refused is opened again so the edits can be seen.
+// 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
+// the current values. A New form that was refused is opened again so the edits can be seen.
 function cfgReapplyPending() {
   var pending = _cfgPending;
   if (!pending) return;
   _cfgPending = null;
-  var box = null;
-  document.querySelectorAll('#config-page-section [data-scope]').forEach(function(el) {
-    if (!box && el.getAttribute('data-scope') === pending.scope) box = el;
-  });
+  var box = cfgFindScope(pending.scope);
   if (!box) return;
   if (box.hasAttribute('data-create')) box.style.display = '';
-  box.querySelectorAll('[data-field], [data-rkey]').forEach(function(el) {
-    var key = el.getAttribute('data-field') || el.getAttribute('data-rkey');
-    if (Object.prototype.hasOwnProperty.call(pending.changes, key)) {
-      cfgSetControl(el, pending.changes[key]);
-    }
-  });
+  cfgRestoreEdits([{scope: pending.scope, changes: pending.changes}]);
   cfgFlash(box.querySelector('[data-status]'), 'Your edits are back in the form. Check them, then save again.', 'blue');
+}
+
+function cfgFindScope(scope) {
+  var found = null;
+  document.querySelectorAll('#config-page-section [data-scope]').forEach(function(el) {
+    if (!found && el.getAttribute('data-scope') === scope) found = el;
+  });
+  return found;
+}
+
+// Puts saved values back into their controls, by scope and key. Used after a reload of
+// the routing list and after a refused save.
+function cfgRestoreEdits(list) {
+  (list || []).forEach(function(item) {
+    var box = cfgFindScope(item.scope);
+    if (!box) return;
+    box.querySelectorAll('[data-field], [data-rkey]').forEach(function(el) {
+      var key = el.getAttribute('data-field') || el.getAttribute('data-rkey');
+      if (Object.prototype.hasOwnProperty.call(item.changes, key)) {
+        cfgSetControl(el, item.changes[key]);
+      }
+    });
+  });
+}
+
+// The edits in every routing entry that has any, keyed by the entry's scope, so the list
+// can be drawn again without losing them.
+var _cfgKept = null;
+function cfgSnapshotEdits() {
+  var out = [];
+  document.querySelectorAll('#config-page-section [data-rentry][data-scope]:not([data-create])').forEach(function(box) {
+    var changes = {};
+    var any = false;
+    cfgEntries(box).forEach(function(e) {
+      if (e.changed) { changes[e.key] = e.after; any = true; }
+    });
+    if (any) out.push({scope: box.getAttribute('data-scope'), changes: changes});
+  });
+  return out;
+}
+
+// 143 second review: after a routing write the list is drawn again from the server, and
+// the typing in the other entries is put back, so the redraw loses none of it.
+function cfgRefreshRouting() {
+  _cfgKept = cfgSnapshotEdits();
+  loadRoutingEntries();
+}
+
+// 143 second review: a secret is cleared by its own action. The field shows that it will be
+// cleared, and typing in it again takes the clear back.
+function cfgClearSecret(btn, field) {
+  var container = btn.closest('[data-section], [data-item]');
+  if (!container) return;
+  var statusEl = container.querySelector('[data-status]');
+  container.querySelectorAll('[data-field]').forEach(function(el) {
+    if (el.getAttribute('data-field') !== field) return;
+    el.value = '';
+    el.setAttribute('data-clear', 'true');
+    el.placeholder = 'Will be cleared when you save';
+    cfgFlash(statusEl, 'The stored value will be cleared when you save.', 'orange');
+  });
+}
+
+// The entry a routing button acts on, as the server will check it: its backend and model.
+function cfgExpectedEntry(btn) {
+  return {backend: btn.getAttribute('data-cfg-backend') || '', model: btn.getAttribute('data-cfg-model') || ''};
 }
 
 // 143: the Settings page's unsaved edits. Editors stay in the page while a tab is
@@ -576,19 +655,29 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
     else if (body.applied === 'staged_restart') cfgFlash(statusEl, body.message || 'Saved · restart required to apply', 'orange');
     else if (body.applied === 'staged_next_job') cfgFlash(statusEl, 'Saved · applies on next job', 'blue');
     else cfgFlash(statusEl, 'Saved', 'green');
-    // Reload for the server's own values, unless another editor on the page holds
-    // edits that a reload would drop.
-    if (!cfgHasUnsaved()) setTimeout(loadConfigPage, 1000);
+    if (store === 'routing_yaml') {
+      cfgRefreshRouting();
+    } else {
+      // Reload for the server's own values after a moment, unless the reader has typed
+      // something new in the meantime: the check is made when the timer fires.
+      setTimeout(function() { if (!cfgHasUnsaved()) loadConfigPage(); }, 1000);
+    }
     return true;
   }
-  if (status === 409 || status === 428) { cfgConflict(statusEl, status, body); return false; }
+  // A conflict keeps the refused edits for "Reload and reapply". Anything else is a rejected value,
+  // and it is not replayed later.
+  var conflicted = status === 428 || (status === 409 && body && body.conflict);
+  if (conflicted) { cfgConflict(statusEl, status, body); return false; }
+  _cfgPending = null;
   var errs = body.errors || [];
   cfgApplyErrors(container, errs);
   var general = errs.filter(function(e) { return !e.key; }).map(function(e) { return e.message; }).join('; ');
-  cfgFlash(statusEl, general || body.message || ('Error ' + status), 'red');
+  cfgFlash(statusEl, general || body.message || body.error || ('Error ' + status), 'red');
   return false;
 }
 
+// 143 second review: a save that gets no answer in time is reported, and the form unlocks.
+var CFG_SAVE_TIMEOUT_MS = 30000;
 async function cfgPut(url, payload, container, statusEl, btn) {
   // Fail closed, as the old Global Config page did: without a version to write
   // against, the server would refuse anyway, and saying so here explains what to do.
@@ -598,17 +687,26 @@ async function cfgPut(url, payload, container, statusEl, btn) {
     return;
   }
   if (btn) btn.disabled = true;
+  var controller = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = setTimeout(function() { if (controller) controller.abort(); }, CFG_SAVE_TIMEOUT_MS);
   try {
     var headers = {'Content-Type': 'application/json'};
     if (payload['If-Match'] !== undefined) headers['If-Match'] = payload['If-Match'];
     var r = await fetch(url, {method: payload._method || 'PUT', headers: headers,
-      body: JSON.stringify(payload.body)});
+      body: JSON.stringify(payload.body), signal: controller ? controller.signal : undefined});
     var body = {};
     try { body = await r.json(); } catch(e) { body = {}; }
+    clearTimeout(timer);
     if (payload.reload && r.ok) loadConfigPage();
     else cfgHandleSave(r.status, body, container, statusEl, payload.store, r.headers.get('ETag'));
   } catch(e) {
-    cfgFlash(statusEl, 'Network error', 'red');
+    if (e && e.name === 'AbortError') {
+      cfgFlash(statusEl, 'The save did not finish in time, so it may or may not have been saved. Reload to see the current values.', 'red');
+    } else {
+      cfgFlash(statusEl, 'Network error', 'red');
+    }
+  } finally {
+    clearTimeout(timer);
   }
   // The form stays locked from the review until the answer, then it is editable again.
   cfgLock(container, false);
@@ -731,16 +829,17 @@ function cfgRoutingFields(e) {
     + cfgRRow('target.reroute_upstream', cfgRText('target.reroute_upstream', t.reroute_upstream, 'string', 'only for reroute strategy'));
 }
 function cfgRoutingEntryBlock(entry, index) {
-  // 143 review: an entry is identified by what it is (backend and model), not by its place in the list.
+  // 143: an entry is identified by what it is (backend and model), not by its place in the list.
   var identity = 'routing:' + String(entry.backend || '') + '|' + String(entry.model || '');
+  var named = ' data-cfg-backend="' + esc(entry.backend || '') + '" data-cfg-model="' + esc(entry.model || '') + '"';
   return '<div data-rentry data-scope="' + esc(identity) + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
     + esc(entry.backend || '') + ' / ' + esc(entry.model || '') + '</div>'
     + cfgRoutingFields(entry)
     + cfgUsedByHtml(entry.used_by)
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
-    + '<button type="button" class="cfg-btn" data-cfg-action="save-routing" data-cfg-index="' + index + '">Save</button>'
-    + '<button type="button" class="cfg-btn cfg-btn-danger" data-cfg-action="delete-routing" data-cfg-index="' + index + '">Delete</button>'
+    + '<button type="button" class="cfg-btn" data-cfg-action="save-routing" data-cfg-index="' + index + '"' + named + '>Save</button>'
+    + '<button type="button" class="cfg-btn cfg-btn-danger" data-cfg-action="delete-routing" data-cfg-index="' + index + '"' + named + '>Delete</button>'
     + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
 }
 function cfgRoutingAddBlock() {
@@ -772,19 +871,23 @@ function cfgSaveRoutingEntry(btn, index) {
   if (!entries.length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
   var changes = cfgCollectRoutingChanges(container, false);
   var pending = cfgPendingFor(container, entries);
+  var expected = cfgExpectedEntry(btn);
   cfgShowReview(container, cfgDiffRows(entries), function() {
     _cfgPending = pending;
     cfgPut('/api/config/routing/entry/' + index,
-      {store: 'routing_yaml', body: {changes: changes, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+      {store: 'routing_yaml', body: {changes: changes, base_hash: _cfgRoutingHash, expected: expected}},
+      container, statusEl, btn);
   });
 }
 function cfgDeleteRoutingEntry(btn, index) {
   var container = btn.closest('[data-rentry]');
   var statusEl = container.querySelector('[data-status]');
+  var expected = cfgExpectedEntry(btn);
   var rows = [{label: 'This routing entry', before: 'present', after: '(deleted)', secret: false}];
   cfgShowReview(container, rows, function() {
     cfgPut('/api/config/routing/entry/' + index,
-      {store: 'routing_yaml', _method: 'DELETE', body: {base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+      {store: 'routing_yaml', _method: 'DELETE', body: {base_hash: _cfgRoutingHash, expected: expected}},
+      container, statusEl, btn);
   });
 }
 function cfgCreateRoutingEntry(btn) {
@@ -827,6 +930,7 @@ async function loadRoutingEntries() {
     host.innerHTML = entries.length
       ? entries.map(function(e, i) { return cfgRoutingEntryBlock(e, i); }).join('')
       : '<div class="empty-state">No routing entries yet.</div>';
+    if (_cfgKept) { cfgRestoreEdits(_cfgKept); _cfgKept = null; }
   } catch(e) {
     host.innerHTML = '<div class="empty-state">Failed to load routing entries</div>';
   }
@@ -977,10 +1081,14 @@ function cfgPersonaBlock(p, usedBy) {
 }
 
 // 143 review: Reset to default goes through the same review as every other change.
+// 143: Reset to default goes through the review. Unsaved text in the box is named as discarded.
 function cfgResetPersona(btn, role) {
   var container = btn.closest('[data-item]');
   var statusEl = container.querySelector('[data-status]');
   var rows = [{label: 'Persona text', before: 'the text in use', after: 'the default text', secret: false}];
+  if (cfgEntries(container).some(cfgChanged)) {
+    rows.push({label: 'Unsaved text in this box', before: '(your edit)', after: '(discarded)', secret: false});
+  }
   cfgShowReview(container, rows, function() {
     cfgPut('/api/personas/' + encodeURIComponent(role),
       {store: 'persona', _method: 'DELETE', 'If-Match': _personaCfgHash || '', reload: true},
@@ -1117,6 +1225,14 @@ function cfgWireControls() {
     var tab = event.target && event.target.closest ? event.target.closest('[data-cfg-tab]') : null;
     if (tab) cfgTabKey(event, tab.getAttribute('data-cfg-tab'));
   });
+  // Typing into a secret takes back a clear that was asked for, so the typed value is what is sent.
+  root.addEventListener('input', function(event) {
+    var t = event.target;
+    if (t && t.getAttribute && t.getAttribute('data-clear') === 'true') {
+      t.removeAttribute('data-clear');
+      t.placeholder = 'leave masked to keep current';
+    }
+  });
 }
 
 function cfgRunAction(el, event) {
@@ -1131,6 +1247,7 @@ function cfgRunAction(el, event) {
   else if (action === 'delete-item') cfgDeleteItem(el, catalog, id);
   else if (action === 'create-item') cfgCreateItem(el, catalog);
   else if (action === 'reset-persona') cfgResetPersona(el, id);
+  else if (action === 'clear-secret') cfgClearSecret(el, el.getAttribute('data-clear-for') || '');
   else if (action === 'save-routing') cfgSaveRoutingEntry(el, index);
   else if (action === 'delete-routing') cfgDeleteRoutingEntry(el, index);
   else if (action === 'create-routing') cfgCreateRoutingEntry(el);

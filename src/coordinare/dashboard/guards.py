@@ -198,8 +198,17 @@ def _version_refusal(
         conflict = None
         break
     if conflict is not None:
-        return JSONResponse({"error": str(conflict), "conflict": True}, status_code=409)
+        return conflict_refusal(str(conflict))
     return None
+
+
+def conflict_refusal(message: str) -> JSONResponse:
+    """A 409 that the page reads as a version conflict: the config changed since it loaded.
+
+    143 second review: the one place that says so. A refusal that is not a version
+    clash must not use it, or the page will tell the reader to reload for nothing.
+    """
+    return JSONResponse({"error": message, "conflict": True}, status_code=409)
 
 def _version_headers(config_path: Any) -> dict[str, str]:
     """The current version of the config file, as an ``ETag`` header.

@@ -12,6 +12,15 @@ from typing import Any
 import pytest
 from playwright.sync_api import Page, Route, expect
 
+from tests.e2e.test_143_settings import (
+    _WAIT,
+    _open_settings,
+    _setting,
+    _snapshot,
+    _stub_config,
+    _tab,
+)
+
 
 @pytest.fixture(autouse=True)
 def _close_without_the_leave_prompt(page: Page) -> Generator[None, None, None]:
@@ -25,15 +34,6 @@ def _close_without_the_leave_prompt(page: Page) -> Generator[None, None, None]:
     page.evaluate(
         "() => window.addEventListener('beforeunload', (event) => event.stopImmediatePropagation(), true)",
     )
-
-from tests.e2e.test_143_settings import (
-    _WAIT,
-    _open_settings,
-    _setting,
-    _snapshot,
-    _stub_config,
-    _tab,
-)
 
 
 def _routing_entry(backend: str, model: str, base_url: str) -> dict[str, Any]:

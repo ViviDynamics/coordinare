@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from coordinare.config_usage import routing_used_by
 from coordinare.config_validation import validate_raw_config
+from coordinare.dashboard.guards import conflict_refusal
 from coordinare.dashboard.routers.config_write import (
     _atomic_write_yaml,
     _global_cfg_editable,
@@ -129,6 +130,14 @@ def _apply_reload_or_stage(daemon: Any, result: Any, what: str) -> None:
             "Saved to disk, but the live reload failed; restart the "
             "coordinare to apply this change."
         )
+
+def _routing_moved_refusal() -> JSONResponse:
+    """143 second review: a routing write whose index moved is a conflict, as any other."""
+    return conflict_refusal(
+        "The routing table changed since this page loaded, so nothing was saved. "
+        "Reload and reapply your edits.",
+    )
+
 
 def _routing_location(daemon: Any) -> Any:
     """Resolve the host-side routing-table location from the live config, or None.
@@ -701,6 +710,8 @@ def _register_put_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> N
                     "code": "validation", "message": "Request body must be a JSON object."}]},
                     status_code=422)
 
+            if routing_config_service.routing_entry_moved(location, index, body.get("expected")):
+                return _routing_moved_refusal()
             result = routing_config_service.update_routing_entry(
                 location, index, body.get("changes", {}), body.get("base_hash", ""),
             )
@@ -727,6 +738,8 @@ def _register_delete_config_routing_entry(app: FastAPI, ctx: DashboardContext) -
             if not isinstance(body, dict):
                 body = {}
 
+            if routing_config_service.routing_entry_moved(location, index, body.get("expected")):
+                return _routing_moved_refusal()
             result = routing_config_service.delete_routing_entry(
                 location, index, body.get("base_hash", ""),
             )

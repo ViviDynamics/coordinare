@@ -510,3 +510,20 @@ def delete_routing_entry(
 
     del entries[index]
     return _write_entries(location, entries, base_hash)
+
+
+def routing_entry_moved(location: RoutingLocation | None, index: int, expected: Any) -> bool:
+    """True when a write names an entry (its backend and model) that is not at ``index`` now.
+
+    143 second review: the table can change between a page's load and its save, so an index
+    may point at a different entry. A write that names no entry is not refused here.
+    """
+    if not isinstance(expected, dict):
+        return False
+    entries = read_routing(location).entries
+    current = entries[index] if 0 <= index < len(entries) else None
+    return not (
+        current is not None
+        and current.get("backend") == expected.get("backend")
+        and current.get("model") == expected.get("model")
+    )
