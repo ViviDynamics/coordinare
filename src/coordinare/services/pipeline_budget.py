@@ -75,6 +75,11 @@ def configured_review_limit(config: Any) -> int | None:
     return max(raw, limit) if isinstance(limit, int) and not isinstance(limit, bool) else raw
 
 
+def review_cap_detail(review_limit: int | None, waiting: int) -> str:
+    """The one wording for a card held back by ``max_cards_in_review`` (#149)."""
+    return f"max_cards_in_review is {review_limit}: {waiting} waiting on review"
+
+
 def select_pipelines(
     sessions: dict[str, Any], limit: int, eligible: set[str] | None = None,
     review_limit: int | None = None,
