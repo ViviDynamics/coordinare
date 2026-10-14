@@ -65,7 +65,7 @@ flowchart LR
 
 - **Board columns** map to workflow phases (TODO → IN_PROGRESS → IN_REVIEW → DONE; BLOCKED is a parking lot).
 - **`max_concurrent_cards`** limits how many cards are active at once (a slot model). A card holds a slot while it has work of ours to do or under way. In-review and blocked cards don't consume a working slot: a card waiting on PR review releases its slot so the next card can start, and when it needs a performer again (feedback, a failing check, a rebase) it goes ahead of cards that have not started, once a slot is free. It never interrupts a running performer.
-- **`max_cards_in_review`** (default 3) caps how many cards may wait on review at once. When it is reached, no new card is started until a review lands; cards already in flight continue.
+- **`max_cards_in_review`** (default 3) caps how many cards may wait on review at once. When that many are waiting, no new card is started until a review lands; cards already in flight continue, so the number in review can pass the cap by up to `max_concurrent_cards - 1`. The effective cap is never below `max_concurrent_cards`.
 - **Bounces** send a card back to the implementer with the failing checks; **infra failures** are parked in BLOCKED (not bounced) and the operator is notified; **only humans approve** the final merge.
 - **BLOCKED is no longer a dead end.** Each cycle, before skipping a blocked card, coordinare
   re-evaluates whether its blocker still holds and **auto-recovers** it to the right stage when it

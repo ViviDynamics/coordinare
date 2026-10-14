@@ -48,16 +48,31 @@ def has_open_pr(session: dict[str, Any]) -> bool:
     return bool(card.get('pr_node_id') or card.get('pr_number') or card.get('pr_url'))
 
 
-def review_cap_reached(sessions: dict[str, Any], review_limit: int | None) -> bool:
-    """Are as many cards parked in review as ``max_cards_in_review`` allows?"""
-    if review_limit is None:
-        return False
-    return sum(1 for session in sessions.values() if is_parked_in_review(session)) >= review_limit
+def parked_in_review(sessions: dict[str, Any]) -> int:
+    return sum(1 for session in sessions.values() if is_parked_in_review(session))
+
+
+def review_cap_allows_new_card(sessions: dict[str, Any], review_limit: int | None) -> bool:
+    """May a card that has not started be admitted under ``max_cards_in_review``?
+
+    The cap counts cards parked in review, as issue #179 words it. Cards that
+    already hold a slot when it is reached still finish and park, so the number
+    in review can exceed the cap by at most ``max_concurrent_cards - 1``.
+    """
+    return review_limit is None or parked_in_review(sessions) < review_limit
 
 
 def configured_review_limit(config: Any) -> int | None:
+    """The effective ``max_cards_in_review``, or None for no cap.
+
+    It is never below ``max_concurrent_cards``: a deployment that runs five
+    cards at once is not throttled to three by the default.
+    """
     raw = getattr(config, 'max_cards_in_review', None)
-    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return None
+    limit = getattr(config, 'max_concurrent_cards', 1)
+    return max(raw, limit) if isinstance(limit, int) and not isinstance(limit, bool) else raw
 
 
 def select_pipelines(
@@ -97,7 +112,7 @@ def select_pipelines(
     selected = set(running)
     retained = [cid for cid in candidates if sessions[cid].get('pipeline_admitted')]
     returning = [cid for cid in candidates if has_open_pr(sessions[cid])]
-    fresh = [] if review_cap_reached(sessions, review_limit) else candidates
+    fresh = candidates if review_cap_allows_new_card(sessions, review_limit) else []
     for cid in [*retained, *returning, *fresh]:
         if len(selected) >= max(1, limit):
             break
@@ -127,7 +142,8 @@ def dispatch_has_pipeline_slot(state: CoordinareState, card_id: str) -> bool:
         candidates[card_id] = candidate
         selected = select_pipelines(candidates, limit, review_limit=review_limit)
     elif card_id not in selected and len(selected) < limit and (
-        has_open_pr(sessions.get(card_id) or {}) or not review_cap_reached(sessions, review_limit)
+        has_open_pr(sessions.get(card_id) or {})
+        or review_cap_allows_new_card(sessions, review_limit)
     ):
         # Recovery may discover new eligible work during a graph tick, and a
         # card parked in review asks for its slot here when it needs a performer

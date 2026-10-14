@@ -24,7 +24,9 @@ slot while it has work of ours to do or under way.
   displaces an issue that already holds a slot.
 - `max_cards_in_review` (default 3, `null` for none) caps how many issues may be parked
   in review. When the cap is reached, issues that have not started are not admitted and
-  their skip reason is `review_capacity`. Issues already in flight continue.
+  their skip reason is `review_capacity`. Issues already in flight continue and park
+  when they finish, so the number in review can pass the cap by up to
+  `max_concurrent_cards - 1`. The effective cap is never below `max_concurrent_cards`.
 
 Queued sessions remain tracked and show `Queued — issue limit reached` in performer
 skip diagnostics, or `Queued: too many cards waiting on review` when the review cap

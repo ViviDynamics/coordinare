@@ -53,7 +53,8 @@ from coordinare.services.pipeline_budget import (
     has_live_side_writer,
     has_open_pr,
     is_parked_in_review,
-    review_cap_reached,
+    parked_in_review,
+    review_cap_allows_new_card,
     select_pipelines,
 )
 from coordinare.services.rebase import fetch_main_sha
@@ -1570,21 +1571,24 @@ async def _preflight_poll_board(
             logger.warning("multi_session.pre_poll_failed", exc_info=True)
 
 
-# #102, #179: cards parked in review that have already been logged, so a wait
-# is reported when it starts and not on every cycle.
-_review_wait_logged: set[str] = set()
+# #102, #179: cards parked in review that have already been logged, per
+# symphony, so a wait is reported when it starts and not on every cycle.
+_review_wait_logged: dict[str, set[str]] = {}
 
 
-def _log_review_waits(active_sessions: dict[str, Any], review_limit: int | None) -> None:
+def _log_review_waits(
+    active_sessions: dict[str, Any], review_limit: int | None, symphony: str,
+) -> None:
     """Say which cards started waiting on review.
 
     A parked card holds no pipeline slot (#179) and is still evaluated for
     merge every cycle (#102). It asks for a slot again when it needs a performer.
     """
     parked = {cid for cid, session in active_sessions.items() if is_parked_in_review(session)}
-    _review_wait_logged.intersection_update(parked)
-    for cid in sorted(parked - _review_wait_logged):
-        _review_wait_logged.add(cid)
+    logged = _review_wait_logged.setdefault(symphony, set())
+    logged.intersection_update(parked)
+    for cid in sorted(parked - logged):
+        logged.add(cid)
         logger.info(
             "session.awaiting_review",
             card_id=cid,
@@ -1633,7 +1637,8 @@ def _compute_session_eligibilities(
         review_limit,
     )
     state["_pipeline_selected"] = selected
-    held_by_review_cap = review_cap_reached(active_sessions, review_limit)
+    held_by_review_cap = not review_cap_allows_new_card(active_sessions, review_limit)
+    waiting = parked_in_review(active_sessions)
     details: dict[str, str] = {}
     for cid, eligibility in eligibilities.items():
         session = active_sessions[cid]
@@ -1646,11 +1651,11 @@ def _compute_session_eligibilities(
         # back cards that have not started.
         if held_by_review_cap and not has_open_pr(session) and len(selected) < max_cards:
             reason: EligibilityReason = "review_capacity"
-            details[cid] = f"{review_limit} cards already wait on review (max_cards_in_review)"
+            details[cid] = f"max_cards_in_review is {review_limit}: {waiting} waiting on review"
         else:
             reason = "pipeline_capacity"
         eligibilities[cid] = SessionEligibility(card_id=cid, eligible=False, reason=reason)
-    _log_review_waits(active_sessions, review_limit)
+    _log_review_waits(active_sessions, review_limit, str(state.get("current_symphony") or "__default__"))
 
     # Record skip reasons for ineligible sessions.
     skip_reasons: dict[str, dict[str, Any]] = {}

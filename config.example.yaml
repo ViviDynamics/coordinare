@@ -673,6 +673,7 @@ max_concurrent_cards: 1
 
 # How many cards may wait on PR review at once. When this many are waiting, no
 # new card is started until a review lands; cards already in flight continue.
+# The effective value is never below max_concurrent_cards.
 # Set to null for no cap. Range: 1-50. Default: 3.
 max_cards_in_review: 3
 

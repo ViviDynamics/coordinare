@@ -11,11 +11,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog
 
 from coordinare import daemon as daemon_module
 from coordinare.daemon import _compute_session_eligibilities
 from coordinare.graph.state import initial_state
 from coordinare.services.pipeline_budget import (
+    configured_review_limit,
     dispatch_has_pipeline_slot,
     is_parked_in_review,
     select_pipelines,
@@ -93,6 +95,14 @@ def test_the_review_cap_stops_new_cards_but_not_returning_ones() -> None:
     assert select_pipelines(sessions, 2, review_limit=None) == {"back", "fresh"}
 
 
+def test_the_cap_is_never_below_the_concurrency_limit() -> None:
+    """A deployment running five cards at once is not throttled by the default of three."""
+    assert configured_review_limit(SimpleNamespace(max_concurrent_cards=5, max_cards_in_review=3)) == 5
+    assert configured_review_limit(SimpleNamespace(max_concurrent_cards=1, max_cards_in_review=3)) == 3
+    assert configured_review_limit(SimpleNamespace(max_concurrent_cards=1, max_cards_in_review=None)) is None
+    assert configured_review_limit(None) is None
+
+
 def test_an_admitted_card_is_not_evicted_when_the_cap_is_reached_later() -> None:
     admitted = {**_todo("admitted"), "pipeline_admitted": True}
     sessions = {"p1": _parked("p1"), "admitted": admitted}
@@ -129,7 +139,7 @@ def test_the_skip_reason_names_the_review_cap() -> None:
     assert not eligibility["fresh"].eligible
     assert eligibility["fresh"].reason == "review_capacity"
     assert state["session_skip_reasons"]["fresh"]["reason"] == "review_capacity"
-    assert "2" in str(state["session_skip_reasons"]["fresh"]["detail"])
+    assert state["session_skip_reasons"]["fresh"]["detail"] == "max_cards_in_review is 2: 2 waiting on review"
 
 
 def test_a_full_pipeline_still_reports_the_issue_limit() -> None:
@@ -157,7 +167,7 @@ def test_a_parked_card_with_feedback_waits_when_the_slot_is_taken() -> None:
 
 def test_a_new_card_cannot_slip_past_the_review_cap_during_a_tick() -> None:
     sessions = {"p1": _parked("p1"), "fresh": _todo("fresh")}
-    state = _state(sessions, limit=2, review_limit=1)
+    state = _state(sessions, limit=1, review_limit=1)
     state["_pipeline_selected"] = set()
     assert not dispatch_has_pipeline_slot(state, "fresh")
     assert dispatch_has_pipeline_slot(state, "p1")
@@ -168,3 +178,15 @@ def test_dispatch_without_a_precomputed_selection_applies_the_same_rule() -> Non
     state = _state(sessions)
     assert state.get("_pipeline_selected") is None
     assert dispatch_has_pipeline_slot(state, "next")
+
+
+def test_each_symphony_logs_its_own_review_waits_once() -> None:
+    with structlog.testing.capture_logs() as captured:
+        for _ in range(2):
+            for symphony, cid in (("a", "card_a"), ("b", "card_b")):
+                sessions = {cid: _parked(cid)}
+                state = _state(sessions)
+                state["current_symphony"] = symphony
+                _compute_session_eligibilities(state, sessions, 1)
+    waits = [e["card_id"] for e in captured if e["event"] == "session.awaiting_review"]
+    assert waits == ["card_a", "card_b"]
