@@ -202,13 +202,43 @@ def _version_refusal(
     return None
 
 
-def conflict_refusal(message: str) -> JSONResponse:
+def conflict_refusal(message: str, body: dict[str, Any] | None = None) -> JSONResponse:
     """A 409 that the page reads as a version conflict: the config changed since it loaded.
 
     143 second review: the one place that says so. A refusal that is not a version
     clash must not use it, or the page will tell the reader to reload for nothing.
     """
-    return JSONResponse({"error": message, "conflict": True}, status_code=409)
+    payload: dict[str, Any] = dict(body or {})
+    payload.update({"error": message, "conflict": True})
+    return JSONResponse(payload, status_code=409)
+
+
+def save_response(result: Any, status: int) -> JSONResponse:
+    """A save result as the response. A stale-version failure carries the conflict flag (143 third check):
+    the page offers Reload and reapply only for that flag, and a real concurrent edit must get it."""
+    body = result.model_dump(mode="json")
+    if not result.ok and any(err.code == "conflict" for err in result.errors):
+        message = next(err.message for err in result.errors if err.code == "conflict")
+        return conflict_refusal(message, body)
+    return JSONResponse(body, status_code=status)
+
+
+def routing_expected_refusal(location: Any, index: int, expected: Any) -> JSONResponse | None:
+    """Refuse a routing write whose named entry is not the one at its index (143 second and third checks)."""
+    from coordinare import routing_config_service
+
+    problem = routing_config_service.routing_expected_problem(location, index, expected)
+    if problem is None:
+        return None
+    if problem == "malformed":
+        return JSONResponse({"ok": False, "errors": [{
+            "key": None, "code": "validation",
+            "message": "expected must name one routing entry, by its backend and model.",
+        }]}, status_code=422)
+    return conflict_refusal(
+        "The routing table changed since this page loaded, so nothing was saved. "
+        "Reload and reapply your edits.",
+    )
 
 def _version_headers(config_path: Any) -> dict[str, str]:
     """The current version of the config file, as an ``ETag`` header.

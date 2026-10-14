@@ -286,13 +286,6 @@ function cfgParseSaved(text) {
   try { return JSON.parse(text); } catch(e) { return text; }
 }
 
-// 143: the saved value of a field, read back from its data attribute.
-
-
-// 143: every setting in a container, with its saved value and its value now. A
-// create form is left out unless withCreate is set, because it has nothing saved.
-// 143: every setting in a container, with its saved value and its value now. A create
-// form is left out unless withCreate is set.
 // 143: every setting in a container, with its saved value and its value now. A create
 // form is left out unless withCreate is set. A cleared secret is a change to ''.
 function cfgEntries(container, withCreate) {
@@ -329,8 +322,23 @@ function cfgChanged(entry) { return entry.changed; }
 // 143: what a conflict reload puts back: each changed setting's value, by key.
 function cfgPendingFor(container, entries) {
   var changes = {};
-  entries.forEach(function(e) { changes[e.key] = e.after; });
-  return {scope: container.getAttribute('data-scope') || '', changes: changes};
+  var clears = {};
+  entries.forEach(function(e) {
+    changes[e.key] = e.after;
+    if (e.cleared) clears[e.key] = true;
+  });
+  var scope = container.getAttribute('data-scope') || '';
+  var index = container.getAttribute('data-entry-index');
+  var ordinal;
+  if (container.hasAttribute('data-rentry') && !container.hasAttribute('data-create')) {
+    // The occurrence of this entry's identity in the list, for a reapply after a conflict.
+    var same = Array.prototype.filter.call(
+      document.querySelectorAll('#config-page-section [data-rentry][data-scope]:not([data-create])'),
+      function(el) { return el.getAttribute('data-scope') === scope; });
+    ordinal = same.indexOf(container);
+  }
+  return {scope: scope, index: index === null ? undefined : Number(index), ordinal: ordinal,
+          changes: changes, clears: clears};
 }
 
 // 143: what a create form will add: one row per filled-in field, with secrets hidden.
@@ -342,13 +350,6 @@ function cfgNewRows(container) {
   });
 }
 
-// 143: after a save, what is on screen is what is saved, so the next change is
-// measured from here and the unsaved-changes prompt does not fire for it.
-// 143: after a save, what is on screen is what is saved, so the next change is measured
-// from here. A secret is never kept: its baseline is the masked marker and its input is
-// cleared. A create form that was just submitted is measured from its current values.
-// 143: after a save, what is on screen is what is saved, so the next change is measured
-// from here. A secret is never kept: its baseline is the masked marker and its input is cleared.
 function cfgRebaseline(container) {
   var own = container.hasAttribute('data-create');
   function inScope(el) { return own || !el.closest('[data-create]'); }
@@ -357,7 +358,10 @@ function cfgRebaseline(container) {
     if (el.getAttribute('data-secret') === 'true') {
       el.setAttribute('data-orig', JSON.stringify(CFG_SECRET_MASK));
       el.value = '';
-      el.removeAttribute('data-clear');
+      if (el.hasAttribute('data-clear')) {
+        el.removeAttribute('data-clear');
+        el.placeholder = 'leave masked to keep current';
+      }
       return;
     }
     el.setAttribute('data-orig', JSON.stringify(cfgCoerce(el)));
@@ -382,9 +386,6 @@ function cfgBaselineCreate() {
   });
 }
 
-// 143: the review step. A save first lists each changed setting, old and new, and goes
-// ahead only when the reader confirms; "Keep editing" leaves the edits as they are.
-// Built from DOM text nodes, so a value is never read as markup.
 // 143 review: the editor is locked while a review is open, so what the reader reviewed is
 // what gets sent. The caller passes a snapshot to onConfirm, never a fresh read of the form.
 function cfgLock(container, locked) {
@@ -464,27 +465,39 @@ function cfgSetControl(el, value) {
   el.value = value === null || value === undefined ? '' : String(value);
 }
 
-// 143: after "Reload and reapply", the edits a conflict refused are back in their
-// form, against the current values, for the reader to check and save again.
-// 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
-// the current values. A New form that was refused is opened again so the edits can be seen.
 // 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
 // the current values. A New form that was refused is opened again so the edits can be seen.
 function cfgReapplyPending() {
   var pending = _cfgPending;
   if (!pending) return;
   _cfgPending = null;
-  var box = cfgFindScope(pending.scope);
+  // A reapply finds the edit's entry by identity and occurrence: the list may have moved under the reader.
+  var item = {scope: pending.scope, ordinal: pending.ordinal, changes: pending.changes, clears: pending.clears};
+  var box = cfgFindEntry(item);
   if (!box) return;
   if (box.hasAttribute('data-create')) box.style.display = '';
-  cfgRestoreEdits([{scope: pending.scope, changes: pending.changes}]);
+  cfgRestoreEdits([item]);
   cfgFlash(box.querySelector('[data-status]'), 'Your edits are back in the form. Check them, then save again.', 'blue');
 }
 
-function cfgFindScope(scope) {
+// Finds the box an edit belongs to. A refresh after a write matches the entry at its index; a
+// reapply after a conflict matches the entry by its identity and its occurrence, because the other
+// editor may have moved it. A section has one box per scope, so the scope alone finds it.
+function cfgFindEntry(item) {
   var found = null;
+  var seen = 0;
   document.querySelectorAll('#config-page-section [data-scope]').forEach(function(el) {
-    if (!found && el.getAttribute('data-scope') === scope) found = el;
+    if (found || el.getAttribute('data-scope') !== item.scope) return;
+    if (item.index !== undefined && item.index !== null) {
+      if (el.getAttribute('data-entry-index') === String(item.index)) found = el;
+      return;
+    }
+    if (item.ordinal !== undefined && item.ordinal !== null) {
+      if (seen === item.ordinal) found = el;
+      seen += 1;
+      return;
+    }
+    found = el;
   });
   return found;
 }
@@ -493,37 +506,56 @@ function cfgFindScope(scope) {
 // the routing list and after a refused save.
 function cfgRestoreEdits(list) {
   (list || []).forEach(function(item) {
-    var box = cfgFindScope(item.scope);
+    var box = cfgFindEntry(item);
     if (!box) return;
     box.querySelectorAll('[data-field], [data-rkey]').forEach(function(el) {
       var key = el.getAttribute('data-field') || el.getAttribute('data-rkey');
-      if (Object.prototype.hasOwnProperty.call(item.changes, key)) {
-        cfgSetControl(el, item.changes[key]);
+      if (!Object.prototype.hasOwnProperty.call(item.changes, key)) return;
+      if (item.clears && item.clears[key]) {
+        el.value = '';
+        el.setAttribute('data-clear', 'true');
+        el.placeholder = 'Will be cleared when you save';
+        return;
       }
+      cfgSetControl(el, item.changes[key]);
     });
   });
 }
 
 // The edits in every routing entry that has any, keyed by the entry's scope, so the list
 // can be drawn again without losing them.
-var _cfgKept = null;
-function cfgSnapshotEdits() {
+var _cfgRefresh = null;
+var _cfgRemovedRoute = null;
+// The edits in every routing entry that has any, keyed by the entry's scope and its index. A
+// deleted entry's edits are dropped; the entries after it move up one place, so their index follows.
+function cfgSnapshotEdits(removed) {
   var out = [];
   document.querySelectorAll('#config-page-section [data-rentry][data-scope]:not([data-create])').forEach(function(box) {
+    var index = Number(box.getAttribute('data-entry-index'));
+    if (removed !== undefined && removed !== null) {
+      if (index === removed) return;
+      if (index > removed) index -= 1;
+    }
     var changes = {};
+    var clears = {};
     var any = false;
     cfgEntries(box).forEach(function(e) {
-      if (e.changed) { changes[e.key] = e.after; any = true; }
+      if (!e.changed) return;
+      changes[e.key] = e.after;
+      if (e.cleared) clears[e.key] = true;
+      any = true;
     });
-    if (any) out.push({scope: box.getAttribute('data-scope'), changes: changes});
+    if (any) out.push({scope: box.getAttribute('data-scope'), index: index, changes: changes, clears: clears});
   });
   return out;
 }
 
 // 143 second review: after a routing write the list is drawn again from the server, and
 // the typing in the other entries is put back, so the redraw loses none of it.
-function cfgRefreshRouting() {
-  _cfgKept = cfgSnapshotEdits();
+// 143 second review: after a routing write the list is drawn again from the server. The edits in
+// the other entries are read when the answer arrives, and put back after the redraw.
+function cfgRefreshRouting(removed) {
+  _cfgRefresh = {removed: removed};
   loadRoutingEntries();
 }
 
@@ -656,7 +688,8 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
     else if (body.applied === 'staged_next_job') cfgFlash(statusEl, 'Saved · applies on next job', 'blue');
     else cfgFlash(statusEl, 'Saved', 'green');
     if (store === 'routing_yaml') {
-      cfgRefreshRouting();
+      cfgRefreshRouting(_cfgRemovedRoute);
+      _cfgRemovedRoute = null;
     } else {
       // Reload for the server's own values after a moment, unless the reader has typed
       // something new in the meantime: the check is made when the timer fires.
@@ -669,6 +702,7 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
   var conflicted = status === 428 || (status === 409 && body && body.conflict);
   if (conflicted) { cfgConflict(statusEl, status, body); return false; }
   _cfgPending = null;
+  _cfgRemovedRoute = null;
   var errs = body.errors || [];
   cfgApplyErrors(container, errs);
   var general = errs.filter(function(e) { return !e.key; }).map(function(e) { return e.message; }).join('; ');
@@ -832,7 +866,8 @@ function cfgRoutingEntryBlock(entry, index) {
   // 143: an entry is identified by what it is (backend and model), not by its place in the list.
   var identity = 'routing:' + String(entry.backend || '') + '|' + String(entry.model || '');
   var named = ' data-cfg-backend="' + esc(entry.backend || '') + '" data-cfg-model="' + esc(entry.model || '') + '"';
-  return '<div data-rentry data-scope="' + esc(identity) + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
+  return '<div data-rentry data-scope="' + esc(identity) + '" data-entry-index="' + index
+    + '" style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
     + esc(entry.backend || '') + ' / ' + esc(entry.model || '') + '</div>'
     + cfgRoutingFields(entry)
@@ -885,6 +920,7 @@ function cfgDeleteRoutingEntry(btn, index) {
   var expected = cfgExpectedEntry(btn);
   var rows = [{label: 'This routing entry', before: 'present', after: '(deleted)', secret: false}];
   cfgShowReview(container, rows, function() {
+    _cfgRemovedRoute = index;
     cfgPut('/api/config/routing/entry/' + index,
       {store: 'routing_yaml', _method: 'DELETE', body: {base_hash: _cfgRoutingHash, expected: expected}},
       container, statusEl, btn);
@@ -922,15 +958,20 @@ function cfgRoutingSection(sec, banner) {
 async function loadRoutingEntries() {
   var host = document.getElementById('cfg-routing-entries');
   if (!host) return;
+  var refresh = _cfgRefresh;
+  _cfgRefresh = null;
+  var kept = [];
   try {
     var r = await fetch('/api/config/routing');
     var d = await r.json();
+    // 143 third check: read the edits after the answer, just before the list is drawn again.
+    if (refresh) kept = cfgSnapshotEdits(refresh.removed);
     _cfgRoutingHash = d.content_hash || null;
     var entries = d.entries || [];
     host.innerHTML = entries.length
       ? entries.map(function(e, i) { return cfgRoutingEntryBlock(e, i); }).join('')
       : '<div class="empty-state">No routing entries yet.</div>';
-    if (_cfgKept) { cfgRestoreEdits(_cfgKept); _cfgKept = null; }
+    cfgRestoreEdits(kept);
   } catch(e) {
     host.innerHTML = '<div class="empty-state">Failed to load routing entries</div>';
   }
