@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any, Literal, Union
 from pydantic import BaseModel, Field
 from pydantic_core import PydanticUndefined
 
+from coordinare.config_usage import UsedBy, usage_index
+
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
 
@@ -53,6 +55,12 @@ Store = Literal["config_yaml", "routing_yaml"]
 SectionKind = Literal["scalar_group", "collection"]
 
 SECRET_MASK = "••••••"  # display mask, not a credential
+
+#: 143: the "Used by" index, keyed by ``(kind, name)`` (see ``config_usage.usage_index``).
+UsageMap = dict[tuple[str, str], list[UsedBy]]
+
+#: 143: the usage kind each catalog section's items are indexed under.
+_USAGE_KIND: dict[str, str] = {"endpoints": "model_server", "model_endpoints": "model", "modes": "mode"}
 
 # 140: fields whose key uses a word the dashboard no longer uses for that
 # idea. The key stays (it is the config contract); the label says what it is.
@@ -89,6 +97,8 @@ class CatalogItem(BaseModel):
     kind: str
     settings: list[ConfigSetting] = Field(default_factory=list)
     referenced_by: list[str] = Field(default_factory=list)
+    # 143: what uses this item, for the Settings page's "Used by" line.
+    used_by: list[UsedBy] = Field(default_factory=list)
     deletable: bool = True
 
 
@@ -482,8 +492,8 @@ def _build_global_section(
         )
     return ConfigSection(
         id="global",
-        title="Global",
-        description="Coordinare-wide tuning applied to every symphony.",
+        title="General",
+        description="Settings shared by every symphony, unless a symphony overrides them.",
         kind="scalar_group",
         settings=settings,
         invalid_banner=_invalid_banner(invalid, "global"),
@@ -497,7 +507,7 @@ def _catalog_settings(section_id: str, item: BaseModel) -> list[ConfigSetting]:
     ]
 
 
-def _build_personas_section(config: CoordinareConfiguration) -> ConfigSection:
+def _build_personas_section(config: CoordinareConfiguration, usage: UsageMap) -> ConfigSection:
     personas = config.global_config.personas
     items: list[CatalogItem] = []
     for role_name in type(personas).model_fields:
@@ -508,13 +518,17 @@ def _build_personas_section(config: CoordinareConfiguration) -> ConfigSection:
                 kind="persona",
                 settings=_catalog_settings("personas", persona),
                 referenced_by=[],
+                used_by=usage.get(("persona", role_name), []),
                 deletable=True,
             ),
         )
     return ConfigSection(
         id="personas",
-        title="Personas",
-        description="Per-role behavioral instructions.",
+        title="Agents",
+        description=(
+            "The instructions each agent role is given. Edit a role's text here. "
+            "The Personas page shows the same text read-only."
+        ),
         kind="collection",
         items=items,
     )
@@ -534,7 +548,10 @@ def _build_symphonies_section(config: CoordinareConfiguration) -> ConfigSection:
     return ConfigSection(
         id="symphonies",
         title="Symphonies",
-        description="Project orchestrations bound to GitHub boards.",
+        description=(
+            "Each symphony's settings. Edit them on the symphony's page, "
+            "which is linked from each entry here."
+        ),
         kind="collection",
         items=items,
     )
@@ -566,7 +583,7 @@ def _build_catalog_section(
     )
 
 
-def _build_catalog_sections(config: CoordinareConfiguration) -> list[ConfigSection]:
+def _build_catalog_sections(config: CoordinareConfiguration, usage: UsageMap | None = None) -> list[ConfigSection]:
     """endpoints / model_endpoints / modes with referential-integrity delete-protection.
 
     Reference DAG (research D6): model_endpoint.endpoint → endpoint;
@@ -575,6 +592,8 @@ def _build_catalog_sections(config: CoordinareConfiguration) -> list[ConfigSecti
     referrers.
     """
     pc = config.global_config
+    if usage is None:
+        usage = usage_index(config)
 
     endpoint_refs: dict[str, list[str]] = {e.name: [] for e in pc.endpoints}
     for me in pc.model_endpoints:
@@ -595,29 +614,36 @@ def _build_catalog_sections(config: CoordinareConfiguration) -> list[ConfigSecti
         if role_mode in mode_refs:
             mode_refs[role_mode].append(role_name)
 
-    return [
+    sections = [
         _build_catalog_section(
             "endpoints",
-            "Endpoints",
-            "Model-serving locations (spec-080).",
+            "Model servers",
+            "Where model calls go: a self-hosted server (LiteLLM, Ollama, vLLM) at a base URL, "
+            "or a vendor API (OpenAI, Anthropic). Models name one of these.",
             list(pc.endpoints),
             endpoint_refs,
         ),
         _build_catalog_section(
             "model_endpoints",
-            "Model Endpoints",
-            "Named (model @ endpoint) pairs (spec-080).",
+            "Models",
+            "A model name served by one model server. Modes choose their models from this list.",
             list(pc.model_endpoints),
             model_endpoint_refs,
         ),
         _build_catalog_section(
             "modes",
             "Modes",
-            "Named orchestration behaviors (spec-080).",
+            "How a role uses models: one model, or a planner and an executor. "
+            "Each performer role picks one mode.",
             list(pc.modes),
             mode_refs,
         ),
     ]
+    # 143: the "Used by" lines, from the one usage index, keyed by each item's kind.
+    for section in sections:
+        for item in section.items:
+            item.used_by = usage.get((_USAGE_KIND[section.id], item.id), [])
+    return sections
 
 
 def _build_routing_section(
@@ -653,7 +679,10 @@ def _build_routing_section(
     return ConfigSection(
         id="routing",
         title="Routing",
-        description="Self-hosted backend routing table (spec-078).",
+        description=(
+            "Which base URL and wire format a self-hosted backend is sent to, "
+            "for a given backend and model. Applies to the next performer job, not live."
+        ),
         store="routing_yaml",
         kind="collection",
         items=[],
@@ -679,11 +708,12 @@ def build_snapshot(
     the raw on-disk YAML, research D3), and renders invalid-on-disk fields
     (``invalid``) read-only (research D8). Never raises.
     """
+    usage = usage_index(config)
     sections = [
         _build_global_section(config, invalid=invalid, raw_values=raw_values),
-        _build_personas_section(config),
+        _build_personas_section(config, usage),
         _build_symphonies_section(config),
-        *_build_catalog_sections(config),
+        *_build_catalog_sections(config, usage),
         _build_routing_section(
             routing_available=routing_available, routing_mounted=routing_mounted,
         ),

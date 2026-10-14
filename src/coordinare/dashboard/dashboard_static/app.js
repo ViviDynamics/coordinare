@@ -461,7 +461,7 @@ var _lastState = null;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','admin-config-page','config-page','assistant-page','runs-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -481,7 +481,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/glossary':'Glossary — Coordinare','/symphonies':'Symphonies — Coordinare','/config':'Settings | Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   // 153: the label, not the link's text: a needs-attention badge sits in the link.
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
@@ -910,8 +910,19 @@ async function submitAddSymphony() {
 }
 
 // 081 config-editing UI: /static/config.js (#349)
+// 143: the route the page last showed. A declined leave (unsaved Settings) goes back here.
+var _lastRoute = '';
+// 143: the Global Config page is the General tab of Settings. Its old address
+// moves there, keeping the query string.
+function redirectRetiredPages() {
+  if (location.pathname !== '/admin/config') return;
+  history.replaceState(null, '', '/config' + location.search + '#global');
+}
 function router() {
+  redirectRetiredPages();
   var path = location.pathname;
+  // 143: leaving Settings ends its rendered state, so the next visit loads it fresh.
+  if (path !== '/config') _cfgShown = false;
   updateNavActive(path);
   // 139: the header control follows the page, and a deep link is applied on arrival.
   renderSymphonySwitcher();
@@ -931,12 +942,9 @@ function router() {
   } else if (path === '/glossary') {
     showPage('glossary-page');
     renderGlossaryPage();
-  } else if (path === '/admin/config') {
-    showPage('admin-config-page');
-    loadGlobalConfigPage();
   } else if (path === '/config') {
     showPage('config-page');
-    loadConfigPage();
+    if (_cfgShown) cfgSyncTab(); else loadConfigPage();
   } else if (path === '/assistant') {
     showPage('assistant-page');
     if (typeof initAssistant === 'function') initAssistant();
@@ -948,11 +956,17 @@ function router() {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(scopedView(_lastState));
   }
+  _lastRoute = location.pathname + location.search + location.hash;
 }
 
 function navigate(e, path) {
   // Only intercept plain left-clicks; let ctrl/cmd/middle-click open new tabs normally
   if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
+  // 143: unsaved Settings edits are not dropped silently by an in-app link.
+  if (!cfgLeaveAllowed(path.split('#')[0].split('?')[0])) {
+    if (e) { e.preventDefault(); }
+    return;
+  }
   if (e) { e.preventDefault(); }
   // 139: in-app navigation keeps the symphony the header has chosen.
   history.pushState(null, '', pathWithSymphony(path));
@@ -961,7 +975,14 @@ function navigate(e, path) {
 }
 
 
-window.addEventListener('popstate', function() { router(); });
+window.addEventListener('popstate', function() {
+  // 143: Back and Forward leave a page with unsaved Settings edits only if the reader agrees.
+  if (!cfgLeaveAllowed(location.pathname)) {
+    history.pushState(null, '', _lastRoute || '/config');
+    return;
+  }
+  router();
+});
 
 // 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
 // BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
@@ -973,7 +994,8 @@ function renderHistoryPage(s) {
   applyScopeNotes(s);
 }
 
-// 049: Personas page
+// 049: Personas page. 143: read-only. Persona text is edited in Settings, under Agents,
+// so each persona has exactly one editor. Each entry links to its Settings item.
 var _personasPageLoaded = false;
 function loadPersonasPage(force) {
   var section = document.getElementById('personas-page-section');
@@ -981,52 +1003,19 @@ function loadPersonasPage(force) {
   if (_personasPageLoaded && !force) return;  // skip if already loaded
   _personasPageLoaded = true;
   section.innerHTML = '<span class="empty-state">Loading...</span>';
-  fetch('/api/personas').then(function(r){ _personaCfgHash = r.headers.get('ETag'); return r.json(); }).then(function(data) {
-    var html = data.map(function(p, idx) {
-      return '<div style="margin-bottom:16px" data-persona-idx="' + idx + '">' +
-        '<label style="font-weight:bold;color:var(--color-text-primary);display:block;margin-bottom:4px" title="' + esc(p.role) + '">' + agentLabel(p.role) + personaStageNote(p.role) + '</label>' +
-        '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
-        '<div style="margin-top:4px;display:flex;gap:8px">' +
-        '<button class="action-btn persona-save-btn">Save</button>' +
-        '<button class="action-btn persona-reset-btn">Reset</button>' +
-        '</div><div class="persona-page-msg action-msg"></div></div>';
+  fetch('/api/personas').then(function(r) { return r.json(); }).then(function(data) {
+    var html = data.map(function(p) {
+      var role = String(p.role || '');
+      return '<div style="margin-bottom:16px" data-persona-role="' + esc(role) + '">' +
+        '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:4px">' + agentLabel(role) + personaStageNote(role) + '</div>' +
+        '<pre style="white-space:pre-wrap;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;margin:0">' + esc(p.instructions || '') + '</pre>' +
+        '<div style="margin-top:4px"><a href="/config#personas/' + encodeURIComponent(role) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit in Settings</a></div>' +
+        '</div>';
     }).join('');
     section.innerHTML = html || '<span class="empty-state">No personas configured</span>';
-    // Wire save/reset via event delegation (safe for all role names)
-    section.querySelectorAll('[data-persona-idx]').forEach(function(el, i) {
-      var role = data[i] && data[i].role;
-      if (!role) return;
-      var ta = el.querySelector('.persona-page-ta');
-      var msg = el.querySelector('.persona-page-msg');
-      el.querySelector('.persona-save-btn').addEventListener('click', async function() {
-        if (!ta || !msg) return;
-        try {
-          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'PUT', headers: {'Content-Type':'application/json', 'If-Match': _personaCfgHash || ''}, body: JSON.stringify({instructions: ta.value}) });
-          if (res.ok) _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
-          // The body has to be read: versionErrorText keys on `conflict` to tell a
-          // version clash from a duplicate name, and passing null made every 409
-          // read 'Error 409'.
-          var pd = res.ok ? null : await res.json().catch(function(){ return {}; });
-          msg.textContent = res.ok ? 'Saved' : versionErrorText(res.status, pd);
-          setTimeout(function(){ msg.textContent=''; }, 3000);
-        } catch(e) { msg.textContent = 'Error'; }
-      });
-      el.querySelector('.persona-reset-btn').addEventListener('click', async function() {
-        if (!confirm('Reset ' + role + ' instructions to default?')) return;
-        try {
-          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'DELETE', headers: {'If-Match': _personaCfgHash || ''} });
-          if (res.ok) { loadPersonasPage(true); }
-          else if (msg) {
-            var rd = await res.json().catch(function(){ return {}; });
-            msg.textContent = versionErrorText(res.status, rd);
-          }
-        } catch(e) { if (msg) msg.textContent = 'Error'; }
-      });
-    });
   }).catch(function() { section.innerHTML = '<span class="empty-state">Failed to load personas</span>'; });
 }
 
-// resetPersonaPage wired inline via event delegation in loadPersonasPage()
 
 // 125: one timer refreshes every elapsed readout from its own start point.
 setInterval(function() { refreshElapsedReadouts(document); refreshFreshness(); }, 1000);
@@ -1049,121 +1038,6 @@ async function forcePoll() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Personas panel (018-performer-personas)
-// ---------------------------------------------------------------------------
-
-async function loadPersonas() {
-  var section = document.getElementById('personas-section');
-  if (!section) return;
-  try {
-    var res = await fetch('/api/personas');
-    _personaCfgHash = res.headers.get('ETag');
-    if (!res.ok) {
-      section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(res.status + ' ' + res.statusText) + '</span>';
-      return;
-    }
-    var personas = await res.json();
-    renderPersonas(personas);
-  } catch(err) {
-    section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(String(err)) + '</span>';
-  }
-}
-
-function renderPersonas(personas) {
-  var section = document.getElementById('personas-section');
-  if (!section) return;
-  var rows = personas.map(function(p) {
-    var badge = p.is_default
-      ? '<span style="font-size:11px;color:var(--color-text-muted);margin-left:6px">using default</span>'
-      : '<span style="font-size:11px;color:var(--color-accent-blue);margin-left:6px">custom</span>';
-    return '<div style="margin-bottom:16px;border-bottom:1px solid var(--color-bg-elevated);padding-bottom:14px">' +
-      '<div style="display:flex;align-items:center;margin-bottom:6px">' +
-        '<strong style="font-size:13px" title="' + esc(p.role) + '">' + agentLabel(p.role) + personaStageNote(p.role) + '</strong>' + badge +
-      '</div>' +
-      '<textarea id="persona-ta-' + esc(p.role) + '" rows="4" style="width:100%;box-sizing:border-box;' +
-        'background:var(--color-bg-base);border:1px solid var(--color-border);color:var(--color-text-primary);padding:6px;font-family:monospace;' +
-        'font-size:12px;border-radius:4px;resize:vertical">' + esc(p.instructions) + '</textarea>' +
-      '<div style="margin-top:6px;display:flex;gap:8px;align-items:center">' +
-        '<button onclick="savePersona(\'' + esc(p.role) + '\')" ' +
-          'id="persona-save-' + esc(p.role) + '" ' +
-          'style="background:var(--color-btn-success);border:none;color:var(--color-on-action);padding:4px 12px;border-radius:4px;cursor:pointer">' +
-          'Save</button>' +
-        '<button onclick="resetPersona(\'' + esc(p.role) + '\')" ' +
-          'id="persona-reset-' + esc(p.role) + '" ' +
-          'style="background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-primary);padding:4px 12px;' +
-          'border-radius:4px;cursor:pointer">Reset to defaults</button>' +
-        '<span id="persona-msg-' + esc(p.role) + '" style="font-size:12px;color:var(--color-text-muted)"></span>' +
-      '</div>' +
-    '</div>';
-  }).join('');
-  section.innerHTML = rows || '<span class="empty-state">No personas found.</span>';
-}
-
-async function savePersona(role) {
-  var ta = document.getElementById('persona-ta-' + role);
-  var btn = document.getElementById('persona-save-' + role);
-  var msg = document.getElementById('persona-msg-' + role);
-  if (!ta || !btn) return;
-  btn.disabled = true;
-  msg.textContent = 'Saving...';
-  try {
-    var res = await fetch('/api/personas/' + encodeURIComponent(role), {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json', 'If-Match': _personaCfgHash || ''},
-      body: JSON.stringify({instructions: ta.value}),
-    });
-    if (res.ok) _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
-    var data = res.headers.get('content-type') && res.headers.get('content-type').includes('application/json')
-      ? await res.json() : {};
-    if (!res.ok) {
-      msg.textContent = versionErrorText(res.status, data);
-      msg.style.color = 'var(--color-accent-red)';
-    } else {
-      msg.textContent = 'Saved.';
-      msg.style.color = 'var(--color-accent-green)';
-      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
-      loadPersonas();
-    }
-  } catch(err) {
-    msg.textContent = 'Network error';
-    msg.style.color = 'var(--color-accent-red)';
-  }
-  btn.disabled = false;
-}
-
-async function resetPersona(role) {
-  var btn = document.getElementById('persona-reset-' + role);
-  var msg = document.getElementById('persona-msg-' + role);
-  if (!btn) return;
-  btn.disabled = true;
-  msg.textContent = 'Resetting...';
-  try {
-    var res = await fetch('/api/personas/' + encodeURIComponent(role), {
-      method: 'DELETE',
-      headers: {'If-Match': _personaCfgHash || ''},
-    });
-    if (res.status === 204 || res.ok) {
-      _personaCfgHash = res.headers.get('ETag') || _personaCfgHash;
-      msg.textContent = 'Reset to defaults.';
-      msg.style.color = 'var(--color-accent-green)';
-      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
-      loadPersonas();
-    } else {
-      var data = await res.json().catch(function() { return {}; });
-      msg.textContent = versionErrorText(res.status, data);
-      msg.style.color = 'var(--color-accent-red)';
-    }
-  } catch(err) {
-    msg.textContent = 'Network error';
-    msg.style.color = 'var(--color-accent-red)';
-  }
-  btn.disabled = false;
-}
-
-// 049: Personas load lazily on /personas page visit via loadPersonasPage().
-// The original loadPersonas() targets #personas-section on the main page (now hidden).
-// The new loadPersonasPage() targets #personas-page-section and uses event delegation.
 
 // ---------------------------------------------------------------------------
 // 138: activity feed

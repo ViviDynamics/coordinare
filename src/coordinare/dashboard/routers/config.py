@@ -11,6 +11,7 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.config_usage import routing_used_by
 from coordinare.config_validation import validate_raw_config
 from coordinare.dashboard.routers.config_write import (
     _atomic_write_yaml,
@@ -637,7 +638,15 @@ def _register_get_config_routing(app: FastAPI, ctx: DashboardContext) -> None:
 
             location = _routing_location(daemon)
             view = routing_config_service.read_routing(location)
-            return JSONResponse(view.model_dump(mode="json"))
+            payload = view.model_dump(mode="json")
+            # 143: each entry says which stages and symphonies it applies to.
+            coordinare_cfg = daemon.state.get("coordinare_config")
+            for entry in payload.get("entries", []):
+                users = [] if coordinare_cfg is None else routing_used_by(
+                    coordinare_cfg, str(entry.get("backend", "")), str(entry.get("model", "")),
+                )
+                entry["used_by"] = [item.model_dump(mode="json") for item in users]
+            return JSONResponse(payload)
 
 
 def _register_post_config_routing_entry(app: FastAPI, ctx: DashboardContext) -> None:
