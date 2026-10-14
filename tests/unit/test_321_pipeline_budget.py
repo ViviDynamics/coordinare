@@ -19,10 +19,13 @@ def test_two_of_six_recovered_issues_keep_slots_across_handoffs():
     work = sessions()
     assert select_pipelines(work, 2) == {'0', '1'}
     work['0']['performer_stage'] = 'implementing'
-    work['1']['phase'] = 'monitoring_pr'
+    work['1']['performer_stage'] = 'reviewing'
     assert select_pipelines(work, 2) == {'0', '1'}
+    # 179: waiting on PR review is not a handoff. The issue releases its slot.
+    work['1']['phase'] = 'monitoring_pr'
+    assert select_pipelines(work, 2) == {'0', '2'}
     work['0']['current_card']['status'] = 'DONE'
-    assert select_pipelines(work, 2) == {'1', '2'}
+    assert select_pipelines(work, 2) == {'2', '3'}
 
 
 def test_one_issue_runs_entire_pipeline_before_another():

@@ -46,7 +46,9 @@ A symphony is a **GitHub Projects v2 board**. Columns map to phases:
 
 - **Pickup:** `check_board` does a "unified pickup" each cycle, bounded by
   `max_concurrent_cards` via the slot manager. IN_REVIEW and BLOCKED cards don't hold a working
-  slot, but the daemon still re-adopts them each cycle.
+  slot, but the daemon still re-adopts them each cycle. A card in review that needs a performer
+  again takes the next free slot ahead of cards that have not started. `max_cards_in_review`
+  bounds how many cards may wait on review before new cards stop being started.
 - **Human approval rule:** in `monitor_pr`, a PR advances to merge only on a **HUMAN** `APPROVED`
   review. Trusted bots may `COMMENT` / `CHANGES_REQUESTED` but cannot approve.
 - **BLOCKED auto-recovery (spec 129):** each cycle `check_board` re-evaluates every BLOCKED card

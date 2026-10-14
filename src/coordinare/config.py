@@ -1218,6 +1218,13 @@ class ProjectConfiguration(BaseSettings):
 
     # 035 — Multi-Card Parallelism
     max_concurrent_cards: int = Field(default=1, ge=1, le=20)
+    # 179: a card waiting on PR review holds no pipeline slot, so the next card
+    # can start. This caps how many cards may wait in review at once; when it is
+    # reached no new card is admitted until a review lands. null removes the cap.
+    max_cards_in_review: int | None = Field(
+        default=3, ge=1, le=50,
+        description="How many cards may wait on PR review at once before new cards stop being started.",
+    )
 
     # 073 (drive-by) — Hold all regular card dispatch while env_bootstrap is
     # in-flight.  When ``False`` (default), only the on-disk ``activate.sh``

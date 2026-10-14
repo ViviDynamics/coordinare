@@ -20,9 +20,11 @@ def test_paused_reservation_releases_capacity_one_for_sibling(status, phase, nex
         record = PersistedSession.model_validate_json(record.model_dump_json())
         paused = _restored_session_dict("paused", record, WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase=phase, active_card_id="paused"), card)
     work = {"paused": paused, "sibling": {"current_card": {"id": "sibling", "status": "TODO" if next_phase == "dispatching" else "IN_REVIEW"}, "phase": next_phase}}
-    assert select_pipelines(work, 1) == {"sibling"}
+    # 179: a sibling waiting on review needs no slot, so none is reserved for it.
+    expected = {"sibling"} if next_phase == "dispatching" else set()
+    assert select_pipelines(work, 1) == expected
     assert not work["paused"]["pipeline_admitted"]
-    assert work["sibling"]["pipeline_admitted"]
+    assert work["sibling"]["pipeline_admitted"] is (next_phase == "dispatching")
 
 
 def test_running_paused_worker_remains_reserved_until_stopped() -> None:

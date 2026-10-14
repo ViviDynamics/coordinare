@@ -1994,6 +1994,7 @@ def test_get_global_config_returns_editable_fields() -> None:
     cfg = MagicMock()
     cfg.poll_interval_seconds = 30
     cfg.max_concurrent_cards = 2
+    cfg.max_cards_in_review = 3
     cfg.log_level = "INFO"
     for attr in ("heartbeat_interval_seconds", "max_feedback_cycles",
                  "max_closed_pr_attempts_per_issue", "output_mode",

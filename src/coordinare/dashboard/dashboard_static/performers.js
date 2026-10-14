@@ -167,6 +167,14 @@ function costHtml(sess, s) {
   return '<span title="' + esc(est.basis) + '">' + fmtCost(est.value) + '</span>';
 }
 
+// Which limit is keeping a card queued, in plain words. null for any other
+// skip reason, so callers keep their ordinary label.
+function queueLimitLabel(reason) {
+  if (reason === 'pipeline_capacity') return 'Queued — issue limit reached';
+  if (reason === 'review_capacity') return 'Queued: too many cards waiting on review';
+  return null;
+}
+
 // 354: queued-for-slot board-row presentation. A card whose role pool is
 // saturated sits in phase 'dispatching' with no slot; it renders as
 // "Queued for <stage>" with a real wait (from the persisted
@@ -334,8 +342,7 @@ function renderActiveWorkPanels(s) {
       var skip = (s.session_skip_reasons || {})[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
-      var phaseLabel = skip && skip.reason === 'pipeline_capacity'
-        ? 'Queued — issue limit reached' : (queuedLabel || formatPhaseLabel(sess.phase || ''));
+      var phaseLabel = (skip && queueLimitLabel(skip.reason)) || queuedLabel || formatPhaseLabel(sess.phase || '');
       var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '';
       // Queued wait is measured from the queued stamp; an actively
       // dispatching card measures from when its dispatch began.
@@ -677,7 +684,7 @@ function renderPerformersPage(s) {
   var skipHtml = roleSkips.length
     ? '<ul class="detail-list">' + roleSkips.map(function(sr) {
         var r = sr.reason || {};
-        var label = r.reason === 'pipeline_capacity' ? 'Queued — issue limit reached' : esc(r.reason || 'skipped');
+        var label = queueLimitLabel(r.reason) || esc(r.reason || 'skipped');
         var blockers = Array.isArray(r.blockers) && r.blockers.length
           ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
         return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
