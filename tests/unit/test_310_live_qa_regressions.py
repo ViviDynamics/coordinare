@@ -22,6 +22,7 @@ def test_optional_assistant_does_not_abort_quiet_timer(enabled):
 let routed = false, timer = false, assistant = false;
 function router() { routed = true; }
 function afTick() {}
+function afApplyChipState() {}
 function setInterval(fn, ms) { assert.equal(fn, afTick); assert.equal(ms, 5000); timer = true; }
 '''
     if enabled:

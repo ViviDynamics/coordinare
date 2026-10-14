@@ -273,6 +273,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .session-age { font-size: 12px; color: var(--color-accent-blue); margin-top: 6px; }
 .ev-progress  { background: var(--color-ev-progress); color: var(--color-accent-green); }
 .ev-tool_use  { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.ev-tool_result { background: var(--color-bg-accent); color: var(--color-accent-blue); }
 .ev-thinking  { background: var(--color-ev-thinking); color: var(--color-accent-yellow); }
 .ev-cost      { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .ev-error     { background: var(--color-ev-error); color: var(--color-accent-red); }
@@ -488,6 +489,12 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
       <option value="">All cards</option>
     </select>
+    <div class="af-chips" role="group" aria-label="Show in the activity feed">
+      <button type="button" class="af-chip" data-chip="lifecycle" aria-pressed="true" onclick="onActivityChipToggle(this)">Lifecycle</button>
+      <button type="button" class="af-chip" data-chip="agent" aria-pressed="true" onclick="onActivityChipToggle(this)">Agent</button>
+      <button type="button" class="af-chip" data-chip="tools" aria-pressed="false" onclick="onActivityChipToggle(this)">Tools</button>
+      <button type="button" class="af-chip" data-chip="errors" aria-pressed="true" onclick="onActivityChipToggle(this)">Errors</button>
+    </div>
     <span id="af-liveness" class="af-liveness" role="status" aria-live="polite"></span>
   </div>
   <div id="af-stale-note" class="af-stale-note" style="display:none">

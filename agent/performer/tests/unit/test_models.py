@@ -386,14 +386,15 @@ class TestBackendEventRedaction:
         event = self._make_event(detail=token)
         assert event.detail == "[REDACTED]"
 
-    def test_text_field_is_not_redacted(self) -> None:
+    def test_text_field_is_redacted(self) -> None:
+        # 148: text reaches the dashboard unchanged by the daemon, so the performer redacts it too.
         token = "ghp_" + "H" * 36
         event = BackendEvent(
             type=BackendEventType.progress,
             text=token,
             detail="normal detail",
         )
-        assert event.text == token  # text is NOT redacted
+        assert event.text == "[REDACTED]"
         assert event.detail == "normal detail"
 
     def test_empty_detail_unchanged(self) -> None:

@@ -96,3 +96,21 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 /* 149: why a To Do or Blocked card is waiting, one short line under its title */
 .swimlane-wait { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; }
 .swimlane-wait[data-wait="needs_human"] { color: var(--color-accent-yellow); }
+
+/* 148: the kind chips, and one left rule per row kind so a narration row, a tool
+   call and a lifecycle event read differently before anyone reads the text. */
+.af-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.af-chip { font-family: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--color-bg-base); color: var(--color-text-muted); border: 1px solid var(--color-border-control); cursor: pointer; }
+.af-chip[aria-pressed="true"] { color: var(--color-text-primary); border-color: var(--color-accent-blue); }
+.af-chip:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 1px; }
+.af-row.af-row-lifecycle { border-left: 3px solid var(--color-accent-green); padding-left: 8px; }
+.af-row.af-row-tools { border-left: 3px solid var(--color-accent-blue); padding-left: 8px; }
+.af-row.af-row-agent { border-left: 3px solid var(--color-border-control); padding-left: 8px; }
+.af-row.af-row-errors { border-left: 3px solid var(--color-accent-red); padding-left: 8px; }
+.af-row.af-plain { display: block; }
+.af-plain > * { margin-right: 4px; }
+.af-icon { display: inline-block; width: 12px; text-align: center; font-weight: bold; color: var(--color-text-muted); }
+.af-plain-text { overflow-wrap: anywhere; color: var(--color-text-primary); }
+.af-row-agent .af-narration { font-family: inherit; white-space: pre-wrap; color: var(--color-text-primary); }
+.af-result { padding-left: 8px; font-family: var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-muted); }
+.af-result-error { color: var(--color-accent-red); }

@@ -36,9 +36,13 @@ from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer import transcript
+from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import (
+    clip_event_text,
+    DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, redact_command,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -672,18 +676,29 @@ class CodexBackend:
         elif method == "item/commandExecution/outputDelta":
             output = params.get("delta", params.get("output", ""))
             if output:
-                self._emit(BackendEventType.tool_use, str(output)[:_MAX_TEXT], detail="shell",
+                self._emit(BackendEventType.tool_use, str(output), detail="shell",
                            is_delta=True, stream_id=str(params.get("itemId", "")))
 
         elif method == "item/completed":
             item = params.get("item", {})
             item_type = item.get("type", "")
             if item_type == "commandExecution":
-                cmd = str(item.get("command", "shell"))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, cmd, detail="shell")
+                command = str(item.get("command", "shell"))
+                # 148: a non-zero exit is the error state the feed shows on the row.
+                exit_code = item.get("exitCode")
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=redact_command(command)[:_MAX_TEXT],
+                    detail="shell", tool="shell",
+                    arg=primary_argument("Bash", {"command": command}),
+                    status="ok" if exit_code in (0, None) else "error",
+                ))
             elif item_type == "fileChange":
-                path = str(item.get("path", "file"))[:_MAX_TEXT]
-                self._emit(BackendEventType.tool_use, f"edit {path}", detail=path)
+                path = str(item.get("path", "file"))
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=f"edit {redact_command(path)}"[:_MAX_TEXT],
+                    detail=redact_command(path), tool="Edit",
+                    arg=primary_argument("Edit", {"file_path": path}),
+                ))
 
         elif method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage", {})
@@ -695,14 +710,14 @@ class CodexBackend:
         elif method == "error":
             error_msg = (params.get("error") or {}).get("message", str(params))
             # Non-fatal errors are emitted as events; fatal ones update status
-            self._emit(BackendEventType.error, error_msg[:_MAX_TEXT])
+            self._emit(BackendEventType.error, error_msg)
             if not params.get("willRetry", False):
                 self._status = BackendStatus(state="error", error_reason=error_msg)
 
         elif method == "item/reasoning/textDelta":
             delta = params.get("delta", "")
             if delta:
-                self._emit(BackendEventType.thinking, delta[:_MAX_TEXT], is_delta=True,
+                self._emit(BackendEventType.thinking, delta, is_delta=True,
                            stream_id=str(params.get("itemId", "")))
 
         # All other notifications are no-ops (turn/started, thread/started, etc.)
@@ -814,7 +829,7 @@ class CodexBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
               is_delta: bool = False, stream_id: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail,
                                                is_delta=is_delta, stream_id=stream_id))
 
 
