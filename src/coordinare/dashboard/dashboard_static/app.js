@@ -464,8 +464,10 @@ function renderSymphoniesPage(s) {
         + bsText + '</span>';
     }
     // 155: an inactive symphony is greyed out and says why, so it is not read as a working one.
+    // 155: a symphony nobody has checked says why under its name; the never-checked ones are greyed.
     var inactive = symphonyIsInactive(sym);
-    var neverChecked = inactive ? '<div class="muted" style="font-size:11px">' + esc(SYMPHONY_NEVER_CHECKED_TEXT) + '</div>' : '';
+    var unchecked = symphonyUncheckedNote(sym);
+    var neverChecked = unchecked ? '<div class="muted" style="font-size:11px">' + esc(unchecked.text) + '</div>' : '';
     return '<tr' + (inactive ? ' class="symphony-inactive" data-inactive="true"' : '') + '>'
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a>' + neverChecked + '</td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'

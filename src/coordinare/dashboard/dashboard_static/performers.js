@@ -206,26 +206,42 @@ function viewRunLinkHtml(sess) {
 var DONE_LANE_WINDOW_MS = 86400000;
 var DONE_LANE_NOTE = 'Counts merges coordinare recorded in the last 24 hours. Earlier merges are not counted.';
 
-// The checks states a card's icon shows. "unknown" is a card no CI gate has judged yet.
+// The checks states a card's icon shows. The state is the gate's result at the review hand-off, not
+// the PR's live state. "unknown" is a gate that could not judge the head.
 var CHECKS_ICONS = {
-  pass: {glyph: '&#10003;', label: 'PR checks: passing'},
-  fail: {glyph: '&#10007;', label: 'PR checks: failing'},
-  running: {glyph: '&#9679;', label: 'PR checks: running'},
-  unknown: {glyph: '?', label: 'PR checks: unknown, no CI gate has judged this card yet'}
+  pass: {glyph: '&#10003;', word: 'passing'},
+  fail: {glyph: '&#10007;', word: 'failing'},
+  running: {glyph: '&#9679;', word: 'running'},
+  blocked: {glyph: '&#9888;', word: 'blocked by environment'},
+  unknown: {glyph: '?', word: 'unknown'}
 };
 
-// The icon beside a card's PR chip. A state the snapshot does not name shows as unknown.
-function checksIconHtml(state) {
-  var key = Object.prototype.hasOwnProperty.call(CHECKS_ICONS, state) ? String(state) : 'unknown';
-  var icon = CHECKS_ICONS[key];
-  return '<span class="checks-icon checks-' + esc(key) + '" role="img" aria-label="' + esc(icon.label) +
-    '" title="' + esc(icon.label) + '">' + icon.glyph + '</span>';
+// The server's clock when the snapshot was taken, so an age and the lane's 24-hour cut do not
+// depend on this browser's clock. The browser's own clock only when the snapshot carries none.
+function serverNowMs(s) {
+  var at = s && s.snapshot_at ? isoMs(s.snapshot_at) : NaN;
+  return isNaN(at) ? Date.now() : at;
 }
 
-// A timestamp in milliseconds, or NaN. A fraction of a second is dropped first, since not every
-// browser reads the microseconds the daemon writes.
-function isoMs(iso) {
-  return Date.parse(String(iso || '').replace(/\.\d+/, ''));
+// The icon beside a card's PR chip, from the card's checks view (the strip's checks). The title
+// always names the hand-off and how old the result is. A stale result is neutral and says so.
+function checksIconHtml(checks, nowMs) {
+  if (!checks || typeof checks !== 'object') {
+    var none = 'PR checks: unknown, no CI gate has judged this card yet';
+    return '<span class="checks-icon checks-unknown" role="img" aria-label="' + esc(none) +
+      '" title="' + esc(none) + '">?</span>';
+  }
+  var key = Object.prototype.hasOwnProperty.call(CHECKS_ICONS, checks.state) ? String(checks.state) : 'unknown';
+  var icon = CHECKS_ICONS[key];
+  var age = fmtAgeAt(checks.at, nowMs);
+  var title = 'PR checks at review hand-off: ' + icon.word + (age ? ' (' + age + ' ago)' : '');
+  var cls = 'checks-icon checks-' + key;
+  if (checks.stale) {
+    cls += ' checks-stale';
+    title += ', checks as of an earlier commit';
+  }
+  return '<span class="' + esc(cls) + '" role="img" aria-label="' + esc(title) +
+    '" title="' + esc(title) + '">' + icon.glyph + '</span>';
 }
 
 // The cards in a symphony's Done column that coordinare merged within the window, newest first.
@@ -252,9 +268,9 @@ function doneLaneEntries(s, nowMs) {
 }
 
 // The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
-function doneLaneHtml(entries) {
+function doneLaneHtml(entries, nowMs) {
   var rows = entries.map(function(e) {
-    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAge(e.mergedAt) || '') + ' ago</span></li>';
+    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgeAt(e.mergedAt, nowMs) || '') + ' ago</span></li>';
   }).join('');
   return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
     '<span class="swimlane-col-count">' + entries.length + '</span></summary>' +
@@ -265,6 +281,7 @@ function doneLaneHtml(entries) {
 
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
+  var nowMs = serverNowMs(s);
   var workCard = document.getElementById('active-work-card');
   if (!workEl) return;
 
@@ -352,9 +369,12 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
-    // 155: a symphony that was never checked says so, rather than waiting for cards that may never come.
-    if (symphonies.length > 0 && symphonies.every(symphonyIsInactive)) {
-      workEl.innerHTML = '<span class="empty-state">' + esc(SYMPHONY_NEVER_CHECKED_TEXT) + '. Its board has not been read yet.</span>';
+    // 155: symphonies nobody has checked yet say why, rather than waiting for cards that may never come.
+    var unchecked = symphonies.map(symphonyUncheckedNote);
+    if (symphonies.length > 0 && unchecked.every(function(note) { return note !== null; })) {
+      var failedCheck = unchecked.some(function(note) { return note.kind === 'failed'; });
+      workEl.innerHTML = '<span class="empty-state">' + esc(symphonyUncheckedText(symphonies)) + '. ' +
+        esc(failedCheck ? 'The last check did not finish.' : 'Its board has not been read yet.') + '</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
@@ -367,7 +387,7 @@ function renderActiveWorkPanels(s) {
         doneCount += Array.isArray(snap.DONE) ? snap.DONE.length : 0;
       });
       workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>' +
-        doneLaneHtml(doneLaneEntries(s, Date.now()));
+        doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
@@ -403,8 +423,7 @@ function renderActiveWorkPanels(s) {
     if (prUrl && /^https?:\/\//i.test(prUrl)) {
       prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;text-decoration:none">PR &#8599;</a>';
       // 155: the checks state, read from the card's strip (no GitHub call). It sits beside the PR chip only.
-      var checksState = pipeline ? pipeline.checks : null;
-      prBadge += ' ' + checksIconHtml(checksState);
+      prBadge += ' ' + checksIconHtml(pipeline ? pipeline.checks : null, nowMs);
     }
 
     var liveLine = '';
@@ -480,7 +499,7 @@ function renderActiveWorkPanels(s) {
       '</div>';
   });
   html += '</div>';
-  html += doneLaneHtml(doneLaneEntries(s, Date.now()));
+  html += doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
   workEl.innerHTML = html;
 }
 

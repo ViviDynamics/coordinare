@@ -13,6 +13,7 @@ and the environment builder run outside a card's pipeline and are not listed her
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from coordinare.lifecycle import ROLE_TO_STAGE
@@ -55,10 +56,12 @@ class CardRef:
 
 @dataclass(frozen=True)
 class LiveStage:
-    """Where the card is now (its live stage, if any) and the stages this deployment runs."""
+    """Where the card is now (its live stage, if any), the stages this deployment runs, and the
+    card's current PR head when its session knows it (None when it does not)."""
 
     current: str | None = None
     lifecycle: tuple[str, ...] = ()
+    head: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,26 +189,72 @@ def stage_statuses(
     return {stage: _status_of(index, stage, frame) for index, stage in enumerate(PIPELINE_STAGES)}
 
 
-#: The PR checks states a board card shows. "running" covers checks that have not finished.
+#: The PR checks states a board card shows. "running" covers checks that have not finished, and
+#: "blocked" an environment block the gate classified (not a failing check).
 CHECKS_GREEN = "pass"
 CHECKS_RED = "fail"
 CHECKS_RUNNING = "running"
-#: The CI gate's result (a ci_result event's detail) and the checks state it stands for.
-_GATE_RESULT_CHECKS: dict[str, str] = {"FORWARD": CHECKS_GREEN, "BOUNCE": CHECKS_RED, "HOLD": CHECKS_RUNNING}
+CHECKS_BLOCKED = "blocked"
+CHECKS_UNKNOWN = "unknown"
+#: A ci_result event's detail, the classified outcome of one gate run, and the checks state it stands for.
+#: UNKNOWN is a gate that could not judge the head (disabled, no PR, or an error).
+_GATE_RESULT_CHECKS: dict[str, str] = {
+    "FORWARD": CHECKS_GREEN,
+    "BOUNCE": CHECKS_RED,
+    "HOLD": CHECKS_RUNNING,
+    "ENV_BLOCKED": CHECKS_BLOCKED,
+    "UNKNOWN": CHECKS_UNKNOWN,
+}
 
 
-def checks_state(events: list[dict[str, Any]]) -> str | None:
-    """The PR checks state of a card, from its latest CI gate result. None when no gate has run.
+def _instant(text: object) -> datetime | None:
+    """A recorded timestamp as an aware datetime, or None when it is missing or unreadable."""
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
-    The gate runs at the implementer-to-reviewer boundary, so this is the checks state as of that
-    gate. A later push is not seen until the gate runs again.
+
+def _is_stale(gated_head: str, head: str | None, gate_at: object, last_dispatch: dict[str, Any] | None) -> bool:
+    """Whether the gate's result is about an earlier commit or an earlier dispatch than the card's now.
+
+    With both heads known, the result is stale when they differ. Otherwise the gate's time decides: a
+    gate older than the card's last dispatch was run before the implementer last worked on it.
     """
-    for event in reversed(events):
-        if event.get("kind") != "ci_result":
-            continue
-        detail = event.get("detail") or {}
-        return _GATE_RESULT_CHECKS.get(str(detail.get("result")))
-    return None
+    if gated_head and head:
+        return not head.startswith(gated_head)
+    gated_time = _instant(gate_at)
+    dispatched = _instant(last_dispatch.get("at")) if last_dispatch is not None else None
+    return gated_time is not None and dispatched is not None and gated_time < dispatched
+
+
+def checks_view(events: list[dict[str, Any]], head: str | None) -> dict[str, Any] | None:
+    """The PR checks of a card as the review hand-off judged them, or None when no gate has run.
+
+    The view is the latest gate's classified result, the head it judged, the time it ran and whether
+    that is stale against ``head``: the card's current PR head when the session knows it (None when
+    it does not). Nothing here calls GitHub. A later push or re-dispatch is shown as stale, not hidden.
+    """
+    gate: dict[str, Any] | None = None
+    last_dispatch: dict[str, Any] | None = None
+    for event in events:
+        if event.get("kind") == "ci_result":
+            gate = event
+        elif event.get("kind") == "dispatched":
+            last_dispatch = event
+    if gate is None:
+        return None
+    detail = gate.get("detail") or {}
+    gated = str(detail.get("head") or "")
+    return {
+        "state": _GATE_RESULT_CHECKS.get(str(detail.get("result")), CHECKS_UNKNOWN),
+        "head": gated,
+        "at": str(gate.get("at") or ""),
+        "stale": _is_stale(gated, head, gate.get("at"), last_dispatch),
+    }
 
 
 def merged_at(events: list[dict[str, Any]]) -> str | None:
@@ -226,7 +275,7 @@ def pipeline_strip(events: list[dict[str, Any]], live: LiveStage) -> dict[str, A
     return {
         "current": live.current if live.current in PIPELINE_STAGES else None,
         "statuses": [{"stage": stage, "status": statuses[stage]} for stage in PIPELINE_STAGES],
-        "checks": checks_state(events),
+        "checks": checks_view(events, live.head),
         "merged_at": merged_at(events),
     }
 

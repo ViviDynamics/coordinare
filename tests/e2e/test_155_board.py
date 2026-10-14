@@ -1,6 +1,7 @@
-"""#155: the board's Done lane, PR checks icons, inactive symphony and card labels, in a real browser."""
+"""#155: the board's Done lane, PR checks icons, unchecked symphony and card labels, in a real browser."""
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,13 +11,28 @@ from coordinare.dashboard import DashboardStore
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_session, _full_snapshot
 
 _SYMPHONY = "conductor-e2e"
+_HEAD = "a" * 40
+EM_DASH = "\u2014"
+EN_DASH = "\u2013"
+
+
+def aged_title(word: str) -> re.Pattern[str]:
+    return re.compile(rf"^PR checks at review hand-off: {re.escape(word)} \(\d+m \d+s ago\)$")
 
 
 def _now_minus(hours: float) -> str:
     return (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
 
 
-def _strip(*, checks: str | None = None, merged_hours_ago: float | None = None) -> dict:
+def _checks(state: str | None, *, stale: bool = False, minutes_ago: float = 12) -> dict | None:
+    """A card's checks view as the strip carries it, or None when no gate has judged the card."""
+    if state is None:
+        return None
+    return {"state": state, "head": _HEAD[:12], "stale": stale,
+            "at": (datetime.now(UTC) - timedelta(minutes=minutes_ago)).isoformat()}
+
+
+def _strip(*, checks: dict | None = None, merged_hours_ago: float | None = None) -> dict:
     return {
         "current": None,
         "statuses": [],
@@ -32,6 +48,7 @@ def _symphony(*, done: list[str] = (), in_review: list[str] = (), in_progress: l
         "name": _SYMPHONY, "priority": 0, "github_project_number": 1, "github_org": "acme", "repo": "sample",
         "cycle_count": 3 if polled else 0, "error_count": 0,
         "last_poll_at": _now_minus(0.01) if polled else None,
+        "poll_interval_seconds": 30, "daemon_cycles_completed": 3,
         "state": {
             "board_snapshot": {"TODO": list(todo), "BLOCKED": [], "IN_PROGRESS": list(in_progress),
                                "IN_REVIEW": list(in_review), "DONE": list(done), "BACKLOG": []},
@@ -65,9 +82,9 @@ def test_the_done_lane_is_collapsed_and_its_summary_carries_the_count(
             titles={"PVTI_1": "Ship the export", "PVTI_2": "Fix the import", "PVTI_3": "Old merge"},
         )],
         card_pipeline={_SYMPHONY: {
-            "PVTI_1": _strip(checks="pass", merged_hours_ago=1),
-            "PVTI_2": _strip(checks="pass", merged_hours_ago=5),
-            "PVTI_3": _strip(checks="pass", merged_hours_ago=30),
+            "PVTI_1": _strip(checks=_checks("pass"), merged_hours_ago=1),
+            "PVTI_2": _strip(checks=_checks("pass"), merged_hours_ago=5),
+            "PVTI_3": _strip(checks=_checks("pass"), merged_hours_ago=30),
         }},
     )
 
@@ -89,8 +106,8 @@ def test_the_done_lane_opens_to_the_cards_it_counts(page: Page, live_server_url:
             titles={"PVTI_1": "Ship the export", "PVTI_3": "Old merge"},
         )],
         card_pipeline={_SYMPHONY: {
-            "PVTI_1": _strip(checks="pass", merged_hours_ago=1),
-            "PVTI_3": _strip(checks="pass", merged_hours_ago=30),
+            "PVTI_1": _strip(checks=_checks("pass"), merged_hours_ago=1),
+            "PVTI_3": _strip(checks=_checks("pass"), merged_hours_ago=30),
         }},
     )
 
@@ -102,6 +119,48 @@ def test_the_done_lane_opens_to_the_cards_it_counts(page: Page, live_server_url:
     expect(lane.locator(".done-lane-list")).to_contain_text("Ship the export")
     expect(lane.locator(".done-lane-list")).not_to_contain_text("Old merge")
     expect(lane.locator(".done-lane-note")).to_contain_text("Earlier merges are not counted.")
+
+
+@pytest.mark.e2e
+def test_the_done_lane_reads_a_microsecond_merge_time_in_this_browser(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # The daemon writes microseconds. The age text must come out as a real age, in every browser.
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(
+        store,
+        symphonies=[_symphony(done=["PVTI_7"], titles={"PVTI_7": "Microsecond merge"})],
+        card_pipeline={_SYMPHONY: {"PVTI_7": _strip(checks=_checks("pass"), merged_hours_ago=2)}},
+    )
+    lane = page.locator("#done-lane")
+    expect(lane.locator("summary .swimlane-col-count")).to_have_text("1", timeout=_WAIT_LIVE)
+    lane.locator("summary").click()
+    row = lane.locator(".done-lane-list li")
+    expect(row).to_contain_text("merged 2h 0m", timeout=_WAIT_LIVE)
+    expect(row).to_contain_text("ago")
+    expect(row).not_to_contain_text("NaN")
+
+
+@pytest.mark.e2e
+def test_the_done_lane_cut_uses_the_server_snapshot_time(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # The snapshot was taken 30 hours ago and the merge is 31 hours before the browser's clock. Against
+    # the snapshot time the merge is an hour old, so it is in the lane.
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    snapshot_at = (datetime.now(UTC) - timedelta(hours=30)).isoformat()
+    merged_at = (datetime.now(UTC) - timedelta(hours=31)).isoformat()
+    _broadcast(
+        store,
+        symphonies=[_symphony(done=["PVTI_8"], titles={"PVTI_8": "Server clock merge"})],
+        card_pipeline={_SYMPHONY: {"PVTI_8": {"current": None, "statuses": [], "checks": None,
+                                              "merged_at": merged_at}}},
+        snapshot_at=snapshot_at,
+    )
+    lane = page.locator("#done-lane")
+    expect(lane.locator("summary .swimlane-col-count")).to_have_text("1", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -118,25 +177,61 @@ def test_each_pr_checks_state_has_its_own_icon_and_an_unknown_one(
         symphonies=[_symphony(in_review=ids, titles=titles,
                               pr_urls={card: f"https://github.com/acme/sample/pull/{n}" for n, card in enumerate(ids, 1)})],
         card_pipeline={_SYMPHONY: {
-            "PVTI_11": _strip(checks="pass"),
-            "PVTI_12": _strip(checks="fail"),
-            "PVTI_13": _strip(checks="running"),
+            "PVTI_11": _strip(checks=_checks("pass")),
+            "PVTI_12": _strip(checks=_checks("fail")),
+            "PVTI_13": _strip(checks=_checks("running")),
             "PVTI_14": _strip(checks=None),
         }},
     )
 
-    card_passing = page.locator("#swimlane-section .swimlane-card").filter(has_text="Passing card")
-    expect(card_passing.locator(".checks-icon.checks-pass")).to_have_attribute(
-        "title", "PR checks: passing", timeout=_WAIT_LIVE,
+    cards = page.locator("#swimlane-section .swimlane-card")
+    expect(cards.filter(has_text="Passing card").locator(".checks-icon.checks-pass")).to_have_attribute(
+        "title", aged_title("passing"), timeout=_WAIT_LIVE,
     )
-    expect(page.locator("#swimlane-section .swimlane-card").filter(has_text="Failing card")
-           .locator(".checks-icon.checks-fail")).to_have_attribute("title", "PR checks: failing")
-    expect(page.locator("#swimlane-section .swimlane-card").filter(has_text="Running card")
-           .locator(".checks-icon.checks-running")).to_have_attribute("title", "PR checks: running")
-    expect(page.locator("#swimlane-section .swimlane-card").filter(has_text="Unjudged card")
-           .locator(".checks-icon.checks-unknown")).to_have_attribute(
+    expect(cards.filter(has_text="Failing card").locator(".checks-icon.checks-fail")).to_have_attribute(
+        "title", aged_title("failing"),
+    )
+    expect(cards.filter(has_text="Running card").locator(".checks-icon.checks-running")).to_have_attribute(
+        "title", aged_title("running"),
+    )
+    expect(cards.filter(has_text="Unjudged card").locator(".checks-icon.checks-unknown")).to_have_attribute(
         "title", "PR checks: unknown, no CI gate has judged this card yet",
     )
+
+
+@pytest.mark.e2e
+def test_a_stale_result_is_neutral_and_says_it_is_an_earlier_commit(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(
+        store,
+        symphonies=[_symphony(in_review=["PVTI_61"], titles={"PVTI_61": "Pushed again"},
+                              pr_urls={"PVTI_61": "https://github.com/acme/sample/pull/61"})],
+        card_pipeline={_SYMPHONY: {"PVTI_61": _strip(checks=_checks("fail", stale=True))}},
+    )
+    icon = page.locator("#swimlane-section .swimlane-card").filter(has_text="Pushed again").locator(".checks-icon")
+    expect(icon).to_have_class("checks-icon checks-fail checks-stale", timeout=_WAIT_LIVE)
+    expect(icon).to_have_attribute("title", re.compile(
+        r"^PR checks at review hand-off: failing \(\d+m \d+s ago\), checks as of an earlier commit$"))
+
+
+@pytest.mark.e2e
+def test_an_environment_block_is_neutral_and_not_failing(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(
+        store,
+        symphonies=[_symphony(in_review=["PVTI_71"], titles={"PVTI_71": "Quota hit"},
+                              pr_urls={"PVTI_71": "https://github.com/acme/sample/pull/71"})],
+        card_pipeline={_SYMPHONY: {"PVTI_71": _strip(checks=_checks("blocked"))}},
+    )
+    icon = page.locator("#swimlane-section .swimlane-card").filter(has_text="Quota hit").locator(".checks-icon")
+    expect(icon).to_have_attribute("title", aged_title("blocked by environment"), timeout=_WAIT_LIVE)
+    expect(icon).not_to_have_class("checks-icon checks-fail")
 
 
 @pytest.mark.e2e
@@ -146,11 +241,19 @@ def test_a_card_without_a_pr_shows_no_checks_icon(page: Page, live_server_url: s
     _broadcast(
         store,
         symphonies=[_symphony(in_review=["PVTI_21"], titles={"PVTI_21": "No pull request yet"})],
-        card_pipeline={_SYMPHONY: {"PVTI_21": _strip(checks="pass")}},
+        card_pipeline={_SYMPHONY: {"PVTI_21": _strip(checks=_checks("pass"))}},
     )
     card = page.locator("#swimlane-section .swimlane-card").filter(has_text="No pull request yet")
     expect(card).to_contain_text("No pull request yet", timeout=_WAIT_LIVE)
     expect(card.locator(".checks-icon")).to_have_count(0)
+
+
+def _unchecked(name: str, **overrides: object) -> dict:
+    entry = {"name": name, "priority": 1, "github_project_number": None, "github_org": "",
+             "repo": "", "cycle_count": 0, "error_count": 0, "last_poll_at": None,
+             "poll_interval_seconds": 30, "daemon_cycles_completed": 3, "state": None}
+    entry.update(overrides)
+    return entry
 
 
 @pytest.mark.e2e
@@ -161,8 +264,7 @@ def test_a_never_checked_symphony_is_labelled_in_the_switcher_and_says_so_in_the
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
     _broadcast(store, symphonies=[
         _symphony(todo=["PVTI_31"], titles={"PVTI_31": "Live card"}),
-        {"name": "placeholder", "priority": 1, "github_project_number": None, "github_org": "",
-         "repo": "", "cycle_count": 0, "error_count": 0, "last_poll_at": None, "state": None},
+        _unchecked("placeholder", priority=1),
     ])
 
     switcher = page.locator("#symphony-select")
@@ -176,16 +278,52 @@ def test_a_never_checked_symphony_is_labelled_in_the_switcher_and_says_so_in_the
 
 
 @pytest.mark.e2e
+def test_a_symphony_whose_first_cycle_failed_shows_the_error_not_never_checked(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(store, symphonies=[
+        _symphony(todo=["PVTI_41"], titles={"PVTI_41": "Live card"}),
+        _unchecked("broken", error_count=3, daemon_cycles_completed=1,
+                   state={"last_error": "GitHub 401 Bad credentials", "board_snapshot": None}),
+    ])
+
+    switcher = page.locator("#symphony-select")
+    expect(switcher.locator("option", has_text="broken")).to_contain_text(
+        "broken (Last check failed: GitHub 401 Bad credentials)", timeout=_WAIT_LIVE,
+    )
+    switcher.select_option("broken")
+    cards = page.locator("#swimlane-section")
+    expect(cards).to_contain_text("Last check failed: GitHub 401 Bad credentials", timeout=_WAIT_LIVE)
+    expect(cards).not_to_contain_text("Never checked")
+    expect(cards).not_to_contain_text("Waiting for a webhook")
+
+
+@pytest.mark.e2e
+def test_a_fresh_boot_says_not_checked_yet_and_a_webhook_only_daemon_says_waiting(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    _broadcast(store, symphonies=[
+        _symphony(todo=["PVTI_51"], titles={"PVTI_51": "Live card"}),
+        _unchecked("booting", daemon_cycles_completed=0),
+        _unchecked("hooked", poll_interval_seconds=None, daemon_cycles_completed=0),
+    ])
+    switcher = page.locator("#symphony-select")
+    expect(switcher.locator("option", has_text="booting")).to_contain_text("booting (Not checked yet)", timeout=_WAIT_LIVE)
+    expect(switcher.locator("option", has_text="hooked")).to_contain_text("hooked (Waiting for a webhook)")
+
+
+@pytest.mark.e2e
 def test_the_symphonies_page_greys_out_a_never_checked_symphony(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     # The broadcaster only pushes to connected clients, so the page is opened before the snapshot.
     page.goto(live_server_url + "/symphonies")
     expect(page.locator("#symphonies-page")).to_be_visible(timeout=_WAIT_SSE)
-    _broadcast(store, symphonies=[
-        {"name": "placeholder", "priority": 0, "github_project_number": None, "github_org": "",
-         "repo": "", "cycle_count": 0, "error_count": 0, "last_poll_at": None, "state": None},
-    ])
+    _broadcast(store, symphonies=[_unchecked("placeholder")])
     row = page.locator("tr[data-inactive='true']")
     expect(row).to_contain_text("Never checked: check config", timeout=_WAIT_LIVE)
 
@@ -198,8 +336,8 @@ def test_the_header_has_no_stray_dash(page: Page, live_server_url: str, store: D
 
     header = page.locator("header.workspace-header")
     expect(page.locator("#workspace-title")).to_have_text("Dashboard", timeout=_WAIT_LIVE)
-    expect(header).not_to_contain_text("\u2014")
-    expect(header).not_to_contain_text("\u2013")
+    expect(header).not_to_contain_text(EM_DASH)
+    expect(header).not_to_contain_text(EN_DASH)
     expect(page).to_have_title("Dashboard | Coordinare", timeout=_WAIT_SSE)
 
 

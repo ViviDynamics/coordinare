@@ -85,6 +85,15 @@ def live_stage(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | N
     return stage if stage in PIPELINE_STAGES else None
 
 
+def live_head(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | None:
+    """The PR head the card's live session last reported, from session state. None when it has no session
+    or the session has not yet seen a PR. Read from memory only: GitHub is never called for this."""
+    session = _sessions_of(daemon, symphony).get(card_id)
+    card = session.get("current_card") if isinstance(session, dict) else None
+    head = card.get("head_after") if isinstance(card, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
 def configured_symphonies(daemon: CoordinareDaemon) -> list[str]:
     return [str(name) for name in (daemon.state.get("symphony_configs") or {})]
 
@@ -119,14 +128,17 @@ def card_pipeline_block(daemon: CoordinareDaemon) -> dict[str, dict[str, dict[st
         strips: dict[str, dict[str, Any]] = {}
         for card_id in log.cards(symphony):
             current = live_stage(daemon, symphony, card_id)
+            head = live_head(daemon, symphony, card_id)
             key = ("strip", symphony, card_id)
             seen.add(key)
-            revision = (log.revision(symphony, card_id), current, lifecycle)
+            revision = (log.revision(symphony, card_id), current, lifecycle, head)
             cached = log.derived.get(key)
             if cached is not None and cached[0] == revision:
                 strips[card_id] = cached[1]
                 continue
-            strip = pipeline_strip(log.peek(symphony, card_id), LiveStage(current=current, lifecycle=lifecycle))
+            strip = pipeline_strip(
+                log.peek(symphony, card_id), LiveStage(current=current, lifecycle=lifecycle, head=head),
+            )
             log.derived[key] = (revision, strip)
             strips[card_id] = strip
         block[symphony] = strips
