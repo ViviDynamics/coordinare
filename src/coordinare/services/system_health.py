@@ -289,7 +289,8 @@ def _count(n: int, singular: str, plural: str | None = None) -> str:
     return f"{n} {singular}" if n == 1 else f"{n} {plural or singular + 's'}"
 
 
-def _github_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[str, Any]:
+def _github_findings(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> list[tuple[str, str]]:
+    """What the failure streak, the quota and the daemon's own probe say about the GitHub API."""
     track, rate = rec.github, rec.rate
     findings: list[tuple[str, str]] = []
     if track.streak and track.last_kind == FAILURE_AUTH:
@@ -310,17 +311,24 @@ def _github_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[s
         findings.append((DEGRADED, "rate limit nearly used up"))
     if inputs.health.get("github") == DEGRADED:
         findings.append((DEGRADED, "the daemon's GitHub probe is degraded"))
+    return findings
 
+
+def _quota_summary(rate: Rate) -> str:
     if rate.remaining is None:
-        summary = "no quota reading yet; GraphQL responses carry it"
-    elif rate.limit:
-        summary = f"{rate.remaining:,} of {rate.limit:,} requests left"
-        if rate.reset_at is not None:
-            summary += f", resets {rate.reset_at.strftime('%H:%M UTC')}"
-    else:
-        summary = f"{rate.remaining:,} requests left"
+        return "no quota reading yet; GraphQL responses carry it"
+    if not rate.limit:
+        return f"{rate.remaining:,} requests left"
+    summary = f"{rate.remaining:,} of {rate.limit:,} requests left"
+    if rate.reset_at is not None:
+        summary += f", resets {rate.reset_at.strftime('%H:%M UTC')}"
+    return summary
 
-    status, reason = _worst(findings)
+
+def _github_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[str, Any]:
+    track, rate = rec.github, rec.rate
+    summary = _quota_summary(rate)
+    status, reason = _worst(_github_findings(rec, inputs))
     if status == HEALTHY and track.last_at is None and rate.read_at is None:
         status, reason = UNKNOWN, "nothing observed since this daemon started"
     fresh = _Fresh("last call", _newest(track.last_at, rate.read_at), track.last_success_at)
