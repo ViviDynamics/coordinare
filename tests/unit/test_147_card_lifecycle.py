@@ -34,7 +34,7 @@ def _snapshot_with(**overrides: Any) -> WorkflowSnapshot:
 
 
 def test_schema_version_is_35_and_v34_snapshots_load_with_an_empty_log() -> None:
-    assert CURRENT_SCHEMA_VERSION == 35
+    assert CURRENT_SCHEMA_VERSION == 36
     snapshot = _snapshot_with(schema_version=34)
     assert snapshot.card_lifecycle == {}
 
