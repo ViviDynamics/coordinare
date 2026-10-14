@@ -39,44 +39,135 @@ def _redact_secrets(text: str) -> str:
     return text
 
 
-# 148: the command forms the transcript redactor (lib/transcript_redaction.py,
-# spec 129) does not cover. Run after it, so anything it already handles is
-# never matched twice. Each pattern keeps its prefix in group 1 and replaces the
-# secret span. The performer keeps an identical list (performer/models.py); a
-# parity test pins the two together.
-_COMMAND_MARKERS = ("-", "configure")
-_QUOTED_OR_BARE = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
-_COMMAND_SECRET_PATTERNS: list[re.Pattern[str]] = [
-    # docker login -p x, sshpass -p x (mysql -p, env assignments, --password and
-    # --token flags, curl -u, URL userinfo and auth headers are all transcript rules)
-    re.compile(
-        r"(\b(?:docker\s+login|sshpass)\b[^|;&\n]*?\s-p)\s*" + _QUOTED_OR_BARE,
-        re.IGNORECASE,
-    ),
-    # aws configure set aws_secret_access_key VALUE (no equals sign)
-    re.compile(
-        r"(\baws\s+configure\s+set\s+\S*(?:secret|token|password)\S*\s+)\S+",
-        re.IGNORECASE,
-    ),
-    # gh secret set NAME --body VALUE
-    re.compile(
-        r"(\bgh\s+secret\s+set\b[^|;&\n]*?\s(?:--body|-b)[=\s]+)" + _QUOTED_OR_BARE,
-        re.IGNORECASE,
-    ),
-]
+# 148: the client secrets the transcript redactor (lib/transcript_redaction.py,
+# spec 129) does not cover: a password given as a flag or an argument to a client
+# program, and `pass:` in openssl. They are found by one linear pass over the words
+# of a text. A pattern that scanned from each program name to the end of its line
+# was quadratic on repeated program names. The performer keeps an identical copy;
+# a parity test compares the two.
+_WORD_RE = re.compile(r"\S+")
+_BREAK_CHARS = ";|&"
+_MAX_QUOTED_WORDS = 8
+_OPENSSL_LABEL = "pass:"
+_CLIENTS = {"sshpass": "sshpass", "redis-cli": "redis", "sqlcmd": "sqlcmd", "htpasswd": "htpasswd"}
+# (client, word) pairs whose next word is the secret.
+_SECRET_FLAGS = frozenset({
+    ("docker", "-p"), ("sshpass", "-p"), ("redis", "-a"), ("sqlcmd", "-P"), ("gh", "--body"), ("gh", "-b"),
+})
+_AWS_SECRET_STEMS = ("secret", "token", "password")
+# htpasswd -b FILE USER PASSWORD: the password is the third word after the program.
+_HTPASSWD_PASSWORD_POSITION = 3
+
+
+class _ClientSecrets:
+    """One left-to-right pass over the words of a text (148)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.spans: list[tuple[int, int]] = []
+        self._reset()
+
+    def _reset(self) -> None:
+        self.recent: list[str] = []
+        self.client = ""
+        self.secret_next = False
+        self.batch = False
+        self.positional = 0
+
+    def scan(self) -> list[tuple[int, int]]:
+        words = list(_WORD_RE.finditer(self.text))
+        previous_end = 0
+        index = 0
+        while index < len(words):
+            word = words[index]
+            if "\n" in self.text[previous_end:word.start()]:
+                self._reset()
+            if self.secret_next:
+                index = self._secret(words, index)
+                previous_end = words[index - 1].end()
+                continue
+            previous_end = word.end()
+            self._word(word.group(), word.start(), word.end())
+            if any(char in word.group() for char in _BREAK_CHARS):
+                self._reset()
+            index += 1
+        return self.spans
+
+    def _secret(self, words: list[re.Match[str]], index: int) -> int:
+        """Record the secret at *index* (a quoted run is taken whole); return the next index."""
+        self.secret_next = False
+        first = words[index].group()
+        last = index
+        if first[:1] in ("'", '"') and not (len(first) > 1 and first.endswith(first[0])):
+            for offset in range(index + 1, min(len(words), index + _MAX_QUOTED_WORDS)):
+                if words[offset].group().endswith(first[0]):
+                    last = offset
+                    break
+        self.spans.append((words[index].start(), words[last].end()))
+        return last + 1
+
+    def _word(self, value: str, start: int, end: int) -> None:
+        base = value.rsplit("/", 1)[-1].lower()
+        self.recent = [*self.recent, base][-3:]
+        if value.startswith(_OPENSSL_LABEL):
+            self.spans.append((start + len(_OPENSSL_LABEL), end))
+        elif self.client == "htpasswd":
+            self._htpasswd_word(value, start, end)
+        elif self.recent[-2:] == ["docker", "login"]:
+            self.client = "docker"
+        elif self.recent[-2:] == ["gh", "secret"]:
+            self.client = "gh"
+        elif self.recent[-3:] == ["aws", "configure", "set"]:
+            self.client = "aws"
+        elif base in _CLIENTS:
+            self.client = _CLIENTS[base]
+            self.batch = False
+            self.positional = 0
+        elif (self.client == "aws" and any(stem in base for stem in _AWS_SECRET_STEMS)) or (
+            self.client,
+            value,
+        ) in _SECRET_FLAGS:
+            self.secret_next = True
+
+    def _htpasswd_word(self, value: str, start: int, end: int) -> None:
+        """htpasswd -b FILE USER PASSWORD: the third positional word is the password."""
+        if value.startswith("-"):
+            self.batch = self.batch or value == "-b"
+            return
+        self.positional += 1
+        if self.batch and self.positional == _HTPASSWD_PASSWORD_POSITION:
+            self.spans.append((start, end))
+
+
+def redact_client_forms(text: str) -> str:
+    """Replace each client secret found by ``_ClientSecrets`` (148)."""
+    pieces: list[str] = []
+    last = 0
+    for start, end in _ClientSecrets(text).scan():
+        pieces.append(text[last:start])
+        pieces.append("[REDACTED]")
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+MAX_EVENT_TEXT = 200
+
+
+def clip_event_text(value: str) -> str:
+    """The text of a backend event: redacted first, then clipped (148).
+
+    Every event text goes through here. Clipping before redaction let a token that
+    straddled the cut leave its prefix behind.
+    """
+    return redact_command(value)[:MAX_EVENT_TEXT]
 
 
 def redact_command(text: str) -> str:
     """Value patterns, the transcript redactor, then the command forms (148, 129). Redact before clipping."""
     text = _redact_secrets(text)
     text = transcript_redact_text(text)
-    # Every form below needs one of these, so text with none of them skips the scan.
-    lowered = text.lower()
-    if not any(marker in lowered for marker in _COMMAND_MARKERS):
-        return text
-    for pattern in _COMMAND_SECRET_PATTERNS:
-        text = pattern.sub(lambda m: m.group(1) + "[REDACTED]", text)
-    return text
+    return redact_client_forms(text)
 
 
 class BackendEventType(str, Enum):
@@ -105,7 +196,7 @@ class BackendEvent(BaseModel):
     @classmethod
     def _redact_sensitive_detail(cls, data: object) -> object:
         if isinstance(data, dict):
-            for field in ("text", "detail", "arg"):
+            for field in ("text", "detail", "arg", "tool"):
                 if field in data:
                     data[field] = redact_command(str(data[field]))
         return data

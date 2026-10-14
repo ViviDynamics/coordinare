@@ -33,7 +33,7 @@ from performer.backends._card_docs import scanner_findings_prompt_section, repai
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -609,7 +609,7 @@ class OpenCodeAdapter:
         return BackendStatus(state="done", output=self._assembled_output() or None)
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
 
     def _handle_event(self, event: dict) -> None:  # type: ignore[type-arg]
         # Events may be wrapped: {"directory": ..., "payload": {...}}

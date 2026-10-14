@@ -59,7 +59,7 @@ from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.backends.pi import _build_task_prompt, _extract_final_assistant_text
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import BackendEvent, BackendEventType, Score, Stand, clip_event_text
 
 log = structlog.get_logger(__name__)
 
@@ -491,7 +491,7 @@ class PrimeAgentBackend:
                 # and EOF without that recovery turns it into the error below.
                 self._pending_failure = failure
                 self._status = BackendStatus(state="working", progress=failure[:_MAX_TEXT])
-                self._emit(BackendEventType.error, failure[:_MAX_TEXT])
+                self._emit(BackendEventType.error, failure)
                 return
             output = _extract_final_assistant_text(event.get("messages", []))
             if not output:
@@ -511,7 +511,7 @@ class PrimeAgentBackend:
             max_attempts = event.get("maxAttempts")
             self._emit(
                 BackendEventType.error,
-                f"retry {attempt}/{max_attempts}: {msg}"[:_MAX_TEXT],
+                f"retry {attempt}/{max_attempts}: {msg}",
             )
 
         elif etype == "auto_retry_end":
@@ -521,7 +521,7 @@ class PrimeAgentBackend:
                 final = str(event.get("finalError") or "auto retry exhausted")
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=final)
-                self._emit(BackendEventType.error, final[:_MAX_TEXT])
+                self._emit(BackendEventType.error, final)
             else:
                 # The CLI recovered — drop the failure held from the agent_end
                 # that preceded the retry, and keep the run working.
@@ -534,7 +534,7 @@ class PrimeAgentBackend:
                 msg = str(event.get("errorMessage") or "compaction aborted")
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=msg)
-                self._emit(BackendEventType.error, msg[:_MAX_TEXT])
+                self._emit(BackendEventType.error, msg)
 
         elif etype == "error":
             msg = ""
@@ -542,13 +542,13 @@ class PrimeAgentBackend:
             if isinstance(err, dict):
                 msg = str(err.get("message") or "")
             msg = msg or str(event.get("message") or "") or etype
-            self._emit(BackendEventType.error, msg[:_MAX_TEXT])
+            self._emit(BackendEventType.error, msg)
             if not event.get("willRetry", False):
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=msg)
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
 
 
 def _failed_assistant_reason(messages: Any) -> str | None:

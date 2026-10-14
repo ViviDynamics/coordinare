@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from performer.backends._relay_feedback import relay_feedback_prompt_section
 from performer.backends._clarifications import clarification_comment_lines
-from performer.models import _redact_secrets
+from performer.models import _redact_secrets, clip_event_text
 
 import asyncio
 import json
@@ -533,7 +533,7 @@ class ClaudeCodeBackend:
         return joined
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail))
 
     def _open_stdout_capture(self) -> None:
         """Open a per-launch stdout-tee file if capture_dir is configured.
@@ -906,18 +906,18 @@ class ClaudeCodeBackend:
                     full_text = str(block.get("text", ""))
                     if full_text:
                         self._output_accumulator.append(full_text)
-                    text = full_text[:_MAX_TEXT]
+                    text = clip_event_text(full_text)
                     self._status = BackendStatus(state="working", progress=text)
                     self._emit(BackendEventType.progress, text)
                 elif block_type == "tool_use":
                     tool = str(block.get("name", "tool"))
                     # 148: the name and its primary argument; the rest of the input stays here.
                     self._event_buffer.append(BackendEvent(
-                        type=BackendEventType.tool_use, text=tool[:_MAX_TEXT], detail=tool,
+                        type=BackendEventType.tool_use, text=tool, detail=tool,
                         tool=tool, arg=primary_argument(tool, block.get("input")),
                     ))
                 elif block_type == "thinking":
-                    thinking = str(block.get("thinking", ""))[:_MAX_TEXT]
+                    thinking = clip_event_text(str(block.get("thinking", "")))
                     self._emit(BackendEventType.thinking, thinking)
 
         elif event_type == "tool_result":
@@ -1009,7 +1009,7 @@ class ClaudeCodeBackend:
                     )
             elif subtype in ("error", "interrupted"):
                 reason = event.get("error", subtype)
-                self._emit(BackendEventType.error, str(reason)[:_MAX_TEXT])
+                self._emit(BackendEventType.error, str(reason))
                 self._status = BackendStatus(state="error", error_reason=str(reason))
 
         # A progress event arrived (anything except the early-return api_retry

@@ -40,6 +40,7 @@ from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
 from performer.models import (
+    clip_event_text,
     DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, redact_command,
 )
 
@@ -675,7 +676,7 @@ class CodexBackend:
         elif method == "item/commandExecution/outputDelta":
             output = params.get("delta", params.get("output", ""))
             if output:
-                self._emit(BackendEventType.tool_use, str(output)[:_MAX_TEXT], detail="shell",
+                self._emit(BackendEventType.tool_use, str(output), detail="shell",
                            is_delta=True, stream_id=str(params.get("itemId", "")))
 
         elif method == "item/completed":
@@ -709,14 +710,14 @@ class CodexBackend:
         elif method == "error":
             error_msg = (params.get("error") or {}).get("message", str(params))
             # Non-fatal errors are emitted as events; fatal ones update status
-            self._emit(BackendEventType.error, error_msg[:_MAX_TEXT])
+            self._emit(BackendEventType.error, error_msg)
             if not params.get("willRetry", False):
                 self._status = BackendStatus(state="error", error_reason=error_msg)
 
         elif method == "item/reasoning/textDelta":
             delta = params.get("delta", "")
             if delta:
-                self._emit(BackendEventType.thinking, delta[:_MAX_TEXT], is_delta=True,
+                self._emit(BackendEventType.thinking, delta, is_delta=True,
                            stream_id=str(params.get("itemId", "")))
 
         # All other notifications are no-ops (turn/started, thread/started, etc.)
@@ -828,7 +829,7 @@ class CodexBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
               is_delta: bool = False, stream_id: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
+        self._event_buffer.append(BackendEvent(type=type, text=clip_event_text(text), detail=detail,
                                                is_delta=is_delta, stream_id=stream_id))
 
 

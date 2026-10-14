@@ -9,6 +9,7 @@ of the stores.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from typing import Any
 
@@ -128,17 +129,26 @@ def test_a_bare_literal_is_a_documented_limit_of_pattern_redaction() -> None:
     assert daemon_redaction.redact_command_text("echo s3cr3tvalue123") == "echo s3cr3tvalue123"
 
 
-def test_the_performer_and_daemon_carry_the_same_command_patterns() -> None:
-    """The two lists are copies. This keeps them from drifting apart."""
-    daemon_patterns = [p.pattern for p in daemon_redaction._COMMAND_SECRET_PATTERNS]
-    performer_patterns = [p.pattern for p in performer_models._COMMAND_SECRET_PATTERNS]
-    assert daemon_patterns == performer_patterns
+def test_the_performer_and_daemon_carry_the_same_client_scanner() -> None:
+    """The two copies stay identical: the scanner, its word pattern and its tables."""
+    assert inspect.getsource(daemon_redaction._ClientSecrets) == inspect.getsource(performer_models._ClientSecrets)
+    assert inspect.getsource(daemon_redaction.redact_client_forms) == inspect.getsource(
+        performer_models.redact_client_forms,
+    )
+    assert daemon_redaction._SECRET_FLAGS == performer_models._SECRET_FLAGS
+    assert daemon_redaction._CLIENTS == performer_models._CLIENTS
 
 
 @pytest.mark.parametrize(("command", "secret"), _SECRET_COMMANDS)
 def test_both_redactors_remove_every_sample(command: str, secret: str) -> None:
     assert secret not in daemon_redaction.redact_command_text(command)
     assert secret not in performer_models.redact_command(command)
+
+
+def test_the_daemon_redacts_the_tool_name_of_an_event_too() -> None:
+    """Every free text field of an event is treated alike, the tool name included."""
+    redacted = daemon_redaction.redact_performer_event({"tool": "GITHUB_TOKEN=abc123short", "text": "Bash"})
+    assert "abc123short" not in redacted["tool"]
 
 
 # The transcript redactor's own leak corpus (spec 129). Each one must be gone from
