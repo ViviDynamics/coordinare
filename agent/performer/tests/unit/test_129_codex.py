@@ -238,10 +238,15 @@ class TestUsageAndTurnEnd:
         usage = _records(buf)[0]
         assert usage["type"] == "usage"
         assert "run total" in usage["text"]
-        assert usage["usage"]["input_tokens"] == 5210
+        # 134 review: the app-server's inputTokens already includes cachedInputTokens
+        # (totalTokens = inputTokens + outputTokens = 6050), so the fresh input is the
+        # difference. Codex has no cache-write field, so cache_write is not reported.
+        assert usage["usage"]["input_tokens"] == 5210 - 3000
         assert usage["usage"]["output_tokens"] == 840
         assert usage["usage"]["cache_read"] == 3000
-        assert usage["usage"]["cache_write"] == 120
+        assert "cache_write" not in usage["usage"]
+        kinds = usage["usage"]["input_tokens"] + usage["usage"]["cache_read"] + usage["usage"]["output_tokens"]
+        assert kinds == 6050  # the kinds add up to the app-server's own total
         assert "model" not in usage["usage"]
         assert "totalTokens=6050" in usage["text"]
 

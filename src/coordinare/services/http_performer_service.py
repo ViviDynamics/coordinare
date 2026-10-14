@@ -1125,7 +1125,6 @@ class HTTPPerformerService:
                     ),
                     timeout=_TRANSCRIPT_POLL_SECONDS,
                 )
-                self._count_usage(writer)
         except TimeoutError:
             # Slow, not broken: the batch is retried on the next poll.
             logger.warning(
@@ -1136,6 +1135,10 @@ class HTTPPerformerService:
             )
         except Exception as exc:  # best effort: see _transcript_failed
             self._transcript_failed(session_id, "absorb", exc, writer)
+        finally:
+            # 134 review: count what the writer accepted on every path, including a
+            # timed-out append, whose worker thread may have written before the timeout.
+            self._count_usage(writer)
 
     async def _load_writer(self, writer: RunTranscriptWriter, session_id: str) -> bool:
         """Read the writer's cursor on a worker thread, bounded. False if it is not ready."""

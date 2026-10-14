@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -83,11 +84,11 @@ def test_the_sample_run_cost_matches_the_hand_calculation(run_on_disk: Path) -> 
     ledger = TokenLedger()
     ledger.load_from_transcripts(run_on_disk, now=NOW)
     priced = price_totals(ledger.totals(run_id="run-134"), price_table_from_config(PRICES))
-    assert priced.cost_usd == pytest.approx(0.125625, abs=1e-12)
+    assert priced.cost_usd == Decimal("0.125625")  # exact decimal, not a float sum
     assert priced.unknown_reason is None
     lines = {line.model: line for line in priced.models}
-    assert lines["claude-opus-4-5"].cost_usd == pytest.approx(0.121875, abs=1e-12)
-    assert lines["claude-haiku-4-5"].cost_usd == pytest.approx(0.00375, abs=1e-12)
+    assert lines["claude-opus-4-5"].cost_usd == Decimal("0.121875")
+    assert lines["claude-haiku-4-5"].cost_usd == Decimal("0.00375")
 
 
 def test_the_breakdown_by_kind_adds_up_to_the_total(run_on_disk: Path) -> None:
@@ -95,11 +96,11 @@ def test_the_breakdown_by_kind_adds_up_to_the_total(run_on_disk: Path) -> None:
     ledger.load_from_transcripts(run_on_disk, now=NOW)
     priced = price_totals(ledger.totals(run_id="run-134"), price_table_from_config(PRICES))
     kinds = priced.kind_usd
-    assert kinds["input"] == pytest.approx(0.01575 + 0.002, abs=1e-12)
-    assert kinds["output"] == pytest.approx(0.075 + 0.0005, abs=1e-12)
-    assert kinds["cache_read"] == pytest.approx(0.0255, abs=1e-12)
-    assert kinds["cache_write"] == pytest.approx(0.005625 + 0.00125, abs=1e-12)
-    assert sum(kinds.values()) == pytest.approx(0.125625, abs=1e-12)
+    assert kinds["input"] == Decimal("0.01775")
+    assert kinds["output"] == Decimal("0.0755")
+    assert kinds["cache_read"] == Decimal("0.0255")
+    assert kinds["cache_write"] == Decimal("0.006875")
+    assert sum(kinds.values(), Decimal(0)) == Decimal("0.125625")
 
 
 def test_the_run_total_record_is_not_counted_on_top(run_on_disk: Path) -> None:

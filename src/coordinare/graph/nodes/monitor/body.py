@@ -131,7 +131,12 @@ from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.progress_fingerprint import progress_fingerprint
-from coordinare.services.token_usage import TokenLedger, price_table_from_config, price_totals
+from coordinare.services.token_usage import (
+    TokenLedger,
+    price_table_from_config,
+    price_totals,
+    to_usd,
+)
 from coordinare.services.workflow_step import (
     latch_declared_steps,
     latch_workflow_step,
@@ -764,7 +769,7 @@ def _ledger_card_cost(state: CoordinareState, card_id: object) -> float | None:
         return None
     config = state.get("config")
     table = price_table_from_config(getattr(config, "cost_tracking", None))
-    return price_totals(usage.totals(card=str(card_id or "")), table).cost_usd
+    return to_usd(price_totals(usage.totals(card=str(card_id or "")), table).cost_usd)
 
 def _transcript_target(state: CoordinareState, card_id: object) -> dict[str, str]:
     """129: the symphony and card a run's transcript is filed under. 134: and its stage."""
@@ -1125,14 +1130,16 @@ async def _phase_token_counters(
     # 134: the cost is the ledger's priced total for the card, not a flat rate. It is
     # recomputed on every poll, since usage records arrive with the transcript.
     card_cost = _ledger_card_cost(state, card_id)
-    state["card_cost_estimate"] = card_cost if card_cost is not None else 0.0
+    # 134 review: an unknown cost is None, not zero. The gauge is set only for a known cost.
+    state["card_cost_estimate"] = card_cost
     if tokens_delta > 0 or card_cost is not None:
         config = state.get("config")
         # Update Prometheus metrics
         from coordinare.metrics import METRICS
         if tokens_delta > 0:
             METRICS.card_tokens_total.labels(role=stage).inc(tokens_delta)
-        METRICS.card_cost_estimate_dollars.set(state["card_cost_estimate"])
+        if card_cost is not None:
+            METRICS.card_cost_estimate_dollars.set(card_cost)
         # 034: Budget alert — fire once per card
         budget = None
         if config is not None and hasattr(config, "cost_tracking"):

@@ -906,6 +906,15 @@ class TranscriptCollector:
     def release(self, run_id: str) -> None:
         """Forget a finished run's writer. The file stays on disk."""
         writer = self._writers.pop(run_id, None)
+        if writer is not None:
+            # 134 review: usage the writer accepted but no poll has taken yet is counted
+            # before the writer is dropped, so a run that ends mid-poll keeps its totals.
+            taken = writer.drain_usage()
+            if taken:
+                symphony, card = writer.parts
+                self.usage.observe(
+                    run_id, symphony=symphony, card=card, stage=writer.stage, records=taken,
+                )
         if writer is not None and writer.truncated:
             logger.info(
                 "run_transcript.run_truncated",

@@ -3,18 +3,21 @@
 The source of truth is the ``usage`` records the daemon accepts onto the run
 transcript (spec 129). The writer hands every accepted record to :class:`TokenLedger`
 (``observe``), so totals rise on the poll that absorbs a record. After a restart the
-ledger is rebuilt from the transcript files inside the window (``load_from_transcripts``),
-and the writer continues from the cursor the file holds, so nothing is counted twice.
+ledger is rebuilt from the transcript files inside the window
+(``load_from_transcripts``), and the writer continues from the cursor the file holds,
+so nothing is counted twice.
 
-Per run, one tier of records is the total (see :meth:`TokenLedger.run_buckets`):
+Per run, one tier of records is the total (see :meth:`_Run.buckets`):
 
 1. ``message`` records, when any exist. These are per model message and carry the model.
-2. otherwise the last ``run`` record. It is cumulative, so it replaces, not adds.
+2. otherwise the run records. They are cumulative, so each UTC day's share is the step
+   from the previous day's last cumulative value to that day's last value.
 3. otherwise ``scope``-less records, summed, and the run is flagged ``unscoped``.
 
 Cost comes from a per-model price table (:class:`PriceTable`), built from the
 ``cost_tracking`` config. A model with no price keeps its token counts and its cost
-is reported unknown, with the reason. No price is ever guessed.
+is reported unknown, with the reason. No price is ever guessed. Money is exact
+``Decimal`` internally and becomes a float rounded to micro-dollars at the snapshot.
 
 Day totals are keyed by the UTC day of each record's timestamp.
 """
@@ -23,8 +26,10 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -40,8 +45,13 @@ logger = structlog.get_logger(__name__)
 # The ledger keeps the 7-day week plus one day of slack. Older runs are pruned.
 USAGE_WINDOW_DAYS = 8
 WEEK_DAYS = 7
-# Per-turn entries kept for one run. Totals stay exact beyond this bound.
+# Per-turn entries kept for one run, and across all runs. Totals stay exact beyond these.
 MAX_TURNS_PER_RUN = 2000
+MAX_TURNS_TOTAL = 20_000
+# Bounds on the boot rebuild: total bytes, wall-clock seconds, and one usage line.
+REBUILD_MAX_BYTES = 256 * 1024 * 1024
+REBUILD_MAX_SECONDS = 30.0
+USAGE_LINE_MAX_BYTES = 1024 * 1024
 
 _SCOPES: frozenset[str] = frozenset({"message", "run"})
 _USAGE_TYPE = "usage"
@@ -49,6 +59,8 @@ _USAGE_MARKER = b'"usage"'
 _TRANSCRIPT_SUFFIX = ".jsonl"
 _NO_PRICE = "no price configured"
 _NO_MODEL = "model not recorded in the usage record"
+_MILLION = Decimal(1_000_000)
+MICRO_DOLLAR = Decimal("0.000001")
 FLAT_SOURCE = "deprecated_flat_rate"
 TABLE_SOURCE = "table"
 NONE_SOURCE = "none"
@@ -80,6 +92,15 @@ class UsageCounts:
             output_tokens=self.output_tokens + other.output_tokens,
             cache_read=self.cache_read + other.cache_read,
             cache_write=self.cache_write + other.cache_write,
+        )
+
+    def minus(self, other: UsageCounts) -> UsageCounts:
+        """The step from ``other`` to ``self``, never below zero for any kind."""
+        return UsageCounts(
+            input_tokens=max(0, self.input_tokens - other.input_tokens),
+            output_tokens=max(0, self.output_tokens - other.output_tokens),
+            cache_read=max(0, self.cache_read - other.cache_read),
+            cache_write=max(0, self.cache_write - other.cache_write),
         )
 
     @classmethod
@@ -135,6 +156,7 @@ class RunInfo:
 @dataclass
 class _Run:
     run_id: str
+    ingested_day: str
     symphony: str = ""
     card: str = ""
     stage: str = ""
@@ -144,15 +166,15 @@ class _Run:
     turns_dropped: bool = False
     message: dict[tuple[str, str | None], UsageCounts] = field(default_factory=dict)
     unscoped_buckets: dict[tuple[str, str | None], UsageCounts] = field(default_factory=dict)
-    run_bucket: tuple[tuple[str, str | None], UsageCounts] | None = None
+    # UTC day -> (model, cumulative total as of that day's last run record).
+    run_by_day: dict[str, tuple[str | None, UsageCounts]] = field(default_factory=dict)
 
     def buckets(self) -> dict[tuple[str, str | None], UsageCounts]:
-        """The tier rule: message, else the last run record, else unscoped."""
+        """The tier rule: message, else the cumulative run steps, else unscoped."""
         if self.message:
             return self.message
-        if self.run_bucket is not None:
-            key, counts = self.run_bucket
-            return {key: counts}
+        if self.run_by_day:
+            return _cumulative_steps(self.run_by_day)
         return self.unscoped_buckets
 
     def info(self) -> RunInfo:
@@ -162,9 +184,39 @@ class _Run:
             card=self.card,
             stage=self.stage,
             last_seq=self.last_seq,
-            unscoped=not self.message and self.run_bucket is None and bool(self.unscoped_buckets),
+            unscoped=not self.message and not self.run_by_day and bool(self.unscoped_buckets),
             turns_dropped=self.turns_dropped,
         )
+
+
+def _cumulative_steps(by_day: Mapping[str, tuple[str | None, UsageCounts]]) -> dict[tuple[str, str | None], UsageCounts]:
+    """Each day's share of a cumulative total: its last value minus the previous day's last value.
+
+    A run that spans midnight is split between the days it ran on. The steps sum to the
+    final cumulative value, so the run total is unchanged.
+    """
+    steps: dict[tuple[str, str | None], UsageCounts] = {}
+    previous = UsageCounts()
+    for day in sorted(by_day):
+        model, cumulative = by_day[day]
+        step = cumulative.minus(previous)
+        if step.total:
+            steps[(day, model)] = step
+        previous = cumulative
+    return steps
+
+
+@dataclass
+class RebuildReport:
+    """What one boot rebuild read and what it had to skip, for the log and for tests."""
+
+    files_read: int = 0
+    files_skipped: int = 0
+    dirs_skipped: int = 0
+    bytes_read: int = 0
+    usage_records: int = 0
+    oversize_usage_lines: int = 0
+    stopped_by: str = ""
 
 
 class TokenLedger:
@@ -180,7 +232,9 @@ class TokenLedger:
         self._runs: dict[str, _Run] = {}
         self._version = 0
         self._cache: dict[tuple[object, ...], ModelTotals] = {}
+        self._turn_total = 0
         self._lock = threading.Lock()
+        self.last_rebuild = RebuildReport()
 
     @property
     def version(self) -> int:
@@ -205,7 +259,7 @@ class TokenLedger:
         with self._lock:
             run = self._runs.get(run_id)
             if run is None:
-                run = _Run(run_id=run_id)
+                run = _Run(run_id=run_id, ingested_day=datetime.now(UTC).date().isoformat())
                 self._runs[run_id] = run
             run.symphony = run.symphony or symphony
             run.card = run.card or card
@@ -239,19 +293,40 @@ class TokenLedger:
         run.stage = run.stage or stage
         if day and day > run.last_day:
             run.last_day = day
-        key = (day, model)
         if scope == "run":
-            run.run_bucket = (key, counts)  # cumulative: the latest run record is the total
+            # Cumulative: the last run record of a day is that day's cumulative value.
+            run.run_by_day[day] = (model, counts)
             return True
+        key = (day, model)
         if scope == "message":
             run.message[key] = run.message.get(key, UsageCounts()) + counts
         else:
             run.unscoped_buckets[key] = run.unscoped_buckets.get(key, UsageCounts()) + counts
-        if len(run.turns) < MAX_TURNS_PER_RUN:
-            run.turns.append(UsageTurn(seq=seq, day=day, model=model, scope=scope, counts=counts))
-        else:
-            run.turns_dropped = True
+        self._keep_turn(run, UsageTurn(seq=seq, day=day, model=model, scope=scope, counts=counts))
         return True
+
+    def _keep_turn(self, run: _Run, turn: UsageTurn) -> None:
+        """Keep one turn's detail within the per-run and the global budget (oldest runs give way)."""
+        if len(run.turns) >= MAX_TURNS_PER_RUN:
+            run.turns_dropped = True
+            return
+        if self._turn_total >= MAX_TURNS_TOTAL and not self._free_turns(keep=run):
+            run.turns_dropped = True
+            return
+        run.turns.append(turn)
+        self._turn_total += 1
+
+    def _free_turns(self, *, keep: _Run) -> bool:
+        """Drop the detail of the oldest runs (insertion order) until there is room. Totals stay."""
+        for other in self._runs.values():
+            if other is keep or not other.turns:
+                continue
+            self._turn_total -= len(other.turns)
+            other.turns = []
+            other.turns_dropped = True
+            if self._turn_total < MAX_TURNS_TOTAL:
+                return True
+        return self._turn_total < MAX_TURNS_TOTAL
 
     def totals(
         self,
@@ -303,11 +378,15 @@ class TokenLedger:
             return list(run.turns) if run is not None else []
 
     def prune(self, today: date) -> int:
-        """Forget runs whose newest record is older than the window. Returns how many."""
+        """Forget runs whose newest activity is older than the window. Returns how many.
+
+        A run with no parseable timestamp is judged by the UTC day it was first seen.
+        """
         cutoff = (today - timedelta(days=self._window_days - 1)).isoformat()
         with self._lock:
-            stale = [rid for rid, run in self._runs.items() if run.last_day and run.last_day < cutoff]
+            stale = [rid for rid, run in self._runs.items() if (run.last_day or run.ingested_day) < cutoff]
             for rid in stale:
+                self._turn_total -= len(self._runs[rid].turns)
                 del self._runs[rid]
             if stale:
                 self._version += 1
@@ -317,53 +396,124 @@ class TokenLedger:
     def load_from_transcripts(self, root: Path, *, now: datetime) -> int:
         """Rebuild from ``<root>/<symphony>/<card>/<run>.jsonl`` files modified inside the window.
 
-        Only ``usage`` lines are parsed. Symphony and card come from the folder names
-        (already sanitized by the writer), and the stage from each record's ``stage`` key.
-        Returns how many usage records were counted. A missing root counts nothing.
+        Best effort: a directory or file that cannot be read is skipped and counted, and
+        the rebuild never raises. Only ``usage`` lines are kept, read a line at a time with
+        the line length, the total bytes and the wall-clock time all bounded. Returns how
+        many usage records were counted. The outcome is in ``last_rebuild``.
         """
-        if not root.is_dir():
-            return 0
+        report = self._rebuild(root, now=now)
+        self.last_rebuild = report
+        logger.info(
+            "token_usage.rebuilt",
+            root=str(root),
+            files_read=report.files_read,
+            files_skipped=report.files_skipped,
+            dirs_skipped=report.dirs_skipped,
+            bytes_read=report.bytes_read,
+            usage_records=report.usage_records,
+            oversize_usage_lines=report.oversize_usage_lines,
+            stopped_by=report.stopped_by or None,
+            runs=len(self._runs),
+        )
+        return report.usage_records
+
+    def _rebuild(self, root: Path, *, now: datetime) -> RebuildReport:
+        report = RebuildReport()
+        started = time.monotonic()
         window_start = (now - timedelta(days=self._window_days)).timestamp()
-        counted = 0
-        for path in _run_files(root):
+        files, dirs_skipped = _run_files(root)
+        report.dirs_skipped = dirs_skipped
+        for path in files:
+            if time.monotonic() - started > REBUILD_MAX_SECONDS:
+                report.stopped_by = "time"
+                break
             try:
-                if path.stat().st_mtime < window_start:
-                    continue
+                info = path.stat()
             except OSError:
+                report.files_skipped += 1
                 continue
-            counted += self.observe(
+            if info.st_mtime < window_start:
+                continue
+            if report.bytes_read + info.st_size > REBUILD_MAX_BYTES:
+                report.stopped_by = "bytes"
+                break
+            scanned = _scan_usage(path)
+            if scanned is None:
+                report.files_skipped += 1
+                continue
+            records, nbytes, oversize = scanned
+            report.files_read += 1
+            report.bytes_read += nbytes
+            report.oversize_usage_lines += oversize
+            report.usage_records += self.observe(
                 path.stem,
                 symphony=path.parent.parent.name,
                 card=path.parent.name,
                 stage="",
-                records=_usage_lines(path),
+                records=records,
             )
         self.prune(now.date())
-        logger.info("token_usage.rebuilt", root=str(root), usage_records=counted, runs=len(self._runs))
-        return counted
+        return report
 
 
-def _run_files(root: Path) -> list[Path]:
-    """Run files two folders down (symphony, then card), in name order. Links are skipped."""
+def _run_files(root: Path) -> tuple[list[Path], int]:
+    """Run files two folders down (symphony, then card), in name order, and how many folders were skipped.
+
+    Links are never followed. A folder that cannot be listed is skipped and counted, so one
+    unreadable card cannot hide the rest.
+    """
     found: list[Path] = []
-    for symphony in sorted(root.iterdir()):
-        if symphony.is_symlink() or not symphony.is_dir():
-            continue
-        for card in sorted(symphony.iterdir()):
-            if card.is_symlink() or not card.is_dir():
+    skipped = 0
+    try:
+        symphonies = sorted(root.iterdir())
+    except OSError:
+        return [], 1
+    for symphony in symphonies:
+        try:
+            if symphony.is_symlink() or not symphony.is_dir():
                 continue
-            for entry in sorted(card.iterdir()):
-                if entry.suffix == _TRANSCRIPT_SUFFIX and entry.is_file() and not entry.is_symlink():
-                    found.append(entry)
-    return found
+            cards = sorted(symphony.iterdir())
+        except OSError:
+            skipped += 1
+            continue
+        for card in cards:
+            try:
+                if card.is_symlink() or not card.is_dir():
+                    continue
+                entries = sorted(card.iterdir())
+            except OSError:
+                skipped += 1
+                continue
+            found.extend(
+                entry for entry in entries
+                if entry.suffix == _TRANSCRIPT_SUFFIX and not entry.is_symlink() and entry.is_file()
+            )
+    return found, skipped
 
 
-def _usage_lines(path: Path) -> list[dict[str, Any]]:
-    """The usage records of one transcript file. Torn or foreign lines are skipped."""
+def _scan_usage(path: Path) -> tuple[list[dict[str, Any]], int, int] | None:
+    """The usage records of one transcript file, read a bounded line at a time.
+
+    Returns (records, bytes read, usage-looking lines skipped as oversize), or None when
+    the file cannot be read. Only lines that name ``usage`` are parsed, and a line over
+    ``USAGE_LINE_MAX_BYTES`` is skipped rather than held in memory.
+    """
     records: list[dict[str, Any]] = []
+    nbytes = 0
+    oversize = 0
     try:
         with path.open("rb") as handle:
-            for line in handle:
+            while True:
+                line = handle.readline(USAGE_LINE_MAX_BYTES + 1)
+                if not line:
+                    break
+                nbytes += len(line)
+                if len(line) > USAGE_LINE_MAX_BYTES:
+                    if _USAGE_MARKER in line:
+                        oversize += 1
+                    if not line.endswith(b"\n"):
+                        nbytes += _discard_rest_of_line(handle)
+                    continue
                 if _USAGE_MARKER not in line:
                     continue
                 try:
@@ -373,8 +523,18 @@ def _usage_lines(path: Path) -> list[dict[str, Any]]:
                 if isinstance(parsed, dict) and parsed.get("type") == _USAGE_TYPE:
                     records.append(parsed)
     except OSError:
-        return []
-    return records
+        return None
+    return records, nbytes, oversize
+
+
+def _discard_rest_of_line(handle: Any) -> int:
+    """Skip to the end of an oversize line without holding it. Returns the bytes skipped."""
+    skipped = 0
+    while True:
+        chunk = handle.readline(USAGE_LINE_MAX_BYTES + 1)
+        skipped += len(chunk)
+        if not chunk or chunk.endswith(b"\n"):
+            return skipped
 
 
 # --- price table ---------------------------------------------------------------------
@@ -389,14 +549,18 @@ class ModelPrice:
     cache_read_per_million: float
     cache_write_per_million: float
 
-    def kind_costs(self, counts: UsageCounts) -> dict[str, float]:
-        scale = 1_000_000
+    def kind_costs(self, counts: UsageCounts) -> dict[str, Decimal]:
+        """Exact cost of each kind. Rates are read through their decimal text, so 0.1 is 0.1."""
         return {
-            "input": counts.input_tokens / scale * self.input_per_million,
-            "output": counts.output_tokens / scale * self.output_per_million,
-            "cache_read": counts.cache_read / scale * self.cache_read_per_million,
-            "cache_write": counts.cache_write / scale * self.cache_write_per_million,
+            "input": _cost(counts.input_tokens, self.input_per_million),
+            "output": _cost(counts.output_tokens, self.output_per_million),
+            "cache_read": _cost(counts.cache_read, self.cache_read_per_million),
+            "cache_write": _cost(counts.cache_write, self.cache_write_per_million),
         }
+
+
+def _cost(tokens: int, rate_per_million: float) -> Decimal:
+    return Decimal(tokens) * Decimal(str(rate_per_million)) / _MILLION
 
 
 class PriceTable:
@@ -502,26 +666,26 @@ class ModelLine:
     tokens: UsageCounts
     price: ModelPrice | None
     basis: str
-    cost_usd: float | None
-    kind_usd: dict[str, float] | None
+    cost_usd: Decimal | None
+    kind_usd: dict[str, Decimal] | None
 
 
 @dataclass(frozen=True)
 class PricedTotals:
     tokens: UsageCounts
     models: tuple[ModelLine, ...]
-    cost_usd: float | None
-    partial_usd: float
-    kind_usd: dict[str, float]
+    cost_usd: Decimal | None
+    partial_usd: Decimal
+    kind_usd: dict[str, Decimal]
     unknown_reason: str | None
 
 
 def price_totals(totals: Mapping[str | None, UsageCounts], table: PriceTable) -> PricedTotals:
-    """Price one set of model totals. ``cost_usd`` is None when any token is unpriced."""
+    """Price one set of model totals exactly. ``cost_usd`` is None when any token is unpriced."""
     tokens = UsageCounts()
     lines: list[ModelLine] = []
-    kinds: dict[str, float] = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
-    partial = 0.0
+    kinds: dict[str, Decimal] = {"input": Decimal(0), "output": Decimal(0), "cache_read": Decimal(0), "cache_write": Decimal(0)}
+    partial = Decimal(0)
     unknown: list[str] = []
     for model in sorted(totals, key=lambda m: (m is None, m or "")):
         counts = totals[model]
@@ -536,7 +700,7 @@ def price_totals(totals: Mapping[str | None, UsageCounts], table: PriceTable) ->
             lines.append(ModelLine(model, counts, None, basis, None, None))
             continue
         per_kind = price.kind_costs(counts)
-        cost = sum(per_kind.values())
+        cost = sum(per_kind.values(), Decimal(0))
         for name, value in per_kind.items():
             kinds[name] += value
         partial += cost
@@ -549,6 +713,14 @@ def price_totals(totals: Mapping[str | None, UsageCounts], table: PriceTable) ->
         kind_usd=kinds,
         unknown_reason="; ".join(unknown) if unknown else None,
     )
+
+
+def to_usd(value: Decimal | None) -> float | None:
+    """The float the snapshot and the card state carry, rounded to micro-dollars. The sums stay exact."""
+    return None if value is None else float(value.quantize(MICRO_DOLLAR))
+
+
+_usd = to_usd
 
 
 def _tokens_json(counts: UsageCounts) -> dict[str, int]:
@@ -567,9 +739,9 @@ def usage_summary(totals: Mapping[str | None, UsageCounts], table: PriceTable) -
     return {
         "tokens": _tokens_json(priced.tokens),
         "cost": {
-            "usd": None if priced.cost_usd is None else round(priced.cost_usd, 12),
-            "partial_usd": round(priced.partial_usd, 12),
-            "kind_usd": {f"{name}_usd": round(value, 12) for name, value in priced.kind_usd.items()},
+            "usd": _usd(priced.cost_usd),
+            "partial_usd": _usd(priced.partial_usd),
+            "kind_usd": {f"{name}_usd": _usd(value) for name, value in priced.kind_usd.items()},
             "unknown_reason": priced.unknown_reason,
         },
         "models": [
@@ -583,7 +755,7 @@ def usage_summary(totals: Mapping[str | None, UsageCounts], table: PriceTable) -
                     "cache_read_per_million": line.price.cache_read_per_million,
                     "cache_write_per_million": line.price.cache_write_per_million,
                 },
-                "cost_usd": None if line.cost_usd is None else round(line.cost_usd, 12),
+                "cost_usd": _usd(line.cost_usd),
                 "reason": None if line.cost_usd is not None else line.basis,
             }
             for line in priced.models

@@ -350,6 +350,8 @@ class CostTrackingConfig(BaseModel):
     loads, prices every model at one rate, and is ignored once a table is configured.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     cost_per_million_tokens: float | None = Field(default=None, ge=0.0)
     cost_budget_per_card: float | None = Field(default=None, ge=0.0)
     pricing_as_of: date | None = None
@@ -374,6 +376,13 @@ class CostTrackingConfig(BaseModel):
                 if pattern in seen:
                     raise ValueError(_DUPLICATE_MODEL_MSG.format(pattern=pattern))
                 seen.add(pattern)
+        if self.cost_budget_per_card is not None and not priced and self.cost_per_million_tokens is None:
+            # Without a price no card has a cost, so the budget alert can never fire.
+            logger.warning(
+                "config.cost_budget_without_price",
+                budget_usd=self.cost_budget_per_card,
+                action="add cost_tracking.prices (with pricing_as_of) or default_price",
+            )
         if self.cost_per_million_tokens is not None:
             if priced:
                 logger.warning("config.cost_per_million_tokens_ignored", replacement="cost_tracking.prices")

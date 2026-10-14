@@ -2233,7 +2233,8 @@ async def test_the_flat_rate_no_longer_prices_a_card(tmp_path: Path) -> None:
     state["transcript_collector"] = TranscriptCollector(tmp_path / "off", enabled=False, max_bytes_per_run=10**6)
 
     result = await monitor_performer(state)
-    assert result["card_cost_estimate"] == 0.0
+    # 134 review: an unknown cost is None, not zero, and the gauge is not set to a zero.
+    assert result["card_cost_estimate"] is None
     assert result["card_tokens_total"] == 1_000_000
 
 
