@@ -145,6 +145,9 @@ class SymphonyRuntimeState:
     last_error: str | None = None
     board_snapshot: dict[str, list[str]] | None = None
     session_skip_reasons: dict[str, Any] | None = None
+    # 149: why each To Do card with no session waits, and the slot count it was judged against.
+    todo_waits: dict[str, Any] | None = None
+    todo_capacity: dict[str, int] | None = None
     previous_phase: str | None = None
     # 062: Per-card metadata for dashboard swimlane rendering (keyed by item_id).
     board_titles: dict[str, str] = dc_field(default_factory=dict)
@@ -440,6 +443,9 @@ class CoordinareState(TypedDict, total=False):
     # 054: Per-cycle eligibility skip map — card_id → {reason, detail, blockers}.
     # Cleared at cycle start; populated by _invoke_multi_session for ineligible sessions.
     session_skip_reasons: dict[str, dict[str, Any]]
+    # 149: To Do card id -> {reason, blockers} for a card with no session (see services/todo_waits.py).
+    todo_waits: dict[str, dict[str, Any]]
+    todo_capacity: dict[str, int] | None
     # 055: Issue comment idempotency fields.
     pipeline_admitted: bool
     last_issue_comment_id: int | None
@@ -585,6 +591,8 @@ def initial_state() -> CoordinareState:
         "github_retry_queue": [],
         "github_retry_after": None,
         "session_skip_reasons": {},
+        "todo_waits": {},
+        "todo_capacity": None,
         "pipeline_admitted": False,
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),

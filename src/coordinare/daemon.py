@@ -55,6 +55,7 @@ from coordinare.services.pipeline_budget import (
     is_parked_in_review,
     parked_in_review,
     review_cap_allows_new_card,
+    review_cap_detail,
     select_pipelines,
 )
 from coordinare.services.rebase import fetch_main_sha
@@ -1067,6 +1068,10 @@ _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     # discarded by the fanout's global merge before the next dispatch.
     "observer_retunes",
     "observer_retune_audit",
+    # 149: To Do waits are decided in check_board, which runs inside the fanout's
+    # session ticks; without these two keys the merge would drop them.
+    "todo_waits",
+    "todo_capacity",
     # phase is NOT included here; it is derived explicitly from active_sessions
     # after the merge loop to avoid misreporting the daemon as idle when only
     # the first completed session had phase="idle" while others are still active.
@@ -1640,6 +1645,10 @@ def _compute_session_eligibilities(
     held_by_review_cap = not review_cap_allows_new_card(active_sessions, review_limit)
     waiting = parked_in_review(active_sessions)
     details: dict[str, str] = {}
+    # #149: the numbers behind each queued reason, so the dashboard words them
+    # without parsing the detail string.
+    facts: dict[str, dict[str, Any]] = {}
+    slots_in_use = len(selected)
     for cid, eligibility in eligibilities.items():
         session = active_sessions[cid]
         # #102: a card parked in monitoring_pr launches no performer. It holds
@@ -1651,9 +1660,11 @@ def _compute_session_eligibilities(
         # back cards that have not started.
         if held_by_review_cap and not has_open_pr(session) and len(selected) < max_cards:
             reason: EligibilityReason = "review_capacity"
-            details[cid] = f"max_cards_in_review is {review_limit}: {waiting} waiting on review"
+            details[cid] = review_cap_detail(review_limit, waiting)
+            facts[cid] = {"waiting_on_review": waiting, "review_limit": review_limit}
         else:
             reason = "pipeline_capacity"
+        facts.setdefault(cid, {})["capacity"] = {"in_use": slots_in_use, "limit": max_cards}
         eligibilities[cid] = SessionEligibility(card_id=cid, eligible=False, reason=reason)
     _log_review_waits(active_sessions, review_limit, str(state.get("current_symphony") or "__default__"))
 
@@ -1665,6 +1676,7 @@ def _compute_session_eligibilities(
                 "reason": elig.reason,
                 "detail": details.get(card_id),
                 "blockers": elig.blockers,
+                **facts.get(card_id, {}),
             }
             _log_session_skip(card_id, active_sessions[card_id], elig)
     state["session_skip_reasons"] = skip_reasons
@@ -3184,10 +3196,13 @@ class CoordinareDaemon:
         sym_state: Any,
         _sym_sessions: dict[str, Any],
         _effective_cfg: Any,
-    ) -> tuple[Any, Any, Any, Any, Any]:
+    ) -> tuple[Any, Any, Any, Any, Any, Any, Any]:
         """Swap the per-symphony graph keys into the flat state.  Returns the
         previous values needed by _restore_symphony_swaps: (prev_config,
-        prev_github, prev_workspace_manager, sym_github, sym_workspace_manager)."""
+        prev_github, prev_workspace_manager, sym_github, sym_workspace_manager,
+        prev_todo_waits, prev_todo_capacity)."""
+        _prev_todo_waits = self._state.get("todo_waits")
+        _prev_todo_capacity = self._state.get("todo_capacity")
         # Swap state["config"] to the per-symphony effective config so that
         # graph nodes and _invoke_multi_session() see the symphony's limits.
         _prev_config = self._state.get("config")
@@ -3213,6 +3228,10 @@ class CoordinareDaemon:
                 self._state["session_skip_reasons"] = sym_state.session_skip_reasons
             if sym_state.previous_phase is not None:
                 self._state["phase"] = sym_state.previous_phase
+        # 149: always assigned, so a symphony with no stored verdicts never
+        # inherits the previous symphony's (its first check may fail).
+        self._state["todo_waits"] = dict(sym_state.todo_waits or {}) if sym_state is not None else {}
+        self._state["todo_capacity"] = sym_state.todo_capacity if sym_state is not None else None
         if _effective_cfg is not None and _effective_cfg is not _prev_config:
             self._state["config"] = _effective_cfg
         if _sym_github is not None:
@@ -3229,6 +3248,8 @@ class CoordinareDaemon:
             _prev_workspace_manager,
             _sym_github,
             _sym_workspace_manager,
+            _prev_todo_waits,
+            _prev_todo_capacity,
         )
 
     def _restore_symphony_swaps(
@@ -3239,8 +3260,20 @@ class CoordinareDaemon:
         prev_workspace_manager: Any,
         sym_github: Any,
         sym_workspace_manager: Any,
+        prev_todo_waits: Any,
+        prev_todo_capacity: Any,
     ) -> None:
         """Inner-finally restore of the per-symphony graph-key swaps."""
+        # 149: the To Do verdicts belong to the symphony that recorded them, so a
+        # cycle that fails puts back what it found.
+        # 149: keep what this cycle recorded on the symphony before the shared
+        # keys go back to their earlier values. The dashboard reads it from there.
+        sym_state = (self._state.get("symphony_states") or {}).get(symphony_name)
+        if sym_state is not None:
+            sym_state.todo_waits = dict(self._state.get("todo_waits") or {})
+            sym_state.todo_capacity = self._state.get("todo_capacity")
+        self._state["todo_waits"] = prev_todo_waits or {}
+        self._state["todo_capacity"] = prev_todo_capacity
         self._state["config"] = prev_config
         if sym_github is not None:
             self._state["github_service"] = prev_github
@@ -3310,6 +3343,8 @@ class CoordinareDaemon:
                 _prev_workspace_manager,
                 _sym_github,
                 _sym_workspace_manager,
+                _prev_todo_waits,
+                _prev_todo_capacity,
             ) = self._swap_symphony_state_in(
                 symphony_name, sym_state, _sym_sessions, _effective_cfg,
             )
@@ -3329,6 +3364,8 @@ class CoordinareDaemon:
                     _prev_workspace_manager,
                     _sym_github,
                     _sym_workspace_manager,
+                    _prev_todo_waits,
+                    _prev_todo_capacity,
                 )
 
             # Update symphony state on success

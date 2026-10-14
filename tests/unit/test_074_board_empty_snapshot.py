@@ -13,7 +13,8 @@ from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 @pytest.mark.parametrize("case", ["held", "empty", "missing", "selected", "populated", "initial", "late", "idleMissing"])
 def test_received_board_empty_state(tmp_path: Path, case: str) -> None:
     source = tmp_path / "performers.js"
-    source.write_text(_DASHBOARD_JS_SOURCES["performers"])
+    # 149: the renderer calls waiting.js, which the page loads right after performers.js.
+    source.write_text(_DASHBOARD_JS_SOURCES["performers"] + "\n" + _DASHBOARD_JS_SOURCES["waiting"])
     node = shutil.which("node")
     assert node is not None, "Node is required for dashboard checks"
     checks = Path(__file__).resolve().parents[1] / "js" / "board_empty_checks.js"
