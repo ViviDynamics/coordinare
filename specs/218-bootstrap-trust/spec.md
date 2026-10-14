@@ -19,7 +19,7 @@ its own success. Found in the review of #217 (spec 208).
 | Decision | Site | Reads | Now |
 | --- | --- | --- | --- |
 | Clean-context verify (bootstrap completion, restart verify, dispatch readiness gate 093) | `verify_env_cache_clean` | `verify.sh` from the cache | The daemon's rendered text, piped on stdin to `bash -s` in the container. The cache is mounted read-only. |
-| Consumer mount and dispatch hold (`get_env_volume_for_symphony`, `_collect_env_volumes_for_persistent_performer`, `_env_cache_hold`, `_env_readiness_gate` persistent check) | `_cache_dir_has_activate` | `activate.sh` from the cache | Byte-identical to `EnvCacheState.rendered_activate_sh`. |
+| Consumer mount and dispatch hold (`get_env_volume_for_symphony`, `_collect_env_volumes_for_persistent_performer`, `_env_cache_hold`, `_resolve_env_volumes` persistent check) | `_cache_dir_has_activate` | `activate.sh` from the cache | Byte-identical to `EnvCacheState.rendered_activate_sh`. |
 | Phantom-success re-bootstrap (`check_and_trigger`) | `_cache_dir_has_activate` | `activate.sh` | Same exact match. |
 | Bootstrap success floor (`on_bootstrap_complete`) | `_cache_dir_is_populated` | cache entry names and types | A real, non-link directory beyond the seed set and `services/`, holding at least one entry. |
 | Completion verify result (`_verify_bootstrap_in_clean_context`) | daemon | verify result | Only a pass counts. None (docker could not run) fails the bootstrap. |
