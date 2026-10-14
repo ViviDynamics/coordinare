@@ -376,8 +376,11 @@ function renderActiveWorkPanels(s) {
     // 139: with all symphonies in view, each card says which one it belongs to.
     var symphonyLine = multiView && entry.symphony
       ? '<div class="swimlane-card-symphony">' + esc(entry.symphony) + '</div>' : '';
+    // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
+    var pipelineDots = timelineDotsHtml(cardPipelineOf(s, iid));
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
       '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
+      pipelineDots +
       waitLine +
       liveLine +
       viewRunLinkHtml(sess) +
@@ -442,7 +445,10 @@ function renderCardDetailContent(sess, s) {
           '</div>';
       }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No progress checks yet.</div>';
+  // 147: the pipeline tracker and lifecycle list, loaded by timelineHydrate after this HTML is set.
+  var pipeline = timelinePlaceholderHtml(timelineSymphonyFor(s, sess.card_id), sess.card_id || '');
   return '<div class="card-detail-actions">' + cardActionsHtml(sess, s) + pendingControlHtml(sess) + viewRunLinkHtml(sess) + '</div>' +
+    pipeline +
     '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
@@ -495,7 +501,7 @@ function showPerformerDetail(cardId) {
     var sessions = Array.isArray(scopedNow.active_sessions) ? scopedNow.active_sessions : [];
     var sess = sessions.find(function(s) { return s.card_id === cardId; });
     if (sess) {
-      if (content) { content.innerHTML = renderCardDetailContent(sess, scopedNow); hydrateCardRuns(content); }
+      if (content) { content.innerHTML = renderCardDetailContent(sess, scopedNow); hydrateCardRuns(content); timelineHydrate(content); }
     }
   }
 }

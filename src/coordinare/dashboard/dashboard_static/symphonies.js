@@ -160,6 +160,8 @@ var SNAPSHOT_FIELD_SCOPE = {
   daemon_start_time: 'shared',
   poll_interval_seconds: 'derived',
   token_usage: 'scoped',
+  // 147: each card's board strip, keyed by symphony; a symphony sees only its own cards' strips.
+  card_pipeline: 'scoped',
   activity_run_id: 'shared',
   cycle_history: 'hidden',
   cycle_active: 'shared',
@@ -301,6 +303,10 @@ function symphonyScope(s, choice) {
   });
   scoped.board_summary = symphonyBoardSummary(scoped.symphonies);
   scoped.token_usage = symphonySpend(s.token_usage, choice);
+  // 147: the board strips of this symphony's cards, and no other symphony's.
+  var strips = s.card_pipeline && typeof s.card_pipeline === 'object' ? s.card_pipeline : {};
+  scoped.card_pipeline = {};
+  if (symphonyHas(strips, choice)) scoped.card_pipeline[choice] = strips[choice];
 
   // Hidden: values the snapshot does not carry per symphony. Each is cleared and named.
   scoped.scope_hidden = ['backend_ui_url', 'blocked_by_dependencies', 'cycle_history',

@@ -57,6 +57,7 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
+from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
@@ -1253,6 +1254,8 @@ async def _bootstrap_services(
         "activity_log": activity_log,
         # 141: attempt telemetry singleton
         "attempt_log": attempt_log,
+        # 147: the card lifecycle log, shared by every symphony and written with the snapshot.
+        "card_lifecycle": CardLifecycleLog(),
         "transcript_collector": transcript_collector,
         # 131: the conductor's own model calls are transcribed through this log.
         "conductor_calls": conductor_calls,

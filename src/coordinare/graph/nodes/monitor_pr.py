@@ -31,6 +31,7 @@ from coordinare.models.review import (
 )
 from coordinare.services import pipeline_budget
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
@@ -750,6 +751,13 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         in (ReviewerType.HUMAN.value, ReviewerType.TRUSTED_BOT.value)
         and str(r.get("state", "")) in _ACTIONABLE_STATES
     ]
+    # 147: a review that asks for change is a lifecycle event, once per review id.
+    for review in actionable:
+        record_lifecycle(
+            state, "review_received", card_id=card_id_of(state), stage=stage_of(state),
+            detail={"reviewer": review.get("author_type"), "review_state": review.get("state")},
+            key=f"review:{review.get('id', '')}",
+        )
     # Only HUMAN approval triggers merge — trusted bots can provide
     # feedback but cannot approve on behalf of a human. When several human
     # approvals are effective, the latest one names the deferral event.

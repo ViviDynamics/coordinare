@@ -46,6 +46,7 @@ from coordinare.services.board_provider import (
     GitHubProjectsBoardProvider,
     board_of,
 )
+from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
@@ -2586,6 +2587,13 @@ class CoordinareDaemon:
                 if isinstance(self._state.get("last_known_main_sha"), str)
                 else None
             ),
+            # 147: the card lifecycle log outlives each card's session, so a Done card's
+            # timeline survives a restart.
+            card_lifecycle=(
+                lifecycle.to_snapshot()
+                if isinstance(lifecycle := self._state.get("card_lifecycle"), CardLifecycleLog)
+                else {}
+            ),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -2609,6 +2617,9 @@ class CoordinareDaemon:
         # cycle compares the live main against the pre-restart value and fires
         # the rebase on genuine cross-restart drift, instead of re-baselining.
         self._state["last_known_main_sha"] = snapshot.last_known_main_sha
+        # 147: the lifecycle log is loaded in place, so every holder of the log sees it.
+        if isinstance(lifecycle := self._state.get("card_lifecycle"), CardLifecycleLog):
+            lifecycle.load(snapshot.card_lifecycle)
         if snapshot.active_card_id:
             _set_current_card(
                 self._state,

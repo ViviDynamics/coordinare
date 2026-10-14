@@ -11,6 +11,18 @@ from coordinare.dashboard.routers import (
     runs,
     state,
     symphonies,
+    timeline,
 )
 
-__all__ = ["assistant", "config", "controls", "pages", "personas", "run_logs", "runs", "state", "symphonies"]
+__all__ = [
+    "assistant",
+    "config",
+    "controls",
+    "pages",
+    "personas",
+    "run_logs",
+    "runs",
+    "state",
+    "symphonies",
+    "timeline",
+]
