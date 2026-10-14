@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.pipeline_budget import has_live_side_writer
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ async def stop_owned_writers(state: CoordinareState, card_id: str, session: dict
         elif is_side:
             # A poll already awaiting a status response must see supersession
             # rather than resurrect this confirmed-absent writer after resume.
-            identity.update(status="failed", writer_active=False, result_reason=reason,
+            identity.update(status="failed", writer_active=False, result_reason=redact_state_value(reason),
                             session_id=None, job_id=None)
         else:
             session["agent_dispatch"] = {}

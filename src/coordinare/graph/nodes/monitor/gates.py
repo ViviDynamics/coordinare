@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.metrics import METRICS
 from coordinare.services.base_gate import evaluate_base_gate
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck
@@ -597,7 +598,7 @@ async def _maybe_env_blocked_hold(
     signature = "|".join(sorted(c.head_signature for c in env_blocked))
     await _env_blocked_notify(
         state=state,
-        env_blocked=env_blocked,
+        env_blocked=redact_state_value(env_blocked),
         failed_names=failed_names,
         head_sha=head_sha,
         pr_num=pr_num,
@@ -620,7 +621,7 @@ async def _maybe_env_blocked_hold(
         "ci_gate_advisory_failures": [],
         "agent_dispatch": {},
         "agent_dispatch_at": None,
-        "env_blocked": {
+        "env_blocked": redact_state_value({
             "head_sha": head_sha,
             "pattern_id": pattern_id,
             "cause": cause,
@@ -629,7 +630,7 @@ async def _maybe_env_blocked_hold(
             "retried_jobs": prior.get("retried_jobs", []) if prior.get("head_sha") == head_sha else [],
             "retried_checks": prior.get("retried_checks", []) if prior.get("head_sha") == head_sha else [],
             "blocked_at": (prior.get("blocked_at") or now_iso) if prior.get("head_sha") == head_sha else now_iso,
-        },
+        }),
     }
     return (updates, True)
 
@@ -1167,7 +1168,7 @@ async def _ci_gate_escalate_l3(
             "bounce_counter": bounce_counter,
             "inheritance_repair_counter": inheritance_repair_counter,
             "repair_audit": repair_audit,
-            "open_questions": open_questions,
+            "open_questions": redact_state_value(open_questions),
             "latest_ci_gate_decision": dump,
             "ci_gate_advisory_failures": [],
         },

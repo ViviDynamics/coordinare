@@ -15,6 +15,7 @@ from coordinare.graph.nodes.github_retry import (
     is_transient_github_outage_error,
 )
 from coordinare.graph.state import _set_current_card
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.notification import (
     EventType,
     NotificationEvent,
@@ -467,7 +468,7 @@ async def _park_closed_pr(state: CoordinareState, card: dict[str, object]) -> Co
     owned = has_owned_writers(cast("dict[str, Any]", state))
     state["phase"] = "monitoring_performer" if owned else "blocked"
     state["pipeline_admitted"] = owned
-    state["system_error_reason"] = reason
+    state["system_error_reason"] = redact_state_value(reason)
     state["open_questions"] = []
     # Closed-PR recovery owns the next transition; a completed CI handoff
     # must not turn the operator's Todo resume into another board pause.
@@ -487,7 +488,7 @@ async def _park_closed_pr(state: CoordinareState, card: dict[str, object]) -> Co
         state["board_pause_resume_phase"] = ""
     else:
         reason += " Worker termination is unconfirmed; ownership retained."
-        state["system_error_reason"] = reason
+        state["system_error_reason"] = redact_state_value(reason)
     _mirror_closed_pr_ownership(state, card_id)
     selected = state.get("_pipeline_selected")
     if isinstance(selected, set):

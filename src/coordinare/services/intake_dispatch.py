@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
+
 if TYPE_CHECKING:
     import asyncio
 
@@ -100,6 +102,9 @@ def register_failure(
     Exhaustion is deliberate and sticky: a role whose repository is misconfigured
     should stop burning containers and wait for a human, not retry forever.
     """
+    # 203: the failure text comes from a performer run or from the dispatcher's exception. It is
+    # persisted with the env cache, shown on the symphony view and logged, so it is redacted once here.
+    error = redact_state_value(error)
     attempts = int(getattr(state, f"{role}_attempts") or 0) + 1
     setattr(state, f"{role}_attempts", attempts)
     setattr(state, f"last_{role}_succeeded", False)

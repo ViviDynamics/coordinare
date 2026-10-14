@@ -16,6 +16,7 @@ from coordinare.graph.nodes.monitor.constants import (
     EXPECTED_STAGE_MARKER,
     VERDICT_STAGES,
 )
+from coordinare.lib.redaction import redact_state_value
 from coordinare.services.observer import observer_enabled
 
 logger = structlog.get_logger(__name__)
@@ -223,12 +224,12 @@ def _evaluate_success_floor(
             return (
                 {
                     "phase": "blocked",
-                    "open_questions": [
+                    "open_questions": redact_state_value([
                         f"The implementer completed without moving the head "
                         f"({origin}) and {reason}: "
                         f"{', '.join(str(d.get('id')) for d in disputed)} — "
                         f"operator adjudication required.",
-                    ],
+                    ]),
                     "agent_dispatch": {},
                     "agent_dispatch_at": None,
                 },
@@ -294,11 +295,11 @@ def _success_floor_noop_hold(
     return (
         {
             "phase": "blocked",
-            "open_questions": [
+            "open_questions": redact_state_value([
                 f"The implementer reported done twice without moving the head "
                 f"({origin}) and without disputing the outstanding feedback:\n"
                 f"{item_lines}\nOperator triage required.",
-            ],
+            ]),
             "agent_dispatch": {},
             "agent_dispatch_at": None,
         },
@@ -426,7 +427,7 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     if action == "veto":
         logger.info("override.veto", card_id=(state.get("current_card") or {}).get("id"))
         state["phase"] = "blocked"
-        state["open_questions"] = ["Lifecycle vetoed by human override."]
+        state["open_questions"] = redact_state_value(["Lifecycle vetoed by human override."])
         return state
 
     logger.warning("override.unknown_action", action=action)
@@ -549,7 +550,7 @@ def _feedback_cycle_exhausted(
     )
 
     state["phase"] = "blocked"
-    state["open_questions"] = [message]
+    state["open_questions"] = redact_state_value([message])
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     return state

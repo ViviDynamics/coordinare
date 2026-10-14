@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import structlog
 
-from coordinare.lib.redaction import redact_secrets
+from coordinare.lib.redaction import redact_command_text, redact_secrets
 from coordinare.lib.subprocess_env import inherited_host_env
 from coordinare.protocol import PROCESS_EXITING_STATUSES, ProtocolMessage, ProtocolResponse
 from coordinare.session import SessionStats
@@ -66,8 +66,10 @@ async def _fetch_session_stats(ui_url: str) -> SessionStats | None:
             logger.debug("transport.session_stats_error", status=resp.status_code, url=ui_url)
             return None
         data = resp.json()
+        # 203: the session title is generated from the task, so it is model text.
+        title = data.get("title")
         return SessionStats(
-            title=data.get("title") or None,
+            title=redact_command_text(title) if isinstance(title, str) and title else None,
             files_changed=int(data.get("filesChanged") or data.get("files_changed") or 0),
             lines_added=int(data.get("linesAdded") or data.get("lines_added") or 0),
             lines_removed=int(data.get("linesRemoved") or data.get("lines_removed") or 0),
@@ -277,7 +279,9 @@ class SubprocessTransport:
             async for raw in proc.stderr:
                 line = raw.decode(errors="replace").rstrip()
                 if line:
-                    self._agent_logs.append(line)
+                    # 203: stderr is performer output and reaches the dashboard's log view, so it is
+                    # redacted as it is buffered, not when it is read.
+                    self._agent_logs.append(redact_command_text(line))
         except asyncio.CancelledError:
             pass
         except Exception as exc:  # pragma: no cover

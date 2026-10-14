@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from collections.abc import Mapping
@@ -174,6 +175,102 @@ def redact_command_text(text: str) -> str:
     text = redact_secrets(text)
     text = transcript_redact_text(text)
     return redact_client_forms(text)
+
+
+# 203: the fields a viewer may read whose text comes from a performer, a model, a gate, or a
+# human comment copied into a question. Every writer of one of these routes its value through
+# redact_state_value (the writer guard in tests/unit/test_203_dashboard_redaction.py enforces it),
+# and a snapshot read from disk is redacted by redact_persisted_text before anything serves it.
+TEXT_FIELD_NAMES = frozenset({
+    "open_questions",
+    "system_error_reason",
+    "env_health_hold_reason",
+    "convergence_reason",
+    "env_blocked",
+    "assessor_open_questions",
+    "card_clarifications",
+    "last_bootstrap_error",
+    "last_error",
+    "last_wiki_init_error",
+    "result_reason",
+})
+# Names built at run time, such as ``last_{role}_error`` in the env cache.
+TEXT_FIELD_GLOBS = ("last_*_error",)
+
+
+def is_text_field(name: str) -> bool:
+    """True when a key names a guarded text field, exactly or by one of the globs."""
+    return name in TEXT_FIELD_NAMES or any(fnmatch.fnmatchcase(name, glob) for glob in TEXT_FIELD_GLOBS)
+
+
+# 203: how deep redact_state_value walks. A value nested past this is replaced whole by a fixed
+# marker, so a cyclic or adversarially deep structure cannot recurse without limit.
+MAX_STATE_DEPTH = 32
+_TOO_DEEP_MARKER = "[REDACTED: value nested too deeply]"
+
+
+def redact_state_value(value: Any) -> Any:
+    """A value about to enter coordinare state, with its free text redacted (203).
+
+    Strings get ``redact_command_text``, and so do string dict keys. Lists, tuples, sets and
+    dicts are walked, so a list of questions or a dict of block details is covered in one
+    call, and the container type is kept. Anything else passes through. The walk is linear in
+    the text, and it stops at ``MAX_STATE_DEPTH``.
+    """
+    return _redact_state(value, 0)
+
+
+def redact_persisted_text(value: Any) -> Any:
+    """A loaded snapshot payload with every guarded field's value redacted (203).
+
+    The walk is over the whole payload, so the top-level snapshot, the persisted sessions and the
+    env cache are all covered. A value under a guarded key is redacted with redact_state_value.
+    Keys are matched by name, so nothing has to be listed by hand.
+    """
+    return _redact_persisted(value, 0)
+
+
+def _redact_state(value: Any, depth: int) -> Any:
+    if isinstance(value, str):
+        return redact_command_text(value)
+    if not isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        return value
+    if depth >= MAX_STATE_DEPTH:
+        return _TOO_DEEP_MARKER
+    return _redact_container(value, depth)
+
+
+def _redact_container(value: Any, depth: int) -> Any:
+    """Walk one container, keeping its type. Its items are redacted one level deeper."""
+    if isinstance(value, Mapping):
+        return {_redact_key(key): _redact_state(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_state(item, depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_state(item, depth + 1) for item in value)
+    return type(value)(_redact_state(item, depth + 1) for item in value)
+
+
+def _redact_key(key: Any) -> Any:
+    return redact_command_text(key) if isinstance(key, str) else key
+
+
+def _redact_persisted(value: Any, depth: int) -> Any:
+    if isinstance(value, Mapping):
+        if depth >= MAX_STATE_DEPTH:
+            return _TOO_DEEP_MARKER
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and is_text_field(key):
+                out[key] = redact_state_value(item)
+            else:
+                out[key] = _redact_persisted(item, depth + 1)
+        return out
+    if isinstance(value, list):
+        if depth >= MAX_STATE_DEPTH:
+            return _TOO_DEEP_MARKER
+        return [_redact_persisted(item, depth + 1) for item in value]
+    return value
 
 
 _EVENT_TEXT_FIELDS = ("text", "detail", "arg", "tool")

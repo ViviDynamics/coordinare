@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
+from coordinare.lib.redaction import redact_state_value
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.services.assessor_failure import (
     classify_assessor_failure,
@@ -85,10 +86,10 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
     # system-error retry loop either. New failures take monitor's token-limit path.
     if classify_assessor_failure(state.get("system_error_reason")) == "truncated":
         state["phase"] = "blocked"
-        state["open_questions"] = [
+        state["open_questions"] = redact_state_value([
             "The model exhausted its output budget. Raise the performer output token cap "
             "or shorten the prompt before retrying.",
-        ]
+        ])
         return state
 
     if count < _MAX_RETRIES:
@@ -150,7 +151,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
             count=count,
             identical=identical,
         )
-        state["system_error_reason"] = reason
+        state["system_error_reason"] = redact_state_value(reason)
         # 103: the retries are spent, so a pending format-repair hint must not ride a
         # later dispatch. A human observer correction is not touched.
         correction = state.get("observer_correction")
@@ -249,12 +250,12 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         if is_env_blocked:
             # Per-card ENV_BLOCKED marker (spec-095 shape) so the surfacing is
             # deduped and operator-visible. No head_sha at the assessing stage.
-            state["env_blocked"] = {
+            state["env_blocked"] = redact_state_value({
                 "head_sha": "",
                 "pattern_id": env_pattern_id,
                 "cause": cause,
                 "action": action,
-            }
+            })
 
         board_provider = board_of(state)
         if board_provider is not None and card_id:

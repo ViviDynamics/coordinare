@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
@@ -16,6 +17,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from coordinare.lib.redaction import redact_persisted_text
 
 if TYPE_CHECKING:
     from coordinare.metrics import CoordinareMetrics
@@ -844,7 +847,9 @@ class StateStore:
             raise StateLoadError(reason="corrupt", detail=str(exc)) from exc
 
         try:
-            snapshot = WorkflowSnapshot.model_validate_json(raw)
+            # 203: a snapshot written before the redaction fix holds raw performer text. It is
+            # redacted here, so last_snapshot and everything read from it hold the redacted form.
+            snapshot = WorkflowSnapshot.model_validate(redact_persisted_text(json.loads(raw)))
         except Exception as exc:
             raise StateLoadError(
                 reason="corrupt", detail=str(exc),
