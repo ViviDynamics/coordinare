@@ -415,8 +415,18 @@ def render_verify_sh(
     *,
     cache_mount_path: str,
     services: list[Any] | None = None,
+    activate_text: str = "",
 ) -> str:
     """Render an authoritative verify.sh from the manifest.
+
+    218: ``activate_text`` is the daemon-rendered activate.sh. It is INLINED, not sourced from the
+    cache, so the verify never reads the performer-writable copy (a copy swapped in between the
+    daemon's match check and docker's read would otherwise be executed).
+
+    What the verify proves: the toolchain the bootstrap installed runs and reports the expected version.
+    Checking a version executes the installed binary, so the verify cannot tell a genuine toolchain from one
+    the bootstrap planted to print the right version. Binary provenance (a digest or a snapshot) is tracked in
+    #234. A PASSED verify is not a security verdict on the toolchain.
 
     Sources activate.sh first (so the installed toolchain is on PATH), runs every
     item's check, and exits non-zero if any failed — the same contract the
@@ -433,7 +443,9 @@ def render_verify_sh(
         "# Do NOT edit by hand; the bootstrap agent must make this pass, not rewrite it.",
         "set +e",
         "FAILED=0",
-        f'if [ -f "{cache_mount_path}/activate.sh" ]; then . "{cache_mount_path}/activate.sh"; fi',
+        "# --- activation (daemon-rendered, inlined: the cache copy is never read) ---",
+        *[ln for ln in activate_text.splitlines() if not ln.startswith("#!")],
+        "# --- end of activation ---",
         "",
     ]
     # Runtimes first (everything else depends on them), then gems, then system.

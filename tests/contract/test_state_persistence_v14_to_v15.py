@@ -39,7 +39,7 @@ _ITEM = {
 
 def test_current_schema_version_is_24() -> None:
     """354 adds the per-session queued-for-slot wait stamp; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 35  # 58: durable terminal error retry clock
+    assert CURRENT_SCHEMA_VERSION == 36  # 58: durable terminal error retry clock
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

@@ -38,6 +38,17 @@ class EnvCacheState(BaseModel):
     # dashboard so an operator can see WHY a symphony's env bootstrap is failing.
     last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
+    # 218: the authoritative verify.sh and activate.sh TEXT the daemon rendered for the
+    # current bootstrap, kept daemon-side (persisted in the snapshot). The copies in the
+    # cache are performer-writable and are never trusted: verification runs this text on
+    # stdin, and a mount or dispatch gate requires activate.sh to match it byte for byte.
+    # None means no daemon-owned script is on record, so nothing verifies or mounts.
+    rendered_verify_sh: str | None = None
+    rendered_activate_sh: str | None = None
+    # 218 (review round 3): infrastructure failures (docker could not run the verify, or the bootstrap
+    # container could not be proven quiet). A separate budget from the verdict budget; reset on success.
+    infra_failures: int = 0
+    last_infra_failure_at: datetime | None = None
 
     # 088 (FR-009/FR-010): bootstrap circuit breaker. ``bootstrap_attempts``
     # counts consecutive failures for the current spec SHA; reset on success

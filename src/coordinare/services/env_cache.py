@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -33,7 +35,6 @@ from coordinare.services.mounted_file import (
     anchored_mkdir,
     loaded_performer_mounts,
     mounted_dir_refusal,
-    mounted_file_refusal,
     read_mounted_dir_names,
     read_mounted_file,
     replace_mounted_file,
@@ -72,6 +73,22 @@ _PRIOR_MANIFEST_MAX_BYTES = 1024 * 1024
 
 # 219: the scripts coordinare renders into the cache (verify.sh, activate.sh, services-*.sh).
 _EXECUTABLE_MODE = 0o755
+
+# 218: bound on a cache script read back for the byte comparison in the activate.sh gate.
+_RENDERED_SCRIPT_MAX_BYTES = 256 * 1024
+
+# 218 (review round 3): the clean verify's wall-clock budget. A run past it is a real failure, and its
+# container is removed by name.
+_VERIFY_TIMEOUT_S = 300.0
+
+# 218 (review round 3): docker run exit code when the daemon or the image could not start the container.
+_DOCKER_RUN_START_FAILED = 125
+
+# 218 (round 4): the daemon's own docker probe. A run is attempted only when this answers.
+_DOCKER_PROBE_TIMEOUT_S = 15.0
+
+# 218 (review round 3): infrastructure failures before the cache is exhausted (operator-visible).
+_INFRA_FAILURE_CAP = 5
 
 
 def load_prior_manifest_bounded(
@@ -122,6 +139,13 @@ def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
     STOPPED retrying and why — instead of a generic 'waiting for bootstrap'."""
     if cache_state.bootstrap_exhausted:
         last_error = (cache_state.last_bootstrap_error or "unknown failure").strip()
+        if cache_state.infra_failures and not cache_state.bootstrap_attempts:
+            return (
+                f"Env bootstrap stopped after {cache_state.infra_failures} infrastructure failure(s): "
+                f"docker or the bootstrap container could not confirm the verification. "
+                f"Last failure: {last_error}. Fix the docker daemon and the performer image, then "
+                "change the spec (a SHA change re-arms it)."
+            )
         return (
             f"Env bootstrap budget exhausted after {cache_state.bootstrap_attempts} "
             f"failed run(s); no further bootstraps will be dispatched for this "
@@ -153,21 +177,25 @@ def _cache_dir_refusal(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> 
     return None if reason == "missing" else reason
 
 
-def _cache_dir_has_activate(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> bool:
-    """Return True iff the host cache_dir has a populated activate.sh.
+def _cache_dir_has_activate(
+    cache_dir: Path, *, performer_mounts: Sequence[Path], expected_activate: str | None,
+) -> bool:
+    """Return True iff the cache's activate.sh is the text the daemon rendered (218).
 
-    The on-disk presence of activate.sh is the authoritative signal that a
-    prior bootstrap left a usable toolchain — independent of the in-process
-    ``cache_dir_ready`` flag, which resets on every coordinare restart.
-    Letting consumer performers mount a stale-but-real cache is strictly
-    better than dispatching them with no toolchain at all. The check is anchored
-    (219): a link planted in the performer-writable cache counts as no toolchain.
+    Presence is not trust. The bootstrap performer writes the cache, so a rewritten or
+    emptied activate.sh must not gate a mount or a dispatch. The cache copy has to equal
+    ``expected_activate`` (``EnvCacheState.rendered_activate_sh``) byte for byte. No rendered
+    text on record (a legacy snapshot, a refused write) is False. The read is anchored (219):
+    a link, hard link or FIFO is refused, never followed.
     """
-    refusal = mounted_file_refusal(
+    if expected_activate is None:
+        return False
+    data = read_mounted_file(
         cache_dir / "activate.sh",
+        max_bytes=_RENDERED_SCRIPT_MAX_BYTES,
         mounts=_env_cache_mounts(cache_dir, performer_mounts),
     )
-    return refusal is None
+    return data is not None and data == expected_activate.encode()
 
 
 # 092: the three files coordinare itself seeds into every cache_dir before a
@@ -180,22 +208,34 @@ def _cache_dir_has_activate(cache_dir: Path, *, performer_mounts: Sequence[Path]
 # block in http_performer_service._build_env_bootstrap_payload.
 _CACHE_SEED_FILES = frozenset({"activate.sh", "manifest.json", "verify.sh"})
 
+# 218: entries coordinare writes that are not toolchain content. services/ holds the
+# service scripts and services.json, never an installed toolchain.
+_CACHE_NON_TOOLCHAIN_ENTRIES = _CACHE_SEED_FILES | {SERVICES_SUBDIR}
+
 
 def _cache_dir_is_populated(cache_dir: Path, *, performer_mounts: Sequence[Path]) -> bool:
-    """Return True iff cache_dir holds toolchain content beyond the seed set.
+    """Return True iff cache_dir holds a toolchain directory beyond the seed set (218).
 
-    Used to fail a "successful" bootstrap loudly when the agent built the
-    toolchain in the wrong location and the real mount is still just the three
-    coordinare-seeded files. A non-empty result requires at least one entry whose
-    name is not in ``_CACHE_SEED_FILES``. A refused or missing directory is False here;
-    the caller reports a refusal separately (see ``_cache_dir_refusal``).
+    Used to fail a "successful" bootstrap loudly when the agent built the toolchain in the
+    wrong location and the real mount holds only coordinare's files. A name alone proves
+    nothing (a dummy file passes it), so a toolchain entry must be a real directory, not a
+    link, file or FIFO, and must hold at least one entry. The daemon cannot predict installed
+    toolchain content, so this is only a structural floor. The daemon's verify.sh run is the
+    arbiter of whether the toolchain works. A refused or missing directory is False.
     """
-    names = read_mounted_dir_names(
-        cache_dir, mounts=_env_cache_mounts(cache_dir, performer_mounts),
-    )
+    mounts = _env_cache_mounts(cache_dir, performer_mounts)
+    names = read_mounted_dir_names(cache_dir, mounts=mounts)
     if names is None:
         return False
-    return any(name not in _CACHE_SEED_FILES for name in names)
+    for name in names:
+        if name in _CACHE_NON_TOOLCHAIN_ENTRIES:
+            continue
+        entry = cache_dir / name
+        if mounted_dir_refusal(entry, mounts=mounts) is not None:
+            continue
+        if read_mounted_dir_names(entry, mounts=mounts):
+            return True
+    return False
 
 
 def get_env_volume_for_symphony(
@@ -231,7 +271,9 @@ def get_env_volume_for_symphony(
     if state is None or not isinstance(state, EnvCacheState):
         return None
     if not is_bootstrap and not _cache_dir_has_activate(
-        state.cache_dir, performer_mounts=performer_mounts,
+        state.cache_dir,
+        performer_mounts=performer_mounts,
+        expected_activate=state.rendered_activate_sh,
     ):
         return None
     # 219: the host path is bind-mounted, and docker follows a link in it, so a linked cache dir
@@ -275,7 +317,11 @@ def _collect_env_volumes_for_persistent_performer(
     for state in env_cache_states.values():
         if not isinstance(state, EnvCacheState):
             continue
-        if not _cache_dir_has_activate(state.cache_dir, performer_mounts=performer_mounts):
+        if not _cache_dir_has_activate(
+            state.cache_dir,
+            performer_mounts=performer_mounts,
+            expected_activate=state.rendered_activate_sh,
+        ):
             continue
         container_path = f"{container_devenv_root}/{state.sanitised_name}"
         mounts.append(
@@ -372,6 +418,77 @@ async def resolve_test_env_vars(
     return loaded
 
 
+async def _remove_verify_container(name: str) -> bool:
+    """218: remove the verify container by its name. True when it is confirmed gone.
+
+    A container that is already removed is confirmed: nothing is left running. Any other failure is
+    not confirmed."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "rm", "-f", "--", name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except (OSError, TimeoutError):
+        return False
+    if proc.returncode == 0:
+        return True
+    return "No such container" in err.decode(errors="replace")
+
+
+async def _kill_and_remove(proc: asyncio.subprocess.Process, name: str) -> bool:
+    """218: kill the docker client, then remove its container by name. True when the removal is confirmed."""
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    return await _remove_verify_container(name)
+
+
+async def _docker_daemon_reachable() -> bool:
+    """218 (round 4): True when the docker daemon answers. An unreachable daemon is infrastructure.
+
+    A performer cannot change this probe, and it does not parse error text: the CLI exits 1 for an
+    unreachable daemon, which is the same code as a failed verdict."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "version", "--format", "{{.Server.Version}}",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=_DOCKER_PROBE_TIMEOUT_S)
+    except (OSError, TimeoutError):
+        return False
+    return proc.returncode == 0
+
+
+def _verify_cache_refusal(
+    symphony_name: str, ec: EnvCacheState, performer_mounts: Sequence[Path],
+) -> str | None:
+    """218: why the verify must not run against this cache, or None. Logs each refusal."""
+    cache_dir = Path(ec.cache_dir)
+    cache_refusal = _cache_dir_refusal(cache_dir, performer_mounts=performer_mounts)
+    if cache_refusal is not None:
+        logger.error(
+            "env_cache.clean_verify_refused",
+            symphony=symphony_name,
+            cache_dir=str(cache_dir),
+            reason=cache_refusal,
+        )
+        return f"env-cache dir refused: {cache_refusal}"
+    if not _cache_dir_has_activate(
+        cache_dir,
+        performer_mounts=performer_mounts,
+        expected_activate=ec.rendered_activate_sh,
+    ):
+        logger.error(
+            "env_cache.activate_mismatch",
+            symphony=symphony_name,
+            cache_dir=str(cache_dir),
+        )
+        return "activate.sh in the cache does not match the coordinare-rendered content"
+    return None
+
+
 async def verify_env_cache_clean(
     state: Mapping[str, Any],
     symphony_name: str,
@@ -388,11 +505,17 @@ async def verify_env_cache_clean(
     (it installs from the cache's local debs, no network), so this is a
     faithful "does the cache alone provide a working toolchain" check.
 
-    Returns ``(passed, detail)``: ``passed`` is True/False when verify.sh
-    ran, or None when it can't be run (absent script / docker error) — None
-    is degraded and does NOT downgrade success, to avoid looping on infra
-    errors. ``detail`` is a concise human-readable reason (the verify FAIL
-    lines) for the dashboard.
+    What the verify proves: the toolchain the bootstrap installed runs and reports the expected version.
+    Checking a version executes the installed binary, so the verify cannot tell a genuine toolchain from one
+    the bootstrap planted to print the right version. Binary provenance (a digest or a snapshot) is tracked in
+    #234. A PASSED verify is not a security verdict on the toolchain.
+
+    Returns ``(passed, detail)``. 218: the script run is the one the daemon rendered
+    (``EnvCacheState.rendered_verify_sh``), piped on stdin. ``passed`` is False when that
+    script exits non-zero, when no script is on record, when the cache dir is refused, or
+    when the cache's activate.sh is not the rendered text. None is returned only when docker
+    could not run the script at all (degraded, does not downgrade success). ``detail`` is a
+    concise human-readable reason (the verify FAIL lines) for the dashboard.
 
     Pure over existing seams (``state``, ``symphony_name``, ``svc``) so both the
     daemon method and the dispatch-time readiness gate (093) share one source of
@@ -404,16 +527,29 @@ async def verify_env_cache_clean(
     if not isinstance(ec, EnvCacheState):
         return None, "no env-cache state for symphony"
     cache_dir = Path(ec.cache_dir)
-    verify_refusal = mounted_file_refusal(
-        cache_dir / "verify.sh", mounts=_env_cache_mounts(cache_dir, performer_mounts),
-    )
-    if verify_refusal is not None:
-        logger.warning(
-            "env_cache.clean_verify_skipped",
+    # 218: the script that decides success is the one the DAEMON rendered, kept in daemon
+    # memory and the snapshot. The copy in the cache is never executed. Every refusal here is
+    # False, not None: None is degraded and would let a performer-caused refusal pass.
+    script = ec.rendered_verify_sh
+    if script is None:
+        logger.error(
+            "env_cache.clean_verify_refused",
             symphony=symphony_name,
-            reason="no verify.sh in cache — cannot confirm consumer install",
+            reason="no daemon-rendered verify.sh on record",
         )
-        return None, "no verify.sh in cache (cannot confirm consumer install)"
+        return False, "no daemon-rendered verify.sh on record for this cache"
+    refusal = _verify_cache_refusal(symphony_name, ec, performer_mounts)
+    if refusal is not None:
+        return False, refusal
+    # 218 (round 4): an unreachable daemon is infrastructure. The CLI exits 1 for it, the same code as a
+    # failed verdict, so the probe answers first. A planted toolchain that exits 1 or 125 is still a verdict.
+    if not await _docker_daemon_reachable():
+        logger.error(
+            "env_cache.clean_verify_docker_unreachable",
+            symphony=symphony_name,
+            detail="the docker daemon did not answer; the clean verify was not run",
+        )
+        return None, "the docker daemon is not reachable; the clean verify was not run"
     devenv_root = (
         svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
     )
@@ -421,26 +557,75 @@ async def verify_env_cache_clean(
     # Mount at the SAME container path the bootstrap used, since activate.sh /
     # verify.sh hardcode that absolute DEVEENV path.
     container_path = f"{devenv_root}/{ec.sanitised_name}"
+    # 218: the daemon's script is piped on stdin (bash -s), so the cache copy of verify.sh is
+    # never run. The cache is mounted read-only, as a consumer sees it.
+    # 218 (review): the image's BASH_ENV is the devenv profile. Bash sources it before `bash -s` reads
+    # stdin, and it unpacks the cache's debs, symlinks /usr/bin entries and sources the cache's
+    # activate.sh. Empty BASH_ENV and ENV stop that for bash and sh. _DEVENV_SOURCED makes the profile
+    # a no-op even if a variable is re-exported, and _DEVENV_SKIP_SERVICES stops any service start.
+    name = f"coordinare-verify-{ec.sanitised_name}-{uuid.uuid4().hex[:8]}"
     cmd = [
-        "docker", "run", "--rm",
+        "docker", "run", "--rm", "-i", "--name", name,
+        "-e", "BASH_ENV=",
+        "-e", "ENV=",
+        "-e", "_DEVENV_SOURCED=1",
+        "-e", "_DEVENV_SKIP_SERVICES=1",
         "-v", f"{cache_dir}:{container_path}:ro",
         "--entrypoint", "bash", str(image),
-        f"{container_path}/verify.sh",
+        "-s",
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
-    except Exception as exc:
+    except OSError as exc:
         logger.warning(
             "env_cache.clean_verify_errored",
             symphony=symphony_name,
             error=str(exc),
         )
         return None, f"clean verify could not run: {exc}"
+    return await _verify_outcome(proc, name, symphony_name, script)
+
+
+async def _verify_outcome(
+    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str,
+) -> tuple[bool | None, str]:
+    """218 (review round 3): the verdict for a verify container that started.
+
+    A run past the budget is a real failure, and its container is removed by name. An exit 125 means
+    docker could not start the container, which is infrastructure. Any other exit is the verify's verdict.
+    """
+    try:
+        out_b, _ = await asyncio.wait_for(
+            proc.communicate(input=script.encode()), timeout=_VERIFY_TIMEOUT_S,
+        )
+    except asyncio.CancelledError:
+        # 218 (round 4): the daemon task was cancelled. The container must still be killed and removed.
+        # The cleanup is shielded, so a second cancel cannot skip it. The cancellation then propagates.
+        await asyncio.shield(_kill_and_remove(proc, name))
+        raise
+    except TimeoutError:
+        removed = await _kill_and_remove(proc, name)
+        logger.error(
+            "env_cache.clean_verify_timed_out",
+            symphony=symphony_name,
+            container=name,
+            removed=removed,
+        )
+        state_note = "removed" if removed else "NOT confirmed removed"
+        return False, f"clean verify timed out after {_VERIFY_TIMEOUT_S:.0f}s; its container was {state_note}"
+    if proc.returncode == _DOCKER_RUN_START_FAILED:
+        logger.warning(
+            "env_cache.clean_verify_errored",
+            symphony=symphony_name,
+            error=f"docker run exited {_DOCKER_RUN_START_FAILED}",
+        )
+        tail = out_b.decode(errors="replace")[-300:].strip()
+        return None, f"docker could not start the verify container: {tail}"
     out = out_b.decode(errors="replace")
     passed = proc.returncode == 0
     logger.info(
@@ -529,6 +714,24 @@ def write_service_scripts(
             error=str(exc),
         )
         return False
+
+
+def rearm_budgets_on_spec_change(cache_state: EnvCacheState, current_sha: str, symphony_name: str) -> None:
+    """218 (round 4): a new spec SHA re-arms the infrastructure budget, at any count.
+
+    The 088 breaker re-arms on a spec change, and so must the infrastructure budget. Before this, the
+    reset sat inside the verdict-budget branch, so an infrastructure count below the cap survived a
+    spec fix. The first SHA, and an unchanged SHA, re-arm nothing."""
+    if cache_state.readme_sha is None or current_sha == cache_state.readme_sha:
+        return
+    if cache_state.infra_failures:
+        logger.info(
+            "env_cache.infra_budget_reset",
+            symphony=symphony_name,
+            previous_infra_failures=cache_state.infra_failures,
+            new_sha=current_sha,
+        )
+        cache_state.infra_failures = 0
 
 
 class EnvCacheService:
@@ -815,6 +1018,9 @@ class EnvCacheService:
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
 
+        # 218 (round 4): a new spec re-arms the infrastructure budget at any count.
+        rearm_budgets_on_spec_change(cache_state, current_sha, symphony_name)
+
         # 088 (FR-009): tripped breaker — no further dispatch for this spec SHA.
         # The (rate-limited implicit) exhaustion was announced once when the
         # breaker tripped; staying silent here avoids a log line per poll cycle.
@@ -836,7 +1042,7 @@ class EnvCacheService:
         if not needs_bootstrap and cache_state.last_bootstrap_succeeded is False:
             last_at = cache_state.last_bootstrap_at
             retry_cooldown = BOOTSTRAP_RETRY_COOLDOWN_S * (
-                2 ** cache_state.bootstrap_attempts
+                2 ** (cache_state.bootstrap_attempts + cache_state.infra_failures)
             )
             cooldown_elapsed = (
                 last_at is None
@@ -868,7 +1074,9 @@ class EnvCacheService:
             not needs_bootstrap
             and cache_state.last_bootstrap_succeeded is True
             and not _cache_dir_has_activate(
-                cache_state.cache_dir, performer_mounts=self._performer_mounts(),
+                cache_state.cache_dir,
+                performer_mounts=self._performer_mounts(),
+                expected_activate=cache_state.rendered_activate_sh,
             )
         ):
             last_at = cache_state.last_bootstrap_at
@@ -1016,6 +1224,11 @@ class EnvCacheService:
         else:
             declared_services = []
 
+        # 218: forget the previous bootstrap's scripts. Only a complete write in
+        # _build_manifest_artifacts sets them again, so a refused or failed write leaves none
+        # and the verify fails closed.
+        cache_state.rendered_verify_sh = None
+        cache_state.rendered_activate_sh = None
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             performer_mounts=self._performer_mounts(),
             symphony_name=symphony_name,
@@ -1028,6 +1241,7 @@ class EnvCacheService:
             cache_mount_path=cache_mount_path,
             llm_chat=llm_chat,
             declared_services=declared_services,
+            cache_state=cache_state,
         )
 
         # 092: load the symphony's configured test-environment so the bootstrap
@@ -1247,6 +1461,7 @@ class EnvCacheService:
         cache_mount_path: str,
         llm_chat: ChatJson | None,
         declared_services: list[dict[str, Any]] | None = None,
+        cache_state: EnvCacheState | None = None,
     ) -> tuple[str | None, bool, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
@@ -1275,8 +1490,10 @@ class EnvCacheService:
         manifest = await enrich_from_readme(manifest, readme_text, llm_chat)
 
         if not manifest.items:
+            # 218: an empty manifest still gets the daemon-owned verify.sh and activate.sh (they
+            # check nothing). Without them the bootstrap's success would rest on scripts the
+            # performer writes, which the daemon never checks.
             logger.info("env_cache.manifest_empty", symphony=symphony_name)
-            return None, False, False
 
         # Write the authoritative verify.sh + activate.sh + manifest.json into the
         # host cache dir (they appear at cache_mount_path inside consumer
@@ -1303,21 +1520,26 @@ class EnvCacheService:
         # 219: every write below the cache dir is anchored at the env-cache root (see
         # mounted_file): no link, hard link or wrong-type entry is followed or replaced.
         mounts = _env_cache_mounts(cache_dir, performer_mounts)
+        # 218: the text is rendered once, kept daemon-side (EnvCacheState) and written to the
+        # cache only as a copy. Verification and the activate.sh gate use the daemon's text.
+        activate_text = render_activate_sh(manifest, cache_mount_path=cache_mount_path)
+        verify_text = render_verify_sh(
+            manifest,
+            cache_mount_path=cache_mount_path,
+            services=service_models,
+            activate_text=activate_text,
+        )
         try:
             anchored_mkdir(cache_dir, mounts=mounts)
             replace_mounted_file(
                 cache_dir / "verify.sh",
-                render_verify_sh(
-                    manifest,
-                    cache_mount_path=cache_mount_path,
-                    services=service_models,
-                ).encode(),
+                verify_text.encode(),
                 mounts=mounts,
                 mode=_EXECUTABLE_MODE,
             )
             replace_mounted_file(
                 cache_dir / "activate.sh",
-                render_activate_sh(manifest, cache_mount_path=cache_mount_path).encode(),
+                activate_text.encode(),
                 mounts=mounts,
                 mode=_EXECUTABLE_MODE,
             )
@@ -1355,6 +1577,9 @@ class EnvCacheService:
             )
             return render_checklist(manifest), False, False
 
+        if cache_state is not None:
+            cache_state.rendered_verify_sh = verify_text
+            cache_state.rendered_activate_sh = activate_text
         logger.info(
             "env_cache.manifest_derived",
             symphony=symphony_name,
@@ -1362,7 +1587,8 @@ class EnvCacheService:
             runtimes=[f"{i.name}=={i.version}" for i in manifest.runtime_pins()],
             llm_derived=manifest.llm_derived,
         )
-        return render_checklist(manifest), True, True
+        checklist = render_checklist(manifest) if manifest.items else None
+        return checklist, True, True
 
     def mark_runtime_health_failed(
         self,
@@ -1490,12 +1716,74 @@ class EnvCacheService:
         self._notify_tasks.add(task)
         task.add_done_callback(self._notify_tasks.discard)
 
+    def _record_infra_failure(
+        self,
+        symphony_name: str,
+        cache_state: EnvCacheState,
+        state: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        """218 (review round 3): record one infrastructure failure, escalate, and cap it.
+
+        The verify could not run, or the bootstrap container could not be proven quiet. The verdict
+        budget is not spent. The cooldown escalates with this count (check_and_trigger). At the cap the
+        cache is exhausted, and the reason says it was infrastructure, so an operator can see it.
+        """
+        cache_state.infra_failures += 1
+        cache_state.last_infra_failure_at = datetime.now(UTC)
+        logger.error(
+            "env_cache.bootstrap_infra_failed",
+            symphony=symphony_name,
+            detail=error,
+            infra_failures=cache_state.infra_failures,
+            cap=_INFRA_FAILURE_CAP,
+            hint="check the docker daemon and the performer image; the retry waits longer each time",
+        )
+        if cache_state.infra_failures >= _INFRA_FAILURE_CAP and not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            cache_state.last_bootstrap_error = redact_state_value(
+                f"infrastructure failures exhausted after {cache_state.infra_failures} runs: {error}",
+            )
+            logger.error(
+                "env_cache.bootstrap_infra_exhausted",
+                symphony=symphony_name,
+                infra_failures=cache_state.infra_failures,
+                last_error=cache_state.last_bootstrap_error,
+            )
+            self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+
+    def _spend_breaker_attempt(
+        self, symphony_name: str, cache_state: EnvCacheState, state: dict[str, Any],
+    ) -> None:
+        """088 (FR-009): one real bootstrap failure spends the attempt budget; exhaustion trips it."""
+        cache_state.bootstrap_attempts += 1
+        max_attempts = int(
+            getattr(
+                getattr(self._coordinare_config, "global_config", None),
+                "env_bootstrap_max_attempts",
+                3,
+            )
+            or 3,
+        )
+        if cache_state.bootstrap_attempts >= max_attempts and not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            logger.warning(
+                "env_cache.bootstrap_exhausted",
+                symphony=symphony_name,
+                attempts=cache_state.bootstrap_attempts,
+                max_attempts=max_attempts,
+                last_error=cache_state.last_bootstrap_error,
+            )
+            self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
         success: bool,
         state: dict[str, Any],
         error: str | None = None,
+        *,
+        infra_failure: bool = False,
     ) -> None:
         """Called when a bootstrap performer session ends.
 
@@ -1550,6 +1838,8 @@ class EnvCacheService:
         # which prevents performers from mounting an unpopulated cache dir.
         if success:
             cache_state.cache_dir_ready = True
+            # 218 (review round 3): a success clears the infrastructure budget.
+            cache_state.infra_failures = 0
             # 088 (FR-009): success re-arms the circuit breaker.
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
@@ -1563,29 +1853,11 @@ class EnvCacheService:
         # With the SHA retained, retries flow through check_and_trigger's
         # escalating-cooldown branch (readme_sha == current ∧ succeeded=False),
         # and the consumer gate still holds (last_bootstrap_succeeded=False).
-        if not success:
-            cache_state.bootstrap_attempts += 1
-            max_attempts = int(
-                getattr(
-                    getattr(self._coordinare_config, "global_config", None),
-                    "env_bootstrap_max_attempts",
-                    3,
-                )
-                or 3,
-            )
-            if (
-                cache_state.bootstrap_attempts >= max_attempts
-                and not cache_state.bootstrap_exhausted
-            ):
-                cache_state.bootstrap_exhausted = True
-                logger.warning(
-                    "env_cache.bootstrap_exhausted",
-                    symphony=symphony_name,
-                    attempts=cache_state.bootstrap_attempts,
-                    max_attempts=max_attempts,
-                    last_error=cache_state.last_bootstrap_error,
-                )
-                self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+        if not success and infra_failure:
+            # 218 (review round 3): an infrastructure failure spends its own budget, not the verdict budget.
+            self._record_infra_failure(symphony_name, cache_state, state, error)
+        elif not success:
+            self._spend_breaker_attempt(symphony_name, cache_state, state)
 
         logger.info(
             "env_cache.bootstrap_complete",

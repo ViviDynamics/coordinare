@@ -104,9 +104,13 @@ class TestVerifyRenderer:
             ],
         )
 
-    def test_sources_activate_and_exits(self) -> None:
-        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "/devenv/sym/activate.sh" in sh
+    def test_inlines_activate_and_exits(self) -> None:
+        """218: the activation is inlined, so the verify never sources the cache's activate.sh."""
+        sh = render_verify_sh(
+            self._manifest(), cache_mount_path="/devenv/sym", activate_text="ACT_MARK=1\n",
+        )
+        assert "ACT_MARK=1" in sh
+        assert "/devenv/sym/activate.sh" not in sh
         assert "FAILED=0" in sh
         assert "exit 1" in sh
         assert "exit 0" in sh
