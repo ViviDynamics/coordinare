@@ -9,13 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML, DashboardStore
+from coordinare.dashboard import DashboardStore
 from coordinare.lib.redaction import RedactingFormatter, redact_mapping
+from tests.unit.dashboard_js_slices import app_js
 
 
 @pytest.mark.parametrize('enabled', [False, True])
 def test_optional_assistant_does_not_abort_quiet_timer(enabled):
-    match = re.search(r"document.addEventListener\('DOMContentLoaded', function\(\) \{(.*?)\n\}\);", _DASHBOARD_HTML, re.DOTALL)
+    match = re.search(r"document.addEventListener\('DOMContentLoaded', function\(\) \{(.*?)\n\}\);", app_js(), re.DOTALL)
     assert match
     script = '''const assert = require('node:assert/strict');
 let routed = false, timer = false, assistant = false;

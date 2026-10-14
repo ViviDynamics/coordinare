@@ -10,14 +10,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from coordinare.dashboard import _DASHBOARD_HTML
 from coordinare.dashboard.assets import _DASHBOARD_SHELL_CSS
-from tests.unit.dashboard_js_slices import shipped_function
+from tests.unit.dashboard_js_slices import page_source, shipped_function
 
 
 def test_header_has_the_freshness_slot_and_the_page_refreshes_it_every_second() -> None:
-    assert '<span id="connection-label">Connecting</span><span id="connection-detail"></span>' in _DASHBOARD_HTML
-    assert "refreshElapsedReadouts(document); refreshFreshness(); }, 1000);" in _DASHBOARD_HTML
+    assert '<span id="connection-label">Connecting</span><span id="connection-detail"></span>' in page_source()
+    assert "refreshElapsedReadouts(document); refreshFreshness(); }, 1000);" in page_source()
 
 
 def test_stale_state_is_styled_amber() -> None:

@@ -8,20 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML
+from tests.unit.dashboard_js_slices import app_js
 
 
 @pytest.mark.parametrize("case", ["native", "closed", "backoff", "handlers", "stale"])
 def test_dashboard_stream_recovery(tmp_path: Path, case: str) -> None:
     start = "var banner = document.getElementById('disconnected-banner');"
     end = "document.addEventListener('DOMContentLoaded', function() {"
-    assert _DASHBOARD_HTML.count(start) == _DASHBOARD_HTML.count(end) == 1
+    assert app_js().count(start) == app_js().count(end) == 1
     bootstrap = tmp_path / "bootstrap.js"
-    status = re.search(r'function updateConnectionStatus\(label\) \{.*?\n\}', _DASHBOARD_HTML, re.DOTALL)
+    status = re.search(r'function updateConnectionStatus\(label\) \{.*?\n\}', app_js(), re.DOTALL)
     assert status is not None
     bootstrap.write_text(
         'var _afHasMessage = false, _afLastMsgAt = 0;\n' + status.group(0) + '\n' +
-        start + _DASHBOARD_HTML.split(start, 1)[1].split(end, 1)[0],
+        start + app_js().split(start, 1)[1].split(end, 1)[0],
     )
     node = shutil.which("node")
     assert node is not None, "Node is required for the dashboard browser checks"

@@ -101,8 +101,8 @@ def test_dashboard_html_budget_lowered() -> None:
     this test, not one that slips through a `<=` re-derivation.
     """
     size = len(_DASHBOARD_HTML.encode())
-    assert DASHBOARD_HTML_BUDGET_BYTES == 112 * 1024, (
-        f"budget {DASHBOARD_HTML_BUDGET_BYTES} is not the lowered 112 KB cap"
+    assert DASHBOARD_HTML_BUDGET_BYTES == 48 * 1024, (
+        f"budget {DASHBOARD_HTML_BUDGET_BYTES} is not the lowered 48 KiB cap"
     )
     assert size < DASHBOARD_HTML_BUDGET_BYTES, (
         f"_DASHBOARD_HTML is {size} bytes (limit: {DASHBOARD_HTML_BUDGET_BYTES})"
