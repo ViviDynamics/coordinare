@@ -247,20 +247,27 @@ def test_the_rebuild_stops_at_its_time_budget(tmp_path: Path, monkeypatch: pytes
     assert ledger.last_rebuild.stopped_by == "time"
 
 
-def test_an_unreadable_card_directory_is_skipped_and_the_rest_still_loads(tmp_path: Path) -> None:
+def test_an_unreadable_card_directory_is_skipped_and_the_rest_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A card folder that cannot be listed (PermissionError) is skipped and counted.
+
+    The error is injected rather than set with chmod, so the test does not depend on
+    the user running it (root ignores permission bits).
+    """
     _write_run(tmp_path, symphony="acme", card="PVTI_good", run_id="run-good", lines=[_usage_line(1, 7)])
     locked = tmp_path / "acme" / "PVTI_locked"
-    locked.mkdir()
     _write_run(tmp_path, symphony="acme", card="PVTI_locked", run_id="run-locked", lines=[_usage_line(1, 99)])
-    os.chmod(locked, 0)
-    try:
-        enforced = not os.access(locked, os.R_OK)  # running as root: permissions do not bind
-        ledger = TokenLedger()
-        counted = ledger.load_from_transcripts(tmp_path, now=NOW)
-    finally:
-        os.chmod(locked, 0o755)
-    if not enforced:
-        pytest.skip("permissions are not enforced for this user")
+    real_iterdir = Path.iterdir
+
+    def _iterdir(self: Path) -> Any:
+        if self == locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+    ledger = TokenLedger()
+    counted = ledger.load_from_transcripts(tmp_path, now=NOW)
     assert counted == 1
     assert _input(ledger, run_id="run-good") == 7
     assert ledger.last_rebuild.dirs_skipped == 1
