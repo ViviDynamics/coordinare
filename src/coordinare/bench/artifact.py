@@ -34,7 +34,7 @@ class Cost(BaseModel):
 
     ``cost_usd`` is None when the cost is unknown; ``cost_unknown_reason`` then says why
     (no tokens reported, or a model with no price). Unknown is never zero. ``cost_basis``
-    names how a priced figure was derived (see ``pricing.BASIS_TOTAL_AT_INPUT_RATE``).
+    names how a priced figure was derived (see ``pricing.BASIS_PER_KIND``).
     Documents written before spec 206 have no ``cost_unknown_reason``/``cost_basis`` and
     load with both None.
     """

@@ -23,8 +23,8 @@ from coordinare.bench.harness_rollup import HarnessRollup, RoleHarnessRow, forma
 from coordinare.bench.noise import aggregate
 from coordinare.bench.pricing import (
     BASIS_PER_KIND,
-    BASIS_TOTAL_AT_INPUT_RATE,
     NO_TOKENS_REASON,
+    SPLIT_NOT_REPORTED_REASON,
     TokenCost,
     bench_price_table,
     combine,
@@ -87,19 +87,19 @@ TABLE = bench_price_table(_tracking())
 # --- pricing a dispatch -----------------------------------------------------------------
 
 
-def test_priced_model_gets_its_table_entry_on_a_bare_total() -> None:
-    """A bare total is charged at the model's input rate, labelled as such. The cache rate
-    is not applied to a total whose split is unknown."""
+def test_bare_total_is_unknown_even_for_a_priced_model() -> None:
+    """Output and cache tokens cost different amounts, so a total with no split has no honest
+    price. It is unknown with the split reason, whatever the model's table entry says."""
     priced = price_tokens(1_000_000, OPUS, TABLE)
 
-    assert priced.cost_usd == pytest.approx(15.0)
-    assert priced.cost_usd != pytest.approx(1.5)  # not the cache read rate
-    assert priced.unknown_reason is None
-    assert priced.basis == BASIS_TOTAL_AT_INPUT_RATE
+    assert priced.cost_usd is None
+    assert priced.unknown_reason == SPLIT_NOT_REPORTED_REASON
+    assert priced.basis is None
 
 
 def test_prefix_entry_prices_a_dated_model_id() -> None:
-    assert price_tokens(1_000_000, HAIKU, TABLE).cost_usd == pytest.approx(1.0)
+    counts = UsageCounts(input_tokens=1_000_000)
+    assert price_counts(counts, HAIKU, TABLE, basis=BASIS_PER_KIND).cost_usd == pytest.approx(1.0)
 
 
 def test_exact_token_kinds_use_cache_read_and_write_rates() -> None:
@@ -119,6 +119,7 @@ def test_unpriced_model_is_unknown_with_the_reason_not_a_guess() -> None:
 
     assert priced.cost_usd is None
     assert priced.unknown_reason is not None
+    assert SPLIT_NOT_REPORTED_REASON in priced.unknown_reason
     assert f"no price for {MYSTERY}" in priced.unknown_reason
     assert priced.basis is None
 
@@ -131,10 +132,10 @@ def test_dispatch_without_a_recorded_model_is_unknown() -> None:
     assert "a model not recorded" in priced.unknown_reason
 
 
-def test_missing_token_count_is_unknown_and_zero_tokens_is_zero() -> None:
-    """Absent is not zero (spec 161, 305): no count leaves the cost unknown."""
+def test_missing_token_count_is_unknown_and_zero_tokens_is_still_unknown() -> None:
+    """Absent is not zero (spec 161, 305), and a zero total has no split either."""
     assert price_tokens(None, OPUS, TABLE) == TokenCost(None, NO_TOKENS_REASON, None)
-    assert price_tokens(0, OPUS, TABLE).cost_usd == 0.0
+    assert price_tokens(0, OPUS, TABLE).cost_usd is None
 
 
 def test_no_price_table_leaves_every_model_unknown() -> None:
@@ -146,31 +147,34 @@ def test_default_price_covers_unmatched_models_and_not_priced_ones() -> None:
         default_price={"input_per_million": 2.0, "output_per_million": 2.0,
                        "cache_read_per_million": 0.2, "cache_write_per_million": 2.5},
     ))
+    counts = UsageCounts(input_tokens=1_000_000)
 
-    assert price_tokens(1_000_000, MYSTERY, table).cost_usd == pytest.approx(2.0)
-    assert price_tokens(1_000_000, OPUS, table).cost_usd == pytest.approx(15.0)
+    assert price_counts(counts, MYSTERY, table, basis=BASIS_PER_KIND).cost_usd == pytest.approx(2.0)
+    assert price_counts(counts, OPUS, table, basis=BASIS_PER_KIND).cost_usd == pytest.approx(15.0)
 
 
 def test_deprecated_flat_rate_never_reaches_the_bench() -> None:
     """The daemon's deprecated flat rate prices every model at one rate. The bench does not
     read it: an unrecorded or unknown model stays unknown, never flat-priced."""
     flat = CostTrackingConfig(cost_per_million_tokens=3.0)
+    counts = UsageCounts(input_tokens=1_000_000)
 
     assert price_table_from_config(flat).resolve(MYSTERY) is not None  # the daemon would
-    assert price_tokens(1_000_000, MYSTERY, bench_price_table(flat)).cost_usd is None
+    assert price_counts(counts, MYSTERY, bench_price_table(flat), basis=BASIS_PER_KIND).cost_usd is None
 
 
 def test_combine_makes_a_card_unknown_when_any_dispatch_is_unknown() -> None:
-    priced = price_tokens(1_000_000, OPUS, TABLE)
+    counts = UsageCounts(input_tokens=1_000_000)
+    priced = price_counts(counts, OPUS, TABLE, basis=BASIS_PER_KIND)
     unknown = price_tokens(1_000_000, MYSTERY, TABLE)
 
     mixed = combine([priced, unknown])
     assert mixed.cost_usd is None
-    assert mixed.unknown_reason is not None and f"no price for {MYSTERY}" in mixed.unknown_reason
+    assert mixed.unknown_reason is not None and SPLIT_NOT_REPORTED_REASON in mixed.unknown_reason
 
-    all_priced = combine([priced, price_tokens(1_000_000, HAIKU, TABLE)])
+    all_priced = combine([priced, price_counts(counts, HAIKU, TABLE, basis=BASIS_PER_KIND)])
     assert all_priced.cost_usd == pytest.approx(16.0)
-    assert all_priced.basis == BASIS_TOTAL_AT_INPUT_RATE
+    assert all_priced.basis == BASIS_PER_KIND
 
     assert combine([]).unknown_reason == NO_TOKENS_REASON
 
@@ -183,7 +187,8 @@ def test_bench_reads_the_daemon_config_through_the_same_loader() -> None:
 
     table = price_table_for_run(real_config=cfg)
 
-    assert price_tokens(1_000_000, OPUS, table).cost_usd == pytest.approx(15.0)
+    counts = UsageCounts(input_tokens=1_000_000)
+    assert price_counts(counts, OPUS, table, basis=BASIS_PER_KIND).cost_usd == pytest.approx(15.0)
 
 
 def test_bench_loads_cost_tracking_from_a_config_file(tmp_path: Path) -> None:
@@ -206,8 +211,9 @@ def test_bench_loads_cost_tracking_from_a_config_file(tmp_path: Path) -> None:
 
     table = price_table_for_run(config_path=config)
 
-    assert price_tokens(1_000_000, OPUS, table).cost_usd == pytest.approx(15.0)
-    assert price_tokens(1_000_000, MYSTERY, table).cost_usd is None
+    counts = UsageCounts(input_tokens=1_000_000)
+    assert price_counts(counts, OPUS, table, basis=BASIS_PER_KIND).cost_usd == pytest.approx(15.0)
+    assert price_counts(counts, MYSTERY, table, basis=BASIS_PER_KIND).cost_usd is None
 
 
 def test_no_config_at_all_is_an_empty_table(tmp_path: Path) -> None:
@@ -282,7 +288,7 @@ def _dispatch_with_cost(session: str, cost: float | None, *, basis: str | None,
 
 def test_rollup_sums_priced_dispatches_and_marks_the_sum_partial() -> None:
     run = artifact([card("c1", [
-        _dispatch_with_cost("s1", 2.0, basis=BASIS_TOTAL_AT_INPUT_RATE),
+        _dispatch_with_cost("s1", 2.0, basis=BASIS_PER_KIND),
         _dispatch_with_cost("s2", None, basis=None, reason=f"no price for {MYSTERY}"),
     ])])
 
@@ -295,7 +301,7 @@ def test_rollup_sums_priced_dispatches_and_marks_the_sum_partial() -> None:
 
 
 def test_rollup_of_an_all_priced_pair_is_not_partial() -> None:
-    run = artifact([card("c1", [_dispatch_with_cost("s1", 2.0, basis=BASIS_TOTAL_AT_INPUT_RATE)])])
+    run = artifact([card("c1", [_dispatch_with_cost("s1", 2.0, basis=BASIS_PER_KIND)])])
 
     row = roll_up([run]).rows[0]
 
@@ -314,7 +320,7 @@ def test_legacy_dispatch_with_no_price_reports_the_legacy_reason() -> None:
 
 
 def test_run_totals_are_partial_when_a_card_is_unpriced() -> None:
-    priced = Cost(tokens_processed=1, cost_usd=1.5, cost_basis=BASIS_TOTAL_AT_INPUT_RATE)
+    priced = Cost(tokens_processed=1, cost_usd=1.5, cost_basis=BASIS_PER_KIND)
     unknown = Cost(tokens_processed=1, cost_unknown_reason=f"no price for {MYSTERY}")
     run = artifact([card("c1", []), card("c2", [])])
     run.cards[0].cost = priced
@@ -330,8 +336,8 @@ def test_run_totals_are_partial_when_a_card_is_unpriced() -> None:
 
 def test_run_totals_are_not_partial_when_every_card_is_priced() -> None:
     run = artifact([card("c1", []), card("c2", [])])
-    run.cards[0].cost = Cost(cost_usd=1.0, cost_basis=BASIS_TOTAL_AT_INPUT_RATE)
-    run.cards[1].cost = Cost(cost_usd=2.0, cost_basis=BASIS_TOTAL_AT_INPUT_RATE)
+    run.cards[0].cost = Cost(cost_usd=1.0, cost_basis=BASIS_PER_KIND)
+    run.cards[1].cost = Cost(cost_usd=2.0, cost_basis=BASIS_PER_KIND)
 
     totals = run.compute_totals()
 
@@ -475,26 +481,26 @@ def _built(rows: list[dict[str, Any]], tmp_path: Path) -> RunArtifact:
     )
 
 
-def test_runner_prices_each_dispatch_and_sums_a_fully_priced_card(tmp_path: Path) -> None:
+def test_runner_leaves_a_bare_total_dispatch_unknown_with_the_split_reason(tmp_path: Path) -> None:
+    """The runner has only a total per dispatch, so no dispatch can price (spec 206)."""
     run = _built([_log_row(OPUS, 1_000_000), _log_row(HAIKU, 1_000_000)], tmp_path)
 
     dispatches = run.cards[0].dispatches
-    assert [d.cost_usd for d in dispatches] == [pytest.approx(15.0), pytest.approx(1.0)]
-    assert all(d.cost_basis == BASIS_TOTAL_AT_INPUT_RATE for d in dispatches)
-    assert run.cards[0].cost.cost_usd == pytest.approx(16.0)
-    assert run.totals.cost_partial is False
+    assert [d.cost_usd for d in dispatches] == [None, None]
+    assert all(d.cost_unknown_reason == SPLIT_NOT_REPORTED_REASON for d in dispatches)
+    assert run.cards[0].cost.cost_usd is None
+    assert run.totals.cost_partial is True
+    assert run.totals.cost_usd is None
 
 
-def test_runner_leaves_a_card_unknown_when_one_dispatch_model_is_unpriced(tmp_path: Path) -> None:
+def test_runner_names_the_unpriced_model_alongside_the_split(tmp_path: Path) -> None:
     run = _built([_log_row(OPUS, 1_000_000), _log_row(MYSTERY, 1_000)], tmp_path)
 
     card_cost = run.cards[0].cost
     assert card_cost.cost_usd is None
     assert card_cost.cost_unknown_reason is not None
     assert f"no price for {MYSTERY}" in card_cost.cost_unknown_reason
-    assert run.cards[0].dispatches[0].cost_usd == pytest.approx(15.0)  # the priced one kept
-    assert run.totals.cost_partial is True
-    assert run.totals.cost_usd is None
+    assert SPLIT_NOT_REPORTED_REASON in card_cost.cost_unknown_reason
 
 
 def test_runner_reports_a_dispatch_with_no_token_count_as_unknown_not_zero(tmp_path: Path) -> None:

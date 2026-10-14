@@ -54,7 +54,7 @@ def test_cost_is_flagged_as_estimate_by_default() -> None:
 def test_compute_totals_aggregates_cards() -> None:
     art = _artifact()
     art.cards[0].cost.cost_usd = 3.0
-    art.cards[0].cost.cost_basis = "total_tokens_at_input_rate"  # priced, not legacy
+    art.cards[0].cost.cost_basis = "exact_per_kind_counts"  # priced, not legacy
     totals = art.compute_totals()
     assert totals.cards_total == 2
     assert totals.cards_merged == 1

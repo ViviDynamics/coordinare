@@ -67,6 +67,8 @@ below are additive and default to `None` or `False`, so every earlier document s
   of its dispatches is unknown.
 - `RunTotals.cost_partial`, `RunTotals.cost_unpriced_cards`, `RunTotals.cost_unknown_reason`:
   `cost_usd` sums the priced cards only. `cost_partial` is `True` when any card is unpriced.
-- `cost_basis` is `total_tokens_at_input_rate` for a bare total (the bench records one token
-  count per dispatch). A cost with no basis was written before spec 206 and is reported as
-  unknown, never as a price.
+- `cost_basis` is `exact_per_kind_counts` for a cost priced from per-kind token counts
+  (input, output, cache read, cache write), which no bench substrate reports yet. A dispatch
+  with only a total token count is unknown, with the reason `token split by kind not
+  reported`. A bare total is never priced at a single rate. A cost with no basis was written
+  before spec 206 and is reported as unknown, never as a price.

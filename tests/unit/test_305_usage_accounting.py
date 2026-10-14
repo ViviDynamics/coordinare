@@ -98,7 +98,9 @@ async def test_real_cli_usage_reaches_the_artifact_as_measured_nonzero() -> None
     row = await _dispatch_row({"tokens_processed": tokens})
     assert row["terminal_marker"] == "pr_opened"
     assert row["tokens_processed"] == CACHE_HEAVY_TOTAL
-    assert price_tokens(row["tokens_processed"], _OPUS, _TABLE).cost_usd > 0
+    assert row["tokens_processed"] > 0  # measured, not zero
+    # A bare total has no per-kind split, so it is never priced (spec 206).
+    assert price_tokens(row["tokens_processed"], _OPUS, _TABLE).cost_usd is None
 
 
 @pytest.mark.asyncio

@@ -5,14 +5,14 @@ same loader (``price_table_from_config``). A model with no price has unknown cos
 reason is recorded. No flat rate is ever applied to a model.
 
 A bench dispatch records one total token count, not a split by kind: performers report a
-single ``tokens_processed``. So the total is priced at the model's ``input_per_million``
-rate, and a bare-total cost carries ``BASIS_TOTAL_AT_INPUT_RATE`` so the
-figure is never mistaken for an exact per-kind cost. Exact pricing needs the performer to
-report the split (cache reads and writes, output) per dispatch.
+single ``tokens_processed``. A total cannot be priced honestly, because output and cache
+tokens cost different amounts, so a total-only dispatch is unknown with the reason
+``SPLIT_NOT_REPORTED_REASON``. Exact pricing (``price_counts``) needs the per-kind counts,
+which no bench substrate reports today.
 
-Unknown is never zero. A dispatch with no token count, or a model with no price, yields
-``cost_usd=None`` with the reason. Rollups sum only what is priced and say so when a sum
-is partial.
+Unknown is never zero. A dispatch with no token count, no kind split, or a model with no
+price yields ``cost_usd=None`` with the reason. Rollups sum only what is priced and say so
+when a sum is partial.
 """
 
 from __future__ import annotations
@@ -35,10 +35,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 #: How a cost was derived. Stored on every priced dispatch, card and run.
-BASIS_TOTAL_AT_INPUT_RATE = "total_tokens_at_input_rate"
 BASIS_PER_KIND = "exact_per_kind_counts"
 
 NO_TOKENS_REASON = "no token count was reported for this dispatch"
+SPLIT_NOT_REPORTED_REASON = "token split by kind not reported"
 
 
 @dataclass(frozen=True)
@@ -60,16 +60,19 @@ def price_counts(counts: UsageCounts, model: str | None, table: PriceTable, *, b
 
 
 def price_tokens(tokens: int | None, model: str | None, table: PriceTable) -> TokenCost:
-    """Price one dispatch from its total token count alone.
+    """Price one dispatch from its total token count alone: never, honestly.
 
-    The total is charged at the model's input rate. That is the only rate a bare total can
-    be charged at without inventing a split, and the basis says so.
+    A total has no per-kind split, and output, cache read and cache write each have their own
+    rate, so any single rate would invent a figure. The cost is unknown with the split reason,
+    and an unpriced model is named as well. Use ``price_counts`` once the split exists.
     """
     if tokens is None:
         return TokenCost(None, NO_TOKENS_REASON, None)
-    return price_counts(
-        UsageCounts(input_tokens=tokens), model, table, basis=BASIS_TOTAL_AT_INPUT_RATE,
-    )
+    reasons = [SPLIT_NOT_REPORTED_REASON]
+    priced = price_totals({model or None: UsageCounts(input_tokens=tokens)}, table)
+    if priced.cost_usd is None and priced.unknown_reason:
+        reasons.append(priced.unknown_reason)
+    return TokenCost(None, "; ".join(reasons), None)
 
 
 def combine(costs: Iterable[TokenCost]) -> TokenCost:
@@ -84,8 +87,7 @@ def combine(costs: Iterable[TokenCost]) -> TokenCost:
     if reasons:
         return TokenCost(None, "; ".join(reasons), None)
     total = round(sum(item.cost_usd or 0.0 for item in items), 6)
-    basis = BASIS_TOTAL_AT_INPUT_RATE if any(item.basis for item in items) else None
-    return TokenCost(total, None, basis)
+    return TokenCost(total, None, items[0].basis)
 
 
 def bench_price_table(cost_tracking: Any) -> PriceTable:
