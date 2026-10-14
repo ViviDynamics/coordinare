@@ -43,11 +43,23 @@ from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_doc_folder, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
+from performer import transcript
 from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+# Spec 129: hermes is one `hermes chat --quiet` process. Its stdout is the final
+# reply plus a session footer; nothing about tool calls, reasoning or token
+# counts reaches the performer as structured data.
+_TRANSCRIPT_UNAVAILABLE: tuple[str, ...] = ("tool_call", "tool_result", "thinking", "usage")
+_TRANSCRIPT_PROVIDED: tuple[str, ...] = ("user", "system", "assistant_text", "result", "error")
+_TRANSCRIPT_CAPABILITY_TEXT = (
+    "hermes runs as one `hermes chat --quiet` process whose stdout is only the final reply "
+    "plus a session footer; --quiet suppresses tool previews and the adapter reads no "
+    "reasoning or token counts, so tool_call, tool_result, thinking and usage records are "
+    "unavailable and assistant_text is the raw stdout after exit"
+)
 # Cap for inlined architecture-plan content (chars). Plans larger than this
 # are truncated with a marker so the prompt stays inside model context.
 _MAX_INLINED_PLAN_CHARS = 20_000
@@ -118,6 +130,7 @@ class HermesBackend:
         self._api_key: str = ""
         self._job_log_id: str = ""
         self._last_prompt: str = ""
+        self._transcript_capability_recorded: bool = False
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -133,8 +146,7 @@ class HermesBackend:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> None:
-        self._stand = stand
-        self._score = score
+        self._stand, self._score = stand, score
         self._git_env = stand.git_env
         self._cache_env = stand.cache_env
         self._tool_env = score.tool_env
@@ -152,11 +164,7 @@ class HermesBackend:
             ("HERMES_MODEL", resolved_model),
         ):
             if not value:
-                self._status = BackendStatus(
-                    state="error",
-                    error_reason=f"missing_env:{env_name}",
-                )
-                self._finalize()
+                self._fail_start(f"missing_env:{env_name}")
                 return
 
         self._api_key = api_key
@@ -198,6 +206,7 @@ class HermesBackend:
         self._last_prompt = prompt
         self._job_log_id = f"{time.strftime('%Y%m%dT%H%M%S')}_{(score.role or 'job')}_{uuid.uuid4().hex[:8]}"
         self._persist_job_artifact("prompt", prompt)
+        full_prompt = prompt
 
         # If the prompt exceeds the Linux per-argument limit (MAX_ARG_STRLEN ≈
         # 128 KB), create_subprocess_exec raises OSError E2BIG.  Offload to
@@ -251,6 +260,12 @@ class HermesBackend:
         env = self._build_subprocess_env(
             profile_dir=self._profile_dir, api_key=api_key, base_url=base_url,
         )
+        self._record_launch(
+            full_prompt=full_prompt,
+            sent_message=prompt,
+            provider=cli_provider,
+            model=resolved_model,
+        )
 
         log.info(
             "hermes starting",
@@ -270,9 +285,9 @@ class HermesBackend:
                 start_new_session=True,
                 env=env,
             )
-        except Exception:
+        except Exception as exc:
             log.exception("hermes subprocess spawn failed", executable=self._executable)
-            self._finalize()
+            self._fail_spawn(exc)
             raise
 
         self._status = BackendStatus(state="working")
@@ -307,6 +322,10 @@ class HermesBackend:
         # which calls into this stop(). Hermes carries no internal timer.
         self._stop_requested = True
         if self._reader_task and not self._reader_task.done():
+            transcript.emit(
+                "error",
+                text="run stopped by the performer before the hermes process finished",
+            )
             self._reader_task.cancel()
             try:
                 await self._reader_task
@@ -518,6 +537,90 @@ class HermesBackend:
             BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
+    @transcript.best_effort
+    def _record_capability_once(self) -> None:
+        """Spec 129: one capability record per backend instance (one run)."""
+        if self._transcript_capability_recorded:
+            return
+        self._transcript_capability_recorded = True
+        transcript.emit(
+            "capability",
+            text=_TRANSCRIPT_CAPABILITY_TEXT,
+            input_data={
+                "unavailable": list(_TRANSCRIPT_UNAVAILABLE),
+                "provided": list(_TRANSCRIPT_PROVIDED),
+            },
+        )
+
+    @transcript.best_effort
+    def _record_launch(
+        self, *, full_prompt: str, sent_message: str, provider: str, model: str,
+    ) -> None:
+        """Spec 129: record what one `hermes chat` invocation was given.
+
+        ``full_prompt`` is the whole task briefing. ``sent_message`` is the -q
+        argument, which is a TASK.md pointer when the briefing was offloaded.
+        Re-recorded on every launch because the parse-retry path re-invokes
+        hermes with a new prompt.
+        """
+        self._record_capability_once()
+        input_data: dict[str, object] = {
+            "provider": provider,
+            "model": model,
+            "toolsets": list(ALLOWED_TOOLSETS),
+            "disabled_toolsets": list(DISABLED_TOOLSETS),
+            "quiet": True,
+            "yolo": True,
+        }
+        transcript.emit("system", text="hermes launch configuration", input_data=input_data)
+        user_input = {"sent_message": sent_message} if sent_message != full_prompt else None
+        transcript.emit("user", text=full_prompt, input_data=user_input)
+
+    @transcript.best_effort
+    def _record_outcome(
+        self,
+        *,
+        rc: int | None,
+        stdout_text: str,
+        stderr_text: str,
+        reason: str | None,
+        output_text: str | None,
+    ) -> None:
+        """Spec 129: the final reply (stdout, full) and the terminal outcome.
+
+        ``reason`` is set on failure paths; ``output_text`` on success.
+        """
+        if reason is not None:
+            detail = stderr_text.strip() or stdout_text.strip()
+            failure_text = f"{reason}: {detail}" if detail else reason
+            transcript.emit("error", text=failure_text, input_data={"rc": rc, "reason": reason})
+            transcript.emit(
+                "result",
+                text=f"failed: {reason}",
+                output_data=stdout_text,
+                is_error=True,
+                input_data={"rc": rc, "stderr": stderr_text},
+            )
+            return
+        if stdout_text.strip():
+            transcript.emit("assistant_text", text=stdout_text.strip())
+        transcript.emit(
+            "result", text="done", output_data=output_text, is_error=False,
+            input_data={"rc": rc},
+        )
+
+    def _fail_start(self, reason: str) -> None:
+        """Spec 129: a start-time failure (missing env). Status, error record, cleanup."""
+        self._record_capability_once()
+        self._status = BackendStatus(state="error", error_reason=reason)
+        transcript.emit("error", text=reason)
+        self._finalize()
+
+    def _fail_spawn(self, exc: Exception) -> None:
+        """Spec 129: the subprocess could not be spawned. Error record, then cleanup."""
+        transcript.emit("error", text=f"subprocess_spawn_failed: {exc}")
+        self._finalize()
+
     def _finalize(self) -> None:
         """Idempotent cleanup of job-scoped state. Safe on every terminal outcome."""
         self._terminal = True
@@ -571,6 +674,10 @@ class HermesBackend:
                 )
                 if snippet:
                     self._emit(BackendEventType.error, snippet)
+                self._record_outcome(
+                    rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
+                    reason=reason, output_text=None,
+                )
                 self._finalize()
                 return
 
@@ -587,6 +694,10 @@ class HermesBackend:
                     error_reason="malformed_output",
                 )
                 self._emit(BackendEventType.error, "malformed_output")
+                self._record_outcome(
+                    rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
+                    reason="malformed_output", output_text=None,
+                )
                 self._finalize()
                 return
 
@@ -617,12 +728,17 @@ class HermesBackend:
             event_text = summary or (output_text or "")
             if event_text:
                 self._emit(BackendEventType.progress, event_text[:_MAX_TEXT])
+            self._record_outcome(
+                rc=rc, stdout_text=stdout_text, stderr_text=stderr_text,
+                reason=None, output_text=output_text,
+            )
             self._finalize()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("hermes reader error", error=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
+            transcript.emit("error", text=f"hermes reader error: {exc}")
             self._finalize()
 
 

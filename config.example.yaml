@@ -874,6 +874,19 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # implementer_rebase:
 #   enabled: true
 
+# --- Run Transcripts (129) ---
+# A full, untruncated JSONL record of every performer run, written by the
+# daemon to <state directory>/transcripts/<symphony>/<card>/<run_id>.jsonl. The
+# root is deliberately outside performer_log_dir, which performer containers
+# mount read-write. A root inside any performer mount disables transcription at
+# startup (error logged). On by default. enabled: false means no transcript
+# traffic, no files, and no retention sweep.
+# transcripts:
+#   enabled: true
+#   dir: null                           # optional root override; must be outside every performer mount
+#   retention_days: 30                  # delete transcripts older than this; 0 = keep forever
+#   max_bytes_per_run: 52428800         # 50 MiB per run; at the cap one "truncated" marker is written
+
 # --- Stuck Card Alerts ---
 # stuck_alerts:
 #   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled

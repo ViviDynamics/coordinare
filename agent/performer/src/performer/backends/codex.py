@@ -35,6 +35,7 @@ import structlog
 from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
+from performer import transcript
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
 from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
@@ -44,6 +45,21 @@ log = structlog.get_logger(__name__)
 _MAX_TEXT = 200
 _READY_TIMEOUT = 30.0
 _RPC_TIMEOUT = 30.0
+
+# Transcript (spec 129): ThreadItem types that run a tool and carry a tool-call
+# id (``item.id``) on both item/started and item/completed.
+_TRANSCRIPT_TOOL_ITEM_TYPES = frozenset({
+    "commandExecution",
+    "fileChange",
+    "mcpToolCall",
+    "dynamicToolCall",
+    "webSearch",
+})
+_TRANSCRIPT_TOOL_NAMES: dict[str, str] = {
+    "commandExecution": "shell",
+    "fileChange": "file_change",
+    "webSearch": "web_search",
+}
 
 # Approval decision sent in response to server approval requests.
 _APPROVE = {"decision": "approved"}
@@ -188,6 +204,10 @@ class CodexBackend:
         # Pending RPC response futures keyed by request id
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._next_id: int = 1
+        # Transcript (spec 129) bookkeeping; never read by the BackendEvent path.
+        self._transcript_started: set[str] = set()
+        self._transcript_reasoning: dict[str, list[str]] = {}
+        self._transcript_total: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -206,6 +226,23 @@ class CodexBackend:
         """Launch codex app-server and dispatch the initial task."""
         port = _find_free_port()
         self._port = port
+        transcript.emit(
+            "capability",
+            text=(
+                "Codex app-server notifications carry full item payloads (agent message text, "
+                "command and aggregated output, file-change diffs, MCP and dynamic tool "
+                "arguments and results) and cumulative token totals; reasoning text appears "
+                "only when the model streams reasoning deltas, and usage only when the "
+                "app-server sends thread/tokenUsage/updated."
+            ),
+            input_data={
+                "unavailable": [],
+                "provided": [
+                    "system", "user", "assistant_text", "thinking", "tool_call",
+                    "tool_result", "usage", "result", "error",
+                ],
+            },
+        )
 
         # 088 B1 shared env policy: codex is itself a Node CLI (@openai/codex)
         # and must launch on the IMAGE's node, never the env-cache's
@@ -327,9 +364,15 @@ class CodexBackend:
         thread_resp = await self._rpc("thread/start", thread_params)
         self._thread_id = thread_resp["thread"]["id"]
         log.info("codex thread started", thread_id=self._thread_id, port=port)
+        transcript.emit(
+            "system",
+            text=f"codex thread started (thread {self._thread_id})",
+            input_data=thread_resp,
+        )
 
         # Start the first turn with the task prompt
         task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
+        transcript.emit("user", text=task_text)
         turn_resp = await self._rpc("turn/start", {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": task_text, "text_elements": []}],
@@ -350,6 +393,7 @@ class CodexBackend:
         if self._ws is None or self._thread_id is None:
             log.warning("relay_feedback called but no active thread")
             return
+        transcript.emit("user", text=feedback)
         turn_resp = await self._rpc("turn/start", {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": feedback, "text_elements": []}],
@@ -502,6 +546,7 @@ class CodexBackend:
             raise
         except Exception as exc:
             log.warning("codex recv loop error", error=str(exc))
+            transcript.emit("error", text=str(exc))
             if self._status.state == "working":
                 self._status = BackendStatus(state="error", error_reason=str(exc))
         finally:
@@ -565,6 +610,7 @@ class CodexBackend:
 
     def _handle_notification(self, method: str, params: dict[str, Any]) -> None:
         """Update status and emit events based on server notifications."""
+        self._transcribe_notification(method, params)
         if method == "turn/completed":
             turn = params.get("turn", {})
             status = turn.get("status", "")
@@ -606,10 +652,14 @@ class CodexBackend:
                     output=output_text or None,
                     tokens_processed=tokens or None,
                 )
+                self._transcribe_turn_end(status, final_text=output_text or None)
             elif status in ("interrupted", "failed"):
                 error = (turn.get("error") or {}).get("message", status)
                 self._status = BackendStatus(state="error", error_reason=error)
                 self._emit(BackendEventType.error, error)
+                self._transcribe_turn_end(
+                    status, final_text=error, error_text=error,
+                )
 
         elif method == "item/agentMessage/delta":
             delta = params.get("delta", "")
@@ -657,10 +707,149 @@ class CodexBackend:
 
         # All other notifications are no-ops (turn/started, thread/started, etc.)
 
+    # ------------------------------------------------------------------
+    # Internal: run transcript (spec 129). Full content, never the 200-char
+    # BackendEvent summaries. Does not alter any BackendEvent or status.
+    # ------------------------------------------------------------------
+
+    @transcript.best_effort
+    def _transcribe_notification(self, method: str, params: dict[str, Any]) -> None:
+        if method == "item/started":
+            item = params.get("item") or {}
+            if str(item.get("type", "")) in _TRANSCRIPT_TOOL_ITEM_TYPES:
+                item_id = str(item.get("id", ""))
+                self._transcript_started.add(item_id)
+                transcript.emit(
+                    "tool_call",
+                    tool_name=_transcript_tool_name(item),
+                    call_id=item_id or None,
+                    input_data=item,
+                )
+        elif method == "item/completed":
+            self._transcribe_item_completed(params.get("item") or {})
+        elif method == "item/reasoning/textDelta":
+            delta = str(params.get("delta", ""))
+            if delta:
+                item_id = str(params.get("itemId", ""))
+                self._transcript_reasoning.setdefault(item_id, []).append(delta)
+        elif method == "thread/tokenUsage/updated":
+            total = (params.get("tokenUsage") or {}).get("total")
+            if isinstance(total, dict):
+                self._transcript_total = total
+        elif method == "error":
+            error_msg = (params.get("error") or {}).get("message", str(params))
+            transcript.emit("error", text=str(error_msg))
+
+    @transcript.best_effort
+    def _transcribe_item_completed(self, item: dict[str, Any]) -> None:
+        item_type = str(item.get("type", ""))
+        if item_type == "agentMessage":
+            text = str(item.get("text", ""))
+            if text:
+                transcript.emit("assistant_text", text=text)
+        elif item_type == "reasoning":
+            item_id = str(item.get("id", ""))
+            deltas = self._transcript_reasoning.pop(item_id, [])
+            content = [str(part) for part in item.get("content") or []]
+            summary = [str(part) for part in item.get("summary") or []]
+            text = "\n".join(content) or "".join(deltas) or "\n".join(summary)
+            if text:
+                transcript.emit("thinking", text=text)
+        elif item_type in _TRANSCRIPT_TOOL_ITEM_TYPES:
+            item_id = str(item.get("id", ""))
+            if item_id not in self._transcript_started:
+                # Completion without a prior item/started: still record the call.
+                transcript.emit(
+                    "tool_call",
+                    tool_name=_transcript_tool_name(item),
+                    call_id=item_id or None,
+                    input_data=item,
+                )
+            self._transcript_started.discard(item_id)
+            transcript.emit(
+                "tool_result",
+                tool_name=_transcript_tool_name(item),
+                call_id=item_id or None,
+                output_data=item,
+                is_error=_transcript_tool_error(item),
+            )
+
+    @transcript.best_effort
+    def _transcribe_turn_end(
+        self,
+        status: str,
+        *,
+        final_text: str | None,
+        error_text: str | None = None,
+    ) -> None:
+        # Reasoning whose item never completed is flushed so it is not lost.
+        for item_id in list(self._transcript_reasoning):
+            text = "".join(self._transcript_reasoning.pop(item_id))
+            if text:
+                transcript.emit("thinking", text=text)
+        if error_text:
+            transcript.emit("error", text=error_text)
+        if self._transcript_total is not None:
+            # thread/tokenUsage/updated.total is cumulative for the thread, so
+            # this record is a run total (cumulative to this turn), not a
+            # per-call count. A relay turn emits a newer cumulative record.
+            total = self._transcript_total
+            transcript.emit(
+                "usage",
+                text=(
+                    "cumulative thread token total as of the end of this turn "
+                    f"(totalTokens={total.get('totalTokens')}, "
+                    f"reasoningOutputTokens={total.get('reasoningOutputTokens')}); "
+                    "a run total, not a per-call count"
+                ),
+                usage=_transcript_usage(total),
+                scope="run",
+            )
+        transcript.emit(
+            "result",
+            text=final_text,
+            input_data={"status": status},
+            is_error=status != "completed",
+        )
+
     def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
               is_delta: bool = False, stream_id: str = "") -> None:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
                                                is_delta=is_delta, stream_id=stream_id))
+
+
+def _transcript_tool_name(item: dict[str, Any]) -> str:
+    item_type = str(item.get("type", ""))
+    if item_type in ("mcpToolCall", "dynamicToolCall"):
+        return str(item.get("tool", item_type))
+    return _TRANSCRIPT_TOOL_NAMES.get(item_type, item_type)
+
+
+def _transcript_tool_error(item: dict[str, Any]) -> bool | None:
+    """Error flag from the protocol's own status fields; None when it has none."""
+    item_type = str(item.get("type", ""))
+    status = str(item.get("status", ""))
+    if item_type in ("commandExecution", "fileChange"):
+        return status in ("failed", "declined")
+    if item_type == "mcpToolCall":
+        return status == "failed" or item.get("error") is not None
+    if item_type == "dynamicToolCall":
+        return status == "failed" or item.get("success") is False
+    return None
+
+
+def _transcript_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+@transcript.best_effort
+def _transcript_usage(total: dict[str, Any]) -> transcript.TranscriptUsage:
+    return transcript.TranscriptUsage(
+        input_tokens=_transcript_int(total.get("inputTokens")),
+        output_tokens=_transcript_int(total.get("outputTokens")),
+        cache_read=_transcript_int(total.get("cachedInputTokens")),
+        cache_write=_transcript_int(total.get("cacheWriteInputTokens")),
+    )
 
 
 def _build_task_prompt(

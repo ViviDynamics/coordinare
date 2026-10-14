@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 import httpx
 import structlog
@@ -123,8 +124,22 @@ class PerformerHTTPClient:
         r.raise_for_status()
         raise TransportError(f"unexpected POST /jobs status {r.status_code}")
 
-    async def get_job(self, job_id: str) -> JobStatus:
-        r = await self._request("GET", f"/jobs/{job_id}")
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        transcript_after: int | None = None,
+        transcript_limit: int = 200,
+    ) -> JobStatus:
+        """Poll one job. ``transcript_after`` (129) asks for the records after that seq.
+
+        Omitted when transcripts are off, so disabled runs add nothing to the wire.
+        """
+        path = f"/jobs/{job_id}"
+        if transcript_after is not None:
+            query = urlencode({"transcript_after": transcript_after, "transcript_limit": transcript_limit})
+            path = f"{path}?{query}"
+        r = await self._request("GET", path)
         r.raise_for_status()
         return JobStatus.model_validate(r.json())
 

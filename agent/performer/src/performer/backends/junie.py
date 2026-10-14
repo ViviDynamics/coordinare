@@ -52,11 +52,24 @@ from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
+from performer import transcript
 from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+# Spec 129: junie is one `junie --task` process. Its only structured output is
+# the JSON result file written on exit, so nothing streams to the performer.
+_TRANSCRIPT_UNAVAILABLE: tuple[str, ...] = ("tool_call", "tool_result", "thinking")
+_TRANSCRIPT_PROVIDED: tuple[str, ...] = (
+    "user", "system", "assistant_text", "usage", "result", "error",
+)
+_TRANSCRIPT_CAPABILITY_TEXT = (
+    "junie runs as one `junie --task` process that writes a single JSON result file on exit, "
+    "so the performer sees only the final summary, any token counts that file reports and the "
+    "raw process output; per-tool calls, tool results and reasoning are not streamed and are "
+    "unavailable"
+)
 # Profile id flows into a file path (`$JUNIE_HOME/models/<id>.json`) and into
 # the `--model custom:<id>` CLI arg, so reject anything that could escape the
 # models directory or smuggle shell metacharacters.  Mirrors the bare-key rule
@@ -169,6 +182,24 @@ def _seed_junie_home(src: Path, dst: Path) -> None:
             continue
 
 
+def _reported_token_counts(parsed: dict) -> tuple[int | None, int | None]:
+    """Token counts the JSON result file actually reports, else ``None`` each.
+
+    Accepts the same two shapes ``_apply_parsed_result`` reads. A count is only
+    returned when the file contains an integer for it; nothing is estimated.
+    """
+    usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else {}
+
+    def _pick(key: str) -> int | None:
+        for source in (parsed, usage):
+            value = source.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        return None
+
+    return _pick("input_tokens"), _pick("output_tokens")
+
+
 class JunieBackend:
     """Backend adapter that drives the ``junie`` CLI in headless mode."""
 
@@ -187,6 +218,7 @@ class JunieBackend:
         self._max_tokens: int | None = None
         self._json_output_path: Path | None = None
         self._original_prompt: str = ""
+        self._transcript_capability_recorded: bool = False
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -244,6 +276,10 @@ class JunieBackend:
 
     async def stop(self) -> None:
         if self._reader_task and not self._reader_task.done():
+            transcript.emit(
+                "error",
+                text="run stopped by the performer before the junie process finished",
+            )
             self._reader_task.cancel()
             try:
                 await self._reader_task
@@ -303,6 +339,7 @@ class JunieBackend:
             args += ["--model", effective_model]
         # Pass the task last as positional argument (per docs).
         args += ["--task", prompt]
+        self._record_launch(prompt, effective_model)
 
         # 088 B1 shared env policy: junie is a Node CLI — it must launch on
         # the IMAGE's node, never the env-cache's project-pinned node (e.g.
@@ -323,7 +360,9 @@ class JunieBackend:
                 start_new_session=True,
                 env=env,
             )
-        except Exception:
+        except Exception as exc:
+            spawn_error = f"subprocess_spawn_failed: {exc}"
+            transcript.emit("error", text=spawn_error)
             self._cleanup_json_output()
             raise
         self._reader_task = asyncio.create_task(
@@ -342,6 +381,90 @@ class JunieBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+
+    @transcript.best_effort
+    def _record_launch(self, prompt: str, effective_model: str | None) -> None:
+        """Spec 129: capability once per run, then this launch's config and prompt.
+
+        ``prompt`` is the full text passed to ``--task``. A relay_feedback
+        launch passes the feedback prepended to the original task, so its user
+        record carries the feedback text.
+        """
+        if not self._transcript_capability_recorded:
+            self._transcript_capability_recorded = True
+            transcript.emit(
+                "capability",
+                text=_TRANSCRIPT_CAPABILITY_TEXT,
+                input_data={
+                    "unavailable": list(_TRANSCRIPT_UNAVAILABLE),
+                    "provided": list(_TRANSCRIPT_PROVIDED),
+                },
+            )
+        transcript.emit(
+            "system",
+            text="junie launch configuration",
+            input_data={
+                "model": effective_model,
+                "output_format": "json",
+                "input_format": "text",
+                "project": str(self._stand.path) if self._stand is not None else None,
+            },
+        )
+        transcript.emit("user", text=prompt)
+
+    @transcript.best_effort
+    def _record_outcome(
+        self, parsed: dict | None, rc: int | None, stdout_text: str, stderr_text: str,
+    ) -> None:
+        """Spec 129: the terminal record set for one junie process.
+
+        ``usage`` is emitted only when the JSON result file itself reports an
+        integer count. Its token fields are read best-effort (see
+        ``_apply_parsed_result``), so the file is also kept whole in ``result``.
+        """
+        raw_input = {"rc": rc, "stdout": stdout_text, "json_output": parsed}
+        if not isinstance(parsed, dict):
+            if rc == 0:
+                transcript.emit(
+                    "result", text="done without a JSON result file", output_data=None,
+                    is_error=False, input_data=raw_input,
+                )
+                return
+            failure = stderr_text.strip() or stdout_text.strip() or f"junie exited with code {rc}"
+            transcript.emit("error", text=failure, input_data={"rc": rc})
+            transcript.emit(
+                "result", text=f"failed: junie exited with code {rc}", output_data=None,
+                is_error=True, input_data=raw_input,
+            )
+            return
+
+        input_tokens, output_tokens = _reported_token_counts(parsed)
+        if input_tokens is not None or output_tokens is not None:
+            transcript.emit(
+                "usage",
+                text="run total reported by the junie JSON result file, not per model turn",
+                usage=transcript.TranscriptUsage(
+                    input_tokens=input_tokens, output_tokens=output_tokens,
+                ),
+                scope="run",
+            )
+        err = parsed.get("error") or parsed.get("error_message")
+        summary = parsed.get("summary") or parsed.get("result") or parsed.get("message")
+        if err or (rc not in (None, 0)):
+            failure = str(err) if err else (stderr_text.strip() or f"junie exited with code {rc}")
+            transcript.emit("error", text=failure, input_data={"rc": rc})
+            transcript.emit(
+                "result", text="failed", output_data=summary if isinstance(summary, str) else None,
+                is_error=True, input_data=raw_input,
+            )
+            return
+        if isinstance(summary, str) and summary:
+            transcript.emit("assistant_text", text=summary)
+        transcript.emit(
+            "result", text="done",
+            output_data=summary if isinstance(summary, str) else None,
+            is_error=False, input_data=raw_input,
+        )
 
     async def _wait_and_parse(self) -> None:
         """Wait for junie to exit, then derive final status from JSON output."""
@@ -380,11 +503,13 @@ class JunieBackend:
                         error_reason=reason[-_MAX_TEXT:],
                     )
                     self._emit(BackendEventType.error, reason[-_MAX_TEXT:])
+            self._record_outcome(parsed, rc, stdout_text, stderr_text)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("junie reader error", error=str(exc))
             self._status = BackendStatus(state="error", error_reason=str(exc))
+            transcript.emit("error", text=f"junie reader error: {exc}")
 
     def _apply_parsed_result(self, parsed: dict, rc: int | None, stderr_text: str) -> None:
         """Map a Junie JSON result document onto BackendStatus + events."""
