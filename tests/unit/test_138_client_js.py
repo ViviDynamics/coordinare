@@ -62,15 +62,8 @@ def _extract_feed_js() -> str:
     # 139: the feed filters by the symphony choice, which lives in symphonies.js.
     run_link = shipped_function("runs", "runEntryLinkHtml")
     return (
-        esc.group(0) + "
-
-" + run_link + "
-
-" + _DASHBOARD_JS_SOURCES["symphonies"] + "
-
-"
-        + _ACTIVITY_STREAM_JS + "
-" + feed_js
+        esc.group(0) + "\n\n" + run_link + "\n\n" + _DASHBOARD_JS_SOURCES["symphonies"] + "\n\n"
+        + _ACTIVITY_STREAM_JS + "\n" + feed_js
     )
 
 
