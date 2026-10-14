@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
+from coordinare.config import expand_config_text
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
@@ -282,7 +284,14 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     from coordinare.config_descriptors import is_env_placeholder
     from coordinare.config_validation import coerce_multi_symphony_raw
 
-    attempt = dict(candidate)
+    # Validate what the daemon will load: the text this write produces, with ${VAR} expanded as
+    # ProjectConfiguration.from_yaml expands it (219 final check). Covers every write path.
+    daemon_view = yaml.safe_load(
+        expand_config_text(
+            yaml.safe_dump(candidate, sort_keys=False, default_flow_style=False, allow_unicode=True),
+        ),
+    )
+    attempt = dict(daemon_view) if isinstance(daemon_view, dict) else {}
     token = attempt.get("github_token")
     if is_env_placeholder(token) or token is None:
         attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token

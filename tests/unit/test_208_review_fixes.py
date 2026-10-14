@@ -192,7 +192,7 @@ def _cache_with_services(tmp: Path, name: str) -> Path:
 def test_prior_manifest_fifo_does_not_block(tmp_path: Path) -> None:
     cache = _cache_with_services(tmp_path, "fifo")
     os.mkfifo(cache / "services" / "services.json")
-    done, value = _bounded(env_cache.load_prior_manifest_bounded, cache)
+    done, value = _bounded(lambda: env_cache.load_prior_manifest_bounded(cache, performer_mounts=()))
     assert done is True
     assert value is None
 
@@ -200,7 +200,7 @@ def test_prior_manifest_fifo_does_not_block(tmp_path: Path) -> None:
 def test_prior_manifest_symlink_to_an_endless_device_is_refused(tmp_path: Path) -> None:
     cache = _cache_with_services(tmp_path, "zero")
     os.symlink("/dev/zero", cache / "services" / "services.json")
-    done, value = _bounded(env_cache.load_prior_manifest_bounded, cache)
+    done, value = _bounded(lambda: env_cache.load_prior_manifest_bounded(cache, performer_mounts=()))
     assert done is True
     assert value is None
 
@@ -209,7 +209,7 @@ def test_prior_manifest_oversize_is_refused(tmp_path: Path) -> None:
     cache = _cache_with_services(tmp_path, "big")
     with open(cache / "services" / "services.json", "wb") as fh:
         fh.truncate(2 * 1024**3)
-    done, value = _bounded(env_cache.load_prior_manifest_bounded, cache)
+    done, value = _bounded(lambda: env_cache.load_prior_manifest_bounded(cache, performer_mounts=()))
     assert done is True
     assert value is None
 
@@ -222,14 +222,14 @@ def test_prior_manifest_symlinked_cache_dir_is_refused(tmp_path: Path) -> None:
     (host / "services").mkdir(parents=True)
     (host / "services" / "services.json").write_text("{}")
     os.symlink(host, root / "sym")
-    assert env_cache.load_prior_manifest_bounded(root / "sym") is None
+    assert env_cache.load_prior_manifest_bounded(root / "sym", performer_mounts=()) is None
 
 
 def test_prior_manifest_reads_a_valid_regular_file(tmp_path: Path) -> None:
     cache = _cache_with_services(tmp_path, "ok")
     (cache / "services" / "services.json").write_text("not a manifest")
     # Unparseable content is None, the same as before; the point is it was read safely.
-    assert env_cache.load_prior_manifest_bounded(cache) is None
+    assert env_cache.load_prior_manifest_bounded(cache, performer_mounts=()) is None
 
 
 # ---------------------------------------------------------------------------

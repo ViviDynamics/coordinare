@@ -160,7 +160,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     (state.cache_dir / "activate.sh").touch()
 
     # ---- 5. get_env_volume_for_symphony() — regular performer gets ro mount ----
-    result = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=False)
+    result = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=False, performer_mounts=())
     assert result is not None
     vol, container_path = result
     assert vol.mode == "ro"
@@ -168,7 +168,7 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     assert Path(vol.host_path) == state.cache_dir
 
     # ---- 6. get_env_volume_for_symphony() — bootstrap performer gets rw mount ----
-    result_rw = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=True)
+    result_rw = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=True, performer_mounts=())
     assert result_rw is not None
     vol_rw, _ = result_rw
     assert vol_rw.mode == "rw"
@@ -281,13 +281,13 @@ def test_no_volume_before_cache_ready(tmp_path: Path) -> None:
         cache_dir=tmp_path / "s-abc123",
         cache_dir_ready=False,
     )
-    result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+    result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False, performer_mounts=())
     assert result is None
 
 
 def test_no_volume_for_unconfigured_symphony(tmp_path: Path) -> None:
     """get_env_volume_for_symphony returns None when symphony has no cache state."""
-    result = get_env_volume_for_symphony("unknown", {}, is_bootstrap=False)
+    result = get_env_volume_for_symphony("unknown", {}, is_bootstrap=False, performer_mounts=())
     assert result is None
 
 

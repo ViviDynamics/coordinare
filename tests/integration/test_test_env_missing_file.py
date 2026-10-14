@@ -45,7 +45,7 @@ class TestConfiguredMissingFileErrors:
         absent = tmp_path / "does-not-exist.env"
 
         with pytest.raises(TestEnvFileError) as excinfo:
-            load_test_env(TestEnvConfig(host_path=str(absent)), repo_root=tmp_path)
+            load_test_env(TestEnvConfig(host_path=str(absent)), repo_root=tmp_path, performer_mounts=())
 
         msg = str(excinfo.value)
         assert str(absent) in msg  # the resolved path is named.
@@ -59,7 +59,7 @@ class TestConfiguredMissingFileErrors:
         # repo_path points inside the clone, but the file was never written.
 
         with pytest.raises(TestEnvFileError) as excinfo:
-            load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=repo_root)
+            load_test_env(TestEnvConfig(repo_path=".env.test"), repo_root=repo_root, performer_mounts=())
 
         msg = str(excinfo.value)
         assert str(repo_root / ".env.test") in msg
@@ -77,6 +77,7 @@ class TestConfiguredMissingFileErrors:
                 github_org=ORG,
                 repo=REPO,
                 github_service=github,
+                performer_mounts=(),
             )
 
         msg = str(excinfo.value)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import string
 from collections import Counter
@@ -29,6 +30,7 @@ from coordinare.models.performer_endpoint import (
 )
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
+from coordinare.services.run_transcript import _within
 
 logger = structlog.get_logger(__name__)
 
@@ -1203,6 +1205,15 @@ class RunLogsConfig(BaseModel):
     max_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=1024 * 1024 * 1024)
 
 
+def expand_config_text(text: str) -> str:
+    """The text the daemon parses for a config file: ``${VAR}`` expanded (219 final check).
+
+    Every reader of config.yaml goes through this (the loader, the preflight, the dashboard
+    saves), so a save is validated on exactly the bytes the daemon will load.
+    """
+    return os.path.expandvars(text)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1489,6 +1500,36 @@ class ProjectConfiguration(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_env_cache_root_disjoint(self) -> ProjectConfiguration:
+        """219: the env-cache root may not overlap any host path a performer can see.
+
+        A performer that can see the root (or a directory that contains it) can replace the root
+        itself. This rejects, at load, a root that is inside, equal to, or containing the
+        performer log dir or any endpoint volume. Compared on resolved paths, so a symlinked
+        spelling cannot slip past. Operators move the root outside the performer mounts.
+        """
+        root = self.env_cache_root.expanduser()
+        mounts: list[tuple[str, Path]] = []
+        if self.performer_log_dir is not None:
+            mounts.append(("performer_log_dir", self.performer_log_dir))
+        for endpoint in self.performer_endpoints:
+            for index, volume in enumerate(endpoint.volumes):
+                label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
+                mounts.append((label, volume.host_path))
+        for label, raw in mounts:
+            mount = raw.expanduser()
+            # _within compares case-insensitively where the filesystem folds case, so a root
+            # spelled "WS/caches" is refused when the volume is "ws" (same directory there).
+            if _within(root, mount) or _within(mount, root):
+                msg = (
+                    f"env_cache_root {root.resolve()} overlaps {label} {mount.resolve()}: a "
+                    "performer that can see that path can rewrite the env-cache root. Move "
+                    "env_cache_root outside every performer mount."
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def _validate_orchestration_catalogs(self) -> ProjectConfiguration:
         """080: validate endpoints/model_endpoints/modes references + unique names.
 
@@ -1692,8 +1733,7 @@ class ProjectConfiguration(BaseSettings):
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
-            expanded = os.path.expandvars(config_path.read_text())
-            loaded = yaml.safe_load(expanded)
+            loaded = yaml.safe_load(expand_config_text(config_path.read_text()))
             if isinstance(loaded, dict):
                 raw = loaded
         # 062 — assessment_backend was replaced by the structured ``conducting`` block.

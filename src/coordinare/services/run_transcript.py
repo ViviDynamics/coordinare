@@ -50,6 +50,7 @@ import json
 import os
 import stat
 import threading
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -190,32 +191,43 @@ class RootGuard:
 def _case_insensitive(path: Path) -> bool:
     """Probe, not guess: is the filesystem that holds ``path`` case-insensitive?
 
-    The nearest existing ancestor is tested by swapping its name's case and asking
-    the filesystem whether that name is the same file.
+    The nearest existing ancestor is tested by swapping its name's case and asking the
+    filesystem whether that name is the same file. Fails closed: when the probe cannot tell
+    (the filesystem root, or a name with no letters to swap, or an error), the answer is True,
+    so the comparison folds case rather than trusting a guess (219 final check).
     """
     probe = path
     while not probe.exists() and probe.parent != probe:
         probe = probe.parent
-    if not probe.name:
-        return False
-    alternate = probe.parent / probe.name.swapcase()
-    if alternate.name == probe.name:
-        return False
+    name = probe.name
+    if not name:
+        return True
+    swapped = name.swapcase()
+    if swapped == name:
+        return True
+    alternate = probe.parent / swapped
     try:
         return alternate.exists() and alternate.samefile(probe)
     except OSError:
-        return False
+        return True
+
+
+def comparable_part(part: str, *, insensitive: bool) -> str:
+    """One path component in the form two spellings are compared in (219 final check).
+
+    NFC first, because APFS treats NFC and NFD spellings of a name as one name, then casefold
+    where the filesystem folds case. Every path comparison that guards a mount uses this.
+    """
+    normalised = unicodedata.normalize("NFC", part)
+    return normalised.casefold() if insensitive else normalised
 
 
 def _within(child: Path, parent: Path) -> bool:
     """True when ``child`` equals ``parent`` or lies inside it (compared case-insensitively
     where the filesystem is case-insensitive)."""
     insensitive = _case_insensitive(parent) or _case_insensitive(child)
-    child_parts = child.resolve().parts
-    parent_parts = parent.resolve().parts
-    if insensitive:
-        child_parts = tuple(part.casefold() for part in child_parts)
-        parent_parts = tuple(part.casefold() for part in parent_parts)
+    child_parts = tuple(comparable_part(p, insensitive=insensitive) for p in child.resolve().parts)
+    parent_parts = tuple(comparable_part(p, insensitive=insensitive) for p in parent.resolve().parts)
     return child_parts[: len(parent_parts)] == parent_parts
 
 

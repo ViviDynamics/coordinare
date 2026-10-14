@@ -11,6 +11,7 @@ from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.state import initial_state
 from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 from coordinare.workspace import WorkspaceInfo
+from tests.unit.env_mount_stub import mount_global
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -114,6 +115,7 @@ class _WorkspaceManager:
 def _base_state(**overrides: Any) -> dict[str, Any]:
     """Return an initial state pre-configured with common test prerequisites."""
     state = initial_state()
+    state["config"] = mount_global()
     state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
     state["github_service"] = _GitHub()
     state["workspace_manager"] = _WorkspaceManager()

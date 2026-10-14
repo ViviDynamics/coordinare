@@ -5,9 +5,12 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 
 import structlog
+import yaml
 from fastapi.responses import JSONResponse
 
+from coordinare.config import expand_config_text
 from coordinare.config_descriptors import GLOBAL_EDITABLE_FIELDS
+from coordinare.config_validation import validate_raw_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -82,19 +85,22 @@ def _guard_global_hash(config_path: Any, expected_hash: Any) -> JSONResponse | N
     return None
 
 
+def candidate_text(loaded: dict[str, Any]) -> str:
+    """The exact text a global save writes, and the text it is validated as (219 final check)."""
+    return yaml.dump(loaded, default_flow_style=False, allow_unicode=True)
+
+
 def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
     """Replace config_path with loaded content atomically, preserving mode."""
     import os
     import stat
     import tempfile
 
-    import yaml
-
     dir_ = config_path.parent
     fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".yaml.tmp")
     try:
         with os.fdopen(fd, "w") as fh:
-            yaml.dump(loaded, fh, default_flow_style=False, allow_unicode=True)
+            fh.write(candidate_text(loaded))
         original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
         os.chmod(tmp, original_mode)
         os.replace(tmp, config_path)
@@ -105,16 +111,17 @@ def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
 
 
 def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
-    # Validate by constructing a throwaway config. All editable fields are
-    # included even if they happen to be lists/dicts (e.g. human_reviewers);
-    # other nested sections (performers, symphonies, …) that ProjectConfiguration
-    # doesn't accept are stripped out so pydantic doesn't reject them.
-    try:
-        from coordinare.config import ProjectConfiguration
-        ProjectConfiguration(**{
-            kk: vv for kk, vv in loaded.items()
-            if not isinstance(vv, (dict, list)) or kk in _global_cfg_editable
-        })
-    except Exception as exc:
-        return JSONResponse({"error": f"Validation failed: {exc}"}, status_code=400)
-    return None
+    """Validate the whole candidate config before anything is written (219 re-review).
+
+    The candidate is validated as the daemon will load it: the text that would be written,
+    with ``${VAR}`` expanded exactly as ``ProjectConfiguration.from_yaml`` expands it (219 final
+    check). A save that would leave the file unloadable (an env-cache root that overlaps a
+    performer volume, or a volume whose expanded path does) is refused with a 422 that names
+    the problem, and nothing is written. Deprecation warnings do not block a save.
+    """
+    daemon_view = yaml.safe_load(expand_config_text(candidate_text(loaded)))
+    result = validate_raw_config(daemon_view if isinstance(daemon_view, dict) else {})
+    if result.passed:
+        return None
+    detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
+    return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
