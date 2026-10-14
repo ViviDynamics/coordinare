@@ -239,12 +239,11 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .swimlane-card { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: var(--space-3); }
 .swimlane-card[tabindex]:hover { background: var(--color-bg-row-hover); border-color: var(--color-accent-blue); }
 .swimlane-empty { color: var(--color-text-muted); font-style: italic; font-size: 12px; padding: 4px 6px; }
-/* 127: board tabs scroll inside their own container instead of wrapping or widening the page. */
-.swimlane-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
-.swimlane-tab { flex: 0 0 auto; white-space: nowrap; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
-.swimlane-tab:hover { color: var(--color-text-primary); }
-.swimlane-tab.active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
-.swimlane-tab-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; margin-left: 4px; color: var(--color-text-primary); }
+/* 127: the Configuration tabs scroll inside their own container instead of wrapping or widening the page. */
+.cfg-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
+.cfg-tab { flex: 0 0 auto; white-space: nowrap; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.cfg-tab:hover { color: var(--color-text-primary); }
+.cfg-tab.active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
 .metric-row { display: flex; gap: 24px; flex-wrap: wrap; }
 .metric { display: flex; flex-direction: column; }
 .metric-value { font-size: 24px; font-variant-numeric: tabular-nums; font-weight: bold; color: var(--color-text-primary); }
@@ -427,7 +426,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 </nav>
 <div class="workspace-shell">
 <header class="workspace-header">
-  <div><h1 id="workspace-title">Dashboard</h1><span id="project-link" class="muted" style="font-size:12px"></span></div>
+  <div><h1 id="workspace-title">Dashboard</h1><span id="project-link" class="symphony-switcher" style="display:none"></span></div>
   <div class="header-controls">
     <span id="spend-strip" class="muted" style="font-size:12px" title="Spend today and this week, from the token usage ledger"></span>
     <span id="connection-status" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span><span id="connection-detail"></span></span>
@@ -472,13 +471,12 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 </div>
 
 <div class="card" id="active-work-card">
-  <h2>Board</h2>
-  <div id="swimlane-tabs" class="swimlane-tabs" style="display:none"></div>
+  <h2>Cards</h2>
   <div id="swimlane-section">
-    <span class="empty-state">Waiting for board snapshot&hellip;</span>
+    <span class="empty-state">Waiting for cards&hellip;</span>
   </div>
   <div id="card-detail-view" style="display:none">
-    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Board</button>
+    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Cards</button>
     <div id="card-detail-content"></div>
   </div>
 </div>
@@ -564,6 +562,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 
 <div class="card" id="health-card">
   <h2>System health</h2>
+  <div id="health-scope-note" class="muted" style="font-size:12px"></div>
   <div id="subsystems-section"><span class="empty-state">Loading...</span></div>
 </div>
 
@@ -592,6 +591,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <div id="performers-page-content">
     <h2 style="margin-bottom:12px">Performers</h2>
     <div id="performers-page-list-view">
+      <div id="capacity-scope-note" class="muted" style="font-size:12px;margin-bottom:6px"></div>
       <table>
         <thead><tr><th>Stage · Agent</th><th>Status</th><th>Card</th><th>Busy</th><th></th></tr></thead>
         <tbody id="performers-page-tbody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
@@ -645,6 +645,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <div id="symphonies-page" style="display:none">
   <div class="card">
     <h2>Symphonies</h2>
+    <p id="symphonies-scope-note" class="muted" style="font-size:12px">Lists every symphony, whatever the switcher shows.</p>
     <div id="symphonies-page-section"><span class="empty-state">Loading...</span></div>
   </div>
 </div>

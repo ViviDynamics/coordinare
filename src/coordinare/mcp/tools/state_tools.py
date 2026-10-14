@@ -29,12 +29,12 @@ async def get_metrics() -> dict[str, Any]:
 
 
 async def get_state_handler(client: DashboardClient) -> ToolResult:
-    """Fetch the JSON board state snapshot (T025)."""
+    """Fetch the JSON dashboard state snapshot (T025)."""
     return await client.get_json("/api/state", timeout_seconds=client.read_budget)
 
 
 async def get_state() -> dict[str, Any]:
-    """Read the dashboard board state snapshot (same payload as the SSE stream)."""
+    """Read the dashboard state snapshot (same payload as the SSE stream)."""
     return (await get_state_handler(get_client())).model_dump(exclude_none=True)
 
 
@@ -85,7 +85,7 @@ TOOLS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="get_state",
         domain="state",
-        description="Read the dashboard board state snapshot (same payload as the SSE stream).",
+        description="Read the dashboard state snapshot, including each symphony's GitHub Project and cards (same payload as the SSE stream).",
         input_model=_NoParams,
         annotations=_READ_ONLY,
         rest_calls=(("GET", "/api/state"),),

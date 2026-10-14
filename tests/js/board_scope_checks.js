@@ -1,14 +1,20 @@
+// 16, 139: the Cards panel renders the snapshot the header choice leaves. A
+// choice narrows the snapshot with symphonyScope(); these checks render the
+// result and confirm no other symphony's cards leak through.
+//
+// Usage: node board_scope_checks.js <helpers.js> <performers.js+waiting.js> <symphonies.js>
+
 const fs = require('fs');
 const assert = require('assert');
-const elements = Object.fromEntries(['swimlane-section', 'active-work-card', 'swimlane-tabs'].map(id => [id, {
+
+const elements = Object.fromEntries(['swimlane-section', 'active-work-card'].map(id => [id, {
   innerHTML: '', style: {}, classList: {toggle() {}, remove() {}},
 }]));
 var document = {getElementById(id) {return elements[id] || null;}};
-var _swimlaneTab = null;
+var _lastState = null;
 var STALE_THRESHOLD_MS = 300000;
 eval(fs.readFileSync(process.argv[2], 'utf8'));
 eval(fs.readFileSync(process.argv[3], 'utf8'));
-var _lastState = null;
 eval(fs.readFileSync(process.argv[4], 'utf8'));
 
 const sessions = [
@@ -23,22 +29,21 @@ let passed = 0;
 function check(name, run) {
   try {run(); passed++;} catch (error) {failures.push(name + ': ' + error.message);}
 }
-function render(tab, symphonies, active = sessions) {
-  _lastState = {phase: 'blocked', symphonies, active_sessions: active};
-  if (tab) selectSwimlaneTab(tab);
-  else {
-    _swimlaneTab = null;
-    _swimlaneTabExplicit = false;
-    renderActiveWorkPanels(_lastState);
-  }
+
+// Renders the panel for one header choice (null means the snapshot as it arrived).
+function render(choice, symphonies, active = sessions) {
+  const full = {phase: 'blocked', symphonies, active_sessions: active};
+  const view = choice === null ? full : symphonyScope(full, choice);
+  renderActiveWorkPanels(view);
   return elements['swimlane-section'].innerHTML;
 }
-check('unavailable tab cannot leak another known board', () => {
+
+check('an unavailable symphony cannot leak another known board', () => {
   const html = render('A', [{name: 'A', state: null}, other]);
   assert(!html.includes('data-card-id='));
   assert(!html.includes('Other symphony active card'));
 });
-check('known empty tab cannot leak other sessions', () => {
+check('a known empty symphony cannot leak other sessions', () => {
   const html = render('A', [{name: 'A', state: {board_snapshot: {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []}}}, other]);
   assert(!html.includes('data-card-id='));
 });
@@ -49,24 +54,35 @@ check('Backlog and Done stay hidden in a known board', () => {
   assert(!html.includes('Backlog retained PR'));
   assert(!html.includes('data-card-id='));
 });
-check('known nonempty tab uses its own board', () => {
+check('the chosen symphony shows its own cards only', () => {
   const html = render('B', [{name: 'A', state: null}, other]);
   assert(html.includes('data-card-id="working"'));
   assert(html.includes('Other symphony active card'));
   assert(!html.includes('data-card-id="completed"'));
   assert(!html.includes('data-card-id="parked"'));
 });
-check('legacy missing symphony boards retains active-session fallback', () => {
+check('All shows the cards of every symphony, each named', () => {
+  const html = render('', [{name: 'A', state: null}, other]);
+  assert(html.includes('data-card-id="working"'));
+  assert(html.includes('swimlane-card-symphony">B<'));
+});
+check('a single symphony is not named on its cards', () => {
+  const html = render('', [other]);
+  assert(html.includes('data-card-id="working"'));
+  assert(!html.includes('swimlane-card-symphony'));
+});
+check('legacy missing symphony boards keep the active-session fallback', () => {
   const html = render(null, [], [sessions[0]]);
   assert(html.includes('data-card-id="working"'));
 });
-check('legacy null board retains fallback', () => {
+check('a legacy null board keeps the fallback', () => {
   const html = render('A', [{name: 'A', state: {board_snapshot: null}}], [sessions[0]]);
   assert(html.includes('data-card-id="working"'));
 });
-check('known empty snapshot is not legacy missing data', () => {
+check('a known empty snapshot is not legacy missing data', () => {
   assert(!render('A', [{name: 'A', state: {board_snapshot: {}}}]).includes('data-card-id='));
 });
+
 failures.forEach(failure => console.error('FAIL ' + failure));
 console.log(`SUMMARY ${passed} ${failures.length}`);
-process.exit(failures.length ? 1 : 0);
+process.exit(failures.length === 0 ? 0 : 1);

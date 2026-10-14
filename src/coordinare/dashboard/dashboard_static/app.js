@@ -86,6 +86,8 @@ function findActivePerformerSession(s) {
   // For aggregate UI indicators, derive from active_sessions instead.
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
   for (var i = 0; i < sessions.length; i++) {
+    // 139: an item on a card no symphony claims is not the conductor's to describe.
+    if (sessions[i].unclaimed) continue;
     var p = sessions[i].phase;
     if (p === 'monitoring_performer' || p === 'monitoring_agent' || p === 'relay_feedback') {
       return sessions[i];
@@ -106,7 +108,7 @@ function renderState(s) {
   phaseEl.title = 'Conductor state: ' + String(effectivePhase || '');
   phaseEl.className = 'phase ' + phaseClass(effectivePhase);
   var phaseDescriptions = {
-    'idle':             'Waiting for a card to enter the TODO column on the GitHub Project board.',
+    'idle':             'Waiting for a card to enter the TODO column on the GitHub Project.',
     'running':          'Running a check.',
     'blocked':          'Work is paused — review the Open Questions below and take action.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
@@ -156,7 +158,7 @@ function renderState(s) {
       var idleFilter = idleFilterText ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + idleFilterText + ')</span>' : '';
       document.getElementById('idle-panel-content').innerHTML =
         '<table style="border-collapse:collapse;font-size:13px">' +
-          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Board total</td>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Cards total</td>' +
               '<td style="padding:4px 0"><strong>' + idleTotal + '</strong>' + idleFilter + '</td></tr>' +
           '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">In progress</td>' +
               '<td style="padding:4px 0"><strong>' + idleInProg + '</strong></td></tr>' +
@@ -203,7 +205,7 @@ function renderState(s) {
     depList.innerHTML = s.blocked_by_dependencies.map(function(d) {
       var label = '#' + d.issue_number;
       if (d.title) label += ' — ' + esc(d.title);
-      var col = d.column || 'off-board';
+      var col = d.column || 'not on the GitHub Project';
       var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)
         ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
         : esc(label);
@@ -292,6 +294,9 @@ function renderState(s) {
       var sha = j.post_rebase_sha ? j.post_rebase_sha.substring(0, 8) : '';
       var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ' — ' + esc(j.outcome);
       if (sha) label += ' (' + esc(sha) + ')';
+      // 139: a branch that needs a person names its symphony, or says it covers all of them.
+      if (j.unattributed) label += ' · covers all symphonies';
+      else if (j.symphony) label += ' · ' + esc(j.symphony);
       if (j.conflicted_files && j.conflicted_files.length > 0) {
         label += ' [' + j.conflicted_files.map(esc).join(', ') + ']';
       }
@@ -352,17 +357,6 @@ function renderState(s) {
   var daemonUptime = fmtAge(s.daemon_start_time);
   daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : '—';
   daemonStartEl.title = s.daemon_start_time ? 'Started ' + fmtTime(s.daemon_start_time) : '';
-  if (s.project_board_url && s.project_name) {
-    var linkEl = document.getElementById('project-link');
-    linkEl.textContent = '— ';
-    var a = document.createElement('a');
-    a.href = s.project_board_url;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.style.cssText = 'text-decoration:none';
-    a.textContent = s.project_name + ' Board';
-    linkEl.appendChild(a);
-  }
   // 134: tokens and cost are the card's usage summary, by kind and model, with the
   // breakdown and the pricing date on hover. Shared-pool usage lives on the session.
   var tokenSource = activeSess || s;
@@ -450,18 +444,14 @@ function renderState(s) {
   }
 
   renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history, { collapse: true, limit: 5 });
+  // 139: the panels that are not known per symphony say so, last, so they win over the rows above.
+  applyScopeNotes(s);
 }
 
 // esc + fmtBytes: /static/helpers.js (#349)
 var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
 
 var _selectedCardId = null;   // card_id shown in card-detail-view
-var _swimlaneTab = null;      // currently selected symphony tab (null = no symphonies)
-function selectSwimlaneTab(name) {
-  _swimlaneTab = name;
-  _swimlaneTabExplicit = true;
-  if (_lastState) renderActiveWorkPanels(_lastState);
-}
 
 // parseTokenCount + derivePerformerTokenTotal: /static/performers.js (#349)
 // Refresh session age counter every 10s while monitoring_agent
@@ -562,7 +552,8 @@ function renderSymphoniesPage(s) {
     }
     return '<tr>'
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
-      + '<td style="color:var(--color-text-muted)">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
+      + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'
+      + '<td style="color:var(--color-text-muted)">' + symphonyRepoHtml(sym) + '</td>'
       + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
       + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
       + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
@@ -571,7 +562,7 @@ function renderSymphoniesPage(s) {
       + '</tr>';
   }).join('');
   el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
-    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Checks</th><th style="text-align:left">Errors</th><th style="text-align:left">Last checked</th><th style="text-align:left">Env</th>'
+    + '<th style="text-align:left">Name</th><th style="text-align:left">GitHub Project</th><th style="text-align:left">Repository</th><th style="text-align:left">Priority</th><th style="text-align:left">Checks</th><th style="text-align:left">Errors</th><th style="text-align:left">Last checked</th><th style="text-align:left">Env</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
@@ -921,15 +912,18 @@ async function submitAddSymphony() {
 function router() {
   var path = location.pathname;
   updateNavActive(path);
+  // 139: the header control follows the page, and a deep link is applied on arrival.
+  renderSymphonySwitcher();
   if (isPerformersPath(path)) {
     showPage('performers-page');
-    if (_lastState) renderPerformersPage(_lastState);
+    if (_lastState) renderPerformersPage(scopedView(_lastState));
   } else if (path === '/personas') {
     showPage('personas-page');
     loadPersonasPage();
   } else if (path === '/history') {
     showPage('history-page');
-    if (_lastState) renderHistoryPage(_lastState);
+    var historyNow = currentScopedState();
+    if (historyNow) renderHistoryPage(historyNow);
   } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
     showPage('symphonies-page');
     if (_lastState) renderSymphoniesPage(_lastState);
@@ -951,7 +945,7 @@ function router() {
     runsPageRoute(path, location.search);
   } else {
     showPage('dashboard-page');
-    if (_lastState) renderDashboardExtras(_lastState);
+    if (_lastState) renderDashboardExtras(scopedView(_lastState));
   }
 }
 
@@ -959,7 +953,8 @@ function navigate(e, path) {
   // Only intercept plain left-clicks; let ctrl/cmd/middle-click open new tabs normally
   if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
   if (e) { e.preventDefault(); }
-  history.pushState(null, '', path);
+  // 139: in-app navigation keeps the symphony the header has chosen.
+  history.pushState(null, '', pathWithSymphony(path));
   window.closeMobileNav();
   router();
 }
@@ -970,8 +965,11 @@ window.addEventListener('popstate', function() { router(); });
 // 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
 // BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
 // performers-page + active-work rendering: /static/performers.js (#349)
+// s is the scoped view: under a symphony the checks are not known per symphony, so the note
+// replaces them, the same note the dashboard panel shows.
 function renderHistoryPage(s) {
   renderCycleHistoryInto(document.getElementById('history-page-section'), s.cycle_history);
+  applyScopeNotes(s);
 }
 
 // 049: Personas page
@@ -1215,7 +1213,12 @@ function afTime(iso) {
 
 
 // 148: the card filter and the kind chips both have to let an entry through.
-function afMatches(e) { return (!_afFilter || e.card_id === _afFilter) && afVisible(e); }
+// 139: the symphony choice narrows the feed to the cards of that symphony.
+function afInScope(e) {
+  var s = typeof _lastState !== 'undefined' ? _lastState : null;
+  return symphonyKeepsCard(s, currentSymphonyChoice(s), e.card_id);
+}
+function afMatches(e) { return (!_afFilter || e.card_id === _afFilter) && afVisible(e) && afInScope(e); }
 
 function afAppend(entries) {
   var feed = document.getElementById('activity-feed');
@@ -1239,6 +1242,7 @@ function afAppend(entries) {
   while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
   if (_afGroupingActive) {
     afSyncGroups(false);
+    _afShownSig = afVisibleSig();
     afUpdateEmpty();
     afUpdateFilterOptions();
     return;
@@ -1250,14 +1254,33 @@ function afAppend(entries) {
     while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
     while (feed.childElementCount > AF_MAX_ROWS) feed.removeChild(feed.lastElementChild);
   }
+  _afShownSig = afVisibleSig();
   afUpdateEmpty();
   afUpdateFilterOptions();
 }
 
+// The keys of the rows the feed shows now, in order. afAppend and afRender keep _afShownSig
+// equal to it, so a snapshot that changes nothing on screen does not re-render the feed.
+var _afShownSig = '';
+function afVisibleSig() {
+  var keys = [];
+  for (var i = 0; i < _afEntries.length; i++) {
+    if (afMatches(_afEntries[i])) keys.push(String(_afEntries[i].seq));
+  }
+  return keys.join('|');
+}
+
+// 139: on every snapshot, re-render only if the rows on screen would change (a scope or a
+// filter change). A full re-render re-announces every row, so it is not done for nothing.
+function afSyncVisible() {
+  if (afVisibleSig() !== _afShownSig) afRender();
+}
+
 function afRender() {
-  // Full re-render — filter changes only, never a live update.
+  // Full re-render: a filter or scope change, or a snapshot that changes the rows on screen.
   var feed = document.getElementById('activity-feed');
   if (!feed) return;
+  _afShownSig = afVisibleSig();
   if (_afGroupingActive) {
     afSyncGroups(true);
     afUpdateEmpty();
@@ -1281,14 +1304,16 @@ function afUpdateEmpty() {
 function afUpdateFilterOptions() {
   var sel = document.getElementById('af-filter');
   if (!sel) return;
+  // 139: a card filter set under another symphony does not survive the switch.
+  if (_afFilter && !afInScope({card_id: _afFilter})) _afFilter = '';
   var seen = {}, cards = [];
   for (var i = 0; i < _afEntries.length; i++) {
     var e = _afEntries[i];
-    if (!e.card_id || seen[e.card_id]) continue;
+    if (!e.card_id || seen[e.card_id] || !afInScope(e)) continue;
     seen[e.card_id] = true;
     cards.push(e);
   }
-  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:_afFilter + ' (no retained activity)'});
+  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:'(no retained activity)'});
   var key = cards.map(function(e) { return e.card_id; }).join(',');
   if (key === sel.getAttribute('data-cards')) return;
   sel.setAttribute('data-cards', key);
@@ -1344,7 +1369,8 @@ function afNoteMessage() {
 }
 
 function afQuietTick() {
-  var s = _lastState;
+  // 139: the quiet markers and the tiles follow the selected symphony, like every other view.
+  var s = currentScopedState();
   if (!s) return;
   var threshold = s.activity_quiet_threshold_seconds;
   var sessions = (Array.isArray(s.active_sessions) ? s.active_sessions : []).filter(function(sess) {
@@ -1433,15 +1459,21 @@ function connectEventStream() {
       _lastState = JSON.parse(e.data);
       // state_update precedes backfill on every stream connection.
       afSyncRun(_lastState.activity_run_id);
+      // 139: the header control first, then every view narrowed to the symphony chosen there.
+      renderSymphonySwitcher();
+      var scoped = scopedView(_lastState);
       // 153: before the render, so the title and favicon follow the data even if renderState throws.
-      updateAttention(_lastState);
-      renderState(_lastState);
+      updateAttention(scoped);
+      renderState(scoped);
       // 049: re-render current page with new state
       var path = location.pathname;
-      if (isPerformersPath(path)) renderPerformersPage(_lastState);
-      else if (path === '/history') renderHistoryPage(_lastState);
+      if (isPerformersPath(path)) renderPerformersPage(scoped);
+      else if (path === '/history') renderHistoryPage(scoped);
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
-      else renderDashboardExtras(_lastState);
+      else renderDashboardExtras(scoped);
+      // 139: the feed follows the scope on every snapshot, so rows that arrived before it cannot linger.
+      afUpdateFilterOptions();
+      afSyncVisible();
     } catch(err) { console.error('parse error', err); }
   });
   source.onerror = function() {

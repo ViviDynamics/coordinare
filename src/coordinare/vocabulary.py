@@ -104,12 +104,15 @@ OUTCOMES: dict[str, Term] = _terms(
 #: The nouns the dashboard is built from. These have no internal code of
 #: their own; they are what the Glossary page explains.
 CONCEPTS: dict[str, Term] = _terms(
-    ("symphony", "Symphony", "Symphonies", "One GitHub Project board and the repository coordinare works it against."),
+    ("symphony", "Symphony", "Symphonies", "One GitHub Project and the repository coordinare works it against. The dashboard's symphony switcher filters every panel to one symphony or to all of them."),
+    ("github_project", "GitHub Project", "GitHub Projects", "The GitHub Project a symphony takes its cards from. The dashboard shows its number as #N."),
+    ("repository", "Repository", "Repositories", "The GitHub repository a symphony's pull requests are opened in. The dashboard shows it as owner/repo."),
+    ("cards", "Cards", "Cards", "The cards of a symphony's GitHub Project, in the columns To Do, Blocked, In Progress and In Review."),
     ("stage", "Stage", "Stages", "A step in a card's pipeline, such as implementing or reviewing."),
     ("agent", "Agent", "Agents", "The persona that does the work of a stage, such as the implementer."),
     ("run", "Run", "Runs", "One agent working on one stage of one card, from dispatch to result."),
     ("run_detail", "Run detail", "Run details", "The view of one run: its live events, stderr, process metrics and steps. Reached from the Performers page, the Active performers tile or a card's View run link."),
-    ("check", "Check", "Checks", "One pass of the conductor over the board to see what needs doing."),
+    ("check", "Check", "Checks", "One pass of the conductor over the GitHub Project to see what needs doing."),
     ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
     ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),
     ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),

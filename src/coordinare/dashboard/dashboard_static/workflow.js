@@ -97,5 +97,7 @@ async function updateFlowChart(phase) {
 
 window.addEventListener('coordinare:appearance', function () {
   _lastRenderedPhase = null;
-  if (typeof _lastState !== 'undefined' && _lastState) updateFlowChart(_lastState.phase);
+  // 139: the flow chart draws the selected symphony's phase, like every other view.
+  var scopedNow = typeof currentScopedState === 'function' ? currentScopedState() : null;
+  if (scopedNow) updateFlowChart(scopedNow.phase);
 });
