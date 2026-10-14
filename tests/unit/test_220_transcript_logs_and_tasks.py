@@ -17,9 +17,10 @@ from typing import TYPE_CHECKING, BinaryIO
 
 import pytest
 
-from coordinare.__main__ import write_task_dump
+from coordinare.__main__ import task_dump_directory, write_task_dump
 from coordinare.services.mounted_file import open_mounted_file
 from coordinare.services.run_log import prune_run_logs
+from coordinare.services.run_transcript import prune_expired
 from coordinare.services.token_usage import TokenLedger, _header_symphony, _scan_usage
 
 if TYPE_CHECKING:
@@ -99,6 +100,63 @@ def test_prune_does_not_follow_a_link_at_the_root(tmp_path: Path) -> None:
 
     assert prune_run_logs(root, retention_days=30, now=now) == 0
     assert old.read_text() == "host log\n"
+
+
+def _aged_run_file(path: Path, when: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("run\n")
+    stamp = when.timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def test_prune_expired_does_not_descend_a_linked_root(tmp_path: Path) -> None:
+    """Defense in depth (220 review): a link at the transcript root must delete nothing behind it."""
+    now = datetime.now(UTC)
+    host = tmp_path / "host-transcripts"
+    old = host / "sym" / "card" / "run-old.jsonl"
+    _aged_run_file(old, now - timedelta(days=90))
+    root = tmp_path / "transcripts"
+    root.symlink_to(host)
+
+    assert prune_expired(root, retention_days=30, now=now) == 0
+    assert old.exists()
+
+
+def test_prune_expired_does_not_descend_a_linked_card(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    root = tmp_path / "transcripts"
+    (root / "sym").mkdir(parents=True)
+    host_card = tmp_path / "host-card"
+    old = host_card / "run-old.jsonl"
+    _aged_run_file(old, now - timedelta(days=90))
+    (root / "sym" / "card").symlink_to(host_card)
+
+    assert prune_expired(root, retention_days=30, now=now) == 0
+    assert old.exists()
+
+
+def test_prune_expired_removes_an_old_run_file_by_name(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    root = tmp_path / "transcripts"
+    old = root / "sym" / "card" / "run-old.jsonl"
+    _aged_run_file(old, now - timedelta(days=90))
+
+    assert prune_expired(root, retention_days=30, now=now) == 1
+    assert not old.exists()
+
+
+def test_task_directory_is_made_on_first_use_only(tmp_path: Path) -> None:
+    """The dump directory is not created at startup: the first SIGUSR1 makes it, later ones reuse it."""
+    holder: list[Path] = []
+
+    first = task_dump_directory(holder)
+    second = task_dump_directory(holder)
+
+    assert first == second
+    assert first.is_dir()
+    assert stat.S_IMODE(first.stat().st_mode) == 0o700
+    assert holder == [first]
+    first.rmdir()
 
 
 def test_task_dump_writes_a_private_file(tmp_path: Path) -> None:

@@ -45,6 +45,8 @@ a performer-planted link to a host file. This spec closes the ten items in issue
    root is opened `O_NOFOLLOW`, and entries are listed, checked and removed by name relative to that
    descriptor. A link at the root deletes nothing.
 7. **SIGUSR1 task dump.** Written by `write_task_dump` into a directory from `mkdtemp` (mode 0700),
+   made on the first SIGUSR1 (`task_dump_directory`), not at startup. A daemon that gets a SIGUSR1
+   leaves that one directory behind; the logged path is the real file.
    opened `O_NOFOLLOW | O_TRUNC`, mode 0600. The fixed `/tmp/coordinare-tasks.log` is gone.
 8. **`workspace_root`.** Audit: no performer container receives a clone. Docker `-v` arguments come
    only from `config.volumes` (`performer_lifecycle.py`), Kubernetes mounts come from the same list,
@@ -59,6 +61,24 @@ a performer-planted link to a host file. This spec closes the ten items in issue
 10. **Dispatch mount list.** `dispatch_performer._performer_mounts` builds the list from
     `coordinare_config.global_config`, not from the symphony's effective config, so an override that
     drops a volume cannot shorten it. Without a loaded daemon config it falls back to `state["config"]`.
+
+## Review round (security probes)
+
+- **BLOCK, state file.** The first rule checked only the state *directory*. Two cases loaded
+  when they should not: a volume whose host path is the state file itself, and a `state_file_path`
+  that is a link into a volume. The rule now also checks the state file, in both directions with
+  `_within` (which resolves the link). Tests: `test_state_file_that_is_a_volume_path_fails_to_load`,
+  `test_state_file_that_is_a_link_into_a_volume_fails_to_load`. The directory check stays one-way, so
+  a log dir under the state dir (a common layout) still loads. `workspace_root` is a directory and
+  needs no file-path check.
+- **Relative default.** `state_file_path` defaults to `./coordinare.state.json`, which is resolved
+  against the directory the daemon is launched from. Whether a mount under `$HOME` refuses at load
+  therefore depends on that launch directory. The field description says so. An absolute path pins it.
+- **`prune_expired`, defense in depth.** The transcript sweep now opens the root and each layout
+  folder with `O_NOFOLLOW` and removes by name relative to the folder descriptor, like
+  `prune_run_logs`. A link at the root or at a folder deletes nothing. Test that fails on the old
+  code: `test_prune_expired_does_not_descend_a_linked_root`. The linked-card test already passed
+  before (the old helper skipped links); it is kept as a guard.
 
 ## Config that now fails to load (deploy risk)
 

@@ -1325,7 +1325,17 @@ class ProjectConfiguration(BaseSettings):
     log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
     max_cycles: int | None = Field(default=None, ge=1)
-    state_file_path: Path = Field(default=Path("./coordinare.state.json"))
+    # The default is RELATIVE, so it resolves against the directory the daemon is launched from.
+    # Whether a performer mount under $HOME refuses at load therefore depends on that directory.
+    # Set an absolute path to make the rule independent of the launch directory (220).
+    state_file_path: Path = Field(
+        default=Path("./coordinare.state.json"),
+        description=(
+            "Where the daemon keeps its state JSON. The default is relative to the working "
+            "directory the daemon is launched from, so the performer-mount rule (220) depends on "
+            "that directory. Use an absolute path to pin it."
+        ),
+    )
     health_check_timeout_seconds: int = Field(default=2, ge=1, le=30)
     optional_subsystems: list[str] = Field(default_factory=list)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
@@ -1522,7 +1532,8 @@ class ProjectConfiguration(BaseSettings):
         where the filesystem folds case, NFC before any fold, ``~`` expanded). Without an explicit
         ``workspace_root`` the clones go under the system temp directory, which is checked too.
         """
-        state_dir = self.state_file_path.expanduser().parent
+        state_file = self.state_file_path.expanduser()
+        state_dir = state_file.parent
         workspace = (
             self.workspace_root.expanduser()
             if self.workspace_root is not None
@@ -1530,6 +1541,16 @@ class ProjectConfiguration(BaseSettings):
         )
         for label, raw in self._performer_mount_entries():
             mount = raw.expanduser()
+            # The state file itself: a volume that is the file, or a link whose target lies in a
+            # volume, lets a performer write the state JSON. The directory check alone misses both.
+            # _within resolves each side, so a link is compared by its target.
+            if _within(state_file, mount) or _within(mount, state_file):
+                msg = (
+                    f"state_file_path {state_file.resolve()} overlaps {label} {mount.resolve()}: "
+                    "a performer that can see that file can rewrite the daemon's state. Move "
+                    "state_file_path outside every performer mount."
+                )
+                raise ValueError(msg)
             if _within(state_dir, mount):
                 msg = (
                     f"state_file_path {state_dir.resolve()} is inside {label} {mount.resolve()}: "

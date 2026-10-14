@@ -67,6 +67,42 @@ def test_state_file_inside_the_performer_log_dir_fails_to_load(tmp_path: Path) -
         )
 
 
+def test_state_file_that_is_a_volume_path_fails_to_load(tmp_path: Path) -> None:
+    """The state file itself mounted: the performer writes the state JSON directly (review BLOCK).
+
+    The directory check alone misses this, because the state directory is the parent of the file.
+    """
+    state = tmp_path / "state" / "coordinare.state.json"
+    state.parent.mkdir()
+    state.write_text("{}")
+    with pytest.raises(pydantic.ValidationError, match="state_file_path"):
+        ProjectConfiguration(
+            **_BASE,
+            env_cache_root=tmp_path / "caches",
+            state_file_path=state,
+            performer_endpoints=[_ephemeral(state)],
+        )
+
+
+def test_state_file_that_is_a_link_into_a_volume_fails_to_load(tmp_path: Path) -> None:
+    """A state path that is a link whose target lies inside a volume is refused (review BLOCK)."""
+    volume = tmp_path / "vol"
+    volume.mkdir()
+    target = volume / "state.json"
+    target.write_text("{}")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    link = state_dir / "coordinare.state.json"
+    link.symlink_to(target)
+    with pytest.raises(pydantic.ValidationError, match="state_file_path"):
+        ProjectConfiguration(
+            **_BASE,
+            env_cache_root=tmp_path / "caches",
+            state_file_path=link,
+            performer_endpoints=[_ephemeral(volume)],
+        )
+
+
 def test_state_file_outside_every_mount_loads(tmp_path: Path) -> None:
     volume = tmp_path / "shared"
     volume.mkdir()

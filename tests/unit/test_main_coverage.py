@@ -596,7 +596,7 @@ def test_sigusr1_dump_uses_truncate_mode() -> None:
     body = src[start:end]
     # 220: the dump goes through write_task_dump, which truncates (O_TRUNC) and refuses links
     # (O_NOFOLLOW). The fixed /tmp name is gone.
-    assert "write_task_dump(task_dump_dir" in body
+    assert "write_task_dump(task_dump_directory(" in body
     assert "/tmp/coordinare-tasks.log" not in src
     writer = src[src.index("def write_task_dump("):src.index("def _performer_mount_hosts(")]
     assert "os.O_TRUNC" in writer

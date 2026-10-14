@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -967,17 +968,6 @@ def make_collector(
     )
 
 
-def _layout_dirs(parent: Path) -> list[Path]:
-    """Immediate subdirectories whose names the writer could have created (the conductor's folder included)."""
-    found: list[Path] = []
-    for entry in parent.iterdir():
-        if entry.is_symlink() or not entry.is_dir():
-            continue
-        if is_conductor_folder(entry.name) or sanitize_segment(entry.name) == entry.name:
-            found.append(entry)
-    return found
-
-
 def _is_run_file(entry: Path) -> bool:
     """A file the writer could have named: ``<sanitized run id>.jsonl`` and nothing else."""
     if not entry.name.endswith(_TRANSCRIPT_SUFFIX):
@@ -1011,23 +1001,6 @@ def _remove_quietly(action: Callable[[], None], path: Path) -> bool:
     return True
 
 
-def _expired_run_file(entry: Path, keep_resolved: set[Path], older_than: float) -> bool:
-    """Is ``entry`` one of the writer's own run files, not live, and old enough?
-
-    Every filesystem call is inside the guard: an entry that cannot be read is
-    skipped, never allowed to stop the sweep. One ``lstat`` answers "regular
-    file, not a link" and the age together.
-    """
-    if not _is_run_file(entry):
-        return False
-    try:
-        info = entry.lstat()
-        if not stat.S_ISREG(info.st_mode) or entry.resolve() in keep_resolved:
-            return False
-    except OSError:
-        return False
-    return info.st_mtime < older_than
-
 
 def prune_expired(
     root: Path,
@@ -1045,27 +1018,117 @@ def prune_expired(
     Folders left empty are removed, but the root is not. A writer creating a folder
     at the same moment is not an error (review item 7). Returns the files deleted.
     """
-    if retention_days <= 0 or not root.is_dir():
+    if retention_days <= 0:
+        return 0
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
         return 0
     base = root.resolve()
-    keep_resolved = {path.resolve() for path in keep}
+    keep_resolved = frozenset(path.resolve() for path in keep)
     current = now or datetime.now(UTC)
     cutoff = (current - timedelta(days=retention_days)).timestamp()
     youngest_allowed = current.timestamp() - MIN_RETENTION_AGE_SECONDS
+    older_than = min(cutoff, youngest_allowed)
     removed = 0
-    for symphony in _layout_dirs(base):
-        for card in _layout_dirs(symphony):
-            for entry in list(card.iterdir()):
-                if _expired_run_file(entry, keep_resolved, min(cutoff, youngest_allowed)) and _remove_quietly(
-                    entry.unlink, entry,
-                ):
-                    removed += 1
-            if not any(card.iterdir()):
-                _remove_quietly(card.rmdir, card)
-        if symphony.exists() and not any(symphony.iterdir()):
-            _remove_quietly(symphony.rmdir, symphony)
+    try:
+        for symphony_name in _layout_names(root_fd):
+            removed += _prune_symphony(root_fd, symphony_name, base, keep_resolved, older_than)
+    finally:
+        os.close(root_fd)
     logger.info("run_transcript.retention_pruned", removed=removed, retention_days=retention_days)
     return removed
+
+
+def _open_layout_dir(name: str, dir_fd: int) -> int | None:
+    """Open a layout folder by name, never following a link. None when it is not a real folder."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
+def _layout_names(dir_fd: int) -> list[str]:
+    """Folder names in *dir_fd* the writer could have created (the conductor's folder included)."""
+    with os.scandir(dir_fd) as entries:
+        names = [entry.name for entry in entries]
+    return [name for name in names if is_conductor_folder(name) or sanitize_segment(name) == name]
+
+
+def _is_empty(dir_fd: int) -> bool:
+    with os.scandir(dir_fd) as entries:
+        return next(entries, None) is None
+
+
+def _prune_symphony(
+    root_fd: int,
+    symphony_name: str,
+    base: Path,
+    keep: frozenset[Path],
+    older_than: float,
+) -> int:
+    """Prune one symphony folder by descriptor. A link at the folder deletes nothing (220)."""
+    symphony_fd = _open_layout_dir(symphony_name, root_fd)
+    if symphony_fd is None:
+        return 0
+    removed = 0
+    try:
+        for card_name in _layout_names(symphony_fd):
+            removed += _prune_card(symphony_fd, card_name, base / symphony_name, keep, older_than)
+        if _is_empty(symphony_fd):
+            _remove_quietly(
+                functools.partial(os.rmdir, symphony_name, dir_fd=root_fd),
+                base / symphony_name,
+            )
+    finally:
+        os.close(symphony_fd)
+    return removed
+
+
+def _prune_card(
+    symphony_fd: int,
+    card_name: str,
+    symphony_path: Path,
+    keep: frozenset[Path],
+    older_than: float,
+) -> int:
+    """Prune one card folder: expired run files by name, then the folder if it is empty."""
+    card_fd = _open_layout_dir(card_name, symphony_fd)
+    if card_fd is None:
+        return 0
+    card_path = symphony_path / card_name
+    removed = 0
+    try:
+        with os.scandir(card_fd) as entries:
+            names = [entry.name for entry in entries]
+        for name in names:
+            entry_path = card_path / name
+            if not _is_run_file(Path(name)) or not _expired_at(card_fd, name, entry_path, keep, older_than):
+                continue
+            if _remove_quietly(functools.partial(os.unlink, name, dir_fd=card_fd), entry_path):
+                removed += 1
+        if _is_empty(card_fd):
+            _remove_quietly(functools.partial(os.rmdir, card_name, dir_fd=symphony_fd), card_path)
+    finally:
+        os.close(card_fd)
+    return removed
+
+
+def _expired_at(
+    dir_fd: int,
+    name: str,
+    entry_path: Path,
+    keep: frozenset[Path],
+    older_than: float,
+) -> bool:
+    """Is *name* in *dir_fd* a regular file (never a link), not live, and older than *older_than*?"""
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or entry_path in keep:
+        return False
+    return info.st_mtime < older_than
 
 
 __all__ = [
