@@ -183,3 +183,60 @@ def test_mount_root_that_is_a_file_refuses_without_raising(tmp_path: Path) -> No
     assert result.ok is False
     assert result.errors[0].code == "forbidden"
     assert rcs.read_routing(location).routing_available is False
+
+
+# ---------------------------------------------------------------------------
+# Second re-review: a state dir inside a performer mount disables attempt telemetry, and the
+# live append refuses a link or a non-directory at the attempts directory itself.
+# ---------------------------------------------------------------------------
+
+
+def test_state_dir_inside_a_performer_mount_disables_attempt_telemetry(tmp_path: Path) -> None:
+    """Probe /tmp/r208b/probe_resolve_state_in_mount.py: the state dir sits under performer_log_dir.
+
+    The daemon must write nothing there. The performer renames the attempts directory and links
+    it to a host directory; no row may reach the host."""
+    from types import SimpleNamespace
+    from typing import cast as _cast
+
+    import coordinare.__main__ as app_main
+
+    base = tmp_path.resolve()
+    perf_logs = base / "performer-logs"
+    state_file = perf_logs / "state" / "coordinare.state.json"
+    state_file.parent.mkdir(parents=True)
+    victim = base / "host-victim"
+    victim.mkdir()
+    cfg = SimpleNamespace(
+        state_file_path=state_file,
+        performer_log_dir=perf_logs,
+        performer_endpoints=[],
+        env_cache_root=base / "caches",
+    )
+    assert app_main._resolve_attempt_log_dir(_cast("Any", cfg), None) is None
+    assert app_main._build_attempt_log(_cast("Any", cfg), None) is None
+    assert list(victim.iterdir()) == []
+    assert not any(perf_logs.rglob("*.jsonl"))
+
+
+def test_a_link_at_the_attempts_directory_is_refused_on_append(tmp_path: Path) -> None:
+    """The performer renames the daemon's attempts directory and links it out. The append must
+    not follow the link, even though the directory was created by the daemon."""
+    log_dir = tmp_path / "daemon" / "logs" / "attempts"
+    log = AttemptLog(log_dir=log_dir)
+    log.open_attempt(task_id="first", routing_reason="x")
+    victim = tmp_path / "host-victim"
+    victim.mkdir()
+    os.rename(log_dir, tmp_path / "daemon" / "moved")
+    os.symlink(victim, log_dir)
+    aid = log.open_attempt(task_id="second", routing_reason="x")
+    log.close_attempt(aid, "pass", "daemon")
+    assert list(victim.iterdir()) == []
+
+
+def test_a_file_at_the_attempts_directory_is_refused_on_append(tmp_path: Path) -> None:
+    log_dir = tmp_path / "daemon" / "logs" / "attempts"
+    log_dir.parent.mkdir(parents=True)
+    log_dir.write_text("a file, not a directory\n")
+    AttemptLog(log_dir=log_dir).open_attempt(task_id="x", routing_reason="x")
+    assert log_dir.read_text() == "a file, not a directory\n"

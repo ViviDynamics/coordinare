@@ -135,24 +135,29 @@ def _is_lexically_under(child: Path, parent: Path) -> bool:
 
 
 def _append_private(path: Path, line: bytes) -> None:
-    """Append one JSONL row without following a link (spec 208).
+    """Append one JSONL row without following a link anywhere on the way (spec 208).
 
-    The file is opened with ``O_NOFOLLOW`` and created owner-only. A planted symlink or
-    a hard link is refused before anything is written, so the row never lands in a file
-    the daemon did not create.
+    The directory is opened with ``O_NOFOLLOW | O_DIRECTORY``, so a link or a file at the
+    attempts directory itself is refused (a performer can rename and replace it). The row is
+    then appended by name relative to that directory descriptor. The file is created owner-only,
+    and a planted link or hard link at the leaf is refused before anything is written.
     """
-    # O_NONBLOCK: a FIFO planted at the path must not block the append. Opening a FIFO
-    # for write with no reader fails with ENXIO, which the caller logs and drops.
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK
-    fd = os.open(path, flags, 0o600)
+    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW)
     try:
+        # O_NONBLOCK: a FIFO planted at the leaf must not block the append. Opening a FIFO for
+        # write with no reader fails with ENXIO, which the caller logs and drops.
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK
+        fd = os.open(path.name, flags, 0o600, dir_fd=dir_fd)
         try:
-            _refuse_unless_private_regular(os.fstat(fd), path)
-        except _RefusedError as exc:
-            raise OSError(str(exc)) from exc
-        _write_all(fd, line)
+            try:
+                _refuse_unless_private_regular(os.fstat(fd), path)
+            except _RefusedError as exc:
+                raise OSError(str(exc)) from exc
+            _write_all(fd, line)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(dir_fd)
 
 
 @dataclass(frozen=True)

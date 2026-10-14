@@ -180,4 +180,4 @@ def test_bootstrap_services_wires_the_resolver() -> None:
     while restoring the deployed failure.
     """
     source = inspect.getsource(app_main._bootstrap_services)
-    assert "_resolve_attempt_log_dir(config, config_path)" in source
+    assert "_build_attempt_log(config, config_path)" in source

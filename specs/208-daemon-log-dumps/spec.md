@@ -133,3 +133,14 @@ descriptor, the leaf included. `..` below a mount is refused. Consequences:
 
 Deferred to a follow-up issue: the `CLAUDE.md` and `AGENTS.md` reads in the classifier still
 run on the event loop, as on main, and the `/api/config/all` reads are synchronous.
+
+### Second re-review notes
+
+- A nested mount root reached through an operator-side symlink is refused (the walk cannot
+  open it through a link below a mount), which fails closed. Accepted.
+- A state directory inside a performer mount disables attempt telemetry (no writes, one error
+  log that says how to fix the config). Previously it logged and wrote anyway.
+- The live append opens the attempts directory with `O_NOFOLLOW | O_DIRECTORY` and appends by
+  name relative to that descriptor, so a link or file placed at the directory itself is refused.
+- Left to follow-up issues: env_cache script and manifest writes, state_store inside a mount,
+  identity checks by st_dev/st_ino for bind mounts, the walk's cost, and the temp-name swap.
