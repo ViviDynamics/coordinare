@@ -491,6 +491,9 @@ class CoordinareState(TypedDict, total=False):
     # 141: AttemptLog singleton.  Typed Any so LangGraph's runtime annotation
     # resolver never imports attempt_log at graph-build time.
     attempt_log: Any
+    # 147: the card lifecycle log behind the pipeline timeline (services/card_lifecycle).
+    # Typed Any for the same reason as attempt_log; it is persisted with the snapshot.
+    card_lifecycle: Any
     # 129: the run-transcript collector (None when transcripts are not wired).
     transcript_collector: Any
     # 131: the conductor's own model calls, transcribed through this log.
@@ -640,6 +643,8 @@ def initial_state() -> CoordinareState:
         "stale_session_reconciliation_deferred": False,
         # 141: attempt telemetry singleton — wired in by _bootstrap_services
         "attempt_log": None,
+        # 147: lifecycle log singleton, wired in by _bootstrap_services
+        "card_lifecycle": None,
     }
 
 

@@ -36,10 +36,12 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # performers and app call them.
 # 139: "symphonies" (the symphony switcher and its scope) defines functions only, and
 # performers, app and attention call them, so it loads before app.
+# 147: "timeline" (the card pipeline tracker and its dots) defines functions only, and the
+# card detail, the board and app call them at render time.
 # 151: "systemhealth" (the System health card's markup) defines functions only, and app calls them.
 _DASHBOARD_JS_FILES = (
     "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
-    "runs", "symphonies", "systemhealth", "app",
+    "runs", "timeline", "symphonies", "systemhealth", "app",
 )
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from

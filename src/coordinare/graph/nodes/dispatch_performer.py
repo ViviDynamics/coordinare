@@ -22,6 +22,7 @@ from coordinare.graph.state import _set_current_card
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import record_lifecycle
 from coordinare.services.env_cache import (
     DEFAULT_DEVENV_ROOT,
     _cache_dir_has_activate,
@@ -2087,6 +2088,15 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
     return card_context, role
 
 
+def _record_dispatch_lifecycle(
+    state: CoordinareState, card_id: str, performer_stage: str, items: list[Any],
+) -> None:
+    """147: a dispatch, and the review feedback it carries to the agent, are lifecycle events."""
+    record_lifecycle(state, "dispatched", card_id, stage=performer_stage)
+    if items:
+        record_lifecycle(state, "feedback_relayed", card_id, stage=performer_stage, detail={"items": len(items)})
+
+
 async def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> dict[str, Any]:
     """130: the daemon-side inputs of the run header (persona version, routing rule).
 
@@ -2757,6 +2767,7 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
     # Dispatch acceptance is not completion. Retain the batch for replacement
     # workers of this stage while keeping the next role's queue separate.
     items = _feedback_for_dispatch(state, performer_stage)
+    _record_dispatch_lifecycle(state, str(card.get("id") or ""), performer_stage, items)
     state["dispatched_feedback"] = {"stage": performer_stage, "items": items} if items else {}
     state["relay_feedback"] = []
     state["reconciled_dispatch_pending"] = False

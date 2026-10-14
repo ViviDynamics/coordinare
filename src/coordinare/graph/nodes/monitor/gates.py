@@ -11,6 +11,7 @@ import structlog
 from coordinare.lib.redaction import redact_state_value
 from coordinare.metrics import METRICS
 from coordinare.services.base_gate import evaluate_base_gate
+from coordinare.services.card_lifecycle import record_lifecycle, stage_of
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck
 from coordinare.services.env_signature import match_env_signature
 from coordinare.services.failure_signature import normalize_reason
@@ -850,6 +851,12 @@ async def _evaluate_ci_gate(
         )
 
         head_sha = rollup.head_sha
+        # 147: the gate's result for this head, recorded once per (head, result).
+        record_lifecycle(
+            state, "ci_result", card_id=card_id, stage=stage_of(state),
+            detail={"result": decision.action, "head": str(head_sha or "")[:12]},
+            key=f"{head_sha}:{decision.action}",
+        )
         (
             bounce_counter,
             inheritance_repair_counter,

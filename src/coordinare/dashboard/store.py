@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coordinare.dashboard.card_pipeline import card_pipeline_block
 from coordinare.dashboard.helpers import (
     _json_default,
     compute_overall_health,
@@ -900,6 +901,8 @@ class DashboardStore:
             "poll_interval_seconds": _poll_interval(daemon.state.get("config")),
             # 134: spend today and this week, with the pricing date, from the usage ledger.
             "token_usage": _token_usage_block(daemon),
+            # 147: each logged card's board strip, per symphony, computed from memory.
+            "card_pipeline": card_pipeline_block(daemon),
             "activity_run_id": self.activity_log.run_id,
             "cycle_history": list(self.history),
             "cycle_active": daemon._cycle_active,

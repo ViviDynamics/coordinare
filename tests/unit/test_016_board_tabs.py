@@ -19,7 +19,12 @@ def test_the_cards_panel_isolates_each_symphony_under_the_header_choice(tmp_path
     symphonies = tmp_path / "symphonies.js"
     helpers.write_text(_DASHBOARD_JS_SOURCES["helpers"], encoding="utf-8")
     # 149: the renderer calls waiting.js, which the page loads right after performers.js.
-    performers.write_text(_DASHBOARD_JS_SOURCES["performers"] + "\n" + _DASHBOARD_JS_SOURCES["waiting"], encoding="utf-8")
+    # 147: the board card calls the timeline's dots, which the page loads with timeline.js.
+    performers.write_text(
+        _DASHBOARD_JS_SOURCES["performers"] + "\n" + _DASHBOARD_JS_SOURCES["waiting"] + "\n"
+        + _DASHBOARD_JS_SOURCES["timeline"],
+        encoding="utf-8",
+    )
     symphonies.write_text(_DASHBOARD_JS_SOURCES["symphonies"], encoding="utf-8")
     checks = Path(__file__).resolve().parents[1] / "js" / "board_scope_checks.js"
     result = subprocess.run(

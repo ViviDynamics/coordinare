@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import structlog
 
+from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -63,6 +65,11 @@ def _record_pr_artefacts(
     updates: CoordinareState = {}
     card = dict(state.get("current_card") or {})
     if pr_url:
+        # 147: the pull request is recorded once, the first time the performer reports it.
+        record_lifecycle(
+            state, "pr_opened", card_id=card_id_of(state), stage=stage_of(state),
+            detail={"pr_number": pr_number, "pr_url": pr_url}, key=str(pr_url),
+        )
         card["pr_url"] = pr_url
     if pr_node_id:
         card["pr_node_id"] = pr_node_id

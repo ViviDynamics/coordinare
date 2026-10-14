@@ -8,6 +8,7 @@ from coordinare.graph.state import _set_current_card
 from coordinare.lib.redaction import redact_state_value
 from coordinare.metrics import METRICS
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.defunct_branch import (
     configured_repo_of,
     delete_defunct_branch,
@@ -146,6 +147,8 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
 
     from coordinare.services.attempt_telemetry import close_attempt
     close_attempt(state, "pass", "human", "merged")
+    # 147: the merge ends the card's timeline. Recorded once, from the card the merge closed.
+    record_lifecycle(state, "merged", card_id=card_id_of(state), stage=stage_of(state), key="merged")
 
     state["phase"] = "idle"
     return state
