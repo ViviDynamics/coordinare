@@ -202,3 +202,20 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .tl-dot.tl-ran { background: var(--color-accent-yellow); }
 .tl-dot.tl-current { background: var(--color-accent-blue); box-shadow: 0 0 0 2px var(--color-bg-surface), 0 0 0 3px var(--color-accent-blue); }
 .tl-dot.tl-skipped, .tl-dot.tl-not_recorded { opacity: 0.4; }
+/* 150: the History page's run table, filters, checks and pager. */
+.history-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-bottom: 12px; font-size: 12px; }
+.history-filters label { display: flex; flex-direction: column; gap: 2px; color: var(--color-text-muted); }
+.history-table-wrap { overflow-x: auto; }
+.history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.history-table th, .history-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--color-border); vertical-align: top; }
+.history-table .history-num { text-align: right; white-space: nowrap; }
+.history-title { color: var(--color-text-muted); font-size: 11px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-missing { color: var(--color-text-muted); font-style: italic; }
+.history-outcome { border-radius: var(--radius-control); padding: 1px 6px; font-size: 11px; }
+.history-outcome-completed { color: var(--color-accent-green); }
+.history-outcome-failed { color: var(--color-accent-red); }
+.history-outcome-unknown { color: var(--color-text-muted); }
+.history-checks { margin-top: 12px; font-size: 12px; }
+.history-checks summary { cursor: pointer; color: var(--color-text-muted); }
+.history-pager { margin-top: 12px; display: flex; gap: 8px; }
+.history-notice { color: var(--color-accent-yellow); font-size: 12px; }

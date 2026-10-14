@@ -383,11 +383,11 @@ function applyScopeNotes(s) {
   setText('capacity-scope-note', scoped ? SCOPE_NOTE_CAPACITY : '');
   var last = document.getElementById('last-duration');
   if (last) last.title = hidden.indexOf('last_cycle_duration_seconds') !== -1 ? SCOPE_NOTE_DURATION : '';
+  // 150: the History page lists runs from the server under the same scope, so only the
+  // Dashboard's Recent checks panel carries this note.
   if (hidden.indexOf('cycle_history') !== -1) {
-    ['history-section', 'history-page-section'].forEach(function(id) {
-      var el = document.getElementById(id);
-      if (el) el.innerHTML = '<span class="empty-state">' + SCOPE_NOTE_CHECKS + '</span>';
-    });
+    var recent = document.getElementById('history-section');
+    if (recent) recent.innerHTML = '<span class="empty-state">' + SCOPE_NOTE_CHECKS + '</span>';
   }
   var depList = document.getElementById('dependency-blockers-list');
   var depCard = document.getElementById('dependency-blockers-card');

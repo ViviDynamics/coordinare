@@ -1017,12 +1017,8 @@ window.addEventListener('popstate', function(event) {
 // 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
 // BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
 // performers-page + active-work rendering: /static/performers.js (#349)
-// s is the scoped view: under a symphony the checks are not known per symphony, so the note
-// replaces them, the same note the dashboard panel shows.
-function renderHistoryPage(s) {
-  renderCycleHistoryInto(document.getElementById('history-page-section'), s.cycle_history);
-  applyScopeNotes(s);
-}
+// 150: the page itself (the run table, its filters, the checks) is history.js. The
+// Dashboard's Recent checks panel keeps the snapshot's cycle rows.
 
 // 049: Personas page. 143: read-only. Persona text is edited in Settings, under Agents,
 // so each persona has exactly one editor. Each entry links to its Settings item.

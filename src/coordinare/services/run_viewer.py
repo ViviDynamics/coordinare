@@ -170,6 +170,11 @@ def _valid_symphony_segment(value: str) -> bool:
     return is_conductor_folder(value) or _valid_segment(value)
 
 
+def is_address_segment(value: str) -> bool:
+    """A card or run name the writer could have created: the same test the run routes apply (150)."""
+    return _valid_segment(value)
+
+
 def run_file(root: Path, ref: RunRef) -> Path:
     """The run's file under ``root``, after every segment and every folder on the way is checked."""
     if not _valid_symphony_segment(ref.symphony):
@@ -405,6 +410,22 @@ def _header_summary(header: dict[str, Any] | None) -> dict[str, Any]:
             "title": card.get("title"),
         },
     }
+
+
+def header_of(path: Path, ref: RunRef) -> dict[str, Any] | None:
+    """The run's header record, read from its first line (150: the History listing reads these)."""
+    return _header_of(path, ref)
+
+
+def summarise_header(header: dict[str, Any] | None) -> dict[str, Any]:
+    """The header's fields as the run lists show them (150: the History listing shares this shape)."""
+    return _header_summary(header)
+
+
+def find_pr_url(text: str) -> str | None:
+    """The first GitHub pull request link in ``text``, or None."""
+    found = _PR_URL.search(text)
+    return found.group(0) if found is not None else None
 
 
 def list_runs(root: Path, *, symphony: str | None, card: str) -> dict[str, Any]:

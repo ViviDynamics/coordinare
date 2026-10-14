@@ -41,7 +41,7 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # 151: "systemhealth" (the System health card's markup) defines functions only, and app calls them.
 _DASHBOARD_JS_FILES = (
     "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
-    "runs", "timeline", "symphonies", "systemhealth", "app",
+    "runs", "history", "timeline", "symphonies", "systemhealth", "app",
 )
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from

@@ -73,9 +73,9 @@ def test_elapsed_readouts_share_one_start_point_and_one_timer() -> None:
 
 
 def test_dashboard_panel_collapses_and_caps_recent_checks() -> None:
-    """#128: collapsed and capped on the Dashboard, full list on History."""
+    """#128: collapsed and capped on the Dashboard. #150: History lists runs from the server instead."""
     assert "s.cycle_history, { collapse: true, limit: 5 }" in page_source()
-    assert "document.getElementById('history-page-section'), s.cycle_history);" in page_source()
+    assert "document.getElementById('history-page-section'), s.cycle_history);" not in page_source()
     assert ".cycle-history-compact { max-height: 240px; overflow-y: auto; }" in page_source()
 
 

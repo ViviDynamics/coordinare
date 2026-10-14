@@ -35,6 +35,7 @@ DEFERRED_REST_PREFIXES = (
     "/api/card-runs",  # 133: a card's runs across symphonies, for the card detail.
     "/api/run-lookup",  # 133: a run id resolved to its address, for activity links.
     "/api/cards",  # 147: a card's pipeline timeline (stages, runs, lifecycle, cost), for the card detail.
+    "/api/history",  # 150: the History page's paginated run listing (human dashboard, read-only).
     "/health",
     "/live",
     "/ready",
