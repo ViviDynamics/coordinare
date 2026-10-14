@@ -92,6 +92,19 @@ CONCERN_TO_STAGE: dict[str, str] = {
     "review": "reviewing",
 }
 
+def _human_requested_changes(reviews: list[dict[str, Any]]) -> bool:
+    """#97: is any pending review a human's CHANGES_REQUESTED?
+
+    That state is the reviewer saying the code must change. It is not a topic
+    to be guessed from the wording of the review body.
+    """
+    return any(
+        str(review.get("state", "")) == "CHANGES_REQUESTED"
+        and str(review.get("author_type", "")) == "HUMAN"
+        for review in reviews
+    )
+
+
 def _earliest_stage(stages: list[str], lifecycle: list[str]) -> str:
     """Return the earliest stage from *stages* that exists in *lifecycle*.
 
@@ -322,6 +335,15 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     if not target_stages:
         target_stages = ["implementing"]
 
+    # 97: a human CHANGES_REQUESTED always reaches the implementer. Concern
+    # classification may still pull the restart earlier (architecture), never
+    # later: routing such a review to "reviewing" or "qa" because its wording
+    # mentions a test re-ran those stages on unchanged code, re-approved it,
+    # and the fix needed a second request.
+    changes_requested = _human_requested_changes(pending_reviews)
+    if changes_requested and "implementing" in lifecycle:
+        target_stages.append("implementing")
+
     target_stage = _earliest_stage(target_stages, lifecycle)
 
     # If the target stage isn't in the lifecycle, fall back to implementer.
@@ -334,6 +356,7 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         target_stage=target_stage,
         review_count=len(pending_reviews),
         classification_method=classification_method,
+        human_changes_requested=changes_requested,
     )
 
     # 066 FR-010 contract for this node: ``current_card`` writes go through
