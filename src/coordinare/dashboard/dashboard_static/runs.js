@@ -234,8 +234,9 @@ function personaHistoryPath(role, version) {
 
 // The activity entry's link into its run. It opens the run at the entry's time.
 function runEntryLinkHtml(entry) {
+  // Self-contained (the pattern is inline), so the activity feed can carry this function alone.
   var session = entry && entry.session_id ? String(entry.session_id) : '';
-  if (!RUN_NAME_PATTERN.test(session)) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(session)) return '';
   var href = '/runs/' + encodeURIComponent(session) +
     (entry.timestamp ? '?at=' + encodeURIComponent(String(entry.timestamp)) : '');
   return '<a class="run-entry-link" href="' + esc(href) + '" ' +

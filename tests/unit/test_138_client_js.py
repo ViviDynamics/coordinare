@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import app_js, page_source
+from tests.unit.dashboard_js_slices import app_js, page_source, shipped_function
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
 
@@ -58,7 +58,9 @@ def _extract_feed_js() -> str:
     esc = re.search(r"function esc\(s\) \{.*?\n\}", _HELPERS_JS, re.DOTALL)
     if esc is None:
         raise AssertionError("the shared esc() helper is no longer in helpers.js")
-    return esc.group(0) + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
+    # 133: the feed links each entry into its run, so the run link helper is needed too.
+    run_link = shipped_function("runs", "runEntryLinkHtml")
+    return esc.group(0) + "\n\n" + run_link + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
 
 
 def test_feed_js_slice_is_complete() -> None:
