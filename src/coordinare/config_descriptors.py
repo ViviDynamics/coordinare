@@ -58,6 +58,7 @@ SECRET_MASK = "••••••"  # display mask, not a credential
 # idea. The key stays (it is the config contract); the label says what it is.
 _FIELD_LABELS: dict[str, str] = {
     "max_feedback_cycles": "Max revision rounds per PR (max_feedback_cycles)",
+    "max_cards_in_review": "Max cards waiting on review (max_cards_in_review)",
 }
 
 
@@ -410,6 +411,7 @@ GLOBAL_EDITABLE_FIELDS: tuple[str, ...] = (
     "poll_interval_seconds",
     "heartbeat_interval_seconds",
     "max_concurrent_cards",
+    "max_cards_in_review",
     "max_feedback_cycles",
     "max_closed_pr_attempts_per_issue",
     "log_level",

@@ -23,6 +23,7 @@ async function loadGlobalConfigPage() {
     {key:'poll_interval_seconds', label:'Poll interval (seconds)', min:0, max:3600},
     {key:'heartbeat_interval_seconds', label:'Heartbeat interval (seconds)', min:5, max:300},
     {key:'max_concurrent_cards', label:'Max concurrent cards', min:1, max:20},
+    {key:'max_cards_in_review', label:'Max cards waiting on review', min:1, max:50},
     {key:'max_feedback_cycles', label:'Max feedback cycles', min:0, max:50},
     {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts per issue', min:0, max:100},
   ];

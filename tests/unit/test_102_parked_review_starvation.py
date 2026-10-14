@@ -25,7 +25,7 @@ from coordinare.graph.state import initial_state
 
 @pytest.fixture(autouse=True)
 def _forget_logged_waits() -> None:
-    daemon_module._review_wait_reserved.clear()
+    daemon_module._review_wait_logged.clear()
 
 
 def _parked_and_running() -> dict[str, dict[str, Any]]:
@@ -106,29 +106,15 @@ async def test_parked_review_card_graph_runs_each_cycle_while_another_card_runs(
     assert graph.invoked == ["parked"]
 
 
-def test_logs_distinguish_healthy_review_wait_from_capacity_starvation() -> None:
+def test_a_review_wait_is_logged_as_healthy_whatever_else_is_running() -> None:
+    """Since #179 a parked card holds no slot by design, so running work beside
+    it is not starvation. It is reported as waiting on review, with the count."""
     sessions = _parked_and_running()
     with structlog.testing.capture_logs() as captured:
         _compute_session_eligibilities(_state_for(sessions), sessions, 1)
-    starved = [e for e in captured if e["event"] == "session.review_starved_by_capacity"]
-    assert [e["card_id"] for e in starved] == ["parked"]
-    assert not [
-        e for e in captured if e["event"] == "session.awaiting_review" and e["card_id"] == "parked"
-    ]
-
-    alone = {"parked": _parked_and_running()["parked"]}
-    alone_state = _state_for(alone)
-    alone_state["board_snapshot"] = {
-        "IN_REVIEW": ["parked"],
-        "IN_PROGRESS": [],
-        "TODO": [],
-        "BACKLOG": [],
-        "BLOCKED": [],
-    }
-    with structlog.testing.capture_logs() as healthy:
-        _compute_session_eligibilities(alone_state, alone, 1)
-    assert [e["card_id"] for e in healthy if e["event"] == "session.awaiting_review"] == ["parked"]
-    assert not [e for e in healthy if e["event"] == "session.review_starved_by_capacity"]
+    waits = [e for e in captured if e["event"] == "session.awaiting_review"]
+    assert [(e["card_id"], e["parked_in_review"]) for e in waits] == [("parked", 1)]
+    assert not [e for e in captured if e["event"] == "session.review_starved_by_capacity"]
 
 
 def test_a_wait_is_logged_when_it_starts_and_not_again_every_cycle() -> None:
@@ -137,10 +123,12 @@ def test_a_wait_is_logged_when_it_starts_and_not_again_every_cycle() -> None:
     with structlog.testing.capture_logs() as captured:
         for _ in range(3):
             _compute_session_eligibilities(state, sessions, 1)
-    assert len([e for e in captured if e["event"] == "session.review_starved_by_capacity"]) == 1
+    assert len([e for e in captured if e["event"] == "session.awaiting_review"]) == 1
 
-    # The running card finishes: the parked card now holds the reservation.
-    del sessions["running"]
+    # The card leaves review and comes back: that is a new wait.
+    sessions["parked"]["phase"] = "dispatching"
+    _compute_session_eligibilities(state, sessions, 1)
+    sessions["parked"]["phase"] = "monitoring_pr"
     with structlog.testing.capture_logs() as after:
         _compute_session_eligibilities(state, sessions, 1)
     assert [e["card_id"] for e in after if e["event"] == "session.awaiting_review"] == ["parked"]
