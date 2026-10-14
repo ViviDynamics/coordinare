@@ -5,8 +5,14 @@ tests/e2e/test_139_symphony_switcher.py.
 """
 from __future__ import annotations
 
+import ast
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "coordinare"
 
@@ -23,6 +29,47 @@ def test_the_paused_card_activity_and_error_name_the_github_project_not_the_boar
     daemon = (_SRC / "daemon.py").read_text(encoding="utf-8")
     assert "Board paused" not in daemon
     assert "The card moved out of its GitHub Project column" in daemon
+
+
+# --- item 1: every top-level snapshot field declares how a symphony scopes it --------- #
+
+_NODE_SNAPSHOT_SCOPE_CHECKS = Path(__file__).resolve().parents[1] / "js" / "snapshot_scope_checks.js"
+
+
+def _server_snapshot_keys() -> list[str]:
+    """Every top-level key the snapshot builder returns, read from store.py's AST.
+
+    A key added to ``_snapshot_core`` or ``_snapshot_extras`` appears here without
+    anyone remembering to update the scope table.
+    """
+    tree = ast.parse((_SRC / "dashboard" / "store.py").read_text(encoding="utf-8"))
+    keys: set[str] = set()
+    for func in ast.walk(tree):
+        if isinstance(func, ast.FunctionDef) and func.name in {"_snapshot_core", "_snapshot_extras"}:
+            for node in ast.walk(func):
+                if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
+                    keys.update(
+                        key.value for key in node.value.keys
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    )
+    return sorted(keys)
+
+
+def test_every_top_level_snapshot_field_declares_its_scope_and_scoping_is_right(tmp_path: Path) -> None:
+    keys = _server_snapshot_keys()
+    assert len(keys) > 30, "the AST walk found too few snapshot keys"
+    keys_file = tmp_path / "keys.json"
+    keys_file.write_text(json.dumps(keys), encoding="utf-8")
+    scope_js = tmp_path / "symphonies.js"
+    scope_js.write_text(_DASHBOARD_JS_SOURCES["symphonies"], encoding="utf-8")
+    node = shutil.which("node")
+    assert node is not None, "node is required for the dashboard JS gates"
+    result = subprocess.run(
+        [node, str(_NODE_SNAPSHOT_SCOPE_CHECKS), str(scope_js), str(keys_file)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    report = result.stdout + result.stderr
+    assert result.returncode == 0, f"snapshot scope checks failed:\n{report}"
 
 
 # --- item 7: per-symphony spend reconciles with the total ------------------------ #
