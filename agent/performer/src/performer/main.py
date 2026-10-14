@@ -1242,6 +1242,8 @@ def _json_required_role(role: str) -> bool:
 # the daemon's ``repair_hint`` (services/assessor_failure.py), which is a
 # separate process and so cannot import this one.
 _OUTPUT_SHAPE_GUIDANCE = {
+    "empty": "The previous output was empty.",
+    "array": "The previous output was a JSON array, not an object. Emit one JSON object.",
     "head_cut": (
         "The previous output began mid-object: its opening brace and first keys were "
         "lost. Emit the complete object from its first character."
@@ -1250,7 +1252,15 @@ _OUTPUT_SHAPE_GUIDANCE = {
         "The previous output ended before the object closed. Keep the answer compact "
         "so the object completes."
     ),
-    "whole": "The previous output had braces but was not valid JSON. Emit one valid JSON object.",
+    "whole": (
+        "The previous output was object-shaped but did not parse as JSON. Emit one valid "
+        "JSON object."
+    ),
+    "wrapped": (
+        "The previous output wrapped its object in other text. Emit only the JSON object, "
+        "with no prose or fences around it."
+    ),
+    "no_object": "The previous output contained no JSON object. Emit one JSON object and nothing else.",
 }
 _FAILURE_CAPTURE_HEAD = 300
 _FAILURE_CAPTURE_TAIL = 200
@@ -1258,22 +1268,29 @@ _FAILURE_PREVIEW = 200
 
 
 def _output_shape(raw: str) -> str:
-    """Name the shape of unparseable output: empty, head_cut, tail_cut or whole.
+    """Name the shape of unparseable output (keys of _OUTPUT_SHAPE_GUIDANCE).
 
-    A head_cut (closing brace present, opening brace absent) means the backend
+    A head_cut (a field-like closing brace, no opening brace) means the backend
     lost the start of its reply; a tail_cut (opening, no closing) means the reply
-    ran out of output budget. Anything else is a content failure, not a cut.
+    ran out of output budget. The rest describe what the reply was instead of an
+    object, so the wording given to the model stays true.
     """
     text = (raw or "").strip()
     if not text:
         return "empty"
     has_open = "{" in text
     has_close = "}" in text
-    if has_close and not has_open:
+    if text.startswith("[") and text.endswith("]"):
+        return "array"
+    if has_close and not has_open and '":' in text:
         return "head_cut"
     if has_open and not has_close:
         return "tail_cut"
-    return "whole"
+    if text.startswith("{") and text.endswith("}"):
+        return "whole"
+    if has_open and has_close:
+        return "wrapped"
+    return "no_object"
 
 
 def _failure_capture(raw: str) -> tuple[str, str]:
@@ -1281,7 +1298,9 @@ def _failure_capture(raw: str) -> tuple[str, str]:
 
     Redacts the whole value before slicing (a credential crossing a slice boundary
     otherwise survives both fragments). Long output keeps its head AND its tail, so
-    an operator can see the end the head-only capture used to hide.
+    an operator can see the end the head-only capture used to hide. The 300 and 200
+    bound source characters; repr() expands control characters (about 4x each), so
+    the excerpt can be several times longer. The daemon caps what it stores.
     """
     redacted = _redact_secrets(raw or "")
     if len(redacted) <= _FAILURE_CAPTURE_HEAD:
@@ -1456,11 +1475,14 @@ async def _parse_failure_retry_response(
         # 103: a restart with the same score re-sends the same prompt, and the
         # same output came back each time. The repair prompt rides the score's
         # relay_feedback so the restarted backend sees what failed and how.
+        # The daemon's format_repair hint (kind="format_repair") is dropped
+        # here: this prompt quotes the newer output, and sending both would
+        # show the model the same repair twice in one prompt.
         if is_json_contract_role:
             perf.score.relay_feedback = [
-                *perf.score.relay_feedback,
-                {"body": repair_prompt, "author_login": "performer"},
-            ]
+                item for item in perf.score.relay_feedback
+                if not (isinstance(item, dict) and item.get("kind") == "format_repair")
+            ] + [{"body": repair_prompt, "author_login": "performer"}]
         # Copilot round 5: backends like OpenCodeAdapter launch long-lived
         # ``opencode serve`` processes and start() doesn't tear down previous
         # instances.  Stop the current backend (best-effort) before launching

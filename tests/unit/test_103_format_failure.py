@@ -123,7 +123,8 @@ async def test_handle_system_error_keeps_generic_wording_for_mixed_failures() ->
 @pytest.mark.asyncio
 async def test_format_failure_retry_sets_a_repair_hint_for_the_next_dispatch() -> None:
     state = _make_state(
-        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}), stage="assessing"
+        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}),
+        stage="assessing",
     )
     result = await monitor_performer(state)
     assert result["phase"] == "system_error"
@@ -136,7 +137,8 @@ async def test_format_failure_retry_sets_a_repair_hint_for_the_next_dispatch() -
 @pytest.mark.asyncio
 async def test_identical_consecutive_format_failures_increment_the_streak() -> None:
     state = _make_state(
-        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}), stage="assessing"
+        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}),
+        stage="assessing",
     )
     state["system_error_reason"] = _HEAD_CUT_REASON
     state["system_error_identical_count"] = 2
@@ -147,7 +149,8 @@ async def test_identical_consecutive_format_failures_increment_the_streak() -> N
 @pytest.mark.asyncio
 async def test_a_different_failure_resets_the_streak() -> None:
     state = _make_state(
-        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}), stage="assessing"
+        service=_Performer({"status": "error", "reason": _HEAD_CUT_REASON}),
+        stage="assessing",
     )
     state["system_error_reason"] = _PLAIN_REASON
     state["system_error_identical_count"] = 2

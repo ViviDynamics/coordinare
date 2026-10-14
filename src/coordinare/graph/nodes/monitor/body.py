@@ -3076,11 +3076,21 @@ async def _phase_error_status_s2(
         # 103: a format retry must change something. The next dispatch carries the
         # failure and the output it quoted, through the observer-correction channel
         # (rides the payload's relay_feedback, never triggers a dispatch, cleared
-        # once a dispatch succeeds).
+        # once a dispatch succeeds). JSON-contract roles only: the BACKEND_FORMAT_ERROR
+        # prefix is stamped only on those, and format_repair_hint returns None without
+        # it. The hint is bound to its stage (inject skips it elsewhere) and is
+        # cleared on exhaustion (handle_system_error).
         stage_label = "assessment" if stage == "assessing" else (stage or "performer")
         repair = format_repair_hint(stored_reason, stage_label)
         state["observer_correction"] = (
-            {"body": repair, "author_login": "coordinare"} if repair is not None else None
+            {
+                "body": repair,
+                "author_login": "coordinare",
+                "kind": "format_repair",
+                "stage": stage,
+            }
+            if repair is not None
+            else None
         )
         state["open_questions"] = []
         state["relay_feedback"] = []

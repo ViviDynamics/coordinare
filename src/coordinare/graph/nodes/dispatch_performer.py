@@ -465,7 +465,9 @@ def inject_review_findings(card_context: dict[str, Any], state: Any, *, performe
     card_context["review_findings"] = deepcopy(review_findings)
 
 
-def inject_observer_correction(card_context: dict[str, Any], state: Any) -> None:
+def inject_observer_correction(
+    card_context: dict[str, Any], state: Any, *, performer_stage: str | None = None,
+) -> None:
     """426: merge the pending observer correction into the dispatch payload.
 
     Merged into the payload's relay_feedback only — never into
@@ -480,12 +482,21 @@ def inject_observer_correction(card_context: dict[str, Any], state: Any) -> None
     correction = state.get("observer_correction") if hasattr(state, "get") else None
     if not isinstance(correction, dict) or not correction.get("body"):
         return
+    # 103: a format-repair hint is bound to the stage that failed. Any other stage
+    # (after a human moved the card on) never receives it; the successful dispatch
+    # then clears it.
+    bound_stage = correction.get("stage")
+    if bound_stage and performer_stage is not None and bound_stage != performer_stage:
+        return
     existing = card_context.get("relay_feedback")
     items = list(existing) if isinstance(existing, list) else []
     # 103: a format-repair hint names its own author; a human observer correction
     # keeps the "observer" attribution it always had.
     author = correction.get("author_login") or "observer"
-    items.append({"body": correction["body"], "author_login": author})
+    item: dict[str, Any] = {"body": correction["body"], "author_login": author}
+    if correction.get("kind"):
+        item["kind"] = correction["kind"]
+    items.append(item)
     card_context["relay_feedback"] = items
 
 
@@ -2034,7 +2045,7 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
         card_context["relay_feedback"] = relay_feedback
     # 426: the observer's pending correction rides the payload's feedback list
     # (appended after any bounce feedback) without touching state["relay_feedback"].
-    inject_observer_correction(card_context, state)
+    inject_observer_correction(card_context, state, performer_stage=performer_stage)
 
     # 020: Include architecture plan in dispatch payload for downstream roles (FR-007).
     # The plan_path is set on the card by monitor_performer when the architect
