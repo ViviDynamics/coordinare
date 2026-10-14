@@ -8,6 +8,7 @@ and a run's menu calls the existing control endpoints.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -26,6 +27,8 @@ from tests.e2e.test_dashboard_browser import (
 
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 800
+MIN_DESCRIPTION_WIDTH = 240  # the 47-character sentence at 11px, uncut
+DESCRIPTION_LINE_HEIGHT = 16
 RUNNING_CARDS = 2
 BOARD_CARDS = 6
 ACTIVITY_ROWS = 20
@@ -461,3 +464,64 @@ def test_the_rendered_dashboard_text_has_no_em_or_en_dash(page: Page, live_serve
 def test_the_tab_title_uses_a_bar_not_a_dash(page: Page, live_server_url: str, store: DashboardStore) -> None:
     _show_the_layout(page, live_server_url, store)
     expect(page).to_have_title("Dashboard | Coordinare", timeout=_WAIT_LIVE)
+
+
+# --- Review 2: the description has its own readable line; tall board columns say they scroll ---
+
+@pytest.mark.e2e
+def test_the_conductor_description_sits_on_its_own_line_and_shows_about_sixty_characters(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    _show_the_layout(page, live_server_url, store)
+    phase = page.locator("#phase").bounding_box()
+    desc = page.locator("#phase-desc")
+    expect(desc).to_have_text("Performer agent is actively working on the card.", timeout=_WAIT_LIVE)
+    box = desc.bounding_box()
+    assert phase is not None and box is not None
+    assert box["y"] >= phase["y"] + phase["height"] - 1, (phase, box)
+    # The sentence is 47 characters: it must show in full, with no ellipsis, on one line.
+    assert box["width"] >= MIN_DESCRIPTION_WIDTH, box
+    assert box["height"] <= DESCRIPTION_LINE_HEIGHT + 2, box
+    fits = desc.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+    assert fits, "the description is cut"
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(("runs", "long_title", "banner"), _SCENARIOS, ids=lambda v: str(v))
+def test_the_fold_still_holds_with_the_description_on_its_own_line(
+    page: Page, live_server_url: str, store: DashboardStore, runs: int, long_title: bool, banner: bool,
+) -> None:
+    page.set_viewport_size({"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(_scenario_snapshot(runs, long_title, banner))
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_have_count(runs, timeout=_WAIT_LIVE)
+    for selector in _FOLD_SELECTORS:
+        box = page.locator(selector).bounding_box()
+        assert box is not None, selector
+        assert box["y"] + box["height"] <= VIEWPORT_HEIGHT, f"{selector} ends below the fold: {box}"
+
+
+@pytest.mark.e2e
+def test_a_column_that_overflows_fades_and_says_how_many_cards_are_below(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    page.set_viewport_size({"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    store.broadcaster.broadcast(_scenario_snapshot(4, False, False))
+    in_progress = page.locator("#swimlane-section .swimlane-col").filter(has_text="In Progress")
+    expect(in_progress).to_have_class(re.compile(r"is-overflowing"), timeout=_WAIT_LIVE)
+    more = in_progress.locator(".swimlane-more")
+    expect(more).to_have_text(re.compile(r"^\+\d+ more$"), timeout=_WAIT_LIVE)
+    body = in_progress.locator(".swimlane-col-body")
+    assert body.evaluate("el => getComputedStyle(el).maskImage") != "none"
+    assert body.get_attribute("tabindex") == "0"
+
+
+@pytest.mark.e2e
+def test_a_column_that_fits_has_no_hint(page: Page, live_server_url: str, store: DashboardStore) -> None:
+    _show_the_layout(page, live_server_url, store)
+    todo = page.locator("#swimlane-section .swimlane-col").filter(has_text="To Do")
+    expect(todo.locator(".swimlane-more")).to_be_hidden(timeout=_WAIT_LIVE)
+    assert "is-overflowing" not in (todo.get_attribute("class") or "")

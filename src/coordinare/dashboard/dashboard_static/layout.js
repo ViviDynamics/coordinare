@@ -182,6 +182,39 @@ function activeRunTileHtml(sess, s) {
   '</div>';
 }
 
+// 154 review 2: a board column that scrolls says so. A column whose cards run past its
+// height gets the fade (is-overflowing), a "+N more" line for the cards whose tops are
+// out of view, and a tab stop so a keyboard user can scroll it. Runs after each board render.
+function markBoardOverflow() {
+  var columns = document.querySelectorAll('#swimlane-section .swimlane-col');
+  for (var i = 0; i < columns.length; i++) {
+    var col = columns[i];
+    var body = col.querySelector('.swimlane-col-body');
+    // Nothing to measure while the board is hidden (the card detail is open, or another page shows).
+    if (!body || body.clientHeight === 0) continue;
+    var height = body.clientHeight;
+    var cards = Array.prototype.filter.call(body.children, function(c) { return c.classList.contains('swimlane-card'); });
+    var floor = body.scrollTop + height;
+    // A card cut by the foot of the column is still more content below, so it counts too.
+    var below = cards.filter(function(c) { return c.offsetTop + c.offsetHeight > floor; }).length;
+    var overflowing = body.scrollHeight > height + 1;
+    col.classList.toggle('is-overflowing', overflowing);
+    if (overflowing) body.setAttribute('tabindex', '0'); else body.removeAttribute('tabindex');
+    var more = col.querySelector('.swimlane-more');
+    if (!more) {
+      more = document.createElement('div');
+      more.className = 'swimlane-more';
+      col.appendChild(more);
+    }
+    more.textContent = '+' + below + ' more';
+    more.hidden = below === 0;
+    if (!body.getAttribute('data-overflow-wired')) {
+      body.setAttribute('data-overflow-wired', '1');
+      body.addEventListener('scroll', markBoardOverflow);
+    }
+  }
+}
+
 // The health dot: takes the reader to the System health card and moves focus there.
 function showSystemHealth() {
   var card = document.getElementById('health-card');

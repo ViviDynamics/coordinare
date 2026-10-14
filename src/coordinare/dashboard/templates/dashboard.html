@@ -447,8 +447,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <!-- 154: the status strip, one row. The headline, the counts, the spend, the freshness
      and the health dot are written by app.js and layout.js. -->
 <section id="status-strip" class="status-strip" aria-label="Status">
-  <span id="phase" class="phase phase-idle">Idle</span>
-  <span id="phase-desc" class="status-desc muted"></span>
+  <span class="status-headline"><span id="phase" class="phase phase-idle">Idle</span>
+  <span id="phase-desc" class="status-desc muted"></span></span>
   <span id="status-counts" class="status-counts"></span>
   <span id="spend-strip" class="status-muted"></span>
   <!-- 154 review: only the state label is a live region; the ticking countdown is not announced each second. -->

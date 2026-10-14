@@ -120,6 +120,7 @@ function renderState(s) {
 
   // Cards (the board). The active runs are rendered by renderDashboardExtras.
   renderActiveWorkPanels(s);
+  markBoardOverflow();
   var cardsSummary = document.getElementById('cards-summary');
   if (cardsSummary) cardsSummary.textContent = boardCountsText(s);
 
