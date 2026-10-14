@@ -136,6 +136,9 @@ class DriverBackend:
             },
         )
         transcript.emit("user", text=task_text)
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         await self._spawn(cmd)
 
     def get_status(self) -> BackendStatus:

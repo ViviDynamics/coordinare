@@ -237,6 +237,9 @@ class ClaudeCodeBackend:
             ]},
         )
         transcript.emit("user", text=prompt)
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         await self._launch(prompt)
 
     def get_status(self) -> BackendStatus:
