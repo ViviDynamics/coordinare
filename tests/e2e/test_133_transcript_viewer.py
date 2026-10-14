@@ -266,11 +266,19 @@ def test_search_finds_an_event_and_jumps_to_it(page: Page, run_server_url: str) 
 
 @pytest.mark.e2e
 def test_copy_link_puts_the_event_address_on_the_clipboard(page: Page, run_server_url: str) -> None:
-    page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=run_server_url)
+    # Record what the page writes instead of reading the real clipboard: Firefox has no
+    # clipboard-read permission to grant, and the test is about the address written.
+    page.add_init_script(
+        """(() => {
+            window.__copied = null;
+            const clip = { writeText: (text) => { window.__copied = text; return Promise.resolve(); } };
+            Object.defineProperty(navigator, 'clipboard', { value: clip, configurable: true });
+        })();""",
+    )
     _open_run(page, run_server_url, SMALL_CARD, SMALL_RUN)
     page.locator('#e2 [data-action="copy"]').click()
     expect(page.locator("#runs-notice")).to_contain_text("Link copied", timeout=_WAIT_LIVE)
-    copied = page.evaluate("navigator.clipboard.readText()")
+    copied = page.evaluate("window.__copied")
     assert copied.endswith(_run_url(SMALL_CARD, SMALL_RUN, "#e2")), copied
 
 
