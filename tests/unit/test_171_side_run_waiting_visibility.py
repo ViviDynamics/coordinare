@@ -75,3 +75,22 @@ async def test_the_waiting_reason_clears_when_the_side_run_starts() -> None:
     assert svc.dispatched == ["P"]
     _compute_session_eligibilities(d._state, sessions, 1)
     assert "P" not in (d._state.get("session_skip_reasons") or {})
+
+
+@pytest.mark.asyncio
+async def test_an_ineligible_card_with_a_resolved_run_keeps_its_real_reason() -> None:
+    """A card with a resolved side run that is ineligible (here: in BLOCKED) is not waiting for a slot.
+
+    Its real skip reason must survive. Before the fix, the side-run overlay replaced
+    any reason with side_run_waiting, so the dashboard misreported the card.
+    """
+    sessions = {"P": _parked("P")}
+    svc = _Svc()
+    d = _waiting_daemon(sessions, svc)
+    d._state["board_snapshot"] = {"BLOCKED": ["P"]}
+    await _run(d, sessions, {"P"})
+    await _drain(d)
+    assert svc.dispatched == []
+    _compute_session_eligibilities(d._state, sessions, 1)
+    reason = (d._state.get("session_skip_reasons") or {}).get("P")
+    assert reason is not None and reason["reason"] == "blocked_column"

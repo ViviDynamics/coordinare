@@ -61,8 +61,8 @@ from coordinare.services.pipeline_budget import (
     has_live_side_writer,
     has_live_work,
     has_started,
-    is_parked_in_review,
     is_released_merge,
+    is_waiting_on_review,
     parked_in_review,
     review_cap_allows_new_card,
     review_cap_detail,
@@ -1622,7 +1622,7 @@ def _log_review_waits(
     A parked card holds no pipeline slot (#179) and is still evaluated for
     merge every cycle (#102). It asks for a slot again when it needs a performer.
     """
-    parked = {cid for cid, session in active_sessions.items() if is_parked_in_review(session)}
+    parked = {cid for cid, session in active_sessions.items() if is_waiting_on_review(session)}
     logged = _review_wait_logged.setdefault(symphony, set())
     logged.intersection_update(parked)
     for cid in sorted(parked - logged):
@@ -1741,7 +1741,8 @@ def _compute_session_eligibilities(
     # moved, so the dashboard shows it beside the card. Set by the side-run admission
     # earlier in the same cycle.
     for card_id, detail in (state.get("_side_run_waiting") or {}).items():
-        if card_id in active_sessions:
+        # Only where the card has no reason of its own: a real skip reason always wins.
+        if card_id in active_sessions and card_id not in skip_reasons:
             skip_reasons[card_id] = {"reason": SIDE_RUN_WAITING, "detail": detail}
     state["session_skip_reasons"] = skip_reasons
     return eligibilities
@@ -4265,12 +4266,15 @@ class CoordinareDaemon:
                     continue
                 if found is not None:
                     resolved[card_id] = found
-            eligible = {cid for cid, elig in _eligibility_map(self._state, sessions).items() if elig.eligible}
-            admit = admitted_side_runs(
-                sessions, set(resolved), limit=self._max_concurrent_cards(), eligible=eligible,
-            )
-            if dispatchable_card_ids is not None:
-                self._record_side_run_waiting(sessions, set(resolved) - admit)
+            admit: set[str] = set()
+            if resolved:
+                eligible = {cid for cid, elig in _eligibility_map(self._state, sessions).items() if elig.eligible}
+                admit = admitted_side_runs(
+                    sessions, set(resolved), limit=self._max_concurrent_cards(), eligible=eligible,
+                )
+                if dispatchable_card_ids is not None:
+                    # Waiting means eligible but not admitted. An ineligible card keeps its real reason.
+                    self._record_side_run_waiting(sessions, (set(resolved) & eligible) - admit)
 
             async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
                 return resolved.get(card_id)
