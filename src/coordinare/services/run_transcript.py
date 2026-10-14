@@ -48,7 +48,6 @@ import errno
 import hashlib
 import json
 import os
-import re
 import stat
 import threading
 from dataclasses import dataclass
@@ -59,6 +58,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from coordinare.lib.path_segments import UNATTRIBUTED, sanitize_segment
 from coordinare.lib.transcript_redaction import redact_value, secret_values_from_env
 from coordinare.services.token_usage import TokenLedger
 
@@ -85,18 +85,12 @@ TranscriptScope = Literal["message", "run"]
 
 TRANSCRIPT_TYPES: frozenset[str] = frozenset(get_args(TranscriptType))
 
-# Folder name used when a run's symphony or card is unknown (for example a
-# status poll made without a transcript target). The file is still written.
-UNATTRIBUTED = "unattributed"
-
 # Bounds on what the daemon accepts from one delivery. A record over the
 # per-record limit becomes a truncation marker. A batch over the batch limit is
 # cut short, and the rest is requested again on the next poll (never skipped).
 MAX_RECORD_BYTES = 16 * 1024 * 1024
 MAX_BATCH_BYTES = 32 * 1024 * 1024
 
-_SEGMENT_INVALID = re.compile(r"[^A-Za-z0-9._-]+")
-_SEGMENT_MAX_LEN = 120
 _TRANSCRIPT_SUFFIX = ".jsonl"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 # A FIFO at the run path must not hang a worker thread (review item 3a).
@@ -136,25 +130,6 @@ class TranscriptRecord(BaseModel):
 
 class _RefusedError(Exception):
     """The writer declined a path (a symlink, a non-directory, a non-regular file)."""
-
-
-def sanitize_segment(value: str) -> str:
-    """Make a symphony, card or run id safe as one path segment.
-
-    Anything outside ``[A-Za-z0-9._-]`` becomes ``_``, leading and trailing dots
-    and underscores are stripped (so ``..`` cannot survive), and the result is
-    length-capped. An empty result becomes ``UNATTRIBUTED``.
-    """
-    stripped = value.strip()
-    cleaned = _SEGMENT_INVALID.sub("_", stripped)[:_SEGMENT_MAX_LEN].strip("._")
-    if not cleaned:
-        return UNATTRIBUTED
-    if cleaned != stripped:
-        # Two different ids can clean to the same text ("a/b" and "a_b"). A short
-        # digest of the original keeps them apart (review item 8).
-        digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:8]
-        return f"{cleaned[: _SEGMENT_MAX_LEN - 9].rstrip('._')}-{digest}"
-    return cleaned
 
 
 def transcript_path(root: Path, *, symphony: str, card_id: str, run_id: str) -> Path:

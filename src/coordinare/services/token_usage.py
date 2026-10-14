@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.path_segments import UNATTRIBUTED, sanitize_segment
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
@@ -255,6 +257,9 @@ class TokenLedger:
         A record at or below the run's last seq is skipped, so a redelivered record is
         never counted twice. A record's own ``stage`` key wins over the argument.
         """
+        # 139 review: the ledger keys a run by the folder its transcript was written to,
+        # so the symphony is the sanitised name the writer used.
+        symphony = sanitize_segment(symphony)
         counted = 0
         with self._lock:
             run = self._runs.get(run_id)
@@ -777,6 +782,16 @@ def usage_block(
     """
     today_iso = today.isoformat()
     week_start = (today - timedelta(days=WEEK_DAYS - 1)).isoformat()
+
+    def _figures(folder: str) -> dict[str, Any]:
+        return {
+            "today": usage_summary(ledger.totals(symphony=folder, days=(today_iso, today_iso)), table),
+            "week": usage_summary(ledger.totals(symphony=folder, days=(week_start, today_iso)), table),
+        }
+
+    # 139 review: a symphony's figures are looked up by the folder its runs were written
+    # to (the same sanitised name), and the runs that name no symphony are reported
+    # apart, so the parts plus the remainder always add up to the total.
     return {
         "tracked": True,
         "reason": None,
@@ -784,13 +799,8 @@ def usage_block(
         "week_start": week_start,
         "today": usage_summary(ledger.totals(days=(today_iso, today_iso)), table),
         "week": usage_summary(ledger.totals(days=(week_start, today_iso)), table),
-        "by_symphony": {
-            name: {
-                "today": usage_summary(ledger.totals(symphony=name, days=(today_iso, today_iso)), table),
-                "week": usage_summary(ledger.totals(symphony=name, days=(week_start, today_iso)), table),
-            }
-            for name in symphonies
-        },
+        "by_symphony": {name: _figures(sanitize_segment(name)) for name in symphonies},
+        "unattributed": _figures(UNATTRIBUTED),
     }
 
 

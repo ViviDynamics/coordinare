@@ -1020,8 +1020,14 @@ class DashboardStore:
         def _text(value: Any) -> str:
             return value if isinstance(value, str) else ""
 
-        org = _text(overrides.get("github_org")) or _text(getattr(global_cfg, "github_org", ""))
-        repo = _text(overrides.get("project_name")) or _text(getattr(global_cfg, "project_name", ""))
+        # A key present in the overrides wins even when it is empty (effective_config
+        # updates the global dict with the overrides). Only an empty repository then
+        # falls back to the symphony name.
+        org = _text(overrides["github_org"]) if "github_org" in overrides else _text(getattr(global_cfg, "github_org", ""))
+        repo = (
+            _text(overrides["project_name"]) if "project_name" in overrides
+            else _text(getattr(global_cfg, "project_name", ""))
+        )
         return org, repo or sym_name
 
     @staticmethod
