@@ -242,6 +242,9 @@ class JunieBackend:
         self._model = model
         self._max_tokens = max_tokens
         self._original_prompt = _build_task_prompt(score, stand_path=Path(stand.path))
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         await self._launch(self._original_prompt)
 
     def get_status(self) -> BackendStatus:

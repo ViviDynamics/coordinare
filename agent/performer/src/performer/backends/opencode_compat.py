@@ -358,6 +358,9 @@ class OpenCodeCompatAdapter:
             session_id=self._session_id,
         )
 
+        # 223: a restart after a format failure reuses this instance; without
+        # this reset get_status() returns the previous run's done and output.
+        self._status = BackendStatus(state="working")
         self._reader_task = asyncio.create_task(
             self._event_reader_loop(), name=f"{self._adapter_name}-event-reader",
         )

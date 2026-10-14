@@ -16,10 +16,30 @@ def _source_identity(item: dict) -> str:
     return identity or "source unspecified"
 
 
+def _is_format_repair(item: object) -> bool:
+    return isinstance(item, dict) and item.get("kind") == "format_repair"
+
+
+def _format_repair_section(feedback: Sequence[object]) -> list[str]:
+    """223: a format repair asks for the reply's shape, not for code changes.
+
+    Rendered on its own, so the codebase-wide "fix them all" instruction below
+    never reaches a role that should only re-emit its JSON object.
+    """
+    bodies = [item.get("body") for item in feedback if _is_format_repair(item) and item.get("body")]
+    if not bodies:
+        return []
+    return ["", "## Output Format Correction", "", *bodies]
+
+
 def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
     """Keep automated, human and unknown feedback distinct from approval."""
     if not feedback:
         return []
+    repair = _format_repair_section(feedback)
+    feedback = [item for item in feedback if not _is_format_repair(item)]
+    if not feedback:
+        return repair
     parts = [
         "", "## Relayed Feedback (address all applicable items)", "",
         "Feedback may come from automated continuation, review or QA, or from human comments. "
@@ -54,4 +74,4 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
                     parts.append(f"  - {location} — {comment['body']}{identity}" if location else f"  - {comment['body']}{identity}")
         elif isinstance(item, str):
             parts += ["**Feedback (source unspecified):**", f"- {item}"]
-    return parts
+    return parts + repair

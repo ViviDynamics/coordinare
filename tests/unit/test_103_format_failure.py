@@ -42,11 +42,12 @@ def test_excerpt_is_the_captured_output_after_the_marker() -> None:
     assert format_failure_excerpt(_PLAIN_REASON) is None
 
 
-def test_repair_hint_names_the_lost_head_and_quotes_the_capture() -> None:
+def test_repair_hint_names_the_lost_head_without_quoting_the_fragment() -> None:
+    # 223: the fragment is not what the model wrote, so it is not quoted back.
     hint = format_repair_hint(_HEAD_CUT_REASON, "assessment")
     assert hint is not None
     assert "opening brace" in hint
-    assert "ufficient" in hint
+    assert "ufficient" not in hint
     assert "assessment" in hint
 
 
