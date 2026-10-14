@@ -26,10 +26,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 import structlog
+from kubernetes.client.rest import ApiException
 
 from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
@@ -610,6 +612,35 @@ class KubernetesRuntime:
             return
 
         await self._await_pod_gone(handle, timeout_s=timeout_s)
+
+    async def confirm_stopped(self, handle: str, *, timeout_s: int = 10) -> bool:
+        """218 (review round 3): True only when the Pod is gone, proven by a read that returns 404.
+
+        Deleting a Pod only requests it, and the Pod sits in ``Terminating`` for its grace period. So
+        the delete is followed by reads until the Pod reads 404 or the budget runs out. A read that
+        fails for any other reason is not proof, and neither is a Pod that still reads.
+        """
+        try:
+            await asyncio.to_thread(
+                self._api.delete_namespaced_pod,
+                name=handle,
+                namespace=self._namespace,
+                grace_period_seconds=timeout_s,
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return True
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                await asyncio.to_thread(
+                    self._api.read_namespaced_pod, name=handle, namespace=self._namespace,
+                )
+            except ApiException as exc:
+                return bool(exc.status == 404)
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
 
     async def _await_pod_gone(self, pod_name: str, *, timeout_s: int) -> None:
         """Block until the Pod is actually gone, matching Docker's ``stop`` semantics.

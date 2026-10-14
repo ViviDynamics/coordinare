@@ -72,6 +72,32 @@ class DockerRuntime:
     async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
         await performer_lifecycle.stop(handle, timeout_s=timeout_s)
 
+    async def confirm_stopped(self, handle: str, *, timeout_s: int = 10) -> bool:
+        """218 (review round 3): True only when docker proves the container can no longer write.
+
+        ``docker stop`` returns once the container has exited. If it fails, only a
+        "No such container" answer from ``docker container inspect`` proves the container
+        was removed (``--rm``). A container still running, an unreadable answer, or any
+        other error is False. A subprocess error propagates to the caller, which fails closed.
+        """
+        stop = await asyncio.create_subprocess_exec(
+            "docker", "stop", "--time", str(timeout_s), handle,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(stop.wait(), timeout=timeout_s + 15)
+        if stop.returncode == 0:
+            return True
+        inspect = await asyncio.create_subprocess_exec(
+            "docker", "container", "inspect", "--format", "{{.State.Running}}", handle,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(inspect.communicate(), timeout=20.0)
+        if inspect.returncode != 0:
+            return "No such container" in err.decode(errors="replace")
+        return out.decode(errors="replace").strip() == "false"
+
     async def tail_logs(self, handle: str, *, lines: int = 200) -> list[str]:
         import asyncio
 

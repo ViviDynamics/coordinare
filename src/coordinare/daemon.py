@@ -662,6 +662,9 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             # 218: the daemon-rendered scripts the verification and activate gate use.
             rendered_verify_sh=get("rendered_verify_sh"),
             rendered_activate_sh=get("rendered_activate_sh"),
+            # 218 (review round 3): the infrastructure budget survives a restart.
+            infra_failures=int(get("infra_failures") or 0),
+            last_infra_failure_at=get("last_infra_failure_at"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
@@ -967,6 +970,8 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             # 218: restore the daemon-rendered scripts; the cache copies are never read back.
             live.rendered_verify_sh = persisted.rendered_verify_sh
             live.rendered_activate_sh = persisted.rendered_activate_sh
+            live.infra_failures = persisted.infra_failures
+            live.last_infra_failure_at = persisted.last_infra_failure_at
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
@@ -3962,57 +3967,48 @@ class CoordinareDaemon:
             ), _clean_ok is None
         return True, None, False
 
-    async def _quiesce_bootstrap_container(self, container_id: str | None, symphony_name: str) -> bool:
-        """218 (review): True when the bootstrap container can no longer write the cache.
+    async def _quiesce_bootstrap_container(self, svc: Any, container_id: str | None, symphony_name: str) -> bool:
+        """218 (review round 3): True only when the bootstrap workload is proven unable to write the cache.
 
-        The performer reports terminal while its container may still run, and the clean verify
-        reads the cache. ``docker stop`` returns once the container has exited. A failed stop is still
-        quiet when the container is gone (``--rm`` removes it on exit), and ``docker container
-        inspect`` says so. A container still running is not quiet, and the verify must not run.
-        With no container id (a transport that does not expose one) nothing can be confirmed, and that
-        is logged.
+        Each runtime proves this on its own transport (``confirm_stopped``): docker by a stop, or a
+        "No such container" answer for a container ``--rm`` removed; Kubernetes by a 404 on the Pod. A
+        missing handle, a runtime with no such check, or any error is not proof, so it is False. A False
+        here is an infrastructure failure, and the verify does not run.
         """
         if not container_id:
-            logger.warning(
+            logger.error(
                 "env_cache.bootstrap_container_unknown",
                 symphony=symphony_name,
-                detail="no container id for this bootstrap; its exit cannot be confirmed",
+                detail="no handle for the bootstrap container, so its exit cannot be confirmed",
             )
-            return True
-        try:
-            stop = await asyncio.create_subprocess_exec(
-                "docker", "stop", "--time", "5", container_id,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(stop.wait(), timeout=20.0)
-            if stop.returncode == 0:
-                return True
-            inspect = await asyncio.create_subprocess_exec(
-                "docker", "container", "inspect", "--format", "{{.State.Running}}", container_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await asyncio.wait_for(inspect.communicate(), timeout=20.0)
-        except Exception as exc:
+            return False
+        confirm = getattr(getattr(svc, "_runtime", None), "confirm_stopped", None)
+        if confirm is None:
             logger.error(
+                "env_cache.bootstrap_container_unknown",
+                symphony=symphony_name,
+                container_id=container_id[:12],
+                detail="this transport cannot confirm that the bootstrap container stopped",
+            )
+            return False
+        try:
+            quiet = bool(await confirm(container_id))
+        except Exception as exc:
+            logger.exception(
                 "env_cache.bootstrap_quiesce_failed",
                 symphony=symphony_name,
                 container_id=container_id[:12],
                 error=str(exc),
             )
             return False
-        if inspect.returncode != 0:
-            return True  # no such container: it exited and was removed
-        running = out.decode(errors="replace").strip() == "true"
-        if running:
+        if not quiet:
             logger.error(
                 "env_cache.bootstrap_container_still_running",
                 symphony=symphony_name,
                 container_id=container_id[:12],
-                detail="verification not run; the bootstrap container could not be stopped",
+                detail="verification not run; the bootstrap container could not be proven stopped",
             )
-        return not running
+        return quiet
 
     async def _bootstrap_idle_reap(
         self,
@@ -4131,7 +4127,7 @@ class CoordinareDaemon:
         # 218 (review): the verify reads the cache, so it runs only after the bootstrap container has
         # exited or been removed. A container that is still running fails the bootstrap (not counted).
         infra = False
-        if ok and not await self._quiesce_bootstrap_container(container_id, symphony_name):
+        if ok and not await self._quiesce_bootstrap_container(svc, container_id, symphony_name):
             ok, infra = False, True
             _boot_err = "bootstrap container could not be confirmed stopped; verification was not run"
         if ok:

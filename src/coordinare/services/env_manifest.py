@@ -423,6 +423,11 @@ def render_verify_sh(
     cache, so the verify never reads the performer-writable copy (a copy swapped in between the
     daemon's match check and docker's read would otherwise be executed).
 
+    What the verify proves: the toolchain the bootstrap installed runs and reports the expected version.
+    Checking a version executes the installed binary, so the verify cannot tell a genuine toolchain from one
+    the bootstrap planted to print the right version. Binary provenance (a digest or a snapshot) is tracked in
+    #234. A PASSED verify is not a security verdict on the toolchain.
+
     Sources activate.sh first (so the installed toolchain is on PATH), runs every
     item's check, and exits non-zero if any failed — the same contract the
     clean-context verifier (daemon._verify_env_cache_clean) already runs.

@@ -45,6 +45,10 @@ class EnvCacheState(BaseModel):
     # None means no daemon-owned script is on record, so nothing verifies or mounts.
     rendered_verify_sh: str | None = None
     rendered_activate_sh: str | None = None
+    # 218 (review round 3): infrastructure failures (docker could not run the verify, or the bootstrap
+    # container could not be proven quiet). A separate budget from the verdict budget; reset on success.
+    infra_failures: int = 0
+    last_infra_failure_at: datetime | None = None
 
     # 088 (FR-009/FR-010): bootstrap circuit breaker. ``bootstrap_attempts``
     # counts consecutive failures for the current spec SHA; reset on success

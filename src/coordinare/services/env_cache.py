@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -75,6 +76,16 @@ _EXECUTABLE_MODE = 0o755
 # 218: bound on a cache script read back for the byte comparison in the activate.sh gate.
 _RENDERED_SCRIPT_MAX_BYTES = 256 * 1024
 
+# 218 (review round 3): the clean verify's wall-clock budget. A run past it is a real failure, and its
+# container is removed by name.
+_VERIFY_TIMEOUT_S = 300.0
+
+# 218 (review round 3): docker run exit code when the daemon or the image could not start the container.
+_DOCKER_RUN_START_FAILED = 125
+
+# 218 (review round 3): infrastructure failures before the cache is exhausted (operator-visible).
+_INFRA_FAILURE_CAP = 5
+
 
 def load_prior_manifest_bounded(
     cache_dir: Path, *, performer_mounts: Sequence[Path],
@@ -124,6 +135,13 @@ def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
     STOPPED retrying and why — instead of a generic 'waiting for bootstrap'."""
     if cache_state.bootstrap_exhausted:
         last_error = (cache_state.last_bootstrap_error or "unknown failure").strip()
+        if cache_state.infra_failures and not cache_state.bootstrap_attempts:
+            return (
+                f"Env bootstrap stopped after {cache_state.infra_failures} infrastructure failure(s): "
+                f"docker or the bootstrap container could not confirm the verification. "
+                f"Last failure: {last_error}. Fix the docker daemon and the performer image, then "
+                "change the spec (a SHA change re-arms it)."
+            )
         return (
             f"Env bootstrap budget exhausted after {cache_state.bootstrap_attempts} "
             f"failed run(s); no further bootstraps will be dispatched for this "
@@ -396,6 +414,20 @@ async def resolve_test_env_vars(
     return loaded
 
 
+async def _remove_verify_container(name: str) -> bool:
+    """218 (review round 3): remove the verify container by its name. True when docker confirms it."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "rm", "-f", name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=30.0)
+    except (OSError, TimeoutError):
+        return False
+    return proc.returncode == 0
+
+
 async def verify_env_cache_clean(
     state: Mapping[str, Any],
     symphony_name: str,
@@ -411,6 +443,11 @@ async def verify_env_cache_clean(
     verify.sh sources activate.sh and asserts every dependency is runnable
     (it installs from the cache's local debs, no network), so this is a
     faithful "does the cache alone provide a working toolchain" check.
+
+    What the verify proves: the toolchain the bootstrap installed runs and reports the expected version.
+    Checking a version executes the installed binary, so the verify cannot tell a genuine toolchain from one
+    the bootstrap planted to print the right version. Binary provenance (a digest or a snapshot) is tracked in
+    #234. A PASSED verify is not a security verdict on the toolchain.
 
     Returns ``(passed, detail)``. 218: the script run is the one the daemon rendered
     (``EnvCacheState.rendered_verify_sh``), piped on stdin. ``passed`` is False when that
@@ -473,8 +510,9 @@ async def verify_env_cache_clean(
     # stdin, and it unpacks the cache's debs, symlinks /usr/bin entries and sources the cache's
     # activate.sh. Empty BASH_ENV and ENV stop that for bash and sh. _DEVENV_SOURCED makes the profile
     # a no-op even if a variable is re-exported, and _DEVENV_SKIP_SERVICES stops any service start.
+    name = f"coordinare-verify-{ec.sanitised_name}-{uuid.uuid4().hex[:8]}"
     cmd = [
-        "docker", "run", "--rm", "-i",
+        "docker", "run", "--rm", "-i", "--name", name,
         "-e", "BASH_ENV=",
         "-e", "ENV=",
         "-e", "_DEVENV_SOURCED=1",
@@ -490,16 +528,47 @@ async def verify_env_cache_clean(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out_b, _ = await asyncio.wait_for(
-            proc.communicate(input=script.encode()), timeout=300.0,
-        )
-    except Exception as exc:
+    except OSError as exc:
         logger.warning(
             "env_cache.clean_verify_errored",
             symphony=symphony_name,
             error=str(exc),
         )
         return None, f"clean verify could not run: {exc}"
+    return await _verify_outcome(proc, name, symphony_name, script)
+
+
+async def _verify_outcome(
+    proc: asyncio.subprocess.Process, name: str, symphony_name: str, script: str,
+) -> tuple[bool | None, str]:
+    """218 (review round 3): the verdict for a verify container that started.
+
+    A run past the budget is a real failure, and its container is removed by name. An exit 125 means
+    docker could not start the container, which is infrastructure. Any other exit is the verify's verdict.
+    """
+    try:
+        out_b, _ = await asyncio.wait_for(
+            proc.communicate(input=script.encode()), timeout=_VERIFY_TIMEOUT_S,
+        )
+    except TimeoutError:
+        proc.kill()
+        removed = await _remove_verify_container(name)
+        logger.error(
+            "env_cache.clean_verify_timed_out",
+            symphony=symphony_name,
+            container=name,
+            removed=removed,
+        )
+        state_note = "removed" if removed else "NOT confirmed removed"
+        return False, f"clean verify timed out after {_VERIFY_TIMEOUT_S:.0f}s; its container was {state_note}"
+    if proc.returncode == _DOCKER_RUN_START_FAILED:
+        logger.warning(
+            "env_cache.clean_verify_errored",
+            symphony=symphony_name,
+            error=f"docker run exited {_DOCKER_RUN_START_FAILED}",
+        )
+        tail = out_b.decode(errors="replace")[-300:].strip()
+        return None, f"docker could not start the verify container: {tail}"
     out = out_b.decode(errors="replace")
     passed = proc.returncode == 0
     logger.info(
@@ -873,6 +942,8 @@ class EnvCacheService:
             )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            # 218 (review round 3): a new spec re-arms the infrastructure budget too.
+            cache_state.infra_failures = 0
 
         # 088 (FR-009): tripped breaker — no further dispatch for this spec SHA.
         # The (rate-limited implicit) exhaustion was announced once when the
@@ -895,7 +966,7 @@ class EnvCacheService:
         if not needs_bootstrap and cache_state.last_bootstrap_succeeded is False:
             last_at = cache_state.last_bootstrap_at
             retry_cooldown = BOOTSTRAP_RETRY_COOLDOWN_S * (
-                2 ** cache_state.bootstrap_attempts
+                2 ** (cache_state.bootstrap_attempts + cache_state.infra_failures)
             )
             cooldown_elapsed = (
                 last_at is None
@@ -1569,6 +1640,42 @@ class EnvCacheService:
         self._notify_tasks.add(task)
         task.add_done_callback(self._notify_tasks.discard)
 
+    def _record_infra_failure(
+        self,
+        symphony_name: str,
+        cache_state: EnvCacheState,
+        state: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        """218 (review round 3): record one infrastructure failure, escalate, and cap it.
+
+        The verify could not run, or the bootstrap container could not be proven quiet. The verdict
+        budget is not spent. The cooldown escalates with this count (check_and_trigger). At the cap the
+        cache is exhausted, and the reason says it was infrastructure, so an operator can see it.
+        """
+        cache_state.infra_failures += 1
+        cache_state.last_infra_failure_at = datetime.now(UTC)
+        logger.error(
+            "env_cache.bootstrap_infra_failed",
+            symphony=symphony_name,
+            detail=error,
+            infra_failures=cache_state.infra_failures,
+            cap=_INFRA_FAILURE_CAP,
+            hint="check the docker daemon and the performer image; the retry waits longer each time",
+        )
+        if cache_state.infra_failures >= _INFRA_FAILURE_CAP and not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            cache_state.last_bootstrap_error = redact_state_value(
+                f"infrastructure failures exhausted after {cache_state.infra_failures} runs: {error}",
+            )
+            logger.error(
+                "env_cache.bootstrap_infra_exhausted",
+                symphony=symphony_name,
+                infra_failures=cache_state.infra_failures,
+                last_error=cache_state.last_bootstrap_error,
+            )
+            self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+
     def _spend_breaker_attempt(
         self, symphony_name: str, cache_state: EnvCacheState, state: dict[str, Any],
     ) -> None:
@@ -1655,6 +1762,8 @@ class EnvCacheService:
         # which prevents performers from mounting an unpopulated cache dir.
         if success:
             cache_state.cache_dir_ready = True
+            # 218 (review round 3): a success clears the infrastructure budget.
+            cache_state.infra_failures = 0
             # 088 (FR-009): success re-arms the circuit breaker.
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
@@ -1669,15 +1778,8 @@ class EnvCacheService:
         # escalating-cooldown branch (readme_sha == current ∧ succeeded=False),
         # and the consumer gate still holds (last_bootstrap_succeeded=False).
         if not success and infra_failure:
-            # 218 (review): docker could not run the clean verify. That is an outage, not a
-            # bootstrap that ran and failed, so the attempt budget is not spent. The reason
-            # stays on the cache state for the operator, and the cooldown retries it.
-            logger.error(
-                "env_cache.bootstrap_infra_failed",
-                symphony=symphony_name,
-                detail=error,
-                hint="docker could not run the clean verify; check the docker daemon. This failure does not count toward the retry limit, and the bootstrap is retried after the cooldown.",
-            )
+            # 218 (review round 3): an infrastructure failure spends its own budget, not the verdict budget.
+            self._record_infra_failure(symphony_name, cache_state, state, error)
         elif not success:
             self._spend_breaker_attempt(symphony_name, cache_state, state)
 

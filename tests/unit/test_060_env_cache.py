@@ -7,11 +7,14 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_cache import (
     BOOTSTRAP_RETRY_COOLDOWN_S,
     EnvCacheService,
@@ -40,6 +43,10 @@ def _seed_toolchain(cache_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # T026: sanitise_symphony_name
 # ---------------------------------------------------------------------------
+
+
+# 218: the real quiesce, captured before the class stub replaces it. The idle-reap test restores it.
+_ORIGINAL_QUIESCE = CoordinareDaemon._quiesce_bootstrap_container
 
 
 class TestSanitiseSymphonyName:
@@ -1418,6 +1425,12 @@ class TestPollBootstrapCompletion:
             "_verify_bootstrap_in_clean_context",
             AsyncMock(return_value=(True, None, False)),
         )
+        # 218: the bootstrap container's stop has its own tests; these tests run the success path.
+        monkeypatch.setattr(
+            CoordinareDaemon,
+            "_quiesce_bootstrap_container",
+            AsyncMock(return_value=True),
+        )
 
     @pytest.mark.asyncio
     async def test_success_path_calls_on_bootstrap_complete_true(self) -> None:
@@ -1680,11 +1693,13 @@ class TestPollBootstrapCompletion:
         daemon._state["performer_services"] = {}
 
         stop_calls: list[tuple] = []
+        order: list[str] = []
         counter = {"n": 0}
 
         async def _fake_exec(*argv, **kwargs):
             if "stop" in argv:
                 stop_calls.append(argv)
+                order.append("stop")
 
             class _P:
                 returncode = 0
@@ -1710,13 +1725,25 @@ class TestPollBootstrapCompletion:
         statuses = [{"status": "working"}] * 5 + [{"status": "env_bootstrap_complete"}]
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=statuses)
+        svc._runtime = DockerRuntime()
         ec_svc = MagicMock()
+
+        # The real quiesce (not the class stub), and a verify that records when it runs.
+        monkeypatch.setattr(CoordinareDaemon, "_quiesce_bootstrap_container", _ORIGINAL_QUIESCE)
+
+        async def _recording_verify(*_a: Any, **_k: Any) -> tuple[bool, None, bool]:
+            order.append("verify")
+            return True, None, False
+
+        monkeypatch.setattr(CoordinareDaemon, "_verify_bootstrap_in_clean_context", _recording_verify)
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-slow")
 
-        # 218: the one `docker stop` is the completion quiesce (before the clean verify), not an
-        # idle reap. Progress kept the idle reap from firing.
+        # 218: the one `docker stop` is the completion quiesce, not an idle reap. It names the stopped
+        # container, and it happens before the clean verify. Progress kept the idle reap from firing.
         assert len(stop_calls) == 1
+        assert "ctr-slow" in stop_calls[0]
+        assert order == ["stop", "verify"]
         ec_svc.on_bootstrap_complete.assert_called_once()
         assert ec_svc.on_bootstrap_complete.call_args.args[1] is True  # completed successfully
 

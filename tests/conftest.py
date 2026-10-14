@@ -14,6 +14,15 @@ from coordinare.services import run_header
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """218: the docker_image lane is deselected (not skipped) unless COORDINARE_DOCKER_IMAGE_TESTS is set.
+    A deselected test never runs and never reports, so an unset environment cannot pass it quietly.
+    With the variable set, a missing docker or image fails the module fixture."""
+    if not os.environ.get("COORDINARE_DOCKER_IMAGE_TESTS"):
+        kept = [item for item in items if "docker_image" not in item.keywords]
+        deselected = [item for item in items if "docker_image" in item.keywords]
+        if deselected:
+            items[:] = kept
+            config.hook.pytest_deselected(items=deselected)
     """151: skip `real`-marked tests unless RUN_REAL_BENCH is set (opt-in paid/
     Docker lane; the free deterministic lane must stay green — SC-006)."""
     if os.environ.get("RUN_REAL_BENCH"):

@@ -19,20 +19,22 @@ import pytest
 
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_cache import EnvCacheService
 from tests.unit.env_mount_stub import mount_config
 
-SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"))
+SVC = SimpleNamespace(devenv_root="/devenv", _config=SimpleNamespace(image="img"), _runtime=DockerRuntime())
 CONTAINER = "ctr-218abcdef012"
 
 
 class _Docker:
     """Answers ``docker stop`` and ``docker container inspect`` from a table, and records order."""
 
-    def __init__(self, *, stop_rc: int, inspect_rc: int, inspect_out: bytes) -> None:
+    def __init__(self, *, stop_rc: int, inspect_rc: int, inspect_out: bytes, inspect_err: bytes = b"") -> None:
         self.stop_rc = stop_rc
         self.inspect_rc = inspect_rc
         self.inspect_out = inspect_out
+        self.inspect_err = inspect_err
         self.calls: list[tuple[str, ...]] = []
 
     async def create_subprocess_exec(self, *argv: Any, **_kwargs: Any) -> _Proc:
@@ -40,17 +42,18 @@ class _Docker:
         if "stop" in argv:
             return _Proc(self.stop_rc, b"")
         if "inspect" in argv:
-            return _Proc(self.inspect_rc, self.inspect_out)
+            return _Proc(self.inspect_rc, self.inspect_out, self.inspect_err)
         return _Proc(0, b"")
 
 
 class _Proc:
-    def __init__(self, rc: int, out: bytes) -> None:
+    def __init__(self, rc: int, out: bytes, err: bytes = b"") -> None:
         self.returncode = rc
         self._out = out
+        self._err = err
 
-    async def communicate(self, **_kwargs: Any) -> tuple[bytes, None]:
-        return self._out, None
+    async def communicate(self, **_kwargs: Any) -> tuple[bytes, bytes]:
+        return self._out, self._err
 
     async def wait(self) -> int:
         return self.returncode
@@ -120,7 +123,10 @@ async def test_a_container_already_removed_counts_as_quiet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--rm`` removes an exited container, so stop and inspect both fail. No writer remains."""
-    docker = _Docker(stop_rc=1, inspect_rc=1, inspect_out=b"")
+    docker = _Docker(
+        stop_rc=1, inspect_rc=1, inspect_out=b"",
+        inspect_err=b"Error response from daemon: No such container: ctr-218abcdef012\n",
+    )
     verify = AsyncMock(return_value=(True, None))
     daemon = _daemon(monkeypatch, docker, verify)
     ec_svc = MagicMock()
