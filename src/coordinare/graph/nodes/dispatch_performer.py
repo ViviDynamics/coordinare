@@ -34,6 +34,7 @@ from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.pr_lifecycle import retained_pr_is_open
+from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs
 from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
@@ -2033,11 +2034,7 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
     role = _persona_role_for_stage(performer_stage)
     if role is not None:
         card_context["persona_instructions"] = get_effective_instructions(role, personas)
-        card_context["persona_instructions"] += (
-            "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
-            "in English. Preserve code, paths, quoted source text, and machine-readable "
-            "protocol fields exactly; do not translate those values."
-        )
+        card_context["persona_instructions"] += PERSONA_LANGUAGE_SUFFIX
 
     # Include relay feedback when present (reviewer / QA feedback loops).
     relay_feedback = _feedback_for_dispatch(state, performer_stage)
@@ -2085,6 +2082,29 @@ def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card
     if card_clarifications:
         card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
     return card_context, role
+
+
+def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> dict[str, Any]:
+    """130: the daemon-side inputs of the run header (persona version, routing rule).
+
+    The persona text sent is the card context's ``persona_instructions``. The language
+    directive appended to it is removed again, so the persona history versions the text
+    the persona itself holds. The transcript folder matches the monitor's
+    ``transcript_target``, so the header and the later records land in one file.
+    Never raises.
+    """
+    card_context = ctx["card_context"]
+    role = ctx.get("role")
+    sent = card_context.get("persona_instructions") if role else None
+    return build_run_inputs(
+        config=state.get("config"),
+        role=role,
+        persona_sent=sent if isinstance(sent, str) else None,
+        transcript_target={
+            "symphony": str(state.get("current_symphony") or ""),
+            "card_id": str(ctx.get("card_id") or ""),
+        },
+    )
 
 
 async def _inject_documentation_findings(state: CoordinareState, ctx: dict[str, Any]) -> None:
@@ -2535,9 +2555,11 @@ async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_
         await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
         _dispatch_kwargs: dict[str, Any] = {"workspace_info": workspace_info}
         if _extra_volumes is not None and isinstance(service, HTTPPerformerService):
-
-
-                _dispatch_kwargs["extra_volumes"] = _extra_volumes
+            _dispatch_kwargs["extra_volumes"] = _extra_volumes
+        if isinstance(service, HTTPPerformerService):
+            # 130: the daemon-side inputs of the run header. Not on the wire: the service
+            # uses them for the transcript header only, so the payload is unchanged.
+            _dispatch_kwargs["run_inputs"] = _dispatch_run_inputs(state, ctx)
         result = await service.dispatch_card(card_context, **_dispatch_kwargs)
     except PerformerAuthError as exc:
         return await _dispatch_auth_error(state, exc, ctx, _release_slot_on_error)

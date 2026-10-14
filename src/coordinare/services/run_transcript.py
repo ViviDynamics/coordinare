@@ -408,6 +408,8 @@ class RunTranscriptWriter:
         # The highest seq the performer has reported. A tail beyond the cursor is known
         # to exist only when this is larger (review round 4, item 4).
         self._performer_last: int | None = None
+        # 130: the run header, held until it is written as the file's first line.
+        self._pending_header: dict[str, Any] | None = None
         self._lock = threading.Lock()
 
     @property
@@ -463,6 +465,7 @@ class RunTranscriptWriter:
             return
         self.ensure_loaded()
         with self._lock:
+            self._flush_pending_header_locked()  # 130: the header is always the first line
             if self._failed or self._truncated:
                 return
             seq = self._cursor + 1
@@ -475,6 +478,53 @@ class RunTranscriptWriter:
                 self._write(_to_line(self._marker(seq, marker_text)))
             except Exception as exc:  # best effort: a failed marker fails the run quietly
                 self._fail(exc)
+
+    def stage_run_header(self, header: dict[str, Any]) -> None:
+        """Hold the run's header until it is written as the file's first line (spec 130).
+
+        Memory only, so it never raises and never waits on the disk. Every content write
+        flushes a staged header first, so the header stays first even when the caller's
+        flush timed out and the write is still on its way to disk.
+        """
+        self._pending_header = header
+
+    def flush_run_header(self) -> bool:
+        """Write the staged header as the first line. Blocking. Never raises.
+
+        Returns True when the header is on disk. A file that already has content gets
+        no header. A failure is logged, and the run carries on without one: the header
+        is diagnostics, and records must still be captured.
+        """
+        self.ensure_loaded()
+        with self._lock:
+            return self._flush_pending_header_locked()
+
+    def _flush_pending_header_locked(self) -> bool:
+        """Write the staged header, if any. The caller holds ``self._lock``."""
+        header = self._pending_header
+        if header is None or self._failed:
+            return False
+        self._pending_header = None
+        if self._cursor or self._bytes:
+            logger.warning(
+                "run_transcript.header_skipped",
+                run_id=self._run_id,
+                reason="file already has records",
+            )
+            return False
+        try:
+            redacted: dict[str, Any] = redact_value(header, self._secrets)
+            line = _to_line(redacted)
+            self._write(line)
+            self._bytes += len(line)
+        except Exception as exc:  # best effort: the run's records still follow
+            logger.warning(
+                "run_transcript.header_failed",
+                run_id=self._run_id,
+                exc_type=type(exc).__name__,
+            )
+            return False
+        return True
 
     def mark_failed(self, exc: BaseException) -> None:
         """Record that capture for this run failed. The caller has already contained it."""
@@ -609,6 +659,7 @@ class RunTranscriptWriter:
                 return 0
 
     def _append(self, records: list[dict[str, Any]], last_seq: int | None) -> int:
+        self._flush_pending_header_locked()  # 130: a staged header precedes every record
         base = self._cursor
         window_end = base + len(records)
         lines: list[bytes] = []

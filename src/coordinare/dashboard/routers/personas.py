@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401
+import difflib
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -12,12 +13,71 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 from fastapi.responses import JSONResponse, Response
 
 from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.dashboard_oidc import SESSION_COOKIE
+from coordinare.services.persona_history import (
+    LOCAL_ACTOR,
+    PERSONA_HISTORY_MAX_VERSIONS,
+    SOURCE_DASHBOARD,
+    SOURCE_DASHBOARD_RESET,
+    effective_persona_text,
+    history_for,
+    persona_history_root,
+)
+from coordinare.services.persona_service import VALID_ROLES
 
 if TYPE_CHECKING:
 
         from coordinare.dashboard.context import DashboardContext
+        from coordinare.dashboard_oidc import OidcFlow
+        from coordinare.services.persona_history import PersonaHistory, PersonaVersion
 
 _log = structlog.get_logger(__name__)
+
+
+def _session_actor(request: Request) -> str:
+    """Who is changing a persona: the OIDC session identity, else ``local`` (spec 130 FR-008)."""
+    flow: OidcFlow | None = getattr(request.app.state, "oidc", None)
+    if flow is None:
+        return LOCAL_ACTOR
+    identity = flow.sessions.identity(request.cookies.get(SESSION_COOKIE, ""))
+    if identity is None:
+        return LOCAL_ACTOR
+    actor: str = identity.name or identity.email or identity.subject
+    return actor
+
+
+def _record_persona_version(
+    config: object, role: str, text: str, *, actor: str, source: str,
+) -> None:
+    """Keep the saved persona text as a version. The save already happened, so this never raises."""
+    root = persona_history_root(config)
+    if root is None:
+        return
+    try:
+        history_for(root).record(role, text, changed_by=actor, source=source)
+    except ValueError as exc:
+        _log.warning("persona_history.refused", role=role, error=str(exc))
+
+
+def _version_meta(version: PersonaVersion) -> dict[str, Any]:
+    return {
+        "version": version.version,
+        "sha256": version.sha256,
+        "changed_at": version.changed_at,
+        "changed_by": version.changed_by,
+        "source": version.source,
+        "chars": len(version.text),
+    }
+
+
+def _unified_diff(previous: PersonaVersion | None, current: PersonaVersion) -> str:
+    """The change from the previous retained version, computed on read."""
+    before = previous.text.splitlines() if previous is not None else []
+    after = current.text.splitlines()
+    fromfile = f"v{previous.version}" if previous is not None else "/dev/null"
+    return "\n".join(
+        difflib.unified_diff(before, after, fromfile=fromfile, tofile=f"v{current.version}", lineterm=""),
+    )
 
 
 def _register_get_personas(app: FastAPI, ctx: DashboardContext) -> None:
@@ -128,6 +188,12 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
                     status_code=500,
                 )
 
+            _record_persona_version(
+                daemon.state.get("config"), role,
+                effective_persona_text(role, instructions),
+                actor=_session_actor(request), source=SOURCE_DASHBOARD,
+            )
+
             # Re-read from config to return what's actually stored/effective.
             from coordinare.services.persona_service import (
                 get_effective_instructions,
@@ -144,6 +210,7 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
 
 
 def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> None:
+        daemon = ctx.daemon
         config_path = ctx.config_path
 
         @app.delete("/api/personas/{role}", status_code=204)
@@ -188,10 +255,62 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
                     status_code=500,
                 )
 
+            _record_persona_version(
+                daemon.state.get("config"), role,
+                effective_persona_text(role, ""),
+                actor=_session_actor(request), source=SOURCE_DASHBOARD_RESET,
+            )
             return Response(status_code=204, headers=_version_headers(config_path))
+
+
+def _register_persona_history(app: FastAPI, ctx: DashboardContext) -> None:
+        """Spec 130: the retained versions of a persona, and one version with its diff. Read-only."""
+        daemon = ctx.daemon
+
+        def _store() -> PersonaHistory | None:
+            root = persona_history_root(daemon.state.get("config"))
+            return history_for(root) if root is not None else None
+
+        @app.get("/api/personas/{role}/history")
+        async def persona_history_list(role: str) -> JSONResponse:
+            if role not in VALID_ROLES:
+                return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
+            store = _store()
+            versions = store.versions(role) if store is not None else []
+            return JSONResponse(
+                {
+                    "role": role,
+                    "max_versions": PERSONA_HISTORY_MAX_VERSIONS,
+                    "available": store is not None,
+                    "versions": [_version_meta(v) for v in versions],
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+
+        @app.get("/api/personas/{role}/history/{version}")
+        async def persona_history_version(role: str, version: int) -> JSONResponse:
+            if role not in VALID_ROLES:
+                return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
+            store = _store()
+            versions = store.versions(role) if store is not None else []
+            index = next((i for i, v in enumerate(versions) if v.version == version), None)
+            if index is None:
+                return JSONResponse({"error": f"Version {version} is not retained"}, status_code=404)
+            current = versions[index]
+            previous = versions[index - 1] if index > 0 else None
+            return JSONResponse(
+                {
+                    **_version_meta(current),
+                    "text": current.text,
+                    "previous_version": previous.version if previous is not None else None,
+                    "diff": _unified_diff(previous, current),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
 
 
 def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_get_personas(app, ctx)
     _register_update_persona(app, ctx)
     _register_reset_persona_endpoint(app, ctx)
+    _register_persona_history(app, ctx)
