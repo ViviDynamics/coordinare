@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Collection
 
 import structlog
 
@@ -201,6 +201,7 @@ async def run_cycle(
     get_session: Callable[[str], dict[str, Any] | None] | None = None,
     polling: set[str] | None = None,
     recover: Callable[[str, dict[str, Any]], Awaitable[bool]] | None = None,
+    admit: Collection[str] | None = None,
 ) -> int:
     """One daemon cycle: dispatch every side run that should run; return the count.
 
@@ -209,6 +210,11 @@ async def run_cycle(
     the completion poll (``asyncio.create_task`` in the daemon, awaited inline
     in tests). A dispatch failure is recorded as a failed run for this
     blueprint hash so it is not retried every cycle.
+
+    *admit* is the set of cards the pipeline budget let start this cycle (#171).
+    ``None`` admits every card that should run. A card outside the set is skipped
+    without being resolved or recorded, so it is asked again on the next cycle.
+    Polling an existing run is never gated: that run already holds its slot.
     """
     dispatched = 0
     polling = polling if polling is not None else set()
@@ -247,6 +253,9 @@ async def run_cycle(
             continue
         ok, _reason = should_dispatch(session)
         if not ok:
+            continue
+        if admit is not None and card_id not in admit:
+            logger.debug("documenting_side.awaiting_slot", card_id=card_id)
             continue
         bp_hash = str((session.get("blueprint") or {}).get("blueprint_hash") or "")
         try:

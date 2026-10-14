@@ -53,6 +53,7 @@ from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
+    admitted_side_runs,
     configured_hold_seconds,
     configured_review_limit,
     expire_review_holds,
@@ -4214,11 +4215,6 @@ class CoordinareDaemon:
         if svc is None or not sessions:
             return
 
-        async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
-            if card_id not in (dispatchable_card_ids or set()):
-                return None
-            return await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
-
         async def _recover(card_id: str, session: dict[str, Any]) -> bool:
             return await recover_documenting_side_session(card_id, session, svc)
 
@@ -4228,11 +4224,33 @@ class CoordinareDaemon:
             task.add_done_callback(self._documenting_side_tasks.discard)
 
         try:
+            # 171: a side run is a claim on a pipeline slot. Resolve the candidates
+            # first, so that only a run that can actually start is asked for a slot;
+            # a card that cannot resolve would otherwise hold a slot it never uses.
+            resolved: dict[str, tuple[dict[str, Any], Any]] = {}
+            for card_id, session in list(sessions.items()):
+                if card_id not in (dispatchable_card_ids or set()) or session.get("board_paused"):
+                    continue
+                if not _ds.should_dispatch(session)[0]:
+                    continue
+                try:
+                    found = await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
+                except Exception as exc:
+                    logger.warning("documenting_side.resolve_failed", card_id=card_id, error=str(exc)[:200])
+                    continue
+                if found is not None:
+                    resolved[card_id] = found
+            admit = admitted_side_runs(sessions, set(resolved), limit=self._max_concurrent_cards())
+
+            async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
+                return resolved.get(card_id)
+
             if not hasattr(self, "_documenting_side_polling"):
                 self._documenting_side_polling: set[str] = set()
             await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn,
                                 get_session=lambda cid: current_sessions().get(cid),
-                                polling=self._documenting_side_polling, recover=_recover)
+                                polling=self._documenting_side_polling, recover=_recover,
+                                admit=admit)
         except Exception as exc:
             logger.warning("documenting_side.cycle_failed", error=str(exc)[:200])
 

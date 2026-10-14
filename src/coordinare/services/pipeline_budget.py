@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Final
 import structlog
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
@@ -189,6 +191,17 @@ def review_cap_detail(review_limit: int | None, waiting: int) -> str:
     return f"max_cards_in_review is {review_limit}: {waiting} waiting on review"
 
 
+def _is_candidate(session: dict[str, Any]) -> bool:
+    """A card the budget may admit: not released, not parked on review, not a held merge."""
+    card = session.get('current_card') or {}
+    return (
+        card.get('status') not in _RELEASED_STATUSES
+        and session.get('phase') not in _RELEASED_PHASES
+        and not is_parked_in_review(session)
+        and not is_released_merge(session)
+    )
+
+
 def select_pipelines(
     sessions: dict[str, Any], limit: int, eligible: set[str] | None = None,
     review_limit: int | None = None, *, admit_unstarted: bool = True,
@@ -218,16 +231,9 @@ def select_pipelines(
     candidates = []
     running = []
     for cid, session in sessions.items():
-        card = session.get('current_card') or {}
         if has_live_work(session):
             running.append(cid)
-        if (
-            (eligible is None or cid in eligible)
-            and card.get('status') not in _RELEASED_STATUSES
-            and session.get('phase') not in _RELEASED_PHASES
-            and not is_parked_in_review(session)
-            and not is_released_merge(session)
-        ):
+        if (eligible is None or cid in eligible) and _is_candidate(session):
             candidates.append(cid)
     selected = set(running)
     retained = [cid for cid in candidates if sessions[cid].get('pipeline_admitted')]
@@ -243,6 +249,41 @@ def select_pipelines(
     for cid, session in sessions.items():
         session['pipeline_admitted'] = cid in selected
     return selected
+
+
+def admitted_side_runs(
+    sessions: dict[str, Any], wanted: Collection[str], *, limit: int,
+) -> set[str]:
+    """#171: the cards wanting a documenter side run that may start this cycle.
+
+    A documenter side run is a claim on a pipeline slot. The daemon passes only the
+    cards whose run has already resolved, so a card that cannot resolve never holds
+    a slot it will not use. Admission order matches ``select_pipelines``: running
+    work, reservations already held, then cards that have started and need a
+    performer again, then the side runs themselves. Fresh cards come after side
+    runs, so a backlog cannot starve one, and a side run never displaces a
+    lifecycle card that already has work.
+
+    A card that already holds a slot shares it. A card whose lifecycle performer is
+    live is never admitted, because its side run starts only after that performer
+    has finished. A card left out waits and is asked again next cycle. Nothing is
+    recorded against it.
+    """
+    if not wanted:
+        return set()
+    selected = {cid for cid, session in sessions.items() if has_live_work(session)}
+    candidates = [cid for cid, session in sessions.items() if _is_candidate(session)]
+    retained = [cid for cid in candidates if sessions[cid].get('pipeline_admitted')]
+    returning = [cid for cid in candidates if has_started(sessions[cid])]
+    side = [
+        cid for cid in sessions
+        if cid in wanted and cid not in selected and not has_live_performer(sessions[cid])
+    ]
+    for cid in [*retained, *returning, *side]:
+        if len(selected) >= max(1, limit):
+            break
+        selected.add(cid)
+    return {cid for cid in wanted if cid in selected and not has_live_performer(sessions[cid])}
 
 
 def dispatch_has_pipeline_slot(state: CoordinareState, card_id: str) -> bool:
