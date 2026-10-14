@@ -929,6 +929,7 @@ class HTTPPerformerService:
             self._transcript_targets[run_id] = (
                 str(target.get("symphony") or ""),
                 str(target.get("card_id") or ""),
+                str(target.get("stage") or ""),
             )
             writer = self._transcript_writer(run_id, None)
             if writer is None:
