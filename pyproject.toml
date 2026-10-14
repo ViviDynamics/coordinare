@@ -36,6 +36,9 @@ dependencies = [
     "mcp==2.3.0",
     "coordinare-service-inference",
     "coordinare-ci-detection",
+    # Issue #228: the spec-078 routing-table models. The daemon validates dashboard
+    # routing writes against them, and the production daemon image has no performer.
+    "coordinare-routing-models",
     # Spec 146 (#200): the Kubernetes transport. The alternative is hand-rolling
     # REST against the API server including in-cluster ServiceAccount token
     # handling, TLS trust, and watch semantics — more code, and code that is
@@ -46,6 +49,7 @@ dependencies = [
 [tool.uv.sources]
 coordinare-service-inference = { path = "packages/service_inference", editable = true }
 coordinare-ci-detection = { path = "packages/ci_detection", editable = true }
+coordinare-routing-models = { path = "packages/routing_models", editable = true }
 
 [project.optional-dependencies]
 dev = [

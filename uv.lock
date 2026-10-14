@@ -355,6 +355,7 @@ dependencies = [
     { name = "aiosmtplib" },
     { name = "anthropic" },
     { name = "coordinare-ci-detection" },
+    { name = "coordinare-routing-models" },
     { name = "coordinare-service-inference" },
     { name = "fastapi" },
     { name = "gql", extra = ["aiohttp"] },
@@ -395,6 +396,7 @@ requires-dist = [
     { name = "aiosmtplib", specifier = ">=3.0" },
     { name = "anthropic", specifier = ">=0.40" },
     { name = "coordinare-ci-detection", editable = "packages/ci_detection" },
+    { name = "coordinare-routing-models", editable = "packages/routing_models" },
     { name = "coordinare-service-inference", editable = "packages/service_inference" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gql", extras = ["aiohttp"], specifier = ">=3.5" },
@@ -440,6 +442,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "structlog", specifier = ">=24.1.0" }]
+
+[[package]]
+name = "coordinare-routing-models"
+version = "0.1.0"
+source = { editable = "packages/routing_models" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
 
 [[package]]
 name = "coordinare-service-inference"

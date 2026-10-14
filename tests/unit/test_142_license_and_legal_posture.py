@@ -114,6 +114,7 @@ PACKAGING_FILES = (
     "pyproject.toml",
     "agent/performer/pyproject.toml",
     "packages/service_inference/pyproject.toml",
+    "packages/routing_models/pyproject.toml",
 )
 
 ELV2_LICENSE_ID = "LicenseRef-Elastic-License-2.0"
@@ -885,8 +886,15 @@ FIRST_PARTY = frozenset(
     # distribution obligation: they are covered by the repo-root LICENSE and
     # NOTICE, which is why each declares LicenseRef-Elastic-License-2.0
     # rather than an OSI identifier. 339 added coordinare-ci-detection, the shared
-    # CI/test-command detection the performer image installs.
-    {"coordinare", "performer", "coordinare-service-inference", "coordinare-ci-detection"},
+    # CI/test-command detection the performer image installs. #228 added
+    # coordinare-routing-models, the spec-078 routing models the daemon validates with.
+    {
+        "coordinare",
+        "performer",
+        "coordinare-service-inference",
+        "coordinare-ci-detection",
+        "coordinare-routing-models",
+    },
 )
 
 #: ``(lock file, root package)`` for each project coordinare distributes.
