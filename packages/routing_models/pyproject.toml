@@ -15,5 +15,8 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[tool.setuptools.package-data]
+coordinare_routing_models = ["py.typed"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
