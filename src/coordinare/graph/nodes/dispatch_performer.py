@@ -32,7 +32,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
 from coordinare.services.http_performer_service import HTTPPerformerService
-from coordinare.services.mounted_file import performer_mount_hosts
+from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.pr_lifecycle import retained_pr_is_open
@@ -2369,11 +2369,7 @@ def _performer_mounts(state: CoordinareState) -> tuple[Path, ...]:
     ``state["config"]`` is the ProjectConfiguration; passing its full mount list to the env-cache
     reads makes the outermost performer mount the trusted start of each anchored walk.
     """
-    config = state.get("config")
-    if config is None:
-        msg = "no loaded config in state; cannot resolve the performer mounts for env-cache reads"
-        raise RuntimeError(msg)
-    return tuple(performer_mount_hosts(config))
+    return loaded_performer_mounts(state.get("config"))
 
 
 async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:

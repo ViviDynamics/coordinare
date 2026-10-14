@@ -3797,9 +3797,10 @@ class CoordinareDaemon:
 
     def _performer_mounts(self) -> tuple[Path, ...]:
         """Every host directory a performer can see, from the loaded config (219 review)."""
-        from coordinare.services.mounted_file import performer_mount_hosts
+        from coordinare.services.mounted_file import loaded_performer_mounts
 
-        return tuple(performer_mount_hosts(self._state["coordinare_config"].global_config))
+        cfg = self._state.get("coordinare_config")
+        return loaded_performer_mounts(cfg.global_config if cfg is not None else None)
 
     async def _poll_bootstrap_completion(
         self,

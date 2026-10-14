@@ -66,6 +66,20 @@ found no overlap in the shipped examples (`~/.junie`, `~/.opencode`, `/var/log/.
   anchored reader (no links below the outermost mount, 1 MiB bound). The `repo_path` source
   is still read through the clone path (not changed here).
 
+## Compatibility
+
+- **Config that now fails to load.** A `performer_log_dir` or an endpoint volume at `~`, or at
+  `~/.coordinare`, or any directory that contains the env-cache root, is refused at load. The
+  root and the volume must not overlap, compared case-insensitively where the filesystem folds
+  case. Move `env_cache_root` outside every performer mount, or narrow the volume.
+- **Global save.** `PUT /api/config/global` validates the whole candidate file before it writes.
+  A save that would leave the file unloadable returns 422 with the reason and writes nothing.
+  Before this change the same save was written and then rejected at reload.
+- **Inherited mode loses group write.** A file replaced without an explicit mode (the
+  routing config, the env-cache `manifest.json`) keeps its permission bits masked to `0755`.
+  A group-writable file comes back `0644`. Operators who need group write must set it on the
+  replacement after the write.
+
 ## Refusal
 
 A refused operation is never followed. It logs a structlog error (`mounted_file.refused`
@@ -81,8 +95,18 @@ Unchanged for every existing file in practice: the scripts are 0755, and an exis
 `manifest.json` keeps its permission bits, masked to 0755 (see the review round). One deliberate difference: a new `manifest.json` is created 0644 instead of
 `0666 & ~umask`. The two are equal under the usual umask 022.
 
-## Tests
+## Re-review, round three
 
+- **Case-variant overlap**: the load check uses the case-aware comparison from
+  `run_transcript._within`, so `WS/caches` against a volume `ws` is refused where the
+  filesystem folds case. The test branches on a runtime probe of the filesystem, not a skip.
+- **Candidate global save**: `_validate_global_config` runs `validate_raw_config` on the full
+  file, so an overlap is refused with 422 before the write.
+- **Mount list**: `loaded_performer_mounts` is the one way to get the list. It refuses with a
+  `RuntimeError` when there is no loaded config, in the daemon and in dispatch alike.
+  `performer_mount_hosts` expands `~` the way the validator does.
+
+## Tests
 `tests/unit/test_219_env_cache_safe_writes.py`: a link at each written file, at `services/`
 and at the cache dir (also at `initialise`); a hard link at a target; a FIFO at a target (run
 on a bounded thread, so a regression that blocks fails instead of hanging); a regular file

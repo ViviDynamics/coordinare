@@ -31,9 +31,9 @@ from coordinare.services.env_manifest_llm import enrich_from_readme
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     anchored_mkdir,
+    loaded_performer_mounts,
     mounted_dir_refusal,
     mounted_file_refusal,
-    performer_mount_hosts,
     read_mounted_dir_names,
     read_mounted_file,
     replace_mounted_file,
@@ -1186,7 +1186,7 @@ class EnvCacheService:
         Passed to every env-cache read and write so the outermost performer mount is always the
         trusted start of the anchored walk.
         """
-        return tuple(performer_mount_hosts(self._coordinare_config.global_config))
+        return loaded_performer_mounts(self._coordinare_config.global_config)
 
     async def _fetch_declared_services(
         self,

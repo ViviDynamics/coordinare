@@ -73,11 +73,24 @@ def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
     hosts: list[Path] = []
     log_dir = getattr(config, "performer_log_dir", None)
     if log_dir is not None:
-        hosts.append(Path(log_dir))
+        hosts.append(Path(log_dir).expanduser())
     for endpoint in config.performer_endpoints:
-        hosts.extend(Path(volume.host_path) for volume in endpoint.volumes)
+        # Expanded the way the config validator expands it, so both agree on ``~`` volumes.
+        hosts.extend(Path(volume.host_path).expanduser() for volume in endpoint.volumes)
     hosts.append(Path(config.env_cache_root).expanduser())
     return hosts
+
+
+def loaded_performer_mounts(global_config: ProjectConfiguration | None) -> tuple[Path, ...]:
+    """The performer mount list from the loaded config, or a clear refusal when there is none.
+
+    Every env-cache read and write takes this list (219). A missing config is a wiring fault, so
+    it raises rather than reading with a shorter list.
+    """
+    if global_config is None:
+        msg = "no loaded config; cannot resolve the performer mounts for env-cache reads"
+        raise RuntimeError(msg)
+    return tuple(performer_mount_hosts(global_config))
 
 
 @dataclass(frozen=True)

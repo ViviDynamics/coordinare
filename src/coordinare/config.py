@@ -29,6 +29,7 @@ from coordinare.models.performer_endpoint import (
 )
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
+from coordinare.services.run_transcript import _within
 
 logger = structlog.get_logger(__name__)
 
@@ -1497,7 +1498,7 @@ class ProjectConfiguration(BaseSettings):
         performer log dir or any endpoint volume. Compared on resolved paths, so a symlinked
         spelling cannot slip past. Operators move the root outside the performer mounts.
         """
-        root = self.env_cache_root.expanduser().resolve()
+        root = self.env_cache_root.expanduser()
         mounts: list[tuple[str, Path]] = []
         if self.performer_log_dir is not None:
             mounts.append(("performer_log_dir", self.performer_log_dir))
@@ -1506,12 +1507,14 @@ class ProjectConfiguration(BaseSettings):
                 label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
                 mounts.append((label, volume.host_path))
         for label, raw in mounts:
-            mount = raw.expanduser().resolve()
-            if mount == root or mount.is_relative_to(root) or root.is_relative_to(mount):
+            mount = raw.expanduser()
+            # _within compares case-insensitively where the filesystem folds case, so a root
+            # spelled "WS/caches" is refused when the volume is "ws" (same directory there).
+            if _within(root, mount) or _within(mount, root):
                 msg = (
-                    f"env_cache_root {root} overlaps {label} {mount}: a performer that can see "
-                    "that path can rewrite the env-cache root. Move env_cache_root outside "
-                    "every performer mount."
+                    f"env_cache_root {root.resolve()} overlaps {label} {mount.resolve()}: a "
+                    "performer that can see that path can rewrite the env-cache root. Move "
+                    "env_cache_root outside every performer mount."
                 )
                 raise ValueError(msg)
         return self

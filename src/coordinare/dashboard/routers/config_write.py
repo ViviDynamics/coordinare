@@ -105,16 +105,17 @@ def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
 
 
 def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
-    # Validate by constructing a throwaway config. All editable fields are
-    # included even if they happen to be lists/dicts (e.g. human_reviewers);
-    # other nested sections (performers, symphonies, …) that ProjectConfiguration
-    # doesn't accept are stripped out so pydantic doesn't reject them.
-    try:
-        from coordinare.config import ProjectConfiguration
-        ProjectConfiguration(**{
-            kk: vv for kk, vv in loaded.items()
-            if not isinstance(vv, (dict, list)) or kk in _global_cfg_editable
-        })
-    except Exception as exc:
-        return JSONResponse({"error": f"Validation failed: {exc}"}, status_code=400)
-    return None
+    """Validate the whole candidate config before anything is written (219 re-review).
+
+    The candidate is the full file as it would be saved, checked by the same validator the
+    preflight and the reload use. A save that would leave the file unloadable (an env-cache
+    root that overlaps a performer volume, for one) is refused with a 422 that names the problem,
+    and nothing is written. Deprecation warnings do not block a save.
+    """
+    from coordinare.config_validation import validate_raw_config
+
+    result = validate_raw_config(loaded)
+    if result.passed:
+        return None
+    detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
+    return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
