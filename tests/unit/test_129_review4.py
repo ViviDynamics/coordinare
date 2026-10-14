@@ -76,9 +76,17 @@ def test_prefix_run_of_one_megabyte_is_linear() -> None:
     assert _timed("sk-" * (MEGABYTE // 3)) < GENEROUS_SECONDS
 
 
-def test_five_megabyte_adversarial_runs_stay_under_five_seconds() -> None:
-    assert _timed("eyJ" * (5 * MEGABYTE // 3)) < 5.0
-    assert _timed("machine a " * (5 * MEGABYTE // 10)) < 5.0
+# Five times the input may take at most this many times as long. Linear work
+# scales by about 5; the quadratic code this guards against scaled by about 25.
+LINEAR_SCALE_LIMIT = 10.0
+
+
+def test_five_megabyte_adversarial_runs_scale_linearly() -> None:
+    """Measured as a ratio, so a slow runner or coverage tracing cannot fail it."""
+    for unit, width in (("eyJ", 3), ("machine a ", 10)):
+        one = _timed(unit * (MEGABYTE // width))
+        five = _timed(unit * (5 * MEGABYTE // width))
+        assert five < LINEAR_SCALE_LIMIT * max(one, 0.01), (unit, one, five)
 
 
 # --- item 2: the relief rules do not leak -----------------------------------------
