@@ -404,7 +404,7 @@ async def test_cleanup_releases_every_per_run_daemon_record(tmp_path: Path) -> N
     collector = TranscriptCollector(tmp_path / "t", enabled=True, max_bytes_per_run=10**6)
     service = _service(_FakeClient(), collector)
     service._transcript_secrets["sess-r"] = ["plaintext-secret-value"]
-    service._transcript_targets["sess-r"] = ("alpha", "PVTI_1")
+    service._transcript_targets["sess-r"] = ("alpha", "PVTI_1", "implementing")
     service._transcript_failed_runs.add("sess-r")
     service._transcript_unsupported_runs.add("sess-r")
     service._transcript_refused.add("sess-r")

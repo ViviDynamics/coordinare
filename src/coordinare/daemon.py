@@ -66,6 +66,7 @@ from coordinare.services.reconciliation import (
     reconcile_board_state,
     recover_documenting_side_session,
 )
+from coordinare.services.run_log import RunLogCollector, prune_run_logs
 from coordinare.services.run_transcript import TranscriptCollector, prune_expired
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
@@ -1390,6 +1391,8 @@ class RuntimeExecutionError(RuntimeError):
 _STALL_LOG_COOLDOWN_SECONDS = 3600.0
 # 129: how often the transcript retention sweep runs (startup, then daily).
 _TRANSCRIPT_RETENTION_INTERVAL_S = 24 * 60 * 60.0
+# 132: the full run log sweep runs on the same daily cadence as the transcripts.
+_RUN_LOG_RETENTION_INTERVAL_S = _TRANSCRIPT_RETENTION_INTERVAL_S
 
 #: 139 — the size at which expired stall keys are swept. Not a hard cap: memory
 #: here is bounded by how many distinct cards can be stuck within the cooldown,
@@ -2394,6 +2397,7 @@ class CoordinareDaemon:
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
         self._transcript_retention_task: asyncio.Task[None] | None = None
+        self._run_log_retention_task: asyncio.Task[None] | None = None
         # 139: when each stall key was last logged, so a card that stays stuck
         # reminds rather than reprints every cycle.
         self._logged_stalls: dict[str, float] = {}
@@ -3012,6 +3016,45 @@ class CoordinareDaemon:
                     timeout=_TRANSCRIPT_RETENTION_INTERVAL_S,
                 )
 
+    def _start_run_log_retention(self) -> asyncio.Task[None] | None:
+        collector = self._state.get("run_log_collector")
+        # Disabled means nothing touches disk, retention included.
+        if (
+            not isinstance(collector, RunLogCollector)
+            or not collector.enabled
+            or collector.retention_days <= 0
+        ):
+            return None
+        return asyncio.create_task(
+            self._run_log_retention_loop(collector),
+            name="run_log_retention",
+        )
+
+    async def _run_log_retention_loop(self, collector: RunLogCollector) -> None:
+        """132: delete full run logs older than retention_days, once at start and daily.
+
+        The sweep runs in a worker thread. A failure is logged and never ends the loop.
+        """
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.to_thread(
+                    prune_run_logs,
+                    collector.root,
+                    retention_days=collector.retention_days,
+                )
+            except Exception as exc:  # best effort: retention must never end the loop
+                logger.warning(
+                    "run_log.retention_failed",
+                    exc_type=type(exc).__name__,
+                    error=str(exc),
+                    root=str(collector.root),
+                )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=_RUN_LOG_RETENTION_INTERVAL_S,
+                )
+
     def stop(self) -> None:
         if self._cycle_active:
             self._stop_during_cycle = True
@@ -3019,6 +3062,8 @@ class CoordinareDaemon:
         self._stop_event.set()
         if self._transcript_retention_task is not None:
             self._transcript_retention_task.cancel()
+        if self._run_log_retention_task is not None:
+            self._run_log_retention_task.cancel()
         # Cancel the in-progress cycle only when stop() is called from outside
         # start() — i.e. signal handlers or external code.  When called from
         # within start() itself (max_cycles, mid-cycle graph callbacks) the
@@ -5755,6 +5800,7 @@ class CoordinareDaemon:
         previous_phase, previous_lifecycle_sig = await self._run_startup_sequence()
         # 129: retention sweeps run beside the cycle loop, never inside it.
         self._transcript_retention_task = self._start_transcript_retention()
+        self._run_log_retention_task = self._start_run_log_retention()
 
         if self._poll_interval_seconds == 0:
             logger.info("polling_disabled")

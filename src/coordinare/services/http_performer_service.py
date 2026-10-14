@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import inspect
 import json
 import os
@@ -38,6 +39,7 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.run_header import build_run_header
+from coordinare.services.run_log import RunLogBusyError, redact_log_text
 from coordinare.services.run_transcript import (
     UNATTRIBUTED,
     RootGuard,
@@ -52,7 +54,7 @@ from coordinare.transport.http_transport import (
 from coordinare.upstream_errors import UpstreamHTTPError, strip_base_url_credentials
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import AsyncGenerator, Awaitable
 
     from coordinare.models.performer_endpoint import (
         JobAcceptResponse,
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
         VolumeMount,
     )
     from coordinare.services.performer_runtime import PerformerRuntime
+    from coordinare.services.run_log import RunLogCollector, RunLogWriter
     from coordinare.services.run_transcript import RunTranscriptWriter, TranscriptCollector
     from coordinare.workspace import WorkspaceInfo
 
@@ -97,6 +100,11 @@ _TRANSCRIPT_POLL_SECONDS = 2.0
 # small append. A slow disk delays the header (the first poll still writes it first),
 # never the dispatch.
 RUN_HEADER_WAIT_SECONDS = 2.0
+# 132: the most the teardown waits for a run's full log before the container is
+# stopped anyway. With the teardown drain (_TRANSCRIPT_TEARDOWN_SECONDS, 5 s) that is at
+# most 20 s before a stop. A large log that is still arriving is kept only as far as it got
+# (the partial is dropped), so the bound delays the stop, never prevents it.
+_RUN_LOG_TEARDOWN_SECONDS = 15.0
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -183,6 +191,23 @@ def _str_dict(value: Any) -> dict[str, str]:
     return {str(k): str(v) for k, v in value.items()}
 
 
+def _open_log_stream(
+    iter_logs: Any,
+    handle: str,
+    io: Any,
+) -> AsyncGenerator[bytes, None]:
+    """132: the runtime's log stream; runtimes that take the run-log pool are given it."""
+    if "io" in inspect.signature(iter_logs).parameters:
+        return cast("AsyncGenerator[bytes, None]", iter_logs(handle, io=io))
+    return cast("AsyncGenerator[bytes, None]", iter_logs(handle))
+
+
+def _record_commit(collector: RunLogCollector, run_id: str, future: asyncio.Future[Any] | Any) -> None:
+    """132: a background finish that committed its file marks the run committed."""
+    if not future.cancelled() and future.exception() is None and future.result() is True:
+        collector.mark_committed(run_id)
+
+
 async def _stop_docker_session_confirmed(runtime: Any, session_id: str) -> bool:
     """A best-effort stop authorizes cleanup only after Docker proves absence."""
     if not isinstance(runtime, DockerRuntime):
@@ -212,6 +237,14 @@ class _EphemeralJob:
     endpoint: str
     client: PerformerHTTPClient
     job_id: str | None = None
+    # 132: the coordinare session id, which is also the run id of the transcript and
+    # of the full log. None for a job that never got that far.
+    run_id: str | None = None
+    # 132: set once the full log has been collected, so one job collects once.
+    log_collected: bool = False
+    # 132: the job's secret values, known from the payload. Held only for this job's life:
+    # they are dropped in cleanup, so a refused dispatch keeps no copy.
+    secrets: tuple[str, ...] = ()
 
 
 def _inject_driver_secrets(
@@ -257,12 +290,16 @@ class HTTPPerformerService:
         client: PerformerHTTPClient | None = None,
         runtime: PerformerRuntime | None = None,
         transcripts: TranscriptCollector | None = None,
+        run_logs: RunLogCollector | None = None,
     ) -> None:
         self._config = config
         self._injected_client = client
         # 129: where the per-run transcript records go. None (the default) keeps
         # the wire and the disk exactly as before.
         self._transcripts = transcripts
+        # 132: where the complete log of each run is written at teardown. None keeps
+        # the teardown exactly as before.
+        self._run_logs = run_logs
         self._transcript_targets: dict[str, tuple[str, str, str]] = {}
         self._transcript_unsupported_runs: set[str] = set()
         self._transcript_secrets: dict[str, list[str]] = {}
@@ -299,6 +336,10 @@ class HTTPPerformerService:
         self._log_buffer: list[str] = []
         # Per-job background poll tasks: job_id → Task (mirrors _active_jobs).
         self._log_poll_tasks: dict[str, asyncio.Task[None]] = {}
+        # 132: background log finishes for collections cut off at the time bound. Held so
+        # they are not garbage collected; they run on worker threads and are never awaited
+        # by a teardown.
+        self._log_finishers: set[asyncio.Future[Any]] = set()
 
     @property
     def mode(self) -> str:
@@ -397,7 +438,8 @@ class HTTPPerformerService:
         active = list(self._active_jobs.values())
         self._active_jobs.clear()
         for job in active:
-            await self._cleanup_ephemeral_job(job)
+            # Shutdown stops every container promptly: no log collection here.
+            await self._run_teardown(self._cleanup_ephemeral_job(job, collect=False))
 
     # ------------------------------------------------------------------
     # AgentServiceProtocol
@@ -542,6 +584,7 @@ class HTTPPerformerService:
                 container_id=started.handle,
                 endpoint=started.endpoint,
                 client=ep_client,
+                run_id=session_id,
             )
             try:
                 await performer_lifecycle.wait_ready(
@@ -551,7 +594,7 @@ class HTTPPerformerService:
                     performer_id=self._config.id,
                 )
             except performer_lifecycle.ReadinessTimeoutError as exc:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
                 return {"status": "error", "reason": f"readiness timeout: {exc}"}
 
         # Build the job-init payload.
@@ -559,13 +602,18 @@ class HTTPPerformerService:
             payload = self._build_job_payload(card_context, workspace_info)
         except ValueError as exc:
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             return {"status": "error", "reason": str(exc)}
         # 129: the coordinare session id is the run identity. Using it as the job
         # id means the performer's transcript run id and the daemon's transcript
         # file name agree without a second id. Persistent mode already set
         # session_id = job_id, so this is the same value there.
         payload = self._transcript_identity(session_id, payload, extra_volumes)
+        if ephemeral_job is not None:
+            # 132: a refused run's container still gets its full log collected at teardown,
+            # so the job carries its secrets. They are not kept in the per-run table until
+            # the job is accepted.
+            ephemeral_job.secrets = tuple(secret.get_secret_value() for secret in payload.secrets.values())
 
         try:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
@@ -574,7 +622,7 @@ class HTTPPerformerService:
             # The run was never accepted, so its refusal marker is dropped (review 6, F8).
             self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             logger.warning(
                 "http_performer.dispatch_failed",
                 performer_id=self._config.id,
@@ -583,6 +631,8 @@ class HTTPPerformerService:
             return {"status": "error", "reason": str(exc)}
         except Exception:
             self._transcript_refused.discard(session_id)
+            if ephemeral_job is not None:
+                await self._refuse_job(ephemeral_job)
             raise
 
         # 409 busy → surface as error so the dispatch loop retries next cycle.
@@ -591,7 +641,7 @@ class HTTPPerformerService:
             detail = getattr(response, "detail", None)
             self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
-                await self._cleanup_ephemeral_job(ephemeral_job)
+                await self._refuse_job(ephemeral_job)
             return {
                 "status": "error",
                 "reason": f"performer busy ({reason})" + (f": {detail}" if detail else ""),
@@ -620,12 +670,16 @@ class HTTPPerformerService:
         # 129 (review 5, blocker 3; review 6, blocker 2): the job's secrets are kept only
         # once it is accepted, and under the run id the polls, the writer and the release
         # use. In persistent mode that is the job id, never the pre-dispatch id.
+        # 132: kept for every accepted run, not only transcribed ones: the live tail and
+        # the full log are redacted by the same exact values. Persistent runs are keyed
+        # by the job id only here, because their session id changes on accept.
+        self._remember_transcript_secrets(session_id, payload)
         if transcribed:
-            self._remember_transcript_secrets(session_id, payload)
             endpoint = ephemeral_job.endpoint if ephemeral_job is not None else self._config.endpoint
             await self._write_run_header(
                 session_id, card_context, run_inputs, str(endpoint) if endpoint else None,
             )
+
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
@@ -682,6 +736,9 @@ class HTTPPerformerService:
         if payload:
             refreshed_token = payload.get("github_token")
             if refreshed_token:
+                # 132: a refreshed token is a secret too: the live tail and the full log
+                # must redact it as well.
+                self._remember_refreshed_secret(session_id, refreshed_token)
                 # 088 US6 (FR-012): retry once immediately on failure; a
                 # second failure marks the session degraded so
                 # monitor_performer can attribute later auth failures to
@@ -958,6 +1015,19 @@ class HTTPPerformerService:
                 run_id=run_id,
                 exc_type=type(exc).__name__,
             )
+    def _remember_refreshed_secret(self, session_id: str, value: str) -> None:
+        """132: a refreshed secret joins the run's exact values, once."""
+        values = self._transcript_secrets.get(session_id)
+        if values is not None and value not in values:
+            values.append(value)
+
+    def _redact_tail(self, lines: list[str], session_id: str) -> list[str]:
+        """132: the live tail is the same text as the full log, so it is redacted the same way."""
+        secrets = [
+            *self._transcript_secrets.get(session_id, []),
+            *(self._run_logs.ambient_secrets if self._run_logs is not None else ()),
+        ]
+        return [redact_log_text(line, secrets) for line in lines]
 
     def _transcript_failed(
         self,
@@ -1455,7 +1525,8 @@ class HTTPPerformerService:
             try:
                 lines = await self._runtime.tail_logs(container_id, lines=200)
                 if lines:
-                    self._log_buffer = lines
+                    # 132: redacted before it is stored, so the snapshot never holds the raw text.
+                    self._log_buffer = self._redact_tail(lines, job_id)
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.debug(
                     "http_performer.log_poll_failed",
@@ -1468,7 +1539,7 @@ class HTTPPerformerService:
         try:
             lines = await self._runtime.tail_logs(container_id, lines=200)
             if lines:
-                self._log_buffer = lines
+                self._log_buffer = self._redact_tail(lines, job_id)
         except Exception:  # pragma: no cover
             pass
 
@@ -1509,10 +1580,15 @@ class HTTPPerformerService:
                 if started is None:
                     return True
                 handle = started.handle
-            await self._runtime.stop(handle)
+            try:
+                # 132: the full log is read before the stop removes it.
+                if job is not None:
+                    await self._capture_run_log(job)
+            finally:
+                await self._runtime.stop(handle)
             if await find(session_id) is not None:
                 return False
-        elif not await _stop_docker_session_confirmed(self._runtime, session_id):
+        elif not await self._stop_by_label_collecting(job, session_id):
             return False
         task = self._log_poll_tasks.pop(session_id, None)
         if task is not None:
@@ -1521,6 +1597,16 @@ class HTTPPerformerService:
         if job is not None and self._injected_client is None:
             await job.client.aclose()
         return True
+
+    async def _stop_by_label_collecting(self, job: _EphemeralJob | None, session_id: str) -> bool:
+        """132: a stop confirmed by container label (Docker without ``find_session``) reads the
+        job's full log first, then stops, exactly as the handle-based path does."""
+        try:
+            if job is not None:
+                await self._capture_run_log(job)
+        finally:
+            confirmed = await _stop_docker_session_confirmed(self._runtime, session_id)
+        return confirmed
 
     async def release_session(self, session_id: str) -> None:
         """Issue #489: release-time teardown for a coordinare session.
@@ -1543,29 +1629,137 @@ class HTTPPerformerService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    async def _cleanup_ephemeral_job(self, job: _EphemeralJob) -> None:
-        """Stop and release a specific ephemeral container + its client."""
+    async def _cleanup_ephemeral_job(self, job: _EphemeralJob, *, collect: bool = True) -> None:
+        """Stop and release a specific ephemeral container + its client.
+
+        The stop is in a finally: nothing that happens while the log is read (a
+        cancellation, a failure, a slow disk) keeps the container alive. ``collect=False``
+        skips the log, which shutdown uses so that every stop happens promptly.
+        """
         host_log_dir = None
         for vol in self._config.volumes:
             if str(vol.container_path) == "/var/log/performer":
                 host_log_dir = vol.host_path
                 break
         try:
+            await self._capture_run_log(job, collect=collect)
+        finally:
+            await self._stop_job_container(job, host_log_dir)
+            if self._injected_client is None:
+                with contextlib.suppress(Exception):
+                    await job.client.aclose()
+            job.secrets = ()
+            if job.run_id is not None:
+                self._transcript_secrets.pop(job.run_id, None)
+
+    async def _refuse_job(self, job: _EphemeralJob) -> None:
+        """Tear down a job whose dispatch was refused. Shielded, like every other teardown:
+        a caller cancelled during the stop does not skip it (review round 3)."""
+        await self._run_teardown(self._cleanup_ephemeral_job(job))
+
+    async def _stop_job_container(self, job: _EphemeralJob, host_log_dir: Path | None) -> None:
+        try:
             await self._runtime.stop(
                 job.container_id,
                 host_log_dir=host_log_dir,
                 performer_id=self._config.id,
             )
-        except Exception as exc:  # pragma: no cover — best effort
+        except Exception as exc:
             logger.warning(
                 "http_performer.stop_failed",
                 performer_id=self._config.id,
                 container_id=job.container_id,
                 error=str(exc),
             )
-        if self._injected_client is None:
-            with contextlib.suppress(Exception):
-                await job.client.aclose()
+
+    async def _capture_run_log(self, job: _EphemeralJob, *, collect: bool = True) -> None:
+        """132: write the run's complete log before its container or Pod is removed.
+
+        Once per job, and bounded by ``_RUN_LOG_TEARDOWN_SECONDS`` (with the drain, at most
+        20 s before a stop). Run-log I/O runs on the collector's own pool. A runtime that
+        hangs or fails leaves no file. A collection cut short by the bound keeps what it
+        wrote, marked as cut off, and is finished on the pool without the stop waiting for
+        it. A saturated pool skips the collection, logged once. A cancellation aborts the
+        partial without waiting for any thread, then propagates.
+        """
+        collector = self._run_logs
+        if (
+            not collect
+            or collector is None
+            or not collector.enabled
+            or job.run_id is None
+            or job.log_collected
+        ):
+            return
+        iter_logs = getattr(self._runtime, "iter_logs", None)
+        if not callable(iter_logs):
+            return
+        job.log_collected = True
+        run_id = job.run_id
+        writer = collector.writer_for(
+            run_id=run_id,
+            secrets=(*job.secrets, *self._transcript_secrets.get(run_id, [])),
+        )
+        completed = False
+        try:
+            chunks = _open_log_stream(iter_logs, job.container_id, collector.io)
+            await asyncio.wait_for(
+                self._copy_run_log(chunks, writer, collector),
+                timeout=_RUN_LOG_TEARDOWN_SECONDS,
+            )
+            completed = True
+        except TimeoutError:
+            logger.warning(
+                "run_log.collect_timeout",
+                run_id=run_id,
+                performer_id=self._config.id,
+                timeout_s=_RUN_LOG_TEARDOWN_SECONDS,
+            )
+            writer.request_cut_off()
+            self._schedule_log_finish(writer, collector)
+        except RunLogBusyError:
+            logger.info("run_log.collect_skipped", run_id=run_id, reason="run-log workers busy")
+        except Exception as exc:  # best effort: the stop follows regardless
+            logger.warning(
+                "run_log.collect_failed",
+                run_id=run_id,
+                performer_id=self._config.id,
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
+        finally:
+            if not completed and not writer.cut_off:
+                writer.abort()
+
+    def _schedule_log_finish(self, writer: RunLogWriter, collector: RunLogCollector) -> None:
+        """Finish a cut-off log on the run-log pool, without anyone awaiting it."""
+        try:
+            future = collector.io.submit(writer.finish)
+        except RunLogBusyError:
+            writer.abort()
+            return
+        future.add_done_callback(functools.partial(_record_commit, collector, writer.run_id))
+        # Held so the finish is not lost; no teardown awaits it.
+        tracked = asyncio.wrap_future(future)
+        self._log_finishers.add(tracked)
+        tracked.add_done_callback(self._log_finishers.discard)
+
+    async def _copy_run_log(
+        self,
+        chunks: AsyncGenerator[bytes, None],
+        writer: RunLogWriter,
+        collector: RunLogCollector,
+    ) -> bool:
+        """Stream the runtime's output into the writer, one chunk on the run-log pool at a time."""
+        try:
+            async for chunk in chunks:
+                await asyncio.wrap_future(collector.io.submit(writer.feed, chunk))
+            committed = await asyncio.wrap_future(collector.io.submit(writer.finish))
+            if committed:
+                collector.mark_committed(writer.run_id)
+            return committed
+        finally:
+            await chunks.aclose()
 
     async def _cleanup_ephemeral_job_by_id(self, job_id: str) -> None:
         """Look up and clean up an ephemeral job by its job_id."""
