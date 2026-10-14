@@ -73,6 +73,9 @@ def create_dashboard_app(
         if oidc is not None:
             register_oidc_routes(app, oidc)
 
+    # 130: the OIDC flow is reachable from handlers, so a persona change can name the
+    # signed-in user as its author. Routes that do not need it never read it.
+    app.state.oidc = oidc
     register_account_route(app, oidc, token_enabled=auth_token is not None)
 
     # Spec 144 (#198). Installed BEFORE the request logger deliberately.

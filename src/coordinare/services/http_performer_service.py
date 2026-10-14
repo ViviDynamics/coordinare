@@ -37,6 +37,7 @@ from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
+from coordinare.services.run_header import build_run_header
 from coordinare.services.run_transcript import (
     UNATTRIBUTED,
     RootGuard,
@@ -92,6 +93,10 @@ _TRANSCRIPT_FINALISED_MEMORY = 4096
 # The most a status poll waits for one transcript operation (review item 4). A slow
 # disk delays the transcript, never completion detection.
 _TRANSCRIPT_POLL_SECONDS = 2.0
+# 130: the most a dispatch waits for its run header to reach disk. The header is one
+# small append. A slow disk delays the header (the first poll still writes it first),
+# never the dispatch.
+RUN_HEADER_WAIT_SECONDS = 2.0
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -440,15 +445,19 @@ class HTTPPerformerService:
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
         extra_volumes: list[VolumeMount] | None = None,
+        run_inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self._dispatch_lock:
-            return await self._dispatch_card_locked(card_context, workspace_info, extra_volumes)
+            return await self._dispatch_card_locked(
+                card_context, workspace_info, extra_volumes, run_inputs,
+            )
 
     async def _dispatch_card_locked(
         self,
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
         extra_volumes: list[VolumeMount] | None = None,
+        run_inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
 
@@ -613,6 +622,10 @@ class HTTPPerformerService:
         # use. In persistent mode that is the job id, never the pre-dispatch id.
         if transcribed:
             self._remember_transcript_secrets(session_id, payload)
+            endpoint = ephemeral_job.endpoint if ephemeral_job is not None else self._config.endpoint
+            await self._write_run_header(
+                session_id, card_context, run_inputs, str(endpoint) if endpoint else None,
+            )
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
@@ -891,6 +904,59 @@ class HTTPPerformerService:
         self._transcript_secrets[session_id] = [
             secret.get_secret_value() for secret in payload.secrets.values()
         ]
+
+    async def _write_run_header(
+        self,
+        run_id: str,
+        card_context: dict[str, Any],
+        run_inputs: dict[str, Any] | None,
+        endpoint: str | None,
+    ) -> None:
+        """130: stage the run's header and write it, best effort. Never raises.
+
+        The header goes to the run file the first poll also writes, so it is the first
+        line of that file. A write that outlasts ``RUN_HEADER_WAIT_SECONDS`` is left to
+        finish in its thread: the writer keeps the header first either way, and dispatch
+        returns on time.
+        """
+        try:
+            target = run_inputs.get("transcript_target") if run_inputs else None
+            if not isinstance(target, dict):
+                # Without the folder the run's file is named after, a writer created here
+                # would pin the file to the wrong place before the first poll knows it.
+                logger.info("run_transcript.header_skipped", run_id=run_id, reason="no transcript target")
+                return
+            self._transcript_targets[run_id] = (
+                str(target.get("symphony") or ""),
+                str(target.get("card_id") or ""),
+            )
+            writer = self._transcript_writer(run_id, None)
+            if writer is None:
+                return
+            writer.stage_run_header(
+                build_run_header(
+                    run_id=run_id,
+                    card_context=card_context,
+                    run_inputs=run_inputs,
+                    performer={"id": self._config.id, "transport": self._config.mode, "endpoint": endpoint},
+                ),
+            )
+            await asyncio.wait_for(
+                asyncio.to_thread(writer.flush_run_header),
+                timeout=RUN_HEADER_WAIT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "run_transcript.header_deferred",
+                run_id=run_id,
+                wait_seconds=RUN_HEADER_WAIT_SECONDS,
+            )
+        except Exception as exc:  # best effort: a header must never fail a dispatch
+            logger.warning(
+                "run_transcript.header_failed",
+                run_id=run_id,
+                exc_type=type(exc).__name__,
+            )
 
     def _transcript_failed(
         self,
