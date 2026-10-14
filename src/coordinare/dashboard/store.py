@@ -20,6 +20,7 @@ from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
+from coordinare.services.run_log import RunLogCollector
 from coordinare.services.token_usage import (
     PriceTable,
     TokenLedger,
@@ -526,6 +527,10 @@ class DashboardStore:
             "backend_ui_url": sess.get("backend_ui_url"),
             "performer_backend": str(_sess_agent_dispatch.get("backend") or "") or None,
             "session_id": _sess_agent_dispatch.get("session_id") or None,
+            # 132: the card offers the full log only once the run's log is committed.
+            "full_log_available": DashboardStore._full_log_available(
+                daemon, _sess_agent_dispatch.get("session_id"),
+            ),
             # 343: which workflow step, since when, and the observed trail.
             "workflow_step": sess.get("workflow_step"),
             "workflow_step_entered_at": (
@@ -908,6 +913,18 @@ class DashboardStore:
             "card_id": card_id, "card_number": card_number, "card_title": card_title,
             "stage": stage, "issue_url": issue_url,
         })
+
+    @staticmethod
+    def _full_log_available(daemon: Any, run_id: object) -> bool:
+        """132: whether this run's complete log is committed (it exists only after teardown).
+
+        Answered from the collector's record of commits, never the disk: the snapshot path
+        must not wait on a stuck volume.
+        """
+        collector = daemon.state.get("run_log_collector")
+        if not run_id or not isinstance(collector, RunLogCollector) or not collector.enabled:
+            return False
+        return collector.is_committed(str(run_id))
 
     @staticmethod
     def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:

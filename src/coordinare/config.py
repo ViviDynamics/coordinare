@@ -1176,6 +1176,33 @@ class TranscriptsConfig(BaseModel):
     max_bytes_per_run: int = Field(default=50 * 1024 * 1024, ge=1024, le=1024 * 1024 * 1024)
 
 
+# ---------------------------------------------------------------------------
+# 132: Full run logs (default on)
+# ---------------------------------------------------------------------------
+
+
+class RunLogsConfig(BaseModel):
+    """132: the complete stdout and stderr of each containerized run, kept after the container.
+
+    Written to ``<state directory>/run-logs/<run_id>.log`` (``run_logs.dir`` overrides
+    the root; it must lie outside every performer mount and must not be a protected
+    daemon directory; see ``coordinare.services.run_log``). The dashboard serves a run's
+    log from its card, one page at a time or as a download. ``enabled: false`` means no
+    collection at teardown and no files. ``max_bytes`` caps one run's file: the first and
+    last parts are kept and a marker says how many bytes were dropped between them.
+    ``retention_days`` defaults to the transcripts' default and is swept with them.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    enabled: bool = True
+    # Optional root override. Default: <state directory>/run-logs. Must not be
+    # inside a directory mounted into a performer (checked at startup).
+    directory: Path | None = Field(default=None, alias="dir")
+    retention_days: int = Field(default=30, ge=0, le=3650)
+    max_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=1024 * 1024 * 1024)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -1402,6 +1429,8 @@ class ProjectConfiguration(BaseSettings):
 
     # 129: Full per-run transcripts. Opt-out via ``transcripts.enabled: false``.
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    # 132: Full per-run logs, kept after the container is removed. Opt-out via ``run_logs.enabled``.
+    run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
 
     # 052 — Stale Branch Cleanup
     stale_branch_cleanup: bool = True

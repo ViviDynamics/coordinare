@@ -473,10 +473,20 @@ function renderCardDetailContent(sess, s) {
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + cost + '</td></tr>' +
     '</table>' +
-    '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' +
+    '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' + fullLogLinkHtml(sess) +
     '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>' +
     '<div style="font-size:12px;color:var(--color-text-muted);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.05em">Progress checks (recent)</div>' +
     '<div class="ov-list">' + verdictsHtml + '</div>';
+}
+
+// 132: the Live Log shows the tail; the full log for this run is one click away, once the
+// run has ended. The run id is the session id, the same value the log file is named after.
+function fullLogLinkHtml(sess) {
+  // Offered only once the run's log exists: it is written at teardown, not during the run.
+  var runId = sess && sess.session_id ? String(sess.session_id) : '';
+  if (!runId || !sess.full_log_available) return '';
+  return '<a class="full-log-link" href="' + esc('/api/runs/' + encodeURIComponent(runId) + '/log') + '" ' +
+    'target="_blank" rel="noopener">Open full log &#8599;</a>';
 }
 
 function showPerformerDetail(cardId) {

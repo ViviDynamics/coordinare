@@ -62,9 +62,12 @@ def test_protocol_covers_only_what_actually_varies_by_runtime() -> None:
     the Pod log endpoint against a Pod name in the other. It was added because
     calling ``docker logs`` directly at the call site did exactly what this
     Protocol exists to prevent — worked on Docker, failed silently on Kubernetes.
+
+    ``iter_logs`` (132) earns its place by the same test: the full log is read from
+    ``docker logs`` or the Pod log endpoint, and the two differ.
     """
     methods = {name for name in dir(PerformerRuntime) if not name.startswith("_")}
-    assert methods == {"start_ephemeral", "stop", "cleanup_orphaned", "tail_logs"}, (
+    assert methods == {"start_ephemeral", "stop", "cleanup_orphaned", "tail_logs", "iter_logs"}, (
         f"Protocol surface drifted to {sorted(methods)}. If a further operation is "
         "genuinely runtime-specific, add it deliberately; if it is not, it belongs "
         "as a shared function."
