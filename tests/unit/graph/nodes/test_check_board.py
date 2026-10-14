@@ -2607,6 +2607,7 @@ _SC001_ALLOWED: tuple[tuple[str, str], ...] = (
     ("_board_cache", "board-cache optimisation — read-only fast path, no pickup divergence"),
     ("_main_sha_cache", "main-sha cache — avoids redundant ls-remote per session"),
     # ast.unparse normalises strings to single quotes, so match that form.
+    ("return max_cards > 1 or len(", "#102 _shares_cycle_reads: decides cache reuse only, feeds the two cache entries above"),
     ("mode='multi'", "structlog label — diagnostic only, not control flow"),
 )
 

@@ -748,14 +748,34 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     _sessions = result.get("active_sessions") or {}
     _config = result.get("config")
     _raw_max = getattr(_config, "max_concurrent_cards", 1) if _config else 1
+    # #102: active_session_count counts every tracked session, including cards
+    # parked in review. The cap is enforced on reserved_pipelines (the admitted
+    # set), so report both to keep "over max" from reading as a cap violation.
+    _reserved = result.get("_pipeline_selected")
+    _parked = [
+        _cid for _cid, _s in (_sessions.items() if isinstance(_sessions, dict) else [])
+        if isinstance(_s, dict) and _s.get("phase") == "monitoring_pr"
+    ]
     logger.info(
         "check_board.unified_pickup",
         active_card_id=result.get("active_card_id"),
         active_session_count=len(_sessions) if isinstance(_sessions, dict) else 0,
+        parked_review_sessions=len(_parked),
+        reserved_pipelines=len(_reserved) if _reserved is not None else None,
         phase=result.get("phase"),
         max_concurrent_cards=_raw_max if isinstance(_raw_max, int) else 1,
     )
     return result
+
+
+def _shares_cycle_reads(state: CoordinareState, max_cards: int) -> bool:
+    """Do this cycle's session ticks share one board poll and one main-SHA read?
+
+    #102: more than one session is ticked per cycle whenever cards wait on
+    review beside the running one, even with a cap of one. Each of those ticks
+    reuses the read the daemon made before the fanout instead of repeating it.
+    """
+    return max_cards > 1 or len(state.get("active_sessions") or {}) > 1
 
 
 async def _poll_board_once(
@@ -763,7 +783,7 @@ async def _poll_board_once(
 ) -> dict[str, Any] | None:
     cached_board: dict[str, Any] | None = (
         cast("dict[str, Any] | None", state.get("_board_cache"))
-        if max_cards > 1
+        if _shares_cycle_reads(state, max_cards)
         else None
     )
     if cached_board:
@@ -800,7 +820,7 @@ async def _poll_board_once(
             logger.error("check_board.poll_failed", error=str(exc))
             state["phase"] = "idle"
             return None
-        if max_cards > 1:
+        if _shares_cycle_reads(state, max_cards):
             state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
         state["last_poll_at"] = datetime.now(UTC)
     return board
@@ -820,11 +840,11 @@ async def _maybe_rebase_on_main_change(
         # active session within a single daemon cycle).
         cached_main = cast("str | None", state.get("_main_sha_cache"))
         current_main: str | None
-        if cached_main and max_cards > 1:
+        if cached_main and _shares_cycle_reads(state, max_cards):
             current_main = cached_main
         else:
             current_main = await fetch_main_sha(github)
-            if current_main and max_cards > 1:
+            if current_main and _shares_cycle_reads(state, max_cards):
                 cast("dict[str, Any]", state)["_main_sha_cache"] = current_main
         if current_main:
             prev_main = state.get("last_known_main_sha")
