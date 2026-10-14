@@ -1676,7 +1676,7 @@ class EnvCacheService:
                 "env_cache.bootstrap_infra_failed",
                 symphony=symphony_name,
                 detail=error,
-                hint="docker could not run the clean verify; check the docker daemon. The attempt is not counted, so the bootstrap is retried after the cooldown.",
+                hint="docker could not run the clean verify; check the docker daemon. This failure does not count toward the retry limit, and the bootstrap is retried after the cooldown.",
             )
         elif not success:
             self._spend_breaker_attempt(symphony_name, cache_state, state)
