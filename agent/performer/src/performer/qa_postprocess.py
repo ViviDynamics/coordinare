@@ -230,16 +230,12 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             visual_evidence=visual_evidence,
         ),
     )
-    # 098: out-of-scope commits and refused declared paths are QA verdict problems
-    # whatever the findings say. Restored tracked files and untracked leftovers are
-    # information only: they were never published, and failing on them would fail
-    # honest runs (lockfiles, snapshots, coverage output).
-    if write_scope.committed_out_of_scope or write_scope_refusals:
-        failures.append(
-            _write_scope_failure(
-                write_scope, write_scope_refusals, _doc_folder(perf.score),
-            ),
-        )
+    # 098/188: the only write-scope condition that fails the verdict is out-of-scope
+    # content in commits the turn made itself (rewound to its start commit). Refused
+    # declarations, restored tracked files and untracked leftovers are notes: they
+    # were never published, and the verdict stands on the QA result.
+    if write_scope.committed_out_of_scope:
+        failures.append(_write_scope_failure(write_scope, _doc_folder(perf.score)))
     latest_main_sha = perf.score.latest_main_sha.strip()
     qa_freshness_check: dict = {}
     if not latest_main_sha:
@@ -613,6 +609,16 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
         qa_report_content += "The turn changed these tracked files without declaring them. They were restored from HEAD and not published.\n\n"
         for restored_path in write_scope.restored[:MAX_REPORTED_PATHS]:
             qa_report_content += f"- `{restored_path}`\n"
+    # 188: informational. A declared new file the guard refused was not written, and
+    # the refusal does not change the verdict.
+    if write_scope_refusals:
+        qa_report_content += "\n## Declared paths not written (informational)\n\n"
+        qa_report_content += (
+            "The turn declared these new files and the write guard refused them. "
+            "Nothing was written to them, and the verdict is unaffected.\n\n"
+        )
+        for refusal in write_scope_refusals[:MAX_REPORTED_PATHS]:
+            qa_report_content += f"- `{refusal.path}`: {refusal.reason}\n"
     if failures:
         qa_report_content += "\n## Failures\n\n"
         for f in failures:
@@ -947,6 +953,14 @@ async def _qa_write_scope(
                 accepted.add(str(path))
             else:
                 refusals.append(Refusal(str(path), reason))
+    if refusals:
+        # 188: a refusal is a note. It is logged here and listed in the report.
+        log.info(
+            "qa.write_scope.declared_refused",
+            session_id=perf.session_id,
+            count=len(refusals),
+            refused=[f"{r.path} ({r.reason})" for r in refusals[:MAX_REPORTED_PATHS]],
+        )
     if not is_clone:
         return ScopeReport([], [], [], None), refusals, accepted
     allowed = {f"{folder}/qa.md", *accepted}
@@ -979,30 +993,22 @@ def _scope_note(report: ScopeReport, refusals: list[Refusal]) -> str:
     return ("QA write scope: " + "; ".join(parts)) if parts else ""
 
 
-def _write_scope_failure(report: ScopeReport, refusals: list[Refusal], report_path: str) -> dict:
-    """The QA defect for scope violations: out-of-scope commits and refused declared
-    paths. Restored and left-out paths are information and never appear here. The
-    wording must not trip the environmental classifier: a clobber is a defect, not a
-    missing tool."""
-    parts: list[str] = []
-    if report.committed_out_of_scope:
-        parts.append(
-            "commits made during the turn touched paths outside its scope; those commits "
-            "were removed from the branch: " + _bounded_paths(report.committed_out_of_scope),
-        )
-    if refusals:
-        shown = [f"{r.path} ({r.reason})" for r in refusals[:MAX_REPORTED_PATHS]]
-        overflow = len(refusals) - MAX_REPORTED_PATHS
-        text = ", ".join(shown) + (f" (and {overflow} more)" if overflow > 0 else "")
-        parts.append(f"declared paths refused, nothing written: {text}")
+def _write_scope_failure(report: ScopeReport, report_path: str) -> dict:
+    """The QA defect for commits the turn made outside its scope. Those commits were
+    removed from the branch. Refused declarations and restored files are notes, not
+    defects, and never appear here. The wording must not trip the environmental
+    classifier: a clobber is a defect, not a missing tool."""
     return {
         "file": None,
         "line": None,
-        "message": "QA turn committed or declared paths outside its report scope",
+        "message": "QA turn committed paths outside its report scope; those commits were removed",
         "type": "write_scope_violation",
         "criterion": "QA turn writes only its report and new test files",
         "expected": f"Only {report_path} and new test files are written",
-        "actual": "; ".join(parts),
+        "actual": (
+            "commits made during the turn touched paths outside its scope: "
+            + _bounded_paths(report.committed_out_of_scope)
+        ),
     }
 
 

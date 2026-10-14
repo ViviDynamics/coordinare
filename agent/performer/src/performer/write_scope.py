@@ -15,8 +15,8 @@ This module is the harness-side check. It has three jobs.
    (the commit step only commits declared paths), so they do not fail a verdict.
    Untracked files are never committed, are left on disk, and are information.
 3. A declared new-file path is checked by :func:`declared_path_refusal` before
-   anything is written. A refusal names the path and the reason, and fails the
-   verdict.
+   anything is written. A refused path is never written. The refusal is a note: it
+   is listed in the QA report with its reason and does not change the verdict.
 
 Allowlists are path-exact, not prefixes. Every git call runs with
 ``GIT_LITERAL_PATHSPECS=1``, so a path is never a pattern.

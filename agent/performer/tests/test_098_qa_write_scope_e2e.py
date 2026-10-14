@@ -137,8 +137,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert _published_files(origin, base) == [REPORT]
         assert not (work / "tests" / "test_*.py").exists()
-        assert resp.status == "qa_failed"
-        assert any("tests/test_*.py" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`tests/test_*.py`" in _published_text(origin, REPORT)
 
     async def test_a_conftest_declared_path_is_refused_and_not_published(
         self, clone: tuple[Path, Path]
@@ -153,8 +154,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert _published_files(origin, base) == [REPORT]
         assert not (work / "tests" / "conftest.py").exists()
-        assert resp.status == "qa_failed"
-        assert any("tests/conftest.py" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`tests/conftest.py`" in _published_text(origin, REPORT)
 
     async def test_a_ci_workflow_declared_path_is_refused(self, clone: tuple[Path, Path]) -> None:
         work, origin = clone
@@ -171,8 +173,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert _published_files(origin, base) == [REPORT]
         assert not (work / ".github").exists()
-        assert resp.status == "qa_failed"
-        assert any(".github/workflows/test_ci.yml" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`.github/workflows/test_ci.yml`" in _published_text(origin, REPORT)
 
     async def test_a_traversing_declared_path_writes_nothing_outside_the_clone(
         self, clone: tuple[Path, Path]
@@ -187,8 +190,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert _published_files(origin, base) == [REPORT]
         assert not (work.parent / "escape").exists()
-        assert resp.status == "qa_failed"
-        assert any("../escape/test_x.py" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`../escape/test_x.py`" in _published_text(origin, REPORT)
 
     async def test_a_case_variant_of_a_tracked_test_is_refused(
         self, clone: tuple[Path, Path]
@@ -203,8 +207,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert (work / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
         assert _published_files(origin, base) == [REPORT]
-        assert resp.status == "qa_failed"
-        assert any("tests/Test_Sample.py" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`tests/Test_Sample.py`" in _published_text(origin, REPORT)
 
     async def test_a_directory_declared_path_is_refused(self, clone: tuple[Path, Path]) -> None:
         work, origin = clone
@@ -217,8 +222,9 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert _published_files(origin, base) == [REPORT]
         assert (work / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
-        assert resp.status == "qa_failed"
-        assert any("tests" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`tests`" in _published_text(origin, REPORT)
 
     async def test_a_symlinked_tests_directory_is_refused_before_any_write(
         self, clone: tuple[Path, Path]
@@ -240,8 +246,42 @@ class TestDeclaredPathsOnTheRealCommitPath:
 
         assert not (work / "src" / "test_new.py").exists()
         assert _published_files(origin, base) == [REPORT]
-        assert resp.status == "qa_failed"
-        assert any("tests/test_new.py" in f["actual"] for f in _scope_failures(resp))
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert "`tests/test_new.py`" in _published_text(origin, REPORT)
+
+
+class TestRefusedDeclarationsAreNotes:
+    async def test_a_passing_turn_keeps_its_verdict_when_declarations_are_refused(
+        self, clone: tuple[Path, Path]
+    ) -> None:
+        """A QA turn that passes on its merits declares a helper module and an existing
+        test module. Both are refused: neither is written or changed, both are listed in
+        the report with their reasons, and the verdict is the QA result, a pass."""
+        work, origin = clone
+        base = _head(work)
+
+        resp = await _verdict(
+            _perf(work, base),
+            _qa_json(
+                new_test_files=[
+                    {"path": "tests/helpers.py", "content": PROSE_NOTES},
+                    {"path": "tests/test_sample.py", "content": PROSE_NOTES},
+                ],
+            ),
+        )
+
+        assert resp.status == "qa_passed"
+        assert _scope_failures(resp) == []
+        assert not (work / "tests" / "helpers.py").exists()
+        assert (work / "tests" / "test_sample.py").read_text() == ORIGINAL_TEST
+        assert set(_published_files(origin, base)) == {REPORT}
+        assert _published_text(origin, "tests/test_sample.py") == ORIGINAL_TEST
+        report = _published_text(origin, REPORT)
+        assert "`tests/helpers.py`" in report
+        assert "not named as a test" in report
+        assert "`tests/test_sample.py`" in report
+        assert "exists at HEAD" in report
 
 
 class TestAgentCommitsOnTheRealPath:
