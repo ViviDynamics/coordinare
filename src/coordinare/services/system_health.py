@@ -41,6 +41,8 @@ __all__ = [
     "MODEL_WINDOW_TURNS",
     "NOT_MONITORED",
     "PERFORMER_FAILURE_STREAK_DOWN",
+    "PERFORMER_NO_ACTIVITY_FALLBACK_SECONDS",
+    "PERFORMER_RUNNING_PHASES",
     "PERFORMER_START_FRESH_SECONDS",
     "STALE",
     "SYSTEM_HEALTH",
@@ -86,6 +88,11 @@ DISK_FREE_DOWN_FRACTION = 0.02
 WEBHOOK_REJECTIONS_DEGRADED = 5
 WEBHOOK_REJECTION_WINDOW_SECONDS = 3600
 WEBHOOK_REJECTION_RECORD_MAX = 100
+# The phases in which coordinare is watching a live performer job. A card waiting on CI or review
+# (monitoring_pr, relay_feedback) has no performer running, so it is not counted in flight.
+PERFORMER_RUNNING_PHASES: tuple[str, ...] = ("dispatching", "monitoring_agent", "monitoring_performer")
+# With no stall or role timeout configured, a running performer with no activity this long is degraded.
+PERFORMER_NO_ACTIVITY_FALLBACK_SECONDS = 7200
 
 _SEVERITY: dict[str, int] = {HEALTHY: 0, UNKNOWN: 1, STALE: 1, DEGRADED: 2, DOWN: 3}
 _RUNTIME_NAMES: dict[str, str] = {"DockerRuntime": "Docker", "KubernetesRuntime": "Kubernetes"}
@@ -214,6 +221,11 @@ class SystemHealthInputs:
     env_symphonies: int
     env_failed: tuple[str, ...]
     env_ready: int
+    # The oldest running performer's dispatch time, the newest activity on a running card,
+    # and the threshold past which a quiet running performer is hung (role timeout, else stall timeout).
+    running_since: datetime | None = None
+    last_activity_at: datetime | None = None
+    no_activity_limit_seconds: int = PERFORMER_NO_ACTIVITY_FALLBACK_SECONDS
 
 
 def _int_or_none(raw: str | None) -> int | None:
@@ -343,6 +355,12 @@ def _webhook_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[
         return _row("github_webhooks", HEALTHY, "deliveries are arriving" + note, fresh)
     if recent:
         return _row("github_webhooks", UNKNOWN, "no valid delivery since this daemon started" + note, fresh)
+    if rec.webhook_rejections:
+        # Rejections are older than the window: say that nothing valid has arrived, not that nothing arrived.
+        return _row(
+            "github_webhooks", UNKNOWN, "no valid delivery since this daemon started", fresh,
+            "only rejected deliveries have arrived",
+        )
     return _row(
         "github_webhooks", UNKNOWN, "no delivery since this daemon started", fresh,
         "nothing observed since this daemon started",
@@ -417,6 +435,11 @@ def _performer_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dic
         findings.append((DEGRADED, f"last start failed ({track.last_error})"))
     if inputs.health.get("agent") == DEGRADED:
         findings.append((DEGRADED, "the daemon's agent probe is degraded"))
+    if inputs.active_performers > 0 and inputs.running_since is not None:
+        quiet_since = max(inputs.running_since, inputs.last_activity_at) if inputs.last_activity_at else inputs.running_since
+        quiet = inputs.now - quiet_since
+        if quiet > timedelta(seconds=inputs.no_activity_limit_seconds):
+            findings.append((DEGRADED, f"performer running for {int(quiet.total_seconds() // 60)} min with no activity"))
     runtime = _RUNTIME_NAMES.get(rec.runtime or "", rec.runtime or "runtime")
     summary = f"{runtime} · {in_flight}"
     status, reason = _worst(findings)

@@ -178,6 +178,30 @@ def test_a_stale_performer_row_is_counted_neutrally_and_does_not_open_the_card(
 
 
 @pytest.mark.e2e
+def test_a_card_the_user_expanded_stays_expanded_across_a_re_render(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """The user can expand a card that is healthy and collapsed; the choice holds across same-status re-renders."""
+    _open_idle(page, live_server_url)
+    store.broadcaster.broadcast(_with_system_health(_all_green_rows(), "healthy"))
+    card = page.locator("#subsystems-section")
+    expect(card.locator("summary")).to_contain_text("All systems healthy", timeout=_WAIT_LIVE)
+    expect(card.locator("details")).not_to_have_attribute("open", "")
+
+    card.locator("summary").click()
+    expect(card.locator("details")).to_have_attribute("open", "")
+    expect(card.locator(".sh-row").first).to_be_visible()
+
+    # A fresh snapshot with the same overall status re-renders the card; the user's expand holds.
+    rows = _all_green_rows()
+    rows[0] = _row("github_api", "GitHub API", "healthy", summary="4,700 of 5,000 requests left",
+                   fresh_label="last call", checked_at=_ago(3), last_success_at=_ago(3))
+    store.broadcaster.broadcast(_with_system_health(rows, "healthy"))
+    expect(card.locator(".sh-row").first).to_contain_text("4,700 of 5,000", timeout=_WAIT_LIVE)
+    expect(card.locator("details")).to_have_attribute("open", "")
+
+
+@pytest.mark.e2e
 def test_a_card_the_user_opened_stays_open_across_a_re_render_until_the_status_changes(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
