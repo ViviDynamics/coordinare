@@ -118,6 +118,11 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .af-row-agent .af-narration { font-family: inherit; white-space: pre-wrap; color: var(--color-text-primary); }
 .af-result { padding-left: 8px; font-family: var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-muted); }
 .af-result-error { color: var(--color-accent-red); }
+/* 135: what the feed hid from a group or a row, and the feed's dropped-entries line. An
+   uncut group has an empty notes slot, which takes no space. */
+.af-notes { font-size: 11px; color: var(--color-text-muted); margin: 2px 0 4px; overflow-wrap: anywhere; }
+.af-notes:empty { display: none; }
+.af-dropped { font-size: 11px; color: var(--color-text-muted); padding: 5px 6px; border-bottom: 1px solid var(--color-bg-surface); }
 
 /* 133: the transcript viewer. Text from a transcript is plain text: white-space keeps the
    line breaks, and nothing here renders markup. */

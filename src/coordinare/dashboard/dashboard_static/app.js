@@ -1183,6 +1183,7 @@ var AF_LABELS = {
 };
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
+var _afDropped = 0;         // 135: entries the server's bounded log has dropped, as of the newest seen
 var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
 var _afRunId = null;
 var _afFilter = '';
@@ -1198,6 +1199,7 @@ function afSyncRun(runId) {
   _afSeen = {};
   _afQuietCards = {};
   _afGroupingActive = false;
+  _afDropped = 0;
   var feed = document.getElementById('activity-feed');
   if (feed) feed.innerHTML = '';
   afUpdateEmpty();
@@ -1227,9 +1229,12 @@ function afAppend(entries) {
   var added = 0;
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
-    if (e == null || _afSeen[e.seq]) continue;
+    if (e == null) continue;
+    // 135: a stream's marker is re-sent as its hidden count grows. Redraw it in place.
+    if (_afSeen[e.seq]) { afRefreshMarker(e); continue; }
     if (e.session_id) _afGroupingActive = true;
     _afSeen[e.seq] = true;
+    if (typeof e.log_dropped === 'number' && e.log_dropped > _afDropped) _afDropped = e.log_dropped;
     var prev = _afEntries[_afEntries.length - 1];
     e._afGroupKey = afCanGroup(prev, e) ? prev._afGroupKey : e.seq;
     _afEntries.push(e);
@@ -1294,11 +1299,34 @@ function afRender() {
   afUpdateEmpty();
 }
 
+// 135: a stream's marker arrives again with a larger hidden count. It keeps its place in the
+// feed; only its count changes, so its group is redrawn.
+function afRefreshMarker(e) {
+  if (e.activity_type !== 'stream_truncated') return;
+  for (var i = _afEntries.length - 1; i >= 0; i--) {
+    if (_afEntries[i].seq !== e.seq) continue;
+    e._afGroupKey = _afEntries[i]._afGroupKey;
+    _afEntries[i] = e;
+    if (_afGroupingActive) afSyncGroups(false);
+    return;
+  }
+}
+
 function afUpdateEmpty() {
   var feed = document.getElementById('activity-feed');
   var empty = document.getElementById('af-empty');
   if (!feed || !empty) return;
   empty.style.display = feed.childElementCount ? 'none' : '';
+  afUpdateDropped();
+}
+
+// 135: the line above the feed for entries the bounded log has dropped. Hidden when none were.
+function afUpdateDropped() {
+  var note = document.getElementById('af-dropped');
+  if (!note) return;
+  var text = afDroppedText(_afDropped);
+  note.textContent = text;
+  note.style.display = text ? '' : 'none';
 }
 
 function afUpdateFilterOptions() {

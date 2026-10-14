@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -67,6 +67,15 @@ class ActivityEntry:
     # 133: the performer's own time for the event (ISO 8601), when the event has one. A
     # transcript record is stamped on the performer clock, so this is the time to open a run at.
     event_at: str = ""
+    # 135: what each cut removed, so the feed can say how much is hidden. None means the count
+    # was not recorded (an entry from before 135), and the feed shows nothing rather than a guess.
+    # The lengths are the original sizes before the clip. hidden_updates is set on a stream's
+    # truncation marker only: the updates past the stream budget. log_dropped is how many
+    # entries the bounded log had dropped when this entry was recorded.
+    text_length: int | None = None
+    summary_length: int | None = None
+    hidden_updates: int | None = None
+    log_dropped: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +95,10 @@ class ActivityEntry:
             "summary": self.summary,
             "status": self.status,
             "event_at": self.event_at,
+            "text_length": self.text_length,
+            "summary_length": self.summary_length,
+            "hidden_updates": self.hidden_updates,
+            "log_dropped": self.log_dropped,
         }
 
 
@@ -126,6 +139,11 @@ class ActivityLog:
         self._seen_order: dict[str, deque[str]] = {}
         # 327: per-stream delta budgets. Insertion-ordered; oldest evicted.
         self._stream_counts: dict[str, int] = {}
+        # 135: the seq of each tracked stream's truncation marker, so a hidden update can
+        # be counted on it. Evicted together with the stream's budget.
+        self._stream_markers: dict[str, int] = {}
+        # 135: entries pushed out of the bounded deque, for the feed's "dropped" line.
+        self._dropped = 0
         self._next_seq = 0
         # Live fan-out, set once by DashboardStore to broadcaster.broadcast_activity.
         # None everywhere else (tests, non-dashboard embeddings).
@@ -212,6 +230,51 @@ class ActivityLog:
 
     # -- internals ---------------------------------------------------------
 
+    def _count_stream_update(self, stream: str) -> int:
+        """327: count one update against its stream's budget, evicting the oldest tracked stream if full.
+
+        Returns how many of the stream's updates are past the budget, this one included. It is
+        one or less while the stream is still within its budget.
+        """
+        used = self._stream_counts.pop(stream, 0)
+        self._stream_counts[stream] = used + 1  # re-insert: most recent last
+        while len(self._stream_counts) > self._max_tracked_streams:
+            # Evict the oldest stream that has NOT yet hit its cap. Dropping
+            # a capped stream would hand it a fresh budget the moment it is
+            # seen again, so one looping message could flood the log twice
+            # over. The dict stays bounded either way: when every tracked
+            # stream is capped, the oldest of those goes.
+            victim = next(
+                (
+                    sid_
+                    for sid_, count in self._stream_counts.items()
+                    if sid_ != stream and count <= self._max_stream_entries
+                ),
+                None,
+            )
+            if victim is None:
+                victim = next(sid_ for sid_ in self._stream_counts if sid_ != stream)
+            self._stream_counts.pop(victim)
+            self._stream_markers.pop(victim, None)
+        return used + 1 - self._max_stream_entries
+
+    def _count_hidden_update(self, stream: str, hidden: int) -> None:
+        """135: record how many of a stream's updates are hidden, on its marker, and re-send it.
+
+        The marker is replaced in place, so a capped stream still takes one slot in the
+        log. The re-sent copy keeps the marker's seq, so a connected feed redraws the
+        count where the marker already sits instead of adding a row.
+        """
+        seq = self._stream_markers.get(stream)
+        if seq is None:
+            return
+        for index in range(len(self._entries) - 1, -1, -1):
+            if self._entries[index].seq == seq:
+                marker = replace(self._entries[index], hidden_updates=hidden)
+                self._entries[index] = marker
+                self._fan_out([marker])
+                return
+
     def _append(
         self,
         *,
@@ -232,10 +295,14 @@ class ActivityLog:
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
-        clipped_text, truncated = _clip(redact_command_text(str(text or "")), self._max_text)
+        raw_text = redact_command_text(str(text or ""))
+        clipped_text, truncated = _clip(raw_text, self._max_text)
         # 148: a tool's argument is a command or a path, so it is redacted in the
         # daemon, before the entry, the dedup key or the snapshot can hold it.
-        clipped_summary, _ = _clip(redact_command_text(str(summary or "")), MAX_SUMMARY)
+        raw_summary = redact_command_text(str(summary or ""))
+        clipped_summary, _ = _clip(raw_summary, MAX_SUMMARY)
+        # 135: the hidden update count, set only when this append is a stream's marker.
+        hidden_updates: int | None = None
         # 133: a timestamp is a short ISO string; anything longer is not one and is dropped.
         clipped_event_at, _ = _clip(str(event_at or ""), MAX_EVENT_AT)
         status_str, _ = _clip(status, 16)
@@ -255,36 +322,21 @@ class ActivityLog:
         # keeps its budget under LRU so an ACTIVE stream is never the one
         # dropped from the bookkeeping.
         if is_delta and stream:
-            used = self._stream_counts.pop(stream, 0)
-            self._stream_counts[stream] = used + 1  # re-insert: most recent last
-            while len(self._stream_counts) > self._max_tracked_streams:
-                # Evict the oldest stream that has NOT yet hit its cap. Dropping
-                # a capped stream would hand it a fresh budget the moment it is
-                # seen again, so one looping message could flood the log twice
-                # over. The dict stays bounded either way: when every tracked
-                # stream is capped, the oldest of those goes.
-                victim = next(
-                    (
-                        sid_
-                        for sid_, count in self._stream_counts.items()
-                        if sid_ != stream and count <= self._max_stream_entries
-                    ),
-                    None,
-                )
-                if victim is None:
-                    victim = next(sid_ for sid_ in self._stream_counts if sid_ != stream)
-                self._stream_counts.pop(victim)
-            if used > self._max_stream_entries:
+            # 135: how many of this stream's updates are past its budget, this one included.
+            hidden = self._count_stream_update(stream)
+            if hidden > 1:
+                self._count_hidden_update(stream, hidden)
                 return None  # already announced below; drop the rest quietly
-            if used == self._max_stream_entries:
+            if hidden == 1:
                 # Say it once, rather than silently swallowing the output.
                 kind = "stream_truncated"
-                clipped_text, truncated = _clip(
+                raw_text = (
                     f"stream {stream} exceeded {self._max_stream_entries} updates "
-                    "(looping or unusually long); further deltas are truncated",
-                    self._max_text,
+                    "(looping or unusually long); further deltas are truncated"
                 )
+                clipped_text, truncated = _clip(raw_text, self._max_text)
                 is_delta = False
+                hidden_updates = hidden
         try:
             number = int(card_number) if card_number is not None else None
         except (TypeError, ValueError):
@@ -309,6 +361,10 @@ class ActivityLog:
         order.append(key)
         seen.add(key)
 
+        if hidden_updates is not None:
+            self._stream_markers[stream] = self._next_seq
+        if len(self._entries) == self._entries.maxlen:
+            self._dropped += 1
         entry = ActivityEntry(
             seq=self._next_seq,
             timestamp=datetime.now(UTC),
@@ -323,6 +379,8 @@ class ActivityLog:
             performer_id=pid,
             is_delta=is_delta, stream_id=stream,
             summary=clipped_summary, status=status_str, event_at=clipped_event_at,
+            text_length=len(raw_text), summary_length=len(raw_summary),
+            hidden_updates=hidden_updates, log_dropped=self._dropped,
         )
         self._next_seq += 1
         self._entries.append(entry)

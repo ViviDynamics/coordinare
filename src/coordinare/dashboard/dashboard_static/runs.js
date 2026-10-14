@@ -233,8 +233,9 @@ function personaHistoryPath(role, version) {
   return '/api/personas/' + encodeURIComponent(role) + '/history/' + String(version);
 }
 
-// The activity entry's link into its run. It opens the run at the entry's time.
-function runEntryLinkHtml(entry) {
+// The activity entry's link into its run. It opens the run at the entry's time. 135: the label
+// is optional, so a cut line can say "Open full transcript" while a row says "Transcript".
+function runEntryLinkHtml(entry, label) {
   // Self-contained (the pattern is inline), so the activity feed can carry this function alone.
   var session = entry && entry.session_id ? String(entry.session_id) : '';
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(session)) return '';
@@ -245,7 +246,7 @@ function runEntryLinkHtml(entry) {
     (when ? '?at=' + encodeURIComponent(String(when)) : '');
   return '<a class="run-entry-link" href="' + esc(href) + '" ' +
     'onclick="event.stopPropagation();navigate(event,this.getAttribute(\'href\'))" ' +
-    'onkeydown="event.stopPropagation()">Transcript</a>';
+    'onkeydown="event.stopPropagation()">' + esc(label || 'Transcript') + '</a>';
 }
 
 // The #146 run detail's link to a session's transcript (the run id is the session id).

@@ -291,6 +291,8 @@ def test_serialised_entry_shape_matches_the_wire_contract() -> None:
         "stage", "activity_type", "text", "truncated", "session_id", "performer_id", "is_delta", "stream_id",
         "summary", "status",  # 148: additive, empty on every entry that is not a tool call or result
         "event_at",  # 133: additive, the performer's own event time (empty when the event has none)
+        # 135: additive, the original lengths and the dropped counts (None when a cut did not happen).
+        "text_length", "summary_length", "hidden_updates", "log_dropped",
     }
     assert entry["timestamp"].endswith("+00:00")
     assert entry["card_number"] == 142
