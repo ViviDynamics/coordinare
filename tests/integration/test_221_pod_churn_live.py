@@ -90,7 +90,7 @@ def test_rapid_restart_of_one_performer_never_collides(runtime) -> None:
         for _ in range(4):
             started = await runtime.start_ephemeral(_config(performer_id))
             assert started.handle
-            await runtime.stop(started.handle, performer_id=performer_id)
+            await runtime.stop(started.handle)
 
     try:
         asyncio.run(churn())
@@ -109,7 +109,7 @@ def test_many_distinct_performers_run_and_stop_concurrently(runtime) -> None:
         assert len({s.handle for s in started}) == len(ids)
         assert all(s.endpoint.startswith("http://") for s in started)
         await asyncio.gather(
-            *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True)),
+            *(runtime.stop(s.handle) for s in started),
         )
 
     try:
@@ -142,7 +142,7 @@ def test_a_restart_while_the_predecessor_is_terminating(runtime) -> None:
         )
 
         second = await runtime.start_ephemeral(_config(performer_id))
-        await runtime.stop(second.handle, performer_id=performer_id)
+        await runtime.stop(second.handle)
 
     try:
         asyncio.run(scenario())
@@ -170,7 +170,7 @@ def test_a_performer_recovers_from_a_failed_start(runtime) -> None:
             )
         # The image problem is resolved; the same performer must start.
         started = await runtime.start_ephemeral(_config(performer_id))
-        await runtime.stop(started.handle, performer_id=performer_id)
+        await runtime.stop(started.handle)
 
     try:
         asyncio.run(scenario())

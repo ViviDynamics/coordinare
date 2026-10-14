@@ -106,12 +106,6 @@ def test_tail_logs_keeps_only_the_requested_tail() -> None:
     assert asyncio.run(_runtime(raw).tail_logs("pod", lines=3)) == ["line 7", "line 8", "line 9"]
 
 
-def test_dumped_pod_log_is_real_text(tmp_path: Path) -> None:
-    runtime = _runtime(str(_LOG_TEXT.encode("utf-8")))
-    asyncio.run(runtime._dump_pod_logs("pod", tmp_path, performer_id="perf"))
-    assert (tmp_path / "perf.log").read_text(encoding="utf-8") == _LOG_TEXT
-
-
 # --- #121 ---------------------------------------------------------------------- #
 
 

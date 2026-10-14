@@ -27,7 +27,6 @@ from coordinare.services.run_log import LOG_CHUNK_BYTES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import AsyncGenerator
-    from pathlib import Path
 
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
     from coordinare.services.run_log import RunLogIO
@@ -70,20 +69,8 @@ class DockerRuntime:
             return config
         return config.model_copy(update={"image": image})
 
-    async def stop(
-        self,
-        handle: str,
-        *,
-        timeout_s: int = 10,
-        host_log_dir: Path | None = None,
-        performer_id: str | None = None,
-    ) -> None:
-        await performer_lifecycle.stop(
-            handle,
-            timeout_s=timeout_s,
-            host_log_dir=host_log_dir,
-            performer_id=performer_id,
-        )
+    async def stop(self, handle: str, *, timeout_s: int = 10) -> None:
+        await performer_lifecycle.stop(handle, timeout_s=timeout_s)
 
     async def tail_logs(self, handle: str, *, lines: int = 200) -> list[str]:
         import asyncio

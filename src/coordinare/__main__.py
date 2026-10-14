@@ -1019,22 +1019,25 @@ def _build_run_logs_collector(
         return None
 
 
+def _performer_mount_dirs_for_attempts(config: ProjectConfiguration) -> tuple[Path, ...]:
+    """Directories a performer can write, whose persisted attempt paths are not trusted (208)."""
+    log_dir = getattr(config, "performer_log_dir", None)
+    return (Path(log_dir),) if log_dir is not None else ()
+
+
 def _resolve_attempt_log_dir(config: ProjectConfiguration, config_path: Path | None) -> Path:
     """Resolve the attempt log dir (141), anchored to the config directory or the
     state location when services are bootstrapped without an on-disk config.
+
+    Never under ``performer_log_dir`` (spec 208): that directory is mounted read-write
+    into performers, so attempt rows are written to the daemon-only ``logs/attempts``.
     """
     _state_base = config.state_file_path.resolve().parent
     _attempt_base = (
         config_path.resolve().parent if config_path is not None
         else _state_base
     )
-    _performer_logs = getattr(config, "performer_log_dir", None)
-    _attempt_log_dir = (
-        Path(_performer_logs) / "attempts" if _performer_logs is not None
-        else _attempt_base / "logs" / "attempts"
-    )
-    if not _attempt_log_dir.is_absolute():
-        _attempt_log_dir = _attempt_base / _attempt_log_dir
+    _attempt_log_dir = _attempt_base / "logs" / "attempts"
     # 493: in containerized deployments config.yaml sits on a read-only
     # ConfigMap mount; anchor to the writable state dir when the chosen
     # directory cannot be written.
@@ -1211,7 +1214,10 @@ async def _bootstrap_services(
             role_timeouts[stage] = role_config.timeout_seconds
 
     # 141: attempt telemetry singleton, resolved at the module seam above
-    attempt_log = AttemptLog(log_dir=_resolve_attempt_log_dir(config, config_path))
+    attempt_log = AttemptLog(
+        log_dir=_resolve_attempt_log_dir(config, config_path),
+        untrusted_dirs=_performer_mount_dirs_for_attempts(config),
+    )
 
     service_state: CoordinareState = {
         "config": config,

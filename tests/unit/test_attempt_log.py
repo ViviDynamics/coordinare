@@ -270,7 +270,7 @@ def test_write_failure_does_not_raise(tmp_path: Path) -> None:
     """A disk write failure is caught and logged as a structlog warning (FR-010)."""
     import structlog.testing
     log = AttemptLog(log_dir=tmp_path)
-    with structlog.testing.capture_logs() as captured, patch("builtins.open", side_effect=OSError("disk full")):
+    with structlog.testing.capture_logs() as captured, patch("coordinare.attempt_log.os.open", side_effect=OSError("disk full")):
         log.open_attempt(task_id="card-1", routing_reason="default_policy")
     assert any(r["event"] == "attempt_log.write_failed" and r["log_level"] == "warning" for r in captured)
 
@@ -279,7 +279,7 @@ def test_close_write_failure_does_not_raise(log: AttemptLog, tmp_path: Path) -> 
     """A disk write failure in close_attempt is caught and logged as a structlog warning (FR-010)."""
     import structlog.testing
     attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
-    with structlog.testing.capture_logs() as captured, patch("builtins.open", side_effect=OSError("disk full")):
+    with structlog.testing.capture_logs() as captured, patch("coordinare.attempt_log.os.open", side_effect=OSError("disk full")):
         log.close_attempt(attempt_id=attempt_id, verdict="pass", verdict_source="qa_role")
     assert any(r["event"] == "attempt_log.write_failed" and r["log_level"] == "warning" for r in captured)
 

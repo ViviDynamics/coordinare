@@ -1421,13 +1421,13 @@ class ProjectConfiguration(BaseSettings):
     # to the system temporary directory (tempfile.gettempdir()).
     workspace_root: Path | None = Field(default=None)
 
-    # 068 — Optional host directory for per-container + per-job logs.
+    # 068: Optional host directory for per-job performer artifacts.
     # When set, every ephemeral performer container is started with this
-    # path bind-mounted at ``/var/log/performer`` and ``PERFORMER_LOG_DIR``
-    # exported into its env. The coordinare also dumps ``docker logs <id>``
-    # into this directory before stopping each container. Backends that
-    # honour ``PERFORMER_LOG_DIR`` (e.g. Hermes) write per-job prompt /
-    # stdout / stderr artifacts beside the container log.
+    # path bind-mounted read-write at ``/var/log/performer`` and
+    # ``PERFORMER_LOG_DIR`` exported into its env. Backends that honour
+    # ``PERFORMER_LOG_DIR`` (e.g. Hermes) write per-job prompt / stdout /
+    # stderr artifacts here. The daemon writes nothing into this directory
+    # (spec 208): the run's output is kept under the state directory (132).
     performer_log_dir: Path | None = Field(default=None)
 
     # 129: Full per-run transcripts. Opt-out via ``transcripts.enabled: false``.

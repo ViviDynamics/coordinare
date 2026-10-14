@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -13,7 +14,15 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from coordinare.services.run_transcript import (
+    _NOFOLLOW,
+    _refuse_unless_private_regular,
+    _RefusedError,
+    _write_all,
+)
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 logger = structlog.get_logger(__name__)
@@ -100,6 +109,24 @@ def resolve_writable_log_dir(candidate: Path, fallback: Path) -> Path:
     return fallback
 
 
+def _append_private(path: Path, line: bytes) -> None:
+    """Append one JSONL row without following a link (spec 208).
+
+    The file is opened with ``O_NOFOLLOW`` and created owner-only. A planted symlink or
+    a hard link is refused before anything is written, so the row never lands in a file
+    the daemon did not create.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW, 0o600)
+    try:
+        try:
+            _refuse_unless_private_regular(os.fstat(fd), path)
+        except _RefusedError as exc:
+            raise OSError(str(exc)) from exc
+        _write_all(fd, line)
+    finally:
+        os.close(fd)
+
+
 @dataclass(frozen=True)
 class _OpenAttempt:
     started_at: str | None
@@ -120,8 +147,11 @@ class AttemptLog:
     can never interrupt card processing.
     """
 
-    def __init__(self, log_dir: Path) -> None:
+    def __init__(self, log_dir: Path, untrusted_dirs: Sequence[Path] = ()) -> None:
         self._log_dir = log_dir
+        # Directories a performer can write (spec 208). A log path persisted under one of
+        # them, from before attempts moved to the daemon-only directory, is not reused.
+        self._untrusted_dirs = tuple(untrusted_dirs)
         self._open_attempts: dict[str, _OpenAttempt] = {}
 
     def reopen_attempt(self, attempt_id: str, task_id: str, log_path: Path) -> None:
@@ -129,8 +159,14 @@ class AttemptLog:
 
         started_at is unknown after restart — wall_time_s in the end row will be null.
         No-ops if the attempt_id is already registered (idempotent).
+
+        A persisted path under a performer-writable directory is not reused (spec 208):
+        attempts used to be written under ``performer_log_dir``, so the end row goes to
+        today's file in the daemon-only directory instead.
         """
         if attempt_id not in self._open_attempts:
+            if any(log_path.is_relative_to(parent) for parent in self._untrusted_dirs):
+                log_path = self._log_path()
             self._open_attempts[attempt_id] = _OpenAttempt(
                 started_at=None,  # unknown after restart; wall_time_s will be null
                 task_id=task_id,
@@ -148,9 +184,8 @@ class AttemptLog:
 
     def _append(self, row: dict[str, Any], path: Path) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(row) + "\n")
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _append_private(path, (json.dumps(row) + "\n").encode("utf-8"))
         except Exception as exc:
             logger.warning("attempt_log.write_failed", path=str(path), error=str(exc))
 

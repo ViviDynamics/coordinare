@@ -146,8 +146,12 @@ def test_bootstrap_resolution_writes_attempt_row_to_state_dir(tmp_path) -> None:
 
 
 @requires_nonroot
-def test_bootstrap_resolution_honours_performer_log_dir(tmp_path) -> None:
-    """A configured performer_log_dir still wins, and is subject to the same fallback."""
+def test_bootstrap_resolution_ignores_performer_log_dir(tmp_path) -> None:
+    """Spec 208: attempt rows never land in ``performer_log_dir``, which performers can write.
+
+    The attempts directory is the daemon-only default even when a performer log dir is set,
+    and it still falls back to the state dir when that default is unwritable.
+    """
     ro_base = tmp_path / "ro-logs"
     ro_base.mkdir()
     ro_base.chmod(0o555)
@@ -165,7 +169,8 @@ def test_bootstrap_resolution_honours_performer_log_dir(tmp_path) -> None:
         ro_base.chmod(0o755)
 
     files = sorted((state_dir / "logs" / "attempts").glob("*.jsonl"))
-    assert files, "attempt history lost: fallback did not engage for the configured dir"
+    assert files, "attempt history lost: the daemon-only default was not used"
+    assert not (ro_base / "performer-logs").exists()
     assert not (ro_base / "attempts").exists()
 
 

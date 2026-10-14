@@ -921,7 +921,9 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # <state directory>/run-logs/<run_id>.log, and served from the card's Live Log
 # ("Open full log"). The root is outside performer_log_dir for the same reason as
 # transcripts. The file keeps the first and last parts of an over-long log, with
-# a marker saying how many bytes were dropped. On by default.
+# a marker saying how many bytes were dropped. On by default. This is the record of
+# a container's output: the daemon no longer copies `docker logs` or pod logs into
+# performer_log_dir (spec 208). With run_logs disabled, no copy is kept.
 # run_logs:
 #   enabled: true
 #   dir: null                           # optional root override; must be outside every performer mount

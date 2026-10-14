@@ -21,6 +21,8 @@ venv for validation parity.
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,19 @@ from coordinare import routing_config_service as rcs
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.services.config_write_service import compute_content_hash
+
+
+def _deny_open(monkeypatch, denied: Path) -> None:
+    """Make opening *denied* fail with EACCES, as an unreadable mounted file does (208 reads
+    go through ``os.open``, not ``Path.read_bytes``)."""
+    real_open = os.open
+
+    def _unreadable(path, flags, mode=0o777, *args, **kwargs):
+        if os.fspath(path) == str(denied):
+            raise PermissionError(errno.EACCES, "permission denied", str(denied))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _unreadable)
 
 
 def _endpoints_from_config(config_path: Path):
@@ -79,14 +94,7 @@ def test_routing_available_false_when_present_file_unreadable(
     # Sanity: the file exists, so the old is_file()-only check returned True.
     assert routing_path.is_file()
 
-    real_read_bytes = Path.read_bytes
-
-    def _unreadable(self, *a, **k):
-        if self == routing_path:
-            raise OSError("permission denied")
-        return real_read_bytes(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_bytes", _unreadable)
+    _deny_open(monkeypatch, routing_path)
     assert rcs.routing_available(endpoints) is False
 
 
@@ -437,14 +445,7 @@ def test_read_routing_unreadable_present_file_is_unavailable(tmp_path, monkeypat
         endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
 
-    real_read_bytes = Path.read_bytes
-
-    def _unreadable(self, *a, **k):
-        if self == f:
-            raise OSError("permission denied")
-        return real_read_bytes(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_bytes", _unreadable)
+    _deny_open(monkeypatch, f)
     view = rcs.read_routing(location)
     assert view.routing_available is False
     assert view.entries == []
