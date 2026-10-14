@@ -5790,9 +5790,10 @@ class CoordinareDaemon:
         # 131: let the conductor's pending call transcripts land, for a bounded time.
         calls = self._state.get("conductor_calls")
         if isinstance(calls, ConductorCallLog):
+            # Best effort: a failed drain is logged and shutdown goes on.
             try:
                 await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
-            except Exception as exc:  # pragma: no cover, best-effort drain
+            except Exception as exc:
                 logger.warning("daemon.conductor_drain_failed", error=str(exc))
         if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
             try:
