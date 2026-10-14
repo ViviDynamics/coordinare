@@ -161,6 +161,7 @@ performers:
 # --- Concurrency (optional) ---
 # max_concurrent_cards: 1            # 1–20; default 1
 # max_cards_in_review: 3             # 1-50, null for no cap; default 3
+# review_slot_hold_seconds: 900      # 60 and up; a non-human hold past this is a human wait
 
 
 # --- Diagnostic Logs (optional) ---

@@ -53,7 +53,7 @@ from coordinare.services.dependency import (
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.orphan_pr import run_per_cycle_sweep
-from coordinare.services.pipeline_budget import has_live_side_writer
+from coordinare.services.pipeline_budget import has_live_work
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.review_staleness import classify_review_staleness
 from coordinare.services.todo_waits import (
@@ -175,9 +175,10 @@ async def _derive_resume_stage(github: GitHubServiceProtocol, card: dict[str, An
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 
-# One slot rule (#179): a card holds a slot while it has work of ours to do or
+# One slot rule (#179, #186): a card holds a slot while it has work of ours to do or
 # under way. The pipeline budget (services/pipeline_budget.py) applies the same
-# rule at dispatch: a card parked in review releases its reservation.
+# rule at dispatch: a card waiting on a human review releases its reservation, and
+# a card waiting on checks or on the daemon keeps it.
 #
 # Phases that do not occupy a concurrency slot.  Blocked cards are waiting on a
 # human answer and have no live performer running, so they shouldn't prevent
@@ -189,12 +190,16 @@ NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked", "idle",
 
 
 def _session_consumes_slot(session: dict[str, Any], board_status: str | None = None) -> bool:
-    """Quiescent history releases admission; owned writers keep their slot."""
-    if has_live_side_writer(session):
+    """Quiescent history releases admission; owned writers keep their slot.
+
+    #186: the live-work test is the budget's (``has_live_work``). What remains
+    here is pickup-only: it also reads the board column, which the budget does not
+    have. A session with no live work is then judged by its board column and its
+    phase, the way the budget judges a candidate.
+    """
+    if has_live_work(session):
         return True
     phase = session.get("phase")
-    if phase in {"monitoring_performer", "monitoring_agent"} and (session.get("agent_dispatch") or {}).get("session_id"):
-        return True
     card = session.get("current_card") or {}
     status = board_status if board_status is not None else card.get("status")
     if session.get("board_paused") or status in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:

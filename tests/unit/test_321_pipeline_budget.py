@@ -21,8 +21,11 @@ def test_two_of_six_recovered_issues_keep_slots_across_handoffs():
     work['0']['performer_stage'] = 'implementing'
     work['1']['performer_stage'] = 'reviewing'
     assert select_pipelines(work, 2) == {'0', '1'}
-    # 179: waiting on PR review is not a handoff. The issue releases its slot.
+    # 179: waiting on PR review is not a handoff. The issue releases its slot once
+    # monitor_pr has said it is waiting on a human (#186: an unevaluated card holds).
     work['1']['phase'] = 'monitoring_pr'
+    assert select_pipelines(work, 2) == {'0', '1'}
+    work['1']['review_wait'] = 'human'
     assert select_pipelines(work, 2) == {'0', '2'}
     work['0']['current_card']['status'] = 'DONE'
     assert select_pipelines(work, 2) == {'2', '3'}
