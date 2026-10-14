@@ -33,7 +33,9 @@ from coordinare.services.run_transcript import (
 from coordinare.transport.http_transport import PerformerHTTPClient
 
 MEGABYTE = 1_000_000
-GENEROUS_SECONDS = 2.0
+# CPU bounds: linear runs take well under a second locally; quadratic ones took
+# minutes. The margin is for slow shared CI runners.
+GENEROUS_SECONDS = 8.0
 
 
 def _timed(text: str) -> float:
@@ -151,7 +153,12 @@ def test_retention_survives_an_entry_whose_stat_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Item 7: the stat after is_file() is inside the guard."""
+    """Item 7: every metadata read in the sweep is inside the guard.
+
+    Both ``stat`` and ``lstat`` fail for the bad entry, since which one a sweep
+    calls (and which one ``Path`` uses underneath) differs between Python
+    versions. CI on Linux showed the difference: ``is_file`` raised there.
+    """
     root = tmp_path / "t"
     bad = transcript_path(root, symphony="s", card_id="c", run_id="bad")
     good = transcript_path(root, symphony="s", card_id="c", run_id="good")
@@ -168,7 +175,16 @@ def test_retention_survives_an_entry_whose_stat_fails(
             raise OSError(message)
         return real_stat(self, **kwargs)
 
+    real_lstat = Path.lstat
+
+    def failing_lstat(self: Path) -> os.stat_result:
+        if self.name == "bad.jsonl":
+            message = "transient"
+            raise OSError(message)
+        return real_lstat(self)
+
     monkeypatch.setattr(Path, "stat", failing_stat)
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
     assert prune_expired(root, retention_days=30) == 1
     assert bad.exists()
     assert not good.exists()

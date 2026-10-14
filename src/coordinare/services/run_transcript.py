@@ -887,6 +887,24 @@ def _remove_quietly(action: Callable[[], None], path: Path) -> bool:
     return True
 
 
+def _expired_run_file(entry: Path, keep_resolved: set[Path], older_than: float) -> bool:
+    """Is ``entry`` one of the writer's own run files, not live, and old enough?
+
+    Every filesystem call is inside the guard: an entry that cannot be read is
+    skipped, never allowed to stop the sweep. One ``lstat`` answers "regular
+    file, not a link" and the age together.
+    """
+    if not _is_run_file(entry):
+        return False
+    try:
+        info = entry.lstat()
+        if not stat.S_ISREG(info.st_mode) or entry.resolve() in keep_resolved:
+            return False
+    except OSError:
+        return False
+    return info.st_mtime < older_than
+
+
 def prune_expired(
     root: Path,
     *,
@@ -914,18 +932,8 @@ def prune_expired(
     for symphony in _layout_dirs(base):
         for card in _layout_dirs(symphony):
             for entry in list(card.iterdir()):
-                if entry.is_symlink() or not entry.is_file() or not _is_run_file(entry):
-                    continue
-                if entry.resolve() in keep_resolved:
-                    continue
-                try:
-                    mtime = entry.stat().st_mtime
-                except OSError:
-                    continue
-                if (
-                    mtime < cutoff
-                    and mtime < youngest_allowed
-                    and _remove_quietly(entry.unlink, entry)
+                if _expired_run_file(entry, keep_resolved, min(cutoff, youngest_allowed)) and _remove_quietly(
+                    entry.unlink, entry,
                 ):
                     removed += 1
             if not any(card.iterdir()):

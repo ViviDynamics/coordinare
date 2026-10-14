@@ -78,7 +78,7 @@ def test_one_megabyte_unbroken_alphanumeric_run_redacts_in_well_under_a_second()
     text = "a" * HUGE
     started = time.perf_counter()
     out = redact_text(text)
-    assert time.perf_counter() - started < 1.0
+    assert time.perf_counter() - started < 5.0
     assert out == text
 
 
@@ -87,7 +87,9 @@ def test_long_runs_containing_key_stems_are_linear() -> None:
     redact_text("FOO_SECRET" * 100_000)
     redact_text('x="' * 200_000)
     redact_text("token=" * 200_000)
-    assert time.perf_counter() - started < 1.0
+    # Linear is about 0.3 s here; the old quadratic code took minutes. The bound
+    # leaves room for a slow shared CI runner without hiding a regression.
+    assert time.perf_counter() - started < 5.0
 
 
 # --- finding 5: redaction leaks and over-redaction ----------------------------------

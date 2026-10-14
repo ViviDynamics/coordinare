@@ -29,7 +29,9 @@ from coordinare.transport.http_transport import PerformerHTTPClient
 from coordinare.workspace import WorkspaceInfo
 
 MEGABYTE = 1_000_000
-GENEROUS_SECONDS = 2.0
+# CPU bounds: linear runs take well under a second locally; quadratic ones took
+# minutes. The margin is for slow shared CI runners.
+GENEROUS_SECONDS = 8.0
 
 
 def _persistent_config() -> PerformerEndpointConfig:

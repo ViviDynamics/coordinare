@@ -46,7 +46,7 @@ def test_a_huge_value_is_withheld_by_its_encoded_size_before_any_walk(
     elapsed = time.perf_counter() - started
     [record] = buffer.after(0, 10)
     assert record["output"] == {"withheld": "value exceeded the per-record size limit"}
-    assert elapsed < 2.0
+    assert elapsed < 8.0
 
 
 def test_an_adversarial_jwt_field_of_one_megabyte_is_served_quickly(
@@ -58,7 +58,7 @@ def test_an_adversarial_jwt_field_of_one_megabyte_is_served_quickly(
     started = time.perf_counter()
     [record] = buffer.after(0, 10)
     elapsed = time.perf_counter() - started
-    assert elapsed < 2.0
+    assert elapsed < 8.0
     assert len(record["text"]) < transcript.FIELD_LIMIT_CHARS + 200
 
 
