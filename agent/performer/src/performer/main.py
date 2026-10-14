@@ -1237,24 +1237,113 @@ def _json_required_role(role: str) -> bool:
     return canonical in _JSON_ROLE_REQUIRED_KEYS
 
 
+# 103: which end of a malformed output was lost. The coordinare's retry and the
+# operator's error_reason both depend on it, so the wording is kept in step with
+# the daemon's ``repair_hint`` (services/assessor_failure.py), which is a
+# separate process and so cannot import this one.
+_OUTPUT_SHAPE_GUIDANCE = {
+    "empty": "The previous output was empty.",
+    "array": "The previous output was a JSON array, not an object. Emit one JSON object.",
+    "head_cut": (
+        "The previous output began mid-object: its opening brace and first keys were "
+        "lost. Emit the complete object from its first character."
+    ),
+    "tail_cut": (
+        "The previous output ended before the object closed. Keep the answer compact "
+        "so the object completes."
+    ),
+    "whole": (
+        "The previous output was object-shaped but did not parse as JSON. Emit one valid "
+        "JSON object."
+    ),
+    "wrapped": (
+        "The previous output wrapped its object in other text. Emit only the JSON object, "
+        "with no prose or fences around it."
+    ),
+    "no_object": "The previous output contained no JSON object. Emit one JSON object and nothing else.",
+}
+_FAILURE_CAPTURE_HEAD = 300
+_FAILURE_CAPTURE_TAIL = 200
+_FAILURE_PREVIEW = 200
+
+
+def _output_shape(raw: str) -> str:
+    """Name the shape of unparseable output (keys of _OUTPUT_SHAPE_GUIDANCE).
+
+    A head_cut (a field-like closing brace, no opening brace) means the backend
+    lost the start of its reply; a tail_cut (opening, no closing) means the reply
+    ran out of output budget. The rest describe what the reply was instead of an
+    object, so the wording given to the model stays true.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "empty"
+    has_open = "{" in text
+    has_close = "}" in text
+    if text.startswith("[") and text.endswith("]"):
+        return "array"
+    if has_close and not has_open and '":' in text:
+        return "head_cut"
+    if has_open and not has_close:
+        return "tail_cut"
+    if text.startswith("{") and text.endswith("}"):
+        return "whole"
+    if has_open and has_close:
+        return "wrapped"
+    return "no_object"
+
+
+def _failure_capture(raw: str) -> tuple[str, str]:
+    """(capture kind, redacted excerpt) for an unparseable output.
+
+    Redacts the whole value before slicing (a credential crossing a slice boundary
+    otherwise survives both fragments). Long output keeps its head AND its tail, so
+    an operator can see the end the head-only capture used to hide. The 300 and 200
+    bound source characters; repr() expands control characters (about 4x each), so
+    the excerpt can be several times longer. The daemon caps what it stores.
+    """
+    redacted = _redact_secrets(raw or "")
+    if len(redacted) <= _FAILURE_CAPTURE_HEAD:
+        return "whole", repr(redacted)
+    head = redacted[:_FAILURE_CAPTURE_HEAD]
+    tail = redacted[-_FAILURE_CAPTURE_TAIL:]
+    return f"head {_FAILURE_CAPTURE_HEAD} and tail {_FAILURE_CAPTURE_TAIL}", f"{head!r} ... {tail!r}"
+
+
 def _json_recovery_prompt(
     *,
     role: str,
     stage_label: str,
     failure_reason: str,
     output_preview: str,
+    output_tail: str = "",
+    output_shape: str = "",
 ) -> str:
-    """Build a strict JSON-only repair prompt for retry turns."""
+    """Build a strict JSON-only repair prompt for retry turns.
+
+    103: the prompt names the shape of the failed output and carries its tail, so
+    a retry differs from the attempt that failed instead of repeating it.
+    """
     canonical = _ROLE_ALIASES.get(role, role)
     required = _JSON_ROLE_REQUIRED_KEYS.get(canonical, ())
     keys_hint = ", ".join(required) if required else "(role schema)"
-    return (
+    header = (
         f"Your previous {stage_label} response {failure_reason}. "
         "Return ONLY a valid JSON object now. "
-        "Do NOT include markdown, prose, or code fences.\n\n"
-        f"Required top-level keys: {keys_hint}\n"
-        f"Previous output preview: {output_preview}"
+        "Do NOT include markdown, prose, or code fences."
     )
+    guidance = _OUTPUT_SHAPE_GUIDANCE.get(output_shape)
+    if guidance:
+        header += f"\n{guidance}"
+    lines = [
+        header,
+        "",
+        f"Required top-level keys: {keys_hint}",
+        f"Previous output preview: {output_preview}",
+    ]
+    if output_tail:
+        lines.append(f"Previous output tail: {output_tail}")
+    return "\n".join(lines)
 
 
 async def _handle_backend_parse_failure(
@@ -1298,13 +1387,18 @@ async def _handle_backend_parse_failure(
     # Slack/email notifications, and persisted snapshots).  Coordinare-side
     # redaction is key-based only, so tokens inside arbitrary text values
     # would otherwise survive into operator-facing surfaces.
-    redacted_short = _redact_secrets(raw[:200]) if raw else ""
+    # 103: the retry names the output's shape and carries its tail. Both are
+    # cut from the redacted value, so a credential never reaches the prompt.
+    redacted_short = redacted_raw[:_FAILURE_PREVIEW]
+    output_tail = redacted_raw[-_FAILURE_CAPTURE_TAIL:] if len(redacted_raw) > _FAILURE_PREVIEW else ""
+    output_shape = _output_shape(raw or "")
     if perf.parse_retry_count < max_retries:
         return await _parse_failure_retry_response(
             perf, stage_label, failure_reason, redacted_short,
             max_retries, is_json_contract_role,
+            output_tail=output_tail, output_shape=output_shape,
         )
-    redacted_long = _redact_secrets((raw or "")[:300])
+    capture_kind, excerpt = _failure_capture(raw or "")
     # 077: retries exhausted. For roles that can SAFELY interpret prose (assessor
     # → default-sufficient; reviewer → changes-requested, never auto-approve), fall
     # back to that instead of hard-failing the stage — a weak/limited model that
@@ -1321,9 +1415,12 @@ async def _handle_backend_parse_failure(
         return await lenient_fallback()
     perf.state = "error"
     prefix = f"{_FORMAT_ERROR_PREFIX} " if is_json_contract_role else ""
+    # 103: length and shape come before the excerpt, so a log line cut at its
+    # end still says how much output there was and which end was lost.
     perf.error_reason = (
         f"{prefix}Backend {stage_label} output {failure_reason} after "
-        f"{perf.parse_retry_count + 1} attempts. Last output: {redacted_long!r}"
+        f"{perf.parse_retry_count + 1} attempts. Output length {len(raw or '')} chars, "
+        f"shape {output_shape}, capture {capture_kind}. Last output: {excerpt}"
     )
     return PerformerResponse(
         status="error",
@@ -1339,6 +1436,9 @@ async def _parse_failure_retry_response(
     redacted_short: str,
     max_retries: int,
     is_json_contract_role: bool,
+    *,
+    output_tail: str = "",
+    output_shape: str = "",
 ) -> PerformerResponse:
     """(045) Schedule a parse-retry: repair prompt for JSON roles, else restart."""
     perf.parse_retry_count += 1
@@ -1349,18 +1449,20 @@ async def _parse_failure_retry_response(
         max_retries=max_retries,
         failure_reason=failure_reason,
         output_preview=redacted_short,
+        output_shape=output_shape,
+    )
+    repair_prompt = _json_recovery_prompt(
+        role=perf.role,
+        stage_label=stage_label,
+        failure_reason=failure_reason,
+        output_preview=redacted_short or "<empty>",
+        output_tail=output_tail,
+        output_shape=output_shape,
     )
     recovery_attempted = False
     if is_json_contract_role:
         try:
-            await perf.backend.relay_feedback(
-                _json_recovery_prompt(
-                    role=perf.role,
-                    stage_label=stage_label,
-                    failure_reason=failure_reason,
-                    output_preview=redacted_short or "<empty>",
-                ),
-            )
+            await perf.backend.relay_feedback(repair_prompt)
             recovery_attempted = True
         except Exception as exc:
             log.warning(
@@ -1370,6 +1472,17 @@ async def _parse_failure_retry_response(
                 error=str(exc),
             )
     if not recovery_attempted:
+        # 103: a restart with the same score re-sends the same prompt, and the
+        # same output came back each time. The repair prompt rides the score's
+        # relay_feedback so the restarted backend sees what failed and how.
+        # The daemon's format_repair hint (kind="format_repair") is dropped
+        # here: this prompt quotes the newer output, and sending both would
+        # show the model the same repair twice in one prompt.
+        if is_json_contract_role:
+            perf.score.relay_feedback = [
+                item for item in perf.score.relay_feedback
+                if not (isinstance(item, dict) and item.get("kind") == "format_repair")
+            ] + [{"body": repair_prompt, "author_login": "performer"}]
         # Copilot round 5: backends like OpenCodeAdapter launch long-lived
         # ``opencode serve`` processes and start() doesn't tear down previous
         # instances.  Stop the current backend (best-effort) before launching
