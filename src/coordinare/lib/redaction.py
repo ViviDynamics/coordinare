@@ -44,6 +44,34 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+# 148: shell commands in the activity feed carry secrets in forms the value
+# patterns above do not match: a short env assignment (TOKEN=abc), a CLI flag
+# (--password hunter2), or an Authorization header whose token is short.
+_COMMAND_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(
+        r"\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|AUTH)[A-Za-z0-9_]*=)"
+        r"(?:\"[^\"]*\"|'[^']*'|\S+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(--?(?:token|password|passwd|secret|api[-_]?key)[=\s]+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(authorization:\s*(?:(?:bearer|basic|token)\s+)?)[^\s\"']+", re.IGNORECASE),
+]
+
+
+def redact_command_text(text: str) -> str:
+    """``redact_secrets`` plus the command forms it misses (148).
+
+    Used for the activity feed, where a tool summary is a shell command.
+    """
+    text = redact_secrets(text)
+    for pattern in _COMMAND_SECRET_PATTERNS:
+        text = pattern.sub(lambda m: m.group(1) + "[REDACTED]", text)
+    return text
+
+
 def _is_sensitive_key(key: str) -> bool:
     return key.lower() in SENSITIVE_KEYS
 

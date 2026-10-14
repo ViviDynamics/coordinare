@@ -34,6 +34,7 @@ import psutil
 import structlog
 
 from performer.backends._scope import scope_prompt_section
+from performer.backends._tool_summary import primary_argument
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer import transcript
@@ -908,7 +909,11 @@ class ClaudeCodeBackend:
                     self._emit(BackendEventType.progress, text)
                 elif block_type == "tool_use":
                     tool = str(block.get("name", "tool"))
-                    self._emit(BackendEventType.tool_use, tool, detail=tool)
+                    # 148: the name and its primary argument; the rest of the input stays here.
+                    self._event_buffer.append(BackendEvent(
+                        type=BackendEventType.tool_use, text=tool[:_MAX_TEXT], detail=tool,
+                        tool=tool, arg=primary_argument(tool, block.get("input")),
+                    ))
                 elif block_type == "thinking":
                     thinking = str(block.get("thinking", ""))[:_MAX_TEXT]
                     self._emit(BackendEventType.thinking, thinking)
@@ -922,7 +927,11 @@ class ClaudeCodeBackend:
                 )[:_MAX_TEXT]
             else:
                 text = str(content)[:_MAX_TEXT]
-            self._emit(BackendEventType.tool_use, f"result: {text}", detail=tool_id)
+            status = "error" if event.get("is_error") is True else "ok"
+            self._event_buffer.append(BackendEvent(
+                type=BackendEventType.tool_use, text=f"result: {text}"[:_MAX_TEXT],
+                detail=tool_id, status=status,
+            ))
 
         elif event_type == "result":
             subtype = event.get("subtype", "")

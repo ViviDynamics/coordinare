@@ -273,6 +273,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .session-age { font-size: 12px; color: var(--color-accent-blue); margin-top: 6px; }
 .ev-progress  { background: var(--color-ev-progress); color: var(--color-accent-green); }
 .ev-tool_use  { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.ev-tool_result { background: var(--color-bg-accent); color: var(--color-accent-blue); }
 .ev-thinking  { background: var(--color-ev-thinking); color: var(--color-accent-yellow); }
 .ev-cost      { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .ev-error     { background: var(--color-ev-error); color: var(--color-accent-red); }
@@ -310,6 +311,23 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
    existing colour tokens so no new contrast pairing is introduced. */
 .af-truncated { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 3px; font-size: 10px; color: var(--color-text-muted); border: 1px solid var(--color-border); }
 .af-stale-note { color: var(--color-accent-yellow); font-size: 11px; padding: 5px 6px; border-bottom: 1px solid var(--color-bg-surface); }
+/* 148: the kind chips, and one left rule per row kind so a narration row, a tool
+   call and a lifecycle event read differently before anyone reads the text. */
+.af-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.af-chip { font-family: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--color-bg-base); color: var(--color-text-muted); border: 1px solid var(--color-border-control); cursor: pointer; }
+.af-chip[aria-pressed="true"] { color: var(--color-text-primary); border-color: var(--color-accent-blue); }
+.af-chip:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 1px; }
+.af-row.af-row-lifecycle { border-left: 3px solid var(--color-accent-green); padding-left: 8px; }
+.af-row.af-row-tools { border-left: 3px solid var(--color-accent-blue); padding-left: 8px; }
+.af-row.af-row-agent { border-left: 3px solid var(--color-border-control); padding-left: 8px; }
+.af-row.af-row-errors { border-left: 3px solid var(--color-accent-red); padding-left: 8px; }
+.af-row.af-plain { display: block; }
+.af-plain > * { margin-right: 4px; }
+.af-icon { display: inline-block; width: 12px; text-align: center; font-weight: bold; color: var(--color-text-muted); }
+.af-plain-text { overflow-wrap: anywhere; color: var(--color-text-primary); }
+.af-row-agent .af-narration { font-family: inherit; white-space: pre-wrap; color: var(--color-text-primary); }
+.af-result { padding-left: 8px; font-family: var(--font-code); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-muted); }
+.af-result-error { color: var(--color-accent-red); }
 /* Performers card */
 .perf-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .perf-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -488,6 +506,12 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
       <option value="">All cards</option>
     </select>
+    <div class="af-chips" role="group" aria-label="Show in the activity feed">
+      <button type="button" class="af-chip" data-chip="lifecycle" aria-pressed="true" onclick="onActivityChipToggle(this)">Lifecycle</button>
+      <button type="button" class="af-chip" data-chip="agent" aria-pressed="true" onclick="onActivityChipToggle(this)">Agent</button>
+      <button type="button" class="af-chip" data-chip="tools" aria-pressed="false" onclick="onActivityChipToggle(this)">Tools</button>
+      <button type="button" class="af-chip" data-chip="errors" aria-pressed="true" onclick="onActivityChipToggle(this)">Errors</button>
+    </div>
     <span id="af-liveness" class="af-liveness" role="status" aria-live="polite"></span>
   </div>
   <div id="af-stale-note" class="af-stale-note" style="display:none">

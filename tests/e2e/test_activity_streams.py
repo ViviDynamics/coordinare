@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 from playwright.sync_api import expect
 
@@ -87,96 +89,109 @@ def test_raw_stream_reconstructs_sentences_and_separates_messages_and_tools(page
     next_message = _event(9)
     next_message.update(text="Done.", is_delta=True, stream_id="m2")
     page.evaluate('entries => afAppend(entries)', [*entries, command, next_message])
-    row = page.locator('#activity-feed > .af-row')
-    expect(row).to_have_count(1)
-    row.locator('summary').click()
-    paragraphs = row.locator('.af-raw p')
-    expect(paragraphs).to_have_count(2)
-    assert paragraphs.nth(0).text_content() == "We can inspect the plan.\nThen test."
-    expect(row.locator('.af-tool code')).to_have_text("cat plan.md && echo '<script>'")
-    assert paragraphs.nth(1).text_content() == "Done."
-    assert row.locator('script').count() == 0
+    # 148: a tool call is its own row, and Tools starts collapsed, so show it first.
+    page.locator("#activity-feed-card .af-chip[data-chip='tools']").click()
+    rows = page.locator('#activity-feed > .af-row')
+    expect(rows).to_have_count(3)
+    # Newest first: the second message, the tool call, then the first message.
+    done_row, tool_row, message_row = rows.nth(0), rows.nth(1), rows.nth(2)
+    expect(tool_row).to_have_class(re.compile(r'\baf-row-tools\b'))
+    expect(message_row).to_have_class(re.compile(r'\baf-row-agent\b'))
+    message_row.locator('summary').click()
+    expect(message_row.locator('.af-raw p')).to_have_count(1)
+    assert message_row.locator('.af-raw p').nth(0).text_content() == "We can inspect the plan.\nThen test."
+    tool_row.locator('summary').click()
+    expect(tool_row.locator('.af-tool code')).to_have_text("cat plan.md && echo '<script>'")
+    assert tool_row.locator('script').count() == 0
+    done_row.locator('summary').click()
+    paragraphs = done_row.locator('.af-raw p')
+    assert paragraphs.nth(0).text_content() == "Done."
     # A live fragment extends the last message without rebuilding earlier paragraphs as rows.
     update = _event(10)
     update.update(text=" Ready for review.", is_delta=True, stream_id="m2")
     page.evaluate('entries => afAppend(entries)', [update])
-    assert paragraphs.nth(1).text_content() == "Done. Ready for review."
-    expect(row.locator('details')).to_have_attribute('open', '')
+    assert paragraphs.nth(0).text_content() == "Done. Ready for review."
+    expect(done_row.locator('details')).to_have_attribute('open', '')
 
     separate = _event(11)
     separate.update(text="Another message.", is_delta=True, stream_id="m3")
     page.evaluate('entries => afAppend(entries)', [separate])
-    expect(paragraphs).to_have_count(3)
-    assert paragraphs.nth(2).text_content() == "Another message."
+    expect(paragraphs).to_have_count(2)
+    assert paragraphs.nth(1).text_content() == "Another message."
 
 
-def test_usage_reports_stay_with_stream_without_splitting_text_or_hiding_lifecycle(page, live_server_url):
+
+
+def _usage_event(seq, **changes):
+    result = _event(seq)
+    result.update(changes)
+    return result
+
+
+def test_usage_reports_stay_with_their_stream(page, live_server_url):
     page.goto(live_server_url)
-
-    def event(seq, **changes):
-        result = _event(seq)
-        result.update(changes)
-        return result
-
     events = [
-        event(0, text='We', is_delta=True, stream_id='message'),
-        event(1, activity_type='cost', text='100 tokens, $0.01'),
-        event(2, text=' can proceed.', is_delta=True, stream_id='message'),
-        event(3, activity_type='tool_use', text='pytest tests/'),
-        event(4, activity_type='cost', text='250 tokens, $0.03'),
+        _usage_event(0, text='We', is_delta=True, stream_id='message'),
+        _usage_event(1, activity_type='cost', text='100 tokens, $0.01'),
+        _usage_event(2, text=' can proceed.', is_delta=True, stream_id='message'),
+        _usage_event(3, activity_type='tool_use', text='pytest tests/'),
+        _usage_event(4, activity_type='cost', text='250 tokens, $0.03'),
     ]
     page.evaluate('entries => afAppend(entries)', events)
-    row = page.locator('#activity-feed > .af-row')
-    expect(row).to_have_count(1)
-    summary = row.locator('details > summary').first
-    # 353: the collapsed line carries the newest non-cost entry's own text
-    # ('pytest tests/') rather than the generic 'Performer used a tool.'.
-    expect(summary).to_contain_text('pytest tests/ (5 updates)')
+    # 148: the tool call is its own row, hidden until Tools is on.
+    page.locator("#activity-feed-card .af-chip[data-chip='tools']").click()
+    rows = page.locator('#activity-feed > .af-row')
+    expect(rows).to_have_count(3)
+    # Newest first: the usage report after the tool, the tool, then the message.
+    message_row = rows.nth(2)
+    summary = message_row.locator('details > summary').first
+    # 353: the collapsed line carries the newest non-cost entry's own text.
+    expect(summary).to_contain_text('can proceed. (3 updates)')
     summary.click()
     summary.focus()
-    assert row.locator('.af-raw > p').text_content() == 'We can proceed.'
-    expect(row.locator('.af-tool code')).to_have_text('pytest tests/')
-    usage = row.locator('.af-usage')
-    expect(usage.locator('summary')).to_have_text('Usage reports (2)')
-    expect(usage.locator('p').first).not_to_be_visible()
+    assert message_row.locator('.af-raw > p').text_content() == 'We can proceed.'
+    expect(rows.nth(1).locator('.af-tool code')).to_have_text('pytest tests/')
+    usage = message_row.locator('.af-usage')
+    expect(usage.locator('summary')).to_have_text('Usage reports (1)')
     usage.locator('summary').click()
-    expect(usage.locator('p')).to_have_text(['100 tokens, $0.01', '250 tokens, $0.03'])
+    expect(usage.locator('p')).to_have_text(['100 tokens, $0.01'])
+    # A new usage report joins the usage row above it and leaves the focused message alone.
     summary.focus()
-    update = event(5, activity_type='cost', text='300 tokens, <script>$0.04</script>')
+    update = _usage_event(5, activity_type='cost', text='300 tokens, <script>$0.04</script>')
     page.evaluate('entries => afAppend(entries)', [update])
     expect(summary).to_be_focused()
-    expect(usage).to_have_attribute('open', '')
-    expect(usage.locator('p')).to_have_count(3)
-    expect(usage.locator('p').last).to_have_text('300 tokens, <script>$0.04</script>')
-    assert row.locator('script').count() == 0
-    usage.locator('summary').focus()
-    # Retention updates can rebuild raw details, including a focused usage summary.
-    page.evaluate('entries => afAppend(entries)', [event(6, activity_type='cost', text='350 tokens')])
-    expect(usage.locator('summary')).to_be_focused()
-    page.evaluate('entries => afAppend(entries)', [*events, update])
-    expect(usage.locator('p')).to_have_count(4)
-    expect(row).to_have_count(1)
-    # A usage event cannot bridge failures, lifecycle boundaries or sessions.
-    page.evaluate('entries => afAppend(entries)', [
-        event(7, activity_type='error'), event(8, activity_type='cost'),
-        event(9, activity_type='blocked'), event(10, activity_type='cost'),
-        event(11, activity_type='completed'), event(12, activity_type='cost'),
-        event(13, activity_type='cost', session_id='next'),
-        event(14, activity_type='cost', card_id='other'),
-        event(15, activity_type='cost', performer_id='other'),
-        event(16, activity_type='cost', stage='reviewing'),
-    ])
-    expect(row).to_have_count(11)
+    expect(rows.nth(0).locator('.af-usage summary')).to_have_text('Usage reports (2)')
+    expect(rows.nth(0).locator('.af-usage p').last).to_have_text('300 tokens, <script>$0.04</script>')
+    assert page.locator('#activity-feed script').count() == 0
+
+
+def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_server_url):
+    page.goto(live_server_url)
+    boundaries = [
+        _usage_event(7, activity_type='error'), _usage_event(8, activity_type='cost'),
+        _usage_event(9, activity_type='blocked'), _usage_event(10, activity_type='cost'),
+        _usage_event(11, activity_type='completed'), _usage_event(12, activity_type='cost'),
+        _usage_event(13, activity_type='cost', session_id='next'),
+        _usage_event(14, activity_type='cost', card_id='other'),
+        _usage_event(15, activity_type='cost', performer_id='other'),
+        _usage_event(16, activity_type='cost', stage='reviewing'),
+    ]
+    page.evaluate('entries => afAppend(entries)', boundaries)
+    rows = page.locator('#activity-feed > .af-row')
+    # Each boundary starts a new row, so no usage report joins across one.
+    expect(rows).to_have_count(10)
     for label in ['ERROR', 'BLOCKED', 'COMPLETED']:
         expect(page.locator('#activity-feed .af-kind').filter(has_text=label)).to_have_count(1)
     page.locator('#af-filter').select_option('other')
-    expect(row).to_have_count(1)
-    # Usage-only traffic is coalesced and still respects the retention cap.
+    expect(rows).to_have_count(1)
+
+
+def test_usage_only_traffic_is_coalesced_and_still_respects_the_retention_cap(page, live_server_url):
+    page.goto(live_server_url)
     page.evaluate('entries => afAppend(entries)', [
-        event(i, activity_type='cost') for i in range(17, 2021)
+        _usage_event(i, activity_type='cost') for i in range(17, 2021)
     ])
-    expect(row).to_have_count(0)
-    page.locator('#af-filter').select_option('')
-    expect(row).to_have_count(1)
     assert page.evaluate('_afEntries.length') == 2000
-    expect(row.locator('.af-usage summary')).to_have_text('Usage reports (2000)')
+    rows = page.locator('#activity-feed > .af-row')
+    expect(rows).to_have_count(1)
+    expect(rows.locator('.af-usage summary')).to_have_text('Usage reports (2000)')

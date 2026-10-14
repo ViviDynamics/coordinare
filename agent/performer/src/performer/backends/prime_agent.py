@@ -55,6 +55,7 @@ import structlog
 
 from performer import transcript
 from performer.backends._env_policy import build_subprocess_env
+from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.backends.pi import _build_task_prompt, _extract_final_assistant_text
 from performer.io_utils import iter_lines_chunked
@@ -470,7 +471,11 @@ class PrimeAgentBackend:
 
         elif etype == "tool_execution_start":
             tool = str(event.get("toolName", "tool"))[:_MAX_TEXT]
-            self._emit(BackendEventType.tool_use, tool, detail=tool)
+            # 148: the name and its primary argument, so the feed can say what ran.
+            self._event_buffer.append(BackendEvent(
+                type=BackendEventType.tool_use, text=tool, detail=tool, tool=tool,
+                arg=primary_argument(tool, event.get("args")),
+            ))
 
         elif etype == "agent_end":
             # agent_end does NOT mean the run succeeded. Prime Agent forwards

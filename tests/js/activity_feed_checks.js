@@ -27,7 +27,8 @@ if (!feedJsPath) {
 // held as HTML strings; rows are self-contained <div class="af-row"> blocks
 // with no nesting, so splitting on the opening tag reconstructs them exactly.
 // ---------------------------------------------------------------------------
-const ROW = '<div class="af-row">';
+// 148: rows carry a kind class (af-row-agent, af-plain, ...), so match the prefix.
+const ROW = '<div class="af-row';
 
 function splitRows(html) {
   if (!html) return [];

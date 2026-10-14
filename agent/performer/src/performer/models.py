@@ -53,12 +53,19 @@ class BackendEvent(BaseModel):
     detail: str = ""        # optional longer detail (file path, tool args, etc.)
     is_delta: bool = False
     stream_id: str = ""
+    # 148: a tool_use event's name and primary argument (see backends/_tool_summary),
+    # and a tool result's outcome ("ok" | "error"). Empty on every other event.
+    tool: str = ""
+    arg: str = ""
+    status: str = ""
 
     @model_validator(mode="before")
     @classmethod
     def _redact_sensitive_detail(cls, data: object) -> object:
-        if isinstance(data, dict) and "detail" in data:
-            data["detail"] = _redact_secrets(str(data["detail"]))
+        if isinstance(data, dict):
+            for field in ("detail", "arg"):
+                if field in data:
+                    data[field] = _redact_secrets(str(data[field]))
         return data
 
 if TYPE_CHECKING:

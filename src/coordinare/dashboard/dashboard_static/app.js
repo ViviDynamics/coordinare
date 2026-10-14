@@ -1174,7 +1174,7 @@ async function resetPersona(role) {
 var AF_MAX_ROWS = 2000;
 var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
 var AF_LABELS = {
-  operator_action: 'OPERATOR', progress: 'PROGRESS', tool_use: 'TOOL', thinking: 'THINKING', cost: 'COST',
+  operator_action: 'OPERATOR', progress: 'AGENT', tool_use: 'TOOL', tool_result: 'RESULT', thinking: 'THINKING', cost: 'COST',
   stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
   stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED',
   // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
@@ -1216,7 +1216,8 @@ function afTime(iso) {
 }
 
 
-function afMatches(e) { return !_afFilter || e.card_id === _afFilter; }
+// 148: the card filter and the kind chips both have to let an entry through.
+function afMatches(e) { return (!_afFilter || e.card_id === _afFilter) && afVisible(e); }
 
 function afAppend(entries) {
   var feed = document.getElementById('activity-feed');
@@ -1476,6 +1477,7 @@ function connectEventStream() {
 connectEventStream();
 
 document.addEventListener('DOMContentLoaded', function() {
+  afApplyChipState();   // 148: the chips show the choice this browser remembered
   router(); // initial route
   if (typeof assistantAvailable === 'function') assistantAvailable();
   setInterval(afTick, 5000);   // 138: silence timer + quiet detection

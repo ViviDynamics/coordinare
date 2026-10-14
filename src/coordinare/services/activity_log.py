@@ -19,13 +19,18 @@ from uuid import uuid4
 
 import structlog
 
-from coordinare.lib.redaction import redact_secrets
+from coordinare.lib.redaction import redact_command_text
 
 logger = structlog.get_logger(__name__)
 
 MAX_ENTRIES = 2000
 MAX_TEXT = 200
 MAX_TITLE = 80
+# 148: a tool call's one-line summary, e.g. "Bash · uv run pytest -q". The
+# performer clips its argument to the same figure (backends/_tool_summary.py).
+MAX_SUMMARY = 160
+# 148: the only tool outcomes the feed distinguishes.
+TOOL_STATUSES = frozenset({"ok", "error"})
 MAX_SEEN_PER_CARD = 256
 # 327: the most delta entries any ONE stream may occupy in the shared log.
 # A degenerate model loop emits ~10 deltas/second; without a per-stream cap a
@@ -56,6 +61,8 @@ class ActivityEntry:
     performer_id: str = ""
     is_delta: bool = False
     stream_id: str = ""
+    summary: str = ""
+    status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +79,8 @@ class ActivityEntry:
             "performer_id": self.performer_id,
             "is_delta": self.is_delta,
             "stream_id": self.stream_id,
+            "summary": self.summary,
+            "status": self.status,
         }
 
 
@@ -131,6 +140,8 @@ class ActivityLog:
         is_delta: bool = False,
         stream_id: str = "",
         source_event_id: str = "",
+        summary: str = "",
+        status: str = "",
     ) -> ActivityEntry | None:
         """Append one entry. Returns None when suppressed as a duplicate."""
         entry = self._append(
@@ -143,6 +154,7 @@ class ActivityLog:
             session_id=session_id,
             performer_id=performer_id,
             is_delta=is_delta, stream_id=stream_id, source_event_id=source_event_id,
+            summary=summary, status=status,
         )
         if entry is not None:
             self._fan_out([entry])
@@ -166,6 +178,8 @@ class ActivityLog:
                 is_delta=item.get("is_delta") is True,
                 stream_id=item.get("stream_id", ""),
                 source_event_id=item.get("source_event_id", ""),
+                summary=item.get("summary", ""),
+                status=item.get("status", ""),
             )
             if entry is not None:
                 appended.append(entry)
@@ -205,10 +219,18 @@ class ActivityLog:
         is_delta: bool = False,
         stream_id: Any = "",
         source_event_id: Any = "",
+        summary: Any = "",
+        status: Any = "",
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
-        clipped_text, truncated = _clip(redact_secrets(str(text or "")), self._max_text)
+        clipped_text, truncated = _clip(redact_command_text(str(text or "")), self._max_text)
+        # 148: a tool's argument is a command or a path, so it is redacted in the
+        # daemon, before the entry, the dedup key or the snapshot can hold it.
+        clipped_summary, _ = _clip(redact_command_text(str(summary or "")), MAX_SUMMARY)
+        status_str, _ = _clip(status, 16)
+        if status_str not in TOOL_STATUSES:
+            status_str = ""
         sid, _ = _clip(session_id, 200)
         pid, _ = _clip(performer_id, 200)
         stream, _ = _clip(stream_id, 200)
@@ -262,6 +284,8 @@ class ActivityLog:
         # event arrives with a new observation time, so including either would
         # disable suppression entirely and make a wedged agent scroll (FR-022).
         key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}"
+        if clipped_summary or status_str:
+            key += f"|{clipped_summary}|{status_str}"
         if source_id and (is_delta or kind == "tool_use"):
             # Backend identity is stable on replay. Distinct executions of the
             # same tool, like repeated streaming words, are real new activity.
@@ -288,6 +312,7 @@ class ActivityLog:
             session_id=sid,
             performer_id=pid,
             is_delta=is_delta, stream_id=stream,
+            summary=clipped_summary, status=status_str,
         )
         self._next_seq += 1
         self._entries.append(entry)
