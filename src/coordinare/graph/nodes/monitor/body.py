@@ -129,6 +129,7 @@ from coordinare.services.assessor_failure import (
 )
 from coordinare.services.block_cause import OUTPUT_CAP_REASON
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import record_lifecycle
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.progress_fingerprint import progress_fingerprint
@@ -4248,7 +4249,38 @@ async def _phase_observer_kill(
     finally:
         lock.release()
 
+# 147: the verdict markers that fail a stage. Passing markers are EXPECTED_STAGE_MARKER's.
+_FAILING_VERDICT_MARKERS: frozenset[str] = frozenset({"changes_requested", "qa_failed", "security_failed"})
+
+
+async def _phase_verdict_record(
+    state: CoordinareState,
+    ctx: _BodyCtx,
+) -> CoordinareState | None:
+    """147: record a stage verdict in the lifecycle log, pass or fail. Never short-circuits.
+
+    Runs first so every verdict is recorded even when a later phase handles it. Once per
+    (marker, settled head), so a verdict seen again on the next cycle is not counted twice.
+    """
+    stage = str(ctx.stage or "")
+    marker = str(ctx.marker or "")
+    if stage not in VERDICT_STAGES:
+        return None
+    passing = marker in EXPECTED_STAGE_MARKER.get(stage, frozenset())
+    if not passing and marker not in _FAILING_VERDICT_MARKERS:
+        return None
+    status = ctx.status if isinstance(ctx.status, dict) else {}
+    head = _settled_head(status)
+    record_lifecycle(
+        state, "verdict", card_id=str(ctx.card_id or ""), stage=stage,
+        detail={"result": "pass" if passing else "fail", "marker": marker, "head": head[:12]},
+        key=f"{marker}:{head}",
+    )
+    return None
+
+
 _PHASES = (
+    _phase_verdict_record,
     _phase_board_reconcile,
     _phase_stall_expired,
     phase_458,

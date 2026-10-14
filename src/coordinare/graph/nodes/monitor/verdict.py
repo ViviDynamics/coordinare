@@ -17,6 +17,7 @@ from coordinare.graph.nodes.monitor.constants import (
     VERDICT_STAGES,
 )
 from coordinare.lib.redaction import redact_state_value
+from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.observer import observer_enabled
 
 logger = structlog.get_logger(__name__)
@@ -396,6 +397,12 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     control_id = override.get("control_id")
     state["consumed_control_id"] = control_id if isinstance(control_id, str) else None
     state["pending_override"] = None  # FR-008: clear immediately
+    # 147: an applied override is a lifecycle event, once per control id.
+    record_lifecycle(
+        state, "override", card_id=card_id_of(state), stage=stage_of(state),
+        detail={"action": action, "target_stage": override.get("target_stage")},
+        key=control_id if isinstance(control_id, str) and control_id else f"{action}:{override.get('target_stage')}",
+    )
 
     if action == "skip":
         logger.info("override.skip", performer_stage=state.get("performer_stage"))

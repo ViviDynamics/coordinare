@@ -20,6 +20,7 @@ import structlog
 
 from coordinare.graph.state import _set_current_card
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.conductor_calls import conductor_call
 from coordinare.services.pr_conversation_feedback import acknowledge_pr_conversation_feedback
 
@@ -316,6 +317,12 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
                 # Other feedback remains eligible after the override completes.
                 command_review = next(r for r in pending_reviews if _COMMAND_RE.search(str(r.get("body", ""))))
                 review_id = str(command_review.get("id") or "")
+                # 147: a human command is a lifecycle event, once per review that carried it.
+                record_lifecycle(
+                    state, "human_action", card_id=card_id_of(state), stage=stage_of(state),
+                    detail={"action": command.get("action"), "target_stage": command.get("target_stage")},
+                    key=f"review:{review_id}",
+                )
                 if review_id:
                     state["processed_review_ids"] = (state.get("processed_review_ids") or set()) | {review_id}
                 acknowledge_pr_conversation_feedback(state, [command_review])

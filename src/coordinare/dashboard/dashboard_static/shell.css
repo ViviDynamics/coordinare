@@ -177,3 +177,28 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .sh-name { font-weight: 600; }
 .sh-word, .sh-fresh { color: var(--color-text-muted); font-size: 0.9em; }
 .sh-reason { flex-basis: 100%; padding-left: 1.2em; color: var(--color-text-muted); font-size: 0.9em; }
+
+/* 147: the card pipeline. The tracker and lifecycle list in the card detail, and the dots on a board card. */
+.tl-heading { font-size: 12px; color: var(--color-text-muted); margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+.tl-tracker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.tl-stage { font: inherit; font-size: 12px; text-align: left; min-width: 112px; flex: 1 1 112px; display: flex; flex-direction: column; gap: 2px; background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 4px; padding: 6px 8px; color: var(--color-text-primary); cursor: pointer; }
+.tl-stage.tl-selected { border-color: var(--color-accent-blue); }
+.tl-stage.tl-done .tl-icon { color: var(--color-accent-green); }
+.tl-stage.tl-current .tl-icon { color: var(--color-accent-blue); }
+.tl-stage.tl-failed .tl-icon { color: var(--color-accent-red); }
+.tl-stage.tl-skipped, .tl-stage.tl-not_recorded { opacity: 0.5; }
+.tl-stage .tl-name { font-weight: 600; }
+.tl-stage .tl-status, .tl-stage .tl-line { color: var(--color-text-muted); overflow-wrap: anywhere; }
+.tl-detail { font-size: 12px; border-top: 1px solid var(--color-border); padding-top: 6px; margin-bottom: 6px; }
+.tl-detail-head { margin-bottom: 4px; }
+.tl-runs, .tl-events { list-style: none; padding: 0; margin: 0; }
+.tl-run, .tl-event { padding: 2px 0; overflow-wrap: anywhere; }
+.tl-event { font-size: 12px; }
+.tl-notes { font-size: 12px; padding-left: 16px; }
+.tl-dots { display: inline-flex; gap: 3px; align-items: center; margin: 2px 0; }
+.tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-border); }
+.tl-dot.tl-done { background: var(--color-accent-green); }
+.tl-dot.tl-failed { background: var(--color-accent-red); }
+.tl-dot.tl-ran { background: var(--color-accent-yellow); }
+.tl-dot.tl-current { background: var(--color-accent-blue); box-shadow: 0 0 0 2px var(--color-bg-surface), 0 0 0 3px var(--color-accent-blue); }
+.tl-dot.tl-skipped, .tl-dot.tl-not_recorded { opacity: 0.4; }

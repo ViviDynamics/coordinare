@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 34  # 058: preserve the same-stage system-error retry clock
+CURRENT_SCHEMA_VERSION: int = 35  # 147: the card lifecycle log behind the pipeline timeline
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -131,6 +131,11 @@ CURRENT_SCHEMA_VERSION: int = 34  # 058: preserve the same-stage system-error re
 # v34 (058) retains the system-error clock used to preserve the same-stage retry
 # budget after dispatch. v1-v33 snapshots default to None; an explicit terminal
 # Todo retry establishes its handoff clock when the older snapshot has none.
+# v35 (147) adds top-level card_lifecycle: the per-symphony, per-card lifecycle
+# events behind the pipeline timeline (kind, stage, UTC time and a few small
+# detail values). It outlives the card's session, which is dropped when the card
+# finishes. v1-v34 snapshots load with an empty log, so older cards show their
+# events as not recorded. Stage codes and short values only, never secrets.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -763,6 +768,10 @@ class WorkflowSnapshot(BaseModel):
     # of being silently adopted as the new baseline.  None = unknown (pre-096
     # snapshots, or a fresh run).  A git SHA only — never a secret value.
     last_known_main_sha: str | None = None
+    # 147 (schema v35+): the run-global card lifecycle log, {symphony: {card_id:
+    # [event, ...]}}, bounded per symphony and per card (services/card_lifecycle).
+    # A malformed entry is dropped when the log loads, never a snapshot failure.
+    card_lifecycle: dict[str, dict[str, list[dict[str, Any]]]] = Field(default_factory=dict)
 
 
 class StateLoadError(ValueError):

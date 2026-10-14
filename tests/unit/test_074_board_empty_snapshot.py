@@ -17,7 +17,7 @@ def test_received_board_empty_state(tmp_path: Path, case: str) -> None:
     # 139: the header choice narrows the snapshot with symphonies.js before the panel renders.
     source.write_text(
         _DASHBOARD_JS_SOURCES["performers"] + "\n" + _DASHBOARD_JS_SOURCES["waiting"] + "\n"
-        + _DASHBOARD_JS_SOURCES["symphonies"],
+        + _DASHBOARD_JS_SOURCES["timeline"] + "\n" + _DASHBOARD_JS_SOURCES["symphonies"],
     )
     node = shutil.which("node")
     assert node is not None, "Node is required for dashboard checks"

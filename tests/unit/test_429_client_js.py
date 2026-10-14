@@ -78,8 +78,10 @@ def _extract_detail_js() -> str:
         if helper is None:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
         cost_helpers.append(helper.group(0))
+    # 147: the detail draws the pipeline tracker, which lives in timeline.js and reads symphonies.js.
+    timeline = [_DASHBOARD_JS_SOURCES["symphonies"], _DASHBOARD_JS_SOURCES["timeline"]]
     # 141: the detail renders the run's short name and its Copy button.
-    return "\n".join([esc.group(0), run_id_js(), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
+    return "\n".join([esc.group(0), run_id_js(), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, *timeline, detail_js])
 
 
 def test_detail_js_slice_is_complete() -> None:
