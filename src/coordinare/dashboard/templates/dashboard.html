@@ -246,10 +246,15 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 .checks-blocked { color: var(--color-accent-blue); }
 .checks-unchecked { color: var(--color-text-muted); }
 .checks-stale { color: var(--color-text-muted); opacity: 0.6; }
-.done-lane { margin-top: 10px; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-bg-base); padding: 6px 10px; font-size: 12px; }
-.done-lane summary { cursor: pointer; color: var(--color-text-primary); font-weight: 600; }
-.done-lane-note { margin: 6px 0; font-size: 11px; }
-.done-lane-list { margin: 4px 0 0; padding-left: 18px; }
+/* 155: the Done lane sits in the Cards heading row. Its summary is one line, and its body floats over the
+   cards when opened, so neither the collapsed nor the opened lane moves anything below it. */
+.cards-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; margin-bottom: 10px; }
+#active-work-card .cards-head h2 { margin-bottom: 0; }
+#done-lane-slot { position: relative; font-size: 12px; }
+.done-lane summary { cursor: pointer; color: var(--color-text-primary); font-weight: 600; white-space: nowrap; }
+.done-lane[open] .done-lane-body { position: absolute; right: 0; top: 100%; z-index: 5; width: 280px; padding: 8px 10px; margin-top: 4px; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-control); }
+.done-lane-note { margin: 0 0 2px; font-size: 11px; }
+.done-lane-list { margin: 2px 0 0; padding-left: 18px; }
 .symphony-inactive td { color: var(--color-text-muted); }
 /* 127: the Configuration tabs scroll inside their own container instead of wrapping or widening the page. */
 .cfg-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; overflow-x: auto; flex-wrap: nowrap; max-width: 100%; }
@@ -486,7 +491,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 
 <!-- 154: the board and the activity feed sit side by side on a desktop. -->
 <div class="card" id="active-work-card">
-  <h2>Cards <span id="cards-summary" class="cards-summary muted"></span></h2>
+  <div class="cards-head"><h2>Cards <span id="cards-summary" class="cards-summary muted"></span></h2><div id="done-lane-slot"></div></div>
   <div id="swimlane-section">
     <span class="empty-state">Waiting for cards&hellip;</span>
   </div>

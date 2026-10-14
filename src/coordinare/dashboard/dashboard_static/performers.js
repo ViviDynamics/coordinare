@@ -273,21 +273,31 @@ function doneLaneEntries(s, nowMs) {
   return entries;
 }
 
+// 155: the Done lane sits in the Cards heading row, so a collapsed lane adds no height to the board.
+// The slot is absent on pages without the board, and then there is nothing to write.
+function setDoneLane(s, nowMs) {
+  var slot = document.getElementById('done-lane-slot');
+  if (slot) slot.innerHTML = doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
+}
+
 // The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
 function doneLaneHtml(entries, nowMs) {
   var rows = entries.map(function(e) {
     return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgeAt(e.mergedAt, nowMs) || '') + ' ago</span></li>';
   }).join('');
+  // Only the summary shows when collapsed. The note and the list sit in the opened body, so the fold holds.
   return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
     '<span class="swimlane-col-count">' + entries.length + '</span></summary>' +
+    '<div class="done-lane-body">' +
     '<p class="muted done-lane-note">' + esc(DONE_LANE_NOTE) + '</p>' +
     (entries.length > 0 ? '<ul class="done-lane-list">' + rows + '</ul>' : '<p class="muted">No merges in the last 24 hours.</p>') +
-    '</details>';
+    '</div></details>';
 }
 
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var nowMs = serverNowMs(s);
+  setDoneLane(s, nowMs);
   var workCard = document.getElementById('active-work-card');
   if (!workEl) return;
 
@@ -392,8 +402,7 @@ function renderActiveWorkPanels(s) {
         backlogCount += Array.isArray(snap.BACKLOG) ? snap.BACKLOG.length : 0;
         doneCount += Array.isArray(snap.DONE) ? snap.DONE.length : 0;
       });
-      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>' +
-        doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
+      workEl.innerHTML = '<span class="empty-state">No active cards in this symphony. Backlog: ' + backlogCount + '. Done: ' + doneCount + '.</span>';
       if (workCard) workCard.classList.remove('card-warning');
       return;
     }
@@ -475,8 +484,17 @@ function renderActiveWorkPanels(s) {
       ? '<div class="swimlane-card-symphony">' + esc(entry.symphony) + '</div>' : '';
     // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
     var pipelineDots = timelineDotsHtml(pipeline);
+    // 137: a running card names its stage pair on the board, on one clamped line. Its phase and timing
+    // are on its active-run tile (154), so the card does not repeat them.
+    var stageLine = sess && isStageRunning(sess) && sess.performer_stage
+      ? '<div class="swimlane-stage"><code>' + stageAgentLabel(sess.performer_stage) + '</code></div>' : '';
+    // 155: the PR chip and its checks icon sit on their own row. Inside the two-line title clamp, a long
+    // title pushes them onto a hidden third line.
+    var prRow = prBadge ? '<div class="swimlane-card-pr">' + prBadge.trim() + '</div>' : '';
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
-      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + prBadge + '</div>' +
+      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + '</div>' +
+      prRow +
+      stageLine +
       pipelineDots +
       waitLine +
       liveLine +
@@ -505,7 +523,6 @@ function renderActiveWorkPanels(s) {
       '</div>';
   });
   html += '</div>';
-  html += doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
   workEl.innerHTML = html;
 }
 
