@@ -664,17 +664,18 @@ performers:
 # --- Concurrency ---
 
 # Maximum cards worked in parallel across all symphonies (or per symphony via overrides).
-# A slot stays reserved across performer stages. A card waiting on PR review,
-# and a blocked or done issue, release it; performer-role capacity adds a
-# separate resource limit. A card in review that needs a performer again takes
-# the next free slot ahead of cards that have not started.
+# A slot stays reserved across performer stages. A card waiting on a human review,
+# and a blocked or done issue, release it. A card waiting on CI checks, or on
+# anything the daemon will act on next, keeps its slot (#186). Performer-role
+# capacity adds a separate resource limit. A card that needs a performer again
+# takes the next free slot ahead of cards that have not started.
 # Range: 1–20. Default: 1.
 max_concurrent_cards: 1
 
-# How many cards may wait on PR review at once. When this many are waiting, no
-# new card is started until a review lands; cards already in flight continue.
-# The effective value is never below max_concurrent_cards.
-# Set to null for no cap. Range: 1-50. Default: 3.
+# How many cards may wait on a human review at once. Cards waiting on checks are
+# not counted. When this many are waiting, no new card is started until a review
+# lands; cards already in flight continue. The effective value is never below
+# max_concurrent_cards. Set to null for no cap. Range: 1-50. Default: 3.
 max_cards_in_review: 3
 
 # Maximum revision rounds per PR (reviewer feedback going back to the implementer)

@@ -40,15 +40,18 @@ A symphony is a **GitHub Projects v2 board**. Columns map to phases:
 | Backlog | idle | no |
 | TODO | dispatching (initial) | yes |
 | IN_PROGRESS | dispatching / monitoring_performer | **yes (1 slot)** |
-| IN_REVIEW | monitoring_pr / merging | no (passive — awaiting human) |
+| IN_REVIEW | monitoring_pr / merging | no while waiting on a human review; yes while waiting on checks or the daemon (#186) |
 | BLOCKED | blocked / recovery | no (no live performer) |
 | DONE | idle | no |
 
 - **Pickup:** `check_board` does a "unified pickup" each cycle, bounded by
-  `max_concurrent_cards` via the slot manager. IN_REVIEW and BLOCKED cards don't hold a working
-  slot, but the daemon still re-adopts them each cycle. A card in review that needs a performer
-  again takes the next free slot ahead of cards that have not started. `max_cards_in_review`
-  bounds how many cards may wait on review before new cards stop being started.
+  `max_concurrent_cards` via the slot manager. A card waiting on a human review and BLOCKED cards
+  don't hold a working slot, but the daemon still re-adopts them each cycle. monitor_pr records
+  what a card in monitoring_pr is waiting on (`review_wait`): only "human" releases the slot. A
+  card that has not been evaluated yet, or is waiting on checks, keeps it (#186). A card that
+  needs a performer again takes the next free slot ahead of cards that have not started, and
+  "started" means it has an open PR or a finished stage. `max_cards_in_review` bounds how many
+  cards may wait on a human review before new cards stop being started.
 - **Human approval rule:** in `monitor_pr`, a PR advances to merge only on a **HUMAN** `APPROVED`
   review. Trusted bots may `COMMENT` / `CHANGES_REQUESTED` but cannot approve.
 - **BLOCKED auto-recovery (spec 129):** each cycle `check_board` re-evaluates every BLOCKED card
