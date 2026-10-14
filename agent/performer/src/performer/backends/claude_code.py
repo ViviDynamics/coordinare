@@ -43,7 +43,9 @@ from performer.backends.claude_code_shim import ClaudeCodeShim
 from performer.config import Settings, get_settings
 from performer.io_utils import iter_lines_chunked
 from performer.transcript import TranscriptUsage
-from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import (
+    DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, redact_command,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -921,12 +923,13 @@ class ClaudeCodeBackend:
         elif event_type == "tool_result":
             tool_id = str(event.get("tool_use_id", ""))
             content = event.get("content", "")
+            # 148: redact before clipping, so a secret cut by the cap is still caught.
             if isinstance(content, list):
-                text = " ".join(
+                text = redact_command(" ".join(
                     str(c.get("text", "")) for c in content if isinstance(c, dict)
-                )[:_MAX_TEXT]
+                ))[:_MAX_TEXT]
             else:
-                text = str(content)[:_MAX_TEXT]
+                text = redact_command(str(content))[:_MAX_TEXT]
             status = "error" if event.get("is_error") is True else "ok"
             self._event_buffer.append(BackendEvent(
                 type=BackendEventType.tool_use, text=f"result: {text}"[:_MAX_TEXT],

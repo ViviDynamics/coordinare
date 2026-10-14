@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from performer.models import redact_command
+
 #: The longest argument the feed carries. The daemon clips to the same figure.
 MAX_TOOL_ARG = 160
 
@@ -24,7 +26,9 @@ def _text(value: Any) -> str:
 
 
 def _one_line(value: str) -> str:
-    return " ".join(value.split())[:MAX_TOOL_ARG]
+    # 148: redact the whole argument before it is clipped, so a secret that
+    # straddles the cap is caught, not left as a visible prefix.
+    return " ".join(redact_command(value).split())[:MAX_TOOL_ARG]
 
 
 def _url_without_query(value: str) -> str:

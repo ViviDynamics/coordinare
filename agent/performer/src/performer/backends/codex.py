@@ -39,7 +39,9 @@ from performer import transcript
 from performer.backends._tool_summary import primary_argument
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
+from performer.models import (
+    DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand, redact_command,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -680,18 +682,20 @@ class CodexBackend:
             item = params.get("item", {})
             item_type = item.get("type", "")
             if item_type == "commandExecution":
-                cmd = str(item.get("command", "shell"))[:_MAX_TEXT]
+                command = str(item.get("command", "shell"))
                 # 148: a non-zero exit is the error state the feed shows on the row.
                 exit_code = item.get("exitCode")
                 self._event_buffer.append(BackendEvent(
-                    type=BackendEventType.tool_use, text=cmd, detail="shell", tool="shell",
-                    arg=primary_argument("Bash", {"command": cmd}),
+                    type=BackendEventType.tool_use, text=redact_command(command)[:_MAX_TEXT],
+                    detail="shell", tool="shell",
+                    arg=primary_argument("Bash", {"command": command}),
                     status="ok" if exit_code in (0, None) else "error",
                 ))
             elif item_type == "fileChange":
-                path = str(item.get("path", "file"))[:_MAX_TEXT]
+                path = str(item.get("path", "file"))
                 self._event_buffer.append(BackendEvent(
-                    type=BackendEventType.tool_use, text=f"edit {path}", detail=path, tool="Edit",
+                    type=BackendEventType.tool_use, text=f"edit {redact_command(path)}"[:_MAX_TEXT],
+                    detail=redact_command(path), tool="Edit",
                     arg=primary_argument("Edit", {"file_path": path}),
                 ))
 

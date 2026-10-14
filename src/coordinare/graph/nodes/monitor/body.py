@@ -122,6 +122,7 @@ from coordinare.graph.nodes.monitor.verdict import (
 )
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.lib.redaction import redact_performer_event
 from coordinare.services.assessor_failure import (
     classify_assessor_failure,
     format_repair_hint,
@@ -973,6 +974,13 @@ async def _phase_merge_events(
     # Accumulate backend events (capped at 100 entries).
     new_events = status.get("events")
     if isinstance(new_events, list) and new_events:
+        # 148: redact before anything holds the events. The state, the session
+        # payloads and the SSE stream all read from here, so a raw command or
+        # tool output never reaches a dashboard viewer.
+        new_events = [
+            redact_performer_event(event) if isinstance(event, dict) else event
+            for event in new_events
+        ]
         existing = list(state.get("performer_events") or [])
         # 358: merge, don't concatenate — the reported list is itself
         # cumulative, so appending it whole stored the same events again

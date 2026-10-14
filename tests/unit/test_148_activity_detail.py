@@ -203,3 +203,22 @@ def test_a_replayed_identical_tool_call_is_still_suppressed() -> None:
     log.record_many([item])
     assert log.record_many([item]) == []
     assert len(log.snapshot()) == 1
+
+
+def test_two_identical_empty_results_for_one_card_are_both_kept() -> None:
+    """Regression (spec 138): `mkdir` and `git add` print nothing, so every result has the same text."""
+    log = ActivityLog()
+    first = {"activity_type": "tool_result", "card_id": "PVTI_148", "text": "", "summary": "result ok",
+             "status": "ok", "source_event_id": "2026-10-13T09:00:01+00:00"}
+    second = {**first, "source_event_id": "2026-10-13T09:00:04+00:00"}
+    log.record_many([first, second])
+    assert [e["activity_type"] for e in log.snapshot()] == ["tool_result", "tool_result"]
+
+
+def test_a_replayed_identical_tool_result_is_still_suppressed() -> None:
+    log = ActivityLog()
+    item = {"activity_type": "tool_result", "card_id": "PVTI_148", "text": "", "summary": "result ok",
+            "status": "ok", "source_event_id": "2026-10-13T09:00:01+00:00"}
+    log.record_many([item])
+    assert log.record_many([item]) == []
+    assert len(log.snapshot()) == 1

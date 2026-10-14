@@ -286,7 +286,7 @@ class ActivityLog:
         key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}"
         if clipped_summary or status_str:
             key += f"|{clipped_summary}|{status_str}"
-        if source_id and (is_delta or kind == "tool_use"):
+        if source_id and (is_delta or kind in ("tool_use", "tool_result")):
             # Backend identity is stable on replay. Distinct executions of the
             # same tool, like repeated streaming words, are real new activity.
             key += f"|{stream}|{source_id}"

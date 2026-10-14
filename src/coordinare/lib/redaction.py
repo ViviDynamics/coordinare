@@ -44,32 +44,88 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-# 148: shell commands in the activity feed carry secrets in forms the value
-# patterns above do not match: a short env assignment (TOKEN=abc), a CLI flag
-# (--password hunter2), or an Authorization header whose token is short.
+# 148: shell commands and tool output carry secrets in forms the value patterns
+# above do not match. Each pattern keeps its prefix in group 1 and replaces the
+# secret span, so one substitution serves every form. The performer keeps an
+# identical list (agent/performer/src/performer/models.py); a parity test pins it.
+_COMMAND_MARKERS = ("=", ":", "-", "@", "configure")
+_QUOTED_OR_BARE = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 _COMMAND_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    # FOO_TOKEN=abc, PGPASSWORD=x, AWS_SECRET_ACCESS_KEY=...
     re.compile(
-        r"\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|AUTH)[A-Za-z0-9_]*=)"
-        r"(?:\"[^\"]*\"|'[^']*'|\S+)",
+        r"\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*=)"
+        + _QUOTED_OR_BARE,
         re.IGNORECASE,
     ),
+    # --token x, --password=x, --api-key x
     re.compile(
-        r"(--?(?:token|password|passwd|secret|api[-_]?key)[=\s]+)(?:\"[^\"]*\"|'[^']*'|\S+)",
+        r"((?:^|\s)--?(?:token|password|passwd|pass|secret|api[-_]?key)[=\s]+)" + _QUOTED_OR_BARE,
         re.IGNORECASE,
     ),
-    re.compile(r"(authorization:\s*(?:(?:bearer|basic|token)\s+)?)[^\s\"']+", re.IGNORECASE),
+    # docker login -p x, sshpass -p x, mysql -pVALUE (the password follows -p, attached or not)
+    re.compile(
+        r"(\b(?:docker\s+login|mysql|mariadb|psql|sshpass|mongosh?)\b[^|;&\n]*?\s-p)\s*"
+        + _QUOTED_OR_BARE,
+        re.IGNORECASE,
+    ),
+    # curl -u user:pass, --user user:pass (only the password after the colon)
+    re.compile(r"((?:^|\s)(?:-u|--user)(?:=|\s+)[\"']?[^\s:\"']*:)[^\s\"']+", re.IGNORECASE),
+    # scheme://user:pass@host, any scheme (https, postgresql, x-access-token, ...)
+    re.compile(r"\b((?:[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/:@'\"]*:)[^\s/@'\"]+(?=@)"),
+    # -H 'X-API-Key: v', -H "Token: v", Authorization: Bearer v
+    re.compile(
+        r"((?:^|[\s\"'])(?:-H\s*)?[\"']?[A-Za-z0-9-]*(?:key|token|secret|auth|password|credential)"
+        r"[A-Za-z0-9-]*\s*:\s*(?:(?:bearer|basic|token)\s+)?)[^\s\"']+",
+        re.IGNORECASE,
+    ),
+    # aws configure set aws_secret_access_key VALUE (no equals sign)
+    re.compile(
+        r"(\baws\s+configure\s+set\s+\S*(?:secret|token|password)\S*\s+)\S+",
+        re.IGNORECASE,
+    ),
+    # gh secret set NAME --body VALUE
+    re.compile(
+        r"(\bgh\s+secret\s+set\b[^|;&\n]*?\s(?:--body|-b)[=\s]+)" + _QUOTED_OR_BARE,
+        re.IGNORECASE,
+    ),
 ]
 
 
 def redact_command_text(text: str) -> str:
-    """``redact_secrets`` plus the command forms it misses (148).
+    """``redact_secrets`` plus the command and header forms it misses (148).
 
-    Used for the activity feed, where a tool summary is a shell command.
+    Used for the activity feed and for every performer event that reaches the
+    dashboard. Callers redact the whole value before they clip it.
+
+    Documented limit: a bare literal with no marker (``echo s3cr3tvalue123``)
+    cannot be recognised by pattern. Streamed deltas are redacted one chunk at
+    a time, so a token split across two chunks is not caught.
     """
     text = redact_secrets(text)
+    # Every form above needs one of these, so text with none of them skips the scan.
+    lowered = text.lower()
+    if not any(marker in lowered for marker in _COMMAND_MARKERS):
+        return text
     for pattern in _COMMAND_SECRET_PATTERNS:
         text = pattern.sub(lambda m: m.group(1) + "[REDACTED]", text)
     return text
+
+
+_EVENT_TEXT_FIELDS = ("text", "detail", "arg")
+
+
+def redact_performer_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of one performer event with its free-text fields redacted (148).
+
+    Applied where the daemon merges a backend's events into state, so the
+    snapshot, the session payloads and the SSE stream never hold the raw text.
+    """
+    redacted = dict(event)
+    for field in _EVENT_TEXT_FIELDS:
+        value = redacted.get(field)
+        if isinstance(value, str) and value:
+            redacted[field] = redact_command_text(value)
+    return redacted
 
 
 def _is_sensitive_key(key: str) -> bool:
