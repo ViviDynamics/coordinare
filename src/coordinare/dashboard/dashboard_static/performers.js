@@ -181,6 +181,15 @@ function queuedPhaseLabel(sess) {
 
 // in-flight work the coordinare is reasoning about.
 var _swimlaneTabExplicit = false;
+// 146: the link to the run for the stage a card is in. Only a live session has
+// one. The link sits inside clickable rows, so its clicks and keys stop there.
+function viewRunLinkHtml(sess) {
+  var stage = sess ? sess.performer_stage : '';
+  if (!stage) return '';
+  return '<a class="view-run-link" href="' + esc('/performers/' + encodeURIComponent(stage)) + '" ' +
+    'onclick="event.stopPropagation();navigate(event,this.pathname)" onkeydown="event.stopPropagation()">View run</a>';
+}
+
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
   var workCard = document.getElementById('active-work-card');
@@ -363,6 +372,7 @@ function renderActiveWorkPanels(s) {
     return '<div class="swimlane-card"' + clickAttrs + '>' +
       '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
       liveLine +
+      viewRunLinkHtml(sess) +
       '</div>';
   }
 
@@ -413,7 +423,7 @@ function renderCardDetailContent(sess, s) {
           '</div>';
       }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No progress checks yet.</div>';
-  return '<div class="card-detail-actions">' + cardActionsHtml(sess, s) + pendingControlHtml(sess) + '</div>' +
+  return '<div class="card-detail-actions">' + cardActionsHtml(sess, s) + pendingControlHtml(sess) + viewRunLinkHtml(sess) + '</div>' +
     '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
@@ -506,6 +516,7 @@ function renderActivePerformers(s) {
         '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
         '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
         cardActionsHtml(sess, s) +
+        viewRunLinkHtml(sess) +
       '</div>' +
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
       '<div class="ap-tile-meta">' +
@@ -526,18 +537,38 @@ function renderDashboardExtras(s) {
   renderActivePerformers(s);
 }
 
-function hidePerformerRoleDetail() {
-  _performersDetailOpen = false;
-  var listView = document.getElementById('performers-page-list-view');
-  var detailView = document.getElementById('performers-page-detail-view');
-  if (listView) listView.style.display = '';
-  if (detailView) detailView.style.display = 'none';
+// 146: the run detail is addressed as /performers/<role>. The segment is client
+// input: it is decoded here, checked against the live roles, and only ever
+// written back through esc().
+function isPerformersPath(path) {
+  return path === '/performers' || path.indexOf('/performers/') === 0;
 }
 
-function showPerformerRoleDetail(role) {
-  _performersSelectedRole = role;
-  _performersDetailOpen = true;
-  if (_lastState) renderPerformersPage(_lastState);
+// The role a performers path names, or null for the list. A malformed segment
+// decodes to '', which matches no role.
+function performerRoleFromPath(path) {
+  if (path === '/performers') return null;
+  try { return decodeURIComponent(path.slice('/performers/'.length)); } catch (_malformed) { return ''; }
+}
+
+// Which view a performers path shows: 'list', 'detail' or 'not_found'.
+function performerRouteView(role, roles) {
+  if (role === null) return 'list';
+  return role && (roles || []).indexOf(role) !== -1 ? 'detail' : 'not_found';
+}
+
+// Opening a run is a navigation, so it has its own address and Back returns to
+// the list. From the keyboard, focus moves to Back so the next Tab is in the run.
+function openPerformerRole(role, fromKeyboard) {
+  navigate(null, '/performers/' + encodeURIComponent(role));
+  if (fromKeyboard) {
+    var back = document.getElementById('performers-page-back');
+    if (back) back.focus();
+  }
+}
+
+function hidePerformerRoleDetail() {
+  navigate(null, '/performers');
 }
 
 // 049 + 053: Performers page list + drilldown detail
@@ -548,12 +579,6 @@ function renderPerformersPage(s) {
   var listView = document.getElementById('performers-page-list-view');
   var detailView = document.getElementById('performers-page-detail-view');
   var detailEl = document.getElementById('performers-page-detail');
-  if (util.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No performer roles configured</td></tr>';
-    if (listView) listView.style.display = '';
-    if (detailView) detailView.style.display = 'none';
-    return;
-  }
 
   // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
@@ -568,13 +593,16 @@ function renderPerformersPage(s) {
   });
   var utilByRole = {};
   util.forEach(function(r) { utilByRole[r.role] = r; });
-  if (_performersSelectedRole == null && util.length > 0) {
-    _performersSelectedRole = util[0].role;
-  }
+  // 146: the view comes from the address, so Back and the browser's buttons agree.
+  var rawRole = performerRoleFromPath(location.pathname);
+  var view = performerRouteView(rawRole, util.map(function(r) { return r.role; }));
+  var selectedRole = view === 'detail' ? rawRole : null;
 
-  tbody.innerHTML = util.map(function(r) {
+  tbody.innerHTML = util.length === 0
+    ? '<tr><td colspan="5" class="empty-state">No performer roles configured</td></tr>'
+    : util.map(function(r) {
     var isActive = r.active > 0;
-    var isSelected = _performersDetailOpen && _performersSelectedRole === r.role;
+    var isSelected = selectedRole === r.role;
     var badge = '<span class="role-status-badge ' + (isActive ? 'role-active' : 'role-idle') + '">' + (isActive ? 'active' : 'idle') + '</span>';
     var cards = (activeByStage[r.role] || []).map(function(sess) {
       return esc((sess.card_title || sess.card_id || '').substring(0, 40));
@@ -584,31 +612,35 @@ function renderPerformersPage(s) {
     var utilStr = esc(busyText(activeVal, maxVal, 0));
     var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">· ' + r.queued + ' queued</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
-      '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
+      '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td><td class="row-chevron" aria-hidden="true"></td></tr>';
   }).join('');
 
   tbody.querySelectorAll('tr[data-role]').forEach(function(row) {
     row.addEventListener('click', function() {
-      var role = row.getAttribute('data-role') || '';
-      showPerformerRoleDetail(role);
+      openPerformerRole(row.getAttribute('data-role') || '', false);
     });
     row.addEventListener('keydown', function(event) {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        var role = row.getAttribute('data-role') || '';
-        showPerformerRoleDetail(role);
+        openPerformerRole(row.getAttribute('data-role') || '', true);
       }
     });
   });
 
-  if (!_performersDetailOpen || !_performersSelectedRole) {
-    if (listView) listView.style.display = '';
-    if (detailView) detailView.style.display = 'none';
+  if (!listView || !detailView || !detailEl) return;
+  if (view === 'list') {
+    listView.style.display = '';
+    detailView.style.display = 'none';
     return;
   }
-  if (!listView || !detailView || !detailEl) return;
+  listView.style.display = 'none';
+  detailView.style.display = '';
+  if (view === 'not_found') {
+    detailEl.innerHTML = '<div><strong>Run not found</strong></div>' +
+      '<div class="muted" style="margin-top:4px">No performer role matches this address. Pick one from the list.</div>';
+    return;
+  }
 
-  var selectedRole = _performersSelectedRole;
   var row = utilByRole[selectedRole] || {role: selectedRole, active: 0, max: 0, queued: 0};
   var selectedSessions = activeByStage[selectedRole] || [];
   var isSelectedRoleActive = selectedSessions.length > 0;
@@ -692,6 +724,4 @@ function renderPerformersPage(s) {
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
     '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';
-  listView.style.display = 'none';
-  detailView.style.display = '';
 }

@@ -108,6 +108,7 @@ CONCEPTS: dict[str, Term] = _terms(
     ("stage", "Stage", "Stages", "A step in a card's pipeline, such as implementing or reviewing."),
     ("agent", "Agent", "Agents", "The persona that does the work of a stage, such as the implementer."),
     ("run", "Run", "Runs", "One agent working on one stage of one card, from dispatch to result."),
+    ("run_detail", "Run detail", "Run details", "The view of one run: its live events, stderr, process metrics and steps. Reached from the Performers page, the Active performers tile or a card's View run link."),
     ("check", "Check", "Checks", "One pass of the conductor over the board to see what needs doing."),
     ("revision_round", "Revision round", "Revision rounds", "One loop of review feedback going back to the implementer on a pull request."),
     ("progress_check", "Progress check", "Progress checks", "An automatic judgement of whether a running agent is still making progress."),

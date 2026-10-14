@@ -386,6 +386,10 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 #performers-page tbody tr.performers-row:hover { background: var(--color-bg-row-hover); }
 #performers-page tbody tr.performers-row.row-selected { background: var(--color-bg-row-selected); }
 #performers-page tbody tr.performers-row:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: -2px; }
+#performers-page tbody tr.performers-row td.row-chevron { width: 24px; text-align: right; color: var(--color-text-muted); }
+#performers-page tbody tr.performers-row td.row-chevron::after { content: "\203A"; font-size: 16px; line-height: 1; }
+#performers-page tbody tr.performers-row:hover td.row-chevron { color: var(--color-accent-blue); }
+.view-run-link { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--color-accent-blue); }
 #performers-page-detail-view { margin-top: 12px; border-top: 1px solid var(--color-border); padding-top: 12px; }
 #performers-page-detail { font-size: 12px; line-height: 1.5; }
 #performers-page-back:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 2px; border-radius: 3px; }
@@ -564,8 +568,8 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <h2 style="margin-bottom:12px">Performers</h2>
     <div id="performers-page-list-view">
       <table>
-        <thead><tr><th>Stage · Agent</th><th>Status</th><th>Card</th><th>Busy</th></tr></thead>
-        <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+        <thead><tr><th>Stage · Agent</th><th>Status</th><th>Card</th><th>Busy</th><th></th></tr></thead>
+        <tbody id="performers-page-tbody"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
       </table>
     </div>
     <div id="performers-page-detail-view" style="display:none">
