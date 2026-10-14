@@ -1,7 +1,7 @@
 """Config read/write/catalog routes (436)."""
 from __future__ import annotations
 
-import asyncio  # noqa: F401
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -167,7 +167,7 @@ def _register_get_config_all(app: FastAPI, ctx: DashboardContext) -> None:
             from coordinare import config_descriptors as cd
 
             coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted = (
-                _build_config_snapshot_inputs(daemon, config_path)
+                await asyncio.to_thread(_build_config_snapshot_inputs, daemon, config_path)
             )
             if coordinare_cfg is None:
                 return JSONResponse({"error": "Config not available"}, status_code=500)
@@ -196,7 +196,7 @@ def _register_get_config_section(app: FastAPI, ctx: DashboardContext) -> None:
             from coordinare import config_descriptors as cd
 
             coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted = (
-                _build_config_snapshot_inputs(daemon, config_path)
+                await asyncio.to_thread(_build_config_snapshot_inputs, daemon, config_path)
             )
             if coordinare_cfg is None:
                 return JSONResponse({"error": "Config not available"}, status_code=500)
@@ -638,7 +638,7 @@ def _register_get_config_routing(app: FastAPI, ctx: DashboardContext) -> None:
             from coordinare import routing_config_service
 
             location = _routing_location(daemon)
-            view = routing_config_service.read_routing(location)
+            view = await asyncio.to_thread(routing_config_service.read_routing, location)
             payload = view.model_dump(mode="json")
             # 143: each entry says which stages and symphonies it applies to.
             coordinare_cfg = daemon.state.get("coordinare_config")

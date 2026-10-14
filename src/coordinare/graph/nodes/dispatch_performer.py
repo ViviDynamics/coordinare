@@ -2374,11 +2374,16 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
 
 
 def _performer_mounts(state: CoordinareState) -> tuple[Path, ...]:
-    """Every host directory a performer can see, from the loaded config (219 review).
+    """Every host directory a performer can see, from the global config (219 review, 220).
 
-    ``state["config"]`` is the ProjectConfiguration; passing its full mount list to the env-cache
-    reads makes the outermost performer mount the trusted start of each anchored walk.
+    ``state["config"]`` is the symphony's *effective* config, which a symphony override can
+    shorten. The mount list is built from the global config instead, so a volume dropped by an
+    override still counts. Passing the full list makes the outermost performer mount the trusted
+    start of each anchored walk. Without a loaded daemon config, the state's own config is used.
     """
+    coordinare_cfg = state.get("coordinare_config")
+    if coordinare_cfg is not None:
+        return loaded_performer_mounts(coordinare_cfg.global_config)
     return loaded_performer_mounts(state.get("config"))
 
 

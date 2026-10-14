@@ -14,6 +14,9 @@ decides where a path lands in two stages, and only the first one touches the ope
    ``O_NOFOLLOW`` relative to the directory descriptor before it, and ``..`` is refused.
    A link anywhere below a mount root is refused, including a link that sits inside a mount
    nested in another one, because the walk reaches the outer mount first.
+   A directory is a mount when its ``(st_dev, st_ino)`` equals a root's, so a second path to the
+   same directory (a bind mount, a firmlink) is a mount too (220). The roots are resolved once per
+   call.
 
 A path that never reaches a mount is an operator path. It is opened normally, links followed,
 and only the file type and size are checked. A non-regular file, a FIFO (opened non-blocking,
@@ -49,6 +52,7 @@ from coordinare.services.run_transcript import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from typing import BinaryIO
 
     from coordinare.config import ProjectConfiguration
 
@@ -102,68 +106,143 @@ class _Walk:
     parts: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _MountRoot:
+    """A mount root resolved once for one call (220): its path, comparable parts and identity."""
+
+    path: Path
+    key: tuple[str, ...]
+    insensitive: bool
+    identity: tuple[int, int] | None
+
+
+def _comparable(parts: Sequence[str], *, insensitive: bool) -> tuple[str, ...]:
+    return tuple(comparable_part(part, insensitive=insensitive) for part in parts)
+
+
 def _parts_below(path: Path, base: Path) -> tuple[str, ...] | None:
     """The components of *path* below *base*, or None when *base* is not an ancestor of it.
 
     Compared case-insensitively where the filesystem that holds *base* is case-insensitive.
     """
     insensitive = _case_insensitive(base)
-    path_parts = path.parts
-    base_parts = base.parts
-    if len(path_parts) < len(base_parts):
+    depth = len(base.parts)
+    if len(path.parts) < depth:
         return None
-    head = tuple(comparable_part(p, insensitive=insensitive) for p in path_parts[: len(base_parts)])
-    base_key = tuple(comparable_part(p, insensitive=insensitive) for p in base_parts)
-    return path_parts[len(base_parts) :] if head == base_key else None
+    head = _comparable(path.parts[:depth], insensitive=insensitive)
+    return path.parts[depth:] if head == _comparable(base.parts, insensitive=insensitive) else None
 
 
-def _mount_entered(current: Path, mounts: Sequence[Path]) -> Path | None:
-    """The outermost mount root that *current* is at or below, resolved now, or None."""
-    found: Path | None = None
+def _lstat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except OSError:
+        return None
+
+
+def _stat_or_none(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _resolve_roots(mounts: Sequence[Path]) -> tuple[_MountRoot, ...]:
+    """Every mount root, resolved, case-probed and identified once for a call (220, item 3).
+
+    The walk used to resolve every root at every path component. Resolving here, once, is the
+    whole cost of the root side of a read.
+    """
+    roots: list[_MountRoot] = []
     for mount in mounts:
-        root = mount.resolve()
-        if _parts_below(current, root) is None:
-            continue
-        if found is None or len(root.parts) < len(found.parts):
-            found = root
-    return found
+        resolved = mount.resolve()
+        insensitive = _case_insensitive(resolved)
+        info = _stat_or_none(resolved)
+        roots.append(
+            _MountRoot(
+                path=resolved,
+                key=_comparable(resolved.parts, insensitive=insensitive),
+                insensitive=insensitive,
+                identity=None if info is None else (info.st_dev, info.st_ino),
+            ),
+        )
+    return tuple(roots)
 
 
-def _classify(
-    path: Path,
-    mounts: Sequence[Path],
-    *,
-    leaf: bool = True,
-) -> tuple[_Walk | None, Path]:
+def _mount_hit(
+    current: Path,
+    here: os.stat_result | None,
+    roots: Sequence[_MountRoot],
+) -> tuple[Path, tuple[str, ...]] | None:
+    """Where the walk enters a mount at *current*, as ``(start, parts below start)``, or None.
+
+    A string match (*current* is at or below a root's resolved path) and an identity match
+    (*current* is the same directory, ``st_dev``/``st_ino``, as a root reached through a second
+    path such as a bind mount or a firmlink) both count. The outermost match wins, so the walk
+    always opens from the outermost mount it reaches.
+    """
+    parts = current.parts
+    hits: list[tuple[int, Path, tuple[str, ...]]] = []
+    keys: dict[bool, tuple[str, ...]] = {}
+    for root in roots:
+        comparable = keys.get(root.insensitive)
+        if comparable is None:
+            comparable = _comparable(parts, insensitive=root.insensitive)
+            keys[root.insensitive] = comparable
+        depth = len(root.key)
+        if comparable[:depth] == root.key:
+            hits.append((depth, root.path, parts[depth:]))
+    if not hits and here is not None:
+        identity = (here.st_dev, here.st_ino)
+        if any(root.identity == identity for root in roots):
+            hits.append((len(parts), current, ()))
+    if not hits:
+        return None
+    _depth, start, inside = min(hits, key=lambda hit: hit[0])
+    return start, inside
+
+
+def _classify(path: Path, mounts: Sequence[Path]) -> tuple[_Walk | None, Path]:
     """Resolve *path* on the operator side. Returns ``(walk, resolved)``.
 
-    ``walk`` is set when the path reaches a performer mount, and is then the walk to take from
-    the mount root. Otherwise ``resolved`` is the operator path to open. Links are followed only
-    while outside every mount: a link found on the way into a mount is the operator's, and a
-    link below a mount root is never followed here (it is left for the ``O_NOFOLLOW`` walk).
-    ``leaf=False`` allows the walk to end on the mount root itself (a directory-only operation).
+    ``walk`` is set when the path reaches below a performer mount, and is then the walk to take
+    from the mount start. Otherwise ``resolved`` is the operator path to open. Links are followed
+    only while outside every mount: a link found on the way into a mount is the operator's, and a
+    link below a mount root is never followed here (it is left for the ``O_NOFOLLOW`` walk). A
+    path that is exactly a mount root (a directory, or a single-file mount) is an operator path,
+    as it was before 220. The mount roots are resolved once per call.
     """
+    roots = _resolve_roots(mounts)
     absolute = path.absolute()
     current = Path(absolute.anchor)
     queue = list(absolute.parts[1:])
+    here = _lstat_or_none(current)
     links = 0
-    while queue:
-        root = _mount_entered(current, mounts)
-        if root is not None:
-            inside = _parts_below(current, root) or ()
+    while True:
+        hit = _mount_hit(current, here, roots)
+        if hit is not None and hit[1] == () and not any(part not in ("", ".") for part in queue):
+            # The path is the mount root itself: nothing below it to anchor, so it is opened
+            # as the operator's path. A mount root cannot be replaced by a link from inside.
+            return None, current
+        if hit is not None:
+            start, inside = hit
             rest = [part for part in queue if part not in ("", ".")]
-            if ".." in rest or (leaf and not rest):
-                message = "'..' or an empty leaf below a performer mount"
+            if ".." in rest:
+                message = "'..' below a performer mount"
                 raise MountedFileRefusedError(message)
-            return _Walk(start=root, parts=(*inside, *rest)), current
+            return _Walk(start=start, parts=(*inside, *rest)), current
+        if not queue:
+            return None, current
         part = queue.pop(0)
         if part in ("", "."):
             continue
         if part == "..":
             current = current.parent
+            here = _lstat_or_none(current)
             continue
         candidate = current / part
-        if candidate.is_symlink():
+        info = _lstat_or_none(candidate)
+        if info is not None and stat.S_ISLNK(info.st_mode):
             links += 1
             if links > _MAX_LINKS:
                 message = "too many links"
@@ -174,9 +253,10 @@ def _classify(
                 queue = [*target.parts[1:], *queue]
             else:
                 queue = [*target.parts, *queue]
+            here = _lstat_or_none(current)
             continue
         current = candidate
-    return None, current
+        here = info
 
 
 def _open_dir(name: str, dir_fd: int) -> int:
@@ -239,16 +319,17 @@ def _open_walk(walk: _Walk) -> tuple[int, str]:
     return fd, walk.parts[-1]
 
 
-def _check_regular(info: os.stat_result, max_bytes: int) -> None:
+def _check_regular(info: os.stat_result, max_bytes: int | None) -> None:
+    """A regular file, and within *max_bytes* when a bound is given (None streams unbounded)."""
     if not stat.S_ISREG(info.st_mode):
         message = "not a regular file"
         raise MountedFileRefusedError(message)
-    if info.st_size > max_bytes:
+    if max_bytes is not None and info.st_size > max_bytes:
         message = f"larger than {max_bytes} bytes"
         raise MountedFileRefusedError(message)
 
 
-def _check_anchored(info: os.stat_result, max_bytes: int) -> None:
+def _check_anchored(info: os.stat_result, max_bytes: int | None) -> None:
     if info.st_nlink != 1:
         message = "hard linked"
         raise MountedFileRefusedError(message)
@@ -310,7 +391,7 @@ def mounted_dir_refusal(path: Path, *, mounts: Iterable[Path]) -> str | None:
 
 def _dir_refusal(path: Path, mounts: tuple[Path, ...]) -> str | None:
     try:
-        walk, resolved = _classify(path, mounts, leaf=False)
+        walk, resolved = _classify(path, mounts)
         if walk is None:
             info = resolved.stat()
             return None if stat.S_ISDIR(info.st_mode) else "not a directory"
@@ -331,7 +412,7 @@ def read_mounted_dir_names(path: Path, *, mounts: Iterable[Path]) -> list[str] |
     a link at the directory or above it is never listed through.
     """
     try:
-        walk, resolved = _classify(path, tuple(mounts), leaf=False)
+        walk, resolved = _classify(path, tuple(mounts))
         if walk is None:
             with os.scandir(resolved) as entries:
                 return [entry.name for entry in entries]
@@ -359,7 +440,7 @@ def anchored_mkdir(path: Path, *, mounts: Iterable[Path]) -> None:
     nothing is created through it. Raises an ``OSError``, including :class:`MountedFileRefusedError`.
     """
     try:
-        walk, resolved = _classify(path, tuple(mounts), leaf=False)
+        walk, resolved = _classify(path, tuple(mounts))
         if walk is None:
             resolved.mkdir(parents=True, exist_ok=True)
             return
@@ -414,6 +495,48 @@ def read_mounted_file(path: Path, *, max_bytes: int, mounts: Iterable[Path]) -> 
     except OSError as exc:
         _refused(path, f"unreadable: {exc.strerror}")
         return None
+
+
+def open_mounted_file(path: Path, *, mounts: Iterable[Path]) -> BinaryIO | None:
+    """Open a regular, single-link file for streamed reading, or None when it is refused (220).
+
+    The same walk and refusals as :func:`read_mounted_file`, without a size bound: the caller
+    reads a line at a time under its own bound (the transcript ledger). The returned file owns
+    its descriptor and is closed by the caller.
+    """
+    try:
+        return _open_stream(path, tuple(mounts))
+    except FileNotFoundError:
+        return None
+    except MountedFileRefusedError as exc:
+        _refused(path, str(exc))
+        return None
+    except OSError as exc:
+        _refused(path, f"unreadable: {exc.strerror}")
+        return None
+
+
+def _open_stream(path: Path, mounts: tuple[Path, ...]) -> BinaryIO:
+    walk, resolved = _classify(path, mounts)
+    if walk is None:
+        fd = os.open(resolved, os.O_RDONLY | _NONBLOCK)
+        try:
+            _check_regular(os.fstat(fd), None)
+        except BaseException:
+            os.close(fd)
+            raise
+        return os.fdopen(fd, "rb")
+    dir_fd, leaf = _open_walk(walk)
+    try:
+        fd = _open_leaf(dir_fd, leaf)
+    finally:
+        os.close(dir_fd)
+    try:
+        _check_anchored(os.fstat(fd), None)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
 
 
 def _read(path: Path, max_bytes: int, mounts: tuple[Path, ...]) -> bytes:
@@ -514,25 +637,54 @@ def _existing_mode(dir_fd: int, leaf: str, *, operator: bool) -> int | None:
     return stat.S_IMODE(info.st_mode)
 
 
+def _name_is_entry(dir_fd: int, name: str, fd: int) -> bool:
+    """Does *name* in *dir_fd* still refer to the regular file that *fd* holds? (220, item 4).
+
+    Compares the descriptor's identity (fstat) with the name's identity (lstat, so a link at the
+    name is not followed and never matches).
+    """
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(fd)
+    return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == (held.st_dev, held.st_ino)
+
+
+def _require_entry(dir_fd: int, name: str, fd: int, message: str, *, remove: bool) -> None:
+    """Refuse unless *name* still refers to the file *fd* holds. ``remove`` drops the entry first."""
+    if _name_is_entry(dir_fd, name, fd):
+        return
+    if remove:
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=dir_fd)
+    raise MountedFileRefusedError(message)
+
+
 def _rename_into(dir_fd: int, leaf: str, data: bytes, mode: int) -> None:
+    """Write *data* to a temporary file and rename it over *leaf*, checking the name by descriptor.
+
+    The temporary name is checked against the descriptor it was written through, before the
+    rename and again after it. A performer that replaces the name with a link or another file in
+    that window is refused: the planted entry is removed, the host file it points at is never
+    written, and the replacement fails. The rename itself acts on names, so a race between the
+    check and the rename can only be detected, not prevented, by POSIX calls.
+    """
     tmp = f".{leaf}.{uuid.uuid4().hex}.tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600, dir_fd=dir_fd)
     try:
         os.fchmod(fd, mode)
         _write_all(fd, data)
         os.fsync(fd)
-    except BaseException:
-        os.close(fd)
-        with contextlib.suppress(OSError):
-            os.unlink(tmp, dir_fd=dir_fd)
-        raise
-    os.close(fd)
-    try:
+        _require_entry(dir_fd, tmp, fd, "temporary file replaced before the rename", remove=False)
         os.replace(tmp, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        _require_entry(dir_fd, leaf, fd, "replacement swapped after the rename", remove=True)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp, dir_fd=dir_fd)
         raise
+    finally:
+        os.close(fd)
 
 
 def _refused(path: Path, reason: str) -> None:

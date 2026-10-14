@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import string
+import tempfile
 from collections import Counter
 from datetime import date
 from enum import StrEnum
@@ -1499,6 +1500,53 @@ class ProjectConfiguration(BaseSettings):
             )
         return self
 
+    def _performer_mount_entries(self) -> list[tuple[str, Path]]:
+        """Every host path a performer container can see, with the config key that names it."""
+        mounts: list[tuple[str, Path]] = []
+        if self.performer_log_dir is not None:
+            mounts.append(("performer_log_dir", self.performer_log_dir))
+        for endpoint in self.performer_endpoints:
+            for index, volume in enumerate(endpoint.volumes):
+                label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
+                mounts.append((label, volume.host_path))
+        return mounts
+
+    @model_validator(mode="after")
+    def _validate_daemon_paths_outside_mounts(self) -> ProjectConfiguration:
+        """220: the state directory and the workspace root stay out of every performer mount.
+
+        The state store loads and saves by path, so a performer inside the state directory can
+        plant a link at the state file or at a temporary name. Clones under ``workspace_root`` are
+        reached by path-based git and ``rmtree``, so a performer that can reach that directory can
+        redirect them. Both are refused at load with the 219 rule (resolved paths, case folded
+        where the filesystem folds case, NFC before any fold, ``~`` expanded). Without an explicit
+        ``workspace_root`` the clones go under the system temp directory, which is checked too.
+        """
+        state_dir = self.state_file_path.expanduser().parent
+        workspace = (
+            self.workspace_root.expanduser()
+            if self.workspace_root is not None
+            else Path(tempfile.gettempdir())
+        )
+        for label, raw in self._performer_mount_entries():
+            mount = raw.expanduser()
+            if _within(state_dir, mount):
+                msg = (
+                    f"state_file_path {state_dir.resolve()} is inside {label} {mount.resolve()}: "
+                    "a performer that can see that path can plant a link at the state file. "
+                    "Move state_file_path outside every performer mount."
+                )
+                raise ValueError(msg)
+            if _within(workspace, mount):
+                msg = (
+                    f"workspace_root {workspace.resolve()} is inside {label} {mount.resolve()}: "
+                    "a performer that can see that path can redirect the daemon's clones. Move "
+                    "workspace_root (or the temp directory it defaults to) outside every "
+                    "performer mount."
+                )
+                raise ValueError(msg)
+        return self
+
     @model_validator(mode="after")
     def _validate_env_cache_root_disjoint(self) -> ProjectConfiguration:
         """219: the env-cache root may not overlap any host path a performer can see.
@@ -1509,14 +1557,7 @@ class ProjectConfiguration(BaseSettings):
         spelling cannot slip past. Operators move the root outside the performer mounts.
         """
         root = self.env_cache_root.expanduser()
-        mounts: list[tuple[str, Path]] = []
-        if self.performer_log_dir is not None:
-            mounts.append(("performer_log_dir", self.performer_log_dir))
-        for endpoint in self.performer_endpoints:
-            for index, volume in enumerate(endpoint.volumes):
-                label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
-                mounts.append((label, volume.host_path))
-        for label, raw in mounts:
+        for label, raw in self._performer_mount_entries():
             mount = raw.expanduser()
             # _within compares case-insensitively where the filesystem folds case, so a root
             # spelled "WS/caches" is refused when the volume is "ws" (same directory there).
