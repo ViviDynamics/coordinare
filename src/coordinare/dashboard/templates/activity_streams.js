@@ -159,8 +159,8 @@ function afCutHtml(entries) {
   if (cuts.summary) parts.push(afCutPhrase('tool summary', cuts.summary));
   if (!parts.length) return '';
   // The link opens the run at the first cut, when the entry has a run. A lifecycle event has none.
-  var link = anchor ? runEntryLinkHtml(anchor, 'Open full transcript') : '';
-  return esc(parts.join(' · ')) + (link ? ' · ' + link : '');
+  var link = anchor ? runEntryLinkHtml(anchor) : '';
+  return esc(parts.join(' · ')) + (link ? ' · Full transcript of ' + link : '');
 }
 // 135: the line for entries the bounded log dropped from the feed. Empty when none were. The
 // capacity comes from the server. The feed is deployment-wide, so a selected symphony does not

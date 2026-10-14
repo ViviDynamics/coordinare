@@ -54,6 +54,14 @@ def label_helpers_js() -> str:
     )
 
 
+def run_id_js() -> str:
+    """141: the run's short name and its markup (helpers.js), verbatim.
+
+    Assumes ``esc`` is already defined by the caller's slice. Any slice that renders a run link needs it.
+    """
+    return "\n\n".join([shipped_function("helpers", "runIdText"), shipped_function("helpers", "runIdHtml")])
+
+
 def symphony_switcher_js() -> str:
     """139: the symphony switcher's pure functions, verbatim, with esc() in front of them."""
     return "\n\n".join([shipped_function("helpers", "esc"), _DASHBOARD_JS_SOURCES["symphonies"]])

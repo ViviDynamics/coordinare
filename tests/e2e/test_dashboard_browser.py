@@ -1812,12 +1812,13 @@ def test_agent_session_info_visible_when_active(
 
     store.broadcaster.broadcast(
         _full_snapshot(
-            agent_session_id="sess-abc123",
+            agent_session_id="3b9f1c2e-7d4a-4e8b-9c1d-5a6b7c8d9e0f",
             agent_dispatch_at="2026-03-02T10:00:00+00:00",
         ),
     )
     expect(page.locator("#agent-session")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#agent-session-id")).to_contain_text("sess-abc123", timeout=_WAIT_LIVE)
+    expect(page.locator("#agent-session-id .run-id")).to_have_text("run 3b9f1c", timeout=_WAIT_LIVE)
+    expect(page.locator("#agent-session-id .run-id")).to_have_attribute("title", "3b9f1c2e-7d4a-4e8b-9c1d-5a6b7c8d9e0f")
 
 
 # ---------------------------------------------------------------------------

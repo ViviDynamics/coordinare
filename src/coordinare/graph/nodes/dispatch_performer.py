@@ -1649,7 +1649,7 @@ async def _closed_pr_churn_gate(state: CoordinareState, ctx: dict[str, Any]) -> 
                 state["phase"] = "blocked"
                 state["open_questions"] = redact_state_value([
                     (
-                        f"Card has {closed_count} closed PR attempts (limit: {closed_pr_limit}). "
+                        f"Card has {closed_count} closed {'PR' if closed_count == 1 else 'PRs'} (limit: {closed_pr_limit}). "
                         "Blocking new PR creation. Please review prior PRs and decide whether to "
                         "resume manually, reset branch strategy, or close the card."
                     ),

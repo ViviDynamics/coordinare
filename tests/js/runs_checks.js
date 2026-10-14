@@ -65,12 +65,24 @@ check("an https link is kept", runsSafeHref("https://github.com/o/r/pull/9"), "h
 check("a javascript link is dropped", runsSafeHref("javascript:alert(1)"), "");
 check("a data link is dropped", runsSafeHref("data:text/html,<script>1</script>"), "");
 check("a missing link is empty", runsSafeHref(null), "");
-const entryLink = runEntryLinkHtml({ session_id: "abc123", timestamp: "2026-10-01T10:00:05+00:00" });
-has("an activity entry links to its run", entryLink, 'href="/runs/abc123?at=2026-10-01T10%3A00%3A05%2B00%3A00"');
+const entryLink = runEntryLinkHtml({ session_id: "abc123def456", timestamp: "2026-10-01T10:00:05+00:00" });
+has("an activity entry links to its run", entryLink, 'href="/runs/abc123def456?at=2026-10-01T10%3A00%3A05%2B00%3A00"');
+has("the entry link's text is the short name", entryLink, ">run abc123</a>");
+has("the entry link carries the full id as its title", entryLink, 'title="abc123def456"');
 check("an entry without a run gets no link", runEntryLinkHtml({ session_id: "" }), "");
 check("a hostile run id gets no link", runEntryLinkHtml({ session_id: '"><script>x</script>' }), "");
-has("the session link opens the transcript", runSessionLinkHtml("run-7"), 'href="/runs/run-7"');
-check("a hostile session id gets no link", runSessionLinkHtml('a"b'), "");
+// 141: the short name and its markup.
+check("a UUID is named by its first six characters", runIdText("299a8349-6f0e-4b1e-9d2a-0c1f2e3d4a5b"), "run 299a83");
+check("a prefix ending in an underscore is not part of the name", runIdText("sess_abcdefgh"), "run abcdef");
+check("a short id keeps all of its characters", runIdText("abc"), "run abc");
+check("a missing id has no name", runIdText(""), "");
+has("the name's markup carries the full id", runIdHtml("299a8349-6f0e", { copy: true }), 'title="299a8349-6f0e"');
+has("the copy button holds the full id", runIdHtml("299a8349-6f0e", { copy: true }), 'data-run-id="299a8349-6f0e"');
+check("a copy button is only added on request", runIdHtml("299a8349-6f0e").indexOf("run-id-copy") === -1, true);
+has("a hostile id is escaped in the name", runIdHtml('"><img src=x onerror=1>'), "&quot;&gt;&lt;img");
+check("a hostile id never reaches the markup raw", runIdHtml('"><img src=x onerror=1>', { copy: true }).indexOf("<img") === -1, true);
+has("a linked name opens its address", runIdHtml("abc123def456", { href: "/runs/abc123def456" }), 'href="/runs/abc123def456"');
+check("a missing id renders no name", runIdHtml(""), '<span class="muted">-</span>');
 check("a persona history path uses an integer version", personaHistoryPath("implementing", 3),
   "/api/personas/implementing/history/3");
 check("a fractional version has no path", personaHistoryPath("implementing", 1.5), "");

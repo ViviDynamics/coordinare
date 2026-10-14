@@ -283,7 +283,7 @@ async def _reject_repair(
     )
     open_qs = list(state.get("open_questions") or [])
     open_qs.append(
-        f"Autonomous baseline repair (attempt {attempt}) on head {head_sha[:12]} "
+        f"Autonomous baseline repair (run {attempt}) on head {head_sha[:12]} "
         f"was rejected by the test-integrity guard and NOT landed: {detail} "
         "A human must review and resolve the inherited base-branch failure.",
     )

@@ -159,5 +159,8 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .run-more, .run-copy, .run-match { font: inherit; font-size: 12px; }
 .run-copy { margin-left: auto; }
 .run-entry-link { font-size: 12px; margin-left: 6px; }
+/* 141: a run's short name, its Copy button, and the container id in the technical section. */
+.run-id { font-family: monospace; }
+.run-id-copy { font-size: 11px; margin-left: 4px; padding: 0 6px; }
 .card-runs-stage { margin-bottom: 6px; font-size: 12px; }
 .card-runs-stage .detail-list li { overflow-wrap: anywhere; }

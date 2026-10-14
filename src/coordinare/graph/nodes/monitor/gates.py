@@ -1033,7 +1033,7 @@ def _ci_gate_repair_dispatch_record(
             kind="dispatch",
             now_iso=now_iso,
             detail=(
-                f"Dispatched autonomous baseline-repair attempt "
+                f"Dispatched autonomous baseline-repair run "
                 f"{repair_mandate['attempt']}/{repair_mandate['max_attempts']} "
                 f"for {len(repair_mandate['inherited_checks'])} inherited "
                 f"failure(s)."
@@ -1121,10 +1121,10 @@ async def _ci_gate_escalate_l3(
     attempts_used = inheritance_repair_counter.get(head_sha, 0)
     reason = (
         f"Autonomous baseline-repair budget exhausted for head "
-        f"{head_sha[:7]}: {attempts_used} attempt(s) used and "
+        f"{head_sha[:7]}: {attempts_used} repair run(s) used and "
         f"{len(inherited_for_l3)} inherited base-branch failure(s) remain "
         f"red. Escalating for human repair instead of dispatching another "
-        f"autonomous attempt."
+        f"autonomous repair run."
     )
     decision_obj = CIGateDecision(
         verdict="escalate",

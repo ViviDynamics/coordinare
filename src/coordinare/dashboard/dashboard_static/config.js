@@ -25,7 +25,7 @@ async function loadGlobalConfigPage() {
     {key:'max_concurrent_cards', label:'Max concurrent cards', min:1, max:20},
     {key:'max_cards_in_review', label:'Max cards waiting on review', min:1, max:50},
     {key:'max_feedback_cycles', label:'Max feedback cycles', min:0, max:50},
-    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts per issue', min:0, max:100},
+    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PRs per issue', min:0, max:100},
   ];
   var selectFields = [
     {key:'log_level', label:'Log level', options:['debug','info','warning','error']},

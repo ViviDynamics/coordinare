@@ -608,7 +608,7 @@ def _feedback_block_message(
         "The review → implement loop isn't converging. Options:",
         "1. Review the PR, accept as-is, and merge (if the remaining complaints are bogus).",
         "2. Leave a concrete comment on the PR telling the implementer exactly what to change, then move the card back to `IN_PROGRESS` to resume.",
-        "3. Move the card to `BACKLOG` / `DONE` to abandon this attempt.",
+        "3. Move the card to `BACKLOG` / `DONE` to end this run.",
     ])
     return "\n".join(lines)
 

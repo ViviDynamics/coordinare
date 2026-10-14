@@ -2457,13 +2457,12 @@ async def _phase_review_routes_s2(
         )
         state["phase"] = "blocked"
         state["system_error_reason"] = (
-            redact_state_value(f"local tests still failing after {_max_attempts} self-fix "
-            f"attempt(s); not pushing:\n{_fail_blob}")
+            redact_state_value(f"local tests still failing after the self-fix budget of {_max_attempts} "
+            f"was spent; not pushing:\n{_fail_blob}")
         )
         state["open_questions"] = redact_state_value([
-            f"The implementer's local test gate failed "
-            f"{_count - 1} consecutive self-fix attempt(s) (budget "
-            f"{_max_attempts}) without converging. Failing output:\n"
+            f"The implementer's local test gate still fails after its self-fix budget "
+            f"of {_max_attempts} was spent without converging. Failing output:\n"
             f"{_fail_blob}",
         ])
         state["agent_dispatch"] = {}
@@ -3023,7 +3022,7 @@ async def phase_2016(
         state["open_questions"] = redact_state_value([
             f"Performer stage '{stage}' produced empty/unusable output "
             f"({str(status.get('reason', '')).strip()[:160]}) on "
-            f"{_eo_budget + 1} attempt(s) for card {card_id}. This is "
+            f"{_eo_budget + 1} run(s) for card {card_id}. This is "
             "typically a model-capability limit on a card too large for "
             "the configured model — consider a stronger model for this "
             "role or splitting the card. Operator intervention required.",
@@ -3284,7 +3283,7 @@ async def _phase_blocked_questions_s2_s1(
         performer_stage=stage,
         pr_node_id=card["pr_node_id"],
         system_error_count=error_count,
-        msg="Session expired but PR already open — resuming monitoring_pr",
+        msg="Performer run expired, but PR already open; resuming monitoring_pr",
     )
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
@@ -3327,8 +3326,8 @@ async def _phase_blocked_questions_s2_s2(
             )
             state["phase"] = "blocked"
             state["open_questions"] = redact_state_value([
-                f"Failed to move card {card_id!r} to IN_REVIEW after session "
-                f"expiry for stage {stage!r}: {exc}. Blocking to avoid an "
+                f"Failed to move card {card_id!r} to IN_REVIEW after the performer run "
+                f"expired for stage {stage!r}: {exc}. Blocking to avoid an "
                 "infinite monitoring loop on stale board state.",
             ])
     return None
@@ -3363,7 +3362,7 @@ async def _phase_blocked_questions_s3_s1(
         card_id=card_id,
         performer_stage=stage,
         reason=reason,
-        msg="Session expired — moving card back to TODO for re-dispatch",
+        msg="Performer run expired; moving card back to TODO for re-dispatch",
     )
     if github is not None:
         try:
@@ -3458,7 +3457,7 @@ async def _phase_feedback_bounce_s1(
             state["open_questions"] = redact_state_value([
                 f"Performer ({stage}) relayed {_spent} times without "
                 "committing anything. Each relay repeated the same "
-                "outcome, so more attempts will not help. "
+                "outcome, so another run will not help. "
                 + (str(status.get("reason") or "").strip()
                    or "The last run reported no reason."),
             ])

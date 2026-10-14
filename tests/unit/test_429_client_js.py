@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function, usage_helpers_js
+from tests.unit.dashboard_js_slices import (
+    label_helpers_js,
+    run_id_js,
+    shipped_function,
+    usage_helpers_js,
+)
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "observer_detail_checks.js"
 
@@ -73,7 +78,8 @@ def _extract_detail_js() -> str:
         if helper is None:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
         cost_helpers.append(helper.group(0))
-    return "\n".join([esc.group(0), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
+    # 141: the detail renders the run's short name and its Copy button.
+    return "\n".join([esc.group(0), run_id_js(), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, detail_js])
 
 
 def test_detail_js_slice_is_complete() -> None:
