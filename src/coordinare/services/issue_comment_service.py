@@ -7,11 +7,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
 logger = structlog.get_logger(__name__)
+
+def normalize_logins(logins: Iterable[str]) -> frozenset[str]:
+    """GitHub logins as compared: lower case, no blanks. Login matching ignores case."""
+    return frozenset(login.strip().lower() for login in logins if login and login.strip())
 
 
 @dataclass
@@ -182,8 +189,14 @@ async def fetch_new_issue_comments(
     since_id: int | None,
     board: Any,
     issue_number: int = 0,
+    *,
+    self_logins: frozenset[str] = frozenset(),
 ) -> list[IssueCommentEvent]:
     """Fetch comments on the card posted after since_id.
+
+    142: ``self_logins`` are coordinare's own logins (normalised with
+    ``normalize_logins``). A comment by one of them is never returned, whatever
+    its text says, so coordinare's own report is never routed as human input.
 
     153: addressed by card id, like every other board operation. The board
     resolves it; on GitHub that means a node id becomes an issue number inside
@@ -209,6 +222,8 @@ async def fetch_new_issue_comments(
         return []
     events: list[IssueCommentEvent] = []
     for c in raw:
+        if str(c.get("author", "")).strip().lower() in self_logins:
+            continue
         events.append(
             IssueCommentEvent(
                 issue_number=issue_number,

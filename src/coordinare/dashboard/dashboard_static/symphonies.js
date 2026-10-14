@@ -182,7 +182,7 @@ var SNAPSHOT_FIELD_SCOPE = {
 // here, rather than per scope. tests/js/snapshot_scope_checks.js fails on a row key that
 // is missing from this list.
 var SESSION_ROW_FIELDS = [
-  'agent_dispatch_at', 'backend_ui_url', 'card_cost_estimate', 'card_id', 'card_title',
+  'agent_dispatch_at', 'backend_ui_url', 'block_cause', 'card_cost_estimate', 'card_id', 'card_title',
   'card_tokens_total', 'container_id', 'feedback_cycle_count', 'full_log_available', 'issue_number',
   'issue_url', 'observer_verdicts', 'pending_control', 'performer_backend', 'performer_events',
   'performer_logs', 'performer_metrics', 'performer_stage', 'phase', 'pr_url', 'session_id',

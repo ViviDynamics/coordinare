@@ -1811,11 +1811,11 @@ async def _announce_unresolvable_deps(
                     await board_provider.add_card_comment(
                         issue_node,
                         f"{header}\n\n"
-                        f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
+                        f"🔗 **Waiting on {dep_labels}**: unresolvable dependency\n\n"
                         "The referenced issue(s) are not on the project board "
                         "and could not be verified as closed (the issue may be "
                         "open, missing, or the API check failed).  Add them to "
-                        "the board or close them to unblock this card.",
+                        "the board or close them to clear this wait.",
                     )
             announced[item_id] = signature
         state["_dep_announcements"] = announced  # type: ignore[typeddict-unknown-key]
@@ -1875,8 +1875,8 @@ async def _handle_dep_cycles(
                     await board_provider.add_card_comment(
                         issue_node_id,
                         f"{header}\n\n"
-                        f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"
-                        "These cards form a dependency cycle — none can "
+                        f"🔄 **Waiting on {cycle_desc}**: circular dependency\n\n"
+                        "These cards form a dependency cycle. None can "
                         "proceed.  Resolve by removing or reordering the "
                         "dependency declarations in one of the issue bodies.",
                     )

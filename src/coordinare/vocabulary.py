@@ -50,7 +50,7 @@ PHASES: dict[str, Term] = _terms(
     ("monitoring_pr", "Waiting on review", "Waiting on review", "The card's pull request is waiting on checks or a human review."),
     ("merging", "Merging", "Merging", "The conductor is merging the card's pull request."),
     ("relay_feedback", "Sending feedback", "Sending feedback", "The conductor is passing review feedback back to an agent."),
-    ("blocked", "Blocked", "Blocked", "The card is stopped until a person acts."),
+    ("blocked", "Needs human", "Needs human", "The card is stopped until a person acts, and says why when the conductor knows."),
     ("recovery", "Recovering", "Recovering", "The conductor is recovering this card after a failed check."),
     ("system_error", "Error, will retry", "Errors, will retry", "The conductor hit an error on this card and will retry within its budget."),
     ("active", "Active", "Active", "A run whose exact state is not known yet."),
@@ -118,6 +118,17 @@ CONCEPTS: dict[str, Term] = _terms(
     ("needs_human", "Needs human", "Needs human", "A card stopped until a person acts. Its question or reason is listed in the needs-attention banner on the Dashboard."),
 )
 
+#: Why a card in the Blocked column needs a person, when the conductor knows (#142).
+#: Keys are the cause codes ``services/block_cause.py`` names. The chip reads
+#: "Needs human: <label>"; a card with no known cause shows the bare kind.
+BLOCK_CAUSES: dict[str, Term] = _terms(
+    ("closed_pr", "the pull request was closed without merging", "the pull request was closed without merging", "The card's pull request was closed by someone other than coordinare, so the card is parked."),
+    ("env_blocked", "the environment needs repair", "the environment needs repair", "The card's checks could not run because of the environment, not the code, so the environment has to be fixed first."),
+    ("output_truncated", "the model ran out of output room", "the model ran out of output room", "The model's answer was cut off before it finished."),
+    ("format_exhausted", "retries exhausted on a format failure", "retries exhausted on a format failure", "The performer's output could not be read after every retry."),
+    ("system_error", "the performer reported an error", "the performer reported an error", "The performer failed and the conductor has stopped retrying."),
+)
+
 #: Why a card is not progressing, shown on To Do and Blocked cards (#149).
 #: Keys are the wait kinds the dashboard names, not the conductor's wire reasons.
 WAITS: dict[str, Term] = _terms(
@@ -134,6 +145,7 @@ GROUPS: dict[str, dict[str, Term]] = {
     "outcomes": OUTCOMES,
     "concepts": CONCEPTS,
     "waits": WAITS,
+    "block_causes": BLOCK_CAUSES,
 }
 
 def _label(group: dict[str, Term], code: str | None) -> str:
@@ -171,6 +183,11 @@ def stage_with_agent(stage: str | None) -> str:
     return f"{stage_label(key)} · {agent_label(agent)}"
 
 
+def block_cause_label(code: str | None) -> str:
+    """Display label for why a stopped card needs a person, or the code when unknown."""
+    return _label(BLOCK_CAUSES, code)
+
+
 def label(code: str | None) -> str:
     """Display label for a conductor phase or a check outcome.
 
@@ -197,6 +214,7 @@ def payload() -> dict[str, Any]:
         "stage_labels": {code: term.label for code, term in STAGES.items()},
         "agent_labels": {code: term.label for code, term in AGENTS.items()},
         "wait_labels": {code: term.label for code, term in WAITS.items()},
+        "block_cause_labels": {code: term.label for code, term in BLOCK_CAUSES.items()},
         "stage_agent": dict(STAGE_AGENT),
         **{name: [asdict(term) for term in terms.values()] for name, terms in GROUPS.items()},
     }

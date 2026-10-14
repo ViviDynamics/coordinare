@@ -19,6 +19,7 @@ from coordinare.dashboard.helpers import (
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
+from coordinare.services.block_cause import block_cause
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
 from coordinare.services.token_usage import (
@@ -213,6 +214,11 @@ class DashboardStore:
                 # when the stage or phase happened to move, which is minutes to
                 # tens of minutes apart -- the exact gap this is meant to close.
                 sess.get("workflow_step"),
+                # 142: a change of cause (or a new environment hold) must reach the page.
+                # The reason text is compared here only; it is never sent.
+                sess.get("system_error_reason"),
+                bool(sess.get("env_blocked")),
+                block_cause(sess),
             ))
         return tuple(parts)
 
@@ -553,6 +559,8 @@ class DashboardStore:
             "issue_url": str(sess_card.get("issue_url", "")) or None,
             "pr_url": str(sess_card.get("pr_url", "")) or None,
             "phase": str(sess.get("phase", "idle")),
+            # 142: why a stopped card needs a person, as one code from a fixed set (no performer text).
+            "block_cause": block_cause(sess),
             "performer_stage": _sess_stage,
             "card_tokens_total": sess.get("card_tokens_total", 0),
             "card_cost_estimate": sess.get("card_cost_estimate", 0.0),

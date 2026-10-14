@@ -2,8 +2,14 @@
 // each of these; this script only names the decision. It never re-derives one
 // from the board, and an unknown or absent reason renders nothing.
 //
-// Inputs: card = {id, column, has_session}; snapshot = {session_skip_reasons,
-// open_questions, todo_waits, todo_capacity, now (optional, ms)}.
+// Inputs: card = {id, column, has_session, block_cause}; snapshot =
+// {session_skip_reasons, open_questions, todo_waits, todo_capacity, now
+// (optional, ms)}.
+//
+// 142: a card in the Blocked column is one of three kinds: Needs human (a
+// person must act, with the reason the conductor holds), Waiting on #N (a
+// dependency), or Queued (capacity, To Do only). A stop with no known reason
+// reads "Needs human" and nothing more.
 
 function waitLabel(kind) {
   return vocabularyKindLabel('wait_labels', kind);
@@ -38,6 +44,29 @@ function waitAgo(iso, now) {
 
 function waitHas(map, key) {
   return !!map && Object.prototype.hasOwnProperty.call(map, key);
+}
+
+// 142: the reason shown after "Needs human:" is one line, however long the
+// question. The full text is kept in the title.
+var WAIT_REASON_CHARS = 160;
+
+// The Blocked-column kind for a stop that needs a person. The reason is what the
+// conductor holds (an open question, or the cause it named); none is invented.
+function needsHumanReason(reason, title) {
+  var full = String(reason || '').replace(/\s+/g, ' ').trim();
+  var short = full.length > WAIT_REASON_CHARS ? full.slice(0, WAIT_REASON_CHARS - 3) + '...' : full;
+  return {
+    kind: 'needs_human',
+    text: waitLabel('needs_human') + (short ? ': ' + short : ''),
+    title: title || 'A person has to act before this card goes on. The conductor does not record why it stopped.',
+  };
+}
+
+// 142: the words for a cause the conductor named (block_cause), or '' when it
+// named none. An unknown code is never shown as if it were a reason.
+function blockCauseText(code) {
+  var map = (typeof COORDINARE_VOCABULARY !== 'undefined' && COORDINARE_VOCABULARY.block_cause_labels) || {};
+  return waitHas(map, code) ? String(map[code]) : '';
 }
 
 // The open question for a blocked card, if the conductor is holding one.
@@ -91,11 +120,8 @@ function waitingReason(card, snapshot) {
     var question = waitOpenQuestion(snap.open_questions, id);
     if (question) {
       var ago = waitAgo(question.asked_at, snap.now || Date.now());
-      return {
-        kind: 'needs_human',
-        text: waitLabel('needs_human') + ': clarification asked' + (ago ? ' ' + ago : ''),
-        title: 'The conductor is waiting for an answer to a question on this card.',
-      };
+      var asked = ago ? 'Asked ' + ago + '. ' : '';
+      return needsHumanReason(question.text, (asked + String(question.text || '')).replace(/\s+/g, ' ').trim());
     }
     if (skip && skip.reason === 'dependency_blocked' && waitBlockersText(skip.blockers)) {
       return dependencyReason(skip.blockers);
@@ -107,7 +133,8 @@ function waitingReason(card, snapshot) {
         return dependencyReason(moved.blockers);
       }
     }
-    return none;
+    var cause = blockCauseText(c.block_cause);
+    return needsHumanReason(cause, cause ? 'The conductor stopped this card: ' + cause + '.' : undefined);
   }
 
   if (c.column !== 'TODO') return none;
@@ -154,6 +181,27 @@ function waitingReason(card, snapshot) {
     };
   }
   return none;
+}
+
+// 142: the kind and reason of a session in the blocked phase, for the views that
+// show a session (the Active performers tiles and the card detail) rather than a
+// column. The same decision the Blocked column reads, so the words cannot differ.
+function blockedSessionText(sess, questions, skipReasons) {
+  var card = {id: sess ? sess.card_id : '', column: 'BLOCKED', has_session: true,
+    block_cause: sess ? sess.block_cause : null};
+  var reason = waitingReason(card, {open_questions: questions, session_skip_reasons: skipReasons, now: Date.now()});
+  return reason.text || waitLabel('needs_human');
+}
+
+// 142: the words for a card the conductor did not pick up this check, on the
+// Performers page. A dependency names its blockers, a capacity hold uses the queued
+// words, and any other skip reads as not picked up. The wire code is never shown.
+function skipReasonText(skip) {
+  var r = skip || {};
+  if (r.reason === 'dependency_blocked' && waitBlockersText(r.blockers)) {
+    return dependencyReason(r.blockers).text;
+  }
+  return queuedWaitText(r.reason, {capacity: r.capacity, waiting: r.waiting_on_review}) || 'Not picked up this check';
 }
 
 function dependencyReason(blockers) {

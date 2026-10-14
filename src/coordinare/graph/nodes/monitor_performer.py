@@ -64,6 +64,7 @@ from coordinare.graph.nodes.monitor.verdict import (
     _stamp_feedback_bounce,
     _summarise_feedback_items,
 )
+from coordinare.vocabulary import phase_label
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -86,7 +87,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         _record_activity(
             result,
             "error",
-            f"{result['phase']}: {reason}",
+            f"{phase_label(str(result['phase']))}: {reason}",
             card_id=str((result.get("current_card") or {}).get("id", "")),
             stage=str(result.get("performer_stage") or ""),
         )

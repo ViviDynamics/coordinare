@@ -201,7 +201,7 @@ def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_ser
     # The message and its usage report share the oldest row; the other ten are boundaries.
     expect(rows).to_have_count(11)
     expect(rows.nth(10).locator('.af-usage summary')).to_have_text('Usage reports (1)')
-    for label in ['ERROR', 'BLOCKED', 'COMPLETED']:
+    for label in ['ERROR', 'NEEDS HUMAN', 'COMPLETED']:
         expect(page.locator('#activity-feed .af-kind').filter(has_text=label)).to_have_count(1)
     page.locator('#af-filter').select_option('other')
     expect(rows).to_have_count(1)

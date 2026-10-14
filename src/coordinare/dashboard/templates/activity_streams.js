@@ -4,7 +4,7 @@ var AF_SUMMARIES = {
   cost: 'Usage updated.',
   stage_change: 'Workflow stage changed.', recovered: 'Work recovered.',
   quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
-  error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.',
+  error: 'An error was reported.', blocked: 'Needs a person before work continues.', completed: 'Work completed.',
   stream_truncated: 'Output was truncated (stream too long).',
   workflow_step: 'Workflow step started.',
   // 429: the verdict verb and reason are in the entry text itself.

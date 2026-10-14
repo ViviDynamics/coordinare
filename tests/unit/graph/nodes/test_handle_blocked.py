@@ -16,7 +16,7 @@ class _GitHub:
 
     async def add_comment(self, subject_id: str, body: str):
         assert subject_id == "ISSUE_1"
-        assert "Needs input" in body
+        assert "Needs human" in body
         return {"id": "C1"}
 
 
@@ -261,7 +261,7 @@ async def test_handle_blocked_reposts_comment_after_reminder_window() -> None:
     result = await handle_blocked(state)
 
     assert github.comment_body is not None
-    assert "Needs input" in github.comment_body
+    assert "Needs human" in github.comment_body
     assert result["last_blocked_notified_at"] > very_old
 
 
@@ -670,7 +670,7 @@ async def test_reposts_when_session_watermark_older_than_window() -> None:
     result = await handle_blocked(state)
 
     assert github.comment_body is not None
-    assert "Needs input" in github.comment_body
+    assert "Needs human" in github.comment_body
     # Dual-write: both session-level and top-level advanced
     assert result["active_sessions"]["ITEM_1"]["last_blocked_notified_at"] > very_old
     assert result["last_blocked_notified_at"] > very_old

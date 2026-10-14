@@ -1237,6 +1237,9 @@ class ProjectConfiguration(BaseSettings):
     github_app_id: int | None = None
     github_private_key_path: Path | None = None
     github_installation_id: int | None = None
+    # 142: logins that count as coordinare's own comments, added to the login coordinare
+    # resolves from its App or token. Only for unusual setups; empty by default.
+    github_self_logins: list[str] = Field(default_factory=list)
 
     agent_transport: Literal["subprocess", "ssh", "kubernetes"] = "subprocess"
     agent_executable: str = ""

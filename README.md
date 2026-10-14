@@ -34,7 +34,7 @@ Cards progress through up to 9 configurable roles (unconfigured roles are skippe
 | Tech Writer | `documenting` | Commits CHANGELOG, README updates, docstrings | `docs_committed` |
 | Closer | `closing_review` | Final pass: verifies prior feedback was addressed, resolves review threads | `approved` |
 
-When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles. The review → implement loop is bounded by `max_feedback_cycles` (default `5`); when exceeded, the card is blocked with an actionable break-case comment that `@`-mentions `human_reviewers` so they can triage.
+When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles. The review → implement loop is bounded by `max_feedback_cycles` (default `5`); when exceeded, the card needs a human (it is parked in the Blocked column) with an actionable break-case comment that `@`-mentions `human_reviewers` so they can triage.
 
 ## Quick Start
 
@@ -100,7 +100,7 @@ whichever one is active (or both, if both exist).
 If both systems are configured on the same branch, both must allow
 the App — GitHub enforces them independently.  When coordinare hits
 this, it logs a permanent error `"You're not authorized to push to
-this branch"` and surfaces the card as blocked with the GitHub error
+this branch"` and surfaces the card as needing a human, with the GitHub error
 message in `open_questions` so you can act on it directly.
 
 ### 5. Validate config

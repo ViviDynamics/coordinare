@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from coordinare.daemon import CoordinareDaemon, _persist_active_sessions
 from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.state import CoordinareState
+from coordinare.services.block_cause import OUTPUT_CAP_REASON
 from coordinare.services.github import GitHubService
 from coordinare.state_store import WorkflowSnapshot
 from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer, _stalled_state
@@ -55,3 +56,5 @@ async def test_token_limit_posts_to_real_github_service_contract():
     assert subject == 'ISSUE_NODE'
     assert 'output token limit reached' in body
     assert result['phase'] == 'blocked'
+    # 142: the token-cap stop names its own cause, so the chip can say what happened.
+    assert result['system_error_reason'] == OUTPUT_CAP_REASON

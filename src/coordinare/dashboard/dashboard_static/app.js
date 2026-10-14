@@ -110,7 +110,7 @@ function renderState(s) {
   var phaseDescriptions = {
     'idle':             'Waiting for a card to enter the TODO column on the GitHub Project.',
     'running':          'Running a check.',
-    'blocked':          'Work is paused — review the Open Questions below and take action.',
+    'blocked':          'Needs human: the card is stopped until a person acts. Review the Open Questions below.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
     'monitoring_agent': 'Performer agent is actively working on the card.',
     'monitoring_performer': 'Performer agent is actively working on the card.',
@@ -193,7 +193,7 @@ function renderState(s) {
     depCard.id = 'dependency-blockers-card';
     depCard.className = 'card';
     depCard.style.display = 'none';
-    depCard.innerHTML = '<h3>Blocked by Dependencies</h3><ul id="dependency-blockers-list"></ul>';
+    depCard.innerHTML = '<h3>Waiting on Dependencies</h3><ul id="dependency-blockers-list"></ul>';
     var questionsCard = document.getElementById('questions-card');
     if (questionsCard && questionsCard.parentNode) {
       questionsCard.parentNode.insertBefore(depCard, questionsCard);
@@ -204,7 +204,7 @@ function renderState(s) {
     depCard.style.display = '';
     depList.innerHTML = s.blocked_by_dependencies.map(function(d) {
       var label = '#' + d.issue_number;
-      if (d.title) label += ' — ' + esc(d.title);
+      if (d.title) label += ': ' + esc(d.title);
       var col = d.column || 'not on the GitHub Project';
       var link = d.issue_url && /^https?:\/\//i.test(d.issue_url)
         ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
@@ -292,7 +292,9 @@ function renderState(s) {
     rebaseList.innerHTML = s.last_rebase_round.jobs.map(function(j) {
       var emoji = outcomeEmoji[j.outcome] || '\u2753';
       var sha = j.post_rebase_sha ? j.post_rebase_sha.substring(0, 8) : '';
-      var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ' — ' + esc(j.outcome);
+      // 142: a rebase that needs a person reads as such, not as the bare outcome code.
+      var outcomeText = j.outcome === 'blocked' ? 'needs human' : j.outcome;
+      var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ': ' + esc(outcomeText);
       if (sha) label += ' (' + esc(sha) + ')';
       // 139: a branch that needs a person names its symphony, or says it covers all of them.
       if (j.unattributed) label += ' · covers all symphonies';
@@ -1172,7 +1174,7 @@ var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
 var AF_LABELS = {
   operator_action: 'OPERATOR', progress: 'AGENT', tool_use: 'TOOL', tool_result: 'RESULT', thinking: 'THINKING', cost: 'COST',
   stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
-  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED',
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'NEEDS HUMAN', completed: 'COMPLETED',
   // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
   // back to the raw uppercased type while every other type had a short label.
   stream_truncated: 'TRUNCATED',

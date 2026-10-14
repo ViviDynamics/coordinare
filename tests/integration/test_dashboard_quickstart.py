@@ -274,7 +274,7 @@ def test_s3_blocked_snapshot_has_open_questions() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["phase"] == "blocked"
-    assert snap["phase_label"] == "Blocked"
+    assert snap["phase_label"] == "Needs human"
     assert snap["active_card_title"] == "Refactor Auth Module"
     assert len(snap["open_questions"]) == 2
     assert "OAuth2" in snap["open_questions"][0]["text"]
