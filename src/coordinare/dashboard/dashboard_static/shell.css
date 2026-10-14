@@ -76,3 +76,7 @@ html[data-navigation-expanded="false"] .mascot-baton { transform: rotate(-16deg)
 .card-action-pending { color: var(--color-accent-yellow); }
 .card-detail-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-bottom: 6px; }
 .ev-operator_action { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+
+/* 152: freshness beside the header connection label */
+#connection-detail { color: var(--color-text-muted); white-space: nowrap; }
+#connection-status.conn-stale, #connection-status.conn-stale #connection-detail { color: var(--color-accent-yellow); }

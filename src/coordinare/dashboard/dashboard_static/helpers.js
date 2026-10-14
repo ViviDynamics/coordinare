@@ -156,11 +156,53 @@ function refreshConductorHeadline() {
 }
 
 // Seconds until the next board check, or null when it cannot be known.
-function nextCheckSeconds(s) {
+function nextCheckSeconds(s, now) {
   var interval = Number(s && s.poll_interval_seconds);
   var last = s && s.last_poll_at ? new Date(s.last_poll_at).getTime() : NaN;
   if (!isFinite(interval) || interval <= 0 || !isFinite(last)) return null;
-  return Math.max(0, Math.ceil((last + interval * 1000 - Date.now()) / 1000));
+  return Math.max(0, Math.ceil((last + interval * 1000 - (now == null ? Date.now() : now)) / 1000));
+}
+
+// 152: how fresh the data on screen is, beside the header's connection label.
+// "Live · updated 3s ago · next check in 18s", or, when the stream is quiet or
+// reconnecting, "Updates quiet · no update for 2m".
+function fmtShortAge(ms) {
+  var secs = Math.max(0, Math.floor(Number(ms) / 1000) || 0);
+  if (secs < 60) return secs + 's';
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm';
+  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+function freshnessText(label, lastMessageAt, hasMessage, s, now) {
+  if (!hasMessage) return '';
+  var age = fmtShortAge(now - lastMessageAt);
+  if (label === 'Live') {
+    var next = nextCheckSeconds(s, now);
+    return ' · updated ' + age + ' ago' + (next == null ? '' : ' · next check in ' + next + 's');
+  }
+  return ' · no update for ' + age + (label === 'Reconnecting' ? ': reconnecting…' : '');
+}
+
+// Called once a second. Reads the page's own connection bookkeeping.
+// When the last state update arrived; set by the state_update listener.
+var _lastStateAt = 0;
+
+function refreshFreshness() {
+  var detail = document.getElementById('connection-detail');
+  var labelEl = document.getElementById('connection-label');
+  if (!detail || !labelEl) return;
+  var label = labelEl.textContent;
+  // "updated Ns ago" is the age of the data on screen: the last state update,
+  // not the last heartbeat. Heartbeats arrive every few seconds and only show
+  // that the stream is open; they are what the Live label is for.
+  var stateAt = Number(_lastStateAt) || 0;
+  var has = stateAt > 0;
+  var last = stateAt;
+  var state = typeof _lastState !== 'undefined' ? _lastState : null;
+  detail.textContent = freshnessText(label, last, has, state, Date.now());
+  var status = document.getElementById('connection-status');
+  if (status) status.classList.toggle('conn-stale', has && label !== 'Live');
 }
 
 // 136: the Glossary page, rendered from the same data.
