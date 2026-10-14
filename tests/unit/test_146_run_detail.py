@@ -115,8 +115,9 @@ def test_rows_show_a_chevron_and_the_page_styles_it() -> None:
 
 
 def test_every_run_link_uses_the_shared_helper() -> None:
-    # The Active performers tile, the swimlane card and the card detail.
-    assert _PERFORMERS.count("viewRunLinkHtml(sess) +") == 3
+    # The swimlane card and the card detail in performers.js; the active-run tile in layout.js (154).
+    assert _PERFORMERS.count("viewRunLinkHtml(sess) +") == 2
+    assert _DASHBOARD_JS_SOURCES["layout"].count("viewRunLinkHtml(sess) +") == 1
     assert "function viewRunLinkHtml(" in _PERFORMERS
 
 

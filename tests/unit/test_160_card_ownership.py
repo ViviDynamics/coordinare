@@ -655,13 +655,7 @@ class TestDashboardReadsOnlyTheHint:
 
     def test_both_sites_read_the_hint(self) -> None:
         """Named line by line: a count would pass with one site fixed twice."""
-        # 349: the idle site still renders from the inline renderState; the
-        # card-detail filter site moved to /static/performers.js.
-        assert (
-            "var idleFilterText = s.ownership_hint ? esc(s.ownership_hint) : '';"
-            in page_source()
-        )
-        assert (
-            "var filterHint = s.ownership_hint ? esc(s.ownership_hint) : '';"
-            in _DASHBOARD_JS_SOURCES["performers"]
-        )
+        # 154: the idle site (the active-runs idle line) renders from /static/layout.js; the
+        # inline renderState no longer has an idle panel of its own.
+        assert "s.ownership_hint ? esc(s.ownership_hint) : ''" in _DASHBOARD_JS_SOURCES["layout"]
+        assert "var idleFilterText" not in page_source()

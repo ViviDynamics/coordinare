@@ -63,7 +63,8 @@ def test_the_history_page_is_fed_by_the_listing_not_the_snapshot() -> None:
 
 
 def test_the_dashboard_panel_still_reads_the_snapshot() -> None:
-    assert "renderCycleHistoryInto(document.getElementById('history-section')" in _DASHBOARD_JS_SOURCES["app"]
+    # 154: the cycle log is the History page's Recent checks panel now, not the Dashboard's.
+    assert "renderCycleHistoryInto(document.getElementById('history-cycles')" in _DASHBOARD_JS_SOURCES["app"]
 
 
 def test_the_page_stays_under_its_size_budget() -> None:

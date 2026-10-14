@@ -195,15 +195,13 @@ h2 { font-size: 15px; font-weight: 600; color: var(--color-text-primary); margin
 .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
 .full { grid-column: 1 / -1; }
 .dashboard-grid > * { min-width: 0; }
+/* 154: on a desktop the board and the activity feed share a row; everything else spans the page.
+   The row fits above the fold at 1280x800, so the activity log has a bounded height there. */
 @media (min-width: 1100px) {
-  .dashboard-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
   .dashboard-grid > * { grid-column: 1 / -1; }
-  #phase-card { grid-column: span 4; }
-  #active-performers { grid-column: span 8; }
-  #active-work-card { grid-column: span 8; }
-  #activity-feed-card { grid-column: span 4; }
-  #metrics-card { grid-column: span 8; }
-  #health-card { grid-column: span 4; }
+  #active-work-card, #activity-feed-card { grid-column: span 1; }
+  #activity-feed-card .af-log { min-height: 0; max-height: 200px; }
 }
 .card { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-panel); padding: var(--space-5); min-width: 0; }
 .phase { font-family: var(--font-display); font-size: 28px; font-weight: 500; line-height: 1.2; }
@@ -427,8 +425,6 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <header class="workspace-header">
   <div><h1 id="workspace-title">Dashboard</h1><span id="project-link" class="symphony-switcher" style="display:none"></span></div>
   <div class="header-controls">
-    <span id="spend-strip" class="muted" style="font-size:12px" title="Spend today and this week, from the token usage ledger"></span>
-    <span id="connection-status" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span><span id="connection-detail"></span></span>
     <div class="appearance-control" role="group" aria-label="Appearance">
       <button type="button" data-appearance="system" aria-label="System appearance" title="System" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4m-4 0h8"/></svg></button>
       <button type="button" data-appearance="light" aria-label="Light appearance" title="Light" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
@@ -448,29 +444,34 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 </section>
 <main class="grid dashboard-grid">
 
-<div class="card" id="phase-card">
-  <h2>Conductor</h2>
-  <div id="phase" class="phase phase-idle">Idle</div>
-  <div id="phase-desc" class="phase-desc"></div>
-  <div id="session-age" class="session-age" style="display:none"></div>
-  <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"
-    aria-label="Check for work now">Check now</button>
-  <span id="last-checked" class="muted" style="font-size:12px;margin-left:8px"></span>
-  <div id="force-poll-msg" class="action-msg"></div>
-</div>
+<!-- 154: the status strip, one row. The headline, the counts, the spend, the freshness
+     and the health dot are written by app.js and layout.js. -->
+<section id="status-strip" class="status-strip" aria-label="Status">
+  <span id="phase" class="phase phase-idle">Idle</span>
+  <span id="status-counts" class="status-counts"></span>
+  <span id="spend-strip" class="status-muted"></span>
+  <span id="connection-status" class="status-freshness" role="status" aria-live="polite" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label">Connecting</span><span id="connection-detail"></span></span>
+  <button id="health-dot" type="button" class="status-health" onclick="showSystemHealth()" aria-label="System health" title="System health"><span class="sh-dot" aria-hidden="true">&#9679;</span></button>
+  <span class="status-actions">
+    <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"
+      aria-label="Check for work now">Check now</button>
+    <span id="force-poll-msg" class="action-msg"></span>
+  </span>
+</section>
 
-<div id="active-performers" class="card" style="display:none">
-  <h2>Active Performers</h2>
+<!-- 154: active runs. One tile per running card, merged from the Conductor and Active Performers panels. -->
+<section id="active-performers" class="card active-runs" aria-labelledby="active-runs-title">
+  <div class="active-runs-head">
+    <h2 id="active-runs-title">Active runs</h2>
+    <span id="active-runs-summary" class="muted"></span>
+    <span id="last-checked" class="muted"></span>
+  </div>
   <div id="active-performer-tiles" class="ap-tiles"></div>
-</div>
+</section>
 
-<div id="questions-card" class="card" style="display:none">
-  <h2>Open Questions</h2>
-  <ul id="questions-list" style="padding-left:20px;line-height:1.8"></ul>
-</div>
-
+<!-- 154: the board and the activity feed sit side by side on a desktop. -->
 <div class="card" id="active-work-card">
-  <h2>Cards</h2>
+  <h2>Cards <span id="cards-summary" class="cards-summary muted"></span></h2>
   <div id="swimlane-section">
     <span class="empty-state">Waiting for cards&hellip;</span>
   </div>
@@ -481,7 +482,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 </div>
 
 <!-- 138: activity feed -->
-<div id="activity-feed-card" class="card full">
+<div id="activity-feed-card" class="card">
   <h2>Activity</h2>
   <div class="af-controls">
     <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
@@ -506,9 +507,9 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   </div>
 </div>
 
-<div id="idle-panel" class="card" style="display:none">
-  <h2>Coordinare is Idle</h2>
-  <div id="idle-panel-content"></div>
+<div id="questions-card" class="card" style="display:none">
+  <h2>Open Questions</h2>
+  <ul id="questions-list" style="padding-left:20px;line-height:1.8"></ul>
 </div>
 
 <div id="clarifications-card" class="card" style="display:none">
@@ -516,8 +517,10 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <div id="clarifications-list" style="max-height:300px;overflow-y:auto"></div>
 </div>
 
-<div class="card" id="metrics-card">
-  <h2>Metrics</h2>
+<!-- 154: the lower row. Metrics is collapsed; the health card is a single line unless a system is down. -->
+<div class="lower-row">
+<details class="card" id="metrics-card">
+  <summary class="panel-summary">Metrics</summary>
   <div class="metric-row">
     <div class="metric">
       <span class="metric-value" id="cycles-completed">—</span>
@@ -532,43 +535,19 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
       <span class="metric-label">Consecutive Errors</span>
     </div>
   </div>
-  <div class="metric-row" style="margin-top:8px">
-    <div class="metric">
-      <span class="metric-value" id="card-tokens-total">0</span>
-      <span class="metric-label" id="card-tokens-label">Tokens</span>
-    </div>
-    <div class="metric">
-      <span class="metric-value" id="card-cost-estimate">$0.00</span>
-      <span class="metric-label">Estimated Cost</span>
-    </div>
-  </div>
-  <div class="metric-row" style="margin-top:8px">
-    <div class="metric">
-      <span class="metric-value" id="spend-today">-</span>
-      <span class="metric-label">Spend today (UTC)</span>
-    </div>
-    <div class="metric">
-      <span class="metric-value" id="spend-week">-</span>
-      <span class="metric-label">Spend this week (UTC)</span>
-    </div>
-  </div>
   <div class="daemon-start">
     Daemon: <strong id="daemon-start-time">—</strong>
   </div>
   <div id="agent-session" style="margin-top:8px;display:none">
     <span class="label">Current run:</span> <span id="agent-session-id"></span>
   </div>
-</div>
+</details>
 
 <div class="card" id="health-card">
   <h2>System health</h2>
   <div id="health-scope-note" class="muted" style="font-size:12px"></div>
   <div id="subsystems-section"><span class="empty-state">Loading...</span></div>
 </div>
-
-<div class="card" id="recent-cycles-card">
-  <h2>Recent checks</h2>
-  <div id="history-section"><span class="empty-state">Loading...</span></div>
 </div>
 
 <div class="card" id="workflow-card">
@@ -613,6 +592,11 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
     <h2>History</h2>
     <div id="history-page-section"><span class="empty-state">Loading...</span></div>
   </div>
+  <!-- 154: the daemon's cycle log moved here from the Dashboard. It is this daemon run's list. -->
+  <details class="card" id="history-cycles-panel">
+    <summary class="panel-summary">Recent checks (this daemon run)</summary>
+    <div id="history-cycles"><span class="empty-state">Loading...</span></div>
+  </details>
 </div>
 
 <!-- 133: the transcript viewer. Logic in /static/runs.js. -->

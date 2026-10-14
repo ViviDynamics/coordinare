@@ -54,8 +54,9 @@ def test_running_stage_with_no_usage_shows_pending_then_the_priced_cost(
         phase="monitoring_performer", phase_label="Monitoring Performer",
         active_sessions=[running],
     ))
-    tokens = page.locator("#card-tokens-total")
-    cost = page.locator("#card-cost-estimate")
+    # 154: the tokens and cost are on the card's active-run tile.
+    tokens = page.locator("#active-performer-tiles .ap-tile-tokens")
+    cost = page.locator("#active-performer-tiles .ap-tile-cost")
     expect(tokens).to_have_text("—", timeout=_WAIT_LIVE)
     expect(tokens).to_have_attribute("title", "Reported when the stage ends")
     # 134: the pending placeholder is a plain hyphen; the value itself is unchanged.
@@ -69,13 +70,13 @@ def test_running_stage_with_no_usage_shows_pending_then_the_priced_cost(
     ))
     expect(tokens).to_have_text((2000000).__format__(","), timeout=_WAIT_LIVE)
     expect(cost).to_have_text("$6.00")
-    title = cost.get_attribute("title") or ""
+    title = cost.locator("[title]").first.get_attribute("title") or ""
     assert "Pricing as of 2026-10-01." in title
     assert "claude-opus-4-5" in title
 
+    # The run has ended: its tile goes with it.
     store.broadcaster.broadcast(_full_snapshot())
-    expect(tokens).to_have_text("0", timeout=_WAIT_LIVE)
-    expect(cost).to_have_text("-")
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_have_count(0, timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -93,9 +94,9 @@ def test_a_model_with_no_price_shows_unknown_with_its_reason(
         phase="monitoring_performer", phase_label="Monitoring Performer",
         active_sessions=[unpriced],
     ))
-    cost = page.locator("#card-cost-estimate")
+    cost = page.locator("#active-performer-tiles .ap-tile-cost")
     expect(cost).to_have_text("unknown", timeout=_WAIT_LIVE)
-    assert "no price for gpt-unpriced" in (cost.get_attribute("title") or "")
+    assert "no price for gpt-unpriced" in (cost.locator("[title]").first.get_attribute("title") or "")
 
 
 @pytest.mark.e2e
@@ -114,5 +115,5 @@ def test_transcripts_off_says_not_tracked_and_does_not_invent_a_cost(
         phase="monitoring_performer", phase_label="Monitoring Performer",
         active_sessions=[untracked],
     ))
-    expect(page.locator("#card-tokens-total")).to_have_text("2,000,000", timeout=_WAIT_LIVE)
-    expect(page.locator("#card-cost-estimate")).to_have_text("not tracked")
+    expect(page.locator("#active-performer-tiles .ap-tile-tokens")).to_have_text("2,000,000", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles .ap-tile-cost")).to_have_text("not tracked")

@@ -41,16 +41,12 @@ function utilizationBarColor(r) {
   return Number(r && r.queued) > 0 ? 'var(--color-accent-yellow)' : 'var(--color-bar-fill)';
 }
 
-function utilizationRowHtml(r) {
+// 154: the role's busy bar. The Performers page table carries it; the Dashboard shows a summary line.
+function utilizationBarHtml(r) {
   var max = Number(r.max) || 0;
   var active = Number(r.active) || 0;
-  var queued = Number(r.queued) || 0;
   var pct = max > 0 ? Math.min(100, Math.round(active / max * 100)) : 0;
-  var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
-  var queuedHtml = queued > 0
-    ? ' <span class="util-queued" style="color:var(--color-accent-yellow)" title="Cards waiting for a free ' + roleOrStageLabel(r.role) + ' slot">· ' + queued + ' queued</span>'
-    : '';
-  return '<tr><td>' + roleOrStageLabel(r.role) + '</td><td>' + bar + ' ' + active + ' of ' + max + ' busy' + queuedHtml + '</td></tr>';
+  return '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + utilizationBarColor(r) + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
 }
 
 // 124: users see the issue number, never the raw ProjectV2 item id. The node
@@ -337,7 +333,8 @@ function renderActiveWorkPanels(s) {
     }
 
     var liveLine = '';
-    if (sess) {
+    // 154: a running card's phase, stage, elapsed time and cost are on its active-run tile.
+    if (sess && !isStageRunning(sess)) {
       var skip = skipAll[iid];
       // 354: a card waiting on a saturated pool is queued, not dispatching.
       var queuedLabel = queuedPhaseLabel(sess);
@@ -514,76 +511,21 @@ function closeCardDetail() {
   if (detailView) detailView.style.display = 'none';
 }
 
+// 154: the active-runs section. One tile per running card (layout.js), the idle
+// line when none runs, and the utilization summary and last check in its header.
 function renderActivePerformers(s) {
   var container = document.getElementById('active-performer-tiles');
-  var section = document.getElementById('active-performers');
-  if (!container || !section) return;
+  var summaryEl = document.getElementById('active-runs-summary');
+  if (!container) return;
+  if (summaryEl) summaryEl.textContent = utilizationSummaryText(s);
   // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
-  var activeSessions = sessions.filter(function(sess) {
-    return sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent';
-  });
+  var activeSessions = sessions.filter(isStageRunning);
   if (activeSessions.length === 0) {
-    section.style.display = '';
-    var phase = s.phase_label || s.phase || 'idle';
-    var cycleCount = s.cycles_completed != null ? s.cycles_completed : '—';
-    var summary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
-    function count(key) {
-      var value = summary[key];
-      return Number.isFinite(value) ? value : 0;
-    }
-    var pollHint = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '—';
-    var filterHint = s.ownership_hint ? esc(s.ownership_hint) : '';
-    container.innerHTML =
-      '<div class="ap-idle">' +
-        '<div class="ap-idle-title">No active performers</div>' +
-        '<div class="ap-idle-rows">' +
-          '<div class="ap-idle-row">' +
-            '<span class="ap-pill">Status: <strong>' + esc(phase) + '</strong></span>' +
-            '<span class="ap-pill">Checks: <strong>' + esc(String(cycleCount)) + '</strong></span>' +
-            '<span class="ap-pill">Last checked: <strong>' + pollHint + '</strong></span>' +
-            (filterHint ? '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span>' : '') +
-          '</div>' +
-          '<div class="ap-idle-row">' +
-            '<span class="ap-pill">TODO <strong>' + String(count('TODO')) + '</strong></span>' +
-            '<span class="ap-pill">IN_PROGRESS <strong>' + String(count('IN_PROGRESS')) + '</strong></span>' +
-            '<span class="ap-pill">IN_REVIEW <strong>' + String(count('IN_REVIEW')) + '</strong></span>' +
-            '<span class="ap-pill">DONE <strong>' + String(count('DONE')) + '</strong></span>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
+    container.innerHTML = activeRunsIdleHtml(s);
     return;
   }
-  section.style.display = '';
-  var html = '';
-  activeSessions.forEach(function(sess) {
-    var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '—';
-    var title = sess.card_title || sess.card_id || '—';
-    var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
-    var phaseLabel = sess.phase === 'blocked'
-      ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
-      : formatPhaseLabel(sess.phase || 'active');
-    html += '<div class="ap-tile">' +
-      '<div class="ap-tile-header">' +
-        '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
-        '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
-        cardActionsHtml(sess, s) +
-        viewRunLinkHtml(sess) +
-      '</div>' +
-      '<div class="ap-tile-title">' + esc(title) + '</div>' +
-      '<div class="ap-tile-meta">' +
-        '<span class="ap-pill ap-tile-elapsed">&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
-        (sess.session_id ? '<span class="ap-pill">' + runIdHtml(sess.session_id) + '</span>' : '') +
-        cardRefHtml(sess) +
-        pendingControlHtml(sess) +
-        // 138 FR-032: quiet marker — observation only, never a phase change.
-        // .af-kind carries no colours of its own, so .ev-quiet is not overridden
-        // by .ap-pill (equal specificity, later in the sheet).
-        (_afQuietCards[sess.card_id] ? '<span class="af-kind ev-quiet">QUIET</span>' : '') +
-      '</div>' +
-      '</div>';
-  });
-  container.innerHTML = html;
+  container.innerHTML = activeSessions.map(function(sess) { return activeRunTileHtml(sess, s); }).join('');
 }
 
 function renderDashboardExtras(s) {
@@ -669,7 +611,7 @@ function renderPerformersPage(s) {
     }).join('<br>') || '<span class="empty-state">—</span>';
     var maxVal = r.max > 0 ? r.max : 1;
     var activeVal = isActive ? (r.active || 1) : 0;
-    var utilStr = esc(busyText(activeVal, maxVal, 0));
+    var utilStr = utilizationBarHtml(r) + ' ' + esc(busyText(activeVal, maxVal, 0));
     var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">· ' + r.queued + ' queued</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
       '<td style="font-weight:bold">' + roleOrStageLabel(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td><td class="row-chevron" aria-hidden="true"></td></tr>';

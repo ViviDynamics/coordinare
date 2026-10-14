@@ -1,7 +1,7 @@
 // 134: token and cost display. Every figure is computed by the daemon
 // (services/token_usage.py) and arrives as a usage summary, so this file only
 // formats it. The functions are pure (no DOM reads) except renderSpend, which
-// writes the header strip and the Metrics spend figures. Served from /static/usage.js.
+// writes the status strip's spend figures. Served from /static/usage.js.
 
 // Integers with thousands separators, independent of the browser locale.
 function usageCount(value) {
@@ -126,22 +126,11 @@ function spendStripTitle(block) {
     '\n\nThis week:\n' + usageBreakdownText(block.week);
 }
 
-// Writes the header strip and the two Metrics spend figures from one block.
+// Writes the status strip's spend figures from one block (154: the strip is their only home).
 function renderSpend(block) {
   var strip = document.getElementById('spend-strip');
   if (strip) {
     strip.textContent = spendStripText(block);
     strip.title = spendStripTitle(block);
-  }
-  var today = document.getElementById('spend-today');
-  var week = document.getElementById('spend-week');
-  var untracked = !block || block.tracked === false;
-  if (today) {
-    today.textContent = untracked ? 'not tracked' : usageSpendValue(block.today);
-    today.title = untracked ? spendStripTitle(block) : usageBreakdownText(block.today);
-  }
-  if (week) {
-    week.textContent = untracked ? 'not tracked' : usageSpendValue(block.week);
-    week.title = untracked ? spendStripTitle(block) : usageBreakdownText(block.week);
   }
 }

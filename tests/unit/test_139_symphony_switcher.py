@@ -141,7 +141,8 @@ def test_no_swimlane_tab_markup_or_style_remains_anywhere() -> None:
 
 
 def test_the_panel_is_called_cards_and_keeps_its_id() -> None:
-    assert '<h2>Cards</h2>' in _DASHBOARD_HTML
+    # 154: the heading carries the board's counts beside its name (cards-summary).
+    assert '<h2>Cards <span id="cards-summary"' in _DASHBOARD_HTML
     assert 'id="swimlane-section"' in _DASHBOARD_HTML  # ids stay: tests and the MCP tools depend on them
     assert "&#8592; Cards</button>" in _DASHBOARD_HTML
 

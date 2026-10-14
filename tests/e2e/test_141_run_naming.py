@@ -57,13 +57,14 @@ def _open_run_detail(page: Page, live_server_url: str, store: DashboardStore, se
 
 
 @pytest.mark.e2e
-def test_metrics_names_the_current_run_by_its_short_id(page: Page, live_server_url: str, store: DashboardStore) -> None:
+def test_the_current_run_is_named_once_on_the_tile_and_not_repeated_in_metrics(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """154: the run that an active-run tile names is not repeated in the Metrics panel."""
     _open_dashboard(page, live_server_url, store)
-    current = page.locator("#agent-session-id .run-id")
-    expect(current).to_have_text(_SHORT, timeout=_WAIT_LIVE)
-    expect(current).to_have_attribute("title", _RUN)
-    expect(page.locator("#agent-session")).to_contain_text("Current run:")
-    assert _RUN not in page.locator("#agent-session").inner_text()
+    expect(page.locator("#active-performers .run-id")).to_have_text(_SHORT, timeout=_WAIT_LIVE)
+    expect(page.locator("#agent-session")).to_be_hidden()
+    assert page.locator("#agent-session-id .run-id").count() == 0
 
 
 @pytest.mark.e2e
@@ -82,7 +83,7 @@ def test_the_copy_button_copies_the_full_id_through_the_clipboard(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _open_dashboard(page, live_server_url, store)
-    copy = page.locator("#agent-session .run-id-copy")
+    copy = page.locator("#active-performers .run-id-copy")
     expect(copy).to_be_visible(timeout=_WAIT_LIVE)
     page.evaluate(
         "() => { window.__copied = null; navigator.clipboard.writeText = (text) => {"
@@ -98,7 +99,7 @@ def test_the_copy_button_falls_back_to_a_selected_field_without_the_clipboard(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     _open_dashboard(page, live_server_url, store)
-    copy = page.locator("#agent-session .run-id-copy")
+    copy = page.locator("#active-performers .run-id-copy")
     expect(copy).to_be_visible(timeout=_WAIT_LIVE)
     page.evaluate(
         "() => { Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });"

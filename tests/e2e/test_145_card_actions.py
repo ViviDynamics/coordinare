@@ -127,7 +127,7 @@ def test_result_survives_a_state_update_that_arrives_before_the_response(
 
     # A normal state update lands while the request is still in flight.
     _broadcast(store, card_tokens_total=1234)
-    expect(page.locator("#card-tokens-total")).to_have_text("1,234", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performers .ap-tile-tokens")).to_have_text("1,234", timeout=_WAIT_LIVE)
     assert held, "the request was never sent"
     held[0].fulfill(status=200, content_type="application/json",
                     body=json.dumps({"status": "override_queued", "action": "skip"}))
@@ -138,7 +138,7 @@ def test_result_survives_a_state_update_that_arrives_before_the_response(
 
     # And it is still there after another re-render.
     _broadcast(store, card_tokens_total=5678)
-    expect(page.locator("#card-tokens-total")).to_have_text("5,678", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performers .ap-tile-tokens")).to_have_text("5,678", timeout=_WAIT_LIVE)
     expect(page.locator("#active-performers .ap-tile .card-action-msg")).to_have_text(
         "Queued. It takes effect on the next check.",
     )
@@ -173,7 +173,7 @@ def test_retry_after_a_rerender_repeats_the_same_restart(
     expect(tile.locator(".card-action-msg")).to_contain_text("A check is in progress", timeout=_WAIT_LIVE)
 
     _broadcast(store, card_tokens_total=42)          # re-render resets the select
-    expect(page.locator("#card-tokens-total")).to_have_text("42", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performers .ap-tile-tokens")).to_have_text("42", timeout=_WAIT_LIVE)
     page.locator("#active-performers .ap-tile .card-action-msg").get_by_role("button", name="Retry").click()
     expect(page.locator("#active-performers .ap-tile .card-action-msg")).to_have_text(
         "Queued. It takes effect on the next check.", timeout=_WAIT_LIVE,

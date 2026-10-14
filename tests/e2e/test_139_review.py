@@ -51,8 +51,9 @@ def test_under_a_selected_symphony_the_headline_and_tokens_are_not_another_symph
 
     expect(page.locator("#phase")).not_to_contain_text("Waiting on review")
     expect(page.locator("#phase")).not_to_contain_text("Alpha card")
-    expect(page.locator("#card-tokens-total")).not_to_contain_text("4,242")
-    expect(page.locator("#card-tokens-total")).not_to_contain_text("4242")
+    # 154: the tokens are on the active-run tiles.
+    expect(page.locator("#active-performers")).not_to_contain_text("4,242")
+    expect(page.locator("#active-performers")).not_to_contain_text("4242")
 
 
 @pytest.mark.e2e
@@ -67,7 +68,7 @@ def test_under_a_selected_symphony_the_checks_and_errors_are_its_own(
     expect(page.locator("#cycles-completed")).to_have_text("2")
     expect(page.locator("#error-count")).to_have_text("0")
     # The recent checks are not known per symphony, so the panel says so instead of showing them.
-    expect(page.locator("#history-section")).to_contain_text("Recent checks are shown for all symphonies only.")
+    expect(page.locator("#history-cycles")).to_contain_text("Recent checks are shown for all symphonies only.")
     expect(page.locator("#health-scope-note")).to_have_text("Covers all symphonies.")
 
 

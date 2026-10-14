@@ -101,7 +101,6 @@ def test_an_unknown_price_says_unknown_not_a_number(page: Page, live_server_url:
     block = _block(today=_SUMMARY_UNKNOWN, week=_SUMMARY_UNKNOWN)
     _open(page, live_server_url, store, token_usage=block, sessions=[])
     expect(page.locator("#spend-strip")).to_have_text("Spend today unknown · this week unknown", timeout=_WAIT_LIVE)
-    expect(page.locator("#spend-today")).to_have_text("unknown", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -109,7 +108,6 @@ def test_transcripts_off_says_not_tracked_and_never_zero(page: Page, live_server
     block = {"tracked": False, "reason": "transcripts disabled", "day": None, "week_start": None, "today": None, "week": None}
     _open(page, live_server_url, store, token_usage=block, sessions=[])
     expect(page.locator("#spend-strip")).to_have_text("Spend not tracked", timeout=_WAIT_LIVE)
-    expect(page.locator("#spend-week")).to_have_text("not tracked", timeout=_WAIT_LIVE)
     expect(page.locator("#spend-strip")).not_to_contain_text("$0.00")
 
 
@@ -136,7 +134,8 @@ def test_the_run_header_shows_tokens_with_the_breakdown_on_hover(
 def test_the_board_card_cost_carries_its_breakdown(page: Page, live_server_url: str, store: DashboardStore) -> None:
     session = _running(_active_session(_CARD, "Add metering", "implementing", issue_number=134, usage=_usage(_SUMMARY_TODAY)))
     _open(page, live_server_url, store, token_usage=_block(today=_SUMMARY_TODAY, week=_SUMMARY_TODAY), sessions=[session])
-    card = page.locator("#swimlane-section .swimlane-card").filter(has_text="Add metering")
+    # 154: a running card's cost is on its active-run tile, not repeated on the board card.
+    card = page.locator("#active-performer-tiles .ap-tile").filter(has_text="Add metering")
     expect(card).to_contain_text("$0.13", timeout=_WAIT_LIVE)
     cost = card.locator("span[title*='Cost:']").first
     expect(cost).to_have_text("$0.13")

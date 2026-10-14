@@ -204,7 +204,7 @@ def test_s1_html_has_required_structure() -> None:
         "error-count",
         "daemon-start-time",
         "subsystems-section",
-        "history-section",
+        "history-cycles",
         "disconnected-banner",
     ):
         assert f'id="{element_id}"' in html, f"HTML is missing id={element_id!r}"

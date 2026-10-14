@@ -220,7 +220,7 @@ def test_empty_history_shows_placeholder(page: Page, live_server_url: str) -> No
     """Before any cycles run, the history section shows the empty-state message."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#history-section")).to_contain_text("No checks completed yet")
+    expect(page.locator("#history-cycles")).to_contain_text("No checks completed yet")
 
 
 @pytest.mark.e2e
@@ -331,9 +331,12 @@ def test_cycle_history_table_renders(
         ),
     )
 
-    expect(page.locator("#history-section table")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#history-section")).to_contain_text("success", timeout=_WAIT_LIVE)
-    expect(page.locator("#history-section")).to_contain_text("error", timeout=_WAIT_LIVE)
+    # 154: the cycle log is the History page's Recent checks panel, collapsed until opened.
+    page.locator("#navbar a[href='/history']").click()
+    page.locator("#history-cycles-panel > summary").click()
+    expect(page.locator("#history-cycles table")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#history-cycles")).to_contain_text("success", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-cycles")).to_contain_text("error", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -627,9 +630,11 @@ def test_idle_state_shows_no_active_performers_message(
     expect(page.locator("#active-performer-tiles")).to_contain_text(
         "No active performers", timeout=_WAIT_LIVE,
     )
-    expect(page.locator("#active-performer-tiles")).to_contain_text("TODO 3", timeout=_WAIT_LIVE)
-    expect(page.locator("#active-performer-tiles")).to_contain_text("IN_PROGRESS 1", timeout=_WAIT_LIVE)
-    expect(page.locator("#active-performer-tiles")).to_contain_text("Last checked:", timeout=_WAIT_LIVE)
+    # 154: the board counts are on the Cards header and the last check on the active-runs header,
+    # not repeated in the idle line.
+    expect(page.locator("#active-performer-tiles")).not_to_contain_text("TODO", timeout=_WAIT_LIVE)
+    expect(page.locator("#cards-summary")).to_have_text("Total 10 · Done 4 · Backlog 0", timeout=_WAIT_LIVE)
+    expect(page.locator("#last-checked")).to_contain_text("Last checked", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -739,57 +744,12 @@ def test_workflow_diagram_expands_and_collapses_from_summary(page: Page, live_se
 
 
 @pytest.mark.e2e
-def test_desktop_layout_gives_active_performers_twice_the_conductor_width(
+def test_desktop_layout_clarifications_span_the_workspace(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """554: Performers share a desktop row with the conductor, then stack on mobile."""
-    page.set_viewport_size({"width": 1200, "height": 900})
-    page.goto(live_server_url)
-    expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
-
-    store.broadcaster.broadcast(
-        _full_snapshot(
-            phase="monitoring_performer",
-            phase_label="Monitoring Performer",
-            active_sessions=[_active_session("PVTI_1", "Fix layout", "implementing")],
-        ),
-    )
-
-    expect(page.locator("#active-performers")).to_be_visible(timeout=_WAIT_LIVE)
-    layout = page.evaluate(
-        """() => {
-          const apCard = document.getElementById('active-performers');
-          const phaseCard = document.getElementById('phase').closest('.card');
-          const ap = apCard.getBoundingClientRect();
-          const ph = phaseCard.getBoundingClientRect();
-          const grid = document.querySelector('.dashboard-grid');
-          return {
-            apWidth: ap.width, phWidth: ph.width, apTop: ap.top, phTop: ph.top,
-            gridWidth: grid.getBoundingClientRect().width,
-            gap: parseFloat(getComputedStyle(grid).columnGap),
-          };
-        }""",
-    )
-    assert abs(layout['apTop'] - layout['phTop']) < 1
-    assert abs(layout['apWidth'] - (2 * layout['phWidth'] + layout['gap'])) < 1
-    assert abs(layout['apWidth'] + layout['phWidth'] + layout['gap'] - layout['gridWidth']) < 1
-    page.set_viewport_size({'width': 390, 'height': 844})
-    mobile = page.evaluate("""() => {
-      const ap = document.getElementById('active-performers').getBoundingClientRect();
-      const ph = document.getElementById('phase-card').getBoundingClientRect();
-      return {apWidth: ap.width, phWidth: ph.width, apTop: ap.top, phBottom: ph.bottom,
-              scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth};
-    }""")
-    assert abs(mobile['apWidth'] - mobile['phWidth']) < 1
-    assert mobile['apTop'] >= mobile['phBottom']
-    assert mobile['scrollWidth'] <= mobile['viewport']
-
-
-@pytest.mark.e2e
-def test_desktop_layout_clarifications_and_recent_cycles_span_the_workspace(
-    page: Page, live_server_url: str, store: DashboardStore,
-) -> None:
-    """554: Historical detail spans the workspace beneath compact operational cards."""
+    """554, updated by 154: the clarifications card spans the workspace. The conductor card it
+    once sat beside is gone (the status strip and active runs replace it), and the cycle log
+    moved to History, so the Dashboard has no narrow card beside this one any more."""
     page.set_viewport_size({"width": 1200, "height": 900})
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
@@ -797,40 +757,20 @@ def test_desktop_layout_clarifications_and_recent_cycles_span_the_workspace(
     store.broadcaster.broadcast(
         _full_snapshot(
             card_clarifications=[{"questions": ["Need API shape?"], "answer": "Use v2 payload."}],
-            cycle_history=[
-                {
-                    "timestamp": "2026-04-22T22:40:00+00:00",
-                    "phase": "monitoring_performer",
-                    "duration_seconds": 12.3,
-                    "outcome": "success",
-                },
-            ],
         ),
     )
 
     expect(page.locator("#clarifications-card")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#history-section")).to_contain_text("success", timeout=_WAIT_LIVE)
     layout = page.evaluate(
         """() => {
           const clCard = document.getElementById('clarifications-card');
-          const historyCard = document.getElementById('history-section').closest('.card');
           const grid = document.querySelector('.dashboard-grid').getBoundingClientRect();
           const cl = clCard.getBoundingClientRect();
-          const hs = historyCard.getBoundingClientRect();
-          return {
-            clWidth: cl.width,
-            hsWidth: hs.width,
-            clLeft: cl.left,
-            hsLeft: hs.left,
-            gridWidth: grid.width,
-            gridLeft: grid.left,
-          };
+          return { clWidth: cl.width, clLeft: cl.left, gridWidth: grid.width, gridLeft: grid.left };
         }""",
     )
     assert abs(layout['clWidth'] - layout['gridWidth']) < 1
-    assert abs(layout['hsWidth'] - layout['gridWidth']) < 1
     assert abs(layout['clLeft'] - layout['gridLeft']) < 1
-    assert abs(layout['hsLeft'] - layout['gridLeft']) < 1
 
 
 # ---------------------------------------------------------------------------
@@ -1386,32 +1326,29 @@ def test_hamburger_menu_hides_on_navigation(page: Page, live_server_url: str) ->
 
 
 # ---------------------------------------------------------------------------
-# Idle panel tests
+# Idle state (154: the idle panel is gone; the active-runs section says there is no run)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.e2e
-def test_idle_panel_shows_when_idle(page: Page, live_server_url: str, store: DashboardStore) -> None:
-    """Idle panel appears when daemon is in idle phase."""
+def test_idle_state_shows_no_active_run(page: Page, live_server_url: str, store: DashboardStore) -> None:
+    """With no run, the active-runs section says so."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#idle-panel")).to_be_visible()
+    expect(page.locator("#active-performer-tiles")).to_contain_text("No active performers", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
 def test_assignee_filter_hint_shows_when_set(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """Idle panel displays assignee filter hint when filter is set."""
+    """The idle active-runs line carries the assignee filter hint when a filter is set."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(phase="idle", phase_label="Idle", assignee_filter="@alice"),
     )
-    expect(page.locator("#idle-panel")).to_be_visible()
-    expect(page.locator("#idle-panel-content")).to_contain_text(
-        "filter", timeout=_WAIT_LIVE,
-    )
+    expect(page.locator("#active-performer-tiles")).to_contain_text("Filter: @alice", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -1447,15 +1384,16 @@ def test_cycle_history_shows_cycles(
         ),
     )
     expect(page.locator("#cycles-completed")).to_contain_text("2", timeout=_WAIT_LIVE)
-    expect(page.locator("#history-section")).to_contain_text("Merging", timeout=_WAIT_LIVE)
-    expect(page.locator("#history-section")).to_contain_text("120", timeout=_WAIT_LIVE)
+    # 154: the cycle log is on the History page now.
+    expect(page.locator("#history-cycles")).to_contain_text("Merging", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-cycles")).to_contain_text("120", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
 def test_history_page_shows_cycle_list(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """#150: History lists card runs from the server. The snapshot's cycles stay on the Dashboard."""
+    """#150: History lists card runs from the server. The snapshot's cycles are its Recent checks panel (154)."""
     page.goto(f"{live_server_url}/history")
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
 
@@ -1485,7 +1423,7 @@ def test_history_page_shows_cycle_list(
                             "completed_at": "2026-03-02T10:31:00+00:00"}],
         ),
     )
-    expect(page.locator("#history-section")).to_contain_text("Idle", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-cycles")).to_contain_text("Idle", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -1677,8 +1615,10 @@ def test_card_tokens_and_cost_display(
             active_sessions=[session],
         ),
     )
-    expect(page.locator("#card-tokens-total")).to_contain_text("42", timeout=_WAIT_LIVE)
-    expect(page.locator("#card-cost-estimate")).to_contain_text("0.15", timeout=_WAIT_LIVE)
+    # 154: the card's tokens and cost are on its active-run tile.
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_contain_text("Tokens", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_contain_text("42", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_contain_text("0.15", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -1781,7 +1721,7 @@ def test_project_name_and_url_display(
 def test_board_summary_displays_column_counts(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """Board summary section shows column counts in the idle panel."""
+    """The board's total, Done and Backlog counts sit in the Cards header (154, from the idle panel)."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
@@ -1797,10 +1737,9 @@ def test_board_summary_displays_column_counts(
             },
         ),
     )
-    # Idle panel shows board total (5+3+2+10=20), in-progress (3), and cycles today (7)
-    expect(page.locator("#idle-panel-content")).to_contain_text("20", timeout=_WAIT_LIVE)
-    expect(page.locator("#idle-panel-content")).to_contain_text("3", timeout=_WAIT_LIVE)
-    expect(page.locator("#idle-panel-content")).to_contain_text("7", timeout=_WAIT_LIVE)
+    # Total is the four columns (5+3+2+10=20); Done and Backlog have no column of their own.
+    expect(page.locator("#cards-summary")).to_have_text("Total 20 · Done 10 · Backlog 8", timeout=_WAIT_LIVE)
+    expect(page.locator("#cycles-completed")).to_have_text("7", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -1832,6 +1771,8 @@ def test_agent_session_info_visible_when_active(
             agent_dispatch_at="2026-03-02T10:00:00+00:00",
         ),
     )
+    # 154: the run line is in Metrics, which is collapsed until it is opened.
+    page.locator("#metrics-card > summary").click()
     expect(page.locator("#agent-session")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#agent-session-id .run-id")).to_have_text("run 3b9f1c", timeout=_WAIT_LIVE)
     expect(page.locator("#agent-session-id .run-id")).to_have_attribute("title", "3b9f1c2e-7d4a-4e8b-9c1d-5a6b7c8d9e0f")
@@ -1880,11 +1821,13 @@ def test_active_work_row_shows_cost(
         ),
     )
 
-    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")
-    expect(row).to_be_visible(timeout=_WAIT_LIVE)
-    expect(row).to_contain_text("$0.01", timeout=_WAIT_LIVE)
+    # 154: a running card's cost is on its active-run tile; the board card does not repeat it.
+    tile = page.locator("#active-performer-tiles .ap-tile[data-card-id='PVTI_cost']")
+    expect(tile).to_be_visible(timeout=_WAIT_LIVE)
+    expect(tile.locator(".ap-tile-cost")).to_contain_text("$0.01", timeout=_WAIT_LIVE)
+    expect(page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")).not_to_contain_text("$0.01")
 
-    # Without dispatch_at, cost column should show em-dash
+    # Without dispatch_at there is no cost to show, so the tile says so without a figure.
     session_no_dispatch = {**_active_session("PVTI_nodispatch", "No dispatch yet", "initialising")}
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1893,9 +1836,9 @@ def test_active_work_row_shows_cost(
             active_sessions=[session_no_dispatch],
         ),
     )
-    row2 = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_nodispatch']")
-    expect(row2).to_be_visible(timeout=_WAIT_LIVE)
-    expect(row2).to_contain_text("—", timeout=_WAIT_LIVE)
+    tile2 = page.locator("#active-performer-tiles .ap-tile[data-card-id='PVTI_nodispatch']")
+    expect(tile2).to_be_visible(timeout=_WAIT_LIVE)
+    expect(tile2.locator(".ap-tile-cost")).not_to_contain_text("$", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -1922,10 +1865,11 @@ def test_active_work_row_stale_session_shows_warning(
         ),
     )
 
-    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_stale']")
-    expect(row).to_be_visible(timeout=_WAIT_LIVE)
+    # 154: the stale warning is on the card's active-run tile.
+    tile = page.locator("#active-performer-tiles .ap-tile[data-card-id='PVTI_stale']")
+    expect(tile).to_be_visible(timeout=_WAIT_LIVE)
     # Stale sessions prepend a ⚠ warning glyph
-    expect(row).to_contain_text("⚠", timeout=_WAIT_LIVE)
+    expect(tile.locator(".ap-tile-elapsed")).to_contain_text("⚠", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -1967,22 +1911,21 @@ def test_card_detail_auto_closes_when_session_ends(
 def test_idle_panel_shows_cycles_completed_label(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """Idle panel shows 'Cycles completed' (not 'Cycles today') and the correct count."""
+    """The checks count is in Metrics, under its label (154: the idle panel's line moved there)."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_full_snapshot(cycles_completed=42))
-    idle = page.locator("#idle-panel-content")
-    expect(idle).to_contain_text("Checks completed", timeout=_WAIT_LIVE)
-    expect(idle).to_contain_text("42", timeout=_WAIT_LIVE)
+    expect(page.locator("#metrics-card")).to_contain_text("Checks completed", timeout=_WAIT_LIVE)
+    expect(page.locator("#cycles-completed")).to_have_text("42", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
 def test_idle_panel_hides_when_session_becomes_active(
     page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
-    """Idle panel disappears once a session becomes active."""
+    """154: the idle line gives way to a run's tile once a session becomes active."""
     page.goto(live_server_url)
-    expect(page.locator("#idle-panel")).to_be_visible(timeout=_WAIT_SSE)
+    expect(page.locator("#active-performer-tiles")).to_contain_text("No active performers", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
         _full_snapshot(
             phase="monitoring_performer",
@@ -1990,7 +1933,8 @@ def test_idle_panel_hides_when_session_becomes_active(
             active_sessions=[_active_session("PVTI_1", "Fix the bug")],
         ),
     )
-    expect(page.locator("#idle-panel")).to_be_hidden(timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles")).not_to_contain_text("No active performers", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles .ap-tile")).to_have_count(1, timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -2238,7 +2182,8 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     # #125: the conductor card and the tile count from the same start point.
     readouts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-elapsed-since]'))
         .filter(el => el.offsetParent !== null).map(el => el.getAttribute('data-elapsed-since'))""")
-    assert len(readouts) >= 2 and len(set(readouts)) == 1
+    # 154: the tile is the only live readout of a run's elapsed time, so there is one start point.
+    assert len(readouts) >= 1 and len(set(readouts)) == 1
 
 
 @pytest.mark.e2e
@@ -2254,11 +2199,14 @@ def test_busy_role_bar_is_not_red_and_queued_role_is_highlighted(
             {"role": "qa", "active": 1, "max": 1, "queued": 2},
         ]),
     )
-    rows = page.locator("#role-utilization-table tbody tr")
+    # 154: the utilization table is on the Performers page; its busy bar is drawn there.
+    page.locator("#navbar a[href='/performers']").click()
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+    rows = page.locator("#performers-page-tbody tr[data-role]")
     expect(rows).to_have_count(2, timeout=_WAIT_LIVE)
     colours = page.evaluate("""() => {
       const style = getComputedStyle(document.documentElement);
-      const fills = Array.from(document.querySelectorAll('#role-utilization-table tbody tr'))
+      const fills = Array.from(document.querySelectorAll('#performers-page-tbody tr[data-role]'))
         .map(tr => getComputedStyle(tr.querySelector('div > div')).backgroundColor);
       const probe = document.createElement('div');
       document.body.appendChild(probe);
@@ -2286,7 +2234,10 @@ def test_recent_checks_panel_collapses_identical_rows(
         for i in range(12)
     ]
     store.broadcaster.broadcast(_full_snapshot(cycle_history=history))
-    rows = page.locator("#history-section tbody tr")
+    # 154: the cycle log is the History page's Recent checks panel.
+    page.locator("#navbar a[href='/history']").click()
+    page.locator("#history-cycles-panel > summary").click()
+    rows = page.locator("#history-cycles tbody tr")
     expect(rows).to_have_count(1, timeout=_WAIT_LIVE)
     expect(rows.first).to_contain_text("12 checks")
     expect(rows.first).to_contain_text("avg 5.00s")

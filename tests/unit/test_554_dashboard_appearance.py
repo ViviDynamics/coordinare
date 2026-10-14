@@ -176,12 +176,18 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
         toggle_mascot = False
         header_image: str | None = None
         header_status = False
+        # 154: the connection status (and the freshness line) is the Dashboard's status strip.
+        inside_status_strip = False
+        strip_status = False
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
             values = dict(attrs)
             if values.get('id') == 'nav-sse-dot':
                 assert not self.inside_navigation, 'system status belongs in the header'
                 self.header_status = self.inside_header
+                self.strip_status = self.inside_status_strip
+            if tag == 'section' and values.get('id') == 'status-strip':
+                self.inside_status_strip = True
             if tag == 'button' and values.get('id') == 'navbar-hamburger':
                 self.inside_toggle = True
             if tag == 'img' and self.inside_toggle:
@@ -205,13 +211,15 @@ def test_navigation_features_the_mascot_and_declares_the_mark_favicon() -> None:
                 self.inside_header = False
             if tag == 'nav':
                 self.inside_navigation = False
+            if tag == 'section':
+                self.inside_status_strip = False
 
     parser = BrandParser()
     parser.feed(_make_app().get('/').text)
     assert parser.favicon == '/static/coordinare-mark.svg'
     assert parser.mascot == '/static/coordinare-conductor.webp'
     assert parser.header_image is None
-    assert parser.header_status
+    assert parser.header_status or parser.strip_status, 'system status is in the header or the status strip'
     assert parser.toggle_mascot, 'the mascot is the drawer button'
 
 

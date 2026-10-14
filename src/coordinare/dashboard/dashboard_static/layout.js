@@ -1,0 +1,186 @@
+// 154: the Dashboard's layout. The status strip, the active-run tiles and the
+// utilization summary are composed here from the state the page already holds.
+// The functions are pure (they read only their arguments and the shared helpers)
+// except renderStatusStrip and showSystemHealth, which touch the strip and the
+// health card. Every value goes through esc(). Loaded after systemhealth.js, before app.js.
+
+// A stage run longer than this is marked stale on its tile and on its board card (moved from app.js, 154).
+var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
+
+// The status strip's counts: running cards, To Do cards queued for a slot, and
+// the cards that need a person (the attention list, minus subsystem alarms, which
+// the health dot already carries).
+function statusCounts(s) {
+  var needsHuman = attentionItems(s).filter(function(item) { return item.kind !== 'subsystem_down'; });
+  return { active: activeRunSessions(s).length, queued: queuedTodoCount(s), needsHuman: needsHuman.length };
+}
+
+// The sessions with a stage running now: one active-run tile each.
+function activeRunSessions(s) {
+  var sessions = Array.isArray(s && s.active_sessions) ? s.active_sessions : [];
+  return sessions.filter(isStageRunning);
+}
+
+// To Do cards that wait for a free slot. Counted with the same reason the To Do
+// column's header reads (waiting.js), so the strip and the column cannot disagree.
+function queuedTodoCount(s) {
+  var sessions = Array.isArray(s && s.active_sessions) ? s.active_sessions : [];
+  var sessionIds = {};
+  sessions.forEach(function(sess) { if (sess && sess.card_id) sessionIds[sess.card_id] = true; });
+  var todoWaits = {};
+  var symphonies = Array.isArray(s && s.symphonies) ? s.symphonies : [];
+  symphonies.forEach(function(sym) { Object.assign(todoWaits, (sym && sym.state && sym.state.todo_waits) || {}); });
+  var snapshot = {
+    session_skip_reasons: sessionSkipReasons(s),
+    open_questions: (s && s.open_questions) || [],
+    todo_waits: todoWaits,
+    todo_capacity: null,
+    now: Date.now(),
+  };
+  var count = 0;
+  symphonies.forEach(function(sym) {
+    var todo = sym && sym.state && sym.state.board_snapshot && Array.isArray(sym.state.board_snapshot.TODO)
+      ? sym.state.board_snapshot.TODO : [];
+    todo.forEach(function(cardId) {
+      var reason = waitingReason({ id: cardId, column: 'TODO', has_session: !!sessionIds[cardId] }, snapshot);
+      if (reason.kind === 'queued') count += 1;
+    });
+  });
+  return count;
+}
+
+// "1 active · 0 queued · 0 need a person": the words the strip shows.
+function statusCountsText(counts) {
+  return counts.active + ' active · ' + counts.queued + ' queued · ' + counts.needsHuman + ' needs human';
+}
+
+// The overall health of a subsystem list, when the snapshot does not carry one (moved from app.js, 154).
+function computeOverallHealth(subsystems) {
+  var required = (subsystems || []).filter(function(s) { return s.required; });
+  if (!required.length || required.every(function(s) { return s.status === 'healthy'; })) return 'healthy';
+  if (required.some(function(s) { return s.status === 'unavailable'; })) return 'unavailable';
+  return 'degraded';
+}
+
+// The health dot's tone and its label. The System health card carries the words.
+function healthDotModel(s) {
+  if (s && s.system_health) {
+    var sum = systemHealthSummary(s.system_health);
+    return { tone: sum.tone, label: 'System health: ' + sum.tone };
+  }
+  var overall = computeOverallHealth(s && s.subsystems);
+  return { tone: overall === 'healthy' ? 'healthy' : (overall === 'unavailable' ? 'down' : 'degraded'), label: 'System health: ' + overall };
+}
+
+// The status strip, as data: the conductor's headline, the counts and the health dot.
+function statusStripModel(s, activeSess) {
+  return {
+    headline: conductorHeadline(s, activeSess),
+    counts: statusCounts(s),
+    health: healthDotModel(s),
+  };
+}
+
+// Writes the strip's dynamic parts. The strip's elements are static markup in the page.
+function renderStatusStrip(s, activeSess) {
+  var model = statusStripModel(s, activeSess);
+  var phaseEl = document.getElementById('phase');
+  if (phaseEl) phaseEl.textContent = model.headline;
+  var countsEl = document.getElementById('status-counts');
+  if (countsEl) countsEl.textContent = statusCountsText(model.counts);
+  var dot = document.getElementById('health-dot');
+  if (dot) {
+    dot.className = 'status-health sh-tone-' + esc(model.health.tone);
+    dot.setAttribute('aria-label', model.health.label);
+    dot.title = model.health.label;
+  }
+}
+
+// The Cards header's counts: the total of the four board columns, and the Done and
+// Backlog counts, which have no column of their own on the board. Read from the
+// board summary, so a symphony's scope is already applied.
+function boardCountsText(s) {
+  var board = (s && s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
+  var count = function(key) { return Number.isFinite(board[key]) ? board[key] : 0; };
+  var total = count('TODO') + count('IN_PROGRESS') + count('IN_REVIEW') + count('DONE');
+  return 'Total ' + total + ' · Done ' + count('DONE') + ' · Backlog ' + count('BACKLOG');
+}
+
+// One summary line for the active-runs header: "8 agents · 1 busy · 0 queued".
+// Empty when the daemon reports no performer roles.
+function utilizationSummaryText(s) {
+  var roles = Array.isArray(s && s.role_utilization) ? s.role_utilization : [];
+  if (roles.length === 0) return '';
+  var busy = 0;
+  var queued = 0;
+  roles.forEach(function(r) {
+    busy += Number(r && r.active) || 0;
+    queued += Number(r && r.queued) || 0;
+  });
+  return roles.length + (roles.length === 1 ? ' agent' : ' agents') + ' · ' + busy + ' busy · ' + queued + ' queued';
+}
+
+// The tokens figure on an active run's tile: the card's usage (134), or a pending
+// marker while the stage runs and nothing is reported yet (122).
+function activeRunTokens(sess) {
+  var cardUsage = usageSummaryOf(sess, 'card');
+  var fallback = sess.card_tokens_total || derivePerformerTokenTotal(sess);
+  return tokenReadout(usageTotalOf(cardUsage, fallback), true);
+}
+
+// The idle state of the active-runs section: no run, and the filter hint when one is set.
+function activeRunsIdleHtml(s) {
+  var filterHint = s && s.ownership_hint ? esc(s.ownership_hint) : '';
+  return '<div class="ap-idle">' +
+    '<div class="ap-idle-title">No active performers</div>' +
+    (filterHint ? '<div class="ap-idle-rows"><div class="ap-idle-row">' +
+      '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span></div></div>' : '') +
+    '</div>';
+}
+
+// One running card: its stage and phase, the title, the pipeline tracker, the
+// elapsed time, tokens and cost, the run, and the card's action menu.
+function activeRunTileHtml(sess, s) {
+  var id = esc(String(sess.card_id || ''));
+  var stage = sess.performer_stage ? stageAgentLabel(sess.performer_stage) : '-';
+  var title = sess.card_title || sess.card_id || '-';
+  var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
+  var phaseLabel = sess.phase === 'blocked'
+    ? esc(blockedSessionText(sess, s.open_questions, sessionSkipReasons(s)))
+    : formatPhaseLabel(sess.phase || 'active');
+  var tokens = activeRunTokens(sess);
+  // While the stage runs with nothing reported, the cost is pending too (122), as the Metrics readout was.
+  var costCell = tokens.pending ? '<span title="' + esc(USAGE_PENDING_NOTE) + '">-</span>'
+    : (sess.agent_dispatch_at ? costHtml(sess, s) : '-');
+  // The stale marker the board card carried for a long run (performers.js, 59 and after).
+  var stale = dispatchAt && (Date.now() - new Date(dispatchAt).getTime()) > STALE_THRESHOLD_MS;
+  var staleGlyph = stale ? '<span style="color:var(--color-degraded)">&#9888;</span> ' : '';
+  return '<div class="ap-tile" data-card-id="' + id + '">' +
+    '<div class="ap-tile-header">' +
+      '<div class="ap-tile-role"><span class="perf-dot perf-running" aria-hidden="true"></span>' + stage + '</div>' +
+      '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
+      cardActionsHtml(sess, s) +
+      viewRunLinkHtml(sess) +
+    '</div>' +
+    '<div class="ap-tile-title">' + esc(title) + ' ' + cardRefHtml(sess) + '</div>' +
+    timelineDotsHtml(cardPipelineOf(s, sess.card_id)) +
+    '<div class="ap-tile-meta">' +
+      '<span class="ap-pill ap-tile-elapsed">' + staleGlyph + '&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
+      '<span class="ap-pill">Tokens <strong class="ap-tile-tokens" title="' + esc(tokens.title) + '">' + esc(tokens.text) + '</strong></span>' +
+      '<span class="ap-pill">Cost <span class="ap-tile-cost">' + costCell + '</span></span>' +
+      (sess.session_id ? '<span class="ap-pill">' + runIdHtml(sess.session_id, {copy: true}) + '</span>' : '') +
+      pendingControlHtml(sess) +
+      // 138 FR-032: quiet marker, observation only, never a phase change.
+      (_afQuietCards[sess.card_id] ? '<span class="af-kind ev-quiet">QUIET</span>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// The health dot: takes the reader to the System health card and moves focus there.
+function showSystemHealth() {
+  var card = document.getElementById('health-card');
+  if (!card) return;
+  card.setAttribute('tabindex', '-1');
+  card.scrollIntoView({ block: 'nearest' });
+  card.focus();
+}

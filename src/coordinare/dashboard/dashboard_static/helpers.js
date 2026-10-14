@@ -135,10 +135,8 @@ function conductorHeadline(s, activeSess) {
     }
   }
   var phase = String(s.phase || 'idle');
-  if (phase === 'idle') {
-    var wait = nextCheckSeconds(s);
-    return wait == null ? 'Idle: waiting for the next check' : 'Idle: next check in ' + wait + 's';
-  }
+  // 154: the countdown is the freshness line's (152), so the headline says only the state.
+  if (phase === 'idle') return 'Idle: waiting for the next check';
   // The server's label is the glossary label for this state; fall back to a
   // local lookup when a snapshot carries none.
   return String(s.phase_label || vocabularyLabel(phase));

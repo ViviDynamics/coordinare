@@ -152,5 +152,7 @@ def test_every_cost_readout_goes_through_the_shared_estimate() -> None:
     shipped = _DASHBOARD_HTML + "".join(_DASHBOARD_JS_SOURCES.values())
     direct = re.findall(r"card_cost_estimate\s*\|\|\s*0\)\.toFixed", shipped)
     assert direct == []
-    assert shipped.count("? costHtml(sess, s) :") == 2
-    assert "usageCostReadout(cardUsage)" in shipped
+    # The card detail, the non-running board card and (154) the active-run tile each read the same cost.
+    assert shipped.count("? costHtml(sess, s) :") == 3
+    # 154: the card's cost is read on its active-run tile (costHtml), which goes through usageCostHtml.
+    assert "usageCostHtml(summary)" in shipped and "costHtml(sess, s)" in shipped
