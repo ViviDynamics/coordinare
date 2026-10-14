@@ -63,7 +63,7 @@ check("the question item carries its card, text and time",
   [asked[0].card_id, asked[0].title, asked[0].detail, asked[0].since],
   ["PVTI_1", "#57 Add login", "Should we use OAuth2?", "2026-10-13T09:00:00+00:00"]);
 check("the question links to the issue", asked[0].href, ISSUE);
-check("the question's key names the card", asked[0].key, "question:PVTI_1:0");
+check("the question's key names the card and the question", asked[0].key, "question:PVTI_1:Should we use OAuth2?");
 
 const blockedOnly = attentionItems({ active_sessions: [blockedSession], open_questions: [] });
 check("a blocked card with no question needs a human", blockedOnly.map(function(it) { return it.kind; }), ["needs_human"]);
@@ -89,7 +89,7 @@ check("a missing URL is refused", attentionExternalUrl(null), "");
 const legacy = attentionItems({ open_questions: ["Should we use API keys?"] });
 check("a bare string question is still a question", legacy.map(function(it) { return [it.kind, it.card_id, it.detail]; }),
   [["question", null, "Should we use API keys?"]]);
-check("a legacy question is keyed by position", legacy[0].key, "question:card:0");
+check("a legacy question is keyed by its text", legacy[0].key, "question:card:Should we use API keys?");
 
 // --- what is not an item -------------------------------------------------------
 const notHuman = attentionItems({ active_sessions: [
@@ -142,6 +142,17 @@ const sigA = attentionSignature(asked);
 check("the same set has the same signature", attentionSignature(attentionItems({ active_sessions: [blockedSession], open_questions: [question] })), sigA);
 check("order does not change the signature", attentionSignature(mixed), attentionSignature(mixed.slice().reverse()));
 check("a new item changes the signature", attentionSignature(mixed) !== attentionSignature(mixed.slice(1)), true);
+// Review: a key by position changed when an earlier question was answered.
+const second = Object.assign({}, question, { text: "Which port?" });
+check("a question keeps its key when one before it is answered",
+  attentionItems({ open_questions: [question, second] })[1].key, attentionItems({ open_questions: [second] })[0].key);
+// Review: a subsystem is probed again and again while nothing changes.
+function downAt(at) {
+  return attentionItems({ subsystems: [{ name: "github", required: true, status: "unavailable", checked_at: at }] });
+}
+check("a later probe of the same down subsystem keeps the signature",
+  attentionSignature(downAt("2026-10-13T09:00:00+00:00")), attentionSignature(downAt("2026-10-13T09:05:00+00:00")));
+has("the question is set apart from the card title", attentionRowHtml(asked[0]), '</a>: <span class="attention-detail">');
 check("a question asked again changes the signature",
   attentionSignature(attentionItems({ open_questions: [Object.assign({}, question, { asked_at: "2026-10-13T10:00:00+00:00" })] })) !== sigA, true);
 check("no items, empty signature", attentionSignature([]), "");
@@ -157,7 +168,7 @@ has("the kind is a text label", row, '<span class="attention-kind">Question</spa
 has("an external link opens in a new tab", row, 'target="_blank" rel="noopener"');
 has("the elapsed time updates on the page timer", row, 'data-elapsed-since="2026-10-13T09:00:00+00:00"');
 has("the elapsed time is labelled", row, 'data-elapsed-prefix="asked "');
-has("the item carries its key", row, 'data-attention-key="question:PVTI_1:0"');
+has("the item carries its key", row, 'data-attention-key="question:PVTI_1:&lt;b&gt;why&lt;/b&gt;"');
 
 const internal = attentionListHtml([{ kind: "needs_human", key: "k", title: "T", detail: "", href: "/performers/implementing", since: null }]);
 has("a run link navigates in the page", internal, 'onclick="navigate(event,this.pathname)"');

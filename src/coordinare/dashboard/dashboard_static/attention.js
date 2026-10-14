@@ -46,14 +46,14 @@ function attentionItems(s) {
   var subsystems = Array.isArray(s.subsystems) ? s.subsystems : [];
   var items = [];
   var askedCards = {};
-  questions.forEach(function(q, i) {
+  questions.forEach(function(q) {
     var obj = typeof q === 'string' ? { text: q } : (q || {});
     var cardId = obj.card_id ? String(obj.card_id) : '';
     if (cardId) askedCards[cardId] = true;
     var stage = typeof obj.stage === 'string' ? obj.stage : '';
     items.push({
       kind: 'question',
-      key: 'question:' + (cardId || 'card') + ':' + i,
+        key: 'question:' + (cardId || 'card') + ':' + String(obj.text || ''),
       card_id: cardId || null,
       title: attentionCardLabel(obj.card_number, obj.card_title, 'Card'),
       detail: String(obj.text || ''),
@@ -107,10 +107,13 @@ function attentionCountText(n) {
 }
 
 // Identifies one set of items. The banner stays dismissed while this is
-// unchanged, and comes back when an item is added, removed or re-asked.
+// unchanged, and comes back when an item is added, removed or re-asked. A
+// subsystem's time is when it was last probed, which moves on every probe
+// while nothing has changed, so it is left out.
 function attentionSignature(items) {
   return (items || []).map(function(it) {
-    return it.kind + '|' + it.key + '|' + (it.since || '');
+    var since = it.kind === 'subsystem_down' ? '' : (it.since || '');
+    return it.kind + '|' + it.key + '|' + since;
   }).sort().join('\n');
 }
 
@@ -136,7 +139,7 @@ function attentionRowHtml(it) {
     attrs = '';
   }
   var link = '<a href="' + esc(href) + '"' + attrs + '>' + esc(it.title) + '</a>';
-  var detail = it.detail ? ' <span class="attention-detail">' + esc(it.detail) + '</span>' : '';
+  var detail = it.detail ? ': <span class="attention-detail">' + esc(it.detail) + '</span>' : '';
   var since = '';
   if (it.since) {
     var prefix = it.kind === 'subsystem_down' ? 'checked ' : 'asked ';

@@ -186,3 +186,44 @@ def test_a_hostile_title_and_question_are_shown_as_text_and_run_no_script(
     expect(rows.nth(0)).to_contain_text(hostile)
     expect(page.locator("#attention-list img")).to_have_count(0)
     assert dialogs == []
+
+
+@pytest.mark.e2e
+def test_a_dismissed_subsystem_stays_dismissed_when_it_is_probed_again(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """Review: the probe time moves on every check while nothing has changed."""
+    _open_dashboard(page, live_server_url)
+    down = _blocked([], subsystem_down=True)
+    _broadcast(store, down)
+    expect(page.locator("#attention-panel")).to_be_visible(timeout=_WAIT_LIVE)
+    page.locator("#attention-panel button").click()
+    expect(page.locator("#attention-panel")).to_be_hidden()
+    for item in down["subsystems"]:
+        item["checked_at"] = "2026-10-13T09:06:00+00:00"
+    _broadcast(store, down)
+    page.wait_for_timeout(500)
+    expect(page.locator("#attention-panel")).to_be_hidden()
+
+
+@pytest.mark.e2e
+def test_the_live_region_does_not_change_while_ages_tick(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    """Review: a live region around the ticking ages was read out every second."""
+    _open_dashboard(page, live_server_url)
+    _broadcast(store, _blocked([_question()]))
+    expect(page.locator("#attention-panel")).to_be_visible(timeout=_WAIT_LIVE)
+    page.evaluate(
+        """() => {
+            window._liveMutations = 0;
+            document.querySelectorAll('[aria-live]').forEach(function(el) {
+                if (!el.closest('#attention-banner')) return;
+                new MutationObserver(function(list) { window._liveMutations += list.length; })
+                    .observe(el, { childList: true, characterData: true, subtree: true });
+            });
+        }""",
+    )
+    page.wait_for_timeout(2500)
+    assert page.evaluate("() => window._liveMutations") == 0
+    assert page.locator("#attention-banner [aria-live]").count() == 1

@@ -46,11 +46,14 @@ def test_the_application_script_composes_titles_and_refreshes_the_signal() -> No
     assert "attentionLabelOf" not in app
 
 
-def test_the_banner_is_a_polite_live_region_with_a_labelled_dismiss_button() -> None:
+def test_only_the_count_is_a_polite_live_region_and_dismiss_is_a_labelled_button() -> None:
+    """The rows carry ages that tick every second. A live region around them
+    would be read out continuously, so only the count announces."""
     section = re.search(r'<section id="attention-banner"[^>]*>', _DASHBOARD_HTML)
     assert section is not None
-    assert 'aria-live="polite"' in section.group(0)
+    assert "aria-live" not in section.group(0)
     assert 'aria-label="Needs attention"' in section.group(0)
+    assert '<strong id="attention-count" aria-live="polite"></strong>' in _DASHBOARD_HTML
     button = re.search(r'<button type="button" class="action-btn" onclick="dismissAttention\(\)"[^>]*>Dismiss</button>', _DASHBOARD_HTML)
     assert button is not None and 'aria-label="Dismiss this needs-attention list"' in button.group(0)
 

@@ -1415,7 +1415,7 @@ function connectEventStream() {
       _lastState = JSON.parse(e.data);
       // state_update precedes backfill on every stream connection.
       afSyncRun(_lastState.activity_run_id);
-      // 153: before the render, so the title and favicon follow the data even if a render throws.
+      // 153: before the render, so the title and favicon follow the data even if renderState throws.
       updateAttention(_lastState);
       renderState(_lastState);
       // 049: re-render current page with new state

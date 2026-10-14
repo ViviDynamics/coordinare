@@ -439,10 +439,10 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <div id="main-content" tabindex="-1">
 <!-- 049: Dashboard page -->
 <div id="dashboard-page">
-<!-- 153: needs-attention banner. A polite live region; app.js fills the list only when the set changes. -->
-<section id="attention-banner" aria-live="polite" aria-label="Needs attention">
+<!-- 153: needs-attention banner. Only the count is a live region: the rows carry ticking ages. -->
+<section id="attention-banner" aria-label="Needs attention">
   <div id="attention-panel" class="attention-panel" hidden>
-    <div class="attention-head"><strong id="attention-count"></strong><button type="button" class="action-btn" onclick="dismissAttention()" aria-label="Dismiss this needs-attention list">Dismiss</button></div>
+    <div class="attention-head"><strong id="attention-count" aria-live="polite"></strong><button type="button" class="action-btn" onclick="dismissAttention()" aria-label="Dismiss this needs-attention list">Dismiss</button></div>
     <ul id="attention-list" class="attention-list"></ul>
   </div>
 </section>
