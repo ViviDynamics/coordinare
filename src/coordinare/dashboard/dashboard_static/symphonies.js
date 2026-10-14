@@ -488,6 +488,13 @@ function currentSymphonyChoice(s) {
   return resolveSymphonyChoice(fromUrl, readStoredSymphony(), symphonyNames(s));
 }
 
+// 135: whether the page is showing one symphony rather than All. The activity feed is
+// deployment-wide, so its dropped-entries line says it covers every symphony when this is true.
+function symphonyChoiceForNote() {
+  var s = typeof _lastState !== 'undefined' ? _lastState : null;
+  return currentSymphonyChoice(s) !== SYMPHONY_ALL;
+}
+
 // The snapshot every panel should render: the full snapshot, narrowed to the choice.
 function scopedView(s) {
   return symphonyScope(s, currentSymphonyChoice(s));

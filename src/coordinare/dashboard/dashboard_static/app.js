@@ -1183,6 +1183,8 @@ var AF_LABELS = {
 };
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
+var _afDropped = 0;         // 135: entries the server's bounded log has dropped, as of the newest seen
+var _afCapacity = null;     // 135: the bound the server's log holds, sent with each entry
 var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
 var _afRunId = null;
 var _afFilter = '';
@@ -1198,6 +1200,7 @@ function afSyncRun(runId) {
   _afSeen = {};
   _afQuietCards = {};
   _afGroupingActive = false;
+  _afDropped = 0;
   var feed = document.getElementById('activity-feed');
   if (feed) feed.innerHTML = '';
   afUpdateEmpty();
@@ -1225,14 +1228,20 @@ function afAppend(entries) {
   if (!feed || !entries || !entries.length) return;
   var html = '';
   var added = 0;
+  var needsRedraw = false;
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
-    if (e == null || _afSeen[e.seq]) continue;
+    if (e == null) continue;
+    // 135: a stream's marker is re-sent as its hidden count grows. Redraw it in place.
+    if (_afSeen[e.seq]) { if (afRefreshMarker(e)) needsRedraw = true; continue; }
     if (e.session_id) _afGroupingActive = true;
     _afSeen[e.seq] = true;
+    if (typeof e.log_dropped === 'number' && e.log_dropped > _afDropped) _afDropped = e.log_dropped;
+    if (typeof e.log_capacity === 'number') _afCapacity = e.log_capacity;
     var prev = _afEntries[_afEntries.length - 1];
     e._afGroupKey = afCanGroup(prev, e) ? prev._afGroupKey : e.seq;
-    _afEntries.push(e);
+    // 135: a late arrival (a re-send whose creation the client never got) goes where its seq belongs.
+    if (!afInsertEntry(e)) needsRedraw = true;
     // FR-032: any real entry ends the card's quiet episode.
     if (e.card_id && e.activity_type !== 'quiet') delete _afQuietCards[e.card_id];
     if (!afMatches(e)) continue;
@@ -1244,6 +1253,12 @@ function afAppend(entries) {
     afSyncGroups(false);
     _afShownSig = afVisibleSig();
     afUpdateEmpty();
+    afUpdateFilterOptions();
+    return;
+  }
+  if (needsRedraw) {
+    // Out of order, or a count changed in the ungrouped view: the rows are drawn again in order.
+    afRender();
     afUpdateFilterOptions();
     return;
   }
@@ -1294,11 +1309,44 @@ function afRender() {
   afUpdateEmpty();
 }
 
+// 135: a stream's marker arrives again with a larger hidden count. It keeps its place in the
+// feed; only its count changes. Returns true when the ungrouped view must be drawn again.
+function afRefreshMarker(e) {
+  if (e.activity_type !== 'stream_truncated') return false;
+  for (var i = _afEntries.length - 1; i >= 0; i--) {
+    if (_afEntries[i].seq !== e.seq) continue;
+    e._afGroupKey = _afEntries[i]._afGroupKey;
+    _afEntries[i] = e;
+    if (_afGroupingActive) { afSyncGroups(false); return false; }
+    return true;
+  }
+  return false;
+}
+
+// 135: entries sit in seq order. Returns false when the entry was not the newest, so the caller
+// draws the feed again rather than prepending a row in the wrong place.
+function afInsertEntry(e) {
+  var i = _afEntries.length;
+  while (i > 0 && _afEntries[i - 1].seq > e.seq) i--;
+  _afEntries.splice(i, 0, e);
+  return i === _afEntries.length - 1;
+}
+
 function afUpdateEmpty() {
   var feed = document.getElementById('activity-feed');
   var empty = document.getElementById('af-empty');
   if (!feed || !empty) return;
   empty.style.display = feed.childElementCount ? 'none' : '';
+  afUpdateDropped();
+}
+
+// 135: the line above the feed for entries the bounded log has dropped. Hidden when none were.
+function afUpdateDropped() {
+  var note = document.getElementById('af-dropped');
+  if (!note) return;
+  var text = afDroppedText(_afDropped, _afCapacity, symphonyChoiceForNote());
+  note.textContent = text;
+  note.style.display = text ? '' : 'none';
 }
 
 function afUpdateFilterOptions() {

@@ -84,6 +84,93 @@ function afLine(e) {
   var base = e.activity_type === 'tool_use' ? (e.summary || e.text) : e.text;
   return (base || '') + (e.truncated ? '… [truncated]' : '');
 }
+// 135: a count with thousands separators, written out so it reads the same in every browser.
+function afCount(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+// 135: a stream's truncation marker is bookkeeping for the cap, not an update of its own.
+function afUpdateCount(entries) {
+  return entries.filter(function(e) { return e.activity_type !== 'stream_truncated'; }).length;
+}
+// 135: one clipped field (text or summary), when the daemon recorded its original length.
+// Null when nothing was clipped, and also when no length was recorded (an entry from before
+// 135), so an old entry shows nothing rather than a guess.
+function afClip(e, field) {
+  var length = e[field + '_length'];
+  var kept = afCodePoints(e[field]);
+  if (typeof length !== 'number' || length <= kept) return null;
+  return {kept: kept, hidden: length - kept};
+}
+// 135: the server counts code points, so the client does too. An astral character is two UTF-16
+// units but one code point, and a low surrogate is the second half of one, so it is not counted.
+function afCodePoints(text) {
+  return String(text || '').replace(/[\uDC00-\uDFFF]/g, '').length;
+}
+// 135: the updates a group hid past the cap, counted from the markers it carries.
+function afHiddenCount(entries) {
+  var hidden = 0;
+  entries.forEach(function(e) {
+    if (e.activity_type === 'stream_truncated' && typeof e.hidden_updates === 'number') hidden += e.hidden_updates;
+  });
+  return hidden;
+}
+// 135: the group summary's count. A group whose updates are all past the cap says so, rather
+// than reading "0 updates", and the shown count is only ever a count of shown updates.
+function afCountText(entries) {
+  var shown = afUpdateCount(entries);
+  var hidden = afHiddenCount(entries);
+  if (!shown && hidden) {
+    return '(' + afCount(hidden) + (hidden === 1 ? ' update not shown)' : ' updates not shown)');
+  }
+  return '(' + shown + (shown === 1 ? ' update)' : ' updates)');
+}
+function afCutPhrase(label, cut) {
+  return label + ' clipped at ' + afCount(cut.kept) + ' characters' +
+    (cut.updates > 1 ? ' in ' + afCount(cut.updates) + ' updates' : '') +
+    ' (' + afCount(cut.hidden) + ' characters hidden)';
+}
+// 135: what the feed hid from one group, in plain words, with a link to the full transcript.
+// Empty when nothing was cut. Every figure is a count the daemon recorded at the cut.
+function afCutHtml(entries) {
+  var shown = 0, hidden = 0, anchor = null, cuts = {};
+  entries.forEach(function(e) {
+    if (e.activity_type === 'stream_truncated') {
+      if (typeof e.hidden_updates === 'number' && e.hidden_updates > 0) {
+        hidden += e.hidden_updates;
+        anchor = anchor || e;
+      }
+      return;
+    }
+    shown++;
+    ['text', 'summary'].forEach(function(field) {
+      var clip = afClip(e, field);
+      if (!clip) return;
+      var cut = cuts[field] || (cuts[field] = {updates: 0, kept: 0, hidden: 0});
+      cut.updates++;
+      cut.hidden += clip.hidden;
+      cut.kept = Math.max(cut.kept, clip.kept);
+      anchor = anchor || e;
+    });
+  });
+  var parts = [];
+  // A group with no shown update says how many it hides, and never claims a shown count of 0.
+  if (hidden > 0) parts.push(shown > 0
+    ? 'Showing ' + afCount(shown) + ' of ' + afCount(shown + hidden) + ' updates'
+    : afCount(hidden) + (hidden === 1 ? ' update not shown' : ' updates not shown'));
+  if (cuts.text) parts.push(afCutPhrase('text', cuts.text));
+  if (cuts.summary) parts.push(afCutPhrase('tool summary', cuts.summary));
+  if (!parts.length) return '';
+  // The link opens the run at the first cut, when the entry has a run. A lifecycle event has none.
+  var link = anchor ? runEntryLinkHtml(anchor, 'Open full transcript') : '';
+  return esc(parts.join(' · ')) + (link ? ' · ' + link : '');
+}
+// 135: the line for entries the bounded log dropped from the feed. Empty when none were. The
+// capacity comes from the server. The feed is deployment-wide, so a selected symphony does not
+// narrow the count, and the line says so.
+function afDroppedText(dropped, capacity, scoped) {
+  if (!(dropped > 0)) return '';
+  var scope = scoped ? ' across all symphonies' : '';
+  var keep = capacity > 0 ? ' to keep the newest ' + afCount(capacity) : '';
+  return 'Older activity is not shown: ' + afCount(dropped) + ' entries were dropped' + scope + keep + '.';
+}
 function afRawHtml(entries) {
   var blocks = [];
   var usage = [];
@@ -171,12 +258,15 @@ function afGroups() {
 // anchor a transcript link (#133) will attach to.
 function afPlainRowHtml(e, id, where) {
   var text = (e.text || '') + (e.truncated ? '… [truncated]' : '');
+  // 135: a plain row is one entry that never changes, so its cut line is drawn once, here.
+  var cut = afCutHtml([e]);
   return '<div class="af-row af-plain af-row-' + esc(afRowKind(e)) + '" id="' + id + '">' +
     '<span class="af-icon" aria-hidden="true">' + esc(afIcon(e.activity_type)) + '</span>' +
     '<span class="af-time">' + esc(afTime(e.timestamp)) + '</span>' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span>' +
-    '<span class="af-plain-text">' + esc(text || afSummary(e)) + '</span>' + runEntryLinkHtml(e) + '</div>';
+    '<span class="af-plain-text">' + esc(text || afSummary(e)) + '</span>' + runEntryLinkHtml(e) +
+    (cut ? '<div class="af-notes">' + cut + '</div>' : '') + '</div>';
 }
 function afRowHtml(e, group) {
   var entries = group ? group.entries : [e];
@@ -186,7 +276,6 @@ function afRowHtml(e, group) {
   // 137: the stage's one display name, when the glossary is loaded.
   var stageName = e.stage && typeof vocabularyKindLabel === 'function' ? vocabularyKindLabel('stage_labels', e.stage) : e.stage;
   var where = who + (stageName ? ' ' + stageName : '');
-  var count = entries.length;
   var key = group ? group.key : e.seq;
   var id = 'af-group-' + esc(String(key));
   // Lifecycle events are plain rows. Errors keep their collapsible line (353).
@@ -199,9 +288,11 @@ function afRowHtml(e, group) {
     '<summary><span class="af-time">' + esc(afTime(latest.timestamp)) + '</span> ' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
-    '<span class="af-summary">' + esc(preview) + ' (' + count +
-    (count === 1 ? ' update)' : ' updates)') + '</span>' + badge + runEntryLinkHtml(latest) + '</summary>' +
-    '<div class="af-raw-label">Raw output (may contain other languages; retained text only)</div>' +
+    '<span class="af-summary">' + esc(preview) + ' ' + afCountText(entries) + '</span>' +
+    badge + runEntryLinkHtml(latest) + '</summary>' +
+    '<div class="af-raw-label">Agent output</div>' +
+    // 135: what was hidden from this group, and how to see all of it. Empty when nothing was cut.
+    '<div class="af-notes">' + afCutHtml(entries) + '</div>' +
     '<div class="af-raw">' + afRawHtml(entries) + '</div>' +
     '</details></div>';
 }
@@ -237,8 +328,10 @@ function afSyncGroups(reset) {
     // badge is inserted or removed to match the folded marker count.
     var summary = afPreview(g.entries) || afSummary(e);
     var summaryEl = node.querySelector('.af-summary');
-    summaryEl.textContent = summary + ' (' +
-      g.entries.length + (g.entries.length === 1 ? ' update)' : ' updates)');
+    summaryEl.textContent = summary + ' ' + afCountText(g.entries);
+    // 135: a marker's count changes without a new row, so the cut line is redrawn on every pass.
+    var notes = node.querySelector('.af-notes');
+    if (notes) notes.innerHTML = afCutHtml(g.entries);
     var badge = node.querySelector('.af-truncated');
     if (g.truncatedCount && !badge) {
       var mark = document.createElement('span');
