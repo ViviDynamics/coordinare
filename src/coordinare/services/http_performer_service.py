@@ -263,7 +263,7 @@ class HTTPPerformerService:
         # 129: where the per-run transcript records go. None (the default) keeps
         # the wire and the disk exactly as before.
         self._transcripts = transcripts
-        self._transcript_targets: dict[str, tuple[str, str]] = {}
+        self._transcript_targets: dict[str, tuple[str, str, str]] = {}
         self._transcript_unsupported_runs: set[str] = set()
         self._transcript_secrets: dict[str, list[str]] = {}
         self._transcript_failed_runs: set[str] = set()
@@ -929,6 +929,7 @@ class HTTPPerformerService:
             self._transcript_targets[run_id] = (
                 str(target.get("symphony") or ""),
                 str(target.get("card_id") or ""),
+                str(target.get("stage") or ""),
             )
             writer = self._transcript_writer(run_id, None)
             if writer is None:
@@ -1005,11 +1006,14 @@ class HTTPPerformerService:
                 self._transcript_targets[session_id] = (
                     str(target.get("symphony") or ""),
                     str(target.get("card_id") or ""),
+                    str(target.get("stage") or ""),
                 )
-            symphony, card_id = self._transcript_targets.get(session_id, (UNATTRIBUTED, ""))
+            symphony, card_id, stage = self._transcript_targets.get(session_id, (UNATTRIBUTED, "", ""))
             writer = self._transcripts.writer_for(
                 run_id=session_id, symphony=symphony, card_id=card_id,
             )
+            # 134: the stage goes on usage records, so the ledger survives a restart with it.
+            writer.set_stage(stage)
             writer.add_secret_values(self._transcript_secrets.get(session_id, []))
             refreshed = payload.get("github_token") if payload else None
             if isinstance(refreshed, str) and refreshed:
@@ -1057,6 +1061,18 @@ class HTTPPerformerService:
         )
         await self._absorb_transcript(writer, status, session_id)
         return status
+
+    def _count_usage(self, writer: RunTranscriptWriter) -> None:
+        """134: hand the usage records this batch accepted to the ledger. Totals rise here."""
+        if self._transcripts is None:
+            return
+        taken = writer.drain_usage()
+        if not taken:
+            return
+        symphony, card_id = writer.parts
+        self._transcripts.usage.observe(
+            writer.run_id, symphony=symphony, card=card_id, stage=writer.stage, records=taken,
+        )
 
     async def _absorb_transcript(
         self,
@@ -1120,6 +1136,10 @@ class HTTPPerformerService:
             )
         except Exception as exc:  # best effort: see _transcript_failed
             self._transcript_failed(session_id, "absorb", exc, writer)
+        finally:
+            # 134 review: count what the writer accepted on every path, including a
+            # timed-out append, whose worker thread may have written before the timeout.
+            self._count_usage(writer)
 
     async def _load_writer(self, writer: RunTranscriptWriter, session_id: str) -> bool:
         """Read the writer's cursor on a worker thread, bounded. False if it is not ready."""

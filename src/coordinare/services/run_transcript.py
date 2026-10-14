@@ -32,6 +32,9 @@ Guarantees the writer provides:
   failure marks the run's transcript failed and is logged once. It never raises.
 * The per-run byte cap writes exactly one ``truncated`` marker and then counts
   (not writes) any further content records.
+* A ``usage`` record carries a ``stage`` key when the daemon knows the run's
+  performer stage (spec 134). It is the only key the daemon adds to a performer
+  record, and readers that ignore unknown keys are unaffected.
 * A torn final line left by a crash mid-write is trimmed before appending.
 
 The performer-side mirror of this schema is ``performer.transcript``. The two
@@ -57,6 +60,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from coordinare.lib.transcript_redaction import redact_value, secret_values_from_env
+from coordinare.services.token_usage import TokenLedger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -424,14 +428,40 @@ class RunTranscriptWriter:
         # 130: the run header, held until it is written as the file's first line.
         self._pending_header: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        # 134: the stage the daemon stamps on usage records, and the accepted usage
+        # records the ledger has not taken yet.
+        self._stage = ""
+        self._usage_out: list[dict[str, Any]] = []
 
     @property
     def path(self) -> Path:
         return self._root.joinpath(*self._parts, self._file_name)
 
     @property
+    def parts(self) -> tuple[str, str]:
+        """The (symphony, card) folder pair, sanitized as the file path uses them."""
+        return self._parts
+
+    @property
     def run_id(self) -> str:
         return self._run_id
+
+    @property
+    def stage(self) -> str:
+        return self._stage
+
+    def set_stage(self, stage: str) -> None:
+        """The performer stage of this run. Written as ``stage`` on usage records only (134)."""
+        self._stage = stage
+
+    def drain_usage(self) -> list[dict[str, Any]]:
+        """The usage records accepted since the last call, redacted, each once (134).
+
+        Records past the byte cap are included: the file drops them, the count does not.
+        """
+        with self._lock:
+            taken, self._usage_out = self._usage_out, []
+        return taken
 
     @property
     def cursor(self) -> int:
@@ -614,6 +644,10 @@ class RunTranscriptWriter:
             return None
         data = parsed.model_dump(exclude_none=True)
         data["run_id"] = self._run_id
+        if data.get("type") == "usage" and self._stage:
+            # 134: the stage is not on the wire; the daemon knows it and the ledger
+            # rebuilds per-stage totals from it after a restart.
+            data["stage"] = self._stage
         redacted: dict[str, Any] = redact_value(data, self._secrets)
         return redacted
 
@@ -726,6 +760,9 @@ class RunTranscriptWriter:
                 line = _to_line(record)
             if lines and batch_bytes + len(line) > MAX_BATCH_BYTES:
                 break  # the rest is re-requested on the next poll
+            if record.get("type") == "usage":
+                # 134: counted here, before the byte cap, so a capped run keeps its totals.
+                self._usage_out.append(record)
             out = self._admit(record, seq, line)
             previous_in_batch = seq
             self._cursor = seq
@@ -822,6 +859,10 @@ class TranscriptCollector:
         self._retention_days = retention_days
         self._ambient_secrets = secret_values_from_env(ambient_secrets or {})
         self._writers: dict[str, RunTranscriptWriter] = {}
+        # 134: the usage ledger the accepted usage records feed. It lives on the
+        # collector because the collector is the one object the daemon shares with the
+        # poll path, and it is empty whenever transcription is off.
+        self.usage = TokenLedger()
 
     @property
     def root(self) -> Path:
@@ -865,6 +906,15 @@ class TranscriptCollector:
     def release(self, run_id: str) -> None:
         """Forget a finished run's writer. The file stays on disk."""
         writer = self._writers.pop(run_id, None)
+        if writer is not None:
+            # 134 review: usage the writer accepted but no poll has taken yet is counted
+            # before the writer is dropped, so a run that ends mid-poll keeps its totals.
+            taken = writer.drain_usage()
+            if taken:
+                symphony, card = writer.parts
+                self.usage.observe(
+                    run_id, symphony=symphony, card=card, stage=writer.stage, records=taken,
+                )
         if writer is not None and writer.truncated:
             logger.info(
                 "run_transcript.run_truncated",

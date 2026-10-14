@@ -20,6 +20,14 @@ from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
+from coordinare.services.token_usage import (
+    PriceTable,
+    TokenLedger,
+    disabled_usage_block,
+    price_table_from_config,
+    session_usage,
+    usage_block,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -31,14 +39,36 @@ if TYPE_CHECKING:
 SESSION_EVENT_LIMIT = 40
 
 
-def _cost_rate(config: Any) -> float:
-    """121: dollars per million tokens in effect (config, else the model default)."""
-    from coordinare.config import CostTrackingConfig
+def _usage_ledger(daemon: Any) -> TokenLedger | None:
+    """134: the usage ledger when transcripts are on, else None (nothing is tracked)."""
+    collector = daemon.state.get("transcript_collector")
+    usage = getattr(collector, "usage", None)
+    if isinstance(usage, TokenLedger) and getattr(collector, "enabled", False) is True:
+        return usage
+    return None
 
-    rate = getattr(getattr(config, "cost_tracking", None), "cost_per_million_tokens", None)
-    if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate >= 0:
-        return float(rate)
-    return float(CostTrackingConfig().cost_per_million_tokens)
+
+def _price_table(daemon: Any) -> PriceTable:
+    """134: the per-model price table from the config (the flat rate only as a fallback)."""
+    return price_table_from_config(getattr(daemon.state.get("config"), "cost_tracking", None))
+
+
+def _token_usage_block(daemon: Any) -> dict[str, Any]:
+    """134: today and the rolling UTC week, or "not tracked" when transcripts are off."""
+    ledger = _usage_ledger(daemon)
+    if ledger is None:
+        return disabled_usage_block(reason="transcripts disabled")
+    today = datetime.now(UTC).date()
+    ledger.prune(today)
+    return usage_block(ledger, _price_table(daemon), today=today)
+
+
+def _session_usage(daemon: Any, *, run_id: str, card_id: str) -> dict[str, Any]:
+    """134: one session's run and card figures, or "not tracked" with no figures."""
+    ledger = _usage_ledger(daemon)
+    if ledger is None:
+        return {"tracked": False, "reason": "transcripts disabled", "run": None, "card": None}
+    return session_usage(ledger, _price_table(daemon), run_id=run_id, card=card_id)
 
 
 def _pending_control(raw: Any) -> dict[str, str] | None:
@@ -516,6 +546,12 @@ class DashboardStore:
             "performer_stage": _sess_stage,
             "card_tokens_total": sess.get("card_tokens_total", 0),
             "card_cost_estimate": sess.get("card_cost_estimate", 0.0),
+            # 134: this run's and this card's tokens by kind, priced, or "not tracked".
+            "usage": _session_usage(
+                daemon,
+                run_id=str(_sess_agent_dispatch.get("session_id") or ""),
+                card_id=sid,
+            ),
             "feedback_cycle_count": int(sess.get("feedback_cycle_count") or 0),
             "total_feedback_cycles": int(sess.get("total_feedback_cycles") or 0),
             "triage_blocks": int(sess.get("triage_blocks") or 0),
@@ -581,6 +617,11 @@ class DashboardStore:
             "performer_stage": _top_stage,
             "card_tokens_total": daemon.state.get("card_tokens_total", 0),
             "card_cost_estimate": daemon.state.get("card_cost_estimate", 0.0),
+            "usage": _session_usage(
+                daemon,
+                run_id=str(_dispatch.get("session_id") or ""),
+                card_id=str(_top_card_id or ""),
+            ),
             "feedback_cycle_count": int(daemon.state.get("feedback_cycle_count") or 0),
             "total_feedback_cycles": int(daemon.state.get("total_feedback_cycles") or 0),
             "triage_blocks": int(daemon.state.get("triage_blocks") or 0),
@@ -703,10 +744,8 @@ class DashboardStore:
             "daemon_start_time": started_at,
             # 138: lets the conductor headline say "next check in 18s".
             "poll_interval_seconds": _poll_interval(daemon.state.get("config")),
-            # 121: the flat rate the cost estimate uses, so the browser can name
-            # the pricing basis and estimate for a session that reports tokens
-            # before its own estimate has been computed.
-            "cost_per_million_tokens": _cost_rate(daemon.state.get("config")),
+            # 134: spend today and this week, with the pricing date, from the usage ledger.
+            "token_usage": _token_usage_block(daemon),
             "activity_run_id": self.activity_log.run_id,
             "cycle_history": list(self.history),
             "cycle_active": daemon._cycle_active,

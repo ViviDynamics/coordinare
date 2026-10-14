@@ -116,28 +116,21 @@ function collapseCycleRows(history) {
   return rows;
 }
 
-// 121: one cost estimate for every place that shows one (Metrics, board row,
-// card detail). The daemon's own figure wins when it has one. In shared-pool
-// mode the figure lives on the session, not the top-level state, and it is
-// only computed when a stage reports, so a session that already shows tokens
-// can still carry 0. In that case estimate from the same token count the
-// page displays, at the same flat rate the daemon uses.
-// Returns {value, basis}; value is null when there is nothing to estimate.
+// 134: a card's or a run's figures are the daemon's usage summary (usage.js).
+// Returns that summary for one scope, the "not tracked" marker, or null.
+function usageSummaryOf(sess, scope) {
+  var u = sess && sess.usage;
+  if (!u) return null;
+  if (u.tracked === false) return u;
+  return u[scope] || null;
+}
+
+// The card's cost as {value, basis}. value is 0 when no priced cost is known;
+// basis is the tooltip text. Nothing here prices tokens with a flat rate.
 function estimateCost(sess, s) {
-  sess = sess || {};
-  s = s || {};
-  var rate = Number(s.cost_per_million_tokens);
-  var hasRate = isFinite(rate) && rate >= 0;
-  var basis = hasRate
-    ? 'Estimate at $' + rate.toFixed(2) + ' per million tokens (one flat rate for all models and token types)'
-    : 'Estimate at the configured flat rate per million tokens';
-  var reported = Number(sess.card_cost_estimate);
-  if (isFinite(reported) && reported > 0) return { value: reported, basis: basis };
-  var tokens = derivePerformerTokenTotal(sess);
-  if (tokens != null && tokens > 0 && hasRate && rate > 0) {
-    return { value: tokens / 1000000 * rate, basis: basis };
-  }
-  return { value: isFinite(reported) ? reported : 0, basis: basis };
+  var summary = usageSummaryOf(sess, 'card');
+  var readout = usageCostReadout(summary);
+  return { value: summary && !readout.unknown ? Number(summary.cost.usd) || 0 : 0, basis: readout.title };
 }
 
 // 122: a stage that is running has usage the backend has not reported yet.
@@ -160,11 +153,12 @@ function tokenReadout(tokens, running) {
 }
 
 function costHtml(sess, s) {
-  var est = estimateCost(sess, s);
-  if (!(est.value > 0) && isStageRunning(sess)) {
-    return '<span title="' + esc(USAGE_PENDING_NOTE) + '">—</span>';
+  var summary = usageSummaryOf(sess, 'card');
+  // 122: a stage that is running has usage the backend has not reported yet.
+  if (isStageRunning(sess) && usageTrackedSummary(summary) && !(summary.tokens.total > 0)) {
+    return '<span title="' + esc(USAGE_PENDING_NOTE) + '">-</span>';
   }
-  return '<span title="' + esc(est.basis) + '">' + fmtCost(est.value) + '</span>';
+  return usageCostHtml(summary);
 }
 
 // 149: every session skip reason on the page. The top-level map is restored to
@@ -720,10 +714,16 @@ function renderPerformersPage(s) {
     ? esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines')
     : 'No session stats available yet.';
   var metrics = sel.performer_metrics || {};
-  var tokenTotal = derivePerformerTokenTotal(sel);
+  // 134: this run's tokens, with the breakdown on hover. The status counter is the fallback.
+  var runUsage = usageSummaryOf(sel, 'run');
+  var fallbackTokens = derivePerformerTokenTotal(sel);
+  var tokenTotal = usageTotalOf(runUsage, fallbackTokens);
   // 122: never a bare 0 while the stage is still running.
   var tokenView = tokenReadout(tokenTotal, isStageRunning(sel));
-  var tokenText = esc(tokenView.text) + (tokenView.pending ? ' (' + esc(USAGE_PENDING_NOTE.toLowerCase()) + ')' : '');
+  var usageView = usageTokensReadout(runUsage, fallbackTokens);
+  var tokenText = tokenView.pending
+    ? esc(tokenView.text) + ' (' + esc(USAGE_PENDING_NOTE.toLowerCase()) + ')'
+    : '<span title="' + esc(usageView.title) + '">' + esc(usageView.text) + '</span>';
   var metricsLine = (metrics && metrics.pid != null)
     ? (
       'PID ' + String(metrics.pid) +
