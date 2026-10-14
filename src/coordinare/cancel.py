@@ -236,7 +236,7 @@ async def cancel_active_card(
         "returned_to_todo": bool(move_to_todo and not performer_may_be_running),
         **({} if not performer_may_be_running else {
             "warning": (
-                "coordinare could not reach the performer to stop it (no session id for this "
+                "coordinare could not reach the performer to stop it (no run id for this "
                 "card); its container may still be running, and the card was left in place "
                 "rather than returned to Todo to avoid a second performer on the same branch"
             ),

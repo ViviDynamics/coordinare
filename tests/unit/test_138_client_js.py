@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import app_js, page_source, shipped_function
+from tests.unit.dashboard_js_slices import app_js, page_source, run_id_js, shipped_function
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
 
@@ -62,7 +62,7 @@ def _extract_feed_js() -> str:
     # 139: the feed filters by the symphony choice, which lives in symphonies.js.
     run_link = shipped_function("runs", "runEntryLinkHtml")
     return (
-        esc.group(0) + "\n\n" + run_link + "\n\n" + _DASHBOARD_JS_SOURCES["symphonies"] + "\n\n"
+        esc.group(0) + "\n\n" + run_id_js() + "\n\n" + run_link + "\n\n" + _DASHBOARD_JS_SOURCES["symphonies"] + "\n\n"
         + _ACTIVITY_STREAM_JS + "\n" + feed_js
     )
 

@@ -1,6 +1,6 @@
 """135: every clipped or dropped activity item says how much is hidden and links to its full transcript.
 
-A clipped entry shows its line, and "Open full transcript" opens the viewer at the entry's run. A
+A clipped entry shows its line, and "Full transcript of" links the run's short name, which opens the viewer at the entry's run. A
 group over the update cap says "Showing N of M". An uncut entry shows nothing. A lifecycle event
 with no run says what was cut and has no link. Hostile text in a clipped entry stays text.
 """
@@ -56,8 +56,10 @@ def test_a_clipped_entry_says_what_was_cut_and_opens_its_run(page: Page, live_se
     row.locator("summary").click()
     notes = row.locator(".af-notes")
     expect(notes).to_contain_text("text clipped at 200 characters (1,040 characters hidden)")
-    link = notes.locator("a.run-entry-link", has_text="Open full transcript")
+    expect(notes).to_contain_text("Full transcript of")
+    link = notes.locator("a.run-entry-link")
     expect(link).to_have_attribute("href", re.compile(r"^/runs/run-135-a\?at="))
+    expect(link).to_have_attribute("title", "run-135-a")
     link.click()
     # The viewer took the address: the run is in the URL, and the viewer's page is on screen.
     expect(page).to_have_url(re.compile(r"/runs/run-135-a\?at=2026-10-13T09%3A00%3A05"))
@@ -80,7 +82,7 @@ def test_a_group_over_the_update_cap_says_showing_n_of_m(
     row = page.locator("#activity-feed .af-row").first
     row.locator("summary").click()
     expect(row.locator(".af-notes")).to_contain_text("Showing 200 of 205 updates")
-    expect(row.locator(".af-notes")).to_contain_text("Open full transcript")
+    expect(row.locator(".af-notes")).to_contain_text("Full transcript of")
     expect(row.locator(".af-truncated")).to_have_count(1)
 
 
@@ -121,7 +123,7 @@ def test_a_clipped_lifecycle_event_says_what_was_cut_with_no_link(page: Page, li
     expect(row.locator(".af-notes")).to_contain_text(
         "text clipped at 200 characters (40 characters hidden)")
     # A lifecycle event has no run, so there is nothing to open, and the line says so by omission.
-    expect(row.locator("a", has_text="Open full transcript")).to_have_count(0)
+    expect(row.locator("a.run-entry-link")).to_have_count(0)
 
 
 def test_hostile_clipped_text_stays_text(page: Page, live_server_url: str) -> None:

@@ -171,7 +171,7 @@ class WikiInitService:
         if not job_succeeded:
             if self.register_failure(ec_state, error or "wiki-init job failed"):
                 await self.notify_blocked(
-                    notification_service, symphony_name, "wiki-init attempts exhausted", ec_state,
+                    notification_service, symphony_name, "wiki-init tries exhausted", ec_state,
                 )
             return
         if not pr_node_id:

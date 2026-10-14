@@ -1,7 +1,8 @@
 """#132: the card's Live Log offers the run's full log, one click away.
 
-The Live Log keeps the tail. The "Open full log" link points at the run's log route
-for the session's run id, and a hostile run id reaches the page as text, never markup.
+The Live Log keeps the tail. The full log link points at the run's log route for the session's
+run id, and its text is the run's short name (141). A hostile run id reaches the page as text,
+never markup.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from coordinare.dashboard import DashboardStore
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_session, _full_snapshot
 
 _CARD = "PVTI_132"
-_RUN = "run-132-e2e"
+_RUN = "1132e2a0-4b1e-4c2d-9e3f-0a1b2c3d4e5f"
 _LINK = "#card-detail-content a.full-log-link"
 NOT_FOUND = 404
 
@@ -48,7 +49,8 @@ def test_the_live_log_links_to_the_full_log_of_the_run(
     _open_card_detail(page, live_server_url, store, _RUN)
 
     link = page.locator(_LINK)
-    expect(link).to_have_text("Open full log ↗", timeout=_WAIT_LIVE)
+    expect(link).to_have_text("run 1132e2", timeout=_WAIT_LIVE)
+    expect(link).to_have_attribute("title", _RUN)
     expect(link).to_have_attribute("href", f"/api/runs/{_RUN}/log")
     expect(link).to_have_attribute("target", "_blank")
 

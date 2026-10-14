@@ -55,8 +55,9 @@ function clipped(seq, length, extra) {
 var one = afCutHtml([clipped(1, 1240)]);
 check('clipped text names its kept and hidden length',
   one.indexOf('text clipped at 200 characters (1,040 characters hidden)') !== -1, one);
-check('clipped text links to the full transcript at the event time',
-  one.indexOf(LINK_ORIGIN) !== -1 && one.indexOf('Open full transcript</a>') !== -1, one);
+check('clipped text links to the full transcript at the event time, named by its short run id',
+  one.indexOf(LINK_ORIGIN) !== -1 && one.indexOf('Full transcript of <a') !== -1 &&
+  one.indexOf('>run sess-1</a>') !== -1 && one.indexOf('title="' + SESSION + '"') !== -1, one);
 
 var over = [];
 for (var i = 0; i < 200; i++) over.push(delta(100 + i, 'w' + i + ' '));

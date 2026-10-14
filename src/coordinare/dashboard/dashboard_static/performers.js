@@ -446,6 +446,7 @@ function renderCardDetailContent(sess, s) {
     '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Stage</td><td style="padding:3px 0" title="Conductor: ' + phaseLabel + '">' + (sess.performer_stage ? stageAgentLabel(sess.performer_stage) : phaseLabel) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Run</td><td style="padding:3px 0">' + runIdHtml(sess.session_id, {copy: true}) + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
     '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + cost + '</td></tr>' +
     '</table>' +
@@ -460,12 +461,21 @@ function renderCardDetailContent(sess, s) {
 
 // 132: the Live Log shows the tail; the full log for this run is one click away, once the
 // run has ended. The run id is the session id, the same value the log file is named after.
+// 141: the link text is the run's short name; the full id is its title.
 function fullLogLinkHtml(sess) {
   // Offered only once the run's log exists: it is written at teardown, not during the run.
   var runId = sess && sess.session_id ? String(sess.session_id) : '';
   if (!runId || !sess.full_log_available) return '';
-  return '<a class="full-log-link" href="' + esc('/api/runs/' + encodeURIComponent(runId) + '/log') + '" ' +
-    'target="_blank" rel="noopener">Open full log &#8599;</a>';
+  return '<div class="muted" style="margin-bottom:4px">Full log of ' +
+    runIdHtml(runId, {href: '/api/runs/' + encodeURIComponent(runId) + '/log', blank: true, className: 'full-log-link'}) +
+    '</div>';
+}
+
+// 141: where a run's container id is shown: the run detail's technical section only.
+function containerIdHtml(containerId) {
+  var full = String(containerId || '');
+  if (!full) return '<span class="muted">-</span>';
+  return '<span style="font-family:monospace;font-size:11px" title="' + esc(full) + '">' + esc(full.slice(0, 12)) + '</span>';
 }
 
 function showPerformerDetail(cardId) {
@@ -557,6 +567,7 @@ function renderActivePerformers(s) {
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
       '<div class="ap-tile-meta">' +
         '<span class="ap-pill ap-tile-elapsed">&#9201; ' + elapsedSinceHtml(dispatchAt) + '</span>' +
+        (sess.session_id ? '<span class="ap-pill">' + runIdHtml(sess.session_id) + '</span>' : '') +
         cardRefHtml(sess) +
         pendingControlHtml(sess) +
         // 138 FR-032: quiet marker — observation only, never a phase change.
@@ -690,10 +701,9 @@ function renderPerformersPage(s) {
   var statusBadge = '<span class="role-status-badge ' + (isSelectedRoleActive ? 'role-active' : 'role-idle') + ' detail-badge">' + (isSelectedRoleActive ? 'active' : 'idle') + '</span>';
   var roleCardsHtml = selectedSessions.length
     ? '<ul class="detail-list">' + selectedSessions.map(function(sess) {
-      var cid = sess.container_id ? ' <span class="muted" style="font-family:monospace;font-size:11px">[' + esc(sess.container_id.slice(0, 12)) + ']</span>' : '';
-      return '<li>' + esc(sess.card_title || sess.card_id || '—') + cid + '</li>';
+      return '<li>' + esc(sess.card_title || sess.card_id || '-') + '</li>';
     }).join('') + '</ul>'
-    : '<div class="muted">No active session currently running for this role.</div>';
+    : '<div class="muted">No run in progress for this role.</div>';
   // 348: the panels below describe ONE card -- name it.
   var telemetryFor = selectedSessions.length > 1
     ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || '—') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
@@ -705,7 +715,7 @@ function renderPerformersPage(s) {
   var sessionStats = sel.session_stats;
   var statsLine = sessionStats
     ? esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines')
-    : 'No session stats available yet.';
+    : 'No run stats available yet.';
   var metrics = sel.performer_metrics || {};
   // 134: this run's tokens, with the breakdown on hover. The status counter is the fallback.
   var runUsage = usageSummaryOf(sel, 'run');
@@ -767,8 +777,16 @@ function renderPerformersPage(s) {
     '<div><strong>' + roleOrStageLabel(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">' + esc(busyText(row.active, row.max, row.queued)) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
-    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + (sel.session_id ? ' &middot; ' + runSessionLinkHtml(sel.session_id) : '') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
+    // 141: the run's name links to its transcript (the run id is the session id). Copy sits beside it.
+    '<div class="detail-block"><strong>Run</strong><div class="muted" style="margin-top:4px">' +
+      runIdHtml(sel.session_id || s.agent_session_id, {
+        href: RUN_NAME_PATTERN.test(String(sel.session_id || '')) ? '/runs/' + encodeURIComponent(String(sel.session_id)) : '',
+        copy: true,
+      }) +
+      ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '-') +
+      '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
+    '<div class="detail-block"><strong>Technical</strong><div class="muted" style="margin-top:4px">Container: ' + containerIdHtml(sel.container_id) + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
     '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';
 }
