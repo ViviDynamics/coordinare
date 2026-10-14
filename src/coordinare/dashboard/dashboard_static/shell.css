@@ -164,3 +164,16 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .run-id-copy { font-size: 11px; margin-left: 4px; padding: 0 6px; }
 .card-runs-stage { margin-bottom: 6px; font-size: 12px; }
 .card-runs-stage .detail-list li { overflow-wrap: anywhere; }
+
+/* 151: the System health card. One line when everything is healthy; rows when it is not. */
+.sh-list { margin-top: 8px; display: grid; gap: 6px; }
+.sh-row { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; padding: 2px 4px; border-radius: 4px; }
+.sh-row.sh-degraded { background: var(--color-bg-degraded); }
+.sh-row.sh-down { background: var(--color-bg-error); }
+.sh-dot { color: var(--color-text-muted); }
+.sh-healthy > .sh-dot, .sh-tone-healthy > .sh-dot { color: var(--color-healthy); }
+.sh-degraded > .sh-dot, .sh-tone-degraded { color: var(--color-degraded); }
+.sh-down > .sh-dot, .sh-tone-down { color: var(--color-error); }
+.sh-name { font-weight: 600; }
+.sh-word, .sh-fresh { color: var(--color-text-muted); font-size: 0.9em; }
+.sh-reason { flex-basis: 100%; padding-left: 1.2em; color: var(--color-text-muted); font-size: 0.9em; }

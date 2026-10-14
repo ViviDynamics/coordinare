@@ -225,10 +225,10 @@ def test_empty_history_shows_placeholder(page: Page, live_server_url: str) -> No
 
 @pytest.mark.e2e
 def test_subsystem_health_table_renders(page: Page, live_server_url: str) -> None:
-    """The subsystem health table must show the registered 'github' probe."""
+    """The System health card must show the GitHub API row (151 folds the 'github' probe into it)."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_contain_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#subsystems-section")).to_contain_text("github")
+    expect(page.locator("#subsystems-section")).to_contain_text("GitHub API")
 
 
 # ---------------------------------------------------------------------------

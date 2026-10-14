@@ -5,9 +5,11 @@ import asyncio
 import contextlib
 import copy
 import json
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coordinare.dashboard.helpers import (
@@ -22,6 +24,11 @@ from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
+from coordinare.services.system_health import (
+    SYSTEM_HEALTH,
+    SystemHealthInputs,
+    build_system_health,
+)
 from coordinare.services.token_usage import (
     PriceTable,
     TokenLedger,
@@ -124,6 +131,27 @@ def _daemon_started_at_iso() -> str | None:
     except (TypeError, ValueError):
         return None
     return started.isoformat()
+
+
+def _as_list(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _env_bootstrap_failed(state: object) -> bool:
+    """151: a symphony's env cache has given up bootstrapping, or its last bootstrap failed."""
+    return bool(getattr(state, "bootstrap_exhausted", False)) or getattr(state, "last_bootstrap_succeeded", None) is False
+
+
+def _disk_free_fraction(config: object) -> float | None:
+    """151: free space on the volume that holds the state file, or None when it cannot be read."""
+    state_file = getattr(config, "state_file_path", None)
+    if not isinstance(state_file, Path):
+        return None
+    try:
+        usage = shutil.disk_usage(state_file.resolve().parent)
+    except OSError:
+        return None
+    return usage.free / usage.total if usage.total else None
 
 
 @dataclass
@@ -414,7 +442,35 @@ class DashboardStore:
         extras = self._snapshot_extras(
             daemon, board_summary, last_poll_at, (cycles_completed, started_at), error_count,
         )
-        return {**core, **extras}
+        system_health = self._system_health(daemon, subsystems, len(active_session_summaries))
+        return {**core, **extras, "system_health": system_health}
+
+    @staticmethod
+    def _system_health(
+        daemon: CoordinareDaemon, subsystems: list[dict[str, Any]], active_performers: int,
+    ) -> dict[str, Any]:
+        """151: the System health card's rows, from what the daemon recorded, the config and the local disk.
+
+        Reads only: no API call is made to build these rows.
+        """
+        config = daemon.state.get("config")
+        env_cache = daemon.state.get("env_cache")
+        env_states: dict[str, Any] = env_cache if isinstance(env_cache, dict) else {}
+        inputs = SystemHealthInputs(
+            now=datetime.now(UTC),
+            health={str(row.get("name")): str(row.get("status")) for row in subsystems},
+            poll_interval_seconds=_poll_interval(config),
+            webhooks_enabled=bool(getattr(getattr(config, "webhooks", None), "enabled", False)),
+            performer_modes=tuple(
+                str(getattr(endpoint, "mode", "")) for endpoint in _as_list(getattr(config, "performer_endpoints", None))
+            ),
+            active_performers=active_performers,
+            disk_free_fraction=_disk_free_fraction(config),
+            env_symphonies=len(env_states),
+            env_failed=tuple(sorted(name for name, state in env_states.items() if _env_bootstrap_failed(state))),
+            env_ready=sum(1 for state in env_states.values() if getattr(state, "last_bootstrap_succeeded", None) is True),
+        )
+        return build_system_health(SYSTEM_HEALTH, inputs)
 
     @staticmethod
     def _subsystem_rows(health: HealthRegistry) -> list[dict[str, Any]]:

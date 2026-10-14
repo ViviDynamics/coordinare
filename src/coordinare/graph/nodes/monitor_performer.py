@@ -64,6 +64,7 @@ from coordinare.graph.nodes.monitor.verdict import (
     _stamp_feedback_bounce,
     _summarise_feedback_items,
 )
+from coordinare.services.system_health import SYSTEM_HEALTH
 from coordinare.vocabulary import phase_label
 
 if TYPE_CHECKING:
@@ -81,7 +82,9 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     wrapper covers every one of them, where patching individual sites would
     leave the siblings silent.
     """
+    phase_before = state.get("phase")
     result = await _monitor_performer_body(state)
+    _record_model_turn(phase_before, result)
     if isinstance(result, dict) and result.get("phase") in {"blocked", "system_error"}:
         reason = result.get("system_error_reason") or "no reason reported"
         _record_activity(
@@ -92,6 +95,18 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             stage=str(result.get("performer_stage") or ""),
         )
     return result
+
+
+def _record_model_turn(phase_before: object, result: object) -> None:
+    """151: a performer turn that ends in a system error is a model-backend failure; one that
+    leaves monitoring without one is a success. A poll that is still running records nothing."""
+    if not isinstance(result, dict):
+        return
+    phase_after = result.get("phase")
+    if phase_after == "system_error":
+        SYSTEM_HEALTH.record_model_turn(ok=False)
+    elif phase_before == "monitoring_performer" and phase_after != "monitoring_performer":
+        SYSTEM_HEALTH.record_model_turn(ok=True)
 
 
 __all__ = [

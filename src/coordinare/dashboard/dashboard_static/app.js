@@ -402,7 +402,10 @@ function renderState(s) {
 
   // Subsystems
   var subsEl = document.getElementById('subsystems-section');
-  if (!s.subsystems || s.subsystems.length === 0) {
+  if (s.system_health) {
+    // 151: one row per subsystem, with its status and how fresh it is.
+    subsEl.innerHTML = systemHealthHtml(s.system_health);
+  } else if (!s.subsystems || s.subsystems.length === 0) {
     subsEl.innerHTML = '<span class="empty-state">No subsystems registered</span>';
   } else {
     var overall = s.overall_health || computeOverallHealth(s.subsystems);

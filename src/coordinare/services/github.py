@@ -17,6 +17,7 @@ from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.issue_comment_service import normalize_logins
+from coordinare.services.system_health import SYSTEM_HEALTH
 
 logger = structlog.get_logger(__name__)
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
@@ -654,6 +655,18 @@ def _next_comment_page_url(resp: httpx.Response) -> str | None:
     return None
 
 
+async def _rate_limited(exc: aiohttp.ClientResponseError) -> RateLimitedGitHubError:
+    """A 429 from GitHub: record the quota it carries (151), wait out Retry-After, and name the error to raise."""
+    SYSTEM_HEALTH.record_github_rate(exc.headers)
+    raw = exc.headers.get("Retry-After", "60") if exc.headers else "60"
+    try:
+        retry_after = float(raw)
+    except (ValueError, TypeError):
+        retry_after = 60.0
+    await asyncio.sleep(retry_after)
+    return RateLimitedGitHubError(retry_after=retry_after)
+
+
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -840,15 +853,11 @@ class GitHubService(CardIdentityMap):
                     result = await result_or_awaitable
                 else:
                     result = result_or_awaitable
+            # 151: every response carries its quota; the transport keeps the last one's headers.
+            SYSTEM_HEALTH.record_github_rate(getattr(getattr(client, "transport", None), "response_headers", None))
         except aiohttp.ClientResponseError as exc:
             if exc.status == 429:
-                raw = exc.headers.get("Retry-After", "60") if exc.headers else "60"
-                try:
-                    retry_after = float(raw)
-                except (ValueError, TypeError):
-                    retry_after = 60.0
-                await asyncio.sleep(retry_after)
-                raise RateLimitedGitHubError(retry_after=retry_after) from exc
+                raise await _rate_limited(exc) from exc
             if exc.status == 401:
                 raise AuthGitHubError(str(exc)) from exc
             if exc.status >= 500:
@@ -930,14 +939,19 @@ class GitHubService(CardIdentityMap):
                 action="execute",
                 outcome="success",
             ).inc()
+            SYSTEM_HEALTH.record_github_call(ok=True)
             return result
-        except Exception:
+        except Exception as exc:
             METRICS.service_calls_total.labels(
                 symphony=get_current_symphony(),
                 service="github",
                 action="execute",
                 outcome="failure",
             ).inc()
+            # 151: only a transient failure says anything about GitHub's health. The class name
+            # is recorded, never the message, which can carry credentials.
+            if isinstance(exc, TransientGitHubError):
+                SYSTEM_HEALTH.record_github_call(ok=False, error=type(exc).__name__)
             raise
 
     @staticmethod
@@ -1033,6 +1047,17 @@ class GitHubService(CardIdentityMap):
             raise RuntimeError(msg)
 
     async def poll_board(self) -> dict[str, Any]:
+        """Read the board, recording the outcome for the System health card (151)."""
+        label = f"{getattr(self, '_org', '')}/{getattr(self, '_project_number', '')}"
+        try:
+            board = await self._read_board()
+        except Exception as exc:
+            SYSTEM_HEALTH.record_board_poll(label, ok=False, error=type(exc).__name__)
+            raise
+        SYSTEM_HEALTH.record_board_poll(label, ok=True)
+        return board
+
+    async def _read_board(self) -> dict[str, Any]:
         self._ensure_initialized()
         items: list[dict[str, Any]] = []
         cursor: str | None = None

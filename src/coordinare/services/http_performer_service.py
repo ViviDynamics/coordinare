@@ -45,6 +45,7 @@ from coordinare.services.run_transcript import (
     RootGuard,
     transcript_root_conflicts,
 )
+from coordinare.services.system_health import SYSTEM_HEALTH
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
@@ -561,7 +562,12 @@ class HTTPPerformerService:
                 started = await self._runtime.start_ephemeral(
                     effective_config, **start_kwargs,
                 )
+                SYSTEM_HEALTH.record_performer_start(type(self._runtime).__name__, ok=True)
             except performer_lifecycle.LifecycleError as exc:
+                # 151: the class name only; the message can carry runtime detail.
+                SYSTEM_HEALTH.record_performer_start(
+                    type(self._runtime).__name__, ok=False, error=type(exc).__name__,
+                )
                 logger.warning(
                     "http_performer.start_failed",
                     performer_id=self._config.id,
