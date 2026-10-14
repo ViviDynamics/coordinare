@@ -4,20 +4,25 @@ A role whose output is a report, not a change, still runs as a free agent turn
 with write access to its clone. Nothing stopped such a turn from editing a
 source or test file it had read, and the next commit carried the edit out.
 
-This module is the harness-side check. It lists what a turn dirtied, discards
-whatever falls outside the role's allowlist, and returns those paths so the
-verdict can name them. Allowlists are path-exact, not prefixes: a role gets
-the files it names and nothing beside them.
+This module is the harness-side check. It lists what a turn changed and sorts
+every path outside the role's allowlist into two groups:
 
-Untracked build detritus (``__pycache__`` and the like) is not a change to the
-repository and is left alone. A tracked file is always in scope.
+* ``restored``: tracked at HEAD and changed. The file is restored from HEAD.
+  This is a verdict problem for the caller.
+* ``left_out``: untracked, or staged but not tracked. Staged entries are
+  unstaged, nothing is deleted, and nothing outside the allowlist is ever
+  committed. This is not a verdict problem: test runs routinely leave coverage
+  output and build artifacts behind.
+
+Allowlists are path-exact, not prefixes: a role gets the files it names and
+nothing beside them. Untracked build detritus (``__pycache__`` and the like) is
+not a change to the repository and is not reported at all.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import structlog
 
@@ -27,12 +32,13 @@ from performer.workspace import WorkspaceSetupError, _run_git, _run_git_stdout
 
 log = structlog.get_logger(__name__)
 
-#: Cap on paths carried in a log line or a verdict. Every out-of-scope path is
-#: still discarded; only the report of them is bounded.
+#: Cap on paths carried in a log line or a verdict. The full set is still
+#: handled; only the report of it is bounded.
 MAX_REPORTED_PATHS = 20
 
 _UNTRACKED = "??"
 _RENAME_OR_COPY = frozenset("RC")
+_UNSTAGED_STATUS = frozenset(" ?")
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,14 @@ class DirtyPath:
 
     status: str
     path: str
+
+
+@dataclass(frozen=True)
+class ScopeResult:
+    """What the guard did with the paths outside the allowlist."""
+
+    restored: list[str]
+    left_out: list[str]
 
 
 def _git_env(stand: Stand) -> dict[str, str]:
@@ -104,58 +118,64 @@ def _out_of_scope(entries: list[DirtyPath], allowed: set[str]) -> list[str]:
     return outside
 
 
-def _is_safe_relative(path: str) -> bool:
-    return bool(path) and not Path(path).is_absolute() and ".." not in Path(path).parts
+async def _restore_from_head(stand: Stand, paths: list[str]) -> None:
+    rc, err = await _run_git(
+        ["git", "checkout", "HEAD", "--", *paths],
+        cwd=stand.path,
+        env=_git_env(stand),
+    )
+    if rc != 0:
+        message = f"could not restore {len(paths)} path(s) from HEAD (exit {rc}): {err[:200]}"
+        raise WorkspaceSetupError(message)
 
 
-async def _discard(stand: Stand, paths: list[str]) -> None:
-    """Restore tracked paths from HEAD and remove the rest.
+async def _unstage(stand: Stand, paths: list[str]) -> None:
+    """Remove *paths* from the index only. The files stay on disk."""
+    rc, err = await _run_git(
+        ["git", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", *paths],
+        cwd=stand.path,
+        env=_git_env(stand),
+    )
+    if rc != 0:
+        message = f"could not unstage {len(paths)} path(s) (exit {rc}): {err[:200]}"
+        raise WorkspaceSetupError(message)
 
-    Raises WorkspaceSetupError when git refuses; a failed discard must not be
-    followed by a publish.
+
+async def enforce_write_scope(stand: Stand, allowed: set[str], *, role: str) -> ScopeResult:
+    """Sort every changed path outside *allowed* and act on it.
+
+    Tracked paths are restored from HEAD. Untracked and staged-only paths are
+    unstaged (never deleted) and reported as left out. Nothing here commits.
+    Raises WorkspaceSetupError when the tree cannot be read or restored, so an
+    unverified write is never published.
     """
-    env = _git_env(stand)
+    entries = await dirty_paths(stand)
+    outside = _out_of_scope(entries, allowed)
+    if not outside:
+        return ScopeResult(restored=[], left_out=[])
+
     tracked = await head_paths(stand)
-    restore = [path for path in paths if path in tracked]
-    stray = [path for path in paths if path not in tracked]
-    if restore:
-        rc, err = await _run_git(
-            ["git", "checkout", "HEAD", "--", *restore],
-            cwd=stand.path,
-            env=env,
-        )
-        if rc != 0:
-            message = f"could not restore {len(restore)} path(s) from HEAD (exit {rc}): {err[:200]}"
-            raise WorkspaceSetupError(message)
-    if stray:
-        rc, err = await _run_git(
-            ["git", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", *stray],
-            cwd=stand.path,
-            env=env,
-        )
-        if rc != 0:
-            message = f"could not unstage {len(stray)} path(s) (exit {rc}): {err[:200]}"
-            raise WorkspaceSetupError(message)
-        for path in stray:
-            target = stand.path / path
-            if _is_safe_relative(path) and (target.is_file() or target.is_symlink()):
-                target.unlink()
+    restored = [path for path in outside if path in tracked]
+    left_out = [path for path in outside if path not in tracked]
+    staged_set = {entry.path for entry in entries if entry.status[:1] not in _UNSTAGED_STATUS}
+    staged = [path for path in left_out if path in staged_set]
 
-
-async def enforce_write_scope(stand: Stand, allowed: set[str], *, role: str) -> list[str]:
-    """Discard every changed path outside *allowed* and return those paths.
-
-    The returned list is in git's order, with duplicates removed. It is empty
-    when the turn stayed in scope. Raises WorkspaceSetupError when the tree
-    cannot be read or restored, so an unverified write is never published.
-    """
-    outside = _out_of_scope(await dirty_paths(stand), allowed)
-    if outside:
-        await _discard(stand, outside)
+    if restored:
+        await _restore_from_head(stand, restored)
         log.warning(
-            "write_scope.discarded",
+            "write_scope.restored",
             role=role,
-            count=len(outside),
-            paths=outside[:MAX_REPORTED_PATHS],
+            count=len(restored),
+            paths=restored[:MAX_REPORTED_PATHS],
         )
-    return outside
+    if staged:
+        await _unstage(stand, staged)
+    if left_out:
+        log.info(
+            "write_scope.left_out",
+            role=role,
+            count=len(left_out),
+            staged_unstaged=len(staged),
+            paths=left_out[:MAX_REPORTED_PATHS],
+        )
+    return ScopeResult(restored=restored, left_out=left_out)

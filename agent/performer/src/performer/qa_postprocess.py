@@ -63,7 +63,7 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     # 098: before anything is committed, keep the turn to its report and the
     # new test files it declares. The loop below writes model-named paths.
     try:
-        write_scope_discarded, write_scope_refused = await _qa_write_scope(
+        write_scope_restored, write_scope_refused = await _qa_write_scope(
             perf, qa_output, _doc_folder(perf.score),
         )
     except WorkspaceSetupError as exc:
@@ -215,11 +215,15 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             visual_evidence=visual_evidence,
         ),
     )
-    # 098: a turn that changed files outside its scope has a QA verdict problem,
-    # whatever its findings say. The changes were discarded, not published.
-    write_scope_paths = list(dict.fromkeys([*write_scope_discarded, *write_scope_refused]))
-    if write_scope_paths:
-        failures.append(_write_scope_failure(write_scope_paths, _doc_folder(perf.score)))
+    # 098: a tracked file the turn changed outside its scope, or a declared path
+    # it was not allowed to write, is a QA verdict problem whatever the findings
+    # say. Untracked artifacts are not in these lists and never fail the verdict.
+    if write_scope_restored or write_scope_refused:
+        failures.append(
+            _write_scope_failure(
+                write_scope_restored, write_scope_refused, _doc_folder(perf.score),
+            ),
+        )
     latest_main_sha = perf.score.latest_main_sha.strip()
     qa_freshness_check: dict = {}
     if not latest_main_sha:
@@ -905,10 +909,11 @@ async def _qa_write_scope(
 ) -> tuple[list[str], list[str]]:
     """098: restrict a QA turn to its report and the new test files it declares.
 
-    Returns ``(discarded, refused)``. ``discarded`` are changed paths outside the
-    allowlist, now restored or removed. ``refused`` are declared new-file paths
-    the commit loop must not write: a path that already exists at HEAD, or one
-    that is not test-shaped. Both are verdict evidence. Raises
+    Returns ``(restored, refused)``. ``restored`` are tracked paths the turn
+    changed outside the allowlist, now restored from HEAD. ``refused`` are
+    declared new-file paths the commit loop must not write: a path that already
+    exists at HEAD, or one that is not test-shaped. Both are verdict evidence.
+    Untracked leftovers are handled by the guard and are not returned. Raises
     WorkspaceSetupError when the tree cannot be checked.
     """
     # A stand that is not a clone cannot publish anything (commit_file needs a
@@ -924,25 +929,36 @@ async def _qa_write_scope(
                 refused.append(path)
             else:
                 allowed.add(path)
-    discarded = await enforce_write_scope(perf.stand, allowed, role="qa")
-    return discarded, refused
+    scope = await enforce_write_scope(perf.stand, allowed, role="qa")
+    return scope.restored, refused
 
 
-def _write_scope_failure(paths: list[str], report_path: str) -> dict:
-    """The QA defect for out-of-scope writes. Its wording must not trip the
-    environmental classifier: a clobber is a defect, not a missing tool."""
+def _bounded_paths(paths: list[str]) -> str:
     shown = ", ".join(paths[:MAX_REPORTED_PATHS])
     overflow = len(paths) - MAX_REPORTED_PATHS
     if overflow > 0:
         shown += f" (and {overflow} more)"
+    return shown
+
+
+def _write_scope_failure(restored: list[str], refused: list[str], report_path: str) -> dict:
+    """The QA defect for out-of-scope writes. Its wording must not trip the
+    environmental classifier: a clobber is a defect, not a missing tool."""
+    parts: list[str] = []
+    if restored:
+        shown = _bounded_paths(restored)
+        parts.append(f"tracked files changed outside the scope, restored from HEAD: {shown}")
+    if refused:
+        shown = _bounded_paths(refused)
+        parts.append(f"declared paths not written (exist at HEAD or are not test files): {shown}")
     return {
         "file": None,
         "line": None,
-        "message": "QA turn changed paths outside its report scope; those changes were discarded",
+        "message": "QA turn changed tracked files or declared paths outside its report scope",
         "type": "write_scope_violation",
         "criterion": "QA turn writes only its report and new test files",
         "expected": f"Only {report_path} and new test files are written",
-        "actual": f"Changes outside the QA scope were discarded: {shown}",
+        "actual": "; ".join(parts),
     }
 
 

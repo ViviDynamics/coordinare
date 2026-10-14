@@ -599,6 +599,11 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         '"path_or_url": "https://... or path/in/repo.png", '
         '"note": "optional context"}]}\n'
         "```\n"
+        "`new_test_files` is ONLY for new acceptance-test files. Each `path` "
+        "must be a NEW path that does not exist in the repository yet. Existing "
+        "files must never be overwritten, including existing test modules. "
+        "Prose (verification notes, reasoning, narrative) belongs in "
+        "`verification_steps` and the QA report, never in a test file.\n"
         "`verification_steps` is REQUIRED and must be non-empty. For every "
         "criterion counted in `criteria_passed`, `executed_checks` must carry "
         "a corresponding entry (command + exit_code) — unless you set "
