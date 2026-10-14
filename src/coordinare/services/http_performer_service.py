@@ -84,30 +84,14 @@ _TRANSCRIPT_TEARDOWN_SECONDS = 5.0
 # The share of a drain's bound kept for the truncation marker, so that the drain and
 # its marker together never exceed the bound (review 5, item 4).
 _TRANSCRIPT_MARKER_SECONDS = 1.0
+# The most aclose waits for teardown steps still running (review 6, F2).
+_CLOSE_TEARDOWN_SECONDS = 10.0
 # How many finished runs are remembered, so that a late poll or teardown never
 # recreates a writer for them (129 review, item 7).
 _TRANSCRIPT_FINALISED_MEMORY = 4096
 # The most a status poll waits for one transcript operation (review item 4). A slow
 # disk delays the transcript, never completion detection.
 _TRANSCRIPT_POLL_SECONDS = 2.0
-
-
-async def _run_shielded[T](awaitable: Awaitable[T]) -> T:
-    """Run a teardown step so that a cancellation of the caller cannot skip it.
-
-    The step runs as its own task. If the caller is cancelled while waiting, the
-    cancellation is raised only after the step has finished, so the container is
-    stopped exactly once and the cancellation still propagates (review 5, blocker 2).
-    """
-    task = asyncio.ensure_future(awaitable)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.wait({task})
-        if not task.cancelled():
-            # Retrieved here, so a failure of the step is not reported as unhandled.
-            task.exception()
-        raise
 
 
 def _known_missing_job(exc: httpx.HTTPStatusError) -> bool:
@@ -285,6 +269,8 @@ class HTTPPerformerService:
         # Runs whose transcript was drained on the terminal path. Their teardown does not
         # drain again, so each run is drained exactly once (review round 4, item 5).
         self._transcript_drained: set[str] = set()
+        # Shielded teardown steps still running; aclose waits for them (review 6, F2).
+        self._teardown_tasks: set[asyncio.Task[Any]] = set()
         # Spec 146: which runtime starts performers. Defaults to Docker so every
         # existing deployment and test behaves exactly as before; the Kubernetes
         # runtime is opted into via agent_transport config.
@@ -369,7 +355,32 @@ class HTTPPerformerService:
             )
         return self._persistent_client
 
+    async def _run_teardown[T](self, awaitable: Awaitable[T]) -> T:
+        """Run a teardown step so that a cancellation of the caller cannot skip it.
+
+        The step runs as its own task, recorded so that ``aclose`` can wait for it. If
+        the caller is cancelled while waiting, the cancellation is raised only after the
+        step has finished, so the container is stopped exactly once and the cancellation
+        still propagates (review 5, blocker 2; review 6, F2).
+        """
+        task = asyncio.ensure_future(awaitable)
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.wait({task})
+            if not task.cancelled():
+                # Retrieved here, so a failure of the step is not reported as unhandled.
+                task.exception()
+            raise
+
     async def aclose(self) -> None:
+        # Teardown steps still running are awaited, bounded, so a shutdown does not
+        # abandon a container stop half way (review 6, F2).
+        running = set(self._teardown_tasks)
+        if running:
+            await asyncio.wait(running, timeout=_CLOSE_TEARDOWN_SECONDS)
         if self._persistent_client is not None and self._injected_client is None:
             await self._persistent_client.aclose()
             self._persistent_client = None
@@ -551,6 +562,8 @@ class HTTPPerformerService:
             client = ephemeral_job.client if ephemeral_job is not None else self._ensure_client()
             response = await client.post_job(payload)
         except (PerformerAuthError, PerformerUnreachableError, TransportError) as exc:
+            # The run was never accepted, so its refusal marker is dropped (review 6, F8).
+            self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             logger.warning(
@@ -559,11 +572,15 @@ class HTTPPerformerService:
                 error=str(exc),
             )
             return {"status": "error", "reason": str(exc)}
+        except Exception:
+            self._transcript_refused.discard(session_id)
+            raise
 
         # 409 busy → surface as error so the dispatch loop retries next cycle.
         if not getattr(response, "accepted", False):
             reason = getattr(response, "reason", "busy")
             detail = getattr(response, "detail", None)
+            self._transcript_refused.discard(session_id)
             if ephemeral_job is not None:
                 await self._cleanup_ephemeral_job(ephemeral_job)
             return {
@@ -574,9 +591,8 @@ class HTTPPerformerService:
         # post_job's union collapses to JobAcceptResponse once the accepted=False
         # guard above has returned the only other shape.
         job_id = cast("JobAcceptResponse", response).job_id
-        # 129 (review 5, blocker 3): the job's secrets are kept only now that it is
-        # accepted. A refused, busy or failed dispatch never stores them.
-        self._remember_accepted_transcript_secrets(session_id, payload)
+        # Decided under the pre-dispatch id, the key the refusal was recorded under.
+        transcribed = self._transcribes(session_id)
         if ephemeral_job is not None:
             # 076 (T016/T017) — _active_jobs is keyed on coordinare-allocated
             # session_id (not the job-runner's job_id); job_id stays on
@@ -592,6 +608,11 @@ class HTTPPerformerService:
             # Persistent mode: no per-container session.  Use the job-runner's
             # job_id as the session_id (status quo for persistent endpoints).
             session_id = job_id
+        # 129 (review 5, blocker 3; review 6, blocker 2): the job's secrets are kept only
+        # once it is accepted, and under the run id the polls, the writer and the release
+        # use. In persistent mode that is the job id, never the pre-dispatch id.
+        if transcribed:
+            self._remember_transcript_secrets(session_id, payload)
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
@@ -859,22 +880,11 @@ class HTTPPerformerService:
             },
         )
 
-    def _remember_accepted_transcript_secrets(
-        self,
-        session_id: str,
-        payload: JobInitPayload,
-    ) -> None:
-        """Keep an accepted job's secret values so its records are redacted by exact value.
-
-        Called only after the performer accepted the job. Refused, busy and failed
-        dispatches store nothing, so a retried dispatch cannot grow the store (review 5,
-        blocker 3).
-        """
+    def _transcribes(self, session_id: str) -> bool:
+        """True when this run's records are captured: transcripts are on and the run is not refused."""
         if self._transcripts is None or not self._transcripts.enabled:
-            return
-        if session_id in self._transcript_refused:
-            return
-        self._remember_transcript_secrets(session_id, payload)
+            return False
+        return session_id not in self._transcript_refused
 
     def _remember_transcript_secrets(self, session_id: str, payload: JobInitPayload) -> None:
         """129: keep the job's secret values so the run's records are redacted by exact value."""
@@ -1105,7 +1115,7 @@ class HTTPPerformerService:
                 if exc.response.status_code == httpx.codes.NOT_FOUND:
                     raise
                 failure = f"http {exc.response.status_code}"
-            except (httpx.HTTPError, TransportError) as exc:
+            except Exception as exc:  # any failure of one pull is retried (review 6, F6)
                 failure = type(exc).__name__
             else:
                 if status.transcript_last_seq is not None or not status.transcript_error:
@@ -1387,7 +1397,7 @@ class HTTPPerformerService:
         try:
             await self._teardown_drain(session_id)
         finally:
-            confirmed = await _run_shielded(self._confirm_stopped(session_id))
+            confirmed = await self._run_teardown(self._confirm_stopped(session_id))
             if confirmed:
                 self._release_transcript_run(session_id)
         return confirmed
@@ -1481,7 +1491,7 @@ class HTTPPerformerService:
             await self._teardown_drain(job_id)
         finally:
             try:
-                await _run_shielded(self._stop_ephemeral_job(job_id))
+                await self._run_teardown(self._stop_ephemeral_job(job_id))
             finally:
                 self._release_transcript_run(job_id)
 

@@ -505,7 +505,9 @@ def test_pgp_private_key_block_is_redacted() -> None:
 
 
 def test_descriptive_suffixes_are_not_secrets() -> None:
-    assert tr.is_sensitive_key("token_count") is False
+    # Review 6: the descriptive relief is applied to the value, not the name. ``token_count``
+    # is still a credential name, but its number is kept.
+    assert tr.redact_value({"token_count": 5}) == {"token_count": 5}
     assert tr.is_sensitive_key("GITHUB_TOKEN") is True
 
 

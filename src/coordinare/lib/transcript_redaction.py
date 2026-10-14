@@ -160,6 +160,12 @@ _NUMBER_RE = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 _PATH_RE = re.compile(r"(?:~|\.{1,2})?/|[A-Za-z]:[\\/]")
 # A plain identifier or dotted name with no digits (``path``, ``self.cache``).
 _IDENTIFIER_VALUE_RE = re.compile(r"[A-Za-z_]+(?:\.[A-Za-z_]+)*")
+# A key that names an authorization header or credential. Searched, not matched.
+_AUTH_KEY_RE = re.compile(r"auth", re.IGNORECASE)
+# ``Bearer `` at the start of a value, optionally quoted. Matched with .match().
+_BEARER_PREFIX_RE = re.compile(r"[\"']?bearer[ \t]+", re.IGNORECASE)
+# A value that starts with a URL scheme. Matched with .match().
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
 # URL userinfo: ``scheme://user:password@host``. The password is redacted. The user may
 # be empty (``redis://:password@host``).
 _USERINFO_RE = re.compile(r"(://[^/\s:@]*:)[^/\s@]+@")
@@ -187,17 +193,14 @@ _VALUE_RES: tuple[re.Pattern[str], ...] = tuple(re.compile(p) for p in VALUE_PAT
 
 @functools.lru_cache(maxsize=4096)
 def _is_secret_name(name: str) -> bool:
-    """A name that holds a credential.
+    """A name that holds a credential: it carries a credential stem, strong or weak.
 
-    A strong stem always counts. Otherwise a weak stem counts unless the name ends in
-    a descriptive suffix (``token_count`` describes a secret; it does not hold one).
+    The suffix is not considered here. A descriptive suffix (``token_url``,
+    ``api_key_file``) does not stop the name from being a credential name, because the
+    value may still be one. The relief for descriptive names is applied to the value, in
+    ``_value_is_credential``.
     """
-    stems = [match.group(0) for match in _KEY_RE.finditer(name)]
-    if not stems:
-        return False
-    if any(_STRONG_RE.fullmatch(stem) for stem in stems):
-        return True
-    return _DESCRIPTIVE_RE.search(name) is None
+    return _KEY_RE.search(name) is not None
 
 
 def _bare_credential_value(name: str, value: str) -> bool:
@@ -225,7 +228,9 @@ def secret_values_from_env(environ: Mapping[str, str]) -> list[str]:
     return [
         value
         for name, value in environ.items()
-        if _is_secret_name(name) and len(value) >= MIN_EXACT_SECRET_LENGTH
+        if _is_secret_name(name)
+        and len(value) >= MIN_EXACT_SECRET_LENGTH
+        and _value_is_credential(name, value, bare_only=False, quoted=False)
     ]
 
 
@@ -468,17 +473,57 @@ def _non_secret_shape(value: str, *, strong: bool, descriptive: bool) -> bool:
       A strong stem keeps these: ``db_password_name=hunter2hunter2`` stays redacted,
       because its value has digits and is not a plain identifier.
     """
+    if _looks_like_credential(value):
+        return False
     if value == "" or value.lower() in _NON_SECRET_LITERALS:
         return True
     if _BOOLEAN_RE.fullmatch(value) is not None:
         return not (strong and not descriptive)
     if not descriptive or strong:
         return False
+    return _descriptive_value_shape(value)
+
+
+def _descriptive_value_shape(value: str) -> bool:
+    """A value that is not a credential under a descriptive, non-strong name.
+
+    A number, a path, a URL without userinfo, or a short plain identifier. A longer
+    identifier, or a value with digits, may be a credential and is not relieved.
+    """
     if _NUMBER_RE.fullmatch(value) is not None:
         return True
+    if _is_path_like(value) or _is_url_without_userinfo(value):
+        return True
+    return (
+        len(value) < MIN_EXACT_SECRET_LENGTH and _IDENTIFIER_VALUE_RE.fullmatch(value) is not None
+    )
+
+
+def _looks_like_credential(value: str) -> bool:
+    """True when the value itself has a known credential shape, whatever its name.
+
+    A value with a credential prefix, a token pattern, a JWT, or a URL with userinfo is
+    a credential, so the descriptive relief never applies to it.
+    """
+    if any(pattern.search(value) for pattern in _VALUE_RES):
+        return True
+    if _first_secret_offset(value) is not None:
+        return True
+    if "eyJ" in value and value.count(".") >= JWT_SEGMENTS - 1:
+        return True
+    return _USERINFO_RE.search(value) is not None
+
+
+def _is_path_like(value: str) -> bool:
+    """A path: starts ``/``, ``./``, ``../``, ``~/`` or a drive, or has a ``/`` and no ``=``."""
     if _PATH_RE.match(value) is not None:
         return True
-    return _IDENTIFIER_VALUE_RE.fullmatch(value) is not None
+    return "/" in value and "=" not in value
+
+
+def _is_url_without_userinfo(value: str) -> bool:
+    """A URL with a scheme and no ``user:password@`` part (checked by ``_looks_like_credential``)."""
+    return _URL_RE.match(value) is not None
 
 
 def _value_is_credential(name: str, value: str, *, bare_only: bool, quoted: bool) -> bool:
@@ -608,6 +653,30 @@ def _locate_assignment(text: str, separator_at: int) -> tuple[int, int, str, str
     return value_start, value_end, open_q, close_q
 
 
+def _is_auth_key(name: str) -> bool:
+    """A key that names an authorization header or credential (``auth_header``, ``Authorization``)."""
+    return _AUTH_KEY_RE.search(name) is not None
+
+
+def _replace_bearer(text: str) -> str:
+    """Replace the token of a ``Bearer <token>`` string, whatever its length."""
+    span = _bearer_token_span(text, 0)
+    if span is None:
+        return text
+    return text[: span[0]] + REDACTED + text[span[1] :]
+
+
+def _bearer_token_span(text: str, value_start: int) -> tuple[int, int] | None:
+    """Span of the token in a ``Bearer <token>`` value starting at ``value_start``, or None."""
+    prefix = _BEARER_PREFIX_RE.match(text, value_start)
+    if prefix is None:
+        return None
+    token = _UNQUOTED_RE.match(text, prefix.end())
+    if token is None or token.end() == prefix.end():
+        return None
+    return prefix.end(), token.end()
+
+
 def _redact_assignments(text: str) -> str:
     """Redact the value of each credential ``NAME=value`` or ``NAME: value``.
 
@@ -640,15 +709,26 @@ def _redact_assignments(text: str) -> str:
         if word.start() < cursor:
             continue
         bare_only = _is_bare_only_name(name)
-        if not bare_only and not _is_secret_name(name):
+        secret = _is_secret_name(name)
+        auth = _is_auth_key(name)
+        if not (bare_only or secret or auth):
             continue
         located = _locate_assignment(text, word.end())
         if located is None:
             continue
         value_start, value_end, open_q, close_q = located
-        value = text[value_start:value_end].strip()
-        if not _value_is_credential(name, value, bare_only=bare_only, quoted=bool(open_q)):
-            continue
+        bearer = _bearer_token_span(text, value_start) if (secret or auth) else None
+        if bearer is not None:
+            # ``auth_token_header: Bearer abc.def.ghi``: the token is a credential whatever its
+            # length, so only the token after ``Bearer`` is replaced.
+            value_start, value_end = bearer
+            open_q = close_q = ""
+        else:
+            if not (bare_only or secret):
+                continue
+            value = text[value_start:value_end].strip()
+            if not _value_is_credential(name, value, bare_only=bare_only, quoted=bool(open_q)):
+                continue
         out.append(text[cursor:value_start])
         out.append(open_q + REDACTED + close_q)
         cursor = value_end
@@ -695,6 +775,29 @@ def _redact_string(text: str, secrets: tuple[str, ...], depth: int) -> str:
     return redact_text(text, secrets)
 
 
+def _sensitive_item(key: str, item: Any, secrets: tuple[str, ...], depth: int) -> Any:
+    """The value under a credential key: kept when its shape is not a credential, else redacted.
+
+    Scalars (numbers, booleans, strings) are judged by ``_value_is_credential``, so the
+    descriptive relief applies to them too. A kept string still goes through the normal
+    text redaction, so a known secret inside it is removed. An empty container is kept.
+    Any other container under a credential key is replaced whole.
+    """
+    if isinstance(item, Mapping | list | tuple):
+        if len(item) == 0:
+            return {} if isinstance(item, Mapping) else []
+        return REDACTED
+    if isinstance(item, bool | int | float):
+        return (
+            REDACTED
+            if _value_is_credential(key, str(item), bare_only=False, quoted=False)
+            else item
+        )
+    if _value_is_credential(key, str(item), bare_only=False, quoted=True):
+        return REDACTED
+    return _redact(item, secrets, depth + 1)
+
+
 def _redact(value: Any, secrets: tuple[str, ...], depth: int) -> Any:
     if isinstance(value, str):
         return _redact_string(value, secrets, depth)
@@ -706,16 +809,9 @@ def _redact(value: Any, secrets: tuple[str, ...], depth: int) -> Any:
             key_text = str(key)
             clean_key = redact_text(key_text, secrets)
             if is_sensitive_key(key_text) and item is not None:
-                if isinstance(item, bool | int | float):
-                    keep = not _value_is_credential(
-                        key_text,
-                        str(item),
-                        bare_only=False,
-                        quoted=False,
-                    )
-                    out[clean_key] = item if keep else REDACTED
-                else:
-                    out[clean_key] = REDACTED
+                out[clean_key] = _sensitive_item(key_text, item, secrets, depth)
+            elif isinstance(item, str) and _is_auth_key(key_text):
+                out[clean_key] = _redact(_replace_bearer(item), secrets, depth + 1)
             else:
                 out[clean_key] = _redact(item, secrets, depth + 1)
         return out
