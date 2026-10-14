@@ -191,7 +191,7 @@ def test_the_history_table_lists_runs_with_a_transcript_link(page: Page, history
     expect(link).to_have_attribute("href", "/runs/alpha-sym/PVTI_A1/run-a1")
     row = link.locator("xpath=ancestor::tr")
     expect(row).to_contain_text("Alpha card")
-    expect(row).to_contain_text("Run 1")
+    expect(row.locator("a[href='/history?h.symphony=alpha-sym&h.card=PVTI_A1']")).to_have_count(1)
     expect(row).to_contain_text("1,200")
     expect(row).to_contain_text("Completed")
     expect(row.locator("a[href='" + PR_URL + "']")).to_have_count(1)
@@ -296,6 +296,10 @@ def test_older_and_newer_page_through_the_server_listing(page: Page, history_ser
     assert second_page, "the second page should hold the runs the first did not"
     assert not set(first_page) & set(second_page)
     page.locator("#history-page-section [data-history-action='newer']").click()
+    # Newer is disabled while the page loads, so wait for the first page's rows, not for the button.
+    expect(page.locator("#history-page-section a[data-history-link]").first).to_have_attribute(
+        "data-history-link", first_page[0], timeout=WAIT_PAGE,
+    )
     expect(page.locator("#history-page-section [data-history-action='newer']")).to_be_disabled(timeout=WAIT_PAGE)
     assert _links(page) == first_page
 
@@ -387,7 +391,9 @@ def test_a_run_written_while_paging_is_announced_not_silently_skipped(
     newest.parent.mkdir(parents=True, exist_ok=True)
     header = _header("run-late", "PVTI_LATE", "Late card", "implementing", 0)
     newest.write_text(json.dumps(header) + "\n" + json.dumps(_records("run-late", 0)[-1]) + "\n", encoding="utf-8")
-    os.utime(newest, (BASE.timestamp() + 10_000, BASE.timestamp() + 10_000))
+    # Written now, so its modification time is after page one's wall-clock anchor.
+    written = time.time_ns()
+    os.utime(newest, ns=(written, written))
     try:
         page.locator("#history-page-section [data-history-action='older']").click()
         expect(page.locator("#history-page-section")).to_contain_text(
