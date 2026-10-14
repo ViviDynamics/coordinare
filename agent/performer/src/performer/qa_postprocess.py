@@ -37,11 +37,15 @@ from performer.models import Score
 from performer.protocol import PerformerResponse
 from performer.workspace import WorkspaceSetupError
 from performer.write_scope import (
+    MAX_DISPLAY_CHARACTERS,
     MAX_REPORTED_PATHS,
     Refusal,
     ScopeReport,
+    TrackedPaths,
     declared_path_refusal,
+    display_path,
     enforce_write_scope,
+    exists_on_disk,
     head_paths,
 )
 
@@ -549,18 +553,20 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
 
     # Commit QA report to the architecture folder
     folder = _doc_folder(perf.score)
+    scope_notice = _scope_notice(qa_output, write_scope_refusals, write_scope_accepted)
     qa_report_content = f"# QA Report: {perf.score.title}\n\n"
     if qa_env_blocked:
         _result_text = "ENVIRONMENT-BLOCKED — UNVERIFIED"
     else:
         _result_text = "PASSED" if qa_passed_flag else "FAILED"
     qa_report_content += f"**Result: {_result_text}**\n\n"
+    qa_report_content += scope_notice
     qa_report_content += f"- Criteria checked: {criteria_checked}\n"
     qa_report_content += f"- Criteria passed: {criteria_passed}\n"
     if perf.qa_new_tests:
         qa_report_content += f"- New tests added: {len(perf.qa_new_tests)}\n"
         for tp in perf.qa_new_tests:
-            qa_report_content += f"  - `{tp}`\n"
+            qa_report_content += f"  - `{display_path(tp)}`\n"
     if pre_fix_repro_steps:
         qa_report_content += "\n## Known Reproduction Steps (pre-fix context)\n\n"
         for idx, step in enumerate(pre_fix_repro_steps, start=1):
@@ -608,17 +614,28 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
         qa_report_content += "\n## Out-of-scope edits restored (informational)\n\n"
         qa_report_content += "The turn changed these tracked files without declaring them. They were restored from HEAD and not published.\n\n"
         for restored_path in write_scope.restored[:MAX_REPORTED_PATHS]:
-            qa_report_content += f"- `{restored_path}`\n"
+            qa_report_content += f"- `{display_path(restored_path)}`\n"
+        if len(write_scope.restored) > MAX_REPORTED_PATHS:
+            qa_report_content += f"- and {len(write_scope.restored) - MAX_REPORTED_PATHS} more\n"
     # 188: informational. A declared new file the guard refused was not written, and
     # the refusal does not change the verdict.
     if write_scope_refusals:
         qa_report_content += "\n## Declared paths not written (informational)\n\n"
         qa_report_content += (
-            "The turn declared these new files and the write guard refused them. "
-            "Nothing was written to them, and the verdict is unaffected.\n\n"
+            "The turn declared these new files and the write guard refused them. The QA "
+            "performer did not write them, and they were not committed or published. "
+            "The verdict is unaffected.\n\n"
         )
         for refusal in write_scope_refusals[:MAX_REPORTED_PATHS]:
-            qa_report_content += f"- `{refusal.path}`: {refusal.reason}\n"
+            on_disk = (
+                " A file exists at this path on disk; it is untracked and was not published."
+                if refusal.on_disk
+                else ""
+            )
+            qa_report_content += f"- `{refusal.path}`: {refusal.reason}.{on_disk}\n"
+        if len(write_scope_refusals) > MAX_REPORTED_PATHS:
+            overflow = len(write_scope_refusals) - MAX_REPORTED_PATHS
+            qa_report_content += f"- and {overflow} more\n"
     if failures:
         qa_report_content += "\n## Failures\n\n"
         for f in failures:
@@ -946,13 +963,15 @@ async def _qa_write_scope(
     accepted: set[str] = set()
     refusals: list[Refusal] = []
     if isinstance(qa_output, dict):
-        tracked = await head_paths(perf.stand, head_at_start) if is_clone and head_at_start else set()
+        # Built once for the whole guard run, not once per declared path (188 review).
+        tracked_paths = await head_paths(perf.stand, head_at_start) if is_clone and head_at_start else set()
+        tracked = TrackedPaths.of(tracked_paths)
         for path in _declared_new_test_paths(qa_output):
             reason = declared_path_refusal(path, root=perf.stand.path, tracked=tracked)
             if reason is None:
                 accepted.add(str(path))
             else:
-                refusals.append(Refusal(str(path), reason))
+                refusals.append(_refusal_record(perf.stand.path, path, reason))
     if refusals:
         # 188: a refusal is a note. It is logged here and listed in the report.
         log.info(
@@ -970,8 +989,39 @@ async def _qa_write_scope(
     return report, refusals, accepted
 
 
+def _refusal_record(root: Path, path: object, reason: str) -> Refusal:
+    """One refusal, with the text a report shows and whether a file sits on disk there."""
+    raw = path if isinstance(path, str) else ""
+    return Refusal(
+        path=display_path(path),
+        reason=reason[:MAX_DISPLAY_CHARACTERS],
+        raw=raw,
+        on_disk=exists_on_disk(root, raw),
+    )
+
+
+def _scope_notice(qa_output: dict, refusals: list[Refusal], accepted: set[str]) -> str:
+    """188 review: say plainly next to the result when the checks rest on test files
+    that were not published. The verdict itself is not changed here."""
+    notices: list[str] = []
+    if refusals and not accepted:
+        notices.append(
+            "Every new test file the turn declared was refused, so no test file from this "
+            "turn is in the branch. The verdict rests on checks whose test files were not published.",
+        )
+    commands = [str(check.get("command", "")) for check in _qa_execution_evidence(qa_output)]
+    cited = [r for r in refusals if r.raw and any(r.raw in command for command in commands)]
+    if cited:
+        names = ", ".join(f"`{r.path}`" for r in cited[:MAX_REPORTED_PATHS])
+        notices.append(
+            "An executed check names a refused path, so that test file was not published: "
+            f"{names}.",
+        )
+    return "".join(f"**Notice:** {notice}\n\n" for notice in notices)
+
+
 def _bounded_paths(paths: list[str]) -> str:
-    shown = ", ".join(paths[:MAX_REPORTED_PATHS])
+    shown = ", ".join(display_path(p) for p in paths[:MAX_REPORTED_PATHS])
     overflow = len(paths) - MAX_REPORTED_PATHS
     if overflow > 0:
         shown += f" (and {overflow} more)"
