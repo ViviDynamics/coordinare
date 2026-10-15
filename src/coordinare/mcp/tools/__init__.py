@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from . import (
     config_tools,
+    event_tools,
     lifecycle_tools,
     persona_tools,
     state_tools,
@@ -29,6 +30,7 @@ def _all_tools() -> tuple[ToolDefinition, ...]:
         persona_tools.TOOLS,
         lifecycle_tools.TOOLS,
         state_tools.TOOLS,
+        event_tools.TOOLS,
     )
     return tuple(tool for module_tools in modules for tool in module_tools)
 

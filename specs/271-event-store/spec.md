@@ -1,4 +1,4 @@
-# 271: Persistent event store, phase 1 of 3
+# 271: Persistent event store, phases 1 and 2 of 3
 
 ## Purpose and scope
 
@@ -124,3 +124,45 @@ microseconds before correction and 6.59 microseconds afterward across nine sampl
 with 30 second deadlines. The throughput test checks row correctness without a
 performance floor. SQLite retains rollback journaling; NFS state volumes require working
 locking and local disk is recommended.
+
+## Phase 2: incident queries
+
+The Logs page at `/logs` reads `GET /api/events`. Its shared EventQuery contract
+validates timezone bearing ISO timestamps, an ordered inclusive range, exact symphony,
+card, run, stage, source, kind and level filters, literal message search, and the
+store's opaque cursor. Text filters are bounded to 1024 characters, cursors to 512,
+and limits to 1 through 500. HTTP defaults to 100 rows; the browser requests 50.
+SQLite reads remain inside EventStore.query_events's worker thread. Storage failures
+return a generic unavailable response. Responses are never cached and receive another
+redact_state_value and sensitive key redaction pass, including legacy rows.
+
+The page participates in the existing navigation, static asset registration and
+symphony switcher. It reads currentScopedState. A header scope fixes the symphony
+parameter on every query, including form submissions; this remains a display filter,
+not an authorization boundary. No snapshot fields are added. The existing snapshot
+scope declarations and unscoped read allow list remain exhaustive.
+
+Rows show the shared timeHtml timestamp, level, source, symphony, card, kind and
+message, with a native disclosure for redacted JSON. Card and run addresses use the
+existing helpers. An integer transcript_seq adds the transcript's #e fragment. A run
+without a card address uses the existing short run route. All interpolated values
+are escaped and the page script uses ES5 syntax.
+
+A successful writer commit calls an optional event loop callback, outside the write
+retry path. It broadcasts only an events_changed notification through the existing
+bounded SSE queues. Callback failures cannot retry a committed insert. Live readers
+requery page one with their own filters; commit bursts coalesce and an outstanding
+query retains one catchup notification. Reconnect and heartbeat also requery, so a
+full SSE queue cannot permanently lose new rows. Paging disables Live. Request logs
+for this read endpoint use DEBUG to prevent an INFO log, commit, query feedback loop.
+
+The MCP registry exposes query_events with a query object using the same EventQuery
+model, including cursor and limit. The existing authenticated DashboardClient applies
+its read timeout budget and ToolResult error mapping. The HTML page is deferred in
+the MCP page path registry; the API is covered by the tool.
+
+Tests cover HTTP validation, scope, paging, legacy redaction, storage errors, auth,
+MCP registration and invocation, commit notification ordering and failure isolation,
+and the shipped JavaScript under node. The new browser file tests filtering, paging,
+Live, links and JSON expansion in either Chromium or Firefox. Browser tests require
+an environment that permits binding a server socket and are left for the operator.

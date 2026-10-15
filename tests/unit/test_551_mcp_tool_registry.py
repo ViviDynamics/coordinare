@@ -119,6 +119,11 @@ EXPECTED_TOOLS: dict[str, dict[str, Any]] = {
         ],
     },
     # state
+    "query_events": {
+        "domain": "state",
+        "annotations": _ann(True, False, True),
+        "rest_calls": [("GET", "/api/events")],
+    },
     "get_state": {
         "domain": "state",
         "annotations": _ann(True, False, True),

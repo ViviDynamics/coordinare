@@ -121,6 +121,7 @@ class EventStore:
         self._task: asyncio.Task[None] | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="event-store")
         self._db: sqlite3.Connection | None = None
+        self.on_commit: Callable[[], None] | None = None
         self._stats: dict[str, Any] = {"size_bytes": 0, "rows": 0, "oldest_ts": None}
 
     def emit(self, event: Mapping[str, Any]) -> bool:
@@ -292,6 +293,9 @@ class EventStore:
                         delay = min(delay * RETRY_BACKOFF, RETRY_MAX_SECONDS)
                 else:
                     failed = False
+                    if self.on_commit is not None:
+                        with contextlib.suppress(Exception):
+                            self.on_commit()
                     self._writer_state = "failed" if self._stats_error else "idle"
                     self._last_error = self._stats_error
                     break

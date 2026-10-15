@@ -20,6 +20,8 @@ from coordinare.mcp.config import McpServerConfig
 from coordinare.mcp.server import run_stdio
 from coordinare.mcp.tools import REGISTRY
 
+EXPECTED_TOOL_COUNT = 17
+
 
 def _stdio_config(**overrides: object) -> McpServerConfig:
     kwargs: dict[str, object] = {
@@ -68,7 +70,7 @@ async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> Non
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         tools = await session.list_tools()
-        assert len(tools.tools) == len(REGISTRY) == 16
+        assert len(tools.tools) == len(REGISTRY) == EXPECTED_TOOL_COUNT
         result = await session.call_tool("get_config", {"scope": "all"})
         payload = json.loads(result.content[0].text)
         assert payload["ok"] is False

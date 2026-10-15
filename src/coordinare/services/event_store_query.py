@@ -123,3 +123,8 @@ def read_events(
             json.dumps([last["ts"], last["id"]]).encode(),
         ).decode()
     return {"events": items, "cursor": next_cursor}
+
+
+def validate_event_cursor(cursor: str) -> None:
+    """Validate an external cursor without touching the database."""
+    _cursor_values(cursor)
