@@ -34,9 +34,11 @@ ALPHA = "alpha-sym"
 BETA = "beta-sym"
 HIDDEN = "hidden-sym"
 CONDUCTOR = "_conductor"
-# Today, not a fixed day: the dashboard's token ledger prunes runs older than its window from the
-# real clock, and a fixed day would be pruned from the snapshot's totals.
-BASE = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
+# Yesterday at 10:00 UTC, not a fixed day: the dashboard's token ledger prunes runs older than its
+# window from the real clock, and a fixed day would be pruned from the snapshot's totals. Not today
+# either: between 00:00 and 10:00 UTC today's 10:00 is in the future, and the paging anchor (the
+# server's clock on page one) rightly hides runs written after it, which emptied page two.
+BASE = (datetime.now(UTC) - timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
 TODAY = BASE.date().isoformat()
 TOMORROW = (BASE + timedelta(days=1)).date().isoformat()
 PAGE_SIZE = 50
