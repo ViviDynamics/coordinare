@@ -390,8 +390,6 @@ def _register_update_global_config(app: FastAPI, ctx: DashboardContext) -> None:
             if refusal is not None:
                 return refusal
 
-            # 252: placeholders left out of the launch are saved, and reported back as warnings.
-            warnings = candidate_warnings(loaded)
             _atomic_write_yaml(config_path, loaded)
 
             if hasattr(daemon, "_config_reload_trigger"):
@@ -413,7 +411,7 @@ def _register_update_global_config(app: FastAPI, ctx: DashboardContext) -> None:
                 "status": "saved",
                 "reload_triggered": hasattr(daemon, "_config_reload_trigger"),
                 "new_hash": saved_hash,
-                "warnings": [w.model_dump(mode="json") for w in warnings],
+                "warnings": [w.model_dump(mode="json") for w in candidate_warnings(loaded)],  # 252
             })
 
 
