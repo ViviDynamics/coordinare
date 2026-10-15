@@ -36,7 +36,7 @@ from coordinare.graph.state import (
     initial_state,
 )
 from coordinare.lib.clarifications import annotate_clarifications
-from coordinare.lib.redaction import clip_session_error, redact_state_value
+from coordinare.lib.redaction import redact_state_value
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -75,6 +75,7 @@ from coordinare.services.reconciliation import (
 )
 from coordinare.services.run_log import RunLogCollector, prune_run_logs
 from coordinare.services.run_transcript import TranscriptCollector, prune_expired
+from coordinare.services.symphony_failures import record_cycle_failure, record_cycle_success
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
     DocumentingSideRun,
@@ -3475,6 +3476,8 @@ class CoordinareDaemon:
         """Mirror the finished cycle's results back onto the symphony state."""
         sym_state.cycle_count = getattr(sym_state, "cycle_count", 0) + 1
         sym_state.last_poll_at = datetime.now(UTC)
+        # 156: a successful cycle ends the run of failures, so the Status reads healthy again.
+        record_cycle_success(sym_state)
         board_snap = self._state.get("board_snapshot")
         if board_snap is not None:
             sym_state.board_snapshot = board_snap
@@ -3586,8 +3589,7 @@ class CoordinareDaemon:
             sym_states = self._state.get("symphony_states") or {}
             s = sym_states.get(symphony_name)
             if s is not None:
-                s.error_count = getattr(s, "error_count", 0) + 1
-                s.last_error = clip_session_error(redact_state_value(str(exc)))
+                record_cycle_failure(s, exc)
             # Do NOT re-raise — other symphonies continue
         finally:
             clear_symphony()

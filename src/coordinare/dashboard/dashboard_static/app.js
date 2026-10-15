@@ -444,43 +444,20 @@ function renderSymphoniesPage(s) {
       + addFormHtml;
     return;
   }
-  var rows = syms.map(function(sym) {
-    var bootBtn = sym.env_bootstrap_performer_id
-      ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
-      : '<span style="color:var(--color-text-muted)">None</span>';
-    // 077: at-a-glance bootstrap status badge (colored dot + label) so a failing
-    // env bootstrap is visible on the overview without opening the symphony.
-    var bootStatus = '';
-    if (sym.env_bootstrap_performer_id) {
-      var bsColor, bsText;
-      if (sym.bootstrap_in_flight) { bsColor = 'var(--color-accent-blue)'; bsText = 'bootstrapping…'; }
-      else if (sym.last_bootstrap_succeeded === false) { bsColor = 'var(--color-accent-red)'; bsText = 'failed'; }
-      else if (sym.cache_dir_ready && sym.last_bootstrap_succeeded === true) { bsColor = 'var(--color-accent-green)'; bsText = 'ready'; }
-      else { bsColor = 'var(--color-text-muted)'; bsText = 'not bootstrapped'; }
-      var bsTitle = (sym.last_bootstrap_succeeded === false && sym.last_bootstrap_error)
-        ? ' title="' + esc(sym.last_bootstrap_error) + '"' : '';
-      bootStatus = '<span' + bsTitle + ' style="display:inline-flex;align-items:center;gap:5px;margin-right:8px;font-size:11px;color:' + bsColor + '">'
-        + '<span style="width:8px;height:8px;border-radius:50%;background:' + bsColor + ';display:inline-block;flex:none"></span>'
-        + bsText + '</span>';
-    }
-    // 155: an inactive symphony is greyed out and says why, so it is not read as a working one.
-    // 155: a symphony nobody has checked says why under its name; the never-checked ones are greyed.
-    var inactive = symphonyIsInactive(sym);
-    var unchecked = symphonyUncheckedNote(sym);
-    var neverChecked = unchecked ? '<div class="muted" style="font-size:11px">' + esc(unchecked.text) + '</div>' : '';
-    return '<tr' + (inactive ? ' class="symphony-inactive" data-inactive="true"' : '') + '>'
-      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a>' + neverChecked + '</td>'
-      + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'
-      + '<td style="color:var(--color-text-muted)">' + symphonyRepoHtml(sym) + '</td>'
-      + '<td>' + (sym.priority != null ? sym.priority : 'None') + '</td>'
-      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : 'None') + '</td>'
-      + '<td>' + (sym.error_count != null ? sym.error_count : 'None') + '</td>'
-      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : 'None') + '</td>'
-      + '<td>' + bootStatus + bootBtn + '</td>'
-      + '</tr>';
-  }).join('');
+  var choice = currentSymphonyChoice(s);
+  var rows = syms.map(function(sym) { return symphonyTableRowHtml(sym, choice); }).join('');
   el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
-    + '<th style="text-align:left">Name</th><th style="text-align:left">GitHub Project</th><th style="text-align:left">Repository</th><th style="text-align:left">Priority</th><th style="text-align:left">Checks</th><th style="text-align:left">Errors</th><th style="text-align:left">Last checked</th><th style="text-align:left">Env</th>'
+    + '<th style="text-align:left">Name</th>'
+    + '<th style="text-align:left" title="Whether coordinare checks this symphony, and why not.">Status</th>'
+    + '<th style="text-align:left" title="The GitHub Project this symphony works from.">GitHub Project</th>'
+    + '<th style="text-align:left" title="The GitHub repository this symphony works against.">Repository</th>'
+    + '<th style="text-align:left" title="Whether the symphony\'s performer environment is cached.">Env</th>'
+    + '<th style="text-align:left" title="Cards a performer is working on now.">Cards active</th>'
+    + '<th style="text-align:left" title="Cards waiting for a performer slot.">Cards queued</th>'
+    + '<th style="text-align:left" title="Cost this week (UTC) from the transcript ledger.">Spend this week</th>'
+    + '<th style="text-align:left" title="Checks of the board this symphony has run.">Checks run</th>'
+    + '<th style="text-align:left" title="Checks that failed in a row. A successful check resets this to 0.">Failed checks in a row</th>'
+    + '<th style="text-align:left" title="When coordinare last checked this symphony.">Last checked</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
@@ -499,6 +476,14 @@ function renderSymphoniesPage(s) {
         else { msg.textContent = n + ': ' + (d.error || ('error ' + r.status)); msg.style.color = 'var(--color-accent-red)'; }
       } catch(e) { msg.textContent = n + ': network error'; msg.style.color = 'var(--color-accent-red)'; }
       b.disabled = false;
+    });
+  });
+  // 156: a click anywhere on a row opens that symphony's page. The name link and the Bootstrap
+  // button keep their own clicks.
+  el.querySelectorAll('tr.symphony-row').forEach(function(tr) {
+    tr.addEventListener('click', function(e) {
+      if (e.target && e.target.closest && e.target.closest('a,button')) return;
+      navigate(e, tr.getAttribute('data-href'));
     });
   });
 }
@@ -534,7 +519,7 @@ async function loadSymphonyDetail(name, el) {
   var statusRows = [
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
-    ['Errors', st.error_count != null ? st.error_count : 'None'],
+    ['Failed checks in a row', st.error_count != null ? st.error_count : 'None'],
     ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
     ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : 'None'],
     ['Last error', st.last_error ? esc(st.last_error) : 'None'],
