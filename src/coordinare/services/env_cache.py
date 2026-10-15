@@ -2521,6 +2521,19 @@ class EnvCacheService:
             )
             self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
 
+    def _mark_bootstrap_success(self, symphony_name: str, cache_state: EnvCacheState) -> None:
+        """A finished bootstrap succeeded: the cache is usable and the budgets it may clear are cleared."""
+        cache_state.cache_dir_ready = True
+        # 218 (review round 3): a success clears the infrastructure budget.
+        cache_state.infra_failures = 0
+        # A runtime repair keeps its refusal budget, including through successful rebuilds.
+        if not cache_state.runtime_repair_budget:
+            cache_state.bootstrap_attempts = 0
+            cache_state.bootstrap_exhausted = False
+        # 088 (US5): an in-process success was already clean-verified by the
+        # completion path, so the restart honor verify must not re-fire.
+        self._restart_verified.add(symphony_name)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
@@ -2586,16 +2599,7 @@ class EnvCacheService:
         # cache_dir_ready stays False until at least one bootstrap succeeds,
         # which prevents performers from mounting an unpopulated cache dir.
         if success:
-            cache_state.cache_dir_ready = True
-            # 218 (review round 3): a success clears the infrastructure budget.
-            cache_state.infra_failures = 0
-            # A runtime repair keeps its refusal budget, including through successful rebuilds.
-            if not cache_state.runtime_repair_budget:
-                cache_state.bootstrap_attempts = 0
-                cache_state.bootstrap_exhausted = False
-            # 088 (US5): an in-process success was already clean-verified by the
-            # completion path — the restart honor verify must not re-fire.
-            self._restart_verified.add(symphony_name)
+            self._mark_bootstrap_success(symphony_name, cache_state)
 
         # 088 (FR-009): on failure, KEEP the recorded SHA. Clearing it (the
         # pre-088 behaviour) made the next cycle recompute needs_bootstrap=True
