@@ -51,6 +51,11 @@ from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.merge_review_gate import (
+    DEFAULT_TARGET_BRANCH,
+    ReviewProbe,
+    refresh_merge_review,
+)
 from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
@@ -3479,6 +3484,27 @@ class CoordinareDaemon:
         if sym_workspace_manager is not None:
             self._state["workspace_manager"] = prev_workspace_manager
 
+    async def _refresh_merge_review(self, symphony_name: str, sym_state: Any, symphony_config: Any) -> None:
+        """101: read this symphony's target-branch review rules, at most every RECHECK_SECONDS.
+
+        A disabled symphony is not checked: the cycle loop skips it, and this guard holds even if
+        a caller does not.
+        """
+        github = self._state.get("github_service")
+        if sym_state is None or github is None or not getattr(symphony_config, "enabled", True):
+            return
+        probe = ReviewProbe(
+            symphony=symphony_name,
+            branch=DEFAULT_TARGET_BRANCH,
+            github=github,
+            notification_service=self._state.get("notification_service"),
+            activity=self._state.get("activity_log"),
+        )
+        await refresh_merge_review(sym_state, probe, now=time.monotonic())
+        # The closer reads the running symphony's condition from the graph state for this cycle.
+        review = getattr(sym_state, "merge_review", None)
+        self._state["merge_review_condition"] = review.get("state") if isinstance(review, dict) else None
+
     def _update_symphony_state(self, symphony_name: str, sym_state: Any) -> None:
         """Mirror the finished cycle's results back onto the symphony state."""
         sym_state.cycle_count = getattr(sym_state, "cycle_count", 0) + 1
@@ -3552,6 +3578,9 @@ class CoordinareDaemon:
             # restored-session ownership is being resolved across an IO await.
             self._state["current_symphony"] = symphony_name
             try:
+                # 101: the branch's review rules against coordinare's identity, read at
+                # most every RECHECK_SECONDS. Never raises and never holds up the cycle.
+                await self._refresh_merge_review(symphony_name, sym_state, symphony_config)
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits
                 # to a single graph cycle inside _invoke_multi_session.

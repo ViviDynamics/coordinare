@@ -124,6 +124,11 @@ class AppAuth:
         expires_monotonic = time.monotonic() + remaining
         return token, expires_monotonic
 
+    @property
+    def app_id(self) -> int:
+        """The App's numeric id, as ruleset bypass lists name it (#101)."""
+        return self._app_id
+
     async def get_app_slug(self) -> str:
         """The App's slug, from ``GET /app`` signed with the App JWT (#142).
 
