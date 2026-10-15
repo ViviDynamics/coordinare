@@ -203,3 +203,40 @@ when using it for bootstrap. Validate configuration before restart. This is
 an operator opt-in; the generic Anthropic-native example remains available.
 Do not apply `disable_thinking` to this GLM model: the recorded policy experiment
 was harmful. The translate route repairs the wire adaptation instead.
+
+## Assessor on a reasoning model behind LiteLLM (223)
+
+Symptom: the assessor's JSON reply starts mid-token (`sufficient": true, ...`)
+with a reasoning model such as glm-5.3-flash behind LiteLLM `/v1/messages`.
+LiteLLM v1.103.2's Anthropic adapter drops a `content` delta that shares a
+chunk with `reasoning`. LiteLLM `/v1/chat/completions` does not drop it. The
+performer's translate route avoids the adapter: it turns the CLI's
+`/v1/messages` calls into `/v1/chat/completions` itself, reads `delta.content`
+independently of reasoning (`reasoning` and `reasoning_content` are both
+recognized), and `strip_reasoning` promotes a reasoning-only reply to text.
+
+Set the routing entry's `model` to the exact model string the assessor
+dispatches. Staging dispatches `spark/glm-5.3-flash`, so the key must carry the
+`spark/` prefix. `upstream_model` is the name the LiteLLM gateway advertises for
+the model:
+
+```yaml
+selfhosted_routing:
+  - backend: claude_code
+    model: spark/glm-5.3-flash              # exact dispatched model string (routing key)
+    target:
+      base_url: https://litellm.example.com/v1
+      wire_format: openai
+      strategy: translate
+      upstream_model: spark/glm-5.3-flash   # name the gateway advertises
+      upstream_auth_env: COORDINARE_PROXY_AUTH
+      normalizers: [strip_control_chars, strip_reasoning]
+      health_probe: completion
+```
+
+The `claude-ephemeral` endpoint must list `assessor` in its `roles` and carry
+the same `SELFHOSTED_ROUTING_CONFIG`, `COORDINARE_PROXY_AUTH` and routing-file
+mount shown above. Keep `disable_thinking` off for this model. Re-check the
+upstream LiteLLM release notes before removing this route: the adapter bug was
+still open upstream as of 2026-10-15 (see issue 32357 and PR 32364 on
+BerriAI/litellm).

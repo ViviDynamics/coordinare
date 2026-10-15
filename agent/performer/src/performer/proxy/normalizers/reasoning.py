@@ -9,7 +9,7 @@ assistant output intact (FR-078-8, FR-078-3). Two leak shapes are handled:
   JSON ``content`` array and as streamed ``content_block_*`` events. Streamed
   text blocks following a dropped thinking block are renumbered so the surviving
   block indices stay contiguous from 0.
-* **OpenAI / qwen** ``reasoning_content`` on the message (JSON) and on streaming
+* **OpenAI / qwen / vLLM** ``reasoning_content`` or ``reasoning`` on the message (JSON) and on streaming
   ``delta`` objects.
 
 Fail-open (FR-078-9): a response carrying neither shape is returned unchanged.
@@ -23,6 +23,9 @@ from typing import Any
 from .base import StatefulSSEFilter
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+# OpenAI-shape reasoning fields. vLLM emits ``reasoning``; LiteLLM and older vLLM
+# emit ``reasoning_content``. Both carry the same channel (223).
+_REASONING_KEYS = ("reasoning_content", "reasoning")
 
 
 class _StripReasoningSSEFilter(StatefulSSEFilter):
@@ -104,11 +107,12 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
             content = delta.get("content")
             if isinstance(content, str) and content:
                 self._content_emitted = True
-            reasoning = delta.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning:
-                self._reasoning_buf.append(reasoning)
-            if "reasoning_content" in delta:
-                delta = {k: v for k, v in delta.items() if k != "reasoning_content"}
+            for key in _REASONING_KEYS:
+                reasoning = delta.get(key)
+                if isinstance(reasoning, str) and reasoning:
+                    self._reasoning_buf.append(reasoning)
+            if any(key in delta for key in _REASONING_KEYS):
+                delta = {k: v for k, v in delta.items() if k not in _REASONING_KEYS}
                 choice = {**choice, "delta": delta}
 
         # Stream end with no real content: promote the buffered reasoning as a
@@ -153,7 +157,7 @@ class StripReasoningNormalizer:
         has_reasoning = isinstance(choices, list) and any(
             isinstance(c, dict)
             and isinstance(c.get("message"), dict)
-            and "reasoning_content" in c["message"]
+            and any(key in c["message"] for key in _REASONING_KEYS)
             for c in choices
         )
         if not has_thinking and not has_reasoning:
@@ -183,7 +187,11 @@ class StripReasoningNormalizer:
                 message = choice.get("message")
                 if not isinstance(message, dict):
                     continue
-                reasoning = message.pop("reasoning_content", None)
+                reasoning = None
+                for key in _REASONING_KEYS:
+                    popped = message.pop(key, None)
+                    if reasoning is None:
+                        reasoning = popped
                 content = message.get("content")
                 content_empty = content is None or (
                     isinstance(content, str) and not content.strip()
