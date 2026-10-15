@@ -175,6 +175,9 @@ class RunArtifact(BaseModel):
     config_fingerprint: ConfigFingerprint
     approver_policy: str = "gates_green"
     fixture_manifest: str = ""
+    #: 242: what the cost figures cover. Performer spend only: the conductor's own model calls
+    #: are not in ``cost_usd`` or any dispatch's cost, whatever the price table says.
+    cost_scope: str = "performers only"
     cards: list[CardOutcome] = []
     totals: RunTotals = RunTotals()
 

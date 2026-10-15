@@ -189,29 +189,51 @@ def test_compute_deltas_reports_an_unpriced_baseline_instead_of_nothing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_default_weights_sweep_reports_every_stub_point_unpriced(tmp_path: Path) -> None:
+async def test_default_weights_sweep_prices_every_stub_point_at_zero_and_ranks_it(tmp_path: Path) -> None:
+    """Spec 242: a stub makes no model calls, so each point is priced at zero and ranks."""
     loaded = _sweep_loaded(tmp_path)
 
     artifact = await run_sweep(loaded, "ablation", tmp_path / "session")
 
     assert artifact.points
-    assert all(p.mean_scalar is None for p in artifact.points)
-    assert all(p.cost_unknown_reason for p in artifact.points)
-    assert all("no token count" in (p.cost_unknown_reason or "") for p in artifact.points)
-    assert artifact.coverage.dropped
-    assert all(d.reason.startswith("unpriced: ") for d in artifact.coverage.dropped)
-    assert artifact.deltas
-    assert all(d.note.startswith("baseline unpriced") for d in artifact.deltas)
+    assert all(p.mean_scalar is not None for p in artifact.points)
+    assert all(p.cost_unknown_reason is None for p in artifact.points)
 
 
 @pytest.mark.asyncio
-async def test_default_weights_optimizer_names_why_nothing_was_recommended(tmp_path: Path) -> None:
+async def test_default_weights_optimizer_recommends_a_stub_run_priced_at_zero(tmp_path: Path) -> None:
+    """Spec 242: a stub evaluation is priced at zero, so the default-weight optimizer ranks and
+    recommends instead of naming an unpriced cost as the reason it could not."""
     loaded = _optimizer_loaded(tmp_path)
     evaluate = real_evaluator(loaded, [tiny_fixture()], tmp_path / "eval")
 
     artifact = await run_optimizer(loaded, evaluate, max_evaluations=3,
                                    session_dir=tmp_path / "opt")
 
-    assert artifact.recommendation is None
-    assert any("no point could be priced" in n and "no token count" in n for n in artifact.notes)
-    assert any("#242" in n for n in artifact.notes)
+    assert artifact.recommendation is not None
+    assert not any("no point could be priced" in n for n in artifact.notes)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_sweep_drops_its_points_and_names_the_unpriced_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 242 restores the end-to-end unknown path. A stub is now priced at zero, so the path
+    is driven here by pricing every dispatch unknown: each point is dropped as unpriced, and the
+    deltas say the baseline is unpriced."""
+    from coordinare.bench import runner
+    from coordinare.bench.pricing import TokenCost
+
+    monkeypatch.setattr(
+        runner, "price_dispatch",
+        lambda *_args, **_kwargs: TokenCost(None, "transcripts disabled: test", None),
+    )
+    loaded = _sweep_loaded(tmp_path)
+
+    artifact = await run_sweep(loaded, "ablation", tmp_path / "session")
+
+    assert artifact.points
+    assert artifact.coverage.dropped
+    assert all(d.reason.startswith("unpriced: ") for d in artifact.coverage.dropped)
+    assert artifact.deltas
+    assert all(d.note.startswith("baseline unpriced") for d in artifact.deltas)
