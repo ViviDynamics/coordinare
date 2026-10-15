@@ -36,7 +36,9 @@ def _entry(seq: int, **extra: Any) -> dict[str, Any]:
 
 def _open(page: Page, live_server_url: str) -> None:
     page.goto(live_server_url)
-    expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
+    # The first state_update starts the activity run (afSyncRun) and clears the feed, so an
+    # append that lands before it is wiped. #phase is rendered by the server, so it is no signal.
+    page.wait_for_function('() => typeof _afRunId === "string" && _afRunId.length > 0', timeout=_WAIT_SSE)
 
 
 def _append(page: Page, entries: list[dict[str, Any]]) -> None:
