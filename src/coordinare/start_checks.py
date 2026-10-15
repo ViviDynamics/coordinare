@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import AnyUrl, BaseModel, RootModel, SecretStr
+from pydantic import AnyUrl, BaseModel, RootModel, Secret, SecretStr
 
 from coordinare.auth import validate_auth_config
 from coordinare.config import ProjectConfiguration
@@ -94,7 +94,7 @@ def _annotation_leaves(annotation: object, stack: frozenset[type]) -> Iterator[t
         yield (), annotation
         return
     origin = get_origin(annotation)
-    if origin is Annotated:
+    if origin in (Annotated, Secret):
         yield from _annotation_leaves(get_args(annotation)[0], stack)
     elif origin is dict:
         yield from _under(_DICT_VALUE, _annotation_leaves(get_args(annotation)[1], stack))
@@ -198,7 +198,7 @@ class PlaceholderFinding:
 
 
 def _leaf_findings(field: str, value: object, rule: str, key: str) -> list[PlaceholderFinding]:
-    raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+    raw = value.get_secret_value() if isinstance(value, (SecretStr, Secret)) else value
     if not isinstance(raw, str):
         return []
     if rule == "text" and not _is_whole_url(raw):
@@ -224,6 +224,8 @@ def _values_at(
     value: object, path: SecretPath, display: str, key: str = "",
 ) -> Iterator[tuple[str, object, str]]:
     """Yield ``(display path, value, dict key)`` for every value at ``path`` below ``value``."""
+    if isinstance(value, Secret):
+        value = value.get_secret_value()
     if not path:
         yield display, value, key
         return

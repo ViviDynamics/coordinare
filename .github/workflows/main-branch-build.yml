@@ -128,6 +128,12 @@ jobs:
       - name: Run pytest
         run: uv run --extra dev pytest
 
+      - name: Verify OTLP wire protocols and licences
+        run: |
+          uv sync --extra otlp --extra dev --inexact
+          uv run --no-sync python -c "import grpc; import google.protobuf; import opentelemetry.proto.collector.logs.v1.logs_service_pb2"
+          uv run --no-sync pytest tests/unit/test_271_otlp_wire.py tests/unit/test_142_license_and_legal_posture.py -v
+
   coverage:
     timeout-minutes: 36
     name: Coverage

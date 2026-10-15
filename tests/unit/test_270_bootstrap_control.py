@@ -550,7 +550,7 @@ def test_manual_trigger_resets_a_tripped_breaker_and_records_who_did_it() -> Non
     daemon._webhook_trigger.set.assert_called_once()
     texts = [entry["text"] for entry in store.activity_log.snapshot()]
     assert any(
-        "Env bootstrap for 'alpha' forced by local: retry budget reset "
+        "Env bootstrap for 'alpha' forced by local. Retry budget reset "
         "(was 3 attempts, breaker tripped)." in text
         for text in texts
     )
@@ -923,3 +923,15 @@ async def test_cancel_cooldown_then_dispatch_without_spending_budget(monkeypatch
     await service.check_and_trigger("alpha", _symphony_cfg(), MagicMock(), state, dispatch)
     dispatch.assert_awaited_once()
     assert cache.bootstrap_attempts == (0 if changed_sha else 1)
+
+
+def test_a_token_actor_survives_redaction_in_the_activity_text() -> None:
+    """The word "token" followed by a colon reads as a credential to the redactor, so the text avoids it."""
+    daemon = _trigger_daemon()
+    _tripped(daemon)
+    store = DashboardStore()
+    client = _client(daemon, store, token=TOKEN)
+    client.post("/api/symphonies/alpha/env-bootstrap", headers={"Authorization": f"Bearer {TOKEN}"})
+    texts = [entry["text"] for entry in store.activity_log.snapshot()]
+    assert any("forced by token. Retry budget reset" in text for text in texts)
+    assert not any("[REDACTED]" in text for text in texts)

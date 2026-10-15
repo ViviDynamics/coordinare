@@ -13,6 +13,15 @@ SENSITIVE_KEYS = {
     "password",
     "secret",
     "api_key",
+    "api-key",
+    "x-api-key",
+    "x-honeycomb-team",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
     "webhook_url",
     "authorization",
     "secrets",  # JobInitPayload.secrets dict
@@ -25,6 +34,13 @@ SENSITIVE_KEYS = {
 # keep these lists in sync when adding new token formats.
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"https://hooks\.slack(?:-gov)?\.com/services/[^\s\"\'<>]+"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]+"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]+"),
+    re.compile(
+        r"(?i)\b(?:x-honeycomb-team|x-api-key|api[-_]key|access[-_]token|refresh[-_]token|"
+        r"client[-_]secret|authorization|proxy-authorization|password|auth[-_]token|token|secret)"
+        r"[\"']?\s*[:=]\s*(?:Bearer\s+|Basic\s+|token\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;&}]+)",
+    ),
     re.compile(r"github_pat_[A-Za-z0-9_]{82,}"),      # fine-grained PAT
     re.compile(r"ghp_[A-Za-z0-9]{36}"),               # classic PAT
     re.compile(r"gho_[A-Za-z0-9]{36}"),               # OAuth app token

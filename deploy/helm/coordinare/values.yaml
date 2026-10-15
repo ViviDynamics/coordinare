@@ -310,8 +310,35 @@ health:
 
 metrics:
   # /metrics discloses card counts, model identifiers and error rates to anyone
-  # who can reach the port. Off by default.
+  # who can reach the port. Service publication is off by default; the route
+  # remains served on the health listener. Restrict it with network
+  # policy; dashboard authentication does not apply to the health listener.
   expose: false
+
+# Optional outbound export. Standard OTEL environment variables in the configured
+# Secret override these values. Credentials belong in OTEL_EXPORTER_OTLP_HEADERS
+# in that Secret, never in a committed values file or ConfigMap.
+observability:
+  metrics_enabled: true
+  otlp:
+    # Empty endpoints disable export. General HTTP endpoints append /v1/logs.
+    endpoint: ""
+    # Signal specific URL, used verbatim when set.
+    logs_endpoint: ""
+    # JSON uses existing httpx. Binary protocols need the optional otlp extra.
+    protocol: http/json
+    service_name: coordinare
+    insecure: false
+    # Optional Secret holding comma separated headers. Never put header values here.
+    headersSecret:
+      name: ""
+      key: OTEL_EXPORTER_OTLP_HEADERS
+    queue_size: 1024
+    queue_bytes: 4194304
+    batch_size: 128
+    flush_seconds: 1
+    timeout_seconds: 3
+    backoff_seconds: 1
 
 # --- Credentials ------------------------------------------------------------
 

@@ -35,6 +35,7 @@ from coordinare.services.env_cache import (
     resolve_test_env_vars,
     verify_env_cache_clean,
 )
+from coordinare.services.export_metrics import EXPORT_METRICS
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.mounted_file import loaded_performer_mounts
@@ -2873,6 +2874,7 @@ async def _finalise_success(state: CoordinareState, result: Any, ctx: dict[str, 
     card_context = ctx["card_context"]
     performer_stage = ctx["performer_stage"]
     card = ctx["card"]
+    EXPORT_METRICS.run_started(str(performer_stage))
     # --- Success ---
     # 034: Reset token counters when dispatching the first role for a new card.
     lifecycle = list(state.get("lifecycle_sequence") or [])

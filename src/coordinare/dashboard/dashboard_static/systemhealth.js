@@ -80,7 +80,10 @@ function systemHealthEventStoreHtml(stats) {
   return '<div class="sh-row">Event store: ' + esc(stats.size_bytes) + ' bytes, ' +
     esc(stats.rows) + ' rows, oldest ' + esc(stats.oldest_ts || 'none') + ', ' +
     esc(stats.dropped) + ' dropped, ' + esc(stats.pruned) + ' pruned, writer ' +
-    esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : '') + '</div>';
+    esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : '') +
+    ', export ' + esc(String(stats.export_dropped || 0)) + ' dropped, ' +
+    esc(String(stats.export_failed || 0)) + ' failed sends' +
+    (stats.export_error ? ', export disabled: ' + esc(stats.export_error) : '') + '</div>';
 }
 
 // The whole card: the summary line, and the rows inside it.

@@ -203,11 +203,16 @@ orchestrator or load balancer, and a containerised daemon bound to loopback is u
 its own host. Narrowing the default would silently break a documented deployment. It is
 configurable via `health_check_host` for operators who want it tighter.
 
-**Residual risk**: `/metrics` is Prometheus output disclosing operational detail — card counts,
-model identifiers, error rates, cycle timings — to **anyone who can reach the port**. That is
-information about your work and your infrastructure, not credentials, but it is more than you may
-intend to publish. Set `health_check_host` to `127.0.0.1` if the port is reachable from anywhere
-you do not control.
+`/metrics` is enabled by default on the health listener. Operators may disable it
+with `observability.metrics_enabled: false`, which returns 404 and also disables
+MCP `get_metrics` access. Helm's `metrics.expose` defaults to false and controls
+only whether the Service publishes the health port; it does not enable the route.
+
+**Residual risk**: `/metrics` discloses card counts, model identifiers,
+error rates and cycle timings to anyone who can reach the health port. Dashboard
+authentication and host checks do not protect this listener. Restrict ingress to
+trusted scrapers with network policy, or set `health_check_host` to `127.0.0.1`
+when remote health checks are not needed.
 
 ## GitHub token permissions
 

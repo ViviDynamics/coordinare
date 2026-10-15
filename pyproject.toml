@@ -52,6 +52,8 @@ coordinare-ci-detection = { path = "packages/ci_detection", editable = true }
 coordinare-routing-models = { path = "packages/routing_models", editable = true }
 
 [project.optional-dependencies]
+# Generated wire messages and transport only; JSON export needs no extra packages.
+otlp = ["opentelemetry-proto>=1.27", "grpcio>=1.66"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
