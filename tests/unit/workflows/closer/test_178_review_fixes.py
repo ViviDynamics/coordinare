@@ -44,7 +44,7 @@ async def test_an_open_thread_record_carries_an_inert_capped_excerpt_and_never_t
 async def test_the_implementer_feedback_is_fenced_capped_and_states_the_rule():
     record, *_ = await _run([thread("t1", comment("outsider", LONG_BODY))])
     comments = closer_feedback_comments(record.open_threads)
-    assert len(comments) == 1 and set(comments[0]) == {"path", "line", "body"}
+    assert len(comments) == 1 and set(comments[0]) == {"path", "line", "fenced", "body"} and comments[0]["fenced"] is True
     body = comments[0]["body"]
     assert TAIL not in body and "A" * (ECHO_LIMIT + 1) not in body, "the feedback carries the capped excerpt only"
     nonce = re.search(rf'<{BLOCK_TAG} nonce="([0-9a-f]{{32}})" label="([^"]*)">', body)
@@ -97,6 +97,22 @@ async def test_a_judgement_reason_in_the_record_is_an_inert_capped_copy():
     assert "[x](" not in reason and "@org/admins" not in reason
     assert len(reason) <= ECHO_LIMIT + 3 and "z" * 150 not in reason
     assert "[x](" not in json.dumps(record.model_dump())
+
+
+# 3b-2. the record's path and login are echoed, inert and capped (they reach the feed)
+@pytest.mark.asyncio
+async def test_a_hostile_path_and_login_in_the_record_are_inert_and_capped():
+    from performer.workflows.untrusted import LOGIN_LIMIT, PATH_LIMIT, echo
+
+    hostile_login = "mallory`@org/admins[x](y)" + "q" * 80
+    hostile_path = "src/`a[b]\n<img src=x>.py"
+    record, *_ = await _run([thread("t1", comment(hostile_login, "needs a guard"), path=hostile_path)])
+    entry = record.open_threads[0]
+    assert entry["path"] == echo(hostile_path, PATH_LIMIT) and entry["author"] == echo(hostile_login, LOGIN_LIMIT)
+    assert "@org/admins" not in entry["author"] and "q" * 60 not in entry["author"]
+    assert len(entry["author"]) <= LOGIN_LIMIT + 3 and len(entry["path"]) <= PATH_LIMIT + 3
+    dumped = json.dumps(record.model_dump())
+    assert "<img src=x>" not in dumped and "\n" not in entry["path"]
 
 
 # 3c. paths are untrusted: a backtick, a bracket and a newline never break the posted line or the relay

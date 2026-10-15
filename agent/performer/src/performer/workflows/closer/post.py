@@ -11,7 +11,7 @@ import structlog
 
 from performer.workflows.closer.models import Thread
 from performer.workflows.reviewer.post import PostOutcome, Poster, pr_number_from_url
-from performer.workflows.untrusted import PATH_LIMIT, echo
+from performer.workflows.untrusted import LOGIN_LIMIT, PATH_LIMIT, echo
 
 log = structlog.get_logger(__name__)
 
@@ -31,7 +31,7 @@ def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thr
     verdict = "CHANGES REQUESTED" if open_threads or changes_requested_by else "APPROVED"
     body = f"{header}\n\n**Bot Closer Review: {verdict}**\n\n"
     if changes_requested_by:
-        body += f"A human reviewer requested changes: {', '.join(changes_requested_by)}.\n"
+        body += f"A human reviewer requested changes: {', '.join(echo(login, LOGIN_LIMIT) for login in changes_requested_by)}.\n"
     if open_threads:
         body += f"{len(open_threads)} review thread(s) still open:\n"
         for t in open_threads:

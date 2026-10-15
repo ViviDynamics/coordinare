@@ -541,8 +541,10 @@ def closer_feedback_comments(open_threads: list[dict[str, Any]]) -> list[dict[st
         path, line = str(t.get("path") or ""), int(t.get("line") or 0)
         label = f"review thread at {path}:{line} raised by {t.get('author') or 'unknown'}"
         excerpt = str(t.get("excerpt") or t.get("thread_id") or "")
+        # ``fenced`` tells the relay renderer that the location lives inside the
+        # block, so no path or line is rendered outside it (spec 178).
         comments.append({
-            "path": path, "line": line,
+            "path": path, "line": line, "fenced": True,
             "body": f"unresolved review thread. {untrusted_rule(nonce)}\n{fence(label, excerpt, nonce)}",
         })
     return comments

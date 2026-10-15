@@ -3,26 +3,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from performer.workflows.untrusted import PATH_LIMIT
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
 def _location(path: object, line: object) -> str:
-    """``path:line`` on one line, capped (spec 178).
-
-    A path is untrusted: git allows newlines in file names, and a newline would
-    start a new line of the prompt. It is flattened and capped, and it is never
-    placed in a code span. It is not markup-escaped: this text goes to the model,
-    not to GitHub's renderer, and escaping would change the file name the model
-    has to match (``synthetic\\_review.py``). The GitHub-facing form is in the
-    closer's posted review, which uses the full inert escape.
-    """
-    if not path:
-        return ""
-    where = " ".join(str(path).split())[:PATH_LIMIT]
-    return f"{where}:{line}" if line else where
+    """The location of a trusted comment, rendered as it always was."""
+    return f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
 
 
 def _source_identity(item: dict) -> str:
@@ -78,14 +65,15 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
                     if item.get("id"):
                         body = f"[{item['id']}] {body}"
             if body:
-                location = _location(item.get("file") or item.get("path"), item.get("line"))
+                # A fenced item (the closer's untrusted thread text) carries its location inside the block (spec 178).
+                location = "" if item.get("fenced") else _location(item.get("file") or item.get("path"), item.get("line"))
                 parts.append(f"- {location} — {body}" if location else f"- {body}")
             inline = item.get("comments", [])
             if isinstance(inline, list):
                 for comment in inline:
                     if not isinstance(comment, dict) or not comment.get("body"):
                         continue
-                    location = _location(comment.get("path"), comment.get("line"))
+                    location = "" if comment.get("fenced") else _location(comment.get("path"), comment.get("line"))
                     identity = f" ({_source_identity(comment)})" if any(comment.get(k) for k in ("author_login", "author", "source", "stage", "raiser")) else ""
                     parts.append(f"  - {location} — {comment['body']}{identity}" if location else f"  - {comment['body']}{identity}")
         elif isinstance(item, str):

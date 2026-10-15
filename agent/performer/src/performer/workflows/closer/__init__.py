@@ -31,7 +31,7 @@ from performer.workflows.closer.judge import run_judge_step
 from performer.workflows.closer.models import ClosingRecord, Thread
 from performer.workflows.closer.post import post_closing_review
 from performer.workflows.closer.report import build_report
-from performer.workflows.untrusted import echo
+from performer.workflows.untrusted import LOGIN_LIMIT, PATH_LIMIT, echo
 
 if TYPE_CHECKING:
     from performer.models import Score, Stand
@@ -43,8 +43,10 @@ _FETCH_TUPLE_WITH_CONTEXT = 3  # (threads, pages, review_context) — injected f
 
 
 def open_thread_entries(threads: list[Thread]) -> list[dict[str, Any]]:
-    """The record's view of an open thread (spec 178): ids and a capped, inert excerpt, never the raw body."""
-    return [{"thread_id": th.id, "path": th.path, "line": th.line, "author": th.first_author,
+    """The record's view of an open thread (spec 178): ids, and path, login and excerpt
+    echoed inert and capped. Nothing from a thread is stored raw."""
+    return [{"thread_id": th.id, "path": echo(th.path, PATH_LIMIT), "line": th.line,
+             "author": echo(th.first_author, LOGIN_LIMIT),
              "excerpt": echo(th.comments[0].body) if th.comments else ""} for th in threads]
 
 

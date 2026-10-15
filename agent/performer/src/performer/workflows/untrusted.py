@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import secrets
 
-__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "PATH_LIMIT", "echo", "fence", "new_nonce", "untrusted_rule"]
+__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "LOGIN_LIMIT", "PATH_LIMIT", "echo", "fence", "new_nonce", "untrusted_rule"]
 
 BLOCK_TAG = "untrusted_data"
 NONCE_BYTES = 16
@@ -26,6 +26,8 @@ _NEUTRAL_TAG = "untrusted-data"
 _LABEL_CHARS = str.maketrans({'"': "'", "<": "(", ">": ")"})
 _WHITESPACE = re.compile(r"\s+")
 PATH_LIMIT = 200
+#: GitHub caps a login at 39 characters; anything longer is not a login.
+LOGIN_LIMIT = 39
 _ZERO_WIDTH_SPACE = "​"
 _MARKDOWN_SPECIAL = frozenset("\\[]!<>`&*_~")
 #: A backslash does not stop issue cross-references (``\#64`` still links), but a zero-width
