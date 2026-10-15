@@ -8,14 +8,19 @@ that card, and the server says which one that is (cancel_available).
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.localhost_guard import build_permitted
+from tests.unit.test_139_review_fixes import _keys_built_by
 from tests.unit.test_dashboard import (
     _make_app,
     _make_mock_daemon,
@@ -27,6 +32,7 @@ HELD = "PVTI_HELD"  # held by the symphony "owner", not the flat active card
 ACTIVE = "PVTI_ACTIVE"
 TOKEN = "a-secret-operator-token-of-at-least-32-characters"
 BASE = "http://127.0.0.1:8090"
+BROADCAST_TIMEOUT_SECONDS = 1.0
 
 
 def _session(card_id: str, number: int) -> dict:
@@ -132,6 +138,40 @@ def test_snapshot_offers_no_cancel_when_nothing_is_active() -> None:
         assert row["cancel_available"] is False
 
 
+@pytest.mark.parametrize("builder", ["_session_summary", "_top_state_summary"])
+def test_cancel_available_is_visible_to_the_session_scope_lint(builder: str) -> None:
+    assert "cancel_available" in _keys_built_by({builder})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_mode", [True, False], ids=["multi-card", "single-card"])
+async def test_changing_only_the_active_card_broadcasts_fresh_cancel_flags(session_mode: bool) -> None:
+    daemon, held = _two_symphony_daemon()
+    if not session_mode:
+        daemon.state["active_sessions"] = {}
+    store = DashboardStore()
+    stream = store.sse_stream(daemon, _make_mock_metrics(), _make_mock_health())
+    try:
+        initial_raw = await anext(stream)
+        initial = json.loads(initial_raw.split("data: ", maxsplit=1)[1])
+        initial_flags = {row["card_id"]: row["cancel_available"] for row in initial["active_sessions"]}
+        assert initial_flags == ({ACTIVE: True, HELD: False} if session_mode else {ACTIVE: True})
+
+        if session_mode:
+            daemon.state["active_card_id"] = HELD
+        else:
+            daemon.state["current_card"] = held["current_card"]
+        updated_raw = await asyncio.wait_for(anext(stream), timeout=BROADCAST_TIMEOUT_SECONDS)
+        assert updated_raw.startswith("event: state_update\n")
+        updated = json.loads(updated_raw.split("data: ", maxsplit=1)[1])
+        updated_flags = {row["card_id"]: row["cancel_available"] for row in updated["active_sessions"]}
+        assert updated_flags == ({ACTIVE: False, HELD: True} if session_mode else {HELD: True})
+        assert store.activity_log.snapshot() == []
+    finally:
+        await stream.aclose()
+        store.shutdown()
+
+
 # --- unknown cards are a clean error ------------------------------------------ #
 
 
@@ -172,8 +212,6 @@ def _authed_app(daemon):
 
 
 def test_card_actions_on_a_held_card_require_the_token_and_same_origin() -> None:
-    from fastapi.testclient import TestClient
-
     daemon, held = _two_symphony_daemon()
     with TestClient(_authed_app(daemon), base_url=BASE) as client:
         for path in ("/api/cancel", "/api/skip-role", "/api/restart-from/assessor"):
