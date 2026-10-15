@@ -156,8 +156,8 @@ def test_no_user_facing_board_wording_remains(phrase: str) -> None:
 
 
 def test_the_symphonies_table_names_the_github_project_and_repository() -> None:
-    assert "<th style=\"text-align:left\">GitHub Project</th>" in app_js()
-    assert "<th style=\"text-align:left\">Repository</th>" in app_js()
+    assert ">GitHub Project</th>" in app_js()
+    assert ">Repository</th>" in app_js()
 
 
 def test_the_symphony_script_loads_before_the_application_script() -> None:

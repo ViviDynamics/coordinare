@@ -20,6 +20,7 @@ from coordinare.dashboard.helpers import (
     ownership_hint,
 )
 from coordinare.dashboard.sse import SSEBroadcaster
+from coordinare.dashboard.symphony_rows import env_status, session_counts, week_spend
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
@@ -44,7 +45,7 @@ from coordinare.services.token_usage import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Mapping
 
     from coordinare.daemon import CoordinareDaemon
     from coordinare.metrics import CoordinareMetrics
@@ -891,6 +892,8 @@ class DashboardStore:
     ) -> dict[str, Any]:
         """The second half of the snapshot dict: cycles, board and ownership."""
         cycles_completed, started_at = metric_rows
+        # 156: read once, so the symphony rows and the spend strip cannot disagree.
+        token_block = _token_usage_block(daemon)
         return {
             "project_name": getattr(_cfg, "project_name", "") if (_cfg := daemon.state.get("config")) else "",
             "project_board_url": f"https://github.com/orgs/{_cfg.github_org}/projects/{_cfg.github_project_number}" if _cfg else "",
@@ -901,7 +904,7 @@ class DashboardStore:
             # 138: lets the conductor headline say "next check in 18s".
             "poll_interval_seconds": _poll_interval(daemon.state.get("config")),
             # 134: spend today and this week, with the pricing date, from the usage ledger.
-            "token_usage": _token_usage_block(daemon),
+            "token_usage": token_block,
             # 147: each logged card's board strip, per symphony, computed from memory.
             "card_pipeline": card_pipeline_block(daemon),
             "activity_run_id": self.activity_log.run_id,
@@ -937,7 +940,7 @@ class DashboardStore:
             # 054: Per-cycle skip reasons for ineligible sessions.
             "session_skip_reasons": copy.deepcopy(daemon.state.get("session_skip_reasons") or {}),
             # 057: Multi-symphony orchestration
-            "symphonies": self._build_symphonies_data(daemon, cycles_completed),
+            "symphonies": self._build_symphonies_data(daemon, cycles_completed, token_block),
             # 155: the server's clock when this snapshot was taken. The browser cuts its 24-hour lane
             # against it, so a snapshot read late still counts the merges it counted when it was taken.
             "snapshot_at": datetime.now(UTC).isoformat(),
@@ -1204,12 +1207,17 @@ class DashboardStore:
             return ""
 
     @staticmethod
-    def _build_symphonies_data(daemon: Any, daemon_cycles: int | None = None) -> list[dict[str, Any]]:
+    def _build_symphonies_data(
+        daemon: Any,
+        daemon_cycles: int | None = None,
+        token_usage: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Build symphony state for the dashboard snapshot (spec 057).
 
         ``daemon_cycles`` is the daemon-wide count of full cycles. Each entry carries it, because the
         scoped view overwrites the top-level count with the symphony's own, and a symphony that was
         never reached needs the daemon count to tell "not checked yet" from "never checked".
+        ``token_usage`` is the spend block; each entry takes only its own symphony's week (156).
         """
         symphony_configs = daemon.state.get("symphony_configs") or {}
         symphony_states = daemon.state.get("symphony_states") or {}
@@ -1221,6 +1229,8 @@ class DashboardStore:
             cache = (daemon.state.get("env_cache") or {}).get(sym_name)
             github_org, repo = DashboardStore._symphony_repository(sym_name, sym_cfg, global_cfg)
             effective = DashboardStore._symphony_effective(sym_cfg, global_cfg)
+            runtime_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state else {}
+            counts = session_counts(runtime_sessions)
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
@@ -1232,6 +1242,20 @@ class DashboardStore:
                 # dashboard never shows another symphony's.
                 "poll_interval_seconds": _poll_interval(effective),
                 "daemon_cycles_completed": daemon_cycles,
+                # 156: the Status column. A disabled symphony is not polled; "paused" is a card
+                # the board paused, counted in cards_paused.
+                "enabled": bool(getattr(sym_cfg, "enabled", True)),
+                "env_status": env_status(
+                    configured=getattr(sym_cfg, "env_bootstrap_performer_id", None) is not None,
+                    in_flight=bool(getattr(cache, "bootstrap_in_flight", False)),
+                    succeeded=getattr(cache, "last_bootstrap_succeeded", None),
+                    cache_ready=bool(getattr(cache, "cache_dir_ready", False)),
+                    error=getattr(cache, "last_bootstrap_error", None),
+                ),
+                "cards_active": counts["active"],
+                "cards_queued": counts["queued"],
+                "cards_paused": counts["paused"],
+                "spend_week": week_spend(token_usage, sym_name),
                 "ownership_hint": DashboardStore._symphony_hint(effective),
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
