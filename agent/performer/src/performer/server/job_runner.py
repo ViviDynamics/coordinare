@@ -14,6 +14,8 @@ secrets return JobBusyResponse with reason="secret_missing".
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextvars import ContextVar
@@ -45,6 +47,31 @@ JobExecutor = Callable[[JobInitPayload], Awaitable[JobResult]]
 # for a limit; the runner clamps it so a single status response stays bounded.
 TRANSCRIPT_DEFAULT_LIMIT = 200
 TRANSCRIPT_MAX_LIMIT = 500
+# Leave response time within the daemon HTTP client's 30 second timeout.
+JOB_CANCEL_TIMEOUT_SECONDS = 20
+
+_cancel_backend_var: ContextVar[dict[str, Any] | None] = ContextVar("_cancel_backend", default=None)
+
+
+def register_cancel_backend(backend: Any) -> None:
+    """Publish this job's backend before startup so forced cancel can reach its process."""
+    holder = _cancel_backend_var.get()
+    if holder is not None:
+        holder["backend"] = backend
+
+
+def _kill_cancel_backend(holder: dict[str, Any]) -> None:
+    """Kill only a registered backend's own process group, without awaiting cleanup."""
+    process = getattr(holder.get("backend"), "_proc", None)
+    if process is None or process.returncode is not None:
+        return
+    try:
+        pgid = os.getpgid(process.pid)
+        if pgid == process.pid:
+            os.killpg(pgid, signal.SIGKILL)
+    except OSError as exc:
+        log.warning("job.cancel_kill_failed", error_type=type(exc).__name__)
+
 
 # Contextvar that holds the active runner's push_progress callback during job execution.
 # Set by JobRunner._run() so _perform_job can push intermediate events without a
@@ -86,6 +113,8 @@ class JobRunner:
         self._lock = asyncio.Lock()
         self._status: JobStatus | None = None
         self._task: asyncio.Task[None] | None = None
+        self._retired_tasks: set[asyncio.Task[None]] = set()
+        self._cancel_backend: dict[str, Any] = {}
         self._update_event = asyncio.Event()
         self._live_events: list[dict[str, Any]] = []
         self._live_metrics: dict[str, Any] | None = None
@@ -239,7 +268,15 @@ class JobRunner:
             raise RuntimeError("_run called without active status — submit() must set _status first")
         self._status = self._status.model_copy(update={"state": "running"})
         self._signal_update()
-        _progress_cb_var.set(self.push_progress)
+        task = asyncio.current_task()
+        self._cancel_backend = {}
+        _cancel_backend_var.set(self._cancel_backend)
+
+        def push(events: list[dict[str, Any]], metrics: dict[str, Any] | None) -> None:
+            if self._task is task:
+                self.push_progress(events, metrics)
+
+        _progress_cb_var.set(push)
         # 129: backends emit transcript records into this job's buffer.
         set_active_buffer(self._transcript)
         # Publish the runner's mutable refreshed-secrets dict so the in-job
@@ -247,6 +284,8 @@ class JobRunner:
         _refreshed_secrets_var.set(self._refreshed_secrets)
         try:
             result = await self._executor(payload)
+            if self._task is not task:
+                return
             self._status = self._status.model_copy(
                 update={
                     "state": "succeeded" if result.success else "failed",
@@ -256,6 +295,8 @@ class JobRunner:
                 },
             )
         except asyncio.CancelledError:
+            if self._task is not task:
+                raise
             self._status = self._status.model_copy(
                 update={
                     "state": "cancelled",
@@ -270,6 +311,8 @@ class JobRunner:
             self._signal_update()
             raise
         except Exception as exc:  # noqa: BLE001 — surface arbitrary executor failure
+            if self._task is not task:
+                return
             self._status = self._status.model_copy(
                 update={
                     "state": "failed",
@@ -288,7 +331,8 @@ class JobRunner:
                 "job_executor_failed", job_id=payload.job_id, error_type=type(exc).__name__, exc_info=False,
             )
         finally:
-            self._signal_update()
+            if self._task is task:
+                self._signal_update()
 
     def _signal_update(self) -> None:
         self._update_event.set()
@@ -335,17 +379,29 @@ class JobRunner:
             await event.wait()
 
     async def cancel(self, job_id: str) -> CancelResponse:
-        if self._status is None or self._status.job_id != job_id:
-            raise JobNotFoundError(job_id)
-        if self._status.state in {"succeeded", "failed", "cancelled"}:
-            return CancelResponse(honored=False, detail="job already terminal")
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        return CancelResponse(honored=True)
+        async with self._lock:
+            if self._status is None or self._status.job_id != job_id:
+                raise JobNotFoundError(job_id)
+            if self._status.state in {"succeeded", "failed", "cancelled"}:
+                return CancelResponse(honored=False, detail="job already terminal")
+            task = self._task
+            if task is not None and not task.done():
+                task.cancel()
+                # wait_for would itself wait forever for a task that swallows cancellation.
+                done, _ = await asyncio.wait({task}, timeout=JOB_CANCEL_TIMEOUT_SECONDS)
+                if task not in done:
+                    _kill_cancel_backend(self._cancel_backend)
+                    self._retired_tasks.add(task)
+                    task.add_done_callback(self._retired_tasks.discard)
+                    self._task = None
+                    log.warning("job.cancel_forced", job_id=job_id)
+            if self._status.state not in {"succeeded", "failed", "cancelled"}:
+                self._status = self._status.model_copy(update={
+                    "state": "cancelled", "finished_at": _utcnow(),
+                    "result": JobResult(success=False, summary="job cancelled", error_code="cancelled"),
+                })
+                self._signal_update()
+            return CancelResponse(honored=True)
 
 
 __all__ = [

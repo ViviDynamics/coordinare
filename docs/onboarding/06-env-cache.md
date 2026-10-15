@@ -52,20 +52,34 @@ flowchart TB
    spec SHA changes (a README fix) or an operator clears it. This prevents an infinite
    bootstrap-fail loop. The operator's manual trigger (`POST /api/symphonies/{name}/env-bootstrap`,
    also the dashboard's "Force bootstrap now") resets the retry budget and the breaker, then
-   bootstraps; the activity feed names who triggered it.
+   bootstraps; the activity feed names who triggered it. Each symphony permits one manual
+   reset per 15 minutes. A reset during the cooldown returns 429 with the next allowed UTC
+   time, without changing state or adding an activity entry. The cooldown is kept in memory
+   for the daemon lifetime and applies to dashboard and MCP triggers.
 
 **Pausing.** A symphony with `enabled: false` is paused: the env-cache cycle, its first
 bootstrap at boot, its retries and its restart re-verify are all skipped, and its persisted
 env-cache state is left as it was. A bootstrap already running when the symphony is paused
 finishes (or is reaped by the limits below), but nothing new is dispatched until it resumes.
-The manual trigger is refused with 409 while paused.
+The manual trigger is refused with 409 while paused. Advocate and curator intake runs and
+wiki initialization also run only for enabled symphonies. Queued wiki requests for a paused
+symphony wait until it resumes.
 
 **Hung bootstraps.** The daemon ends a bootstrap that has stopped making progress, or that has
 run past its wall clock, whatever the performer does. Progress is the status poll's event
-stream (the same signal as card stall detection). `bootstrap_idle_timeout_seconds` (default
-600, `0` disables) and `bootstrap_max_seconds` (default 3600, `0` restores the legacy cap) set
-the two limits. The job is stopped through its runtime, and the attempt is recorded as failed
-with the reason ("no progress for N minutes" or "exceeded M minutes") against the retry budget.
+stream (the same signal as card stall detection). Idle time uses elapsed monotonic time,
+including time spent in status calls. `bootstrap_idle_timeout_seconds` defaults to 1800
+seconds (`0` disables idle reaping). An unmatched tool call suspends the idle timer and has
+a separate 2700 second limit, so a long install is not mistaken for silence. A matching tool
+result restarts the idle timer. `bootstrap_max_seconds` defaults to 3600 seconds (`0` restores
+the legacy cap) and bounds the whole job, including open tools.
+
+Immediately before either reap, the daemon reads status once more, allowing up to 5 seconds
+for that final read. A job that finished in the gap is handled as its real result. Otherwise
+the runtime stops the job and the attempt is recorded as failed against the retry budget.
+Persistent performer cancellation waits at most 20 seconds for cooperative cleanup, then
+kills the registered backend process group when available, frees the slot, and logs
+`job.cancel_forced`. Late results and progress from the old task cannot update the next job.
 
 ## Activation — what happens when a performer starts
 

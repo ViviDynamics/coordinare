@@ -1461,15 +1461,10 @@ class ProjectConfiguration(BaseSettings):
     # backends whose first-run install legitimately exceeds the default.
     bootstrap_max_seconds: int = Field(default=3600, ge=0, le=21600)
 
-    # 076 (live QA #150) — idle reap for env_bootstrap.  The wall-clock budget
-    # above can't tell "slow but progressing" from "hung", so a stuck bootstrap
-    # still burns the whole budget.  When the bootstrap container produces no
-    # NEW meaningful log output (LLM calls / install commands — coordinare's own
-    # status-poll lines are filtered out) for this many seconds, reap it early.
-    # Must be comfortably larger than the slowest legitimate gap (a long LLM
-    # completion or install step); 600 s is safe for slow single-tenant
-    # backends.  Set to 0 to disable idle reaping (wall-clock budget only).
-    bootstrap_idle_timeout_seconds: int = Field(default=600, ge=0, le=7200)
+    # Bootstrap silence outside a tool call is bounded separately from installs.
+    # Open tools get a 45 minute ceiling; the job wall clock still applies.
+    # Set idle timeout to 0 to disable the silence limit.
+    bootstrap_idle_timeout_seconds: int = Field(default=1800, ge=0, le=7200)
 
     # 045 — Maximum number of reviewer/security/qa → implementer feedback
     # cycles before blocking the card for human intervention.  Each

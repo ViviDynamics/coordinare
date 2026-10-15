@@ -12,6 +12,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+import coordinare.daemon as daemon_mod
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.docker_runtime import DockerRuntime
@@ -23,6 +24,17 @@ from coordinare.services.env_cache import (
     sanitise_symphony_name,
     write_service_scripts,
 )
+
+
+class _BootstrapClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _combined_sha(per_file: dict[str, str]) -> str:
@@ -1406,13 +1418,10 @@ class TestPollBootstrapCompletion:
 
     @pytest.fixture(autouse=True)
     def _fast_sleep(self, monkeypatch):
-        """Patch asyncio.sleep in the daemon module to avoid real 10s delays."""
-        import coordinare.daemon as daemon_mod
-
-        async def _no_sleep(_):
-            return None
-
-        monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
+        """Advance the daemon clock with each sleep, without real delays."""
+        clock = _BootstrapClock()
+        monkeypatch.setattr(daemon_mod.asyncio, "sleep", clock.sleep)
+        monkeypatch.setattr(daemon_mod, "monotonic", clock.time)
 
     @pytest.fixture(autouse=True)
     def _clean_verify_passes(self, monkeypatch):
@@ -1515,8 +1524,8 @@ class TestPollBootstrapCompletion:
     @pytest.mark.asyncio
     async def test_budget_exhausted_reaps_container_and_marks_failure(self, monkeypatch) -> None:
         """076 (live QA #150): a bootstrap that never reports terminal status
-        must be bounded by ``bootstrap_max_seconds`` — the loop stops at the
-        derived attempt cap, reaps the container, and marks failure (which
+        must be bounded by ``bootstrap_max_seconds``. The loop stops at the
+        elapsed deadline, stops the job, and marks failure (which
         unblocks dispatch; the next cycle re-dispatches).
         """
         import coordinare.daemon as daemon_mod
@@ -1557,7 +1566,7 @@ class TestPollBootstrapCompletion:
             svc, "job-1", "alpha", ec_svc, container_id="ctr-hung-deadbeef",
         )
 
-        # check_status polled exactly the budgeted number of times, never more.
+        # One regular read plus the final status read at the elapsed deadline.
         assert svc.check_status.await_count == 2
         # The job was stopped through its runtime at the cap (270: not docker stop).
         svc.stop_session_confirmed.assert_awaited_once_with("job-1")
@@ -1568,8 +1577,7 @@ class TestPollBootstrapCompletion:
 
     @pytest.mark.asyncio
     async def test_sub_10s_budget_clamps_to_one_attempt(self, monkeypatch) -> None:
-        """076: a budget under one poll interval (10s) clamps to 1 attempt
-        rather than 0 (which would skip polling entirely)."""
+        """A budget below the poll interval still gets a final status read."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1601,8 +1609,7 @@ class TestPollBootstrapCompletion:
 
     @pytest.mark.asyncio
     async def test_reap_failure_is_non_fatal(self, monkeypatch) -> None:
-        """076: if the docker-stop reap itself fails, the bootstrap is still
-        marked failed (the symphony must not stay wedged on a reap error)."""
+        """If the runtime stop fails, the bootstrap is still recorded as failed."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1665,8 +1672,8 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-idle")
 
-        # Polls at 0, 10, 20 s show progress or idle < 30 s; the poll at 30 s reaps.
-        assert svc.check_status.await_count == 4
+        # Four regular reads show 30 seconds of silence, then one final read confirms it.
+        assert svc.check_status.await_count == 5
         svc.stop_session_confirmed.assert_awaited_once_with("j")
         error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
         assert "no progress for 0.5 minutes" in error

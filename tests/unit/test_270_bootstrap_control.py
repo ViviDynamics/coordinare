@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -37,8 +38,21 @@ SHA_OLD = "sha-old"
 SHA_NEW = "sha-new"
 
 
-async def _no_sleep(_: float) -> None:
-    return None
+POLL_SECONDS = 10
+IDLE_SECONDS = 120
+OPEN_TOOL_SECONDS = 2700
+DEFAULT_IDLE_SECONDS = 1800
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _symphony_cfg(*, enabled: bool = True, performer_id: str | None = "bp-1") -> MagicMock:
@@ -158,7 +172,9 @@ async def test_enabled_symphony_still_runs_its_cycle(tmp_path, monkeypatch) -> N
 
 
 def _poll_daemon(monkeypatch: pytest.MonkeyPatch, *, wall_clock_s: int, idle_s: int) -> CoordinareDaemon:
-    monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
+    clock = _Clock()
+    monkeypatch.setattr(daemon_mod.asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr(daemon_mod, "monotonic", clock.time)
     monkeypatch.setattr(CoordinareDaemon, "_verify_bootstrap_in_clean_context", AsyncMock(return_value=(True, None, False)))
     monkeypatch.setattr(CoordinareDaemon, "_quiesce_bootstrap_container", AsyncMock(return_value=True))
     daemon = _make_daemon_for_env_cache()
@@ -196,8 +212,8 @@ async def test_job_that_never_progresses_is_reaped_at_the_idle_limit(monkeypatch
 
     await daemon._poll_bootstrap_completion(svc, "job-hung", "alpha", ec_svc)
 
-    # Progress is first seen at poll 0; no change for 120 s reaps at poll 12.
-    assert svc.check_status.await_count == 13
+    # Progress is first seen at poll 0; reap after 120 seconds and a final read.
+    assert svc.check_status.await_count == 14
     svc.stop_session_confirmed.assert_awaited_once_with("job-hung")
     ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
     assert ec_svc.on_bootstrap_complete.call_args.kwargs["error"] == (
@@ -217,7 +233,7 @@ async def test_progressing_job_past_the_wall_clock_is_reaped(monkeypatch) -> Non
 
     await daemon._poll_bootstrap_completion(svc, "job-slow", "alpha", ec_svc)
 
-    assert svc.check_status.await_count == 12  # 120 s at 10 s a poll, no more
+    assert svc.check_status.await_count == 12  # eleven regular polls and one final read
     svc.stop_session_confirmed.assert_awaited_once_with("job-slow")
     error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
     assert error == "bootstrap failed: exceeded 2 minutes of wall clock; job stopped"
@@ -316,8 +332,6 @@ def test_bootstrap_endpoint_with_other_roles_loads_with_a_warning() -> None:
 
 
 def test_example_config_registers_the_bootstrap_endpoint_with_the_literal_role() -> None:
-    from pathlib import Path
-
     text = (Path(__file__).resolve().parents[2] / "config.example.yaml").read_text()
     assert "roles: [env_bootstrap]" in text
     assert "roles: []                          # env_bootstrap" not in text
@@ -439,3 +453,181 @@ def test_manual_trigger_requires_authentication_like_every_operator_action() -> 
     assert cache.bootstrap_exhausted is False
     texts = [entry["text"] for entry in store.activity_log.snapshot()]
     assert any("forced by token" in text for text in texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["env_bootstrap_complete", "failed"])
+@pytest.mark.parametrize("limit", ["idle", "wall"])
+async def test_completion_between_limit_and_stop_keeps_real_result(monkeypatch, terminal, limit) -> None:
+    wall = 20 if limit == "wall" else 3600
+    idle = 20 if limit == "idle" else 0
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=wall, idle_s=idle)
+    polls = 1 if limit == "wall" else 3
+    svc = _svc([{"status": "working", "events": []}] * polls + [{"status": terminal}])
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-race", "alpha", ec_svc)
+
+    svc.stop_session_confirmed.assert_not_awaited()
+    ec_svc.on_bootstrap_complete.assert_called_once()
+    assert ec_svc.on_bootstrap_complete.call_args.args[1] is (terminal == "env_bootstrap_complete")
+    assert "job stopped" not in str(ec_svc.on_bootstrap_complete.call_args)
+
+
+@pytest.mark.asyncio
+async def test_open_tool_survives_idle_silence_then_completes(monkeypatch) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=3600, idle_s=IDLE_SECONDS)
+    silent_polls = IDLE_SECONDS // POLL_SECONDS + 2
+    svc = _svc(
+        [{"status": "working", "events": [{"type": "tool_use", "id": "install", "text": "bundle install"}]}]
+        + [{"status": "working", "events": []}] * silent_polls
+        + [{"status": "env_bootstrap_complete"}],
+    )
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-install", "alpha", ec_svc)
+
+    svc.stop_session_confirmed.assert_not_awaited()
+    assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wall", [OPEN_TOOL_SECONDS // 2, OPEN_TOOL_SECONDS * 2])
+async def test_open_tool_is_bounded_by_tool_limit_and_wall_clock(monkeypatch, wall) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=wall, idle_s=IDLE_SECONDS)
+    svc = _svc({"status": "working", "events": [{"type": "tool_use", "id": "install", "text": "bundle install"}]})
+    ec_svc = _ec_svc()
+    stop_times = []
+
+    async def stop(_job):
+        stop_times.append(daemon_mod.monotonic())
+        return True
+
+    svc.stop_session_confirmed = AsyncMock(side_effect=stop)
+    await daemon._poll_bootstrap_completion(svc, "job-install", "alpha", ec_svc)
+
+    assert stop_times == [min(wall, OPEN_TOOL_SECONDS + POLL_SECONDS)]
+    assert ec_svc.on_bootstrap_complete.call_args.args[1] is False
+    error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
+    assert ("wall clock" if wall < OPEN_TOOL_SECONDS else "tool") in error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [
+    {"type": "tool_result", "tool_use_id": "install", "text": "done"},
+    {"type": "tool_use", "detail": "install", "status": "ok", "text": "result: done"},
+])
+async def test_tool_result_restarts_idle_timer(monkeypatch, result) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=3600, idle_s=IDLE_SECONDS)
+    start = {"type": "tool_use", "id": "install", "text": "bundle install"}
+    svc = _svc([{"status": "working", "events": [start]}] + [
+        {"status": "working", "events": [start, result]},
+    ] * (IDLE_SECONDS // POLL_SECONDS + 2))
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-done-tool", "alpha", ec_svc)
+
+    assert daemon_mod.monotonic() == IDLE_SECONDS + 2 * POLL_SECONDS
+    svc.stop_session_confirmed.assert_awaited_once()
+    assert "no progress" in ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
+
+
+@pytest.mark.asyncio
+async def test_idle_uses_elapsed_time_including_slow_status_reads(monkeypatch) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=3600, idle_s=IDLE_SECONDS)
+    clock = _Clock()
+    monkeypatch.setattr(daemon_mod, "monotonic", clock.time)
+    monkeypatch.setattr(daemon_mod.asyncio, "sleep", clock.sleep)
+
+    async def slow_status(_job):
+        clock.now += IDLE_SECONDS
+        return {"status": "working", "events": []}
+
+    svc = _svc({})
+    svc.check_status = AsyncMock(side_effect=slow_status)
+    await daemon._poll_bootstrap_completion(svc, "job-slow-poll", "alpha", _ec_svc())
+
+    assert svc.check_status.await_count == 3
+    svc.stop_session_confirmed.assert_awaited_once()
+
+
+def test_default_idle_limit_allows_install_gaps() -> None:
+    cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(_raw_with_roles(["env_bootstrap"])))
+    assert cfg.global_config.bootstrap_idle_timeout_seconds == DEFAULT_IDLE_SECONDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("names", [("alpha", "disabled"), ("disabled", "alpha")])
+async def test_intake_and_wiki_run_only_for_enabled_symphonies(tmp_path, monkeypatch, names) -> None:
+    env_svc = MagicMock(check_and_trigger=AsyncMock())
+    daemon = _cycle_daemon(monkeypatch, _cache_state(tmp_path), env_svc)
+    gh = daemon._state["symphony_github_services"]["alpha"]
+    daemon._state["symphony_github_services"]["disabled"] = MagicMock()
+    daemon._wiki_init_requests = {"alpha", "disabled"}
+    wiki = AsyncMock()
+    monkeypatch.setattr(daemon, "_execute_wiki_init_dispatch", wiki)
+    configs = {name: _symphony_cfg(enabled=name == "alpha") for name in names}
+
+    await daemon._run_env_cache_and_cardless_cycle(configs)
+
+    intake = daemon._maybe_dispatch_intake
+    assert intake.await_count == 2
+    intake.assert_any_await("advocate", "alpha", gh)
+    intake.assert_any_await("curator", "alpha", gh)
+    wiki.assert_awaited_once_with("alpha", gh)
+    assert daemon._wiki_init_requests == {"disabled"}
+
+
+def test_manual_reset_cooldown_refuses_without_any_record_or_mutation() -> None:
+    daemon = _trigger_daemon()
+    store = DashboardStore()
+    client = _client(daemon, store)
+    assert client.post("/api/symphonies/alpha/env-bootstrap").status_code == 202
+    cache = _tripped(daemon)
+    cache.readme_sha = SHA_OLD
+    before = cache.model_dump()
+    entries = store.activity_log.snapshot()
+    daemon._webhook_trigger.set.reset_mock()
+
+    response = client.post("/api/symphonies/alpha/env-bootstrap")
+
+    assert response.status_code == 429
+    assert response.json()["status"] == "bootstrap_reset_cooldown"
+    assert "next reset is allowed at" in response.json()["error"]
+    assert response.json()["next_reset_at"] in response.json()["error"]
+    assert cache.model_dump() == before
+    assert store.activity_log.snapshot() == entries
+    daemon._webhook_trigger.set.assert_not_called()
+
+
+def test_manual_reset_cooldown_expires_and_is_per_symphony(monkeypatch) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.setattr("coordinare.services.env_bootstrap_control._utcnow", lambda: now)
+    daemon = _trigger_daemon()
+    daemon.state["symphony_configs"]["beta"] = SymphonyConfig(name="beta", github_project_number=11)
+    alpha = daemon.state["env_cache"]["alpha"]
+    _attach_env_cache(daemon, "beta")
+    daemon.state["env_cache"]["alpha"] = alpha
+    client = _client(daemon, DashboardStore())
+    assert client.post("/api/symphonies/alpha/env-bootstrap").status_code == 202
+    assert client.post("/api/symphonies/beta/env-bootstrap").status_code == 202
+    now += timedelta(minutes=15) - timedelta(microseconds=1)
+    assert client.post("/api/symphonies/alpha/env-bootstrap").status_code == 429
+    now += timedelta(microseconds=1)
+    assert client.post("/api/symphonies/alpha/env-bootstrap").status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_poll_uses_limits_from_real_root_config(monkeypatch) -> None:
+    wall_seconds = 20
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=wall_seconds, idle_s=0)
+    cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(_raw_with_roles(["env_bootstrap"])))
+    cfg.global_config.bootstrap_max_seconds = wall_seconds
+    cfg.global_config.bootstrap_idle_timeout_seconds = 0
+    daemon._state["coordinare_config"] = cfg
+    svc = _svc({"status": "working", "events": []})
+
+    await daemon._poll_bootstrap_completion(svc, "job-root-config", "alpha", _ec_svc())
+
+    assert daemon_mod.monotonic() == wall_seconds
+    svc.stop_session_confirmed.assert_awaited_once()
