@@ -32,6 +32,7 @@ from tests.e2e.test_dashboard_browser import _full_snapshot
 _WAIT = 5_000
 _NAME = "demo"
 _SECRET = "ghp_symphonysecret0000000000000000000"
+_TOKEN = "a-dashboard-token-with-more-than-thirty-two-characters"
 _OVERRIDE = '[data-override-key="max_concurrent_cards"]'
 _CONFIRM = "#sym-config-form [data-review] button"
 _CONFIRM_TEXT = "Save these changes"
@@ -267,15 +268,13 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture
-def real_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
-    """The real dashboard over a real config.yaml, with one symphony that has a secret override."""
+def _serve(tmp_path: Path, overrides: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
+    """The real dashboard over a real config.yaml, with one symphony holding the given overrides."""
     raw = {
         "github_org": "acme",
         "github_token": "ghp_fixturetoken",
         "human_reviewers": ["alice"],
-        "symphonies": [{"name": _NAME, "github_project_number": 100,
-                        "overrides": {"max_concurrent_cards": 2, "github_token": _SECRET}}],
+        "symphonies": [{"name": _NAME, "github_project_number": 100, "overrides": overrides}],
     }
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
@@ -309,10 +308,43 @@ def real_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
     thread.join(timeout=5)
 
 
+@pytest.fixture
+def real_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
+    """A symphony with a secret override, which the page must never show."""
+    yield from _serve(tmp_path, {"max_concurrent_cards": 2, "github_token": _SECRET})
+
+
+@pytest.fixture
+def nocap_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
+    """A symphony whose max_cards_in_review is No cap (null)."""
+    yield from _serve(tmp_path, {"max_concurrent_cards": 2, "max_cards_in_review": None})
+
+
 def _open_real(page: Page, server: dict[str, Any]) -> None:
     page.goto(f"{server['url']}/symphonies/{_NAME}")
     _snapshot(server["store"])
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT)
+
+
+@pytest.mark.e2e
+def test_no_cap_unticked_then_reapplied_leaves_the_number_editable(page: Page, nocap_server: dict[str, Any]) -> None:
+    _open_real(page, nocap_server)
+    box = page.locator('[data-override-nocap="max_cards_in_review"]')
+    number = page.locator('[data-override-key="max_cards_in_review"]')
+    expect(box).to_be_checked()
+    box.uncheck()
+    number.fill("4")
+    # A conflict refuses the save, and Reload and reapply puts the unticked box and the typed number back.
+    config = nocap_server["config"]
+    config.write_text(config.read_text() + "\n# edited elsewhere\n")
+    _review_and_confirm(page)
+    expect(page.locator("#sym-save-msg")).to_contain_text("Someone else changed", timeout=_WAIT)
+    page.locator("#sym-save-msg button", has_text="Reload and reapply").click()
+    expect(page.locator("#sym-save-msg")).to_contain_text("Your edits are back in the form", timeout=_WAIT)
+
+    expect(box).not_to_be_checked()
+    expect(number).to_have_value("4")
+    expect(number).to_be_enabled()
 
 
 @pytest.mark.e2e
@@ -334,6 +366,35 @@ def test_a_stale_save_offers_reload_and_reapply_and_keeps_the_edit(page: Page, r
     expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT)
     stored = yaml.safe_load(config.read_text())["symphonies"][0]["overrides"]
     assert stored["max_concurrent_cards"] == 5
+
+
+@pytest.fixture
+def token_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
+    """A symphony with an optional secret override, which the page may clear."""
+    yield from _serve(tmp_path, {"max_concurrent_cards": 2, "dashboard_auth_token": _TOKEN})
+
+
+@pytest.mark.e2e
+def test_a_clearable_secret_override_is_reviewed_as_cleared_and_removed(page: Page, token_server: dict[str, Any]) -> None:
+    _open_real(page, token_server)
+    page.locator('[data-cfg-action="clear-secret"][data-clear-for="overrides.dashboard_auth_token"]').click()
+
+    page.click("#sym-save-btn")
+    review = page.locator("#sym-config-form [data-review]")
+    expect(review).to_contain_text("(cleared)", timeout=_WAIT)
+    assert _TOKEN not in review.inner_text()
+    page.locator(_CONFIRM, has_text=_CONFIRM_TEXT).click()
+
+    expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT)
+    stored = yaml.safe_load(token_server["config"].read_text())["symphonies"][0]["overrides"]
+    assert stored == {"max_concurrent_cards": 2}
+
+
+@pytest.mark.e2e
+def test_a_required_secret_override_is_not_offered_a_clear(page: Page, real_server: dict[str, Any]) -> None:
+    _open_real(page, real_server)
+    expect(page.locator('[data-field="overrides.github_token"]')).to_have_attribute("type", "password")
+    expect(page.locator('[data-cfg-action="clear-secret"]')).to_have_count(0)
 
 
 @pytest.mark.e2e

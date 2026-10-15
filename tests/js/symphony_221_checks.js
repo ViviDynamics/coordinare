@@ -32,6 +32,13 @@ check('an unchanged persona is kept', body.personas.reviewer.instructions === 'k
 check('enabled is sent', body.enabled === false, JSON.stringify(body));
 check('an empty spec list sends the default', same(body.env_spec_files, ['README.md']), JSON.stringify(body));
 
+var clearedSecret = symRequestBody([
+  {key: 'overrides.github_token', after: '', secret: true, cleared: true},
+], {overrides: {github_token: CFG_SECRET_MASK, max_concurrent_cards: 2}, personas: {}});
+check('a cleared secret is written absent', !('github_token' in clearedSecret.overrides), JSON.stringify(clearedSecret));
+var clearedRows = cfgDiffRows([{label: 'github_token', before: CFG_SECRET_MASK, after: '', secret: true, cleared: true}]);
+check('a cleared secret reads (cleared) in the review', clearedRows[0].after === '(cleared)', JSON.stringify(clearedRows));
+
 var typed = symRequestBody([{key: 'overrides.github_token', after: 'ghp_typed000000000000000000000000000', secret: true}], base);
 check('a typed secret is what is sent', typed.overrides.github_token === 'ghp_typed000000000000000000000000000', JSON.stringify(typed));
 
@@ -63,6 +70,7 @@ function cfgFlash(el, text, kind) { calls.flash.push([text, kind]); }
 function cfgRebaseline() { calls.rebaseline += 1; }
 function cfgConflict(el, status, body, reload) { calls.conflict.push(reload); }
 function navigate(e, path) { calls.navigate.push(path); }
+function cfgHasUnsaved() { return false; }
 var _symCfgHash = 'old';
 var _cfgPending = {scope: 'symphony:demo'};
 

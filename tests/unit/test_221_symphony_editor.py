@@ -80,8 +80,68 @@ def test_a_secret_override_is_served_masked_and_its_key_is_listed(tmp_path: Path
     assert resp.status_code == 200
     body = resp.json()
     assert body["overrides"] == {"github_token": SECRET_MASK, "max_concurrent_cards": 2}
-    assert body["secret_overrides"] == ["github_token"]
+    # The global token is required, so the override is not offered a Clear (#225's required rule).
+    assert body["secret_overrides"] == [{"key": "github_token", "clearable": False}]
     assert _SECRET not in resp.text
+
+
+_NESTED = "whsec_NESTED_SECRET_123456789"
+
+
+def test_no_secret_at_any_depth_appears_in_the_get_body(tmp_path: Path) -> None:
+    """A secret inside a dict-valued override (webhooks.secret) is masked like a top-level one."""
+    raw = {**_BASE, "symphonies": [{"name": "demo", "github_project_number": 100, "overrides": {
+        "webhooks": {"secret": _NESTED}, "github_token": _SECRET, "max_concurrent_cards": 2}}]}
+    client, _ = _client(_write(tmp_path / "config.yaml", raw), raw)
+
+    resp = client.get("/api/symphonies/demo")
+
+    assert resp.status_code == 200
+    assert resp.json()["overrides"]["webhooks"] == {"secret": SECRET_MASK}
+    assert _NESTED not in resp.text
+    assert _SECRET not in resp.text
+
+
+def test_a_nested_masked_secret_keeps_its_stored_value_on_save(tmp_path: Path) -> None:
+    raw = {**_BASE, "symphonies": [{"name": "demo", "github_project_number": 100, "overrides": {
+        "webhooks": {"secret": _NESTED}}}]}
+    path = _write(tmp_path / "config.yaml", raw)
+    client, _ = _client(path, raw)
+
+    resp = client.put("/api/symphonies/demo", json={"overrides": {"webhooks": {"secret": SECRET_MASK}, "max_concurrent_cards": 4}},
+                      headers={"If-Match": _etag(client)})
+
+    assert resp.status_code == 200, resp.text
+    assert _symphony_on_disk(path, "demo")["overrides"] == {"webhooks": {"secret": _NESTED}, "max_concurrent_cards": 4}
+    assert _NESTED not in resp.text
+
+
+def test_a_nested_mask_with_nothing_stored_is_refused(tmp_path: Path) -> None:
+    path = _write(tmp_path / "config.yaml", _BASE)
+    before = path.read_text()
+    client, _ = _client(path, _BASE)
+
+    resp = client.put("/api/symphonies/demo", json={"overrides": {"webhooks": {"secret": SECRET_MASK}}},
+                      headers={"If-Match": _etag(client)})
+
+    assert resp.status_code == 422, resp.text
+    assert path.read_text() == before
+
+
+def test_an_optional_secret_override_is_clearable_and_clearing_it_writes_it_absent(tmp_path: Path) -> None:
+    raw = {**_BASE, "symphonies": [{"name": "demo", "github_project_number": 100,
+                                    "overrides": {"dashboard_auth_token": _TOKEN, "max_concurrent_cards": 2}}]}
+    path = _write(tmp_path / "config.yaml", raw)
+    client, _ = _client(path, raw)
+
+    body = client.get("/api/symphonies/demo").json()
+    assert body["secret_overrides"] == [{"key": "dashboard_auth_token", "clearable": True}]
+
+    resp = client.put("/api/symphonies/demo", json={"overrides": {"max_concurrent_cards": 2}},
+                      headers={"If-Match": _etag(client)})
+
+    assert resp.status_code == 200, resp.text
+    assert _symphony_on_disk(path, "demo")["overrides"] == {"max_concurrent_cards": 2}
 
 
 def test_an_update_response_serves_a_secret_override_masked_too(tmp_path: Path) -> None:

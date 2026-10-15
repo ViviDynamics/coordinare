@@ -643,7 +643,8 @@ async function loadSymphonyDetail(name, el) {
   }
   _symBase = {overrides: data.overrides || {}, personas: data.personas || {}};
   _symShown = name;
-  _cfgSymReload = function() { loadSymphonyDetail(name, el); };
+  // A reload after a moment must not draw this form over another page the reader has since entered.
+  _cfgSymReload = function() { if (_symShown === name) loadSymphonyDetail(name, el); };
   var form = document.getElementById('sym-config-form');
   cfgWireControls(form, symRunAction);
   cfgRebaseline(form);
@@ -702,13 +703,19 @@ function symOverrideRow(f, ov) {
 
 // 221: a secret override is typed into, never shown. The server holds the value and shows the mask, so
 // the page has nothing to write into the input, and Show reveals only what is typed.
-function symSecretRow(key) {
+// 221: Clear is offered only where the global field may be empty (#225's required rule, from the server).
+function symSecretRow(secret) {
+  var key = secret.key;
+  var clear = secret.clearable
+    ? '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc('overrides.' + key) + '">Clear</button>'
+    : '';
   return '<div style="margin-bottom:8px">'
     + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(key) + ' (secret)</label>'
     + '<div style="display:flex;gap:6px;align-items:center">'
     + '<input type="password" autocomplete="off" data-secret="true" data-field="' + esc('overrides.' + key) + '"'
     + ' data-type="text" data-label="' + esc(key) + '" placeholder="leave masked to keep current" style="' + CFG_INPUT + '">'
     + '<button type="button" class="cfg-btn" data-cfg-action="toggle-secret" aria-pressed="false">Show</button>'
+    + clear
     + '</div></div>';
 }
 
@@ -738,7 +745,7 @@ function symFormHtml(name, data) {
   var secretKeys = data.secret_overrides || [];
   var enabledChecked = data.enabled !== false ? ' checked' : '';
   var overrideRows = symOverrideFields().map(function(f) { return symOverrideRow(f, ov); }).join('');
-  var secretRows = secretKeys.map(function(key) { return symSecretRow(key); }).join('');
+  var secretRows = secretKeys.map(function(secret) { return symSecretRow(secret); }).join('');
   var personaRows = symPersonaRoles().map(function(role) {
     var instructions = personas[role] && personas[role].instructions ? personas[role].instructions : '';
     return symPersonaRow(role, instructions);
@@ -815,7 +822,9 @@ function symRequestBody(entries, base) {
     var name = key.slice('overrides.'.length);
     if (name.slice(-6) === '.nocap') { noCap[name.slice(0, -6)] = e.after === true; return; }
     if (e.secret) {
-      if (cfgSecretChanged(e.after)) overrides[name] = e.after;
+      // A cleared secret is written absent. A typed one replaces the stored value, and an untouched one stays masked.
+      if (e.cleared) delete overrides[name];
+      else if (cfgSecretChanged(e.after)) overrides[name] = e.after;
       return;
     }
     var value = typeof e.after === 'string' ? e.after.trim() : e.after;

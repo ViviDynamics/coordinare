@@ -572,6 +572,8 @@ function cfgRestoreEdits(list) {
       }
       cfgSetControl(el, item.changes[key]);
     });
+    // 221: a number that a No cap box switches off follows the box it was restored with.
+    cfgSyncOffTargets(box);
   });
 }
 
@@ -823,6 +825,9 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
       return true;
     }
     cfgFlash(statusEl, 'Saved', 'green');
+    // The form is drawn again from the server after a moment, as Settings is, so a cleared secret's row and the
+    // base the next save starts from match what was stored. A reader who has typed since is left alone.
+    setTimeout(function() { if (!cfgHasUnsaved()) cfgReloadSymphony(); }, 1000);
     return true;
   }
   if (status === 428 || (status === 409 && body && body.conflict)) {
