@@ -12,8 +12,11 @@ back to the embedded build version when distribution metadata is absent. Escape
 the version before rendering it into HTML. No snapshot scope or JS changes.
 
 Extend main branch release jobs with build and isolated installation using hashed
-lock exports under read permissions. Transfer assets to a separate job for GitHub
-provenance attestation, checksum generation and upload with write permissions.
+lock exports under read permissions. Generate checksums after both smoke tests.
+Transfer assets and the checksum manifest to a separate job that verifies strict
+checksums and the exact inventory before GitHub provenance attestation and upload
+with write permissions. Preserve the manifest unchanged. Delete matching assets
+from a reused draft before uploading, and fail publication if deletion fails.
 Gate final publication on successful artifacts and preserve the existing image
 latest dependencies. Reuse drafts discovered through paginated release listings
 and publish by the release id passed through job outputs. Test the parsed workflow,

@@ -20,14 +20,19 @@ and latest image tags are separate tracks. Image promotion depends only on its
 existing image jobs, so Python packaging failures do not block it. A failed upload
 leaves a draft for a safe rerun. Existing published releases are detected and their
 asset upload and final publication are left intact on reruns.
-SHA256SUMS covers every downloadable asset except itself, including the provenance
-bundle. Provenance covers the built packages and optional installer; the bundle
-cannot attest itself.
+SHA256SUMS is generated after both build smoke tests and covers every downloadable
+artifact except itself. The publication job verifies the original manifest with
+strict checksum checking and an exact file inventory before attestation or upload.
+Missing, extra, malformed or changed files fail publication. GitHub attestation
+covers the verified artifacts and that same manifest; no separate provenance
+bundle is added to the release assets. Before upload, matching asset names on a
+reused draft are deleted, with any deletion failure blocking publication.
 
 Build and smoke jobs have read access only and do not persist checkout credentials.
-A separate job downloads the built assets for attestation and release upload with
-write permissions. Draft discovery lists releases with pagination and matches the
-tag, and creation passes the release id through job outputs to final publication.
+A separate job downloads the built assets and their checksums for verification,
+attestation and release upload with write permissions. Draft discovery lists
+releases with pagination and matches the tag, and creation passes the release id
+through job outputs to final publication.
 
 The clean environment test installs hashed external dependencies exported from
 the locks and installs the exact local wheels without dependency resolution,

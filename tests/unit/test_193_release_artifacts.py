@@ -24,6 +24,7 @@ VERSION = "2026.10.84"
 LEGACY_TAG = "2026.09.01.3"
 NORMALIZED_VERSION = "2026.9.1.3"
 RELEASE_ID = 193
+EXECUTABLE_MODE = 0o755
 
 
 def release_tools():
@@ -120,13 +121,143 @@ def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
     assert attestation["with"]["subject-path"] == "dist/*"
     assert attestation["with"]["create-storage-record"] is False
     upload = next(s for s in steps if s.get("id") == "upload")
-    assert "bundle-path" in upload["env"]["ATTESTATION_BUNDLE"]
-    assert "SHA256SUMS" in upload["run"]
-    assert "sha256sum" in upload["run"]
+    assert "sha256sum" not in upload["run"]
     assert "gh release upload" in upload["run"]
     assert "dist/*" in upload["run"]
     assert steps.index(attestation) < steps.index(upload)
     assert "test_142_license_and_legal_posture.py" in str(workflow()["jobs"]["test"])
+
+
+def test_release_checksum_order_and_strict_verification() -> None:
+    jobs = workflow()["jobs"]
+    build_steps = jobs["release-artifacts"]["steps"]
+    checksum = next(s for s in build_steps if s.get("id") == "checksums")
+    transfer = next(s for s in build_steps if s.get("uses", "").startswith("actions/upload-artifact@"))
+    for smoke in (s for s in build_steps if "smoke_release.py" in s.get("run", "") or "performer-*.whl" in s.get("run", "")):
+        assert build_steps.index(smoke) < build_steps.index(checksum)
+    assert build_steps.index(checksum) < build_steps.index(transfer)
+    assert checksum["working-directory"] == "dist"
+    steps = jobs["publish-artifacts"]["steps"]
+    download = next(s for s in steps if s.get("uses", "").startswith("actions/download-artifact@"))
+    verify = next(s for s in steps if s.get("id") == "verify")
+    attest = next(s for s in steps if s.get("id") == "attest")
+    cleanup = next(s for s in steps if s.get("id") == "cleanup")
+    upload = next(s for s in steps if s.get("id") == "upload")
+    assert steps.index(download) < steps.index(verify) < steps.index(attest) < steps.index(cleanup) < steps.index(upload)
+    assert "set -euo pipefail" in verify["run"]
+    assert "sha256sum --strict -c SHA256SUMS" in verify["run"]
+    assert verify["working-directory"] == "dist"
+    assert "continue-on-error" not in str(steps)
+
+
+def run_artifact_step(step: dict, root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=root / step.get("working-directory", "."),
+        env={**os.environ, "RUNNER_TEMP": str(root), "RELEASE_VERSION": VERSION},
+        capture_output=True, text=True, check=False,
+    )
+
+
+def prepare_release_dist(root: Path) -> bytes:
+    dist = root / "dist"
+    dist.mkdir()
+    for name in ("coordinare.whl", "performer.whl", "coordinare.tar.gz", "install.sh"):
+        (dist / name).write_text(name)
+    steps = workflow()["jobs"]["release-artifacts"]["steps"]
+    checksum = next(s for s in steps if s.get("id") == "checksums")
+    result = run_artifact_step(checksum, root)
+    assert result.returncode == 0, result.stderr
+    manifest = (dist / "SHA256SUMS").read_bytes()
+    for name in (p.name for p in dist.iterdir() if p.name != "SHA256SUMS"):
+        digest = hashlib.sha256((dist / name).read_bytes()).hexdigest()
+        assert f"{digest}  {name}\n".encode() in manifest
+    return manifest
+
+
+@pytest.mark.parametrize("damage", ["none", "changed", "missing", "missing_manifest", "extra", "hidden", "malformed", "duplicate", "symlink", "directory"])
+def test_release_verification_rejects_any_unverified_download(tmp_path: Path, damage: str) -> None:
+    manifest = prepare_release_dist(tmp_path)
+    dist = tmp_path / "dist"
+    if damage == "changed":
+        (dist / "coordinare.whl").write_text("corrupt")
+    elif damage == "missing":
+        (dist / "coordinare.whl").unlink()
+    elif damage == "missing_manifest":
+        (dist / "SHA256SUMS").unlink()
+    elif damage in {"extra", "hidden"}:
+        (dist / ("extra.whl" if damage == "extra" else ".extra.whl")).write_text("unverified")
+    elif damage == "malformed":
+        (dist / "SHA256SUMS").write_bytes(manifest + b"invalid checksum\n")
+    elif damage == "duplicate":
+        (dist / "SHA256SUMS").write_bytes(manifest + manifest)
+    elif damage == "symlink":
+        (dist / "coordinare.whl").rename(tmp_path / "coordinare.whl")
+        (dist / "coordinare.whl").symlink_to(tmp_path / "coordinare.whl")
+    elif damage == "directory":
+        (dist / "extra").mkdir()
+    steps = workflow()["jobs"]["publish-artifacts"]["steps"]
+    verify = next(s for s in steps if s.get("id") == "verify")
+    result = run_artifact_step(verify, tmp_path)
+    assert (result.returncode == 0) == (damage == "none"), result.stdout + result.stderr
+    if damage == "none":
+        assert (dist / "SHA256SUMS").read_bytes() == manifest
+
+
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_draft_rerun_deletes_only_matching_assets_before_upload(tmp_path: Path, delete_fails: bool) -> None:
+    prepare_release_dist(tmp_path)
+    steps = workflow()["jobs"]["publish-artifacts"]["steps"]
+    cleanup = next(s for s in steps if s.get("id") == "cleanup")
+    assert cleanup["env"]["RELEASE_ID"] == "${{ needs.create-tag.outputs.release_id }}"
+    script = cleanup["with"]["script"]
+    harness = """
+const assert = require('node:assert/strict');
+const events = [];
+const context = {repo: {owner: 'ViviDynamics', repo: 'coordinare'}};
+const github = {
+  paginate: async (method, params) => {
+    assert.equal(params.release_id, Number(process.env.RELEASE_ID));
+    assert.equal(method, github.rest.repos.listReleaseAssets);
+    return ['coordinare.whl', 'SHA256SUMS', 'unrelated.txt'].map(name => ({id: name, name}));
+  },
+  rest: {repos: {
+    listReleaseAssets: () => { throw new Error('must paginate'); },
+    deleteReleaseAsset: async params => {
+      await new Promise(resolve => setImmediate(resolve));
+      if (DELETE_FAILS) throw new Error('deletion failed');
+      events.push(params.asset_id);
+    },
+  }},
+};
+(async () => { SCRIPT })().then(() => {
+  assert.deepEqual(events.sort(), ['SHA256SUMS', 'coordinare.whl']);
+}).catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("SCRIPT", script).replace("DELETE_FAILS", json.dumps(delete_fails))
+    result = subprocess.run(
+        ["node", "-e", harness], cwd=tmp_path,
+        env={**os.environ, "RELEASE_ID": str(RELEASE_ID)},
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is not delete_fails, result.stderr
+
+
+def test_release_upload_preserves_build_manifest_and_only_uploads_verified_files(tmp_path: Path) -> None:
+    manifest = prepare_release_dist(tmp_path)
+    steps = workflow()["jobs"]["publish-artifacts"]["steps"]
+    verify = next(s for s in steps if s.get("id") == "verify")
+    result = run_artifact_step(verify, tmp_path)
+    assert result.returncode == 0, result.stderr
+    gh = tmp_path / "gh"
+    gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > uploaded.txt\n')
+    gh.chmod(EXECUTABLE_MODE)
+    upload = next(s for s in steps if s.get("id") == "upload")
+    with patch.dict(os.environ, {"PATH": f"{tmp_path}:{os.environ['PATH']}"}):
+        result = run_artifact_step(upload, tmp_path)
+    assert result.returncode == 0, result.stderr
+    expected = sorted(f"dist/{path.name}" for path in (tmp_path / "dist").iterdir())
+    assert (tmp_path / "uploaded.txt").read_text().splitlines() == ["release", "upload", VERSION, *expected]
+    assert (tmp_path / "dist/SHA256SUMS").read_bytes() == manifest
 
 
 def test_staged_packages_have_tag_versions_pinned_siblings_and_legal_files(tmp_path: Path) -> None:
@@ -181,27 +312,20 @@ def test_upload_failure_prevents_release_promotion(tmp_path: Path) -> None:
     """Exercise the real upload shell with a failing gh, without calling GitHub."""
     job = workflow()["jobs"]["publish-artifacts"]
     upload = next(s for s in job["steps"] if s.get("id") == "upload")
-    (tmp_path / "dist").mkdir()
-    (tmp_path / "dist/coordinare.whl").write_bytes(b"wheel")
-    (tmp_path / "bundle.json").write_text("{}")
+    manifest = prepare_release_dist(tmp_path)
     gh = tmp_path / "gh"
     gh.write_text("#!/bin/sh\nexit 1\n")
-    gh.chmod(0o755)
+    gh.chmod(EXECUTABLE_MODE)
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", upload["run"]],
         cwd=tmp_path,
-        env={"PATH": f"{tmp_path}:{os.defpath}:{os.environ['PATH']}", "ATTESTATION_BUNDLE": str(tmp_path / "bundle.json"), "RELEASE_VERSION": VERSION},
+        env={"PATH": f"{tmp_path}:{os.defpath}:{os.environ['PATH']}", "RELEASE_VERSION": VERSION},
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode != 0
-    checksums = (tmp_path / "dist/SHA256SUMS").read_text()
-    assert "coordinare.whl" in checksums and "provenance.json" in checksums
-    for line in checksums.splitlines():
-        digest, name = line.split("  ", 1)
-        assert digest == hashlib.sha256((tmp_path / "dist" / name).read_bytes()).hexdigest()
-    assert "SHA256SUMS" not in checksums
+    assert (tmp_path / "dist/SHA256SUMS").read_bytes() == manifest
 
 
 def run_release_scripts(*jobs: str, published: bool = False, exists: bool = True) -> dict:

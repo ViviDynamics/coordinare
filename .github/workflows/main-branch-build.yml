@@ -388,6 +388,15 @@ jobs:
           cd "$(mktemp -d)"
           "$SMOKE_ENV/bin/python" -I -c 'from importlib.metadata import version; import os; import performer.main; assert version("performer") == os.environ["RELEASE_VERSION"]; assert callable(performer.main.main)'
 
+      - name: Checksum smoke tested release assets
+        id: checksums
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+
       - name: Transfer smoke tested release assets
         uses: actions/upload-artifact@v4
         with:
@@ -415,26 +424,68 @@ jobs:
           name: release-dist
           path: dist/
 
-      - name: Attest built release assets
+      - name: Verify downloaded release assets
+        id: verify
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum --strict -c SHA256SUMS
+          # Check the inventory too: sha256sum does not reject extra files.
+          python - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+
+          files = list(Path('.').iterdir())
+          if any(path.is_symlink() or not path.is_file() for path in files):
+              raise SystemExit('Release assets must be regular files')
+          expected = sorted(
+              line.partition('  ')[-1]
+              for line in Path('SHA256SUMS').read_text().splitlines()
+          )
+          actual = sorted(path.name for path in files if path.name != 'SHA256SUMS')
+          if expected != actual:
+              raise SystemExit('Release assets do not match the checksum inventory')
+          PY
+
+      - name: Attest verified release assets and checksums
         id: attest
         uses: actions/attest@v4
         with:
           subject-path: dist/*
           create-storage-record: false
 
-      - name: Upload assets and checksums to the draft
+      - name: Remove matching assets from the draft
+        id: cleanup
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-tag.outputs.release_id }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const names = new Set(fs.readdirSync('dist'));
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              ...context.repo, release_id: Number(process.env.RELEASE_ID),
+            });
+            for (const asset of assets) {
+              if (names.has(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  ...context.repo, asset_id: asset.id,
+                });
+              }
+            }
+
+      - name: Upload verified assets and checksums to the draft
         id: upload
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
-          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         shell: bash
         run: |
           set -euo pipefail
-          cp "$ATTESTATION_BUNDLE" dist/provenance.json
-          (cd dist && sha256sum -- * > SHA256SUMS)
-          gh release upload "$RELEASE_VERSION" dist/* --clobber
+          gh release upload "$RELEASE_VERSION" dist/*
 
   # 173a: image jobs are pinned to an architecture. Each arch is built on a
   # runner that IS that architecture — amd64 images on ubuntu-latest and arm64
