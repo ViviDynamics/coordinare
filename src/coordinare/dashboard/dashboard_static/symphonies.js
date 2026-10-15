@@ -178,6 +178,8 @@ var SNAPSHOT_FIELD_SCOPE = {
   session_stats: 'hidden',
   session_skip_reasons: 'derived',
   symphonies: 'scoped',
+  // 155: the server's clock when the snapshot was taken; the Done lane's 24-hour cut reads it.
+  snapshot_at: 'shared',
   coordinare: 'shared'
 };
 
@@ -409,6 +411,62 @@ function safeHttpUrl(url) {
   return /^https?:\/\//i.test(text) ? text : '';
 }
 
+// 155: a symphony that has never been polled and holds no cards. Its config has not been
+// checked, so the switcher and the Symphonies page say so. It is greyed out, not hidden,
+// because hiding it would also hide the config problem that keeps it empty.
+var SYMPHONY_NEVER_CHECKED_TEXT = 'Never checked: check config';
+
+// The cards on one symphony's board, over every column. 0 when the board has not been read.
+function symphonyCardCount(sym) {
+  var snap = sym && sym.state && sym.state.board_snapshot;
+  if (!snap || typeof snap !== 'object') return 0;
+  var total = 0;
+  for (var col in snap) {
+    if (symphonyHas(snap, col) && Array.isArray(snap[col])) total += snap[col].length;
+  }
+  return total;
+}
+
+// 155: why a symphony has no check yet, or null once it has been checked, or when the snapshot does
+// not say. The kinds are told apart by what the snapshot carries:
+//   failed   its first cycle threw (error_count, or last_error); the error is shown, redacted server-side
+//   startup  the daemon has not finished a cycle yet, so the symphony may simply not have been reached
+//   webhook  polling is off and no cycle has run, so the symphony is waiting for a webhook
+//   never    polling is on, the daemon has finished cycles, and this symphony was never checked
+// Only "never" is a config question, so only it is greyed out (see symphonyIsInactive).
+function symphonyUncheckedNote(sym) {
+  if (!sym || typeof sym !== 'object') return null;
+  if (!symphonyHas(sym, 'cycle_count') || !symphonyHas(sym, 'last_poll_at')) return null;
+  var checked = !!sym.last_poll_at || (typeof sym.cycle_count === 'number' && sym.cycle_count > 0);
+  if (checked) return null;
+  var lastError = sym.state && typeof sym.state === 'object' ? sym.state.last_error : null;
+  if ((typeof sym.error_count === 'number' && sym.error_count > 0) || lastError) {
+    return {kind: 'failed', text: 'Last check failed: ' + String(lastError || 'the error was not recorded')};
+  }
+  var polling = typeof sym.poll_interval_seconds === 'number' && sym.poll_interval_seconds > 0;
+  if (!polling) return {kind: 'webhook', text: 'Waiting for a webhook'};
+  var daemonCycles = sym.daemon_cycles_completed;
+  if (typeof daemonCycles !== 'number' || daemonCycles <= 0) return {kind: 'startup', text: 'Not checked yet'};
+  return {kind: 'never', text: SYMPHONY_NEVER_CHECKED_TEXT};
+}
+
+// The notes for several symphonies as one line of text, each text once.
+function symphonyUncheckedText(syms) {
+  var texts = [];
+  (syms || []).forEach(function(sym) {
+    var note = symphonyUncheckedNote(sym);
+    if (note && texts.indexOf(note.text) === -1) texts.push(note.text);
+  });
+  return texts.join('; ');
+}
+
+// Greyed out when the symphony was never checked and holds no cards. Hiding it would hide the
+// config problem that keeps it empty. A symphony that is only waiting, or has failed, is not greyed.
+function symphonyIsInactive(sym) {
+  var note = symphonyUncheckedNote(sym);
+  return !!note && note.kind === 'never' && symphonyCardCount(sym) === 0;
+}
+
 // The identity of one symphony: "name", "GitHub Project #16" and "owner/repo".
 // A part the snapshot does not know is left out, never shown as a placeholder.
 function symphonyIdentity(sym) {
@@ -468,7 +526,10 @@ function symphonySwitcherHtml(s, choice) {
   }
   var options = '<option value="' + esc(SYMPHONY_ALL) + '"' + (choice === SYMPHONY_ALL ? ' selected' : '') + '>All symphonies</option>';
   names.forEach(function(name) {
-    options += '<option value="' + esc(name) + '"' + (name === choice ? ' selected' : '') + '>' + esc(name) + '</option>';
+    // 155: a select cannot grey out one option, so an unchecked symphony says why in its label.
+    var unchecked = symphonyUncheckedNote(symphonyEntry(s, name));
+    var note = unchecked ? ' (' + unchecked.text + ')' : '';
+    options += '<option value="' + esc(name) + '"' + (name === choice ? ' selected' : '') + '>' + esc(name + note) + '</option>';
   });
   var identity = choice === SYMPHONY_ALL ? '' : symphonyIdentityHtml(symphonyEntry(s, choice));
   return '<label for="symphony-select" class="muted">Symphony</label>' +

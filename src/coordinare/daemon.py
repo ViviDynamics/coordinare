@@ -36,7 +36,7 @@ from coordinare.graph.state import (
     initial_state,
 )
 from coordinare.lib.clarifications import annotate_clarifications
-from coordinare.lib.redaction import redact_state_value
+from coordinare.lib.redaction import clip_session_error, redact_state_value
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -3587,7 +3587,7 @@ class CoordinareDaemon:
             s = sym_states.get(symphony_name)
             if s is not None:
                 s.error_count = getattr(s, "error_count", 0) + 1
-                s.last_error = redact_state_value(str(exc))
+                s.last_error = clip_session_error(redact_state_value(str(exc)))
             # Do NOT re-raise — other symphonies continue
         finally:
             clear_symphony()

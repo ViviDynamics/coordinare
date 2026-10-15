@@ -514,6 +514,21 @@ def _closed_pr_resume_pending(state: CoordinareState, card: dict[str, Any], live
     return live_state != "MERGED" and isinstance(reason, str) and matches_closed_pr_identity(reason, card)
 
 
+def _mirror_live_head(state: CoordinareState, card_id: str, head: str) -> None:
+    """155: mirror the PR head read this cycle onto the card's session as ``pr_live_head``.
+
+    A cycle that read no head clears the mirror, so an old read never stands for the current commit.
+    """
+    sessions = state.get("active_sessions")
+    if not card_id or not isinstance(sessions, dict) or not isinstance(sessions.get(card_id), dict):
+        return
+    session = sessions[card_id]
+    if head:
+        session["pr_live_head"] = {"head": head, "checked_at": datetime.now(UTC).isoformat()}
+    else:
+        session.pop("pr_live_head", None)
+
+
 async def monitor_pr(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
     board_provider = board_of(state)
@@ -649,6 +664,9 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             reason="monitor_pr_error", head=str(state.get("review_wait_head") or ""),
         )
         return state
+    # 155: the head this cycle read is the card's current commit, as far as coordinare knows. The
+    # board's PR checks icon reads it from the session. No extra GitHub call: it is the same read.
+    _mirror_live_head(state, str(card.get("id", "")), _pr_head_oid)
     if _closed_pr_resume_pending(state, card, live_pr_state):
         return await _park_closed_pr(state, card)
     # 065 Fix 8 — Re-gate PR checks while the card sits in IN_REVIEW so a new

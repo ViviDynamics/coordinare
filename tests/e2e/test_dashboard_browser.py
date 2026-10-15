@@ -1737,8 +1737,8 @@ def test_board_summary_displays_column_counts(
             },
         ),
     )
-    # Total is the four columns (5+3+2+10=20); Done and Backlog have no column of their own.
-    expect(page.locator("#cards-summary")).to_have_text("Total 20 · Done 10 · Backlog 8", timeout=_WAIT_LIVE)
+    # Total is every card the board shows: the four columns and Done (5+3+2+1+10=21); Backlog has no column.
+    expect(page.locator("#cards-summary")).to_have_text("Total 21 · Done 10 · Backlog 8", timeout=_WAIT_LIVE)
     expect(page.locator("#cycles-completed")).to_have_text("7", timeout=_WAIT_LIVE)
 
 
@@ -1827,7 +1827,7 @@ def test_active_work_row_shows_cost(
     expect(tile.locator(".ap-tile-cost")).to_contain_text("$0.01", timeout=_WAIT_LIVE)
     expect(page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")).not_to_contain_text("$0.01")
 
-    # Without dispatch_at there is no cost to show, so the tile says so without a figure.
+    # Without dispatch_at there is no cost to show. The tile names the ledger's state, never a bare "None" (155).
     session_no_dispatch = {**_active_session("PVTI_nodispatch", "No dispatch yet", "initialising")}
     store.broadcaster.broadcast(
         _full_snapshot(
@@ -1838,7 +1838,7 @@ def test_active_work_row_shows_cost(
     )
     tile2 = page.locator("#active-performer-tiles .ap-tile[data-card-id='PVTI_nodispatch']")
     expect(tile2).to_be_visible(timeout=_WAIT_LIVE)
-    expect(tile2.locator(".ap-tile-cost")).to_have_text("None", timeout=_WAIT_LIVE)
+    expect(tile2.locator(".ap-tile-cost")).to_have_text("not tracked", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e

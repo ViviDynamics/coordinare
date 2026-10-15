@@ -818,6 +818,33 @@ def _ci_gate_budget(
     return bounce_counter, inheritance_repair_counter, max_bounces, now_iso, _stash
 
 
+#: The result a gate that could not judge the head leaves on the card's lifecycle: the gate is disabled,
+#: the card has no PR, or the gate raised.
+GATE_RESULT_UNKNOWN = "UNKNOWN"
+#: How a verdict's decision reads as a lifecycle result. A bounce and an escalation are both a failed gate.
+_GATE_VERDICT_RESULTS: dict[str, str] = {"pass": "FORWARD", "hold": "HOLD"}
+#: The characters of a head SHA a lifecycle record keeps.
+_RECORDED_HEAD_CHARS = 12
+
+
+def _record_gate_result(state: CoordinareState, card_id: str, result: str, head_sha: str | None) -> None:
+    """155: write one gate result, the classified outcome, to the card's lifecycle, once per (head, result).
+
+    This records what the gate decided. It changes nothing the gate does.
+    """
+    head = str(head_sha or "")[:_RECORDED_HEAD_CHARS]
+    record_lifecycle(
+        state, "ci_result", card_id=card_id, stage=stage_of(state),
+        detail={"result": result, "head": head}, key=f"{head}:{result}",
+    )
+
+
+def _gate_result_of(updates: dict[str, Any]) -> str:
+    """The lifecycle result of a verdict's updates: its classified decision, a bounce when there is none."""
+    decision = updates.get("latest_ci_gate_decision") or {}
+    return _GATE_VERDICT_RESULTS.get(str(decision.get("verdict")), "BOUNCE")
+
+
 async def _evaluate_ci_gate(
     state: CoordinareState,
     card_id: str,
@@ -832,8 +859,11 @@ async def _evaluate_ci_gate(
     """
     prereqs = _ci_gate_prereqs(state, pr_url)
     if prereqs is None:
+        # 155: a gate that did not run says so, so an older result is not read as this head's.
+        _record_gate_result(state, card_id, GATE_RESULT_UNKNOWN, None)
         return {}, False
     cfg, owner, repo, pr_num, github = prereqs
+    judged_head: str | None = None
 
     try:
         svc, rollup = await _ci_gate_fetch_rollup(
@@ -851,12 +881,7 @@ async def _evaluate_ci_gate(
         )
 
         head_sha = rollup.head_sha
-        # 147: the gate's result for this head, recorded once per (head, result).
-        record_lifecycle(
-            state, "ci_result", card_id=card_id, stage=stage_of(state),
-            detail={"result": decision.action, "head": str(head_sha or "")[:12]},
-            key=f"{head_sha}:{decision.action}",
-        )
+        judged_head = head_sha
         (
             bounce_counter,
             inheritance_repair_counter,
@@ -866,6 +891,7 @@ async def _evaluate_ci_gate(
         ) = _ci_gate_budget(state, card_id, cfg)
 
         if decision.action == "FORWARD":
+            _record_gate_result(state, card_id, "FORWARD", head_sha)
             return _ci_gate_pass_decision(
                 rollup=rollup,
                 required_names=required_names,
@@ -877,6 +903,7 @@ async def _evaluate_ci_gate(
             )
 
         if decision.action == "HOLD":
+            _record_gate_result(state, card_id, "HOLD", head_sha)
             return _ci_gate_hold_decision(
                 state=state,
                 decision=decision,
@@ -896,9 +923,11 @@ async def _evaluate_ci_gate(
             pr_num=pr_num, now_iso=now_iso, stash=_stash,
         )
         if classify[0] is not None:
+            # 155: the env block is recorded as what it is, not as the BOUNCE the rollup alone suggested.
+            _record_gate_result(state, card_id, "ENV_BLOCKED", head_sha)
             return classify[0]
 
-        return await _ci_gate_decide_verdict(
+        verdict = await _ci_gate_decide_verdict(
             state=state, decision=decision, rollup=rollup,
             classification=classify[1], required_names=required_names,
             resolved=resolved, failed_names=classify[2], failed_objs=classify[3],
@@ -906,10 +935,14 @@ async def _evaluate_ci_gate(
             head_sha=head_sha, pr_num=pr_num, max_bounces=max_bounces, now_iso=now_iso,
             stash=_stash,
         )
+        _record_gate_result(state, card_id, _gate_result_of(verdict[0]), head_sha)
     except Exception as exc:
         # FR-011: fail-open on any error so a broken gate never blocks flow.
+        # 155: the head it had reached, if any, is recorded as unknown, so an older result is not read as its own.
+        _record_gate_result(state, card_id, GATE_RESULT_UNKNOWN, judged_head)
         _warn_ci_gate_api_error(pr=pr_num, card_id=card_id, exc=exc)
         return {}, False
+    return verdict
 
 
 def _ci_gate_pass_decision(

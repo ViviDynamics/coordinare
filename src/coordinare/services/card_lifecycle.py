@@ -120,6 +120,19 @@ def _valid_event(raw: object) -> EventRecord | None:
     return event
 
 
+def _repeats(events: list[EventRecord], kind: str, key: str) -> bool:
+    """Whether a keyed event repeats one already recorded.
+
+    A ci_result is judged against the card's latest ci_result only. A gate that judged HOLD, then BOUNCE,
+    then HOLD on one head has judged HOLD again, and that is the latest judgement, so it is kept. Any other
+    kind is judged against the whole history, as a merge or a PR is recorded once.
+    """
+    if kind == "ci_result":
+        latest = next((e for e in reversed(events) if e["kind"] == kind), None)
+        return latest is not None and latest.get("key") == key
+    return any(e["kind"] == kind and e.get("key") == key for e in events)
+
+
 def _protected_indexes(events: list[EventRecord]) -> set[int]:
     """The events the cap never drops: the first event (it holds the epoch and the dropped count),
     the first dispatch of each stage, the latest verdict of each stage, and the latest merge.
@@ -210,7 +223,7 @@ class CardLifecycleLog:
         if kind == START_KIND and any(e["kind"] == TERMINAL_KIND for e in events):
             # A reused card id: the old history belongs to the card that finished, so it is dropped.
             events.clear()
-        if key is not None and any(e["kind"] == kind and e.get("key") == str(key)[:MAX_KEY_CHARS] for e in events):
+        if key is not None and _repeats(events, kind, str(key)[:MAX_KEY_CHARS]):
             return False
         event_at = str(at) if at else _now_iso()
         event: EventRecord = {

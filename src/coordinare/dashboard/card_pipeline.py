@@ -85,6 +85,26 @@ def live_stage(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | N
     return stage if stage in PIPELINE_STAGES else None
 
 
+#: The phase in which monitor_pr reads the PR's live head every cycle. It is the only source of a current head.
+_PR_WAIT_PHASE = "monitoring_pr"
+
+
+def live_head(daemon: CoordinareDaemon, symphony: str, card_id: str) -> str | None:
+    """The PR head monitor_pr last read for a card still waiting on its PR, or None.
+
+    monitor_pr reads the live head on every cycle of that phase and mirrors it onto the session as
+    ``pr_live_head``. Outside that phase, or before the first read, there is no current head, and the
+    performer's last report (head_after) is not one: a human push or a coordinare rebase is never
+    reported. Read from memory only; GitHub is never called for this.
+    """
+    session = _sessions_of(daemon, symphony).get(card_id)
+    if not isinstance(session, dict) or session.get("phase") != _PR_WAIT_PHASE:
+        return None
+    read = session.get("pr_live_head")
+    head = read.get("head") if isinstance(read, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
 def configured_symphonies(daemon: CoordinareDaemon) -> list[str]:
     return [str(name) for name in (daemon.state.get("symphony_configs") or {})]
 
@@ -119,14 +139,17 @@ def card_pipeline_block(daemon: CoordinareDaemon) -> dict[str, dict[str, dict[st
         strips: dict[str, dict[str, Any]] = {}
         for card_id in log.cards(symphony):
             current = live_stage(daemon, symphony, card_id)
+            head = live_head(daemon, symphony, card_id)
             key = ("strip", symphony, card_id)
             seen.add(key)
-            revision = (log.revision(symphony, card_id), current, lifecycle)
+            revision = (log.revision(symphony, card_id), current, lifecycle, head)
             cached = log.derived.get(key)
             if cached is not None and cached[0] == revision:
                 strips[card_id] = cached[1]
                 continue
-            strip = pipeline_strip(log.peek(symphony, card_id), LiveStage(current=current, lifecycle=lifecycle))
+            strip = pipeline_strip(
+                log.peek(symphony, card_id), LiveStage(current=current, lifecycle=lifecycle, head=head),
+            )
             log.derived[key] = (revision, strip)
             strips[card_id] = strip
         block[symphony] = strips

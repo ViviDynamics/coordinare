@@ -12,9 +12,31 @@ function fmtTime(iso) {
   try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
 }
 
+// 155: a timestamp in milliseconds, or NaN. The daemon writes microseconds, and not every browser
+// reads them, so a fraction of a second is dropped before the parse. The board's ages read through this.
+function isoMs(iso) {
+  return Date.parse(String(iso || '').replace(/\.\d+/, ''));
+}
+
+// The age of a timestamp, as "12m 3s" or "2h 0m", or null when it cannot be read. Each function below is
+// self-contained: the tests slice them out of this file one at a time, so none calls another.
 function fmtAge(iso) {
   if (!iso) return null;
-  var secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  var at = Date.parse(String(iso).replace(/\.\d+/, ''));
+  if (isNaN(at)) return null;
+  var secs = Math.floor((Date.now() - at) / 1000);
+  if (secs < 60) return secs + 's';
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+// The same age at an instant the caller names, such as the snapshot's server time.
+function fmtAgeAt(iso, nowMs) {
+  if (!iso) return null;
+  var at = isoMs(iso);
+  if (isNaN(at)) return null;
+  var secs = Math.floor((nowMs - at) / 1000);
   if (secs < 60) return secs + 's';
   var mins = Math.floor(secs / 60);
   if (mins < 60) return mins + 'm ' + (secs % 60) + 's';

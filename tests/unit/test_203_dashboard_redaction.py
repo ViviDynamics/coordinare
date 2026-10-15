@@ -397,6 +397,10 @@ def _scanned_files() -> list[Path]:
 def _wrapped(value: ast.expr) -> bool:
     """True when the value is the helper's result or a value that holds no text."""
     if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        # 155: a length bound may wrap the redaction, never replace it. The bound runs after the
+        # redaction, so a secret is never cut at the boundary and left half-visible.
+        if value.func.id == "clip_session_error" and value.args:
+            return _wrapped(value.args[0])
         return value.func.id == "redact_state_value"
     if isinstance(value, ast.Constant):
         return True
@@ -607,6 +611,11 @@ def test_every_writer_of_a_text_field_routes_through_the_helper() -> None:
                 continue
             offenders.append(f"{path.relative_to(ROOT)}:{line} writes {key!r} unredacted")
     assert not offenders, "\n".join(offenders)
+
+
+def test_a_length_bound_around_the_redaction_is_accepted_but_not_a_bound_alone() -> None:
+    assert _unwrapped_writers(ast.parse("s.last_error = clip_session_error(redact_state_value(x))\n")) == []
+    assert _unwrapped_writers(ast.parse("s.last_error = clip_session_error(x)\n")) == [(1, "last_error")]
 
 
 def test_the_guard_catches_an_unwrapped_writer() -> None:

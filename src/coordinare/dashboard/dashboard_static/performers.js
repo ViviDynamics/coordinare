@@ -72,7 +72,7 @@ function cardRefHtml(sess) {
 // dispatch of that run) and is refreshed by one timer, so two readouts for the
 // same run can never disagree. The element carries its start point.
 function elapsedSinceHtml(iso) {
-  if (!iso) return '<strong>—</strong>';
+  if (!iso) return '<strong>unknown</strong>';
   return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || 'unknown') + '</strong>';
 }
 
@@ -199,8 +199,105 @@ function viewRunLinkHtml(sess) {
     'onclick="event.stopPropagation();navigate(event,this.pathname)" onkeydown="event.stopPropagation()">View run</a>';
 }
 
+// 155: the PR checks icon and the Done lane. The functions above the markup are pure: they read
+// the scoped snapshot and return data or HTML, so tests/js/board_155_checks.js can run them.
+
+// The Done lane counts the last 24 hours, in milliseconds.
+var DONE_LANE_WINDOW_MS = 86400000;
+var DONE_LANE_NOTE = 'Counts merges coordinare recorded in the last 24 hours. Earlier merges are not counted.';
+
+// The checks states a card's icon shows. The state is the gate's result at the review hand-off, not
+// the PR's live state. "unknown" is a gate that could not judge the head.
+var CHECKS_ICONS = {
+  pass: {glyph: '&#10003;', word: 'passing'},
+  fail: {glyph: '&#10007;', word: 'failing'},
+  running: {glyph: '&#9679;', word: 'running'},
+  blocked: {glyph: '&#9888;', word: 'blocked by environment'},
+  unknown: {glyph: '?', word: 'unknown'}
+};
+
+// The server's clock when the snapshot was taken, so an age and the lane's 24-hour cut do not
+// depend on this browser's clock. The browser's own clock only when the snapshot carries none.
+function serverNowMs(s) {
+  var at = s && s.snapshot_at ? isoMs(s.snapshot_at) : NaN;
+  return isNaN(at) ? Date.now() : at;
+}
+
+// The icon beside a card's PR chip, from the card's checks view (the strip's checks). The title
+// always names the hand-off and how old the result is. A stale result is neutral and says so.
+function checksIconHtml(checks, nowMs) {
+  if (!checks || typeof checks !== 'object') {
+    var none = 'PR checks: unknown, no CI gate has judged this card yet';
+    return '<span class="checks-icon checks-unknown" role="img" aria-label="' + esc(none) +
+      '" title="' + esc(none) + '">?</span>';
+  }
+  var key = Object.prototype.hasOwnProperty.call(CHECKS_ICONS, checks.state) ? String(checks.state) : 'unknown';
+  var icon = CHECKS_ICONS[key];
+  // 155: nothing has read the current commit, so the gate's result is not a claim about it. Neutral, whatever it was.
+  if (checks.current_checked !== true) {
+    var last = 'last gate at review hand-off: ' + icon.word + '; current commit not checked';
+    return '<span class="checks-icon checks-unchecked" role="img" aria-label="' + esc(last) +
+      '" title="' + esc(last) + '">?</span>';
+  }
+  var age = fmtAgeAt(checks.at, nowMs);
+  var title = 'PR checks at review hand-off: ' + icon.word + (age ? ' (' + age + ' ago)' : '');
+  var cls = 'checks-icon checks-' + key;
+  if (checks.stale) {
+    cls += ' checks-stale';
+    title += ', checks as of an earlier commit';
+  }
+  return '<span class="' + esc(cls) + '" role="img" aria-label="' + esc(title) +
+    '" title="' + esc(title) + '">' + icon.glyph + '</span>';
+}
+
+// The cards in a symphony's Done column that coordinare merged within the window, newest first.
+// A card with no merge in the lifecycle log is not counted, so the lane claims no merge it did not see.
+function doneLaneEntries(s, nowMs) {
+  var entries = [];
+  var syms = s && Array.isArray(s.symphonies) ? s.symphonies : [];
+  var pipelines = s && s.card_pipeline && typeof s.card_pipeline === 'object' ? s.card_pipeline : {};
+  syms.forEach(function(sym) {
+    var name = sym && sym.name ? String(sym.name) : '';
+    var st = sym && sym.state ? sym.state : {};
+    var done = st.board_snapshot && Array.isArray(st.board_snapshot.DONE) ? st.board_snapshot.DONE : [];
+    var strips = symphonyHas(pipelines, name) && pipelines[name] ? pipelines[name] : {};
+    done.forEach(function(iid) {
+      var strip = symphonyHas(strips, iid) ? strips[iid] : null;
+      var at = strip && strip.merged_at ? isoMs(strip.merged_at) : NaN;
+      if (isNaN(at) || nowMs - at > DONE_LANE_WINDOW_MS) return;
+      var title = symphonyHas(st.board_titles || {}, iid) ? st.board_titles[iid] : '';
+      entries.push({iid: String(iid), symphony: name, label: title || String(iid), mergedAt: strip.merged_at, at: at});
+    });
+  });
+  entries.sort(function(a, b) { return b.at - a.at; });
+  return entries;
+}
+
+// 155: the Done lane sits in the Cards heading row, so a collapsed lane adds no height to the board.
+// The slot is absent on pages without the board, and then there is nothing to write.
+function setDoneLane(s, nowMs) {
+  var slot = document.getElementById('done-lane-slot');
+  if (slot) slot.innerHTML = doneLaneHtml(doneLaneEntries(s, nowMs), nowMs);
+}
+
+// The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
+function doneLaneHtml(entries, nowMs) {
+  var rows = entries.map(function(e) {
+    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgeAt(e.mergedAt, nowMs) || '') + ' ago</span></li>';
+  }).join('');
+  // Only the summary shows when collapsed. The note and the list sit in the opened body, so the fold holds.
+  return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
+    '<span class="swimlane-col-count">' + entries.length + '</span></summary>' +
+    '<div class="done-lane-body">' +
+    '<p class="muted done-lane-note">' + esc(DONE_LANE_NOTE) + '</p>' +
+    (entries.length > 0 ? '<ul class="done-lane-list">' + rows + '</ul>' : '<p class="muted">No merges in the last 24 hours.</p>') +
+    '</div></details>';
+}
+
 function renderActiveWorkPanels(s) {
   var workEl = document.getElementById('swimlane-section');
+  var nowMs = serverNowMs(s);
+  setDoneLane(s, nowMs);
   var workCard = document.getElementById('active-work-card');
   if (!workEl) return;
 
@@ -288,6 +385,15 @@ function renderActiveWorkPanels(s) {
   }
 
   if (totalCards === 0) {
+    // 155: symphonies nobody has checked yet say why, rather than waiting for cards that may never come.
+    var unchecked = symphonies.map(symphonyUncheckedNote);
+    if (symphonies.length > 0 && unchecked.every(function(note) { return note !== null; })) {
+      var failedCheck = unchecked.some(function(note) { return note.kind === 'failed'; });
+      workEl.innerHTML = '<span class="empty-state">' + esc(symphonyUncheckedText(symphonies)) + '. ' +
+        esc(failedCheck ? 'The last check did not finish.' : 'Its board has not been read yet.') + '</span>';
+      if (workCard) workCard.classList.remove('card-warning');
+      return;
+    }
     var receivedBoards = symphonies.filter(function(sym) { return boardSnapshots[sym.name || '']; });
     if (receivedBoards.length > 0) {
       var backlogCount = 0, doneCount = 0;
@@ -321,6 +427,7 @@ function renderActiveWorkPanels(s) {
     var issueUrl = issueUrls[iid] || '';
     var prUrl = prUrls[iid] || '';
     var sess = sessionsByCard[iid];
+    var pipeline = cardPipelineOf(s, iid);
 
     var label = num ? ('#' + num + ' ' + title) : (title || iid);
     var titleHtml = issueUrl && /^https?:\/\//i.test(issueUrl)
@@ -330,6 +437,8 @@ function renderActiveWorkPanels(s) {
     var prBadge = '';
     if (prUrl && /^https?:\/\//i.test(prUrl)) {
       prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;text-decoration:none">PR &#8599;</a>';
+      // 155: the checks state, read from the card's strip (no GitHub call). It sits beside the PR chip only.
+      prBadge += ' ' + checksIconHtml(pipeline ? pipeline.checks : null, nowMs);
     }
 
     var liveLine = '';
@@ -374,9 +483,18 @@ function renderActiveWorkPanels(s) {
     var symphonyLine = multiView && entry.symphony
       ? '<div class="swimlane-card-symphony">' + esc(entry.symphony) + '</div>' : '';
     // 147: one dot per pipeline stage, the current one ringed. Read from the snapshot, no fetch.
-    var pipelineDots = timelineDotsHtml(cardPipelineOf(s, iid));
+    var pipelineDots = timelineDotsHtml(pipeline);
+    // 137: a running card names its stage pair on the board, on one clamped line. Its phase and timing
+    // are on its active-run tile (154), so the card does not repeat them.
+    var stageLine = sess && isStageRunning(sess) && sess.performer_stage
+      ? '<div class="swimlane-stage"><code>' + stageAgentLabel(sess.performer_stage) + '</code></div>' : '';
+    // 155: the PR chip and its checks icon sit on their own row. Inside the two-line title clamp, a long
+    // title pushes them onto a hidden third line.
+    var prRow = prBadge ? '<div class="swimlane-card-pr">' + prBadge.trim() + '</div>' : '';
     return '<div class="swimlane-card"' + clickAttrs + '>' + symphonyLine +
-      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + prBadge + '</div>' +
+      '<div class="swimlane-card-title" title="' + esc(title || label) + '">' + titleHtml + '</div>' +
+      prRow +
+      stageLine +
       pipelineDots +
       waitLine +
       liveLine +
