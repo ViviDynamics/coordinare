@@ -108,3 +108,15 @@ temporary-name checks (`temporary file replaced before the rename`, `replacement
 What cannot be tested locally: a real bind mount (needs root or a user namespace). The identity
 branch is exercised on macOS through the firmlink, and on Linux only through the string path,
 because `/proc/self/root` is unified by `resolve()`.
+
+## Residuals (accepted)
+
+- **Prune window (run_transcript.py).** `prune_expired` checks that each folder is still at its name
+  when it is opened and again before every removal. A folder renamed out of the root in the single
+  syscall between that check and the removal is still removed from. macOS has no `openat2` with
+  `RESOLVE_BENEATH`, so this is detected and bounded, not prevented. Covered by
+  `test_symphony_moved_out_after_its_fd_is_open_deletes_nothing_outside` and
+  `test_card_moved_out_after_its_fd_is_open_deletes_nothing_outside`.
+- **State file that is a symlink loop.** It loads, and the read fails later. Accepted.
+- **Pre-existing hard link to a file inside a volume.** It loads, and is orphaned at the first save
+  (the save replaces the name). Accepted.
