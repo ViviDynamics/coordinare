@@ -13,9 +13,8 @@ from pathlib import Path
 
 import pytest
 import structlog
-
-from coordinare.services import security_scanner
-from coordinare.services.security_scanner import ScannerError, scan_diff
+from performer import security_scanner
+from performer.security_scanner import ScannerError, scan_diff
 
 FIXTURES = Path(__file__).parent / "fixtures" / "security_scanner"
 

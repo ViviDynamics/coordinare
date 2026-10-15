@@ -43,7 +43,7 @@ from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.run_header import PERSONA_LANGUAGE_SUFFIX, build_run_inputs_bounded
-from coordinare.services.security_scanner import ScannerError, scan_diff
+from coordinare.services.security_floor import SCAN_VERSION
 from coordinare.services.test_env_loader import TestEnvFileError
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
@@ -161,9 +161,8 @@ def _role_runs_workflow(state: Any, role: str | None, workflow_name: str) -> boo
 
     Returns True only when the role's config carries a workflow field matching
     the given name. Guards every attribute access to tolerate missing config.
-    Used to shape the dispatch payload: a role running a workflow receives the
-    raw PR diff its intake parses; a non-workflow security role does not need
-    it injected (the 083 floor fetches the diff itself).
+    Used to shape the dispatch payload: a security workflow receives its
+    intake diff; prose security receives a mandatory performer scan request.
     """
     if role is None:
         return False
@@ -181,89 +180,6 @@ def _role_runs_workflow(state: Any, role: str | None, workflow_name: str) -> boo
         return False
     role_workflow = getattr(role_config, "workflow", None)
     return role_workflow == workflow_name
-
-
-def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
-    """083 — Synthetic fail-closed finding for a broken/unavailable scanner.
-
-    ``reason`` is a short, payload-free phrase (no diff text, no token, no raw
-    tool output) — it only describes *which* stage failed, never *what* the
-    scanner saw.
-    """
-    return {
-        "severity": "critical",
-        "category": "scanner_unavailable",
-        "description": f"security scanner unavailable: {reason}",
-        "file": "",
-        "line": 0,
-        "routing": "halt",
-    }
-
-
-async def _run_security_floor(
-    state: CoordinareState, card: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """083 US1 — Fetch the PR diff and run the scanner once (Contract 3).
-
-    412 round 10: restored for NON-workflow security roles — the example
-    config promises "remove the workflow line to restore the prose path
-    exactly", and the prose path carries the 083 dispatch-time scan. A role
-    configured with ``workflow: security`` skips it: the workflow runs its own
-    scanner inside the performer and is the single source of security truth.
-
-    Returns the normalized findings list. On *any* diff-fetch or scanner error
-    returns a single synthetic ``scanner_unavailable`` critical finding so the
-    gate fails closed (FR-008). INFO logging is summary-only (counts), never raw
-    diff text or finding messages (FR-011).
-    """
-    github = state.get("github_service")
-    pr_url = str(card.get("pr_url") or "").strip()
-    card_id = str(card.get("id", ""))
-
-    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        logger.error(
-            "security_floor.diff_unavailable",
-            card_id=card_id,
-            has_github=github is not None,
-            has_pr_url=bool(pr_url),
-        )
-        return [_scanner_unavailable_finding("PR diff source unavailable")]
-
-    try:
-        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
-    except Exception as exc:
-        logger.error(
-            "security_floor.diff_fetch_failed",
-            card_id=card_id,
-            error_type=type(exc).__name__,
-        )
-        return [_scanner_unavailable_finding("diff fetch failed")]
-
-    repo_root = state.get("workspace_path")
-    if repo_root is None:
-        # Fail closed: a missing workspace is a scanner-unavailable condition,
-        # not something to pass into Path() as a TypeError.
-        logger.error("security_floor.scan_failed_no_workspace", card_id=str(card.get("id", "")))
-        return [_scanner_unavailable_finding("no workspace to scan")]
-    try:
-        findings = scan_diff(changed_files, repo_root)
-    except ScannerError as exc:
-        logger.error(
-            "security_floor.scan_failed",
-            card_id=card_id,
-            error_type=type(exc).__name__,
-        )
-        return [_scanner_unavailable_finding("scanner failed")]
-
-    gating = sum(1 for f in findings if f.get("severity") in ("critical", "high"))
-    logger.info(
-        "security_floor.complete",
-        card_id=card_id,
-        file_count=len(changed_files),
-        finding_count=len(findings),
-        gating_count=gating,
-    )
-    return findings
 
 
 def inject_qa_findings(
@@ -1878,28 +1794,9 @@ def _performer_clones_own_workspace(service: Any) -> bool:
 
 
 def _daemon_clone_needed(state: CoordinareState, performer_stage: str, service: Any) -> bool:
-    """107: does anything in the daemon still need a local clone for this dispatch?
-
-    Coordinare is an orchestrator; it clones the target repository only when
-    something on its side cannot work without the tree:
-
-    - the performer does not clone for itself (the subprocess transport works
-      in the daemon's clone);
-    - a security role on the prose path: the 083 dispatch-time scanner floor
-      runs semgrep/bandit over the daemon's clone. ``workflow: security`` runs
-      the scanner in the performer instead and needs no daemon clone.
-    """
-    if not _performer_clones_own_workspace(service):
-        return True
-    role = _persona_role_for_stage(performer_stage)
-    if role == "security" and not _role_runs_workflow(state, role, "security"):
-        logger.warning(
-            "security_floor.daemon_side_scan",
-            card_id=str((state.get("current_card") or {}).get("id", "")),
-            remedy="set performers.security.workflow: security to scan in the performer",
-        )
-        return True
-    return False
+    """107: only the development subprocess performer uses a daemon clone."""
+    config = state.get("config")
+    return getattr(config, "agent_transport", "subprocess") == "subprocess" and not _performer_clones_own_workspace(service)
 
 
 async def _setup_workspace(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str, workspace_manager: Any, board_provider: Any, _release_slot_on_error: Callable[[], None], service: Any = None) -> tuple[Any | None, CoordinareState | None]:
@@ -2129,24 +2026,12 @@ async def _dispatch_run_inputs(state: CoordinareState, ctx: dict[str, Any]) -> d
 async def _inject_documentation_findings(state: CoordinareState, ctx: dict[str, Any]) -> None:
     """170 security floor + 164/166/169/165 findings injection (async)."""
     performer_stage = ctx["performer_stage"]
-    card = ctx["card"]
     card_context = ctx["card_context"]
     role = ctx["role"]
-    # 170: when the security role runs the workflow, skip the 083 floor: the
-    # workflow runs its own scanner inside the performer. Set scanner_findings
-    # to [] so the monitor floor merge is skipped (it checks for a report key
-    # instead), and inject pr_diff since the workflow's intake needs it.
-    # 412 round 10: WITHOUT the workflow, the 083 floor is back — the example
-    # config promises "remove the workflow line to restore the prose path
-    # exactly", and the prose path's static scan is the floor.
+    # 107: scan evidence comes from this job's response, never prior state.
     if role == "security":
-        if _role_runs_workflow(state, role, "security"):
-            state["scanner_findings"] = []
-            card_context["scanner_findings"] = []
-        else:
-            scanner_findings = await _run_security_floor(state, card)
-            state["scanner_findings"] = scanner_findings
-            card_context["scanner_findings"] = scanner_findings
+        state["scanner_findings"] = []
+        card_context["scanner_findings"] = []
 
     # 164: hand the previous QA round's repair brief to the implementer.
     from coordinare.services.documentation_findings import inject as inject_documentation
@@ -2182,11 +2067,21 @@ async def _inject_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> Non
     # one get_pr_diff per dispatch evaluation.
     # 170: also inject pr_diff for the security role when it runs the workflow,
     # since the workflow intake needs to parse the diff (R-b).
-    inject_pr_diff = role in _DIFF_REVIEW_ROLES or _role_runs_workflow(state, role, "security")
+    inject_pr_diff = role in _DIFF_REVIEW_ROLES or role == "security"
     if inject_pr_diff:
         if pr_data is None:
             pr_data = await _fetch_pr_data(state, card)
         pr_diff_text = pr_data[0]
+        if role == "security" and not _role_runs_workflow(state, role, "security"):
+            scan_files = pr_data[1] or []
+            scan_status = "ok" if pr_data[2] == "injected" else pr_data[2]
+            if len(scan_files) > _MAX_DISPATCH_CHANGED_PATHS:
+                scan_status = "overflow"
+            card_context["security_floor"] = {
+                "version": SCAN_VERSION,
+                "files": scan_files[:_MAX_DISPATCH_CHANGED_PATHS],
+                "diff_status": scan_status,
+            }
         # 412: the workflow decides "empty" from a delivered-and-empty diff.
         # An outage ("failed"/"unavailable") is not an empty diff — the status
         # rides along so the workflow holds instead of advancing on nothing.

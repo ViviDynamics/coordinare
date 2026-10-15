@@ -15,10 +15,9 @@ RUN pip install --no-cache-dir playwright && \
 # Install cross-language linters, formatters, and test runners
 # Python tools
 #
-# semgrep + bandit are ADVISORY here: they give the security performer a
-# self-check it can run while iterating, feeding the model's findings[]. They
-# are NOT verdict-binding — the authoritative security floor (spec 083) is the
-# coordinare-side scan run at dispatch in monitor_performer, never this image.
+# semgrep and bandit run the mandatory prose security floor inside the
+# performer (107). Its runtime report gates the daemon's security verdict.
+# A custom image without either tool holds the security stage closed.
 RUN pip install --no-cache-dir \
     bandit \
     black \

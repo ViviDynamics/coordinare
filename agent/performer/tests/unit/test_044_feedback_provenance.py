@@ -117,13 +117,16 @@ async def test_native_security_failure_reaches_the_implementer_prompt(backend: s
         "severity": "high", "routing": "implementer"}],
     }}))
     perf = Performance(session_id="synthetic", stand=Stand(path=Path("/tmp/synthetic"), branch="synthetic"),
-                       score=score(), backend=native, role="security", state="working")
+                       score=score(workflow="security"), backend=native, role="security", state="working")
     response = await handle_status(PerformerMessage(action="status", session_id="synthetic"), perf)
     assert response.status == "security_failed"
     state = initial_state()
     state.update(performer_services={"security": SimpleNamespace(check_status=AsyncMock(return_value=response.model_dump()))},
                  performer_stage="security", lifecycle_sequence=["implementing", "security"],
                  current_card={"id": "synthetic", "status": "IN_PROGRESS"}, agent_dispatch={"session_id": "synthetic"})
+    state["config"] = SimpleNamespace(performers=SimpleNamespace(
+        resolved_role=lambda role: SimpleNamespace(workflow="security"),
+    ))
     result = await monitor_performer(state)
     assert result["phase"] == "dispatching" and result["performer_stage"] == "implementing"
     text = prompt(backend, score(relay_feedback=result["relay_feedback"]))

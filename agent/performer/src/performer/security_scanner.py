@@ -1,19 +1,9 @@
-"""Coordinare-side static-analysis scanner (spec 083, Contract 1).
-
-Runs semgrep + bandit over a PR's changed files and normalizes both tools'
-output into the spec-022 finding schema. This is the *authoritative floor*: its
-findings gate the security verdict in the monitor, independent of the model.
-
-Design notes:
-- Pure transform over subprocess results — deterministic given fixed tool output.
-- "Tool found issues" (non-zero exit with parseable JSON) is NOT an error; only
-  tool-missing / crash / unparseable output raises :class:`ScannerError`, so the
-  dispatch layer can apply fail-closed handling (FR-008).
-- INFO logs are limited to a scan summary (counts/severities). Raw diff text,
-  finding messages, and ``auth_env`` values MUST NOT be logged (FR-011).
-"""
-
 from __future__ import annotations
+
+# Mandatory prose security scanner (083, 107). Tool execution and normalization
+# live in the performer; the daemon gates the runtime response findings.
+# A missing tool, abnormal exit, malformed JSON or scan error fails closed.
+# Logs contain only counts and severities, never tool output or source text.
 
 import json
 import shutil
@@ -53,12 +43,13 @@ _DANGEROUS_CWES = frozenset(
 
 _DEFAULT_ROUTING = "implementer"
 _SUBPROCESS_TIMEOUT_S = 120
+_OK_EXIT_CODES = {0, 1}
 
 
 class ScannerError(Exception):
     """Raised when a scanner tool is missing, crashes, or emits unparseable output.
 
-    Distinct from a *clean* or *findings-present* run — both of those return a
+    Distinct from a *clean* or *findings-present* run : both of those return a
     (possibly empty) list. Callers treat ``ScannerError`` as fail-closed.
     """
 
@@ -71,7 +62,7 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
     unparseable output.
     """
     repo_root = Path(repo_root)
-    files = list(changed_files)
+    files = [f"./{name}" if name.startswith("-") else name for name in changed_files]
 
     findings: list[Finding] = []
     findings.extend(_run_semgrep(files, repo_root))
@@ -93,15 +84,15 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
 def _resolve_binary(tool: str) -> str:
     """Resolve a scanner executable, preferring the active venv's bin dir.
 
-    The coordinare daemon is commonly launched as ``.venv/bin/coordinare`` *without*
+    The performer is commonly launched as ``.venv/bin/coordinare`` *without*
     activating the venv, so ``.venv/bin`` is not on ``PATH``. A bare-name
     subprocess call then raises ``FileNotFoundError`` -> :class:`ScannerError`,
     which fails the security floor closed and wedges the card in ``blocked``.
 
     Resolution order:
-      1. ``<dir of sys.executable>/<tool>`` — the venv that's running us.
-      2. ``shutil.which(tool)`` — a PATH lookup.
-      3. the bare ``tool`` name — last resort (subprocess will raise if absent,
+      1. ``<dir of sys.executable>/<tool>`` : the venv that's running us.
+      2. ``shutil.which(tool)`` : a PATH lookup.
+      3. the bare ``tool`` name : last resort (subprocess will raise if absent,
          preserving the documented fail-closed behavior).
     """
     candidate = Path(sys.executable).parent / tool
@@ -131,18 +122,26 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
         raise ScannerError(f"{tool} binary not found") from exc
     except subprocess.TimeoutExpired as exc:
         raise ScannerError(f"{tool} timed out") from exc
-    except OSError as exc:  # pragma: no cover - defensive
+    except OSError as exc: 
         raise ScannerError(f"{tool} failed to launch") from exc
 
     if not (proc.stdout or "").strip():
-        # No JSON at all — a clean run still emits ``{"results": []}``; empty
+        # No JSON at all : a clean run still emits ``{"results": []}``; empty
         # stdout means the tool crashed before producing output.
         raise ScannerError(f"{tool} produced no output (exit {proc.returncode})")
 
     try:
-        return json.loads(proc.stdout)
+        payload = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError) as exc:
         raise ScannerError(f"{tool} emitted unparseable JSON") from exc
+
+    if proc.returncode not in _OK_EXIT_CODES:
+        raise ScannerError(f"{tool} failed")
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise ScannerError(f"{tool} emitted malformed results")
+    if payload.get("errors") or any(not isinstance(row, dict) for row in payload["results"]):
+        raise ScannerError(f"{tool} reported scan errors")
+    return payload
 
 
 def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:

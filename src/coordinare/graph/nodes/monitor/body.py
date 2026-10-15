@@ -133,6 +133,7 @@ from coordinare.services.card_lifecycle import record_lifecycle
 from coordinare.services.conducting import build_model_endpoint_backend
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.progress_fingerprint import progress_fingerprint
+from coordinare.services.security_floor import reported_findings, workflow_security_reported
 from coordinare.services.token_usage import (
     TokenLedger,
     price_table_from_config,
@@ -1206,26 +1207,11 @@ async def _phase_security_scan_gate(
     marker = ctx.marker
     stage = ctx.stage
     status = ctx.status
-    # --- 083 security-scan-gate: coordinare-authoritative floor ---
-    # At the security stage the coordinare ran semgrep/bandit ONCE at
-    # dispatch and stashed the findings in state["scanner_findings"]. Those
-    # findings are authoritative: any critical/high finding forces
-    # security_failed regardless of the model's self-reported verdict, and
-    # a synthetic scanner_unavailable finding (routing=halt) blocks the card
-    # fail-closed. Reuse the dispatch findings — never re-scan here. This
-    # MUST run before the terminal-success handling below so an overridden
-    # security_passed never advances the stage.
-    # 170: when the report carries a "security" key (workflow report), skip
-    # the 083 floor merge because the workflow already ran its floor inside
-    # the performer.
-    # 412 round 10: restored for NON-workflow security roles — the example
-    # config promises "remove the workflow line to restore the prose path
-    # exactly", so the prose path keeps its coordinare-side scan gate.
+    # 107: runtime scan evidence comes from the current performer response.
+    # Prior state and a model-authored workflow key cannot satisfy the floor.
     if stage == "security" and marker != "working":
-        _workflow_report = status.get("report") if isinstance(status.get("report"), dict) else {}
-        if not isinstance(_workflow_report.get("security"), dict):
-            raw_scanner = state.get("scanner_findings") or []
-            scanner_findings = [f for f in raw_scanner if isinstance(f, dict)]
+        if not workflow_security_reported(state, status):
+            scanner_findings = reported_findings(status)
             gating = [
                 f for f in scanner_findings
                 if str(f.get("severity", "")).lower() in ("critical", "high")
@@ -1248,17 +1234,12 @@ async def _phase_security_scan_gate(
                 # performer service's response object.
                 existing_raw = status.get("findings", [])
                 existing = list(existing_raw) if isinstance(existing_raw, list) else []
-                seen = {
-                    (f.get("file"), f.get("line"), f.get("category"))
-                    for f in existing
-                    if isinstance(f, dict)
-                }
                 merged = list(existing)
                 for f in scanner_findings:
                     key = (f.get("file"), f.get("line"), f.get("category"))
-                    if key not in seen:
-                        merged.append(f)
-                        seen.add(key)
+                    # Replace a model downgrade with the scanner's finding.
+                    merged = [item for item in merged if not isinstance(item, dict) or (item.get("file"), item.get("line"), item.get("category")) != key]
+                    merged.append(f)
                 status = {**status, "findings": merged}
         else:
             logger.info(

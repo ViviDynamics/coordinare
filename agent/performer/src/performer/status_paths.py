@@ -960,8 +960,16 @@ async def security_path(
     _doc_folder = _m._doc_folder
     commit_file = _m.commit_file
 
+    if perf.score.workflow != "security":
+        floor = perf.security_floor_report
+        if not floor or floor.get("complete") is not True:
+            perf.state = "env_blocked"
+            return PerformerResponse(
+                status="env_blocked", session_id=perf.session_id,
+                reason="security scanner unavailable: " + str((floor or {}).get("reason", "scan report missing")),
+            )
     sec_raw = backend_status.output or ""
-    _workflow = await _security_workflow_response(perf, sec_raw, settings)
+    _workflow = await _security_workflow_response(perf, sec_raw, settings) if perf.score.workflow == "security" else None
     if _workflow is not None:
         return _workflow
     if not sec_raw.strip():
@@ -976,12 +984,19 @@ async def security_path(
         )
 
     raw_findings = sec_output.get("findings", [])
-    findings = raw_findings if isinstance(raw_findings, list) else []
+    findings = list(raw_findings) if isinstance(raw_findings, list) else []
+    for finding in (perf.security_floor_report or {}).get("findings", []):
+        key = (finding.get("file"), finding.get("line"), finding.get("category"))
+        # Scanner evidence wins even if the model downgraded the same finding.
+        findings = [f for f in findings if not isinstance(f, dict) or (f.get("file"), f.get("line"), f.get("category")) != key]
+        findings.append(finding)
 
     # Commit security report to the architecture folder
     folder = _doc_folder(perf.score)
     sec_report = f"# Security Report: {perf.score.title}\n\n"
-    passed = sec_output.get("passed", len(findings) == 0)
+    passed = sec_output.get("passed", len(findings) == 0) and not any(
+        isinstance(f, dict) and f.get("severity") in ("critical", "high") for f in findings
+    )
     sec_report += f"**Result: {'PASSED' if passed else 'FAILED'}**\n\n"
     if findings:
         sec_report += "## Findings\n\n"

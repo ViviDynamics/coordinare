@@ -36,6 +36,7 @@ from performer.qa_capture import boot_and_capture_app_screenshot  # noqa: F401
 # performer.main.<name>). Ruff sees no local use and would prune them.
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs  # noqa: F401 (post_issue_comment: see T049 note above)  # noqa: F401 (post_issue_comment: see T049 note above)
 from performer.io_utils import iter_lines_chunked
+from performer.security_floor import attach_security_floor, run_security_floor
 from performer.server.job_runner import register_cancel_backend
 from performer.process_metrics import CpuSampler
 from performer.env_provenance import (
@@ -1643,7 +1644,11 @@ async def handle_dispatch(
     orchestration_proxy = await _launch_dispatch_proxy(
         score, backend_name, model_name, stand, settings,
     )
+    security_floor_report = None
     try:
+        if role == "security" and score.workflow != "security":
+            security_floor_report = await run_security_floor(score, stand)
+            score.scanner_findings = security_floor_report["findings"]
         # 164: a role with a configured workflow runs that workflow, presented
         # as a BackendAdapter so every downstream mechanism (Performance, the
         # monitor loop, role post-processing, cleanup) is unchanged. An absent
@@ -1680,6 +1685,7 @@ async def handle_dispatch(
         score=score,
         backend=backend,
         orchestration_proxy=orchestration_proxy,
+        security_floor_report=security_floor_report,
         role=role,
         pr_url=pr_url,
         pr_node_id=pr_node_id,
@@ -2205,7 +2211,7 @@ async def handle_status(
     # backend.get_status(), see "done", and re-execute the push/PR-open path.
     _settled = await _terminal_status_response(perf, settings)
     if _settled is not None:
-        return _settled
+        return attach_security_floor(perf, _settled)
 
     backend_status: BackendStatus = perf.backend.get_status()
 
@@ -2324,7 +2330,7 @@ async def _role_dispatch_response(
         return await reviewer_path(perf, backend_status, settings)
 
     if perf.role == "security":
-        return await security_path(perf, backend_status, settings)
+        return attach_security_floor(perf, await security_path(perf, backend_status, settings))
 
     if perf.role == "documenting":
         return await documenting_path(perf, backend_status, settings)
