@@ -51,6 +51,7 @@ DEFERRED_PAGE_PATHS = (
     "/runs/{symphony}/{card}/{run}",  # 133: the transcript viewer, by address.
     "/personas",
     "/history",
+    "/logs",
     "/glossary",
     "/symphonies",
     "/symphonies/{name}",

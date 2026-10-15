@@ -323,3 +323,6 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .active-runs-head { margin-bottom: 8px; }
 .ap-tile { padding: 8px 10px; }
 .swimlane-more[hidden] { display: none; }
+
+/* 271: structured event payloads stay inside the table on narrow screens. */
+.logs-data { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 50vw; max-height: 24rem; overflow: auto; }

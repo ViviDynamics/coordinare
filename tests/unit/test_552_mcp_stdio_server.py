@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import sys
 from typing import Any
 
@@ -19,6 +18,9 @@ from coordinare.mcp.auth import credential_fingerprint
 from coordinare.mcp.config import McpServerConfig
 from coordinare.mcp.server import run_stdio
 from coordinare.mcp.tools import REGISTRY
+
+EXPECTED_TOOL_COUNT = 17
+UNREACHABLE_DASHBOARD_URL = "http://127.0.0.1:0"
 
 
 def _stdio_config(**overrides: object) -> McpServerConfig:
@@ -51,9 +53,6 @@ def test_run_stdio_builds_the_bare_server_and_sets_the_fingerprint(
 @pytest.mark.asyncio
 async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> None:
     """The real process speaks MCP over stdio: registry served, errors as data."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        free_port = probe.getsockname()[1]
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "coordinare.mcp", "--transport", "stdio"],
@@ -62,13 +61,15 @@ async def test_stdio_transport_smoke_lists_the_registry_and_maps_errors() -> Non
             "HOME": os.environ.get("HOME", "/"),
             "COORDINARE_MCP_TOKEN": "a" * 32,
             "COORDINARE_MCP_DASHBOARD_TOKEN": "d" * 32,
-            "COORDINARE_MCP_DASHBOARD_URL": f"http://127.0.0.1:{free_port}",
+            "COORDINARE_MCP_DASHBOARD_URL": UNREACHABLE_DASHBOARD_URL,
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
         },
     )
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
         tools = await session.list_tools()
-        assert len(tools.tools) == len(REGISTRY) == 16
+        assert len(tools.tools) == len(REGISTRY) == EXPECTED_TOOL_COUNT
+        assert "query_events" in {tool.name for tool in tools.tools}
         result = await session.call_tool("get_config", {"scope": "all"})
         payload = json.loads(result.content[0].text)
         assert payload["ok"] is False

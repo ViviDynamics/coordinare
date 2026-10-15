@@ -108,6 +108,12 @@ def _register_dashboard_history(app: FastAPI, ctx: DashboardContext) -> None:
             return HTMLResponse(_page_html(_assistant_on))
 
 
+def _register_dashboard_logs(app: FastAPI, ctx: DashboardContext) -> None:
+    @app.get("/logs", response_class=HTMLResponse)
+    async def dashboard_logs() -> HTMLResponse:
+        return HTMLResponse(_page_html(ctx.assistant_on))
+
+
 def _register_dashboard_glossary(app: FastAPI, ctx: DashboardContext) -> None:
         _assistant_on = ctx.assistant_on
 
@@ -192,6 +198,7 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_dashboard_run_detail(app, ctx)
     _register_dashboard_personas(app, ctx)
     _register_dashboard_history(app, ctx)
+    _register_dashboard_logs(app, ctx)
     _register_dashboard_glossary(app, ctx)
     _register_dashboard_symphonies(app, ctx)
     _register_dashboard_symphony_detail(app, ctx)

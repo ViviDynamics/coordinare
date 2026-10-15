@@ -15,6 +15,7 @@ from coordinare.services.event_store_db import (
     COLUMNS,
     create_schema,
     disk_stats,
+    migrate_filter_index,
     migrate_performer_batch,
     prune_batch,
 )
@@ -115,12 +116,14 @@ class EventStore:
         self._dropped = 0
         self._pruned = 0
         self._migration_active = False
+        self._filter_migration_active = True
         self._accepting = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._owner = threading.get_ident()
         self._task: asyncio.Task[None] | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="event-store")
         self._db: sqlite3.Connection | None = None
+        self.on_commit: Callable[[], None] | None = None
         self._stats: dict[str, Any] = {"size_bytes": 0, "rows": 0, "oldest_ts": None}
 
     def emit(self, event: Mapping[str, Any]) -> bool:
@@ -224,6 +227,10 @@ class EventStore:
                 "INSERT OR IGNORE INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 [tuple(row[column] for column in COLUMNS) for row in safe_rows],
             )
+        # rowcount excludes unique-index and replay-trigger ignores. Count only
+        # after commit so a retried transaction cannot inflate the counter.
+        with self._lock:
+            self._dropped += len(safe_rows) - inserted.rowcount
         self._update_stats(inserted.rowcount)
 
     async def start(self) -> None:
@@ -235,6 +242,7 @@ class EventStore:
 
     async def _run(self) -> None:
         next_prune = time.monotonic() + MAINTENANCE_SECONDS
+        next_index = time.monotonic() + MAINTENANCE_YIELD_SECONDS
         try:
             try:
                 await self._call(self._initialize)
@@ -247,15 +255,19 @@ class EventStore:
                 if rows:
                     await self._persist(rows)
                 elif self._accepting:
+                    next_work = min(next_prune, next_index) if self._filter_migration_active else next_prune
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(
                             self._ready.wait(),
-                            timeout=max(next_prune - time.monotonic(), MAINTENANCE_YIELD_SECONDS),
+                            timeout=max(next_work - time.monotonic(), MAINTENANCE_YIELD_SECONDS),
                         )
                 if self._accepting and time.monotonic() >= next_prune:
                     removed = await self.prune()
                     interval = MAINTENANCE_YIELD_SECONDS if removed or self._migration_active else MAINTENANCE_SECONDS
                     next_prune = time.monotonic() + interval
+                elif self._accepting and self._filter_migration_active and time.monotonic() >= next_index:
+                    interval = await self._maintain_filter_index()
+                    next_index = time.monotonic() + interval
                 await asyncio.sleep(0)
         finally:
             with contextlib.suppress(Exception):
@@ -292,6 +304,9 @@ class EventStore:
                         delay = min(delay * RETRY_BACKOFF, RETRY_MAX_SECONDS)
                 else:
                     failed = False
+                    if self.on_commit is not None:
+                        with contextlib.suppress(Exception):
+                            self.on_commit()
                     self._writer_state = "failed" if self._stats_error else "idle"
                     self._last_error = self._stats_error
                     break
@@ -299,6 +314,18 @@ class EventStore:
             self._finish(len(rows), sum(map(len, rows)), failed=failed)
             for _ in rows:
                 self._queue.task_done()
+
+    def _migrate_filter_index(self) -> bool:
+        self._initialize()
+        return self._db is not None and migrate_filter_index(self._db)
+
+    async def _maintain_filter_index(self) -> float:
+        try:
+            self._filter_migration_active = await self._call(self._migrate_filter_index)
+        except Exception as exc:
+            self._record_error(exc)
+            return MAINTENANCE_SECONDS
+        return MAINTENANCE_YIELD_SECONDS
 
     def _prune(self) -> int:
         self._initialize()
