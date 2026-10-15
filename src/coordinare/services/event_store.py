@@ -26,10 +26,13 @@ from coordinare.services.event_store_query import (
     utc_timestamp,
 )
 from coordinare.services.event_store_settings import EventStoreConfig
+from coordinare.services.export_metrics import EXPORT_METRICS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
+
+    from coordinare.services.otlp_export import OtlpExporter
 
 DEFAULT_QUEUE_SIZE = 4096
 WRITE_ATTEMPTS = 6
@@ -97,6 +100,8 @@ class EventStore:
         prune_batch_size: int = PRUNE_BATCH_SIZE,
         enable_fts: bool = True,
     ) -> None:
+        self._exporter: OtlpExporter | None = None
+        self._export_error = ""
         self.path = path
         self.config = config or EventStoreConfig()
         self._capacity = max(queue_size, 1)
@@ -126,6 +131,13 @@ class EventStore:
         self.on_commit: Callable[[], None] | None = None
         self._stats: dict[str, Any] = {"size_bytes": 0, "rows": 0, "oldest_ts": None}
 
+    def set_export_error(self, reason: str) -> None:
+        self._export_error = reason
+
+    def set_exporter(self, exporter: OtlpExporter) -> None:
+        """Attach optional outbound delivery before starting the store."""
+        self._exporter = exporter
+
     def emit(self, event: Mapping[str, Any]) -> bool:
         """Snapshot and enqueue without redaction or disk work on the caller."""
         try:
@@ -135,6 +147,7 @@ class EventStore:
         except Exception:
             with self._lock:
                 self._dropped += 1
+                EXPORT_METRICS.dropped.inc()
             return False
         # ASCII JSON length is its byte size. Check before any redaction or
         # queue reservation, and include callbacks and batches still in flight.
@@ -146,6 +159,7 @@ class EventStore:
                 or self._outstanding_bytes + size > self._byte_capacity
             ):
                 self._dropped += 1
+                EXPORT_METRICS.dropped.inc()
                 return False
             self._outstanding += 1
             self._outstanding_bytes += size
@@ -173,6 +187,7 @@ class EventStore:
             self._outstanding_bytes -= size
             if failed:
                 self._dropped += count
+                EXPORT_METRICS.dropped.inc(count)
         if self._loop is not None:
             with contextlib.suppress(RuntimeError):
                 self._loop.call_soon_threadsafe(self._signal_idle)
@@ -222,20 +237,45 @@ class EventStore:
         self._initialize()
         if self._db is None:
             return
+        columns = ",".join(COLUMNS)
+        placeholders = ",".join("?" for _ in COLUMNS)
+        # Identifiers come only from the schema; event values remain bound parameters.
+        insert_sql = "".join(("INSERT OR IGNORE INTO events (", columns, ") VALUES (", placeholders, ")"))
+        accepted_sql = "".join(("SELECT ", columns, " FROM events WHERE id > ? ORDER BY id"))
         with self._db:
+            before = self._db.execute("SELECT coalesce(max(id),0) FROM events").fetchone()[0]
             inserted = self._db.executemany(
-                "INSERT OR IGNORE INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                insert_sql,
                 [tuple(row[column] for column in COLUMNS) for row in safe_rows],
             )
+            # One writer owns this connection. A replay can leave gaps in ids,
+            # so read the committed range only when SQLite ignored some rows.
+            accepted = safe_rows if inserted.rowcount == len(safe_rows) else [
+                dict(zip(COLUMNS, values, strict=True))
+                for values in self._db.execute(
+                    accepted_sql, (before,),
+                ).fetchall()
+            ]
         # rowcount excludes unique-index and replay-trigger ignores. Count only
         # after commit so a retried transaction cannot inflate the counter.
         with self._lock:
             self._dropped += len(safe_rows) - inserted.rowcount
-        self._update_stats(inserted.rowcount)
+        EXPORT_METRICS.written.inc(len(accepted))
+        # Telemetry is outside the transaction and cannot turn a committed
+        # insert into a retry. Only accepted redacted rows cross this boundary.
+        for row in accepted:
+            with contextlib.suppress(Exception):
+                EXPORT_METRICS.observe(row)
+            if self._exporter is not None:
+                with contextlib.suppress(Exception):
+                    self._exporter.offer(row)
+        self._update_stats(len(accepted))
 
     async def start(self) -> None:
         if self._task is not None:
             return
+        if self._exporter is not None:
+            self._exporter.start()
         self._loop = asyncio.get_running_loop()
         self._owner = threading.get_ident()
         self._task = asyncio.create_task(self._run(), name="event-store-writer")
@@ -334,6 +374,7 @@ class EventStore:
         migrated, self._migration_active = migrate_performer_batch(self._db, self._prune_batch_size)
         removed = prune_batch(self._db, self.path, self.config, self._prune_batch_size)
         self._pruned += removed
+        EXPORT_METRICS.pruned.inc(removed)
         self._update_stats(-removed - migrated)
         return removed + migrated
 
@@ -346,6 +387,8 @@ class EventStore:
 
     def health(self) -> dict[str, Any]:
         return {
+            **(self._exporter.health() if self._exporter is not None else {"export_dropped": 0, "export_failed": 0}),
+            "export_error": self._export_error,
             **self._stats, "dropped": self._dropped, "pruned": self._pruned,
             "writer_state": self._writer_state,
             "last_error": redact_state_value(self._last_error),
@@ -375,6 +418,9 @@ class EventStore:
         if self._task is not None:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(self._task), timeout=grace_seconds)
+
+        if self._exporter is not None:
+            await self._exporter.close()
 
     async def wait_closed(self) -> None:
         if self._task is not None:

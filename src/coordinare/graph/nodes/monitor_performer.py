@@ -64,6 +64,7 @@ from coordinare.graph.nodes.monitor.verdict import (
     _stamp_feedback_bounce,
     _summarise_feedback_items,
 )
+from coordinare.services.export_metrics import EXPORT_METRICS
 from coordinare.services.system_health import SYSTEM_HEALTH
 from coordinare.vocabulary import phase_label
 
@@ -83,8 +84,13 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     leave the siblings silent.
     """
     phase_before = state.get("phase")
+    stage_before = str(state.get("performer_stage") or "")
     result = await _monitor_performer_body(state)
     _record_model_turn(phase_before, result)
+    if phase_before == "monitoring_performer" and result.get("phase") != phase_before:
+        phase = str(result.get("phase") or "")
+        outcome = phase if phase in {"blocked", "system_error"} else "redispatched" if phase == "dispatching" else "completed"
+        EXPORT_METRICS.run_finished(stage_before, outcome)
     if isinstance(result, dict) and result.get("phase") in {"blocked", "system_error"}:
         reason = result.get("system_error_reason") or "no reason reported"
         _record_activity(

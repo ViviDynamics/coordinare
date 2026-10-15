@@ -78,6 +78,7 @@ from coordinare.services.notification_config import (
     describe_notification_posture,
     sanitize_notifications,
 )
+from coordinare.services.otlp_export import OtlpExporter
 from coordinare.services.run_log import (
     RunLogCollector,
     make_run_logs_collector,
@@ -346,8 +347,9 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
 def _create_health_app(
     daemon: CoordinareDaemon,
     circuit_breakers: dict[str, CircuitBreaker] | None = None,
+    metrics_enabled: bool = True,
 ) -> FastAPI:
-    return create_health_app(daemon, circuit_breakers=circuit_breakers or {})
+    return create_health_app(daemon, circuit_breakers=circuit_breakers or {}, metrics_enabled=metrics_enabled)
 
 
 def _retry_config_from(src: ServiceRetryConfig) -> RetryConfig:
@@ -1357,7 +1359,19 @@ async def _run(
     # cannot start the daemon past a refusal main would have made.
     unexpanded = load_unexpanded_config(config_path)
     validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
+    exporter = None
+    export_error = ""
+    try:
+        otlp = config.observability.otlp.resolve()
+        exporter = OtlpExporter(otlp) if otlp.target else None
+    except ValueError as exc:
+        export_error = str(exc)
+    if export_error:
+        logger.error("otlp.export_disabled", reason=export_error)
     event_store = EventStore(config.state_file_path.expanduser().resolve().parent / "events.db", config=config.event_store)
+    event_store.set_export_error(export_error)
+    if exporter is not None:
+        event_store.set_exporter(exporter)
     install_event_store(event_store)
     try:
         await event_store.start()
@@ -1515,7 +1529,7 @@ async def _run_with_events(
         )
         daemon.state["env_cache_service"] = _env_cache_service
 
-    app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
+    app = _create_health_app(daemon, circuit_breakers=circuit_breakers, metrics_enabled=config.observability.metrics_enabled)
     server = uvicorn.Server(
         uvicorn.Config(
             app,

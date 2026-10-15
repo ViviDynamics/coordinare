@@ -912,9 +912,9 @@ def _distributed_closure(lock_rel: str, root_name: str) -> dict[str, bool]:
     """Transitive runtime closure of ``root_name``, mapped to unconditional-ness.
 
     Returns ``{package: reachable_unconditionally}``. Walks only the
-    ``dependencies`` list of each locked package: optional and development groups
-    are excluded on purpose, since development dependencies are never conveyed to
-    a recipient and including them would misreport what coordinare actually ships.
+    ``dependencies`` list of each locked package, plus the optional OTLP runtime
+    extra. The extra is conditional so its metadata is checked whenever installed.
+    Development groups are excluded because they are not distributed.
 
     A package is *conditional* when every path to it passes through a
     marker-gated edge (``psycopg -> tzdata`` under ``sys_platform == 'win32'``,
@@ -928,6 +928,10 @@ def _distributed_closure(lock_rel: str, root_name: str) -> dict[str, bool]:
     root = _canonical(root_name)
     reachable: dict[str, bool] = {}
     stack: list[tuple[str, bool]] = [(root, True)]
+    # Optional runtime export packages are audited whenever installed. Their
+    # absence is permitted in installations using only HTTP JSON.
+    for dep in packages[root].get("optional-dependencies", {}).get("otlp", []):
+        stack.append((_canonical(dep["name"]), False))
     while stack:
         name, unconditional = stack.pop()
         if name not in packages:
@@ -1385,3 +1389,8 @@ def test_scrub_attributes_de_sparking_to_spec_145() -> None:
 
     assert "145" in text, "the scrub must attribute internal-reference removal to spec 145"
     assert "199" in text, "the scrub should cite issue #199 as the owning ticket"
+
+
+def test_otlp_runtime_extra_is_in_the_distributed_license_gate() -> None:
+    closure = _distributed_closure('uv.lock', 'coordinare')
+    assert {'opentelemetry-proto', 'protobuf', 'grpcio'} <= closure.keys()

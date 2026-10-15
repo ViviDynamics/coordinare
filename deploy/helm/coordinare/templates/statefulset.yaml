@@ -59,6 +59,22 @@ spec:
             - secretRef:
                 name: {{ .Values.existingSecret | default (include "coordinare.fullname" .) }}
                 optional: true
+          env:
+            {{- if .Values.observability.otlp.headersSecret.name }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.observability.otlp.headersSecret.name | quote }}
+                  key: {{ required "observability.otlp.headersSecret.key is required" .Values.observability.otlp.headersSecret.key | quote }}
+            {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           livenessProbe:
             httpGet:
               path: /live

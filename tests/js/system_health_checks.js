@@ -160,5 +160,16 @@ const awaitingAndNotMonitored = {overall: 'unknown', rows: [row('board_check', '
 check('awaiting and not monitored both appear on the one line, closed', systemHealthSummary(awaitingAndNotMonitored).text, 'No problems seen · 1 awaiting first check · 1 not monitored');
 check('the awaiting-and-not-monitored line stays closed', systemHealthSummary(awaitingAndNotMonitored).open, false);
 
+// 271: export health is additive and every untrusted value is escaped.
+var exportHealth = systemHealthEventStoreHtml({size_bytes: 10, rows: 2, oldest_ts: null,
+  dropped: 0, pruned: 0, writer_state: 'idle', export_dropped: 3, export_failed: 4});
+checkContains('export loss counters render', exportHealth, 'export 3 dropped, 4 failed sends');
+checkContains('missing export counters render as zero', systemHealthEventStoreHtml({}), 'export 0 dropped, 0 failed sends');
+checkAbsent('export drops cannot inject markup', systemHealthEventStoreHtml({export_dropped: hostile}), '<img');
+checkAbsent('export failures cannot inject markup', systemHealthEventStoreHtml({export_failed: hostile}), '<img');
+
+checkContains('disabled export is visible', systemHealthEventStoreHtml({export_error: 'invalid protocol'}), 'export disabled: invalid protocol');
+checkAbsent('export errors cannot inject markup', systemHealthEventStoreHtml({export_error: hostile}), '<img');
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
