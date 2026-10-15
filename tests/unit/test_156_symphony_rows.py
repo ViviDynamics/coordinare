@@ -38,8 +38,22 @@ _OTHER_WEEK = {
 }
 
 
+def env_from_flags(**flags: Any) -> dict[str, str]:
+    """Builds one symphony's env-cache state from named flags, then reads its env status."""
+    cache = SimpleNamespace(
+        bootstrap_in_flight=flags.get("in_flight", False),
+        pending_sha="queued" if flags.get("rebootstrap_queued", False) else None,
+        last_bootstrap_succeeded=flags.get("succeeded"),
+        cache_dir_ready=flags.get("cache_ready", False),
+        runtime_health_failed=flags.get("health_failed", False),
+        last_bootstrap_error=flags.get("error"),
+    )
+    return env_status(configured=flags.get("configured", True), cache=cache)
+
+
+
 def _ready() -> dict[str, str]:
-    return env_status(
+    return env_from_flags(
         configured=True, in_flight=False, succeeded=True, cache_ready=True, error=None,
     )
 
@@ -48,7 +62,7 @@ def _ready() -> dict[str, str]:
 
 
 def test_an_unconfigured_symphony_says_no_bootstrap_performer_is_set() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=False, in_flight=True, succeeded=False, cache_ready=True, error="boom",
     )
     assert status == {
@@ -58,14 +72,14 @@ def test_an_unconfigured_symphony_says_no_bootstrap_performer_is_set() -> None:
 
 
 def test_a_running_bootstrap_is_bootstrapping() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=True, in_flight=True, succeeded=None, cache_ready=False, error=None,
     )
     assert status["state"] == ENV_BOOTSTRAPPING
 
 
 def test_a_failed_bootstrap_carries_its_reason() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=True,
         in_flight=False,
         succeeded=False,
@@ -76,14 +90,14 @@ def test_a_failed_bootstrap_carries_its_reason() -> None:
 
 
 def test_a_failed_bootstrap_without_a_recorded_error_still_says_so() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=True, in_flight=False, succeeded=False, cache_ready=False, error=None,
     )
     assert status == {"state": ENV_FAILED, "reason": "the error was not recorded"}
 
 
 def test_a_long_bootstrap_error_is_clipped() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=True, in_flight=False, succeeded=False, cache_ready=False, error="x" * 2000,
     )
     assert len(status["reason"]) == MAX_SESSION_ERROR_CHARS
@@ -95,7 +109,7 @@ def test_a_cached_and_succeeded_bootstrap_is_ready() -> None:
 
 
 def test_a_configured_symphony_never_bootstrapped_says_so() -> None:
-    status = env_status(
+    status = env_from_flags(
         configured=True, in_flight=False, succeeded=None, cache_ready=False, error=None,
     )
     assert status == {"state": ENV_NOT_BOOTSTRAPPED, "reason": "No env bootstrap has finished yet."}

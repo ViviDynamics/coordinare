@@ -595,9 +595,13 @@ function symphonyEnvView(sym) {
   return {label: SYMPHONY_ENV_LABELS[env.state], reason: String(env.reason || '')};
 }
 
-// Under a chosen symphony, every other row's spend and card cells are hidden, so the figures of
-// a symphony the viewer did not choose stay out of view. The row itself stays, as the page lists
-// every symphony by design.
+// Under a chosen symphony, every other row's reasons, spend and card cells are hidden, so the
+// figures and error text of a symphony the viewer did not choose stay out of view. The row itself
+// stays, as the page lists every symphony by design, and the status word and env word stay too.
+//
+// This is a display filter, not a data boundary. The snapshot carries every symphony's data to
+// every browser (the Symphonies page lists them all), so a determined reader of the page's
+// scripts can still see it. Making scope a data boundary needs the server to omit other symphonies.
 function symphonyRowHidden(name, choice) {
   return !!choice && choice !== name;
 }
@@ -624,16 +628,17 @@ function symphonyTableRowHtml(sym, choice) {
   return '<tr class="symphony-row' + (inactive ? ' symphony-inactive' : '') + '"' + (inactive ? ' data-inactive="true"' : '') + ' data-href="' + esc(href) + '">'
     + '<td><a href="' + esc(href) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
     + '<td><span style="color:' + SYMPHONY_STATUS_COLORS[status.tone] + ';font-weight:bold">' + esc(status.label) + '</span>'
-    + '<div class="muted" style="font-size:11px">' + esc(status.reason) + '</div></td>'
+    + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(status.reason)) + '</div></td>'
     + '<td style="color:var(--color-text-muted)">' + (symphonyProjectHtml(sym) || 'No project number') + '</td>'
     + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
-    + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + esc(env.reason) + '</div>' + bootBtn + '</td>'
+    + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' + bootBtn + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_active))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_queued))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : usageCostHtml(sym.spend_week)) + '</td>'
     + '<td>' + esc(symphonyCountText(sym.cycle_count)) + '</td>'
     + '<td>' + esc(symphonyCountText(sym.error_count)) + '</td>'
-    + '<td>' + (checked || (unchecked ? esc(unchecked.text) : 'Not checked yet')) + '</td>'
+    // The unchecked note can carry the last error, so under a scope it is hidden with the rest.
+    + '<td>' + (checked || (hidden ? hiddenHtml : (unchecked ? esc(unchecked.text) : 'Not checked yet'))) + '</td>'
     + '</tr>';
 }
 

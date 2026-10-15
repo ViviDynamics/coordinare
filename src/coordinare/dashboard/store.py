@@ -1247,10 +1247,7 @@ class DashboardStore:
                 "enabled": bool(getattr(sym_cfg, "enabled", True)),
                 "env_status": env_status(
                     configured=getattr(sym_cfg, "env_bootstrap_performer_id", None) is not None,
-                    in_flight=bool(getattr(cache, "bootstrap_in_flight", False)),
-                    succeeded=getattr(cache, "last_bootstrap_succeeded", None),
-                    cache_ready=bool(getattr(cache, "cache_dir_ready", False)),
-                    error=getattr(cache, "last_bootstrap_error", None),
+                    cache=cache,
                 ),
                 "cards_active": counts["active"],
                 "cards_queued": counts["queued"],
@@ -1261,7 +1258,12 @@ class DashboardStore:
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),
                 "last_bootstrap_succeeded": getattr(cache, "last_bootstrap_succeeded", None),
-                "last_bootstrap_error": getattr(cache, "last_bootstrap_error", None),
+                # 156: clipped where the snapshot is built, so no bootstrap error reaches the page unbounded.
+                "last_bootstrap_error": (
+                    clip_session_error(_bootstrap_error)
+                    if isinstance(_bootstrap_error := getattr(cache, "last_bootstrap_error", None), str)
+                    else None
+                ),
                 "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
                 "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
                 "last_poll_at": (

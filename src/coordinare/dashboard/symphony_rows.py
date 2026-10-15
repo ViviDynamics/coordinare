@@ -21,36 +21,40 @@ ENV_NOT_BOOTSTRAPPED = "not_bootstrapped"
 _NO_ERROR_TEXT = "the error was not recorded"
 
 
-def env_status(
-    *,
-    configured: bool,
-    in_flight: bool,
-    succeeded: bool | None,
-    cache_ready: bool,
-    error: str | None,
-) -> dict[str, str]:
-    """The env column's state and the reason for it, in the order a reader needs them.
+_HEALTH_FAILED_TEXT = "The performer environment failed a health check and is being rebuilt."
+
+
+def env_status(*, configured: bool, cache: object | None) -> dict[str, str]:
+    """The env column's state and the reason for it, read from one symphony's env-cache state.
 
     ``configured`` is whether the symphony names an env bootstrap performer. Without one there
     is no manifest to bootstrap, so that is the reason, whatever the cache says.
+
+    Ready follows the 093 readiness gate (``check_board._env_cache_recovered``): the cache is ready,
+    no runtime health failure is pending, and the last bootstrap succeeded. A re-bootstrap queued
+    behind an in-flight one (``pending_sha``) also blocks Ready, so the column cannot read Ready
+    in that window.
     """
     if not configured:
         return {
             "state": ENV_NOT_CONFIGURED,
             "reason": "No env bootstrap performer is configured for this symphony.",
         }
-    if in_flight:
-        return {"state": ENV_BOOTSTRAPPING, "reason": "An env bootstrap is running."}
-    if succeeded is False:
-        return {
-            "state": ENV_FAILED,
-            "reason": clip_session_error(error) if error else _NO_ERROR_TEXT,
-        }
-    if cache_ready and succeeded is True:
-        return {
-            "state": ENV_READY,
-            "reason": "The env cache is ready for this symphony's performers.",
-        }
+    in_flight = bool(getattr(cache, "bootstrap_in_flight", False))
+    if in_flight or getattr(cache, "pending_sha", None):
+        reason = "An env bootstrap is running." if in_flight else "A re-bootstrap is queued for a changed env spec."
+        return {"state": ENV_BOOTSTRAPPING, "reason": reason}
+    succeeded = getattr(cache, "last_bootstrap_succeeded", None)
+    health_failed = bool(getattr(cache, "runtime_health_failed", False))
+    if succeeded is False or health_failed:
+        error = getattr(cache, "last_bootstrap_error", None)
+        if succeeded is False:
+            reason = clip_session_error(str(error)) if error else _NO_ERROR_TEXT
+        else:
+            reason = _HEALTH_FAILED_TEXT
+        return {"state": ENV_FAILED, "reason": reason}
+    if bool(getattr(cache, "cache_dir_ready", False)) and succeeded is True:
+        return {"state": ENV_READY, "reason": "The env cache is ready for this symphony's performers."}
     return {"state": ENV_NOT_BOOTSTRAPPED, "reason": "No env bootstrap has finished yet."}
 
 

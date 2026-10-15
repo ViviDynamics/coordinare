@@ -40,7 +40,7 @@ def test_the_symphonies_table_has_the_columns_the_issue_asks_for() -> None:
         "Cards queued",
         "Spend this week",
         "Checks run",
-        "Failed checks",
+        "Failed checks in a row",
         "Last checked",
     ):
         assert f">{header}</th>" in page, header

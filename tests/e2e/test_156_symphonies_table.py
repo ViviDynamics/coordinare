@@ -246,3 +246,20 @@ def test_a_scoped_viewer_sees_only_their_symphonys_spend(
     expect(alpha_spend).to_contain_text("Hidden: another symphony is shown")
     expect(page.locator(_TABLE)).not_to_contain_text("$0.13")
     expect(_cell(page, "alpha-sym", _ACTIVE)).not_to_have_text("2")
+
+
+@pytest.mark.e2e
+def test_a_scoped_viewer_never_sees_another_symphonys_error_or_env_reason(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    # delta-sym carries a recorded error and a failed env with a reason; scoped to alpha-sym, neither
+    # text may appear anywhere in delta-sym's row. Its status word and env word stay.
+    _open(page, live_server_url + "/symphonies?symphony=alpha-sym", store)
+
+    row = page.locator("tr.symphony-row[data-href='/symphonies/delta-sym']")
+    expect(row).to_contain_text("Hidden: another symphony is shown", timeout=_WAIT_LIVE)
+    html = row.evaluate("el => el.outerHTML")
+    assert "GitHub 401" not in html, html
+    assert "image pull denied" not in html, html
+    expect(row.locator("td").nth(_STATUS)).to_contain_text("Error")
+    expect(row.locator("td").nth(_ENV)).to_contain_text("Failed")

@@ -169,6 +169,41 @@ check('a disabled symphony row says why in its status cell', () => {
   assert.ok(html.indexOf('>Disabled<') !== -1, html);
 });
 
+// --- review: recovery and scope -------------------------------------------------------- //
+check('a failure then a success reads Active, and the error is no longer shown', () => {
+  // The daemon clears error_count and last_error on a successful cycle (services/symphony_failures.py).
+  const recovered = sym({error_count: 0, state: {last_error: null}, last_poll_at: '2026-10-14T11:59:00+00:00'});
+  assert.strictEqual(symphonyStatus(recovered).label, 'Active');
+  assert.ok(symphonyTableRowHtml(recovered, '').indexOf('>Active<') !== -1);
+});
+check('a scoped row hides another symphony error text and env reason, and keeps the words', () => {
+  const other = sym({name: 'other', error_count: 2, state: {last_error: 'secret-project-id 123 quota'},
+    env_status: {state: 'failed', reason: 'bootstrap failed: private repo path /srv/other'}});
+  const html = symphonyTableRowHtml(other, 'mine');
+  assert.ok(html.indexOf('quota') === -1, html);
+  assert.ok(html.indexOf('secret-project-id') === -1, html);
+  assert.ok(html.indexOf('/srv/other') === -1, html);
+  assert.ok(html.indexOf('>Error<') !== -1 && html.indexOf('Failed<div') !== -1, html);
+  assert.ok(html.indexOf('Hidden: another symphony is shown') !== -1, html);
+});
+check('a scoped row hides the unchecked note, which can carry the last error', () => {
+  const other = sym({name: 'other', last_poll_at: null, cycle_count: 0, error_count: 3,
+    daemon_cycles_completed: 1, state: {last_error: 'token ghp_leak'}});
+  const html = symphonyTableRowHtml(other, 'mine');
+  assert.ok(html.indexOf('ghp_leak') === -1, html);
+  assert.ok(html.indexOf('Last check failed') === -1, html);
+});
+check('the chosen symphony keeps its own error and env reason', () => {
+  const mine = sym({name: 'mine', error_count: 2, state: {last_error: 'timeout'},
+    env_status: {state: 'failed', reason: 'pull denied'}});
+  const html = symphonyTableRowHtml(mine, 'mine');
+  assert.ok(html.indexOf('Last check failed: timeout') !== -1 && html.indexOf('pull denied') !== -1, html);
+});
+check('no scope shows every reason', () => {
+  const other = sym({name: 'other', error_count: 2, state: {last_error: 'visible under all'}});
+  assert.ok(symphonyTableRowHtml(other, '').indexOf('visible under all') !== -1);
+});
+
 if (failures.length > 0) {
   failures.forEach(f => console.log('FAIL ' + f));
 }

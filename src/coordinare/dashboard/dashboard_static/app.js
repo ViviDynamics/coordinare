@@ -456,7 +456,7 @@ function renderSymphoniesPage(s) {
     + '<th style="text-align:left" title="Cards waiting for a performer slot.">Cards queued</th>'
     + '<th style="text-align:left" title="Cost this week (UTC) from the transcript ledger.">Spend this week</th>'
     + '<th style="text-align:left" title="Checks of the board this symphony has run.">Checks run</th>'
-    + '<th style="text-align:left" title="Checks that failed in a row.">Failed checks</th>'
+    + '<th style="text-align:left" title="Checks that failed in a row. A successful check resets this to 0.">Failed checks in a row</th>'
     + '<th style="text-align:left" title="When coordinare last checked this symphony.">Last checked</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
@@ -519,7 +519,7 @@ async function loadSymphonyDetail(name, el) {
   var statusRows = [
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
-    ['Errors', st.error_count != null ? st.error_count : 'None'],
+    ['Failed checks in a row', st.error_count != null ? st.error_count : 'None'],
     ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
     ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : 'None'],
     ['Last error', st.last_error ? esc(st.last_error) : 'None'],
