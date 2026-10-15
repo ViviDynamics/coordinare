@@ -24,7 +24,7 @@ class StatsQuery(BaseModel):
     model: str | None = Field(None, max_length=MAX_FILTER_CHARS)
     backend: str | None = Field(None, max_length=MAX_FILTER_CHARS)
     outcome: (
-        Literal["success", "changes_requested", "blocked", "system_error", "cancelled", "unknown"]
+        Literal["success", "failure", "completed_without_verdict", "blocked", "system_error", "cancelled", "unknown"]
         | None
     ) = None
     top_n: int = Field(DEFAULT_TOP_N, ge=1, le=MAX_TOP_N)

@@ -172,3 +172,18 @@ def capture_performer_events(
                 "data": {**event, "run_id": run_id, "transcript_seq": event.get("transcript_seq")},
             },
         )
+
+
+def capture_usage_records(
+    run_id: str, symphony: str, card_id: str, stage: str, records: list[dict[str, Any]],
+) -> None:
+    """Persist accepted canonical counts, independent of display-only cost events."""
+    store = _STORE
+    if store is None:
+        return
+    for record in records:
+        store.emit({
+            "ts": record.get("ts"), "run_id": run_id, "symphony": symphony,
+            "card_id": card_id, "stage": stage, "source": "daemon", "kind": "run_usage",
+            "data": record,
+        })

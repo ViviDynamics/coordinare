@@ -85,6 +85,11 @@ def _episodes(records: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     return episodes
 
 
+def _wait_overlap(began: datetime, closed: datetime, start: datetime | None) -> tuple[float, int]:
+    seconds = max(0.0, (closed - max(began, start or began)).total_seconds())
+    return seconds, int(seconds > 0)
+
+
 def _flow_one(
     cards: list[list[dict[str, Any]]],
     start: datetime | None,
@@ -114,8 +119,9 @@ def _flow_one(
             if kind == "human_review_started":
                 waiting = waiting or at
             if waiting is not None and _closes_wait(kind, detail):
-                wait_seconds += max(0, (at - max(waiting, start or waiting)).total_seconds())
-                waits += 1
+                seconds, samples = _wait_overlap(waiting, at, start)
+                wait_seconds += seconds
+                waits += samples
                 waiting = None
             if kind == "pr_opened":
                 observed_prs.add(str(detail.get("pr_url") or detail.get("pr_number") or record.get("at")))
@@ -131,8 +137,9 @@ def _flow_one(
                     cycles.append((at - began).total_seconds())
                 began = None
         if waiting is not None:
-            wait_seconds += max(0, (end - max(waiting, start or waiting)).total_seconds())
-            waits += 1
+            seconds, samples = _wait_overlap(waiting, end, start)
+            wait_seconds += seconds
+            waits += samples
         if active or waiting is not None:
             prs.update(observed_prs)
     return {

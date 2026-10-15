@@ -137,25 +137,32 @@ async def query(service: RunStatistics, **kwargs: Any) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_fixed_records_define_all_run_measures(tmp_path: Path) -> None:
-    write_run(tmp_path, "first", "card", hours=5, duration=60)
-    write_run(tmp_path, "retry", "card", hours=3, duration=120)
-    write_run(tmp_path, "single", "other", duration=180)
-    write_run(tmp_path, "failure", "broken", error=True, duration=240)
-    body = await query(RunStatistics(tmp_path), group_by="agent")
+    write_run(tmp_path, "first", "card", hours=5, duration=60, persona="reviewer")
+    write_run(tmp_path, "retry", "card", hours=3, duration=120, persona="reviewer")
+    write_run(tmp_path, "single", "other", duration=180, persona="reviewer")
+    write_run(tmp_path, "failure", "broken", error=True, duration=240, persona="reviewer")
+    events = {"alpha": {card: [
+        {"kind": "verdict", "stage": "reviewing", "at": (NOW - timedelta(hours=hours)).isoformat(),
+         "detail": {"run_id": run, "result": result, "marker": "changes_requested" if result == "fail" else "approved"}}
+        for run, result, hours in verdicts
+    ] for card, verdicts in {"card": [("first", "fail", 5), ("retry", "pass", 3)], "other": [("single", "pass", 1)]}.items()}}
+    body = await RunStatistics(tmp_path).query(StatsQuery(group_by="agent"), visible=VISIBLE, lifecycle=events, boards={}, now=NOW)
     group = body["groups"][0]
-    assert group["key"] == "implementer"
+    assert group["key"] == "reviewer"
     assert group["runs"] == 4
     assert group["outcomes"] == {
         "success": 2,
-        "changes_requested": 1,
+        "failure": 1,
+        "completed_without_verdict": 0,
         "system_error": 1,
         "blocked": 0,
         "cancelled": 0,
         "unknown": 0,
     }
-    assert group["success_rate"] == 0.5
-    assert group["first_pass_rate"] == pytest.approx(1 / 3)
-    assert group["resolved_card_stages"] == 3
+    assert group["success_rate"] == pytest.approx(2 / 3)
+    assert group["verdict_runs"] == 3
+    assert group["first_pass_rate"] == 0.5
+    assert group["resolved_card_stages"] == 2
     assert group["runs_per_card"] == pytest.approx(4 / 3)
     assert group["retries"] == 1
     assert group["bounces"] == 1
@@ -374,14 +381,16 @@ async def test_terminal_lifecycle_outcomes_and_top_reasons(tmp_path: Path) -> No
     )
     assert {group["key"] for group in body["groups"]} == {"blocked", "cancelled", "system_error"}
     assert len(body["totals"]["failure_reasons"]) == 1
-    assert body["totals"]["first_pass_rate"] == 0
+    assert body["totals"]["first_pass_rate"] is None
 
 
 @pytest.mark.asyncio
 async def test_prior_window_attempt_prevents_first_pass(tmp_path: Path) -> None:
-    write_run(tmp_path, "old", "a", hours=48)
-    write_run(tmp_path, "new", "a", hours=1)
-    body = await query(RunStatistics(tmp_path), window="24h")
+    write_run(tmp_path, "old", "a", hours=48, persona="reviewer")
+    write_run(tmp_path, "new", "a", hours=1, persona="reviewer")
+    events = {"alpha": {"a": [{"kind": "verdict", "stage": "reviewing", "at": NOW.isoformat(),
+                               "detail": {"run_id": "new", "result": "pass"}}]}}
+    body = await RunStatistics(tmp_path).query(StatsQuery(window="24h"), visible=VISIBLE, lifecycle=events, boards={}, now=NOW)
     assert body["totals"]["runs"] == body["totals"]["retries"] == 1
     assert body["totals"]["first_pass_rate"] == 0
 
@@ -501,15 +510,15 @@ async def test_ci_bounces_and_dimension_filters_share_the_same_cohort(tmp_path: 
     write_run(tmp_path, "a", "a")
     write_run(tmp_path, "b", "b", persona="reviewer")
     events = {"alpha": {"a": [
-        {"kind": "ci_result", "at": NOW.isoformat(), "stage": "implementing", "detail": {"result": "BOUNCE"}},
-        {"kind": "ci_result", "at": NOW.isoformat(), "stage": "implementing", "detail": {"result": "BOUNCE"}},
+        {"kind": "ci_result", "at": NOW.isoformat(), "stage": "implementing", "detail": {"result": "BOUNCE", "run_id": "a"}},
+        {"kind": "ci_result", "at": NOW.isoformat(), "stage": "implementing", "detail": {"result": "BOUNCE", "run_id": "a"}},
     ]}}
     body = await RunStatistics(tmp_path).query(
-        StatsQuery(agent="implementer", stage="implementing", backend="codex", model="m", outcome="success"),
+        StatsQuery(agent="implementer", stage="implementing", backend="codex", model="m", outcome="completed_without_verdict"),
         visible=VISIBLE, lifecycle=events, boards={}, now=NOW,
     )
     assert body["totals"]["runs"] == body["totals"]["bounces"] == 1
-    assert body["totals"]["outcomes"]["success"] == 1
+    assert body["totals"]["outcomes"]["completed_without_verdict"] == 1
 
 
 @pytest.mark.asyncio

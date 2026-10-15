@@ -16,6 +16,7 @@ from coordinare.services.event_store_query import (
 from coordinare.services.run_history import retained_runs
 from coordinare.services.run_transcript import transcript_path
 from coordinare.services.run_viewer import RunLookupError, RunRef, RunRefusedError, open_run
+from coordinare.services.stats_usage import read_stats_usage
 from coordinare.services.token_usage import TokenLedger
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def _usage(
     row: dict[str, Any],
     remaining: int,
     deadline: float,
-) -> tuple[list[dict[str, Any]] | None, int]:
+) -> tuple[list[dict[str, Any]] | None, int, str | None]:
     """Only usage is parsed; the existing ledger owns accounting and precedence."""
     ref = RunRef(symphony=row["symphony"], card=row["card"], run=row["run"])
     path = transcript_path(root, symphony=ref.symphony, card_id=ref.card, run_id=ref.run)
@@ -58,9 +59,11 @@ def _usage(
                 line = handle.readline(min(MAX_LINE_BYTES, remaining - consumed) + 1)
                 consumed += len(line)
                 if not line:
-                    return records, consumed
-                if len(line) > MAX_LINE_BYTES or consumed > remaining or not line.endswith(b"\n"):
-                    return None, consumed
+                    return records, consumed, None
+                if len(line) > MAX_LINE_BYTES or consumed > remaining:
+                    return None, consumed, "usage_read_budget_or_unreadable"
+                if not line.endswith(b"\n"):
+                    return records, consumed, "usage_partial_line"
                 if b'"usage"' not in line:
                     continue
                 try:
@@ -70,8 +73,8 @@ def _usage(
                 if isinstance(record, dict) and record.get("type") == "usage":
                     records.append(record)
     except (OSError, RunLookupError, RunRefusedError):
-        return None, consumed
-    return None, consumed
+        return None, consumed, "usage_read_budget_or_unreadable"
+    return None, consumed, "usage_read_budget_or_unreadable"
 
 
 def read_stats_events(
@@ -128,26 +131,41 @@ def load_sources(
         history = retained_runs(root, visible, limit=MAX_RUNS, deadline=deadline)
         result.runs = history["rows"]
         result.reasons.extend(history["partial_reasons"])
-        ledger = TokenLedger()
-        consumed = 0
-        for row in result.runs:
-            if consumed >= MAX_USAGE_BYTES or time.monotonic() >= deadline:
-                result.reasons.append("usage_read_budget_or_unreadable")
-                break
-            records, size = _usage(root, row, max(0, MAX_USAGE_BYTES - consumed), deadline)
-            consumed += size
-            if records is None:
-                result.reasons.append("usage_read_budget_or_unreadable")
-                continue
-            ledger.observe(
-                row["run"],
-                symphony=row["attributed_symphony"],
-                card=row["card"],
-                stage=str(row.get("stage") or ""),
-                records=records,
-            )
-        result.usage = ledger.totals_by_run(row["run"] for row in result.runs)
+    oldest = None
     if event_path is not None:
+        result.usage, oldest, reasons = read_stats_usage(event_path, result.runs, end)
+        result.reasons.extend(reasons)
         result.events, reasons = read_stats_events(event_path, visible, end)
         result.reasons.extend(reasons)
+    if root is not None:
+        _transcript_usage(root, result, oldest)
     return result
+
+
+def _transcript_usage(root: Path, result: StatsSources, oldest: str | None) -> None:
+    ledger = TokenLedger()
+    consumed = 0
+    deadline = time.monotonic() + SOURCE_TIMEOUT_SECONDS
+    legacy = []
+    for row in result.runs:
+        if oldest is not None and row["started_at"] >= oldest:
+            if row["run"] not in result.usage:
+                result.reasons.append("usage_events_missing")
+            continue
+        # A run predating retention can have only a suffix in the event store.
+        result.usage.pop(row["run"], None)
+        legacy.append(row)
+    for row in legacy:
+        if consumed >= MAX_USAGE_BYTES or time.monotonic() >= deadline:
+            result.reasons.append("usage_read_budget_or_unreadable")
+            break
+        records, size, reason = _usage(root, row, max(0, MAX_USAGE_BYTES - consumed), deadline)
+        consumed += size
+        if reason is not None:
+            result.reasons.append(reason)
+        if records is not None:
+            ledger.observe(
+                row["run"], symphony=row["attributed_symphony"], card=row["card"],
+                stage=str(row.get("stage") or ""), records=records,
+            )
+    result.usage.update(ledger.totals_by_run(row["run"] for row in result.runs))
