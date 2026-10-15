@@ -79,6 +79,8 @@ class EnvCacheState(BaseModel):
     # snapshot so a restart does not hand out a fresh budget.
     bootstrap_attempts: int = 0
     bootstrap_exhausted: bool = False
+    # Configuration refusals alone disable consumer rechecks until the breaker is reset.
+    bootstrap_exhaustion_reason: Literal["configuration_refusal"] | None = None
 
     # 063 Phase 4 (T024): set by EnvCacheService.mark_runtime_health_failed when
     # a performer reports a non-zero services-health.sh exit. Causes the next

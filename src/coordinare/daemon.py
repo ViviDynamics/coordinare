@@ -735,6 +735,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             bootstrap_budget_sha=get("bootstrap_budget_sha"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
+            bootstrap_exhaustion_reason=get("bootstrap_exhaustion_reason"),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
             test_env_source=get("test_env_source"),
             # 124 (US2): docs/wiki wiki-init durable state (wiki_in_flight is
@@ -1054,6 +1055,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
+            live.bootstrap_exhaustion_reason = persisted.bootstrap_exhaustion_reason
             # 124 (US3): the wiki-init marker + breaker survive
             # restarts so an initialized symphony is never re-seeded.
             live.wiki_initialized = getattr(persisted, "wiki_initialized", False)

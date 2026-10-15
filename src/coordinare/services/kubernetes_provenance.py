@@ -88,7 +88,8 @@ def parse_summary(
             message += ": " + redact_command_text(diagnostics)[-VERIFIER_LOG_TAIL_CHARS:]
         raise ProvenanceTransientError(message)
     lines = [line[len(RESULT_SENTINEL):] for line in nonempty if line.startswith(RESULT_SENTINEL)]
-    if logs.count(RESULT_SENTINEL) != 1 or len(lines) != 1 or len(lines[0].encode("utf-8")) > MAX_RESULT_BYTES:
+    sentinel_count = sum(line.count(RESULT_SENTINEL) for line in nonempty if not line.startswith(WALK_DIAGNOSTIC_PREFIX))
+    if sentinel_count != 1 or len(lines) != 1 or len(lines[0].encode("utf-8")) > MAX_RESULT_BYTES:
         message = "verifier provenance is missing, duplicated or exceeds the result bound; upgrade the performer image"
         raise ValueError(message)
     doc = json.loads(lines[0])

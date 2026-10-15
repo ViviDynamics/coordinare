@@ -113,6 +113,8 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
 # bounded tail, discard an initial partial line, redact, then clip the encoded
 # diagnostic. JSON escaping keeps even a multiline traceback on one log line.
 WALK_DIAGNOSTICS_PY = r"""
+from __future__ import annotations
+
 import json, os, re, sys
 prefix = os.environ["WALK_DIAGNOSTIC_PREFIX"]
 limit = int(os.environ["WALK_DIAGNOSTIC_MAX_BYTES"])
@@ -130,6 +132,7 @@ text = re.sub(r"(?:gh[pousr]_|github_pat_|sk-|AKIA)[A-Za-z0-9_./+=-]+", "[REDACT
 text = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", text)
 text = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
 text = re.sub(r'''(?i)((?:[\w-]*(?:token|password|secret|api[_-]?key)[\w-]*)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)''', r"\1[REDACTED]", text)
+text = text.replace("COORDINARE_PROVENANCE=", "[PROVENANCE_MARKER]")
 if text.strip():
     payload = json.dumps(text.strip(), ensure_ascii=True)
     budget = limit - len(prefix) - len("\n")

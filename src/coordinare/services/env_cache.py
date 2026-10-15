@@ -1210,6 +1210,7 @@ class EnvCacheService:
             )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            cache_state.bootstrap_exhaustion_reason = None
             cache_state.runtime_repair_budget = False
             cache_state.bootstrap_budget_sha = current_sha
 
@@ -1712,7 +1713,7 @@ class EnvCacheService:
         ec = (state.get("env_cache") or {}).get(symphony_name)
         if ec is None:
             return
-        if ec.runtime_health_failed or ec.bootstrap_exhausted:
+        if ec.runtime_health_failed or (ec.bootstrap_exhausted and ec.bootstrap_exhaustion_reason == "configuration_refusal"):
             return
         self._provenance_full_at.pop(symphony_name, None)
         check = await self.run_full_pass(symphony_name, ec)
@@ -2400,6 +2401,7 @@ class EnvCacheService:
         )
         reason = str(cache_state.last_bootstrap_error)
         cache_state.verifier_provenance = None
+        cache_state.bootstrap_exhaustion_reason = "configuration_refusal"
         if not cache_state.bootstrap_exhausted:
             cache_state.bootstrap_exhausted = True
             self._notify_bootstrap_exhausted(
@@ -2553,6 +2555,7 @@ class EnvCacheService:
         if not cache_state.runtime_repair_budget:
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            cache_state.bootstrap_exhaustion_reason = None
         # 088 (US5): an in-process success was already clean-verified by the
         # completion path, so the restart honor verify must not re-fire.
         self._restart_verified.add(symphony_name)

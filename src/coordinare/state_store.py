@@ -711,6 +711,7 @@ class EnvCacheStateSnapshot(BaseModel):
     # with the defaults (no migration).
     bootstrap_attempts: int = 0
     bootstrap_exhausted: bool = False
+    bootstrap_exhaustion_reason: Literal["configuration_refusal"] | None = None
     # 092 (FR-016/FR-017): agent-discovered test-env file PATH (e.g.
     # ".coordinare/test.env"), persisted only when no symphony-level test_env
     # config block is set. PATH ONLY — never the loaded KEY=VALUE pairs. A reused
