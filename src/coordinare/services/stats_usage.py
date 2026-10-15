@@ -4,6 +4,7 @@ import contextlib
 import json
 import sqlite3
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.event_store_query import (
@@ -22,6 +23,29 @@ MAX_USAGE_GROUPS = 10000
 MAX_USAGE_RUNS = 2000
 USAGE_BATCH_RUNS = 128
 USAGE_READ_SECONDS = 1.0
+USAGE_COVERAGE_SQL = """
+    WITH requested AS (
+        SELECT json_extract(value, '$.run') AS run,
+               json_extract(value, '$.attributed_symphony') AS owner,
+               json_extract(value, '$.symphony') AS folder,
+               json_extract(value, '$.card') AS card FROM json_each(?)
+    ) SELECT e.run_id,
+        coalesce(
+            min(CASE WHEN e.kind='run_usage' AND e.ts<=?
+                AND json_type(e.data, '$.usage')='object' THEN e.ts END),
+            min(CASE WHEN e.kind IN ('usage', 'cost') AND e.ts<=?
+                AND json_type(e.data, '$.usage')='object' THEN e.ts END)
+        ) AS first_usage,
+        max(e.kind='usage_events_dropped') AS dropped
+    FROM requested r JOIN events e INDEXED BY events_run_ts ON e.run_id=r.run
+    WHERE e.symphony IN (r.owner, r.folder) AND e.card_id=r.card
+        AND (e.kind IN ('run_usage', 'usage_events_dropped')
+            OR (e.source='performer' AND e.kind IN ('usage', 'cost')))
+    GROUP BY e.run_id
+"""
+GLOBAL_USAGE_LOSS_SQL = """
+    SELECT 1 FROM events WHERE kind='usage_events_dropped' AND run_id='' LIMIT 1
+"""
 USAGE_SQL = """
         WITH requested AS MATERIALIZED (
             SELECT json_extract(value, '$.run') AS run,
@@ -75,8 +99,16 @@ USAGE_SQL = """
         """
 
 
+@dataclass
+class UsageCoverage:
+    first_usage: dict[str, str] = field(default_factory=dict)
+    dropped_runs: set[str] = field(default_factory=set)
+    pruned_runs: set[str] = field(default_factory=set)
+
+
 def read_stats_usage(
     path: Path, runs: list[dict[str, Any]], end: str,
+    coverage: UsageCoverage | None = None,
 ) -> tuple[dict[str, ModelTotals], str | None, list[str]]:
     """Read bounded run/model totals using the run/time index in one read snapshot.
 
@@ -85,6 +117,7 @@ def read_stats_usage(
     """
     deadline = time.monotonic() + USAGE_READ_SECONDS
     totals: dict[str, ModelTotals] = {}
+    coverage = coverage if coverage is not None else UsageCoverage()
     if len(runs) > MAX_USAGE_RUNS:
         raise EventQueryTooBroad
     try:
@@ -93,11 +126,15 @@ def read_stats_usage(
         )) as db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN")
-            first = db.execute("SELECT ts FROM events ORDER BY ts LIMIT 1").fetchone()
+            first_rows = _query_rows(db, "SELECT ts FROM events ORDER BY ts LIMIT 1", (), deadline)
+            first = first_rows[0] if first_rows else None
             oldest = first["ts"] if first is not None else None
+            if _query_rows(db, GLOBAL_USAGE_LOSS_SQL, (), deadline):
+                coverage.dropped_runs.update(run["run"] for run in runs)
             groups = 0
             for offset in range(0, len(runs), USAGE_BATCH_RUNS):
                 batch = runs[offset:offset + USAGE_BATCH_RUNS]
+                _coverage_batch(db, batch, end, deadline, coverage)
                 rows = _usage_batch(db, batch, end, deadline)
                 groups += len(rows)
                 if groups > MAX_USAGE_GROUPS:
@@ -115,10 +152,28 @@ def read_stats_usage(
 def _usage_batch(
     db: sqlite3.Connection, runs: list[dict[str, Any]], end: str, deadline: float,
 ) -> list[sqlite3.Row]:
+    requested = [{key: run.get(key) for key in ("run", "card", "symphony", "attributed_symphony")} for run in runs]
+    return _query_rows(db, USAGE_SQL, (json.dumps(requested), end, MAX_USAGE_GROUPS + 1), deadline)
+
+
+def _coverage_batch(
+    db: sqlite3.Connection, runs: list[dict[str, Any]], end: str, deadline: float,
+    coverage: UsageCoverage,
+) -> None:
+    requested = [{key: run.get(key) for key in ("run", "card", "symphony", "attributed_symphony")} for run in runs]
+    for row in _query_rows(db, USAGE_COVERAGE_SQL, (json.dumps(requested), end, end), deadline):
+        if row["first_usage"] is not None:
+            coverage.first_usage[row["run_id"]] = row["first_usage"]
+        if row["dropped"]:
+            coverage.dropped_runs.add(row["run_id"])
+
+
+def _query_rows(
+    db: sqlite3.Connection, sql: str, parameters: tuple[Any, ...], deadline: float,
+) -> list[sqlite3.Row]:
     statement_deadline = min(deadline, time.monotonic() + QUERY_TIMEOUT_SECONDS)
     db.set_progress_handler(lambda: int(time.monotonic() >= statement_deadline), QUERY_PROGRESS_STEPS)
-    requested = [{key: run.get(key) for key in ("run", "card", "symphony", "attributed_symphony")} for run in runs]
-    rows = db.execute(USAGE_SQL, (json.dumps(requested), end, MAX_USAGE_GROUPS + 1)).fetchall()
+    rows = db.execute(sql, parameters).fetchall()
     if time.monotonic() >= statement_deadline:
         raise EventQueryTooBroad
     return rows

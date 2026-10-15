@@ -11,6 +11,7 @@ from structlog.contextvars import get_contextvars
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, MutableMapping
+    from pathlib import Path
 
     from coordinare.services.activity_log import ActivityEntry
     from coordinare.services.event_store import EventStore
@@ -182,8 +183,18 @@ def capture_usage_records(
     if store is None:
         return
     for record in records:
-        store.emit({
+        accepted = store.emit({
             "ts": record.get("ts"), "run_id": run_id, "symphony": symphony,
             "card_id": card_id, "stage": stage, "source": "daemon", "kind": "run_usage",
             "data": record,
         })
+        if not accepted:
+            store.record_usage_drop(run_id, symphony, card_id)
+
+
+def usage_drop_snapshot(path: Path) -> set[tuple[str, str, str]]:
+    """Expose losses before their durable markers reach the event store."""
+    store = _STORE
+    if store is None or store.path != path:
+        return set()
+    return store.usage_drop_snapshot()

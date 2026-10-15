@@ -62,8 +62,15 @@ ledger rules: message sums first, otherwise daily cumulative run steps, otherwis
 unscoped sums. Canonical records take precedence over display events and sequence
 identities prevent duplicate counting. Pricing still uses the existing PriceTable.
 
-The oldest retained event is the conservative store coverage boundary. Only runs
-starting before that boundary fall back to transcripts. When no store is available
+The oldest retained event is the conservative store coverage boundary. Runs
+starting before that boundary fall back to transcripts. Failed canonical usage
+emits retain bounded run identities in memory until the writer persists
+`usage_events_dropped` markers. Saturation records a conservative global marker
+instead of forgetting affected runs. Marked runs fall back to transcripts even
+before the marker reaches disk. A run whose first attributed lifecycle event
+predates its oldest retained usage event reports `usage_partially_pruned` and
+also falls back. Canonical usage defines this boundary when available. Coverage
+includes counts of runs affected by each condition. When no store is available
 or it is empty, all runs use the bounded transcript fallback. A run within store
 coverage with no structured usage reports `usage_events_missing`; textual cost
 events never fabricate token counts. A legacy transcript's final line without a

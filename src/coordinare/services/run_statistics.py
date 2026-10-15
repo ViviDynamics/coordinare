@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from coordinare.graph.nodes.monitor.constants import VERDICT_STAGES
 from coordinare.lifecycle import ROLE_TO_STAGE
 from coordinare.services import stats_sources
+from coordinare.services.event_store_query import QUERY_TIMEOUT_SECONDS
 from coordinare.services.stats_flow import card_flow, instant, lifecycle_records, percentiles
 from coordinare.services.token_usage import PriceTable, UsageCounts, price_totals, usage_summary
 
@@ -27,6 +28,7 @@ OUTCOMES = ("success", "failure", "completed_without_verdict", "blocked", "syste
 OUTCOME_MAP = {"completed": "completed_without_verdict", "failed": "system_error"}
 DIMENSIONS = ("symphony", "stage", "agent", "model", "backend", "outcome")
 MAX_REASON_CHARS = 300
+MILLISECONDS_PER_SECOND = 1000
 DEFINITIONS = {
     "window": "Run start in [start, end]; all usage of those runs. Daily series uses UTC run start day.",
     "agent": "Persona name in the run header. Missing dimensions use null.",
@@ -41,8 +43,8 @@ DEFINITIONS = {
     "bounces": "Runs with a failing verdict or a recorded CI BOUNCE, counted once per run.",
     "runs_per_card": "Runs / distinct (symphony, card) in the group.",
     "duration_seconds": "Header start to final transcript timestamp; negative or missing durations excluded. Linear percentiles.",
-    "cost": "Indexed event store usage aggregated per run and model in SQL, with TokenLedger scope precedence and PriceTable pricing. Transcript fallback only for runs predating retained event coverage, or when no event store exists. usd is null if usage is missing or any model is unpriced.",
-    "usage_read_bounds": "At most 2000 runs and 10000 run/model groups, in batches of 128 runs. Each SQLite statement has a 250 ms deadline and all usage batches share a one second deadline. Legacy transcripts share a 16 MiB usage byte budget.",
+    "cost": "Indexed event store usage aggregated per run and model in SQL, with TokenLedger scope precedence and PriceTable pricing. Transcript fallback covers runs predating retained event coverage, runs with dropped or partially pruned usage events, and runs with no event store. usd is null if usage is missing or any model is unpriced.",
+    "usage_read_bounds": f"At most 2000 runs and 10000 run/model groups, in batches of 128 runs. Each SQLite statement has a {QUERY_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND:g} ms deadline and all usage batches share a one second deadline. Legacy transcripts share a 16 MiB usage byte budget.",
     "cost_precision": "usd is rounded to microdollars for display. Sum Decimal(usd_exact) for exact reconciliation across groups; partial_usd_exact contains known costs.",
     "card_flow": "Lifecycle observations per symphony, independent of run dimension filters. Merge time selects completed cards and cycles.",
     "cycle_time_seconds": "First dispatch of a card lifecycle to its merge, including dispatches before the window.",
@@ -292,6 +294,8 @@ def aggregate(
             "retained_runs_read": len(runs),
             "unattributed_observations": unattributed,
             "usage_runs_read": sum(row["run"] in sources.usage for row in runs),
+            "usage_events_dropped_runs": sum(row["run"] in sources.usage_coverage.dropped_runs for row in runs),
+            "usage_partially_pruned_runs": sum(row["run"] in sources.usage_coverage.pruned_runs for row in runs),
             "lifecycle_cards": len(lifecycle),
             "oldest_run_at": min((row["started_at"] for row in runs), default=None),
             "human_wait_recording": "Only intervals with a recorded human_review_started boundary are measured.",
@@ -348,6 +352,7 @@ class RunStatistics:
             ):
                 self._sources = await asyncio.to_thread(
                     stats_sources.load_sources, self.root, self.event_path, visible, now.isoformat(),
+                    copy.deepcopy(lifecycle),
                 )
                 self._visible = visible
                 self._expires = time.monotonic() + CACHE_SECONDS

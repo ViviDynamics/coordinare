@@ -7,16 +7,19 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from coordinare.services.event_capture import usage_drop_snapshot
+from coordinare.services.event_store import ALL_USAGE_RUNS
 from coordinare.services.event_store_query import (
     QUERY_PROGRESS_STEPS,
     QUERY_TIMEOUT_SECONDS,
     READ_BUSY_TIMEOUT_MS,
     EventQueryTooBroad,
+    utc_timestamp,
 )
 from coordinare.services.run_history import retained_runs
 from coordinare.services.run_transcript import transcript_path
 from coordinare.services.run_viewer import RunLookupError, RunRef, RunRefusedError, open_run
-from coordinare.services.stats_usage import read_stats_usage
+from coordinare.services.stats_usage import UsageCoverage, read_stats_usage
 from coordinare.services.token_usage import TokenLedger
 
 if TYPE_CHECKING:
@@ -40,6 +43,7 @@ class StatsSources:
     usage: dict[str, ModelTotals] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    usage_coverage: UsageCoverage = field(default_factory=UsageCoverage)
 
 
 def _usage(
@@ -121,6 +125,7 @@ def read_stats_events(
 
 def load_sources(
     root: Path | None, event_path: Path | None, visible: frozenset[str], end: str,
+    lifecycle: dict[str, Any] | None = None,
 ) -> StatsSources:
     """Load once per cache interval; no writes and no new durable storage."""
     result = StatsSources()
@@ -133,10 +138,23 @@ def load_sources(
         result.reasons.extend(history["partial_reasons"])
     oldest = None
     if event_path is not None:
-        result.usage, oldest, reasons = read_stats_usage(event_path, result.runs, end)
+        losses = usage_drop_snapshot(event_path)
+        result.usage_coverage.dropped_runs.update(
+            row["run"] for row in result.runs
+            if ALL_USAGE_RUNS in losses or any(
+                (row["run"], owner, row["card"]) in losses
+                for owner in (row["symphony"], row["attributed_symphony"])
+            )
+        )
+        result.usage, oldest, reasons = read_stats_usage(event_path, result.runs, end, result.usage_coverage)
         result.reasons.extend(reasons)
         result.events, reasons = read_stats_events(event_path, visible, end)
         result.reasons.extend(reasons)
+        _mark_pruned_usage(result, lifecycle or {})
+    if result.usage_coverage.dropped_runs:
+        result.reasons.append("usage_events_dropped")
+    if result.usage_coverage.pruned_runs:
+        result.reasons.append("usage_partially_pruned")
     if root is not None:
         _transcript_usage(root, result, oldest)
     return result
@@ -147,8 +165,9 @@ def _transcript_usage(root: Path, result: StatsSources, oldest: str | None) -> N
     consumed = 0
     deadline = time.monotonic() + SOURCE_TIMEOUT_SECONDS
     legacy = []
+    incomplete = result.usage_coverage.dropped_runs | result.usage_coverage.pruned_runs
     for row in result.runs:
-        if oldest is not None and row["started_at"] >= oldest:
+        if oldest is not None and row["started_at"] >= oldest and row["run"] not in incomplete:
             if row["run"] not in result.usage:
                 result.reasons.append("usage_events_missing")
             continue
@@ -169,3 +188,30 @@ def _transcript_usage(root: Path, result: StatsSources, oldest: str | None) -> N
                 stage=str(row.get("stage") or ""), records=records,
             )
     result.usage.update(ledger.totals_by_run(row["run"] for row in result.runs))
+
+
+def _mark_pruned_usage(result: StatsSources, lifecycle: dict[str, Any]) -> None:
+    first: dict[tuple[str, str, str], str] = {}
+    observations = [
+        (symphony, card, event)
+        for symphony, cards in lifecycle.items() for card, events in cards.items() for event in events
+    ]
+    observations.extend(
+        (event["symphony"], event["card_id"], event["data"])
+        for event in result.events if event["kind"] == LIFECYCLE_KIND
+    )
+    for symphony, card, event in observations:
+        run_id = (event.get("detail") or {}).get("run_id")
+        if not run_id or not isinstance(event.get("at"), str):
+            continue
+        try:
+            timestamp = utc_timestamp(event["at"])
+        except ValueError:
+            continue
+        key = (symphony, card, run_id)
+        first[key] = min(first.get(key, timestamp), timestamp)
+    for row in result.runs:
+        began = first.get((row["attributed_symphony"], row["card"], row["run"]))
+        usage = result.usage_coverage.first_usage.get(row["run"])
+        if began is not None and usage is not None and began < usage:
+            result.usage_coverage.pruned_runs.add(row["run"])

@@ -45,6 +45,9 @@ MAINTENANCE_SECONDS = 30.0
 MAINTENANCE_YIELD_SECONDS = 0.01
 SHUTDOWN_SECONDS = 5.0
 MAX_EVENT_BYTES = 256 * 1024
+MAX_USAGE_DROP_RUNS = 128
+USAGE_DROPPED_KIND = "usage_events_dropped"
+ALL_USAGE_RUNS = ("", "", "")
 MAX_TEXT_CHARS = 16 * 1024
 REDACTION_OVERLAP_CHARS = 1024
 REDACTION_YIELD_ROWS = 1
@@ -119,6 +122,7 @@ class EventStore:
         self._lock = threading.Lock()
         self._outstanding = 0
         self._dropped = 0
+        self._usage_drops: set[tuple[str, str, str]] = set()
         self._pruned = 0
         self._migration_active = False
         self._filter_migration_active = True
@@ -181,6 +185,42 @@ class EventStore:
         self._queue.put_nowait(raw)
         self._ready.set()
 
+    def record_usage_drop(self, run_id: str, symphony: str, card_id: str) -> None:
+        """Keep bounded run identities until the writer can persist loss markers.
+
+        Reserve one slot for a conservative global marker if identities overflow.
+        This prevents saturation from silently restoring complete coverage.
+        """
+        identity = (run_id, symphony, card_id)
+        with self._lock:
+            if identity in self._usage_drops:
+                return
+            if len(self._usage_drops) >= MAX_USAGE_DROP_RUNS - 1:
+                identity = ALL_USAGE_RUNS
+            self._usage_drops.add(identity)
+
+    def usage_drop_snapshot(self) -> set[tuple[str, str, str]]:
+        with self._lock:
+            return self._usage_drops.copy()
+
+    async def _persist_usage_drops(self) -> None:
+        identities = self.usage_drop_snapshot()
+        if not identities:
+            return
+        timestamp = datetime.now(UTC).isoformat()
+        rows = [json.dumps({
+            "ts": timestamp, "run_id": run, "symphony": symphony, "card_id": card,
+            "kind": USAGE_DROPPED_KIND,
+            "data": {"all_runs": (run, symphony, card) == ALL_USAGE_RUNS},
+        }) for run, symphony, card in identities]
+        try:
+            await self._call(lambda: self._write_batch(rows))
+        except Exception as exc:
+            self._record_error(exc)
+        else:
+            with self._lock:
+                self._usage_drops.difference_update(identities)
+
     def _finish(self, count: int, size: int, *, failed: bool = False) -> None:
         with self._lock:
             self._outstanding -= count
@@ -193,7 +233,7 @@ class EventStore:
                 self._loop.call_soon_threadsafe(self._signal_idle)
 
     def _signal_idle(self) -> None:
-        if not self._outstanding:
+        if not self._outstanding and not self.usage_drop_snapshot():
             self._idle.set()
 
     async def _call(self, function: Callable[[], T]) -> T:
@@ -294,7 +334,9 @@ class EventStore:
                 rows = self._take_batch()
                 if rows:
                     await self._persist(rows)
-                elif self._accepting:
+                await self._persist_usage_drops()
+                self._signal_idle()
+                if not rows and self._accepting:
                     next_work = min(next_prune, next_index) if self._filter_migration_active else next_prune
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(
@@ -310,6 +352,7 @@ class EventStore:
                     next_index = time.monotonic() + interval
                 await asyncio.sleep(0)
         finally:
+            await self._persist_usage_drops()
             with contextlib.suppress(Exception):
                 await self._call(self._close_connection)
             self._executor.shutdown(wait=False)
