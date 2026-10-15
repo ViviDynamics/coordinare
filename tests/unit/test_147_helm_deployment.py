@@ -532,17 +532,342 @@ class TestImagePinning:
 
 
 class TestOptionalPerformerCache:
-    def test_renders_without_a_performer_cache_claim(self) -> None:
-        """SC-008 — a chart demanding a PVC nobody can provision fails on exactly
-        the small clusters this is meant to support."""
-        config = _rendered_config(_render())
-        assert not config.get("kubernetes_cache_claim"), (
-            "the performer cache must be absent by default, not a required claim"
+    def test_the_cache_can_be_switched_off_and_then_nothing_is_wired(self) -> None:
+        """SC-008: optional means optional, and the chart does not demand a claim.
+
+        The default now CREATES the claim (see TestDevenvCache), so the optionality
+        is the explicit switch rather than an absent default. A cluster with no
+        ReadWriteMany class turns it off and gets a cold cache, not a failed render.
+        """
+        objects = _render(**{"devenvCache.enabled": False})
+        assert not _by_kind(objects, "PersistentVolumeClaim"), "disabled cache renders no claim"
+        assert "kubernetes_cache_claim" not in _rendered_config(objects)
+
+
+# ---------------------------------------------------------------------------
+# The performer environment cache: the claim, its wiring, and the failures
+# ---------------------------------------------------------------------------
+
+#: A config that passes coordinare's own validation, so the config tests check
+#: the chart's output rather than failing on a field the chart never sets.
+VALID_CONFIG = {
+    "github_org": "ViviDynamics",
+    "human_reviewers": ["smoke"],
+    "project_name": "smoke",
+    "github_project_number": 1,
+    "poll_interval_seconds": 3600,
+}
+
+
+def _devenv_claims(objects: list[dict]) -> list[dict]:
+    return _by_kind(objects, "PersistentVolumeClaim")
+
+
+class TestDevenvCache:
+    def test_defaults_render_a_rwx_claim_in_the_performer_namespace(self) -> None:
+        """The bootstrap writes the cache while consumers mount it on other nodes,
+        so the default must be ReadWriteMany. A RWO default would bind the claim to
+        one node and strand every other performer."""
+        claims = _devenv_claims(_render())
+        assert len(claims) == 1, "defaults must render exactly one devenv claim"
+        claim = claims[0]
+        assert claim["metadata"]["name"] == "coordinare-devenv-cache"
+        assert claim["metadata"]["namespace"] == NAMESPACE
+        assert claim["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert claim["spec"]["resources"]["requests"]["storage"] == "50Gi"
+        assert "storageClassName" not in claim["spec"], "empty means the cluster default"
+
+    def test_the_claim_is_kept_on_uninstall(self) -> None:
+        """Rebuilding the cache is a full bootstrap per symphony. Helm must not
+        delete it with the release, or an uninstall destroys it by accident."""
+        claim = _devenv_claims(_render())[0]
+        assert claim["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+
+    def test_the_claim_lands_in_the_performer_namespace_not_the_release_one(self) -> None:
+        """A Pod mounts only a claim in its own namespace, so the claim follows
+        performers.namespace."""
+        objects = _render(**{"performers.namespace": "coordinare-performers"})
+        claim = _devenv_claims(objects)[0]
+        assert claim["metadata"]["namespace"] == "coordinare-performers"
+
+    def test_the_claim_carries_the_release_label(self) -> None:
+        """The uninstall and cleanup commands select claims by this label."""
+        claim = _devenv_claims(_render())[0]
+        assert claim["metadata"]["labels"]["app.kubernetes.io/instance"] == RELEASE
+
+    def test_the_storage_class_and_size_can_be_set(self) -> None:
+        claim = _devenv_claims(_render(**{
+            "devenvCache.storageClassName": "nfs-client",
+            "devenvCache.size": "100Gi",
+        }))[0]
+        assert claim["spec"]["storageClassName"] == "nfs-client"
+        assert claim["spec"]["resources"]["requests"]["storage"] == "100Gi"
+
+    def test_the_daemon_is_pointed_at_the_rendered_claim(self) -> None:
+        """Config key kubernetes_cache_claim, read by kubernetes_runtime through
+        __main__._build_performer_runtime. The name must match the rendered claim."""
+        objects = _render()
+        claim_name = _devenv_claims(objects)[0]["metadata"]["name"]
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == claim_name
+
+    def test_the_daemon_is_pointed_at_a_renamed_claim(self) -> None:
+        objects = _render(**{"devenvCache.name": "devenv-west"})
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == "devenv-west"
+        assert _devenv_claims(objects)[0]["metadata"]["name"] == "devenv-west"
+
+    def test_an_existing_claim_renders_no_claim_and_is_wired(self) -> None:
+        """create false: the chart wires a claim it did not create. Rendering a
+        second one with the same name would make Helm refuse, or adopt a claim
+        that holds someone's toolchains."""
+        objects = _render(**{
+            "devenvCache.create": False,
+            "devenvCache.existingClaim": "shared-devenv",
+        })
+        assert not _devenv_claims(objects), "an existing claim must not be re-rendered"
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == "shared-devenv"
+
+    def test_the_legacy_cache_claim_key_still_works_with_create_false(self) -> None:
+        """performers.cacheClaim predates devenvCache. An install that set it keeps
+        working, provided it also says the claim is not the chart's to create."""
+        objects = _render(**{
+            "devenvCache.create": False,
+            "performers.cacheClaim": "devenv-cache",
+        })
+        assert not _devenv_claims(objects)
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == "devenv-cache"
+
+
+class TestLegacyCacheClaimMigration:
+    """An install that predates devenvCache must keep working with no values change.
+
+    The reference install (garden) sets only performers.cacheClaim, and its claim
+    is created outside Helm. A chart bump must not fail that install's Argo sync.
+    With create left unset (null), a named claim means "wire it, do not create".
+    """
+
+    #: Garden's performers block, verbatim. No devenvCache overrides at all.
+    GARDEN_PERFORMERS: ClassVar[dict[str, str]] = {"performers.cacheClaim": "coordinare-devenv-cache"}
+
+    def test_garden_performers_block_renders_with_no_pvc(self) -> None:
+        """The render succeeds, and no claim is created over the infra-owned one."""
+        objects = _render(**self.GARDEN_PERFORMERS)
+        assert not _devenv_claims(objects), (
+            "a chart bump must not render a second claim over garden's existing one"
         )
 
-    def test_a_cache_claim_is_passed_through_when_given(self) -> None:
-        config = _rendered_config(_render(**{"performers.cacheClaim": "devenv-cache"}))
-        assert config["kubernetes_cache_claim"] == "devenv-cache"
+    def test_garden_performers_block_wires_the_existing_claim(self) -> None:
+        config = _rendered_config(_render(**self.GARDEN_PERFORMERS))
+        assert config["kubernetes_cache_claim"] == "coordinare-devenv-cache"
+
+    def test_the_legacy_key_announces_its_migration_in_notes(self) -> None:
+        notes = TestNotesWarnTheInstaller._notes(**self.GARDEN_PERFORMERS)
+        assert "DEPRECATED: performers.cacheClaim" in notes
+        assert "existingClaim: coordinare-devenv-cache" in notes
+
+    def test_a_fresh_install_says_nothing_about_the_legacy_key(self) -> None:
+        assert "DEPRECATED" not in TestNotesWarnTheInstaller._notes()
+
+    def test_an_existing_claim_and_the_legacy_key_naming_the_same_claim_is_fine(self) -> None:
+        objects = _render(**{
+            "devenvCache.existingClaim": "coordinare-devenv-cache",
+            "performers.cacheClaim": "coordinare-devenv-cache",
+        })
+        assert not _devenv_claims(objects)
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == "coordinare-devenv-cache"
+
+    def test_the_cache_claim_is_not_settable_from_config_while_the_chart_wires_one(self) -> None:
+        """While the chart wires a claim, a hand-set config value could disagree with
+        it, so it fails rather than being silently overwritten or silently obeyed."""
+        with pytest.raises(RenderError, match="kubernetes_cache_claim is set by hand"):
+            _render(config={**VALID_CONFIG, "kubernetes_cache_claim": "elsewhere"})
+
+    def test_a_hand_set_cache_claim_is_accepted_when_the_cache_is_off(self) -> None:
+        """With the cache disabled the chart wires nothing, so a hand-set key is the
+        operator's to manage. This matches main, and must keep rendering."""
+        objects = _render(
+            config={**VALID_CONFIG, "kubernetes_cache_claim": "elsewhere"},
+            **{"devenvCache.enabled": False},
+        )
+        assert _rendered_config(objects)["kubernetes_cache_claim"] == "elsewhere"
+        assert not _devenv_claims(objects)
+
+    def test_the_created_claim_carries_the_argo_delete_false_option(self) -> None:
+        """Argo CD does not read helm.sh/resource-policy. Its own option stops a sync
+        from pruning the claim, so the claim carries it alongside the Helm one."""
+        claim = _devenv_claims(_render())[0]
+        assert claim["metadata"]["annotations"]["argocd.argoproj.io/sync-options"] == "Delete=false"
+
+    def test_the_env_cache_root_is_on_the_state_volume(self) -> None:
+        """The env-cache bookkeeping must survive a reschedule. Left to its default
+        it sits on the container filesystem, which does not."""
+        objects = _render()
+        root = _rendered_config(objects)["env_cache_root"]
+        container = _container(objects)
+        state_mounts = [m["mountPath"] for m in container["volumeMounts"] if m["name"] == "state"]
+        assert root == "/var/lib/coordinare/env-caches"
+        assert any(root.startswith(p.rstrip("/") + "/") for p in state_mounts), (
+            f"env_cache_root {root!r} is not under the state volume {state_mounts}"
+        )
+
+    def test_an_explicit_env_cache_root_is_respected(self) -> None:
+        objects = _render(config={**VALID_CONFIG, "env_cache_root": "/elsewhere"})
+        assert _rendered_config(objects)["env_cache_root"] == "/elsewhere"
+
+    @pytest.mark.parametrize(
+        ("values", "message"),
+        [
+            pytest.param(
+                {"devenvCache.create": False},
+                "devenvCache.create is false",
+                id="create-false-without-a-claim-name",
+            ),
+            pytest.param(
+                {"devenvCache.create": True, "devenvCache.existingClaim": "x"},
+                "devenvCache.existingClaim is set, but devenvCache.create is true",
+                id="existing-claim-with-create-explicitly-true",
+            ),
+            pytest.param(
+                {"devenvCache.create": True, "performers.cacheClaim": "x"},
+                "performers.cacheClaim names an existing claim, but devenvCache.create is set to true",
+                id="legacy-claim-with-create-explicitly-true",
+            ),
+            pytest.param(
+                {"devenvCache.existingClaim": "a", "performers.cacheClaim": "b"},
+                "Keep only devenvCache.existingClaim",
+                id="two-different-claim-names-with-create-unset",
+            ),
+            pytest.param(
+                {"devenvCache.enabled": False, "performers.cacheClaim": "x"},
+                "devenvCache.enabled is false",
+                id="legacy-claim-while-disabled",
+            ),
+            pytest.param(
+                {"devenvCache.create": False, "devenvCache.existingClaim": "a",
+                 "performers.cacheClaim": "b"},
+                "Keep only devenvCache.existingClaim",
+                id="two-different-claim-names",
+            ),
+            pytest.param(
+                {"devenvCache.namespace": "elsewhere", "performers.namespace": "perf"},
+                "performer Pods can mount a devenv claim only from their own namespace",
+                id="claim-namespace-differs-from-performers",
+            ),
+            pytest.param(
+                {"devenvCache.accessModes": []},
+                "accessModes must not be empty",
+                id="no-access-mode",
+            ),
+            pytest.param(
+                {"devenvCache.name": ""},
+                "devenvCache.name must be set",
+                id="no-name-while-creating",
+            ),
+            pytest.param(
+                {"devenvCache.enabled": False, "devenvCache.existingClaim": "x"},
+                "devenvCache.existingClaim is set, but devenvCache.enabled is false",
+                id="existing-claim-while-disabled",
+            ),
+            pytest.param(
+                {"devenvCache.enabled": False, "devenvCache.create": True},
+                "devenvCache.create is true, but devenvCache.enabled is false",
+                id="create-true-while-disabled",
+            ),
+        ],
+    )
+    def test_a_contradictory_cache_configuration_fails_the_render(
+        self, values: dict, message: str,
+    ) -> None:
+        """Every impossible combination fails at template time, naming the fix.
+
+        A claim name guessed wrong binds performers to a different volume than the
+        operator meant, which is far harder to diagnose than a failed install.
+        """
+        with pytest.raises(RenderError, match=message):
+            _render(**values)
+
+    def test_the_rendered_config_passes_coordinares_own_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The chart's output must be a config the daemon accepts, not just YAML.
+
+        Validated with the same function `coordinare config validate` uses. The
+        ${VAR} placeholders expand from the environment, so the test sets the two
+        the chart always references and nothing else.
+        """
+        from coordinare.config_validation import validate_config
+
+        monkeypatch.setenv("GITHUB_TOKEN", "unit-test-token")
+        monkeypatch.setenv("COORDINARE_DASHBOARD_AUTH_TOKEN", "unit-test-dashboard-token")
+        objects = _render(config=VALID_CONFIG, **{"devenvCache.create": False,
+                                                   "devenvCache.existingClaim": "devenv-cache"})
+        path = tmp_path / "config.yaml"
+        path.write_text(_one(objects, "ConfigMap")["data"]["config.yaml"])
+
+        result = validate_config(path)
+        assert result.passed, [e.fix_hint for e in result.errors]
+        assert result.config_file_path == path
+
+
+class TestNotesWarnTheInstaller:
+    """NOTES.txt is what an installer reads after `helm install`, so the cache's
+    state is said there and not only in the README."""
+
+    #: `helm template` never prints NOTES.txt, and `helm install --dry-run=client`
+    #: still dials the cluster. So the test renders NOTES through a probe in a
+    #: throwaway copy of the chart, which includes NOTES.txt into a ConfigMap.
+    PROBE = (
+        "apiVersion: v1\n"
+        "kind: ConfigMap\n"
+        "metadata:\n"
+        "  name: notes-probe\n"
+        "data:\n"
+        "  notes: |\n"
+        '{{ include (print $.Template.BasePath "/NOTES.txt") . | indent 4 }}\n'
+    )
+
+    @classmethod
+    def _notes(cls, **values) -> str:
+        with tempfile.TemporaryDirectory() as scratch:
+            chart = Path(scratch, "coordinare")
+            shutil.copytree(CHART, chart)
+            Path(chart, "templates", "notes-probe.yaml").write_text(cls.PROBE)
+            args = ["helm", "template", RELEASE, str(chart), "--namespace", NAMESPACE,
+                    "--show-only", "templates/notes-probe.yaml"]
+            for key, value in values.items():
+                args += ["--set-json", f"{key}={json.dumps(value)}"]
+            result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        return yaml.safe_load(result.stdout)["data"]["notes"]
+
+    def test_disabling_the_cache_prints_a_warning(self) -> None:
+        assert "performer environment cache is DISABLED" in self._notes(
+            **{"devenvCache.enabled": False},
+        )
+
+    def test_a_default_install_names_the_claim_and_its_namespace(self) -> None:
+        notes = self._notes()
+        assert "coordinare-devenv-cache" in notes
+        assert "DISABLED" not in notes
+
+    def test_a_created_claim_says_it_needs_rwx_and_how_to_check_it(self) -> None:
+        """The default needs an RWX class. Without one the claim stays Pending and the
+        bootstrap and performers wait, so NOTES must say so and show the check."""
+        notes = self._notes()
+        assert "ReadWriteMany (RWX)" in notes
+        assert "STATUS Pending" in notes
+        assert "kubectl get pvc -n coordinare-test coordinare-devenv-cache" in notes
+        assert "kubectl get storageclass" in notes
+        assert "devenvCache.enabled: false" in notes
+
+    def test_the_disabled_warning_says_what_opting_out_costs(self) -> None:
+        assert "environment bootstrap for its symphony" in self._notes(
+            **{"devenvCache.enabled": False},
+        )
+
+    def test_a_non_rwx_access_mode_is_called_out(self) -> None:
+        assert "does not include ReadWriteMany" in self._notes(
+            **{"devenvCache.accessModes": ["ReadWriteOnce"]},
+        )
 
 
 # ---------------------------------------------------------------------------

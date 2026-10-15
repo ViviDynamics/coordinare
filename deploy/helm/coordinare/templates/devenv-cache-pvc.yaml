@@ -1,0 +1,47 @@
+{{/*
+The performer environment cache claim, rendered only when the chart owns it.
+
+It lives in the performer namespace, not the release namespace: performer Pods
+mount it, and a Pod can mount only a claim in its own namespace. The chart does
+not create that namespace (the Role in rbac.yaml makes the same assumption), so
+the install fails with a clear message if it is missing.
+
+Installing this claim needs rights in the performer namespace, held by the
+installer, not by the daemon. The daemon's ServiceAccount never creates or
+reads a PVC, so the chart's RBAC is deliberately unchanged.
+
+`helm.sh/resource-policy: keep` stops `helm uninstall` from deleting it. The
+cache holds every symphony's toolchain, which costs a 10 to 20 minute bootstrap
+per symphony to rebuild, so an uninstall must not destroy it by accident.
+*/}}
+{{- if eq (include "coordinare.devenvMode" .) "create" }}
+{{- $claim := include "coordinare.devenvClaim" . }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  namespace: {{ include "coordinare.performerNamespace" . }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+  annotations:
+    # Helm honours this on `helm uninstall`. This is a Helm feature, and Argo CD
+    # is not documented to honour it. Argo's own Delete=false option below stops
+    # the claim being pruned on sync when it leaves the rendered set. It is not
+    # documented to stop a deleted Application with the resources finalizer from
+    # removing the claim. See the README.
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes:
+    {{- with .Values.devenvCache.accessModes }}
+    {{- toYaml . | nindent 4 }}
+    {{- else }}
+    {{- fail "devenvCache.accessModes must not be empty. Keep ReadWriteMany; see values.yaml." }}
+    {{- end }}
+  {{- if .Values.devenvCache.storageClassName }}
+  storageClassName: {{ .Values.devenvCache.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.devenvCache.size }}
+{{- end }}
