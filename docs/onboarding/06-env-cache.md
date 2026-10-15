@@ -50,7 +50,22 @@ flowchart TB
 6. **Circuit breaker** (spec 088): N consecutive bootstrap failures for a spec SHA →
    `bootstrap_exhausted` → consumer dispatch is **held** (with a human-readable reason) until the
    spec SHA changes (a README fix) or an operator clears it. This prevents an infinite
-   bootstrap-fail loop.
+   bootstrap-fail loop. The operator's manual trigger (`POST /api/symphonies/{name}/env-bootstrap`,
+   also the dashboard's "Force bootstrap now") resets the retry budget and the breaker, then
+   bootstraps; the activity feed names who triggered it.
+
+**Pausing.** A symphony with `enabled: false` is paused: the env-cache cycle, its first
+bootstrap at boot, its retries and its restart re-verify are all skipped, and its persisted
+env-cache state is left as it was. A bootstrap already running when the symphony is paused
+finishes (or is reaped by the limits below), but nothing new is dispatched until it resumes.
+The manual trigger is refused with 409 while paused.
+
+**Hung bootstraps.** The daemon ends a bootstrap that has stopped making progress, or that has
+run past its wall clock, whatever the performer does. Progress is the status poll's event
+stream (the same signal as card stall detection). `bootstrap_idle_timeout_seconds` (default
+600, `0` disables) and `bootstrap_max_seconds` (default 3600, `0` restores the legacy cap) set
+the two limits. The job is stopped through its runtime, and the attempt is recorded as failed
+with the reason ("no progress for N minutes" or "exceeded M minutes") against the retry budget.
 
 ## Activation — what happens when a performer starts
 

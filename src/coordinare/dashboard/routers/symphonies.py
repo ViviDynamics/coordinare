@@ -15,6 +15,7 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 from fastapi.responses import JSONResponse
 
 from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.dashboard.routers.personas import _session_actor
 from coordinare.dashboard.secret_overrides import (
     _mask_secret_overrides,
     _restore_masked_secrets,
@@ -619,16 +620,39 @@ def _register_delete_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({"deleted": name}, headers=_version_headers(config_path))
 
 
+def _reset_env_bootstrap_breaker(
+    ctx: DashboardContext, symphony: str, cache_state: Any, request: Request,
+) -> None:
+    """270: an operator trigger re-arms the retry budget and the breaker, then records who did it.
+
+    The activity entry is best effort: a feed that cannot be written never fails the trigger."""
+    previous, was_exhausted = cache_state.bootstrap_attempts, cache_state.bootstrap_exhausted
+    cache_state.bootstrap_attempts = 0
+    cache_state.bootstrap_exhausted = False
+    cache_state.infra_failures = 0
+    actor = _session_actor(request)
+    breaker = "tripped" if was_exhausted else "armed"
+    text = (
+        f"Env bootstrap for '{symphony}' forced by {actor}: retry budget reset "
+        f"(was {previous} attempts, breaker {breaker})."
+    )
+    _log.info("symphony.env_bootstrap_forced", symphony=symphony, actor=actor, previous_attempts=previous)
+    try:
+        ctx.store.activity_log.record(activity_type="operator_action", text=text)
+    except Exception:
+        _log.warning("symphony.env_bootstrap_activity_not_recorded", symphony=symphony)
+
+
 def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
 
         @app.post("/api/symphonies/{name}/env-bootstrap")
-        async def trigger_env_bootstrap(name: str) -> JSONResponse:
+        async def trigger_env_bootstrap(name: str, request: Request) -> JSONResponse:
             """Force an env_bootstrap dispatch for a symphony.
 
-            Clears the recorded readme_sha so the next env_cache cycle treats the
-            spec files as changed, then fires the cycle trigger. Returns 202 on
-            accept; 409 if a bootstrap is already in flight.
+            Resets the retry budget and breaker (270), clears readme_sha so the next cycle
+            dispatches, and records who triggered it. Paused symphonies get 409 and nothing
+            is queued. Returns 202 on accept; 409 if paused or in flight.
             """
             symphony_configs = daemon.state.get("symphony_configs") or {}
             if name not in symphony_configs:
@@ -647,6 +671,10 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     },
                     status_code=400,
                 )
+
+            if not getattr(sym_cfg, "enabled", True):
+                msg = f"Symphony {name!r} is paused (enabled: false); enable it before forcing a bootstrap"
+                return JSONResponse({"error": msg, "status": "symphony_paused"}, status_code=409)
 
             env_cache_svc = daemon.state.get("env_cache_service")
             if env_cache_svc is None:
@@ -692,6 +720,7 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     status_code=409,
                 )
 
+            _reset_env_bootstrap_breaker(ctx, name, cache_state, request)
             # Force the next cycle to detect a SHA mismatch and re-dispatch.
             cache_state.readme_sha = None
             if hasattr(daemon, "_webhook_trigger"):

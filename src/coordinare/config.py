@@ -2632,6 +2632,37 @@ class CoordinareConfiguration(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_env_bootstrap_roles(self) -> CoordinareConfiguration:
+        """270: the endpoint a symphony bootstraps on must carry the literal ``env_bootstrap`` role.
+
+        Registration maps an endpoint by its roles, so an endpoint with no roles is never
+        reachable for bootstrap: that is an error, and the message says what to add. An
+        endpoint with other roles but no ``env_bootstrap`` is reached only by id, through
+        an unrelated role, so it is a warning and the config still loads.
+        """
+        endpoints = {p.id: p for p in self.global_config.performer_endpoints}
+        for symphony in self.symphonies:
+            performer_id = symphony.env_bootstrap_performer_id
+            endpoint = endpoints.get(performer_id) if performer_id is not None else None
+            if endpoint is None or "env_bootstrap" in endpoint.roles:
+                continue
+            if not endpoint.roles:
+                msg = (
+                    f"Symphony '{symphony.name}' env_bootstrap_performer_id "
+                    f"'{performer_id}' has roles: [] and can never be registered for "
+                    "bootstrap. Set roles: [env_bootstrap] on that performer endpoint."
+                )
+                raise ValueError(msg)
+            logger.warning(
+                "config.env_bootstrap_role_missing",
+                symphony=symphony.name,
+                performer_id=performer_id,
+                roles=endpoint.roles,
+                detail="add 'env_bootstrap' to this endpoint's roles; it dispatches now only by id",
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_observer_model_endpoints(self) -> CoordinareConfiguration:
         """425: an enabled observer must reference a resolvable 080 model_endpoint."""
         for symphony in self.symphonies:
