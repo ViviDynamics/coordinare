@@ -160,7 +160,8 @@ def test_usage_reports_stay_with_their_stream(page, live_server_url):
     expect(summary).to_contain_text('can proceed. (3 updates)')
     summary.click()
     summary.focus()
-    assert message_row.locator('.af-raw > p').text_content() == 'We can proceed.'
+    # 178: each block is a labelled group, and its text is in its own paragraph.
+    assert message_row.locator('.af-raw .af-narration').text_content() == 'We can proceed.'
     expect(rows.nth(1).locator('.af-tool code')).to_have_text('pytest tests/')
     usage = message_row.locator('.af-usage')
     expect(usage.locator('summary')).to_have_text('Usage reports (1)')

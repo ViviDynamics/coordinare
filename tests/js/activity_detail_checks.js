@@ -276,5 +276,29 @@ truthy("a merged block marks its last record", merged.indexOf('data-transcript-s
 truthy("a merged block says it spans records 20 to 23", merged.indexOf("transcript records 20 to 23") !== -1, merged);
 check("a merged block keeps its joined text", merged.indexOf(">The fix<") !== -1, true);
 
+// --- accessible groups and clean bodies (178) --------------------------------
+const grouped = afRawHtml([
+  entry(80, { activity_type: "tool_use", text: "Bash", summary: "Bash · ls", transcript_seq: 3 }),
+  entry(81, { activity_type: "progress", text: "I will check the CI.", transcript_seq: 4 }),
+]);
+truthy("each block is a role group", grouped.indexOf('role="group"') !== -1, grouped);
+truthy("a tool group's accessible name is its source label",
+  grouped.indexOf('role="group"') !== -1 && grouped.indexOf('aria-label="Tool call"') !== -1, grouped);
+truthy("a narration group's accessible name is its source label",
+  grouped.indexOf('aria-label="Assistant text"') !== -1, grouped);
+truthy("a narration body is its own paragraph, with the entry text only",
+  grouped.indexOf('<p class="af-narration">I will check the CI.</p>') !== -1, grouped);
+truthy("a tool body is its own pre, with the command only",
+  grouped.indexOf('<pre class="af-tool"><code>Bash · ls</code></pre>') !== -1, grouped);
+
+// --- own-property lookups (178) ----------------------------------------------
+check("afLabel answers a prototype name with its own uppercase, not Object's method",
+  afLabel("constructor"), "CONSTRUCTOR");
+check("afLabel answers toString the same way", afLabel("toString"), "TOSTRING");
+check("afSummary answers a prototype name with the generic sentence",
+  afSummary(entry(1, { activity_type: "constructor" })), "Activity reported.");
+check("afIcon answers a prototype name with the default glyph", afIcon("constructor"), "*");
+check("afIcon answers __proto__ with the default glyph", afIcon("__proto__"), "*");
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

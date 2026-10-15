@@ -29,6 +29,8 @@
      "expect": {"activity_type": "tool_use", "summary": "Bash · uv run pytest -q", "status": ""}},
     {"id": "tool_call_without_argument", "event": {"type": "tool_use", "tool": "", "arg": "", "text": "legacy"},
      "expect": {"activity_type": "tool_use", "summary": "legacy", "status": ""}},
+    {"id": "tool_output_delta", "event": {"type": "tool_use", "is_delta": true, "stream_id": "item1", "text": "PASS test_x"},
+     "expect": {"activity_type": "tool_use", "summary": "PASS test_x", "status": ""}},
     {"id": "tool_result_error", "event": {"type": "tool_use", "text": "result: 1 failed", "status": "error"},
      "expect": {"activity_type": "tool_result", "summary": "result error", "status": "error"}},
     {"id": "tool_result_ok", "event": {"type": "tool_use", "text": "result: fine", "status": "ok"},

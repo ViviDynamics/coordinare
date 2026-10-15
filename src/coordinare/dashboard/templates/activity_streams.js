@@ -12,7 +12,11 @@ var AF_LABELS = {
   // 178: a raw line from the backend gets its own chip, distinct from the agent's AGENT chip.
   output: 'OUTPUT'
 };
-function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
+// Own properties only: a bare lookup would answer for "constructor" with Object's method.
+function afOwn(map, key) {
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+}
+function afLabel(t) { return afOwn(AF_LABELS, t) || String(t || '').toUpperCase() || 'EVENT'; }
 var AF_SUMMARIES = {
   progress: 'Performer reported progress.', thinking: 'Performer is reasoning.',
   tool_use: 'Performer used a tool.', tool_result: 'A tool returned a result.',
@@ -35,8 +39,8 @@ var AF_ICONS = {
   error: '!', recovered: '+', completed: '+', operator_action: '*', observer_verdict: '?',
   quiet: '~', stream_truncated: '~'
 };
-function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
-function afIcon(type) { return AF_ICONS[type] || '*'; }
+function afSummary(e) { return afOwn(AF_SUMMARIES, e.activity_type) || 'Activity reported.'; }
+function afIcon(type) { return afOwn(AF_ICONS, type) || '*'; }
 // 148: the four feed filters. Lifecycle, Agent and Errors show by default and
 // Tools starts collapsed out of the way. The choice is remembered per browser.
 var AF_CHIP_DEFAULTS = {lifecycle: true, agent: true, tools: false, errors: true};
@@ -219,25 +223,29 @@ function afBlockAttrs(b) {
   var record = !b.seq ? '' : spans
     ? ', transcript records ' + b.seq + ' to ' + b.seqLast
     : ', transcript record ' + b.seq;
+  // 178: the group's accessible name is its source label. The label is also drawn by CSS, which
+  // screen readers, copy and find do not rely on.
   return ' data-event-type="' + esc(b.kind) + '" data-source="' + esc(b.label) + '"' +
+    ' aria-label="' + esc(b.label) + '"' +
     (b.seq ? ' data-transcript-seq="' + b.seq + '"' : '') +
     (spans ? ' data-transcript-seq-last="' + b.seqLast + '"' : '') +
     ' title="' + esc(b.label + record) + '"';
+}
+// 178: the body of one block, in its own element, so the text a reader copies is the entry's text.
+function afBlockBody(b) {
+  if (b.kind === 'tool_use') return '<pre class="af-tool"><code>' + esc(b.text) + '</code></pre>';
+  if (b.kind === 'tool_result') {
+    return '<p class="af-result af-result-' + esc(b.status) + '">' + esc(b.text) + '</p>';
+  }
+  // 178: a raw line from the backend is set like output, never like the agent's prose.
+  if (b.kind === 'output') return '<p class="af-output">' + esc(b.text) + '</p>';
+  return '<p class="af-narration">' + esc(b.text) + '</p>';
 }
 // 237 + 178: one block of agent output. The feed and the performer page both draw a block through
 // this one function, so they cannot disagree about what a row looks like. A block is
 // {kind, text, status, label, seq, seqLast}; afBlockFromEntry builds it from any feed entry.
 function afBlockHtml(b) {
-  var attrs = afBlockAttrs(b);
-  if (b.kind === 'tool_use') {
-    return '<div class="af-block"' + attrs + '><pre class="af-tool"><code>' + esc(b.text) + '</code></pre></div>';
-  }
-  if (b.kind === 'tool_result') {
-    return '<p class="af-result af-result-' + esc(b.status) + '"' + attrs + '>' + esc(b.text) + '</p>';
-  }
-  // 178: a raw line from the backend is set like output, never like the agent's prose.
-  if (b.kind === 'output') return '<p class="af-output"' + attrs + '>' + esc(b.text) + '</p>';
-  return '<p class="af-narration"' + attrs + '>' + esc(b.text) + '</p>';
+  return '<div class="af-block" role="group"' + afBlockAttrs(b) + '>' + afBlockBody(b) + '</div>';
 }
 function afBlockFromEntry(e) {
   var seq = afBlockSeq(e.transcript_seq);
