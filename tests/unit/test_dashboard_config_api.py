@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -22,6 +23,12 @@ from coordinare.config import CoordinareConfiguration
 from coordinare.config_descriptors import SECRET_MASK
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+
+
+@pytest.fixture(autouse=True)
+def _github_token_in_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixtures keep ${COORDINARE_GITHUB_TOKEN} in the file; the daemon reads it from the environment (225)."""
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
 
 
 def _version_header(config_path) -> dict[str, str]:

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from coordinare.config import expand_config_text
 from coordinare.config_descriptors import GLOBAL_EDITABLE_FIELDS
 from coordinare.config_validation import validate_raw_config
+from coordinare.services.config_write_service import _validate_candidate
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -118,10 +119,19 @@ def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
     check). A save that would leave the file unloadable (an env-cache root that overlaps a
     performer volume, or a volume whose expanded path does) is refused with a 422 that names
     the problem, and nothing is written. Deprecation warnings do not block a save.
+
+    225: the candidate must also pass the daemon's own start-time checks and the candidate
+    validation every other write runs (dashboard bind and token, OIDC, App key file, and unexpanded
+    ${VAR} secrets). A save that the daemon could not start with is refused here, so the global
+    route, the config assistant's Apply and MCP put_global all get the same refusal.
     """
     daemon_view = yaml.safe_load(expand_config_text(candidate_text(loaded)))
     result = validate_raw_config(daemon_view if isinstance(daemon_view, dict) else {})
-    if result.passed:
-        return None
-    detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
-    return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
+    if not result.passed:
+        detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
+        return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
+    start_errors = _validate_candidate(loaded)
+    if start_errors:
+        detail = "; ".join(err.message for err in start_errors)
+        return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
+    return None

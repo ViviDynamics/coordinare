@@ -45,6 +45,12 @@ _BASE: dict[str, Any] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _github_token_in_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixtures keep ${COORDINARE_GITHUB_TOKEN} in the file; the daemon reads it from the environment (225)."""
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
+
+
 def _endpoint(volume: Path) -> PerformerEndpointConfig:
     return PerformerEndpointConfig(
         id="p1",

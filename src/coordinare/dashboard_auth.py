@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 
 from coordinare.dashboard_oidc import SESSION_COOKIE
-from coordinare.localhost_guard import MUTATING_METHODS, is_loopback_bind
+from coordinare.localhost_guard import MUTATING_METHODS, dashboard_token_required
 
 if TYPE_CHECKING:
     from pydantic import SecretStr
@@ -63,12 +63,12 @@ def _public_origin(flow: OidcFlow) -> str:
 
 
 def validate_dashboard_bind(
-    host: str, token: SecretStr | None, *, oidc: OidcFlow | None = None,
+    host: str, token: SecretStr | None, *, oidc: object | None = None,
 ) -> None:
     """Refuse remote anonymous access before any daemon services are started."""
     if token is not None and len(token.get_secret_value()) < 32:
         raise ValueError("dashboard_auth_token must contain at least 32 characters")
-    if not is_loopback_bind(host) and token is None and oidc is None:
+    if token is None and dashboard_token_required(host, oidc=oidc):
         raise ValueError(
             "Non-loopback dashboard_host requires dashboard_auth_token. "
             "Configure a token or bind the dashboard to 127.0.0.1.",

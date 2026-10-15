@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal, get_args
 from urllib.parse import urlparse
 
 import structlog
@@ -1215,10 +1215,30 @@ def expand_config_text(text: str) -> str:
     return os.path.expandvars(text)
 
 
+def _holds_secret(annotation: Any) -> bool:
+    """True when a field annotation is a ``SecretStr``, or a union (``Optional``) that holds one."""
+    return annotation is SecretStr or any(_holds_secret(arg) for arg in get_args(annotation))
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
     model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_secret_is_unset(cls, data: Any) -> Any:
+        """225: an empty secret means unset. A cleared optional secret is written as absent, and an
+        empty value that reaches the loader (an unset ``${VAR}``, an older save) is read the same way."""
+        if not isinstance(data, dict):
+            return data
+        cleared = {
+            name: None
+            for name, info in cls.model_fields.items()
+            if _holds_secret(info.annotation)
+            and isinstance(data.get(name), str) and not data[name].strip()
+        }
+        return {**data, **cleared} if cleared else data
 
     project_name: str = ""
     github_org: str
@@ -1240,6 +1260,11 @@ class ProjectConfiguration(BaseSettings):
     # real bench sets it to git://host.docker.internal:<port> so a bridged
     # container reaches the host's git daemon while the host still uses 127.0.0.1.
     performer_git_base_url: str | None = None
+
+    # 225: a credential the model refuses to leave empty while github_auth is the named mode.
+    # Settings reads this for each field's "required" flag, so the page offers Clear only where
+    # clearing would be accepted. Keep it in step with _validate_auth_config.
+    AUTH_REQUIRED_CREDENTIALS: ClassVar[dict[str, str]] = {"github_token": "pat"}
 
     # Auth mode — "pat" (default) or "app"
     github_auth: Literal["pat", "app"] = "pat"
@@ -1859,9 +1884,11 @@ class ProjectConfiguration(BaseSettings):
                 raise ValueError(msg)
             token = self.github_token.get_secret_value().strip()
             if token.startswith("${") and token.endswith("}"):
+                name = token[2:-1]
                 msg = (
-                    "github_token must be a real token value; unresolved placeholder detected. "
-                    "Set COORDINARE_GITHUB_TOKEN or update config.yaml."
+                    f"github_token still holds ${{{name}}}, an unresolved placeholder: "
+                    f"the environment variable {name} is not set. "
+                    f"Set {name} in the daemon's environment, or write the token in config.yaml."
                 )
                 raise ValueError(msg)
         elif self.github_auth == "app":

@@ -154,6 +154,16 @@ def _is_wildcard_bind(host: str) -> bool:
     return any(ipaddress.ip_address(info[4][0]).is_unspecified for info in resolved)
 
 
+def dashboard_token_required(host: str, *, oidc: object | None) -> bool:
+    """True when the dashboard must have a token: a non-loopback bind with no OIDC flow.
+
+    225: the one rule. ``validate_dashboard_bind`` refuses a start without the token when this is
+    true, and the Settings page reads the same predicate for the dashboard token's ``required`` flag,
+    so the page never offers a Clear the daemon would refuse.
+    """
+    return not is_loopback_bind(host) and oidc is None
+
+
 def is_loopback_bind(host: str) -> bool:
     """True when binding to ``host`` keeps a server off the network.
 

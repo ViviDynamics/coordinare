@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from coordinare.mcp.client import ToolResult, get_client
 from coordinare.mcp.tools._registry import ToolDefinition
@@ -49,6 +49,9 @@ UpdateAction = Literal[
     "put_global", "put_section", "catalog_create", "catalog_update", "catalog_delete",
     "routing_create", "routing_update", "routing_delete", "reload",
 ]
+
+#: The routing actions that name an existing entry by its index (225).
+_ROUTING_ENTRY_ACTIONS: frozenset[str] = frozenset({"routing_update", "routing_delete"})
 
 
 def _fill(template: str, **params: str | int | None) -> str | None:
@@ -88,6 +91,33 @@ async def get_config(scope: str, id: str | None = None) -> dict[str, Any]:
     return (await get_config_handler(parsed, get_client())).model_dump(exclude_none=True)
 
 
+class RoutingIdentity(BaseModel):
+    """The routing entry a write means, by its backend and model (225).
+
+    ``get_config`` with scope ``routing`` lists every entry with these two fields, so an agent
+    can take them from the same read that gave it ``index`` and ``content_hash``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend: str
+    model: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _only_backend_and_model(cls, data: Any) -> Any:
+        """Name the keys that are allowed, so an agent that copied a whole entry knows what to remove."""
+        if isinstance(data, dict):
+            extra = sorted(str(key) for key in data if key not in ("backend", "model"))
+            if extra:
+                msg = (
+                    "expected takes exactly two keys, backend and model; "
+                    f"remove {', '.join(extra)} (pass the entry's backend and model only)"
+                )
+                raise ValueError(msg)
+        return data
+
+
 class UpdateConfigInput(BaseModel):
     action: UpdateAction
     id: str | None = None
@@ -95,6 +125,10 @@ class UpdateConfigInput(BaseModel):
     index: int | None = None
     payload: dict[str, Any] | None = None
     base_hash: str | None = None
+    #: 225: for routing_update / routing_delete, the entry the write means. The dashboard refuses
+    #: the write (409) when the entry at ``index`` is a different one. Optional, so a caller that
+    #: omits it is still guarded by ``base_hash``.
+    expected: RoutingIdentity | None = None
 
 
 def _update_body(input: UpdateConfigInput) -> dict[str, Any]:
@@ -111,7 +145,10 @@ def _update_body(input: UpdateConfigInput) -> dict[str, Any]:
         "routing_update": {"changes": payload, "base_hash": base},
         "routing_delete": {"base_hash": base},
     }
-    return body_by_action.get(input.action, {})  # reload → {}
+    body = body_by_action.get(input.action, {})  # reload → {}
+    if input.expected is not None and input.action in _ROUTING_ENTRY_ACTIONS:
+        body = {**body, "expected": input.expected.model_dump()}
+    return body
 
 
 async def update_config_handler(
@@ -139,6 +176,13 @@ async def update_config_handler(
             f"action '{input.action}' requires base_hash",
             "read the latest values via get_config first; its result carries base_hash",
         )
+    if input.expected is not None and input.action not in _ROUTING_ENTRY_ACTIONS:
+        return ToolResult.failure(
+            "validation",
+            400,
+            "expected names a routing entry, so it applies only to routing_update and routing_delete",
+            "remove expected, or use a routing action",
+        )
     body = _update_body(input)
     return await client.send_json(
         _verb, path, json=body, timeout_seconds=client.read_budget,
@@ -149,9 +193,24 @@ async def update_config(action: str, **kwargs: Any) -> dict[str, Any]:
     """Write configuration with optimistic concurrency (put/section/catalog/routing/reload).
 
     Keyword arguments mirror ``UpdateConfigInput``: the optional ``id``,
-    ``item_id``, ``index``, ``payload`` and ``base_hash``.
+    ``item_id``, ``index``, ``payload``, ``base_hash`` and, for routing_update and
+    routing_delete, ``expected`` (``{"backend": ..., "model": ...}``). A malformed argument
+    comes back as a validation ``ToolResult`` error, never as an exception.
     """
-    parsed = UpdateConfigInput.model_validate({"action": action, **kwargs})
+    try:
+        parsed = UpdateConfigInput.model_validate({"action": action, **kwargs})
+    except ValidationError as exc:
+        errors = exc.errors()
+        loc = errors[0]["loc"] if errors else ()
+        msg = (errors[0]["msg"] if errors else "invalid value").removeprefix("Value error, ")
+        where = ".".join(str(part) for part in loc) or "arguments"
+        failure = ToolResult.failure(
+            "validation",
+            400,
+            f"invalid update_config argument '{where}': {msg}",
+            "check the arguments: expected takes exactly backend and model, as strings",
+        )
+        return failure.model_dump(exclude_none=True)
     return (await update_config_handler(parsed, get_client())).model_dump(exclude_none=True)
 
 

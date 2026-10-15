@@ -46,7 +46,7 @@ from coordinare.config_validation import (
 )
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
-from coordinare.dashboard_oidc import OidcFlow, validate_dashboard_oidc
+from coordinare.dashboard_oidc import OidcFlow
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
@@ -1341,15 +1341,9 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
-    from coordinare.dashboard_auth import validate_dashboard_bind
+    from coordinare.start_checks import validate_start_time
 
-    _dashboard_oidc = getattr(config, "dashboard_oidc", None)
-    validate_dashboard_bind(config.dashboard_host, config.dashboard_auth_token, oidc=_dashboard_oidc)
-    if _dashboard_oidc is not None:
-        validate_dashboard_oidc(
-            _dashboard_oidc, dashboard_host=config.dashboard_host,
-            trusted_hosts=getattr(config, "trusted_dashboard_hosts", []),
-        )
+    validate_start_time(config)
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -1802,8 +1796,13 @@ def main() -> None:
         deprecated_fields_detected=bool(result.warnings),
     )
 
-    # Step 4b: Validate auth config (key file exists for App mode)
-    validate_auth_config(config)
+    # Step 4b: Validate auth config (key file exists for App mode). Boot refuses with the
+    # message on stderr and exit status 1, as it always has; the save path gets the same ValueError.
+    try:
+        validate_auth_config(config)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Step 4c: Warn when polling is disabled but no webhook trigger is configured
     if config.poll_interval_seconds == 0 and not config.webhooks.enabled:

@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -29,6 +30,12 @@ from coordinare.dashboard import DashboardStore, create_dashboard_app
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _github_token_in_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixtures keep ${COORDINARE_GITHUB_TOKEN} in the file; the daemon reads it from the environment (225)."""
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
 
 
 def _make_client(config_path: Path, raw: dict[str, Any]) -> tuple[TestClient, MagicMock]:

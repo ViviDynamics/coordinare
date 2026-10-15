@@ -129,45 +129,31 @@ def test_validate_auth_config_app_no_key_path_returns() -> None:
     validate_auth_config(cfg)  # must not raise
 
 
-def test_validate_auth_config_missing_key_file_exits(tmp_path: Path) -> None:
+def test_validate_auth_config_missing_key_file_raises_value_error(tmp_path: Path) -> None:
+    """225: a ValueError (the save path refuses with it); boot turns it into exit status 1."""
     cfg = MagicMock()
     cfg.github_auth = "app"
     cfg.github_private_key_path = tmp_path / "nonexistent.pem"
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="does not exist"):
         validate_auth_config(cfg)
 
 
-def test_validate_auth_config_missing_key_file_prints_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture,
-) -> None:
-    cfg = MagicMock()
-    cfg.github_auth = "app"
-    cfg.github_private_key_path = tmp_path / "nonexistent.pem"
-    with pytest.raises(SystemExit):
-        validate_auth_config(cfg)
-    err = capsys.readouterr().err
-    assert "does not exist" in err
-
-
-def test_validate_auth_config_path_is_directory_exits(tmp_path: Path) -> None:
-    """If github_private_key_path points to a directory, should sys.exit(1)."""
+def test_validate_auth_config_path_is_directory_raises_value_error(tmp_path: Path) -> None:
+    """If github_private_key_path points to a directory, the check refuses it."""
     cfg = MagicMock()
     cfg.github_auth = "app"
     cfg.github_private_key_path = tmp_path  # exists but is not a file
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="not a regular file"):
         validate_auth_config(cfg)
 
 
-def test_validate_auth_config_path_is_directory_prints_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture,
-) -> None:
+def test_validate_auth_config_path_is_directory_names_the_path(tmp_path: Path) -> None:
     cfg = MagicMock()
     cfg.github_auth = "app"
     cfg.github_private_key_path = tmp_path
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="not a regular file") as info:
         validate_auth_config(cfg)
-    err = capsys.readouterr().err
-    assert "not a regular file" in err
+    assert str(tmp_path) in str(info.value)
 
 
 def test_validate_auth_config_valid_key_file_passes(tmp_path: Path) -> None:
