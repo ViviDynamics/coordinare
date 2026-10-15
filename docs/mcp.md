@@ -135,7 +135,12 @@ static-token (552 FR5).
 after the write, using the lifecycle budget for the chain and aborting on the
 first failure. Writes that need optimistic concurrency (`update_config`) take a
 `base_hash` from the latest `get_config`; a 409 surfaces as a `conflict` error
-whose recovery hint is to re-read.
+whose recovery hint is to re-read. A routing update or delete also takes
+`expected` (`{"backend": ..., "model": ...}`), the entry the write means, so the
+dashboard refuses it if another entry has moved into that index. The routing
+scope of `get_config` gives the entries with their backend and model, and its
+`content_hash` is the `base_hash`. `expected` is optional: a caller that omits
+it is still guarded by `base_hash`.
 
 ## Security notes
 

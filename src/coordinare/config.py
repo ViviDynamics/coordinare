@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import structlog
@@ -1240,6 +1240,11 @@ class ProjectConfiguration(BaseSettings):
     # real bench sets it to git://host.docker.internal:<port> so a bridged
     # container reaches the host's git daemon while the host still uses 127.0.0.1.
     performer_git_base_url: str | None = None
+
+    # 225: a credential the model refuses to leave empty while github_auth is the named mode.
+    # Settings reads this for each field's "required" flag, so the page offers Clear only where
+    # clearing would be accepted. Keep it in step with _validate_auth_config.
+    AUTH_REQUIRED_CREDENTIALS: ClassVar[dict[str, str]] = {"github_token": "pat"}
 
     # Auth mode — "pat" (default) or "app"
     github_auth: Literal["pat", "app"] = "pat"

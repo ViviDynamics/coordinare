@@ -30,7 +30,7 @@ def _setting(key: str, label: str, type_: str, current: Any, *, editable: bool =
     base = {
         "key": key, "label": label, "help": None, "type": type_, "current_value": current,
         "default": None, "range": None, "enum": None, "editable": editable, "restart_required": False,
-        "secret": False, "is_env_placeholder": False, "invalid": False,
+        "secret": False, "required": False, "is_env_placeholder": False, "invalid": False,
         "section": key.split(".")[0], "store": "config_yaml",
     }
     base.update(extra)
@@ -45,7 +45,8 @@ def _snapshot(poll: int = 30) -> dict[str, Any]:
             "items": [], "invalid_banner": None,
             "settings": [
                 _setting("global.poll_interval_seconds", "Poll interval (seconds)", "int", poll),
-                _setting("global.github_token", "GitHub token", "secret", "••••••", secret=True),
+                _setting("global.github_token", "GitHub token", "secret", "••••••", secret=True, required=True),
+                _setting("global.dashboard_auth_token", "Dashboard auth token", "secret", "••••••", secret=True),
             ],
         },
         {

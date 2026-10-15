@@ -223,10 +223,14 @@ function cfgInput(s) {
   }
   var ph = s.secret ? ' placeholder="leave masked to keep current"' : '';
   if (s.secret) {
-    // 143 second review: a secret is a password field, and it has its own Clear action.
+    // 143 second review: a secret is a password field. 225: Clear is offered only for an optional
+    // secret, because the server refuses to clear a required one. Show reveals only what was typed.
+    var clear = s.required ? ''
+      : '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc(field) + '">Clear</button>';
     return '<div style="display:flex;gap:6px;align-items:center">'
       + '<input type="password" autocomplete="off" ' + base + ph + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">'
-      + '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc(field) + '">Clear</button>'
+      + '<button type="button" class="cfg-btn" data-cfg-action="toggle-secret" aria-pressed="false">Show</button>'
+      + clear
       + '</div>';
   }
   return '<input type="text" ' + base + ph + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">';
@@ -262,6 +266,40 @@ function cfgSameValue(now, saved) {
 // masked display, is the stored secret kept as it is.
 function cfgSecretChanged(now) {
   return now !== null && now !== undefined && now !== '' && now !== CFG_SECRET_MASK;
+}
+
+// 225: a secret's value may be shown only when it is what the reader typed. The masked marker
+// stands in for a stored value the page never has, so it is never revealed. Pure.
+function cfgMayReveal(value) {
+  return value !== CFG_SECRET_MASK;
+}
+
+// 225: the secret input's Show button, found from the input it sits beside.
+function cfgSecretToggle(input) {
+  return input && input.parentNode ? input.parentNode.querySelector('[data-cfg-action="toggle-secret"]') : null;
+}
+
+// 225: a secret input goes back to a password field, and its Show button to not pressed.
+function cfgHideSecret(input) {
+  input.type = 'password';
+  var btn = cfgSecretToggle(input);
+  if (btn) btn.setAttribute('aria-pressed', 'false');
+}
+
+// 225: Show and Hide for a secret input. Show reveals only typed text. When the field still
+// holds the masked marker, it says the stored value stays hidden and does not reveal it.
+function cfgToggleSecret(btn) {
+  var input = btn.parentNode ? btn.parentNode.querySelector('input[data-secret="true"]') : null;
+  if (!input) return;
+  if (input.type === 'text') { cfgHideSecret(input); return; }
+  if (!cfgMayReveal(input.value)) {
+    var container = btn.closest('[data-section], [data-item]');
+    cfgFlash(container ? container.querySelector('[data-status]') : null,
+      'The stored value stays hidden. Type a new value to see what you type.', 'muted');
+    return;
+  }
+  input.type = 'text';
+  btn.setAttribute('aria-pressed', 'true');
 }
 
 // 143 second review: a cleared secret is sent as the empty string the server accepts.
@@ -358,6 +396,7 @@ function cfgRebaseline(container) {
     if (el.getAttribute('data-secret') === 'true') {
       el.setAttribute('data-orig', JSON.stringify(CFG_SECRET_MASK));
       el.value = '';
+      cfgHideSecret(el);
       if (el.hasAttribute('data-clear')) {
         el.removeAttribute('data-clear');
         el.placeholder = 'leave masked to keep current';
@@ -955,6 +994,42 @@ function cfgRoutingSection(sec, banner) {
     + '<h3 style="margin:0 0 8px 0;font-size:14px;color:var(--color-text-primary)">' + esc(sec.title) + '</h3>'
     + desc + banner + body + '</section>';
 }
+// 225: the (backend, model) pairs that the table lists more than once, each with the 1-based
+// positions of its entries, in the order the pairs first appear. An older table can hold
+// duplicates that the server now refuses to create. Pure, so the node check runs it as it ships.
+function cfgDuplicatePairs(entries) {
+  var seen = {};
+  var order = [];
+  (entries || []).forEach(function(e, i) {
+    var backend = e && e.backend !== null && e.backend !== undefined ? String(e.backend) : '';
+    var model = e && e.model !== null && e.model !== undefined ? String(e.model) : '';
+    var key = JSON.stringify([backend, model]);
+    if (!seen[key]) {
+      seen[key] = {backend: backend, model: model, positions: []};
+      order.push(key);
+    }
+    seen[key].positions.push(i + 1);
+  });
+  return order.map(function(key) { return seen[key]; }).filter(function(p) { return p.positions.length > 1; });
+}
+
+// 225: the one-time warning on the Routing tab. It names each duplicate pair and its positions,
+// and suggests removing all but one. Empty when the table has no duplicates.
+function cfgDuplicateNotice(pairs) {
+  if (!pairs || !pairs.length) return '';
+  var items = pairs.map(function(p) {
+    return '<li>backend <span style="font-family:var(--font-mono,monospace)">' + esc(p.backend)
+      + '</span>, model <span style="font-family:var(--font-mono,monospace)">' + esc(p.model)
+      + '</span>: entries ' + esc(p.positions.join(', ')) + ' (counted from the top of the list)</li>';
+  }).join('');
+  return '<div role="status" data-routing-duplicates style="background:var(--color-bg-base);border:1px solid var(--color-accent-orange,#d29922);'
+    + 'border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--color-text-primary)">'
+    + '<div style="font-weight:600;color:var(--color-accent-orange,#d29922)">This routing table has duplicate backend and model pairs</div>'
+    + '<div style="' + CFG_HINT + ';margin-bottom:4px">Each backend and model pair should appear once. New duplicates are refused, '
+    + 'but these were already in the file. Keep one entry for each pair and remove the others with Delete.</div>'
+    + '<ul style="margin:4px 0 0 18px;padding:0">' + items + '</ul></div>';
+}
+
 async function loadRoutingEntries() {
   var host = document.getElementById('cfg-routing-entries');
   if (!host) return;
@@ -968,9 +1043,10 @@ async function loadRoutingEntries() {
     if (refresh) kept = cfgSnapshotEdits(refresh.removed);
     _cfgRoutingHash = d.content_hash || null;
     var entries = d.entries || [];
-    host.innerHTML = entries.length
-      ? entries.map(function(e, i) { return cfgRoutingEntryBlock(e, i); }).join('')
-      : '<div class="empty-state">No routing entries yet.</div>';
+    host.innerHTML = cfgDuplicateNotice(cfgDuplicatePairs(entries))
+      + (entries.length
+        ? entries.map(function(e, i) { return cfgRoutingEntryBlock(e, i); }).join('')
+        : '<div class="empty-state">No routing entries yet.</div>');
     cfgRestoreEdits(kept);
   } catch(e) {
     host.innerHTML = '<div class="empty-state">Failed to load routing entries</div>';
@@ -1158,7 +1234,7 @@ function cfgAddBlock(sec) {
   var template = (sec.items && sec.items.length) ? sec.items[0].settings || [] : [];
   var blanks = template.map(function(s) {
     var b = {key: s.key, label: s.label, help: s.help, type: s.type, enum: s.enum, range: s.range,
-      secret: s.secret, editable: true, current_value: null};
+      secret: s.secret, required: s.required, editable: true, current_value: null};
     return cfgFieldRow(b);
   }).join('');
   if (!blanks) {
@@ -1289,6 +1365,7 @@ function cfgRunAction(el, event) {
   else if (action === 'create-item') cfgCreateItem(el, catalog);
   else if (action === 'reset-persona') cfgResetPersona(el, id);
   else if (action === 'clear-secret') cfgClearSecret(el, el.getAttribute('data-clear-for') || '');
+  else if (action === 'toggle-secret') cfgToggleSecret(el);
   else if (action === 'save-routing') cfgSaveRoutingEntry(el, index);
   else if (action === 'delete-routing') cfgDeleteRoutingEntry(el, index);
   else if (action === 'create-routing') cfgCreateRoutingEntry(el);
