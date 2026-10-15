@@ -3,8 +3,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from performer.workflows.untrusted import PATH_LIMIT, echo
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+
+def _location(path: object, line: object) -> str:
+    """``path:line`` rendered inertly and on one line (spec 178).
+
+    A path is untrusted: git allows newlines and markup in file names. It is
+    never placed in a code span (a backtick in the name would close it), so it
+    goes through the same inert escape as any other thread text.
+    """
+    if not path:
+        return ""
+    where = echo(str(path), PATH_LIMIT)
+    return f"{where}:{line}" if line else where
 
 
 def _source_identity(item: dict) -> str:
@@ -60,16 +75,14 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
                     if item.get("id"):
                         body = f"[{item['id']}] {body}"
             if body:
-                path, line = item.get("file") or item.get("path"), item.get("line")
-                location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+                location = _location(item.get("file") or item.get("path"), item.get("line"))
                 parts.append(f"- {location} — {body}" if location else f"- {body}")
             inline = item.get("comments", [])
             if isinstance(inline, list):
                 for comment in inline:
                     if not isinstance(comment, dict) or not comment.get("body"):
                         continue
-                    path, line = comment.get("path"), comment.get("line")
-                    location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+                    location = _location(comment.get("path"), comment.get("line"))
                     identity = f" ({_source_identity(comment)})" if any(comment.get(k) for k in ("author_login", "author", "source", "stage", "raiser")) else ""
                     parts.append(f"  - {location} — {comment['body']}{identity}" if location else f"  - {comment['body']}{identity}")
         elif isinstance(item, str):

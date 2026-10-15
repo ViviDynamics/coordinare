@@ -102,3 +102,43 @@ def test_the_cap_counts_output_characters_and_never_splits_an_escape_pair():
     body = out[: -len("...")]
     assert len(body) <= ECHO_LIMIT
     assert len(body) % 2 == 0, "whole escape pairs only"
+
+
+def test_an_entity_encoded_mention_is_inert_because_the_ampersand_is_escaped():
+    out = echo("&#64;acme/team")
+    assert out == "\\&#\u200b64;acme/team", "GitHub renders the escape as the literal text, never as an @"
+
+
+def test_bare_urls_and_www_hosts_do_not_autolink():
+    assert echo("https://evil.example/x") == "https:\u200b//evil.example/x"
+    assert echo("see http://evil.example") == "see http:\u200b//evil.example"
+    assert echo("www.evil.example") == "www\u200b.evil.example"
+    assert echo("WWW.Evil.example") == "WWW\u200b.Evil.example"
+
+
+def test_emphasis_and_strikethrough_are_escaped():
+    assert echo("*bold* _it_ ~s~") == "\\*bold\\* \\_it\\_ \\~s\\~"
+
+
+# Pinned from GitHub's own renderer: `gh api markdown -f mode=gfm -f context=ViviDynamics/coordinare`
+# was run on each echo() output below (no content is posted). None of these rendered an
+# <a>, <img>, user-mention or team-mention element; see specs/178-closer-untrusted-threads/spec.md.
+PINNED_INERT_SHAPES = {
+    "@acme/team": "@\u200bacme/team",
+    "ping @alice": "ping @\u200balice",
+    "&#64;acme/team": "\\&#\u200b64;acme/team",
+    "see #64": "see #\u200b64",
+    "[docs](https://evil.example)": "\\[docs\\](https:\u200b//evil.example)",
+    "![pixel](https://evil.example/p.png)": "\\!\\[pixel\\](https:\u200b//evil.example/p.png)",
+    "<img src=x onerror=y>": "\\<img src=x onerror=y\\>",
+    "https://evil.example/x": "https:\u200b//evil.example/x",
+    "www.evil.example": "www\u200b.evil.example",
+    "<https://evil.example>": "\\<https:\u200b//evil.example\\>",
+    "`unclosed code": "\\`unclosed code",
+    "*emphasis* _under_ ~strike~": "\\*emphasis\\* \\_under\\_ \\~strike\\~",
+}
+
+
+def test_the_pinned_inert_shapes_are_stable():
+    for raw, expected in PINNED_INERT_SHAPES.items():
+        assert echo(raw) == expected, raw

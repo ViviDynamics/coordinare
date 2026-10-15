@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import secrets
 
-__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "echo", "fence", "new_nonce", "untrusted_rule"]
+__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "PATH_LIMIT", "echo", "fence", "new_nonce", "untrusted_rule"]
 
 BLOCK_TAG = "untrusted_data"
 NONCE_BYTES = 16
@@ -25,8 +25,13 @@ _ELLIPSIS = "..."
 _NEUTRAL_TAG = "untrusted-data"
 _LABEL_CHARS = str.maketrans({'"': "'", "<": "(", ">": ")"})
 _WHITESPACE = re.compile(r"\s+")
+PATH_LIMIT = 200
 _ZERO_WIDTH_SPACE = "​"
-_MARKDOWN_SPECIAL = frozenset("\\[]!<>`")
+_MARKDOWN_SPECIAL = frozenset("\\[]!<>`&*_~")
+#: A backslash does not stop issue cross-references (``\#64`` still links), but a zero-width
+#: space after ``#`` does, and ``@`` mentions are broken the same way.
+_ZWSP_AFTER = frozenset("@#")
+_WWW = re.compile(r"www\.", re.IGNORECASE)
 
 
 def new_nonce() -> str:
@@ -59,27 +64,39 @@ def untrusted_rule(nonce: str) -> str:
 def _inert(ch: str) -> str:
     """One character made inert in GitHub markdown.
 
-    ``@`` gets a zero-width space after it, so no mention is parsed. Brackets,
-    ``!`` (images), ``<`` and backticks get a backslash, which GitHub renders
-    as the bare character, so no link, image, tag or code span can open. The
-    backslash itself is escaped so an attacker cannot pre-escape the rest.
+    ``@`` and ``#`` get a zero-width space after them, so no mention or issue
+    reference is parsed. Every other special character gets a backslash, which
+    GitHub renders as the bare character: brackets, ``!`` (images), ``<``,
+    backticks, ``&`` (entities such as ``&#64;`` would decode to ``@``), and
+    emphasis ``*``, ``_``, ``~``. The backslash itself is escaped so an attacker
+    cannot pre-escape the rest.
     """
-    if ch == "@":
-        return "@" + _ZERO_WIDTH_SPACE
+    if ch in _ZWSP_AFTER:
+        return ch + _ZERO_WIDTH_SPACE
     if ch in _MARKDOWN_SPECIAL:
         return "\\" + ch
     return ch
 
 
-def echo(text: str, limit: int = ECHO_LIMIT) -> str:
-    """A short, inert slice of untrusted text for a posted review.
+def _break_autolinks(flat: str) -> str:
+    """Stop bare ``http://``, ``https://`` and ``www.`` links from autolinking.
 
-    Whitespace is flattened, then markup is neutralised, then the output is
-    capped: ``limit`` counts characters of the output, so the attacker controls
-    at most ``limit`` inert characters (plus the ellipsis). The cap never splits
-    an escape pair.
+    A zero-width space goes inside ``://`` and after ``www.``, so the autolink
+    extension finds no scheme or domain to link.
     """
-    flat = _WHITESPACE.sub(" ", str(text or "")).strip()
+    flat = flat.replace("://", ":" + _ZERO_WIDTH_SPACE + "//")
+    return _WWW.sub(lambda m: m.group(0)[:-1] + _ZERO_WIDTH_SPACE + ".", flat)
+
+
+def echo(text: str, limit: int = ECHO_LIMIT) -> str:
+    """A short, inert slice of untrusted text for a posted review or a prompt.
+
+    Whitespace is flattened, autolinks are broken, then markup is neutralised,
+    then the output is capped: ``limit`` counts characters of the output, so
+    the attacker controls at most ``limit`` inert characters (plus the
+    ellipsis). The cap never splits an escape pair.
+    """
+    flat = _break_autolinks(_WHITESPACE.sub(" ", str(text or "")).strip())
     out: list[str] = []
     size = 0
     for ch in flat:

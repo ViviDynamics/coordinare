@@ -137,7 +137,7 @@ class CloserWorkflow:
             head_sha=str(getattr(score, "head_sha", "") or "") or None,
             threads_read=len(threads), pages_read=pages, classifications=classifications,
             # the gate matched raw quotes; the record carries inert copies only (spec 178)
-            judgements=[j.model_copy(update={"quote": echo(j.quote)}) for j in outcome.judgements],
+            judgements=[j.model_copy(update={"quote": echo(j.quote), "reason": echo(j.reason)}) for j in outcome.judgements],
             open_threads=open_thread_entries(open_threads),
             verdict=outcome.verdict,
         )

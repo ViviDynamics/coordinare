@@ -9,12 +9,10 @@ Thread text is written by anyone who can comment on the PR, so every part of it
 """
 from __future__ import annotations
 
-from performer.workflows.closer.models import Thread
+from performer.workflows.closer.models import Thread, visible_body
 from performer.workflows.untrusted import fence
 
-__all__ = ["BODY_LIMIT", "JUDGE_PERSONA", "render_threads"]
-
-BODY_LIMIT = 2000
+__all__ = ["JUDGE_PERSONA", "render_threads"]
 
 JUDGE_PERSONA = """You are closing out a pull request that has already been reviewed. The substantive review is finished. Your only question, for each thread below, is whether the reply addresses what the thread asked for.
 
@@ -49,6 +47,6 @@ def render_threads(threads: list[Thread], nonce: str) -> str:
         where = f"{t.path}:{t.line}" if t.path else "(no file anchor)"
         lines = [f"### thread {t.id}", fence("file location", where, nonce)]
         for c in t.comments:
-            lines.append(fence(f"comment by {c.author or 'unknown'} at {c.created_at}", c.body.strip()[:BODY_LIMIT], nonce))
+            lines.append(fence(f"comment by {c.author or 'unknown'} at {c.created_at}", visible_body(c.body), nonce))
         parts.append("\n".join(lines))
     return "\n\n".join(parts) if parts else "(none)"

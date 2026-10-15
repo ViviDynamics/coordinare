@@ -11,7 +11,7 @@ import structlog
 
 from performer.workflows.closer.models import Thread
 from performer.workflows.reviewer.post import PostOutcome, Poster, pr_number_from_url
-from performer.workflows.untrusted import echo
+from performer.workflows.untrusted import PATH_LIMIT, echo
 
 log = structlog.get_logger(__name__)
 
@@ -35,7 +35,7 @@ def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thr
     if open_threads:
         body += f"{len(open_threads)} review thread(s) still open:\n"
         for t in open_threads:
-            where = f"`{t.path}:{t.line}`" if t.path else "(no file anchor)"
+            where = f"{echo(t.path, PATH_LIMIT)}:{t.line}" if t.path else "(no file anchor)"  # spec 178: an inert, flat path, never a code span
             first = echo(t.comments[0].body) if t.comments else ""  # spec 178: a capped echo of thread text
             body += f"- {where}: {first}\n"
     else:

@@ -14,6 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 BODY_MAX = 4000
+#: The judge sees at most this much of a comment; the gate matches quotes only inside it (spec 178).
+BODY_LIMIT = 2000
+
+
+def visible_body(body: str) -> str:
+    """The text the judge is shown for one comment, and the only text a quote may match."""
+    return body.strip()[:BODY_LIMIT]
 
 
 class ThreadComment(BaseModel):

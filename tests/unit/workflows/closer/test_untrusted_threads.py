@@ -92,8 +92,8 @@ def test_an_open_thread_excerpt_in_the_posted_review_is_capped():
     open_thread = _thread(long_body)
     _event, body = build_closing_review([], [open_thread], "HDR")
     assert "TAILMARKER" not in body and INJECTION not in body, "nothing past the cap is echoed"
-    excerpt_line = next(line for line in body.splitlines() if line.startswith("- `src/app.py:10`"))
-    assert len(excerpt_line) <= len("- `src/app.py:10`: ") + ECHO_LIMIT + 3
+    excerpt_line = next(line for line in body.splitlines() if line.startswith("- src/app.py:10: "))
+    assert len(excerpt_line) <= len("- src/app.py:10: ") + ECHO_LIMIT + 3
 
 
 # echo guard, resolved quotes: mutation = quote[:200]

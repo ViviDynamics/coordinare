@@ -78,7 +78,7 @@ async def test_a_quote_that_appears_nowhere_in_the_thread_is_discarded():
     j = record.judgements[0]
     assert not j.accepted and j.discard_reason == "quote_not_found"
     assert [t["thread_id"] for t in record.open_threads] == ["t1"]
-    assert "1 review thread(s) still open" in gh.reviews[0]["body"] and "`src/app.py:10`" in gh.reviews[0]["body"]
+    assert "1 review thread(s) still open" in gh.reviews[0]["body"] and "- src/app.py:10: " in gh.reviews[0]["body"]
 
 
 @pytest.mark.asyncio
