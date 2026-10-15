@@ -23,22 +23,32 @@ def _ar(members: list[tuple[str, bytes]]) -> bytes:
     """A minimal ar archive, the format a .deb uses. Built in Python so no ar binary is needed."""
     out = bytearray(b"!<arch>\n")
     for name, data in members:
-        out += f"{name:<16}{0:<12}{0:<6}{0:<6}{644:<8o}{len(data):<10}`\n".encode()
+        out += "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n".format(name, 0, 0, 0, "100644", len(data)).encode()
         out += data
         if len(data) % 2:
             out += b"\n"
     return bytes(out)
 
 
-def _deb(lib_name: str) -> bytes:
-    """A .deb whose data member carries one shared object named *lib_name*."""
+def _targz(members: list[tuple[str, bytes]]) -> bytes:
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        payload = b"fake-so"
-        info = tarfile.TarInfo(f"usr/lib/{lib_name}")
-        info.size = len(payload)
-        tar.addfile(info, io.BytesIO(payload))
-    return _ar([("debian-binary", b"2.0\n"), ("data.tar", buf.getvalue())])
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, payload in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+def _deb(lib_name: str) -> bytes:
+    """A .deb whose data member carries one shared object named *lib_name*.
+
+    Built the way a real deb is: gzip-compressed ``data.tar.gz`` and ``control.tar.gz`` members. dpkg-deb on the Debian
+    image rejects an uncompressed ``data.tar``, and the profile then extracts nothing (CI failure on PR 264).
+    """
+    data = _targz([(f"usr/lib/{lib_name}", b"fake-so")])
+    control = _targz([("control", b"Package: fake\n")])
+    return _ar([("debian-binary", b"2.0\n"), ("control.tar.gz", control), ("data.tar.gz", data)])
 
 
 def _marker_script(marker: Path) -> str:

@@ -366,6 +366,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e ".[dev]"
+          # 234: the provenance lane imports the performer package (materialise, the server models), as the other jobs do.
+          uv pip install -e "agent/performer[dev]"
 
       - name: Verify the verify decision against the built performer image (spec 218)
         env:
