@@ -20,8 +20,9 @@ _SYMPHONY: Callable[[str], str] | None = None
 LOG_LEVELS = frozenset({"info", "warning", "warn", "error", "exception", "critical", "fatal"})
 EARLY_RECORD_LIMIT = 128
 EARLY_BYTE_LIMIT = 1024 * 1024
-_EARLY_RECORDS: deque[str] = deque()
+_EARLY_RECORDS: deque[str] = deque(maxlen=EARLY_RECORD_LIMIT)
 _CAPTURE_LOCK = threading.Lock()
+_CAPTURE_LOCAL = threading.local()
 _ACTIVITY_CAPTURE: ContextVar[bool] = ContextVar("event_store_activity_capture", default=True)
 ERROR_KINDS = frozenset({"error", "failed", "failure", "blocked"})
 
@@ -29,13 +30,19 @@ ERROR_KINDS = frozenset({"error", "failed", "failure", "blocked"})
 def install_event_store(
     store: EventStore | None, resolver: Callable[[str], str] | None = None,
 ) -> None:
-    global _STORE, _SYMPHONY
+    global _STORE, _SYMPHONY, _EARLY_RECORDS
     with _CAPTURE_LOCK:
         _STORE, _SYMPHONY = store, resolver
+        early = _EARLY_RECORDS
+        _EARLY_RECORDS = deque(maxlen=EARLY_RECORD_LIMIT)
+    active = getattr(_CAPTURE_LOCAL, "active", False)
+    _CAPTURE_LOCAL.active = True
+    try:
         if store is not None:
-            for raw in _EARLY_RECORDS:
+            for raw in early:
                 store.emit(json.loads(raw))
-        _EARLY_RECORDS.clear()
+    finally:
+        _CAPTURE_LOCAL.active = active
 
 
 @contextlib.contextmanager
@@ -97,8 +104,16 @@ def event_store_processor(
     _: Any, method: str, event: MutableMapping[str, Any],
 ) -> MutableMapping[str, Any]:
     """Never logs, never mutates the renderer's event, and ignores internal records."""
-    with contextlib.suppress(Exception):
+    if getattr(_CAPTURE_LOCAL, "active", False):
+        return event
+    _CAPTURE_LOCAL.active = True
+    try:
         _capture_log(method, event)
+    except Exception:
+        # Capture is best effort and must never break the normal log renderer.
+        return event
+    finally:
+        _CAPTURE_LOCAL.active = False
     return event
 
 
@@ -121,16 +136,18 @@ def _capture_log(method: str, event: MutableMapping[str, Any]) -> None:
         "message": str(event.get("message") or event.get("error") or kind),
         "data": dict(event),
     }
+    # User conversion may log recursively. It must happen outside the lock,
+    # with the thread-local guard still set, even in a CLI without a store.
+    raw = json.dumps(row, default=str, ensure_ascii=True)
     with _CAPTURE_LOCK:
-        if _STORE is not None:
-            _STORE.emit(row)
-        else:
-            raw = json.dumps(row, default=str, ensure_ascii=True)
-            if len(raw) > EARLY_BYTE_LIMIT:
-                return
-            _EARLY_RECORDS.append(raw)
-            while len(_EARLY_RECORDS) > EARLY_RECORD_LIMIT or sum(map(len, _EARLY_RECORDS)) > EARLY_BYTE_LIMIT:
-                _EARLY_RECORDS.popleft()
+        store = _STORE
+        if store is None:
+            if len(raw) <= EARLY_BYTE_LIMIT:
+                _EARLY_RECORDS.append(raw)
+                while sum(map(len, _EARLY_RECORDS)) > EARLY_BYTE_LIMIT:
+                    _EARLY_RECORDS.popleft()
+            return
+    store.emit(json.loads(raw))
 
 
 def capture_performer_events(

@@ -39,12 +39,77 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT NOT NULL DEFAULT '{}'
 )
 """
+PERFORMER_INDEX = """CREATE UNIQUE INDEX IF NOT EXISTS events_performer_seq
+    ON events (run_id, json_extract(data, '$.transcript_seq'))
+    WHERE source='performer' AND run_id != ''
+    AND json_type(data, '$.transcript_seq')='integer'"""
+PERFORMER_REPLAY_GUARD = """CREATE TRIGGER IF NOT EXISTS events_performer_replay
+    BEFORE INSERT ON events
+    WHEN new.source='performer' AND new.run_id != ''
+        AND json_type(new.data, '$.transcript_seq')='integer'
+        AND EXISTS (SELECT 1 FROM events WHERE source='performer'
+            AND run_id=new.run_id AND json_type(data, '$.transcript_seq')='integer'
+            AND json_extract(data, '$.transcript_seq')=json_extract(new.data, '$.transcript_seq'))
+    BEGIN SELECT RAISE(IGNORE); END"""
 FTS_TRIGGERS = (
     """CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
     INSERT INTO events_fts(rowid, message) VALUES (new.id, new.message); END""",
     """CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
     INSERT INTO events_fts(events_fts, rowid, message) VALUES ('delete', old.id, old.message); END""",
 )
+
+
+def _prepare_performer_migration(db: sqlite3.Connection) -> None:
+    db.execute("""CREATE TABLE IF NOT EXISTS event_migration (
+        id INTEGER PRIMARY KEY CHECK (id=1), last_id INTEGER NOT NULL,
+        end_id INTEGER NOT NULL)""")
+    exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='events_performer_seq'").fetchone()
+    if exists:
+        return
+    end_id = db.execute("SELECT max(id) FROM events").fetchone()[0]
+    if end_id is None:
+        db.execute(PERFORMER_INDEX)
+        return
+    db.execute("INSERT OR IGNORE INTO event_migration VALUES (1,0,?)", (end_id,))
+    db.execute("""CREATE TABLE IF NOT EXISTS event_migration_seen (
+        run_id TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (run_id, seq))""")
+    db.execute(PERFORMER_REPLAY_GUARD)
+
+
+def migrate_performer_batch(db: sqlite3.Connection, batch_size: int) -> tuple[int, bool]:
+    """Scan at most one batch of legacy ids, preserving progress across restarts."""
+    progress = db.execute("SELECT last_id,end_id FROM event_migration WHERE id=1").fetchone()
+    if progress is None:
+        return 0, False
+    with db:
+        rows = db.execute(
+            """SELECT id,source,run_id,json_type(data,'$.transcript_seq'),
+                json_extract(data,'$.transcript_seq') FROM events
+                WHERE id > ? AND id <= ? ORDER BY id LIMIT ?""",
+            (*progress, batch_size),
+        ).fetchall()
+        removed = _remove_replays(db, rows)
+        last_id = rows[-1][0] if rows else progress[1]
+        db.execute("UPDATE event_migration SET last_id=? WHERE id=1", (last_id,))
+        active = last_id < progress[1]
+        if not active:
+            # The full index build is maintenance work too, never startup work.
+            db.execute(PERFORMER_INDEX)
+            db.execute("DROP TRIGGER events_performer_replay")
+            db.execute("DROP TABLE event_migration_seen")
+            db.execute("DELETE FROM event_migration WHERE id=1")
+    return removed, active
+
+
+def _remove_replays(db: sqlite3.Connection, rows: list[Any]) -> int:
+    duplicates = []
+    for row_id, source, run_id, seq_type, seq in rows:
+        if source == "performer" and run_id and seq_type == "integer":
+            inserted = db.execute("INSERT OR IGNORE INTO event_migration_seen VALUES (?,?)", (run_id, seq))
+            if not inserted.rowcount:
+                duplicates.append((row_id,))
+    db.executemany("DELETE FROM events WHERE id=?", duplicates)
+    return len(duplicates)
 
 
 def _create_fts(db: sqlite3.Connection) -> bool:
@@ -85,17 +150,7 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
             ("kind_ts", "kind, ts"),
         ):
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
-        if version < SCHEMA_VERSION:
-            # Earlier databases can already contain replayed performer rows.
-            db.execute("""DELETE FROM events WHERE source='performer' AND run_id != ''
-                AND json_type(data, '$.transcript_seq')='integer' AND id NOT IN (
-                    SELECT min(id) FROM events WHERE source='performer' AND run_id != ''
-                    AND json_type(data, '$.transcript_seq')='integer'
-                    GROUP BY run_id, json_extract(data, '$.transcript_seq'))""")
-        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS events_performer_seq
-            ON events (run_id, json_extract(data, '$.transcript_seq'))
-            WHERE source='performer' AND run_id != ''
-            AND json_type(data, '$.transcript_seq')='integer'""")
+        _prepare_performer_migration(db)
         fts = _create_fts(db) if enable_fts else False
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return fts

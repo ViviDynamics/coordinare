@@ -27,6 +27,7 @@ from coordinare.services.event_store_db import (
     CREATE_TABLE,
     VACUUM_PAGES,
     create_schema,
+    migrate_performer_batch,
     prune_batch,
 )
 from coordinare.services.event_store_settings import EventStoreConfig
@@ -225,7 +226,7 @@ async def test_performer_feed_has_one_persistent_source_and_restart_identity(tmp
 @pytest.mark.asyncio
 async def test_startup_logs_are_bounded_snapshots_and_flushed(tmp_path: Path, monkeypatch: Any) -> None:
     install_event_store(None)
-    monkeypatch.setattr(event_capture, "_EARLY_RECORDS", deque())
+    monkeypatch.setattr(event_capture, "_EARLY_RECORDS", deque(maxlen=event_capture.EARLY_RECORD_LIMIT))
     total = BUFFER_RECORDS * 2
     for index in range(total):
         event_store_processor(None, "info", {"event": "startup.progress", "index": index})
@@ -279,6 +280,8 @@ def test_upgrade_removes_old_performer_replays_before_unique_index(tmp_path: Pat
             )
         db.commit()
         create_schema(db)
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 3
+        assert migrate_performer_batch(db, BUFFER_RECORDS) == (1, False)
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 2
         db.execute(
             "INSERT OR IGNORE INTO events (ts,source,run_id,data) VALUES (?,?,?,?)",

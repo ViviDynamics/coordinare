@@ -23,9 +23,12 @@ message and JSON data. UTC timestamps plus increasing ids give stable ordering. 
 cover ts, (symphony, ts), (run_id, ts), (kind, ts). PRAGMA user_version tracks
 independent migrations, without changing the state snapshot schema. Version 1 defines
 the base table; version 2 adds indexes and the optional full text index. Version 3 adds
-a unique performer index on run_id and the integer transcript_seq in JSON data, after
-removing any existing replays. Inserts use INSERT OR IGNORE. FTS5 indexes message when
-supported; otherwise literal LIKE search is used.
+a unique performer index on run_id and the integer transcript_seq in JSON data. For
+existing databases, duplicate cleanup scans at most one primary-key batch per maintenance
+turn, with its cursor and seen identities persisted across restarts. Normal writes run
+between maintenance turns. A temporary insert trigger rejects replays until cleanup
+finishes and maintenance builds the unique index. Startup never deletes legacy rows.
+Inserts use INSERT OR IGNORE. FTS5 indexes message when supported; otherwise literal LIKE search is used.
 
 Use DELETE rollback journaling, synchronous NORMAL and a busy timeout. WAL is unsafe on
 the reference NFS state volume. A single daemon must own the volume. Prefer local disk
@@ -37,9 +40,9 @@ Existing versioned databases are migrated transactionally.
 Capture accepted activity entries at the shared ActivityLog append funnel, independent
 of its SSE sink. Operator actions already share that path. Attribute symphony from
 logging context or the daemon's card ownership map when available. Capture performer
-payloads at the common monitor activity intake even without a dashboard log. Keep full
-tool arguments, progress, errors and cost payloads, with run_id and transcript_seq in
-data. Deduplicate cumulative performer batches with persistent (run_id, transcript_seq)
+payloads at the common monitor activity intake even without a dashboard log. Keep
+tool arguments, progress, errors and cost payloads within the text bounds below, with
+run_id and transcript_seq in data. Deduplicate cumulative performer batches with persistent (run_id, transcript_seq)
 identities. The performer row is the only persistent copy of the corresponding live feed
 entry. Distinct sequence numbers remain distinct even when timestamps and payloads
 match. This does not add performer buffering or replay. Events never received from a
@@ -48,11 +51,19 @@ disconnected performer cannot be recovered here.
 One non-blocking structlog processor captures INFO and above after context merge and
 exception formatting. It excludes event store records and never logs its own failures.
 Bootstrap and env cache records use this common logging funnel. A bounded startup buffer
-retains up to 128 early log records within 1 MiB and flushes them into the store when
-installed. Every column passes through redact_state_value and sensitive-key redaction on
-the writer before insertion. Unsupported objects become strings before redaction.
+is a ring retaining the newest 128 early log records within 1 MiB and flushes them
+into the store when installed. CLI processes that never install a store retain only
+this bounded ring until exit; new records evict the oldest. Uninstalling clears it.
+Serialization and store emission happen outside the capture lock, including replay.
+A thread-local guard skips nested capture when a user conversion logs. Every column
+passes through redact_state_value and sensitive-key redaction on the writer before
+insertion. Unsupported objects become strings before redaction.
 Oversized rows are rejected before redaction rather than retaining unbounded producer
-payloads in the queue. The byte budget includes foreign thread callbacks and batches
+payloads in the queue. Before redaction, every string (including message, nested data
+values and keys) is clipped to 16 Ki characters plus a 1 Ki character overlap margin.
+Redaction sees the margin so credential patterns crossing the retained boundary can
+match, then output is clipped to 16 Ki characters. The writer yields the GIL after
+each redacted row. The byte budget includes foreign thread callbacks and batches
 being written, and is configurable with event_store.queue_bytes.
 
 ## Retention and health
@@ -70,7 +81,10 @@ last_error. The writer retries failures six times with exponential backoff bound
 half a second. Error categories are exposed without exception text. The existing System
 health panel renders these in one line, without filesystem work on the loop. Drops and
 pruned counts cover the current daemon process; row and size statistics are refreshed
-from disk. Storage failures count drops and appear on the health line.
+from disk. A post-commit stats failure appears on the health line without retrying
+the committed insert or counting it as dropped. Recovery recounts from disk rather
+than applying deltas to stale totals. Storage failures count drops and appear on the
+health line.
 
 ## Query contract
 

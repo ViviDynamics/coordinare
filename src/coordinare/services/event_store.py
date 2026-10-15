@@ -10,8 +10,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from coordinare.lib.redaction import redact_mapping, redact_state_value
-from coordinare.services.event_store_db import COLUMNS, create_schema, disk_stats, prune_batch
+from coordinare.lib.redaction import MAX_STATE_DEPTH, redact_mapping, redact_state_value
+from coordinare.services.event_store_db import (
+    COLUMNS,
+    create_schema,
+    disk_stats,
+    migrate_performer_batch,
+    prune_batch,
+)
 from coordinare.services.event_store_query import (
     DEFAULT_LIMIT,
     EventFilters,
@@ -35,14 +41,34 @@ MAINTENANCE_SECONDS = 30.0
 MAINTENANCE_YIELD_SECONDS = 0.01
 SHUTDOWN_SECONDS = 5.0
 MAX_EVENT_BYTES = 256 * 1024
+MAX_TEXT_CHARS = 16 * 1024
+REDACTION_OVERLAP_CHARS = 1024
+REDACTION_YIELD_ROWS = 1
+DEPTH_MARKER = "[REDACTED: value nested too deeply]"
 T = TypeVar("T")
+
+
+def _clip_strings(value: Any, limit: int, depth: int = 0) -> Any:
+    """Bound each regex input, including nested data and mapping keys."""
+    if isinstance(value, str):
+        return value[:limit]
+    if depth >= MAX_STATE_DEPTH:
+        return DEPTH_MARKER
+    if isinstance(value, dict):
+        return {
+            key[:limit]: _clip_strings(item, limit, depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_clip_strings(item, limit, depth + 1) for item in value]
+    return value
 
 
 def _safe_row(raw: str) -> dict[str, Any]:
     # Only the writer transforms the immutable producer snapshot. No raw value
     # is passed to SQLite, including its journal and full text index.
-    plain = json.loads(raw)
-    safe = redact_mapping(redact_state_value(plain))
+    plain = _clip_strings(json.loads(raw), MAX_TEXT_CHARS + REDACTION_OVERLAP_CHARS)
+    safe = _clip_strings(redact_mapping(redact_state_value(plain)), MAX_TEXT_CHARS)
     row = {column: str(safe.get(column) or "") for column in COLUMNS}
     row["ts"] = utc_timestamp(str(safe["ts"])) if safe.get("ts") else datetime.now(UTC).isoformat()
     row["level"] = str(safe.get("level") or "info").lower()
@@ -74,6 +100,7 @@ class EventStore:
         self._outstanding_bytes = 0
         self._writer_state = "starting"
         self._last_error: str | None = None
+        self._stats_error: str | None = None
         self._prune_batch_size = max(prune_batch_size, 1)
         self._enable_fts = enable_fts
         self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=self._capacity)
@@ -84,6 +111,7 @@ class EventStore:
         self._outstanding = 0
         self._dropped = 0
         self._pruned = 0
+        self._migration_active = False
         self._accepting = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._owner = threading.get_ident()
@@ -161,15 +189,30 @@ class EventStore:
             db.close()
             raise
         self._db = db
-        self._refresh_stats()
+        self._update_stats()
 
     def _refresh_stats(self, delta: int | None = None) -> None:
         if self._db is not None:
             rows = self._stats["rows"] + delta if delta is not None else None
             self._stats = disk_stats(self._db, self.path, rows)
 
+    def _update_stats(self, delta: int | None = None) -> None:
+        # A committed write must never be retried because health collection
+        # failed. Recount on recovery because cached deltas may now be stale.
+        try:
+            self._refresh_stats(None if self._stats_error else delta)
+        except Exception as exc:
+            self._stats_error = type(exc).__name__
+            self._record_error(exc)
+        else:
+            self._stats_error = None
+
     def _write_batch(self, rows: list[str]) -> None:
-        safe_rows = [_safe_row(raw) for raw in rows]
+        safe_rows = []
+        for index, raw in enumerate(rows, start=1):
+            safe_rows.append(_safe_row(raw))
+            if index % REDACTION_YIELD_ROWS == 0:
+                time.sleep(0)
         self._initialize()
         if self._db is None:
             return
@@ -178,7 +221,7 @@ class EventStore:
                 "INSERT OR IGNORE INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 [tuple(row[column] for column in COLUMNS) for row in safe_rows],
             )
-        self._refresh_stats(inserted.rowcount)
+        self._update_stats(inserted.rowcount)
 
     async def start(self) -> None:
         if self._task is not None:
@@ -208,7 +251,8 @@ class EventStore:
                         )
                 if self._accepting and time.monotonic() >= next_prune:
                     removed = await self.prune()
-                    next_prune = time.monotonic() + (0 if removed else MAINTENANCE_SECONDS)
+                    interval = MAINTENANCE_YIELD_SECONDS if removed or self._migration_active else MAINTENANCE_SECONDS
+                    next_prune = time.monotonic() + interval
                 await asyncio.sleep(0)
         finally:
             with contextlib.suppress(Exception):
@@ -245,8 +289,8 @@ class EventStore:
                         delay = min(delay * RETRY_BACKOFF, RETRY_MAX_SECONDS)
                 else:
                     failed = False
-                    self._writer_state = "idle"
-                    self._last_error = None
+                    self._writer_state = "failed" if self._stats_error else "idle"
+                    self._last_error = self._stats_error
                     break
         finally:
             self._finish(len(rows), sum(map(len, rows)), failed=failed)
@@ -257,10 +301,11 @@ class EventStore:
         self._initialize()
         if self._db is None:
             return 0
+        migrated, self._migration_active = migrate_performer_batch(self._db, self._prune_batch_size)
         removed = prune_batch(self._db, self.path, self.config, self._prune_batch_size)
         self._pruned += removed
-        self._refresh_stats(-removed)
-        return removed
+        self._update_stats(-removed - migrated)
+        return removed + migrated
 
     async def prune(self) -> int:
         try:
