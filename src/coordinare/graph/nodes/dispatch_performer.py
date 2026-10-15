@@ -2401,21 +2401,30 @@ def _performer_mounts(state: CoordinareState) -> tuple[Path, ...]:
     return loaded_performer_mounts(state.get("config"))
 
 
+def env_cache_current(state: CoordinareState, cache_state: EnvCacheState) -> bool:
+    """266: the env-cache gate's predicate. A consumer dispatch runs only while this holds.
+
+    The gate (``_env_cache_hold``) and the dashboard's hold reason both call it, so a card is named
+    as held exactly when the gate would hold it.
+    """
+    return bool(
+        cache_state.cache_dir_ready
+        and bool(cache_state.last_bootstrap_succeeded)
+        and not cache_state.bootstrap_in_flight
+        and _cache_dir_has_activate(
+            cache_state.cache_dir,
+            performer_mounts=_performer_mounts(state),
+            expected_activate=cache_state.rendered_activate_sh,
+        )
+        and cache_state.last_seen_spec_sha is not None
+        and cache_state.readme_sha == cache_state.last_seen_spec_sha,
+    )
+
+
 async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
     """077: holds consumer dispatch until the env cache is CURRENT+VERIFIED."""
     if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
-        _current_and_verified = (
-            _ec_state_for_sym.cache_dir_ready
-            and bool(_ec_state_for_sym.last_bootstrap_succeeded)
-            and not _ec_state_for_sym.bootstrap_in_flight
-            and _cache_dir_has_activate(
-                _ec_state_for_sym.cache_dir,
-                performer_mounts=_performer_mounts(state),
-                expected_activate=_ec_state_for_sym.rendered_activate_sh,
-            )
-            and _ec_state_for_sym.last_seen_spec_sha is not None
-            and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
-        )
+        _current_and_verified = env_cache_current(state, _ec_state_for_sym)
         if not _current_and_verified:
             logger.info(
                 "dispatch_performer.env_cache_not_current",

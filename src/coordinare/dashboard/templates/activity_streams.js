@@ -10,7 +10,10 @@ var AF_LABELS = {
   // 429: an observer verdict's chip. The verb itself is in the entry text.
   observer_verdict: 'OBSERVER',
   // 178: a raw line from the backend gets its own chip, distinct from the agent's AGENT chip.
-  output: 'OUTPUT'
+  output: 'OUTPUT',
+  // 266: the env bootstrap's events. They name the symphony, not a card.
+  env_bootstrap_dispatched: 'BOOTSTRAP', env_bootstrap_failed: 'BOOTSTRAP', env_bootstrap_retry: 'BOOTSTRAP',
+  env_bootstrap_budget_reset: 'BOOTSTRAP', env_bootstrap_ready: 'BOOTSTRAP', env_bootstrap_exhausted: 'BOOTSTRAP'
 };
 // Own properties only: a bare lookup would answer for "constructor" with Object's method.
 function afOwn(map, key) {
@@ -30,14 +33,22 @@ var AF_SUMMARIES = {
   // 429: the verdict verb and reason are in the entry text itself.
   observer_verdict: 'Observer reported a verdict.',
   // 145: the entry text says which control the operator used.
-  operator_action: 'An operator took an action.'
+  operator_action: 'An operator took an action.',
+  env_bootstrap_dispatched: 'A bootstrap run started for a symphony environment.',
+  env_bootstrap_failed: 'An environment bootstrap run failed.',
+  env_bootstrap_retry: 'The environment bootstrap will retry.',
+  env_bootstrap_budget_reset: 'The environment bootstrap budget was reset.',
+  env_bootstrap_ready: 'The symphony environment is ready.',
+  env_bootstrap_exhausted: 'The environment bootstrap budget is used up.'
 };
 // 148: one glyph per lifecycle kind, so a lifecycle row is recognisable at a
 // glance without the chip. Decorative: the label beside it says the same thing.
 var AF_ICONS = {
   stage_change: '>', workflow_step: '#', feedback: '<', blocked: '!', stuck: '!', stall: '!',
   error: '!', recovered: '+', completed: '+', operator_action: '*', observer_verdict: '?',
-  quiet: '~', stream_truncated: '~'
+  quiet: '~', stream_truncated: '~',
+  env_bootstrap_dispatched: '>', env_bootstrap_failed: '!', env_bootstrap_retry: '~',
+  env_bootstrap_budget_reset: '+', env_bootstrap_ready: '+', env_bootstrap_exhausted: '!'
 };
 function afSummary(e) { return afOwn(AF_SUMMARIES, e.activity_type) || 'Activity reported.'; }
 function afIcon(type) { return afOwn(AF_ICONS, type) || '*'; }

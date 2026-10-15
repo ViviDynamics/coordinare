@@ -25,6 +25,7 @@ from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
+from coordinare.services.bootstrap_status import symphony_view
 from coordinare.services.merge_review_gate import merge_review_view
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
@@ -146,6 +147,22 @@ def _as_list(value: object) -> list[Any]:
 def _env_bootstrap_failed(state: object) -> bool:
     """151: a symphony's env cache has given up bootstrapping, or its last bootstrap failed."""
     return bool(getattr(state, "bootstrap_exhausted", False)) or getattr(state, "last_bootstrap_succeeded", None) is False
+
+
+def _env_failures(
+    state: Mapping[str, Any], env_states: Mapping[str, Any], now: datetime,
+) -> tuple[tuple[str, str], ...]:
+    """266: each failing symphony with the reason its bootstrap gives.
+
+    The health row is shown under every scope, so it carries the words of a failure and not which symphony failed.
+    """
+    failures: list[tuple[str, str]] = []
+    for name in sorted(env_states):
+        if not _env_bootstrap_failed(env_states[name]):
+            continue
+        reason = symphony_view(state, name, configured=True, now=now)["reason"]
+        failures.append((name, str(reason or "the reason was not recorded")))
+    return tuple(failures)
 
 
 def _disk_free_fraction(config: object) -> float | None:
@@ -534,6 +551,7 @@ class DashboardStore:
             disk_free_fraction=_disk_free_fraction(config),
             env_symphonies=len(env_states),
             env_failed=tuple(sorted(name for name, state in env_states.items() if _env_bootstrap_failed(state))),
+            env_failures=_env_failures(daemon.state, env_states, datetime.now(UTC)),
             env_ready=sum(1 for state in env_states.values() if getattr(state, "last_bootstrap_succeeded", None) is True),
         )
         return build_system_health(SYSTEM_HEALTH, inputs)
@@ -1232,6 +1250,7 @@ class DashboardStore:
             effective = DashboardStore._symphony_effective(sym_cfg, global_cfg)
             runtime_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state else {}
             counts = session_counts(runtime_sessions)
+            configured = getattr(sym_cfg, "env_bootstrap_performer_id", None) is not None
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
@@ -1246,9 +1265,10 @@ class DashboardStore:
                 # 156: the Status column. A disabled symphony is not polled; "paused" is a card
                 # the board paused, counted in cards_paused.
                 "enabled": bool(getattr(sym_cfg, "enabled", True)),
-                "env_status": env_status(
-                    configured=getattr(sym_cfg, "env_bootstrap_performer_id", None) is not None,
-                    cache=cache,
+                "env_status": env_status(configured=configured, cache=cache),
+                # 266: the bootstrap in words (state, attempt, times, reason, running job) and its recent attempts.
+                "env_bootstrap": symphony_view(
+                    daemon.state, sym_name, configured=configured, now=datetime.now(UTC),
                 ),
                 "cards_active": counts["active"],
                 "cards_queued": counts["queued"],

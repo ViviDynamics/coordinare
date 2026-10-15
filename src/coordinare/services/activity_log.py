@@ -89,6 +89,9 @@ class ActivityEntry:
     stream_id: str = ""
     summary: str = ""
     status: str = ""
+    # 266: the symphony an entry belongs to when it has no card (a bootstrap event). The feed
+    # filters on this, so one symphony's bootstrap rows never show under another symphony.
+    symphony: str = ""
     # 133: the performer's own time for the event (ISO 8601), when the event has one. A
     # transcript record is stamped on the performer clock, so this is the time to open a run at.
     event_at: str = ""
@@ -124,6 +127,7 @@ class ActivityEntry:
             "stream_id": self.stream_id,
             "summary": self.summary,
             "status": self.status,
+            "symphony": self.symphony,
             "event_at": self.event_at,
             "transcript_seq": self.transcript_seq,
             "text_length": self.text_length,
@@ -208,6 +212,7 @@ class ActivityLog:
         summary: str = "",
         status: str = "",
         link: EventLink | None = None,
+        symphony: str = "",
     ) -> ActivityEntry | None:
         """Append one entry. Returns None when suppressed as a duplicate."""
         entry = self._append(
@@ -220,7 +225,7 @@ class ActivityLog:
             session_id=session_id,
             performer_id=performer_id,
             is_delta=is_delta, stream_id=stream_id, source_event_id=source_event_id,
-            summary=summary, status=status, link=link,
+            summary=summary, status=status, link=link, symphony=symphony,
         )
         if entry is not None:
             self._fan_out([entry])
@@ -368,6 +373,7 @@ class ActivityLog:
         summary: Any = "",
         status: Any = "",
         link: EventLink | None = None,
+        symphony: Any = "",
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
@@ -402,7 +408,7 @@ class ActivityLog:
         # `timestamp` and `seq` are deliberately NOT in the key: a re-reported
         # event arrives with a new observation time, so including either would
         # disable suppression entirely and make a wedged agent scroll (FR-022).
-        key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}"
+        key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{_clip(symphony, 200)[0]}|{clipped_text}"
         if clipped_summary or status_str:
             key += f"|{clipped_summary}|{status_str}"
         if source_id and (is_delta or kind in ("tool_use", "tool_result")):
@@ -454,7 +460,7 @@ class ActivityLog:
             session_id=sid,
             performer_id=pid,
             is_delta=is_delta, stream_id=stream,
-            summary=clipped_summary, status=status_str, event_at=clipped_event_at,
+            summary=clipped_summary, status=status_str, event_at=clipped_event_at, symphony=_clip(symphony, 200)[0],
             # 211: validated here as well as at the caller. Not part of the dedup key: a re-reported
             # event that now names its record is still the same activity.
             transcript_seq=transcript_seq_or_none(link.transcript_seq),
