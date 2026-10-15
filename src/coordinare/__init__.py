@@ -39,17 +39,21 @@ def configure_logging(log_level: str | None = None, *, structured: bool | None =
     renderer: structlog.types.Processor = (
         structlog.processors.JSONRenderer() if structured_enabled else structlog.dev.ConsoleRenderer()
     )
+    # Bound and cached loggers retain this list. Keep its identity so they
+    # follow reconfiguration and structlog.testing.capture_logs can reach them.
+    processors = structlog.get_config()["processors"]
+    processors[:] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        _redact_processor,
+        event_store_processor,
+        renderer,
+    ]
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.add_log_level,
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            _redact_processor,
-            event_store_processor,
-            renderer,
-        ],
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(level),
         # Route to stderr so the coordinare's log config doesn't contaminate
         # subprocess stdout when coordinare modules are imported by performers

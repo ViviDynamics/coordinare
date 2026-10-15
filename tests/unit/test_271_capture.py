@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 import structlog
+from structlog.testing import capture_logs
 
 from coordinare import configure_logging
 from coordinare.__main__ import _run
@@ -52,6 +53,40 @@ async def test_activity_operator_and_log_funnels(capture_store: EventStore) -> N
     assert {row["kind"] for row in rows} == {"progress", "operator_action", "bootstrap.ready"}
     assert {row["source"] for row in rows} == {"daemon", "operator", "bootstrap"}
     assert all(row["symphony"] == "garden" for row in rows)
+
+
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.asyncio
+async def test_reconfigured_loggers_remain_capturable(
+    capture_store: EventStore, structured: bool,
+) -> None:
+    cached = structlog.get_logger("capture.regression")
+    cached.info("daemon.before_configuration")
+    bound = cached.bind(card_id="card")
+    configure_logging(structured=structured)
+    await capture_store.start()
+    try:
+        cached.info("daemon.after_configuration")
+        with capture_logs() as captured:
+            cached.warning("daemon.capture_cached", detail="retained")
+            bound.error("daemon.capture_bound", detail="retained")
+        assert captured == [
+            {"event": "daemon.capture_cached", "detail": "retained", "log_level": "warning"},
+            {
+                "event": "daemon.capture_bound", "card_id": "card",
+                "detail": "retained", "log_level": "error",
+            },
+        ]
+    finally:
+        await capture_store.close()
+    rows = (await capture_store.query_events())["events"]
+    assert {row["kind"] for row in rows} == {
+        "daemon.before_configuration", "daemon.after_configuration",
+    }
+    install_event_store(None)
+    with capture_logs() as captured_after_close:
+        cached.info("daemon.after_close")
+    assert captured_after_close == [{"event": "daemon.after_close", "log_level": "info"}]
 
 
 @pytest.mark.asyncio
