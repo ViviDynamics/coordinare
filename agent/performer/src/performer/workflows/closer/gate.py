@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from performer.workflows.closer.models import Classification, Judgement, Thread
+from performer.workflows.untrusted import echo
 
 __all__ = ["quote_found", "accept_judgement", "verdict", "to_resolve", "GateOutcome", "run_gate"]
 
@@ -79,7 +80,7 @@ def to_resolve(classifications: list[Classification], judgements: list[Judgement
     seen: set[str] = set()
     for tid, reason in (
         [(c.thread_id, "outdated: the code the thread pointed at has changed") for c in classifications if c.state == "stale"]
-        + [(j.thread_id, f"addressed: {j.quote[:200]}") for j in judgements if j.accepted and j.addressed]
+        + [(j.thread_id, f"addressed: {echo(j.quote)}") for j in judgements if j.accepted and j.addressed]
     ):
         if tid in seen:  # one entry per thread: a thread is resolved once, for one reason
             continue
