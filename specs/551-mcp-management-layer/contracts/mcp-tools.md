@@ -52,10 +52,10 @@ Read-only, idempotent. REST: GET `/api/symphonies`.
 Read-only, idempotent. Param: `name` (str). REST: GET `/api/symphonies/{name}`.
 
 ### upsert_symphony
-Creates or replaces one symphony. Destructive. Param: `name` (str), `spec` (object), optional `bootstrap` (`enum: env, wiki`; when present the server chains POST `/api/symphonies/{name}/env-bootstrap` or `/wiki-init` after the write). REST: PUT `/api/symphonies/{name}` (POST `/api/symphonies` for create), chained bootstrap per above.
+Creates or replaces one symphony. Destructive. Param: `name` (str), `spec` (object), optional `bootstrap` (`enum: env, wiki`; when present the server chains POST `/api/symphonies/{name}/env-bootstrap` or `/wiki-init` after the write). REST: PUT `/api/symphonies/{name}` (POST `/api/symphonies` for create), chained bootstrap per above. Writes carry `If-Match` (257): the tool reads the config version from the GET `/api/symphonies` ETag first and sends it on the PUT or POST. A 409 maps to `conflict` with a recovery hint to re-read via `list_symphonies` or `get_symphony`; the tool does not retry. A 422 (the daemon's start-time or validation check) maps to `validation` with the daemon's reason as `detail`.
 
 ### delete_symphony
-Deletes one symphony. Destructive. Param: `name`. REST: DELETE `/api/symphonies/{name}`.
+Deletes one symphony. Destructive. Param: `name`. REST: DELETE `/api/symphonies/{name}`, sent with the `If-Match` version read as for `upsert_symphony` (257). A 409 maps to `conflict` as above and nothing is deleted.
 
 ### validate_symphony
 Validates a symphony payload without writing. Read-only. Param: `name`, `spec`. REST: POST `/api/symphonies/{name}/validate`.

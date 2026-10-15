@@ -52,6 +52,7 @@ class _SpyClient(DashboardClient):
 
     async def send_json(
         self, method: str, path: str, *, json: Any = None, timeout_seconds: float = 0.0,
+        if_match: str | None = None,
     ) -> ToolResult:
         self.calls.append((method, path))
         return ToolResult(ok=True, data={"path": path})

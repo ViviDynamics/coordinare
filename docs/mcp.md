@@ -133,7 +133,13 @@ static-token (552 FR5).
 
 `upsert_symphony` optionally chains a bootstrap step (`bootstrap: env | wiki`)
 after the write, using the lifecycle budget for the chain and aborting on the
-first failure. Writes that need optimistic concurrency (`update_config`) take a
+first failure. The symphony writes (`upsert_symphony`, `delete_symphony`) read the
+config version from the `ETag` of `GET /api/symphonies` and send it as `If-Match`
+on the write, so the caller does not pass one. A concurrent edit surfaces as a
+`conflict` error whose recovery hint is to re-read with `list_symphonies` or
+`get_symphony`; nothing is written and the tool does not retry. A refusal by the
+daemon's start-time or validation check surfaces as a `validation` error whose
+`detail` is the reason the daemon gave. Writes that need optimistic concurrency (`update_config`) take a
 `base_hash` from the latest `get_config`; a 409 surfaces as a `conflict` error
 whose recovery hint is to re-read. A routing update or delete also takes
 `expected` (`{"backend": ..., "model": ...}`), the entry the write means, so the
