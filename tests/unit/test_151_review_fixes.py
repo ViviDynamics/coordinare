@@ -210,7 +210,7 @@ async def test_real_mode_acloses_the_services_it_built(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(
         "coordinare.bench.runner._build_bench_performer_services",
-        lambda _config: {"assessing": RecordingPerformer(_Svc())},
+        lambda _config, _transcripts=None: {"assessing": RecordingPerformer(_Svc())},
     )
     # Also assert the label sweep backstop fires, scoped to the config's endpoint —
     # aclose() alone cannot see a container still inside wait_ready.
