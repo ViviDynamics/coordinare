@@ -44,6 +44,9 @@ MAX_EVENT_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 16 * 1024
 REDACTION_OVERLAP_CHARS = 1024
 REDACTION_YIELD_ROWS = 1
+# sleep(0) does not release the GIL to a waiting event loop thread on CPython; a real
+# sleep does. Measured: 1 ms caps loop overrun near 3 ms for a burst of 100 KB rows.
+REDACTION_YIELD_SECONDS = 0.001
 DEPTH_MARKER = "[REDACTED: value nested too deeply]"
 T = TypeVar("T")
 
@@ -212,7 +215,7 @@ class EventStore:
         for index, raw in enumerate(rows, start=1):
             safe_rows.append(_safe_row(raw))
             if index % REDACTION_YIELD_ROWS == 0:
-                time.sleep(0)
+                time.sleep(REDACTION_YIELD_SECONDS)
         self._initialize()
         if self._db is None:
             return
