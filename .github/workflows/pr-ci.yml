@@ -300,7 +300,7 @@ jobs:
         # to run as container root with that foreign-owned home directory.
         env:
           HOME: /root
-        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --browser chromium --browser firefox -v
+        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --override-ini="timeout_method=thread" --browser chromium --browser firefox -v
 
   performer:
     timeout-minutes: 10
