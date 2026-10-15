@@ -14,7 +14,7 @@ letting tests reach real git and GitHub. Same pattern as
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -528,7 +528,7 @@ async def intake_path(
     )
 
 
-def closer_feedback_comments(open_threads: list[dict]) -> list[dict]:
+def closer_feedback_comments(open_threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The implementer's feedback for each open thread (spec 178).
 
     The excerpt is already an inert, capped copy (the closer's record never
@@ -536,7 +536,7 @@ def closer_feedback_comments(open_threads: list[dict]) -> list[dict]:
     feedback, so it arrives fenced as untrusted data with the rule stated.
     """
     nonce = new_nonce()
-    comments: list[dict] = []
+    comments: list[dict[str, Any]] = []
     for t in open_threads:
         path, line = str(t.get("path") or ""), int(t.get("line") or 0)
         label = f"review thread at {path}:{line} raised by {t.get('author') or 'unknown'}"
