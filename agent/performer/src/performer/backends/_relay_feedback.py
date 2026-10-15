@@ -3,22 +3,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from performer.workflows.untrusted import PATH_LIMIT, echo
+from performer.workflows.untrusted import PATH_LIMIT
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
 def _location(path: object, line: object) -> str:
-    """``path:line`` rendered inertly and on one line (spec 178).
+    """``path:line`` on one line, capped (spec 178).
 
-    A path is untrusted: git allows newlines and markup in file names. It is
-    never placed in a code span (a backtick in the name would close it), so it
-    goes through the same inert escape as any other thread text.
+    A path is untrusted: git allows newlines in file names, and a newline would
+    start a new line of the prompt. It is flattened and capped, and it is never
+    placed in a code span. It is not markup-escaped: this text goes to the model,
+    not to GitHub's renderer, and escaping would change the file name the model
+    has to match (``synthetic\\_review.py``). The GitHub-facing form is in the
+    closer's posted review, which uses the full inert escape.
     """
     if not path:
         return ""
-    where = echo(str(path), PATH_LIMIT)
+    where = " ".join(str(path).split())[:PATH_LIMIT]
     return f"{where}:{line}" if line else where
 
 

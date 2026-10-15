@@ -29,8 +29,12 @@ posted review and the implementer's relayed feedback.
 - **FR-005** The implementer's feedback is fenced and inert. The closer's
   feedback for an open thread is built from the record's excerpt. It arrives
   fenced as untrusted data with the rule stated. Paths in relayed feedback
-  (`relay_feedback_prompt_section`, for top-level and inline items) render
-  through the same inert escape, on one line, never in a code span.
+  (`relay_feedback_prompt_section`, for top-level and inline items) are
+  flattened onto one line and capped at 200 characters, and never placed in a
+  code span. They are not markup-escaped. The relay is read by the model, not
+  rendered by GitHub, and escaping would change the file name the model has to
+  match (`synthetic\_review.py`). The GitHub-facing escape is in the posted
+  review (FR-007).
 - **FR-006** `echo` makes a posted or relayed excerpt inert (rules below). The
   120-character cap counts output characters and never splits an escape pair.
   A path is capped at 200 characters. An attacker controls at most 120 inert
