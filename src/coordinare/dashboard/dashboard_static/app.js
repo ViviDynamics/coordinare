@@ -1142,9 +1142,6 @@ function afSyncRun(runId) {
   afUpdateFilterOptions();
 }
 
-
-
-
 // 148: the card filter and the kind chips both have to let an entry through.
 // 139: the symphony choice narrows the feed to the cards of that symphony.
 function afInScope(e) {

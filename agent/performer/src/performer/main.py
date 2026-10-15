@@ -1550,6 +1550,8 @@ def _doc_folder(score: Score) -> str:
 # ---------------------------------------------------------------------------
 # Process-level CPU sampler — must be initialised once at startup
 # ---------------------------------------------------------------------------
+# Accessed only from the monitor path (collect_metrics, reached from the job loop). Not thread-safe:
+# do not touch it from a worker thread.
 _cpu_sampler: CpuSampler | None = None
 
 

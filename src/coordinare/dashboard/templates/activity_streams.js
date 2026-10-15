@@ -393,10 +393,25 @@ function afApplyChipState() {
   }
 }
 
-// 237: the client's mirror of the daemon's feed mapping (monitor/activity.py _feed_fields). A tool
-// call is tool_use with its summary, a tool result is tool_result with its outcome, and narration
-// stays progress. The performer page reads a run's events through this, so both views agree.
-var AF_BACKEND_KIND = {progress: 'progress', thinking: 'thinking', cost: 'cost', error: 'error', output: 'progress'};
+// 237: the client's mirror of the daemon's feed mapping (monitor/activity.py _feed_fields). The
+// workflow step test comes first, as on the daemon. A tool call is tool_use with its summary, a
+// tool result is tool_result with its outcome, and everything else maps through AF_BACKEND_KIND.
+// tests/unit/test_237_feed_parity.py checks every case in tests/fixtures/feed_parity_237.json
+// against both sides, and checks AF_STEP_PREFIXES against the daemon's KNOWN_STEP_PREFIXES.
+var AF_BACKEND_KIND = {
+  progress: 'progress', thinking: 'thinking', cost: 'cost', error: 'error', output: 'progress',
+  completed: 'completed', completion: 'completed', blocked: 'blocked', failed: 'error', failure: 'error'
+};
+var AF_STEP_PREFIXES = ['implementer', 'architect', 'assessor', 'qa', 'reviewer', 'security',
+  'documenter', 'closer', 'advocate', 'curator', 'env_bootstrap'];
+var AF_STEP_PATTERN = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/;
+// The daemon's is_step_event: a non-delta progress event whose text is <known role>.<step>.
+function afIsStepEvent(ev) {
+  if (!ev || ev.is_delta || ev.type !== 'progress' || typeof ev.text !== 'string') return false;
+  var text = ev.text.trim();
+  if (!AF_STEP_PATTERN.test(text)) return false;
+  return AF_STEP_PREFIXES.indexOf(text.split('.')[0]) !== -1;
+}
 // "Bash · uv run pytest -q", or the tool's name alone when the call carried no argument.
 function afToolSummary(ev) {
   var name = String(ev.tool || ev.text || 'tool');
@@ -408,7 +423,9 @@ function afEntryFromBackend(ev, runId) {
   var status = String(ev.status || '');
   var kind = 'progress';
   var summary = '';
-  if (type === 'tool_use' && status) {
+  if (afIsStepEvent(ev)) {
+    kind = 'workflow_step';
+  } else if (type === 'tool_use' && status) {
     kind = 'tool_result';
     summary = 'result ' + status;
   } else if (type === 'tool_use') {
