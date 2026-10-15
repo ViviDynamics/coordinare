@@ -225,6 +225,10 @@ class EventStore:
                 "INSERT OR IGNORE INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 [tuple(row[column] for column in COLUMNS) for row in safe_rows],
             )
+        # rowcount excludes unique-index and replay-trigger ignores. Count only
+        # after commit so a retried transaction cannot inflate the counter.
+        with self._lock:
+            self._dropped += len(safe_rows) - inserted.rowcount
         self._update_stats(inserted.rowcount)
 
     async def start(self) -> None:

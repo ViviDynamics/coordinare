@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
     from coordinare.services.event_store_settings import EventStoreConfig
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 1000
 VACUUM_PAGES = 256
 COLUMNS = (
@@ -148,6 +148,10 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
             ("symphony_ts", "symphony, ts"),
             ("run_ts", "run_id, ts"),
             ("kind_ts", "kind, ts"),
+            ("card_ts", "card_id, ts"),
+            ("source_ts", "source, ts"),
+            ("level_ts", "level, ts"),
+            ("stage_ts", "stage, ts"),
         ):
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
         _prepare_performer_migration(db)

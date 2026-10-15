@@ -5,11 +5,10 @@ import binascii
 import contextlib
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-
-from coordinare.services.event_store_db import BUSY_TIMEOUT_MS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +17,17 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 MAX_CURSOR_LENGTH = 512
 EXACT_FILTERS = ("symphony", "card_id", "run_id", "stage", "source", "kind", "level")
+QUERY_TIMEOUT_SECONDS = 0.05
+READ_BUSY_TIMEOUT_MS = 50
+QUERY_PROGRESS_STEPS = 1000
+QUERY_TOO_BROAD_MESSAGE = "query too broad, narrow the filters"
+
+
+class EventQueryTooBroad(sqlite3.OperationalError):
+    """The statement exceeded its read budget and released its transaction."""
+
+    def __init__(self) -> None:
+        super().__init__(QUERY_TOO_BROAD_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -94,6 +104,26 @@ def _text_condition(text: str, *, fts: bool) -> tuple[str, str]:
     return "message LIKE ? ESCAPE '\\'", f"%{escaped}%"
 
 
+def _read_rows(
+    path: Path, filters: EventFilters, cursor: str | None, limit: int,
+) -> list[sqlite3.Row]:
+    deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
+    # mode=ro never creates a database as a side effect of a query.
+    with contextlib.closing(sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=QUERY_TIMEOUT_SECONDS,
+    )) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(f"PRAGMA busy_timeout={READ_BUSY_TIMEOUT_MS}")
+        db.set_progress_handler(lambda: int(time.monotonic() >= deadline), QUERY_PROGRESS_STEPS)
+        db.execute("BEGIN")
+        fts = bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='events_fts'").fetchone())
+        clauses, values = _conditions(filters, cursor, fts=fts)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(limit + 1)
+        statement = " ".join(("SELECT * FROM events", where, "ORDER BY ts DESC, id DESC LIMIT ?"))
+        return db.execute(statement, values).fetchall()
+
+
 def read_events(
     path: Path, filters: EventFilters, cursor: str | None, limit: int,
 ) -> dict[str, Any]:
@@ -103,18 +133,12 @@ def read_events(
     limit = min(limit, MAX_LIMIT)
     if cursor:
         _cursor_values(cursor)
-    # mode=ro never creates a database as a side effect of a query.
-    with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as db:
-        db.row_factory = sqlite3.Row
-        db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
-        db.execute("BEGIN")
-        fts = bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='events_fts'").fetchone())
-        clauses, values = _conditions(filters, cursor, fts=fts)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        values.append(limit + 1)
-        statement = " ".join(("SELECT * FROM events", where, "ORDER BY ts DESC, id DESC LIMIT ?"))
-        rows = db.execute(statement, values).fetchall()
-        db.commit()
+    try:
+        rows = _read_rows(path, filters, cursor, limit)
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT:
+            raise EventQueryTooBroad from exc
+        raise
     items = [{**dict(row), "data": json.loads(row["data"])} for row in rows[:limit]]
     next_cursor = None
     if len(rows) > limit:

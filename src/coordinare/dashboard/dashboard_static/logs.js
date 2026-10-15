@@ -5,8 +5,10 @@ var LOGS_LABELS = {start: 'From', end: 'To', symphony: 'Symphony', card_id: 'Car
   stage: 'Stage', source: 'Source', kind: 'Kind', level: 'Level', text: 'Search'};
 var LOGS_JSON_INDENT = 2;
 var LOGS_MAX_SAFE_INTEGER = 9007199254740991;
+var LOGS_LIVE_DEBOUNCE_MS = 300;
+var LOGS_QUERY_REJECTED_STATUS = 422;
 var _logsPage = {scope: null, filters: {}, cursors: [''], index: 0, next: null,
-  live: false, busy: false, dirty: false, seq: 0};
+  live: false, busy: false, dirty: false, seq: 0, timer: null};
 
 function logsQueryString(filters, cursor) {
   var parts = ['limit=' + LOGS_PAGE_LIMIT];
@@ -21,8 +23,8 @@ function logsLink(path, label) {
   return '<a href="' + esc(path) + '" data-logs-link="' + esc(path) + '">' + esc(label) + '</a>';
 }
 
-function logsRowHtml(row) {
-  var address = row.symphony && row.card_id;
+function logsRowHtml(row, expanded) {
+  var address = cardPageAddressOk(row.symphony, row.card_id);
   var card = address ? logsLink(cardPathFor(row.symphony, row.card_id), row.card_id) : esc(row.card_id || '');
   var run = row.run_id ? (address ? runPathFor(row.symphony, row.card_id, row.run_id) :
     '/runs/' + encodeURIComponent(row.run_id)) : '';
@@ -35,7 +37,7 @@ function logsRowHtml(row) {
     '</td><td>' + esc(row.level || '') + '</td><td>' + esc(row.source || '') + '</td><td>' +
     esc(row.symphony || '') + '</td><td>' + card + '</td><td>' + esc(row.kind || '') +
     '</td><td><div>' + esc(row.message || '') + '</div>' + links +
-    '<details><summary>Data</summary><pre class="logs-data">' +
+    '<details' + (expanded ? ' open' : '') + '><summary>Data</summary><pre class="logs-data">' +
     esc(JSON.stringify(row.data || {}, null, LOGS_JSON_INDENT)) + '</pre></details></td></tr>';
 }
 
@@ -57,10 +59,17 @@ function logsFormHtml() {
 function logsPaint(body) {
   var target = document.getElementById('logs-results');
   if (!target) return;
+  var expanded = {};
+  Array.prototype.forEach.call(target.querySelectorAll('tr[data-event-id]'), function(row) {
+    var details = row.querySelector('details');
+    if (details && details.open) expanded[row.getAttribute('data-event-id')] = true;
+  });
   var rows = body.events || [];
   target.innerHTML = (rows.length ? '<div class="history-table-wrap"><table class="history-table">' +
     '<thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Symphony</th><th>Card</th><th>Kind</th><th>Message</th></tr></thead>' +
-    '<tbody id="logs-rows">' + rows.map(logsRowHtml).join('') + '</tbody></table></div>' : '<p>No events match these filters.</p>') +
+    '<tbody id="logs-rows">' + rows.map(function(row) {
+      return logsRowHtml(row, expanded[String(row.id)]);
+    }).join('') + '</tbody></table></div>' : '<p>No events match these filters.</p>') +
     '<div class="history-pager"><button type="button" data-logs-action="newer"' +
     (_logsPage.index > 0 ? '' : ' disabled') + '>Newer</button>' +
     '<button type="button" data-logs-action="older"' + (body.cursor ? '' : ' disabled') + '>Older</button>' +
@@ -140,11 +149,16 @@ function logsAction(action) {
   loadLogs();
 }
 
-// Coalesce commit bursts, retaining one catchup when a commit arrives during a read.
+// Debounce commit bursts, retaining one catchup when a commit arrives during a read.
 function logsChanged() {
   if (location.pathname !== '/logs' || !_logsPage.live || _logsPage.scope === null) return;
-  if (_logsPage.busy) { _logsPage.dirty = true; return; }
-  logsFirstPage();
+  if (_logsPage.timer !== null) clearTimeout(_logsPage.timer);
+  _logsPage.timer = setTimeout(function() {
+    _logsPage.timer = null;
+    if (location.pathname !== '/logs' || !_logsPage.live || _logsPage.scope === null) return;
+    if (_logsPage.busy) { _logsPage.dirty = true; return; }
+    logsFirstPage();
+  }, LOGS_LIVE_DEBOUNCE_MS);
 }
 
 function loadLogs() {
@@ -153,7 +167,13 @@ function loadLogs() {
   _logsPage.dirty = false;
   return fetch('/api/events' + logsQueryString(_logsPage.filters, _logsPage.cursors[_logsPage.index]),
     {credentials: 'same-origin'}).then(function(response) {
-    if (!response.ok) throw new Error('Event history unavailable (' + response.status + ').');
+    if (!response.ok) {
+      var message = 'Event history unavailable (' + response.status + ').';
+      if (response.status === LOGS_QUERY_REJECTED_STATUS) {
+        return response.json().then(function(body) { throw new Error(body.error || message); });
+      }
+      throw new Error(message);
+    }
     return response.json();
   }).then(function(body) {
     if (seq !== _logsPage.seq) return;

@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ WAIT_SECONDS = 10
 START_INTERVAL = 0.05
 PAGE_ROWS = 50
 SEED_ROWS = 55
+BETA_TRANSCRIPT_SEQ = SEED_ROWS
 ALPHA = "alpha-sym"
 BETA = "beta-sym"
 
@@ -31,15 +33,16 @@ class LogsServer:
     url: str
     events: EventStore
     loop: asyncio.AbstractEventLoop
+    sequence: Iterator[int]
 
     def emit(self, message: str, symphony: str = ALPHA) -> None:
-        asyncio.run_coroutine_threadsafe(_emit(self.events, message, symphony), self.loop).result(WAIT_SECONDS)
+        asyncio.run_coroutine_threadsafe(_emit(self.events, message, symphony, self.sequence), self.loop).result(WAIT_SECONDS)
 
 
-async def _emit(events: EventStore, message: str, symphony: str) -> None:
+async def _emit(events: EventStore, message: str, symphony: str, sequence: Iterator[int]) -> None:
     events.emit({"symphony": symphony, "card_id": "card", "run_id": "run", "stage": "qa",
                  "source": "performer", "kind": "tool", "level": "info", "message": message,
-                 "data": {"transcript_seq": 7, "detail": "<literal>"}})
+                 "data": {"transcript_seq": next(sequence), "detail": "<literal>"}})
     await events.flush()
 
 
@@ -55,13 +58,14 @@ def logs_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Lo
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     loop = asyncio.new_event_loop()
+    sequence = count()
 
     async def serve() -> None:
         await events.start()
         try:
             for index in range(SEED_ROWS):
-                await _emit(events, f"alpha row {index}", ALPHA)
-            await _emit(events, "beta marker", BETA)
+                await _emit(events, f"alpha row {index}", ALPHA, sequence)
+            await _emit(events, "beta marker", BETA, sequence)
             await server.serve()
         finally:
             await events.close()
@@ -73,7 +77,7 @@ def logs_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Lo
         time.sleep(START_INTERVAL)
     assert server.started, "Logs test server did not start"
     try:
-        yield LogsServer(f"http://127.0.0.1:{port}", events, loop)
+        yield LogsServer(f"http://127.0.0.1:{port}", events, loop, sequence)
     finally:
         loop.call_soon_threadsafe(store.shutdown)
         server.should_exit = True
@@ -142,14 +146,15 @@ def test_live_rows_and_paused_view(page: Page, logs_server: LogsServer) -> None:
 def test_row_links_and_expand_view(page: Page, logs_server: LogsServer) -> None:
     _open(page, logs_server)
     row = page.locator("#logs-rows tr").first
+    record_path = f"/runs/beta-sym/card/run#e{BETA_TRANSCRIPT_SEQ}"
     expect(row.locator("a[href='/cards/beta-sym/card']")).to_have_count(1)
     expect(row.locator("a[href='/runs/beta-sym/card/run']")).to_have_count(1)
-    expect(row.locator("a[href='/runs/beta-sym/card/run#e7']")).to_have_count(1)
+    expect(row.locator(f"a[href='{record_path}']")).to_have_count(1)
     row.locator("summary").click()
     expect(row.locator("pre")).to_be_visible()
-    expect(row.locator("pre")).to_contain_text('"transcript_seq": 7')
+    expect(row.locator("pre")).to_contain_text(f'"transcript_seq": {BETA_TRANSCRIPT_SEQ}')
     expect(row.locator("pre")).to_contain_text("<literal>")
     expect(row.locator("pre literal")).to_have_count(0)
-    row.locator("a[href='/runs/beta-sym/card/run#e7']").click()
-    expect(page).to_have_url(logs_server.url + "/runs/beta-sym/card/run#e7", timeout=WAIT_MS)
+    row.locator(f"a[href='{record_path}']").click()
+    expect(page).to_have_url(logs_server.url + record_path, timeout=WAIT_MS)
     expect(page.locator("#runs-page")).to_be_visible()
