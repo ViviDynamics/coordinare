@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import sqlite3
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from coordinare.lib.redaction import redact_mapping, redact_state_value
+from coordinare.services.event_store_db import COLUMNS, create_schema, disk_stats, prune_batch
+from coordinare.services.event_store_query import (
+    DEFAULT_LIMIT,
+    EventFilters,
+    read_events,
+    utc_timestamp,
+)
+from coordinare.services.event_store_settings import EventStoreConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+    from pathlib import Path
+
+DEFAULT_QUEUE_SIZE = 4096
+INSERT_BATCH_SIZE = 128
+PRUNE_BATCH_SIZE = 256
+MAINTENANCE_SECONDS = 30.0
+MAINTENANCE_YIELD_SECONDS = 0.01
+SHUTDOWN_SECONDS = 5.0
+MAX_EVENT_BYTES = 256 * 1024
+MAX_SEEN_EVENTS = 10000
+T = TypeVar("T")
+
+
+def _safe_row(event: Mapping[str, Any]) -> dict[str, Any]:
+    # Serialize custom objects before redaction, so their __str__ cannot leak a
+    # credential later. The queued copy cannot be changed by a producer.
+    plain = json.loads(json.dumps(dict(event), default=str))
+    safe = redact_mapping(redact_state_value(plain))
+    row = {column: str(safe.get(column) or "") for column in COLUMNS}
+    row["ts"] = utc_timestamp(str(safe["ts"])) if safe.get("ts") else datetime.now(UTC).isoformat()
+    row["level"] = str(safe.get("level") or "info").lower()
+    row["source"] = str(safe.get("source") or "daemon")
+    row["data"] = json.dumps(safe.get("data") or {}, ensure_ascii=True)
+    return row
+
+
+class EventStore:
+    """Best-effort ingress, one SQLite writer and independent threaded readers.
+
+    No error path logs through structlog. Broken disks and malformed events must
+    not recurse through the capture processor or raise into daemon callers.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        config: EventStoreConfig | None = None,
+        queue_size: int = DEFAULT_QUEUE_SIZE,
+        prune_batch_size: int = PRUNE_BATCH_SIZE,
+        enable_fts: bool = True,
+    ) -> None:
+        self.path = path
+        self.config = config or EventStoreConfig()
+        self._capacity = max(queue_size, 1)
+        self._prune_batch_size = max(prune_batch_size, 1)
+        self._enable_fts = enable_fts
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._capacity)
+        self._ready = asyncio.Event()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._lock = threading.Lock()
+        self._outstanding = 0
+        self._dropped = 0
+        self._pruned = 0
+        self._accepting = True
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._owner = threading.get_ident()
+        self._task: asyncio.Task[None] | None = None
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="event-store")
+        self._db: sqlite3.Connection | None = None
+        self._stats: dict[str, Any] = {"size_bytes": 0, "rows": 0, "oldest_ts": None}
+        self._seen: OrderedDict[str, None] = OrderedDict()
+
+    def emit(self, event: Mapping[str, Any]) -> bool:
+        """Redact and enqueue without awaiting disk, including from logging threads."""
+        with self._lock:
+            if not self._accepting or self._outstanding >= self._capacity:
+                self._dropped += 1
+                return False
+            self._outstanding += 1
+        try:
+            row = _safe_row(event)
+            if len(json.dumps(row).encode()) > MAX_EVENT_BYTES:
+                self._finish(1, failed=True)
+                return False
+            if threading.get_ident() == self._owner:
+                self._enqueue(row)
+            elif self._loop is not None:
+                self._loop.call_soon_threadsafe(self._enqueue, row)
+            else:
+                self._finish(1, failed=True)
+                return False
+        except Exception:
+            self._finish(1, failed=True)
+            return False
+        return True
+
+    def remember(self, identity: str) -> bool:
+        """Bound cumulative performer replay suppression by process-local identity."""
+        if identity in self._seen:
+            self._seen.move_to_end(identity)
+            return False
+        self._seen[identity] = None
+        if len(self._seen) > MAX_SEEN_EVENTS:
+            self._seen.popitem(last=False)
+        return True
+
+    def _enqueue(self, row: dict[str, Any]) -> None:
+        self._idle.clear()
+        self._queue.put_nowait(row)
+        self._ready.set()
+
+    def _finish(self, count: int, *, failed: bool = False) -> None:
+        with self._lock:
+            self._outstanding -= count
+            if failed:
+                self._dropped += count
+        if self._loop is not None:
+            with contextlib.suppress(RuntimeError):
+                self._loop.call_soon_threadsafe(self._signal_idle)
+
+    def _signal_idle(self) -> None:
+        if not self._outstanding:
+            self._idle.set()
+
+    async def _call(self, function: Callable[[], T]) -> T:
+        return await asyncio.get_running_loop().run_in_executor(self._executor, function)
+
+    def _initialize(self) -> None:
+        if self._db is not None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.path)
+        try:
+            create_schema(db, enable_fts=self._enable_fts)
+        except Exception:
+            db.close()
+            raise
+        self._db = db
+        self._refresh_stats()
+
+    def _refresh_stats(self, delta: int | None = None) -> None:
+        if self._db is not None:
+            rows = self._stats["rows"] + delta if delta is not None else None
+            self._stats = disk_stats(self._db, self.path, rows)
+
+    def _write_batch(self, rows: list[dict[str, Any]]) -> None:
+        self._initialize()
+        if self._db is None:
+            return
+        with self._db:
+            self._db.executemany(
+                "INSERT INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [tuple(row[column] for column in COLUMNS) for row in rows],
+            )
+        self._refresh_stats(len(rows))
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._loop = asyncio.get_running_loop()
+        self._owner = threading.get_ident()
+        self._task = asyncio.create_task(self._run(), name="event-store-writer")
+
+    async def _run(self) -> None:
+        next_prune = time.monotonic() + MAINTENANCE_SECONDS
+        try:
+            with contextlib.suppress(Exception):
+                await self._call(self._initialize)
+            while self._accepting or self._outstanding:
+                self._ready.clear()
+                rows = self._take_batch()
+                if rows:
+                    await self._persist(rows)
+                elif self._accepting:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            self._ready.wait(),
+                            timeout=max(next_prune - time.monotonic(), MAINTENANCE_YIELD_SECONDS),
+                        )
+                if self._accepting and time.monotonic() >= next_prune:
+                    removed = await self.prune()
+                    next_prune = time.monotonic() + (0 if removed else MAINTENANCE_SECONDS)
+                await asyncio.sleep(0)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._call(self._close_connection)
+            self._executor.shutdown(wait=False)
+
+    def _take_batch(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        while len(rows) < INSERT_BATCH_SIZE and not self._queue.empty():
+            rows.append(self._queue.get_nowait())
+        return rows
+
+    async def _persist(self, rows: list[dict[str, Any]]) -> None:
+        failed = False
+        try:
+            await self._call(lambda: self._write_batch(rows))
+        except Exception:
+            failed = True
+        finally:
+            self._finish(len(rows), failed=failed)
+            for _ in rows:
+                self._queue.task_done()
+
+    def _prune(self) -> int:
+        self._initialize()
+        if self._db is None:
+            return 0
+        removed = prune_batch(self._db, self.path, self.config, self._prune_batch_size)
+        self._pruned += removed
+        self._refresh_stats(-removed)
+        return removed
+
+    async def prune(self) -> int:
+        try:
+            return await self._call(self._prune)
+        except Exception:
+            return 0
+
+    def health(self) -> dict[str, Any]:
+        return {**self._stats, "dropped": self._dropped, "pruned": self._pruned}
+
+    async def query_events(
+        self,
+        filters: EventFilters | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            read_events, self.path, filters or EventFilters(), cursor, limit,
+        )
+
+    async def flush(self) -> None:
+        self._idle.clear()
+        self._signal_idle()
+        await self._idle.wait()
+
+    async def close(self, *, grace_seconds: float = SHUTDOWN_SECONDS) -> None:
+        with self._lock:
+            self._accepting = False
+        if self._task is None:
+            await self.start()
+        self._ready.set()
+        if self._task is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=grace_seconds)
+
+    async def wait_closed(self) -> None:
+        if self._task is not None:
+            await asyncio.shield(self._task)
+
+    def _close_connection(self) -> None:
+        if self._db is not None:
+            self._db.close()
+            self._db = None

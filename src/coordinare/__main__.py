@@ -62,6 +62,8 @@ from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
+from coordinare.services.event_capture import install_event_store, symphony_for_card
+from coordinare.services.event_store import EventStore
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
 from coordinare.services.mounted_file import (
@@ -1354,6 +1356,23 @@ async def _run(
     # cannot start the daemon past a refusal main would have made.
     unexpanded = load_unexpanded_config(config_path)
     validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
+    event_store = EventStore(config.state_file_path.expanduser().resolve().parent / "events.db", config=config.event_store)
+    install_event_store(event_store)
+    try:
+        await event_store.start()
+        await _run_with_events(config, config_path, coordinare_config, config_mode, event_store)
+    finally:
+        install_event_store(None)
+        await event_store.close()
+
+
+async def _run_with_events(
+    config: ProjectConfiguration,
+    config_path: Path | None,
+    coordinare_config: CoordinareConfiguration | None,
+    config_mode: Literal["legacy", "multi_symphony"],
+    event_store: EventStore,
+) -> None:
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -1413,6 +1432,9 @@ async def _run(
         idle_threshold_seconds=config.notifications.prolonged_idle_threshold_seconds,
         dashboard_store=dashboard_store,
     )
+
+    daemon.state["event_store"] = event_store
+    install_event_store(event_store, lambda card_id: symphony_for_card(daemon.state, card_id))
 
     daemon.state.update(
         await _bootstrap_services(

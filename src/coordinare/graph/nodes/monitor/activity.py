@@ -1,10 +1,10 @@
-"""Activity-feed attribution and recording for the monitor (435, 138)."""
-
 from __future__ import annotations
 
+# Activity-feed attribution and recording for the monitor (435, 138).
 import contextlib
 from typing import TYPE_CHECKING, Any
 
+from coordinare.services.event_capture import capture_performer_events
 from coordinare.services.workflow_step import is_step_event
 
 if TYPE_CHECKING:
@@ -74,6 +74,8 @@ def _record_activity_batch(
     stage: str,
 ) -> None:
     """138 T023: push a poll's worth of backend events as one batch."""
+    with contextlib.suppress(Exception):
+        capture_performer_events(state, events, {"card_id": card_id, "stage": stage})
     log = state.get("activity_log")
     if log is None:
         return

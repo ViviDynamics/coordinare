@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from coordinare.lib.redaction import RedactingFormatter, redact_mapping
+from coordinare.services.event_capture import event_store_processor
 
 
 def _redact_processor(_: Any, __: str, event_dict: MutableMapping[str, Any]) -> Mapping[str, Any]:
@@ -46,6 +47,7 @@ def configure_logging(log_level: str | None = None, *, structured: bool | None =
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             _redact_processor,
+            event_store_processor,
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
