@@ -27,6 +27,7 @@ permissions:
 
 jobs:
   forward:
+    timeout-minutes: 10
     name: Forward to maintainers
     runs-on: ubuntu-latest
     steps:

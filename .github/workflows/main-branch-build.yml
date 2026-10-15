@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   derive-version:
+    timeout-minutes: 10
     name: Derive Version
     runs-on: ubuntu-latest
     permissions:
@@ -78,6 +79,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   lint:
+    timeout-minutes: 10
     name: Lint
     runs-on: ubuntu-latest
     steps:
@@ -102,6 +104,7 @@ jobs:
         run: uv run --extra dev mypy -p coordinare
 
   test:
+    timeout-minutes: 26
     name: Test
     runs-on: ubuntu-latest
     steps:
@@ -126,6 +129,7 @@ jobs:
         run: uv run --extra dev pytest
 
   coverage:
+    timeout-minutes: 36
     name: Coverage
     runs-on: ubuntu-latest
     steps:
@@ -150,6 +154,7 @@ jobs:
         run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
 
   create-tag:
+    timeout-minutes: 10
     name: Create Release Tag
     needs:
       - derive-version
@@ -209,6 +214,7 @@ jobs:
   # downstream was skipped. The two images are joined into one manifest, so the
   # published image serves both.
   build-base-amd64:
+    timeout-minutes: 10
     name: Build and Push Base Image (amd64)
     needs: create-tag
     runs-on: ubuntu-latest
@@ -241,6 +247,7 @@ jobs:
           echo "Pushed ${REGISTRY}-base:${VERSION}-amd64"
 
   build-base-arm64:
+    timeout-minutes: 10
     name: Build and Push Base Image (arm64)
     needs: create-tag
     runs-on: ubuntu-24.04-arm
@@ -271,6 +278,7 @@ jobs:
           echo "Pushed ${REGISTRY}-base:${VERSION}-arm64"
 
   manifest-base:
+    timeout-minutes: 10
     name: Base Image Manifest
     needs:
       - create-tag
@@ -304,6 +312,7 @@ jobs:
           echo "Published ${REGISTRY}-base:${VERSION} (amd64 + arm64)"
 
   build-full-amd64:
+    timeout-minutes: 10
     name: Build and Push Full Image (amd64)
     needs:
       - create-tag
@@ -342,6 +351,7 @@ jobs:
           echo "Pushed ${REGISTRY}-full:${VERSION}-amd64"
 
   build-full-arm64:
+    timeout-minutes: 10
     name: Build and Push Full Image (arm64)
     needs:
       - create-tag
@@ -377,6 +387,7 @@ jobs:
           echo "Pushed ${REGISTRY}-full:${VERSION}-arm64"
 
   manifest-full:
+    timeout-minutes: 10
     name: Full Image Manifest
     needs:
       - create-tag
@@ -414,6 +425,7 @@ jobs:
   # would be cost without a consumer. If coordinare is ever deployed on arm64,
   # split this the way the performer images above are split.
   build-daemon:
+    timeout-minutes: 10
     name: Build and Push Daemon Image
     needs: create-tag
     runs-on: ubuntu-latest
@@ -458,6 +470,7 @@ jobs:
           echo "Resolved ${REGISTRY}:${VERSION} to ${DIGEST}"
 
   publish-chart:
+    timeout-minutes: 10
     name: Publish Chart
     # Consumes the version derive-version minted; derives nothing itself. The in-house scheme's
     # #2700 is the cautionary tale: its chart publish lived in a second workflow
@@ -513,6 +526,7 @@ jobs:
           helm push "${out}"/coordinare-*.tgz oci://ghcr.io/vividynamics/charts
 
   tag-latest:
+    timeout-minutes: 10
     name: Tag Latest
     needs:
       - create-tag

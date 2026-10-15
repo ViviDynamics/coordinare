@@ -72,7 +72,9 @@ def _snapshot(symphonies: list[dict[str, Any]], **overrides: Any) -> dict[str, A
 
 def _connected(page: Page, url: str) -> None:
     """Load a page and wait for its stream to be live, so a broadcast is not sent before anyone listens."""
-    page.goto(url)
+    # Firefox can keep load waiting on the dashboard's long lived SSE request.
+    # The Live indicator below is the readiness condition we need.
+    page.goto(url, wait_until="domcontentloaded", timeout=_WAIT_SSE)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
 
 
@@ -129,7 +131,7 @@ def test_the_choice_survives_a_reload_and_navigation(page: Page, live_server_url
     page.locator("#symphony-select").select_option("beta-sym")
     expect(page.locator("#swimlane-section")).not_to_contain_text("Alpha card")
 
-    page.reload()
+    page.reload(wait_until="domcontentloaded", timeout=_WAIT_SSE)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
     expect(page.locator("#symphony-select")).to_have_value("beta-sym", timeout=_WAIT_LIVE)

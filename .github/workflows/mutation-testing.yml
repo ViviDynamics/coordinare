@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   mutation:
+    timeout-minutes: 10
     name: Mutation Testing (pilot)
     continue-on-error: true
     runs-on: ubuntu-latest

@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   lint:
+    timeout-minutes: 10
     name: Lint
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -41,6 +42,7 @@ jobs:
         run: uv run --extra dev mypy -p coordinare
 
   test:
+    timeout-minutes: 26
     name: Test
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -66,6 +68,7 @@ jobs:
         run: uv run pytest
 
   chart:
+    timeout-minutes: 10
     name: Chart
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -107,6 +110,7 @@ jobs:
                         tests/unit/test_225_kubernetes_egress.py -v
 
   daemon-image:
+    timeout-minutes: 10
     name: Daemon Image
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -135,6 +139,7 @@ jobs:
         run: uv run pytest tests/integration/test_148_docker_daemon_image.py -v
 
   chart-install:
+    timeout-minutes: 10
     name: Chart Install (kind)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -231,6 +236,7 @@ jobs:
           fi
 
   coverage:
+    timeout-minutes: 36
     name: Coverage
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -256,6 +262,7 @@ jobs:
         run: uv run pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
 
   e2e:
+    timeout-minutes: 40
     name: E2E Browser Tests
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -293,9 +300,10 @@ jobs:
         # to run as container root with that foreign-owned home directory.
         env:
           HOME: /root
-        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --browser chromium --browser firefox -v
+        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --override-ini="timeout_method=thread" --browser chromium --browser firefox -v
 
   performer:
+    timeout-minutes: 10
     name: Performer Tests
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -316,6 +324,7 @@ jobs:
         run: uv run pytest agent/performer/tests/ -q --ignore=agent/performer/tests/integration
 
   docker:
+    timeout-minutes: 10
     name: Docker Images
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
@@ -417,6 +426,7 @@ jobs:
           echo "Pushed ${REGISTRY}-full:${SNAPSHOT_TAG}"
 
   benchmark:
+    timeout-minutes: 10
     name: Performance Benchmarks
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     continue-on-error: true
@@ -450,6 +460,7 @@ jobs:
           if-no-files-found: ignore
 
   skills-wiring:
+    timeout-minutes: 10
     name: Skills Wiring
     runs-on: ubuntu-latest
     steps:
@@ -462,6 +473,7 @@ jobs:
           .agents/skills/ci-safety/scripts/check-wiring
 
   quality-guard:
+    timeout-minutes: 10
     name: Quality guard
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -479,6 +491,7 @@ jobs:
           .agents/skills/merge-pr/scripts/quality-guard --pr ${{ github.event.pull_request.number }}
 
   build-success:
+    timeout-minutes: 10
     name: Build Success
     # always() prevents skipped upstream jobs (e.g. benchmark on non-performer PRs)
     # from silently skipping this gate job. The failure/cancelled checks ensure
