@@ -463,8 +463,13 @@ function renderSymphoniesPage(s) {
         + '<span style="width:8px;height:8px;border-radius:50%;background:' + bsColor + ';display:inline-block;flex:none"></span>'
         + bsText + '</span>';
     }
-    return '<tr>'
-      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
+    // 155: an inactive symphony is greyed out and says why, so it is not read as a working one.
+    // 155: a symphony nobody has checked says why under its name; the never-checked ones are greyed.
+    var inactive = symphonyIsInactive(sym);
+    var unchecked = symphonyUncheckedNote(sym);
+    var neverChecked = unchecked ? '<div class="muted" style="font-size:11px">' + esc(unchecked.text) + '</div>' : '';
+    return '<tr' + (inactive ? ' class="symphony-inactive" data-inactive="true"' : '') + '>'
+      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a>' + neverChecked + '</td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyProjectHtml(sym) + '</td>'
       + '<td style="color:var(--color-text-muted)">' + symphonyRepoHtml(sym) + '</td>'
       + '<td>' + (sym.priority != null ? sym.priority : 'None') + '</td>'

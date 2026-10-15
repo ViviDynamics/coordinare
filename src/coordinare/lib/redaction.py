@@ -203,6 +203,19 @@ def is_text_field(name: str) -> bool:
     return name in TEXT_FIELD_NAMES or any(fnmatch.fnmatchcase(name, glob) for glob in TEXT_FIELD_GLOBS)
 
 
+# 155: the longest error text a symphony keeps, and the snapshot shows. A longer error is cut and ends
+# with an ellipsis, so one failure cannot put a whole traceback into every snapshot.
+MAX_SESSION_ERROR_CHARS = 500
+_CLIP_ELLIPSIS = "..."
+
+
+def clip_session_error(text: str) -> str:
+    """The text, cut to MAX_SESSION_ERROR_CHARS including its ellipsis when it is longer."""
+    if len(text) <= MAX_SESSION_ERROR_CHARS:
+        return text
+    return text[: MAX_SESSION_ERROR_CHARS - len(_CLIP_ELLIPSIS)] + _CLIP_ELLIPSIS
+
+
 # 203: how deep redact_state_value walks. A value nested past this is replaced whole by a fixed
 # marker, so a cyclic or adversarially deep structure cannot recurse without limit.
 MAX_STATE_DEPTH = 32

@@ -146,6 +146,8 @@ def test_state_update_shape_additive_only() -> None:
         "stall_timeout_seconds",
         "system_health",
         "card_pipeline",
+        # 155: the server's clock when the snapshot was taken, for the Done lane's 24-hour cut.
+        "snapshot_at",
     }, f"unplanned additions: {sorted(added)}"
     for key, expected in _PRE_138_KEYS.items():
         assert isinstance(snapshot[key], expected), f"{key} changed type"

@@ -21,6 +21,7 @@ from coordinare.dashboard.helpers import (
 )
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.lib.clarifications import annotate_clarifications
+from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
@@ -936,7 +937,10 @@ class DashboardStore:
             # 054: Per-cycle skip reasons for ineligible sessions.
             "session_skip_reasons": copy.deepcopy(daemon.state.get("session_skip_reasons") or {}),
             # 057: Multi-symphony orchestration
-            "symphonies": self._build_symphonies_data(daemon),
+            "symphonies": self._build_symphonies_data(daemon, cycles_completed),
+            # 155: the server's clock when this snapshot was taken. The browser cuts its 24-hour lane
+            # against it, so a snapshot read late still counts the merges it counted when it was taken.
+            "snapshot_at": datetime.now(UTC).isoformat(),
             "coordinare": {
                 "current_symphony": daemon.state.get("current_symphony"),
                 "config_version": daemon.state.get("config_version", 0),
@@ -1200,8 +1204,13 @@ class DashboardStore:
             return ""
 
     @staticmethod
-    def _build_symphonies_data(daemon: Any) -> list[dict[str, Any]]:
-        """Build symphony state for the dashboard snapshot (spec 057)."""
+    def _build_symphonies_data(daemon: Any, daemon_cycles: int | None = None) -> list[dict[str, Any]]:
+        """Build symphony state for the dashboard snapshot (spec 057).
+
+        ``daemon_cycles`` is the daemon-wide count of full cycles. Each entry carries it, because the
+        scoped view overwrites the top-level count with the symphony's own, and a symphony that was
+        never reached needs the daemon count to tell "not checked yet" from "never checked".
+        """
         symphony_configs = daemon.state.get("symphony_configs") or {}
         symphony_states = daemon.state.get("symphony_states") or {}
         global_cfg = daemon.state.get("config")
@@ -1222,6 +1231,7 @@ class DashboardStore:
                 # 139: the timing and ownership this symphony runs with, so the
                 # dashboard never shows another symphony's.
                 "poll_interval_seconds": _poll_interval(effective),
+                "daemon_cycles_completed": daemon_cycles,
                 "ownership_hint": DashboardStore._symphony_hint(effective),
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
@@ -1234,7 +1244,12 @@ class DashboardStore:
                     last_poll_raw.isoformat() if isinstance(last_poll_raw, datetime) else None
                 ),
                 "state": {
-                    "last_error": getattr(sym_state, "last_error", None) if sym_state else None,
+                    # 155: clipped again here, so a value stored before the daemon clipped it stays small too.
+                    "last_error": (
+                        clip_session_error(str(sym_state.last_error))
+                        if sym_state is not None and isinstance(getattr(sym_state, "last_error", None), str)
+                        else None
+                    ),
                     "active_card": getattr(sym_state, "active_card", None) if sym_state else None,
                     "board_snapshot": getattr(sym_state, "board_snapshot", None) if sym_state else None,
                     "board_titles": getattr(sym_state, "board_titles", None) or {},

@@ -71,7 +71,7 @@ var since = "2026-10-13T12:00:00Z";
 var el = elapsedSinceHtml(since);
 has("elapsed readout carries its start point", el, 'data-elapsed-since="' + since + '"');
 has("elapsed readout says what it measures", el, "Time since this stage run was dispatched");
-check("no start point renders a dash", elapsedSinceHtml(null), "<strong>—</strong>");
+check("no start point says unknown, never a dash (155)", elapsedSinceHtml(null), "<strong>unknown</strong>");
 // Two readouts for the same run, refreshed by the one timer, agree.
 var a = { attrs: { "data-elapsed-since": since }, textContent: "stale-a",
   getAttribute(k) { return this.attrs[k] || null; } };

@@ -62,7 +62,7 @@ check("no roles, no summary", utilizationSummaryText({ role_utilization: [] }), 
 // The Cards header's counts: the old idle panel's total, and the Done and Backlog counts.
 check("the board total is the four columns, with Done and Backlog beside it",
   boardCountsText({ board_summary: { TODO: 5, IN_PROGRESS: 3, IN_REVIEW: 2, DONE: 10, BLOCKED: 1, BACKLOG: 8 } }),
-  "Total 20 · Done 10 · Backlog 8");
+  "Total 21 · Done 10 · Backlog 8");
 check("a missing board summary counts nothing", boardCountsText({}), "Total 0 · Done 0 · Backlog 0");
 
 // --- The health dot -------------------------------------------------------

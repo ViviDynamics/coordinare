@@ -264,6 +264,11 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .status-counts, .status-muted, .status-freshness, .status-actions { white-space: nowrap; }
 .status-actions .action-btn { font-size: 12px; }
 .swimlane-card-title, .ap-tile-title { font-size: 13px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+/* 137: a running card's stage pair, one line, cut with an ellipsis so the card keeps its size. */
+.swimlane-stage { font-size: 11px; color: var(--color-text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* 155: the PR chip and its checks icon, on one compact row under the title. */
+.swimlane-card-pr { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 3px; font-size: 11px; }
+.swimlane-card-pr .checks-icon { margin-left: 0; }
 .ap-tile-title { font-size: 13px; font-weight: bold; -webkit-line-clamp: 1; }
 .ap-tile-header { flex-wrap: nowrap; margin-bottom: 4px; min-width: 0; }
 .ap-tile-role { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
