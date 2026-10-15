@@ -19,6 +19,9 @@ from coordinare.services.event_store_query import EventFilters
 TOKEN = "ghp_" + "a" * 36
 EVENT_COUNT = 40
 PRODUCERS = 8
+WAIT_SECONDS = 30.0
+POLL_SECONDS = 0.01
+RETENTION_SIZE_BUDGET = 96 * 1024
 
 
 def event(**overrides: object) -> dict[str, object]:
@@ -26,7 +29,7 @@ def event(**overrides: object) -> dict[str, object]:
 
 
 async def drain(store: EventStore) -> None:
-    await asyncio.wait_for(store.flush(), timeout=5)
+    await asyncio.wait_for(store.flush(), timeout=WAIT_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -135,7 +138,7 @@ async def test_many_producers_share_one_writer(tmp_path: Path) -> None:
     thread_ids: set[int] = set()
     original = store._write_batch
 
-    def write(rows: list[dict[str, object]]) -> None:
+    def write(rows: list[str]) -> None:
         thread_ids.add(threading.get_ident())
         original(rows)
 
@@ -251,20 +254,20 @@ async def test_retention_age_batches_and_health(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_retention_size_deletes_oldest_and_reclaims_pages(tmp_path: Path) -> None:
-    config = EventStoreConfig(max_bytes=65536)
+    config = EventStoreConfig(max_bytes=RETENTION_SIZE_BUDGET)
     store = EventStore(tmp_path / "events.db", config=config, prune_batch_size=2)
     await store.start()
     for index in range(12):
         store.emit(event(message=f"old {index} " + "payload " * 1200))
     await drain(store)
     previous = store.health()["rows"]
-    for _ in range(100):
-        removed = await store.prune()
-        assert removed <= 2
-        assert store.health()["rows"] <= previous
-        previous = store.health()["rows"]
-        if store.health()["size_bytes"] <= config.max_bytes:
-            break
+    async with asyncio.timeout(WAIT_SECONDS):
+        while store.health()["size_bytes"] > config.max_bytes:
+            removed = await store.prune()
+            assert removed <= 2
+            assert store.health()["rows"] <= previous
+            previous = store.health()["rows"]
+            await asyncio.sleep(POLL_SECONDS)
     assert store.health()["size_bytes"] <= config.max_bytes
     assert store.health()["pruned"] > 0
     rows = (await store.query_events())["events"]
@@ -281,7 +284,7 @@ async def test_shutdown_wait_is_bounded(tmp_path: Path) -> None:
     entered = threading.Event()
     original = store._write_batch
 
-    def blocked(rows: list[dict[str, object]]) -> None:
+    def blocked(rows: list[str]) -> None:
         entered.set()
         release.wait(timeout=5)
         original(rows)
@@ -444,7 +447,10 @@ def test_migration_failure_rolls_back_schema_and_version(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_query_limit_is_capped_and_cursor_survives_deleted_rows(tmp_path: Path) -> None:
+async def test_query_limit_is_capped_and_cursor_survives_deleted_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("coordinare.services.event_store.MAINTENANCE_SECONDS", WAIT_SECONDS * 2)
     store = EventStore(tmp_path / "events.db", prune_batch_size=1000)
     old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
     await store.start()

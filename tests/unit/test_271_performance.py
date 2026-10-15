@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from time import perf_counter
 
@@ -10,6 +11,7 @@ from coordinare.services.event_store import EventStore
 BENCHMARK_ROWS = 2000
 PAYLOAD_REPEATS = 16
 SECONDS_TO_MICROSECONDS = 1_000_000
+WAIT_SECONDS = 30.0
 
 
 @pytest.mark.asyncio
@@ -33,9 +35,11 @@ async def test_typical_event_write_throughput_and_loop_overhead(tmp_path: Path) 
         },
     }
     started = perf_counter()
-    for _ in range(BENCHMARK_ROWS):
-        assert store.emit(payload)
+    for seq in range(BENCHMARK_ROWS):
+        row = {**payload, "data": {**payload["data"], "transcript_seq": seq}}
+        assert store.emit(row)
     enqueued = perf_counter()
+    await asyncio.wait_for(store.flush(), timeout=WAIT_SECONDS)
     await store.close()
     finished = perf_counter()
     assert store.health()["rows"] == BENCHMARK_ROWS

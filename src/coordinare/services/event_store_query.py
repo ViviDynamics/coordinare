@@ -107,12 +107,14 @@ def read_events(
     with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as db:
         db.row_factory = sqlite3.Row
         db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        db.execute("BEGIN")
         fts = bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='events_fts'").fetchone())
         clauses, values = _conditions(filters, cursor, fts=fts)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(limit + 1)
         statement = " ".join(("SELECT * FROM events", where, "ORDER BY ts DESC, id DESC LIMIT ?"))
         rows = db.execute(statement, values).fetchall()
+        db.commit()
     items = [{**dict(row), "data": json.loads(row["data"])} for row in rows[:limit]]
     next_cursor = None
     if len(rows) > limit:

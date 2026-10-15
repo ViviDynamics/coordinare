@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
     from coordinare.services.event_store_settings import EventStoreConfig
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 1000
 VACUUM_PAGES = 256
 COLUMNS = (
@@ -85,6 +85,17 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
             ("kind_ts", "kind, ts"),
         ):
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
+        if version < SCHEMA_VERSION:
+            # Earlier databases can already contain replayed performer rows.
+            db.execute("""DELETE FROM events WHERE source='performer' AND run_id != ''
+                AND json_type(data, '$.transcript_seq')='integer' AND id NOT IN (
+                    SELECT min(id) FROM events WHERE source='performer' AND run_id != ''
+                    AND json_type(data, '$.transcript_seq')='integer'
+                    GROUP BY run_id, json_extract(data, '$.transcript_seq'))""")
+        db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS events_performer_seq
+            ON events (run_id, json_extract(data, '$.transcript_seq'))
+            WHERE source='performer' AND run_id != ''
+            AND json_type(data, '$.transcript_seq')='integer'""")
         fts = _create_fts(db) if enable_fts else False
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return fts
@@ -111,10 +122,5 @@ def prune_batch(
                 "SELECT id FROM events ORDER BY ts, id LIMIT ?", (batch_size,),
             ).fetchall()
         db.executemany("DELETE FROM events WHERE id=?", ids)
-    # SQLite incremental_vacuum can yield after reclaiming just one page.
-    # Step explicitly, bounding the work even on a large mostly-empty file.
-    for _ in range(VACUUM_PAGES):
-        if not db.execute("PRAGMA freelist_count").fetchone()[0]:
-            break
-        db.execute("PRAGMA incremental_vacuum(1)").fetchall()
+    db.execute(f"PRAGMA incremental_vacuum({VACUUM_PAGES})").fetchall()
     return len(ids)

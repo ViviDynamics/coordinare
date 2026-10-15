@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
+import threading
+from collections import deque
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from structlog.contextvars import get_contextvars
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, MutableMapping
+    from collections.abc import Callable, Iterator, Mapping, MutableMapping
 
     from coordinare.services.activity_log import ActivityEntry
     from coordinare.services.event_store import EventStore
@@ -16,6 +18,11 @@ if TYPE_CHECKING:
 _STORE: EventStore | None = None
 _SYMPHONY: Callable[[str], str] | None = None
 LOG_LEVELS = frozenset({"info", "warning", "warn", "error", "exception", "critical", "fatal"})
+EARLY_RECORD_LIMIT = 128
+EARLY_BYTE_LIMIT = 1024 * 1024
+_EARLY_RECORDS: deque[str] = deque()
+_CAPTURE_LOCK = threading.Lock()
+_ACTIVITY_CAPTURE: ContextVar[bool] = ContextVar("event_store_activity_capture", default=True)
 ERROR_KINDS = frozenset({"error", "failed", "failure", "blocked"})
 
 
@@ -23,7 +30,22 @@ def install_event_store(
     store: EventStore | None, resolver: Callable[[str], str] | None = None,
 ) -> None:
     global _STORE, _SYMPHONY
-    _STORE, _SYMPHONY = store, resolver
+    with _CAPTURE_LOCK:
+        _STORE, _SYMPHONY = store, resolver
+        if store is not None:
+            for raw in _EARLY_RECORDS:
+                store.emit(json.loads(raw))
+        _EARLY_RECORDS.clear()
+
+
+@contextlib.contextmanager
+def performer_feed_capture() -> Iterator[None]:
+    """The raw performer row owns persistence while its live feed is recorded."""
+    token = _ACTIVITY_CAPTURE.set(False)
+    try:
+        yield
+    finally:
+        _ACTIVITY_CAPTURE.reset(token)
 
 
 def _symphony(card_id: str) -> str:
@@ -41,7 +63,7 @@ def _source(kind: str) -> str:
 
 def capture_activity(entry: ActivityEntry) -> None:
     store = _STORE
-    if store is None:
+    if store is None or not _ACTIVITY_CAPTURE.get():
         return
     data = entry.to_dict()
     store.emit(
@@ -81,28 +103,34 @@ def event_store_processor(
 
 
 def _capture_log(method: str, event: MutableMapping[str, Any]) -> None:
-    store = _STORE
     kind = str(event.get("event") or "")
     if (
-        store is None
-        or method not in LOG_LEVELS
+        method not in LOG_LEVELS
         or kind.startswith(("event_store.", "coordinare.services.event_store"))
     ):
         return
-    store.emit(
-        {
-            "ts": event.get("timestamp"),
-            "symphony": event.get("symphony") or "",
-            "card_id": event.get("card_id") or "",
-            "run_id": event.get("run_id") or event.get("session_id") or "",
-            "stage": event.get("stage") or event.get("performer_stage") or "",
-            "source": _source(kind),
-            "kind": kind,
-            "level": method,
-            "message": str(event.get("message") or event.get("error") or kind),
-            "data": dict(event),
-        },
-    )
+    row = {
+        "ts": event.get("timestamp"),
+        "symphony": event.get("symphony") or "",
+        "card_id": event.get("card_id") or "",
+        "run_id": event.get("run_id") or event.get("session_id") or "",
+        "stage": event.get("stage") or event.get("performer_stage") or "",
+        "source": _source(kind),
+        "kind": kind,
+        "level": method,
+        "message": str(event.get("message") or event.get("error") or kind),
+        "data": dict(event),
+    }
+    with _CAPTURE_LOCK:
+        if _STORE is not None:
+            _STORE.emit(row)
+        else:
+            raw = json.dumps(row, default=str, ensure_ascii=True)
+            if len(raw) > EARLY_BYTE_LIMIT:
+                return
+            _EARLY_RECORDS.append(raw)
+            while len(_EARLY_RECORDS) > EARLY_RECORD_LIMIT or sum(map(len, _EARLY_RECORDS)) > EARLY_BYTE_LIMIT:
+                _EARLY_RECORDS.popleft()
 
 
 def capture_performer_events(
@@ -114,9 +142,6 @@ def capture_performer_events(
     run_id = str((state.get("agent_dispatch") or {}).get("session_id") or "")
     for event in events:
         if not isinstance(event, dict):
-            continue
-        identity = json.dumps([run_id, attribution, event], sort_keys=True, default=str)
-        if not store.remember(hashlib.sha256(identity.encode()).hexdigest()):
             continue
         store.emit(
             {

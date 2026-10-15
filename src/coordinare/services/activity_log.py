@@ -1,14 +1,16 @@
+"""138: bounded in-memory activity log behind the dashboard's activity feed.
+
+Owns retention (FR-019 through FR-021), ingest-time truncation (FR-035 through
+FR-037), per-card duplicate suppression (FR-022 through FR-024), and the live
+sink fan-out to the SSE transport (FR-001, FR-004).
+
+The live deque is per-process and discarded on restart (FR-018). The shared
+append funnel also sends accepted entries to the persistent event store (271).
+Single-process, single-threaded under asyncio, so no lock is needed.
+"""
+
 from __future__ import annotations
 
-# 138: bounded in-memory activity log behind the dashboard's activity feed.
-#
-# Owns retention (FR-019 through FR-021), ingest-time truncation (FR-035 through
-# FR-037), per-card duplicate suppression (FR-022 through FR-024), and the live
-# sink fan-out to the SSE transport (FR-001, FR-004).
-#
-# The live deque is per-process and discarded on restart (FR-018). The shared
-# append funnel also sends accepted entries to the persistent event store (271).
-# Single-process, single-threaded under asyncio, so no lock is needed.
 import contextlib
 import time
 from collections import deque

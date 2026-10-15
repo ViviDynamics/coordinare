@@ -79,7 +79,8 @@ function systemHealthEventStoreHtml(stats) {
   if (!stats) return '';
   return '<div class="sh-row">Event store: ' + esc(stats.size_bytes) + ' bytes, ' +
     esc(stats.rows) + ' rows, oldest ' + esc(stats.oldest_ts || 'none') + ', ' +
-    esc(stats.dropped) + ' dropped, ' + esc(stats.pruned) + ' pruned</div>';
+    esc(stats.dropped) + ' dropped, ' + esc(stats.pruned) + ' pruned, writer ' +
+    esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : '') + '</div>';
 }
 
 // The whole card: the summary line, and the rows inside it.

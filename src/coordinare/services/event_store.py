@@ -6,7 +6,6 @@ import json
 import sqlite3
 import threading
 import time
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -26,20 +25,23 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 DEFAULT_QUEUE_SIZE = 4096
+WRITE_ATTEMPTS = 6
+RETRY_INITIAL_SECONDS = 0.05
+RETRY_MAX_SECONDS = 0.5
+RETRY_BACKOFF = 2
 INSERT_BATCH_SIZE = 128
 PRUNE_BATCH_SIZE = 256
 MAINTENANCE_SECONDS = 30.0
 MAINTENANCE_YIELD_SECONDS = 0.01
 SHUTDOWN_SECONDS = 5.0
 MAX_EVENT_BYTES = 256 * 1024
-MAX_SEEN_EVENTS = 10000
 T = TypeVar("T")
 
 
-def _safe_row(event: Mapping[str, Any]) -> dict[str, Any]:
-    # Serialize custom objects before redaction, so their __str__ cannot leak a
-    # credential later. The queued copy cannot be changed by a producer.
-    plain = json.loads(json.dumps(dict(event), default=str))
+def _safe_row(raw: str) -> dict[str, Any]:
+    # Only the writer transforms the immutable producer snapshot. No raw value
+    # is passed to SQLite, including its journal and full text index.
+    plain = json.loads(raw)
     safe = redact_mapping(redact_state_value(plain))
     row = {column: str(safe.get(column) or "") for column in COLUMNS}
     row["ts"] = utc_timestamp(str(safe["ts"])) if safe.get("ts") else datetime.now(UTC).isoformat()
@@ -68,9 +70,13 @@ class EventStore:
         self.path = path
         self.config = config or EventStoreConfig()
         self._capacity = max(queue_size, 1)
+        self._byte_capacity = self.config.queue_bytes
+        self._outstanding_bytes = 0
+        self._writer_state = "starting"
+        self._last_error: str | None = None
         self._prune_batch_size = max(prune_batch_size, 1)
         self._enable_fts = enable_fts
-        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._capacity)
+        self._queue: asyncio.Queue[str] = asyncio.Queue(maxsize=self._capacity)
         self._ready = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -85,50 +91,52 @@ class EventStore:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="event-store")
         self._db: sqlite3.Connection | None = None
         self._stats: dict[str, Any] = {"size_bytes": 0, "rows": 0, "oldest_ts": None}
-        self._seen: OrderedDict[str, None] = OrderedDict()
 
     def emit(self, event: Mapping[str, Any]) -> bool:
-        """Redact and enqueue without awaiting disk, including from logging threads."""
+        """Snapshot and enqueue without redaction or disk work on the caller."""
+        try:
+            snapshot = dict(event)
+            snapshot["ts"] = utc_timestamp(str(snapshot["ts"])) if snapshot.get("ts") else datetime.now(UTC).isoformat()
+            raw = json.dumps(snapshot, default=str, ensure_ascii=True)
+        except Exception:
+            with self._lock:
+                self._dropped += 1
+            return False
+        # ASCII JSON length is its byte size. Check before any redaction or
+        # queue reservation, and include callbacks and batches still in flight.
+        size = len(raw)
         with self._lock:
-            if not self._accepting or self._outstanding >= self._capacity:
+            if (
+                not self._accepting or size > MAX_EVENT_BYTES
+                or self._outstanding >= self._capacity
+                or self._outstanding_bytes + size > self._byte_capacity
+            ):
                 self._dropped += 1
                 return False
             self._outstanding += 1
+            self._outstanding_bytes += size
         try:
-            row = _safe_row(event)
-            if len(json.dumps(row).encode()) > MAX_EVENT_BYTES:
-                self._finish(1, failed=True)
-                return False
             if threading.get_ident() == self._owner:
-                self._enqueue(row)
+                self._enqueue(raw)
             elif self._loop is not None:
-                self._loop.call_soon_threadsafe(self._enqueue, row)
+                self._loop.call_soon_threadsafe(self._enqueue, raw)
             else:
-                self._finish(1, failed=True)
+                self._finish(1, size, failed=True)
                 return False
         except Exception:
-            self._finish(1, failed=True)
+            self._finish(1, size, failed=True)
             return False
         return True
 
-    def remember(self, identity: str) -> bool:
-        """Bound cumulative performer replay suppression by process-local identity."""
-        if identity in self._seen:
-            self._seen.move_to_end(identity)
-            return False
-        self._seen[identity] = None
-        if len(self._seen) > MAX_SEEN_EVENTS:
-            self._seen.popitem(last=False)
-        return True
-
-    def _enqueue(self, row: dict[str, Any]) -> None:
+    def _enqueue(self, raw: str) -> None:
         self._idle.clear()
-        self._queue.put_nowait(row)
+        self._queue.put_nowait(raw)
         self._ready.set()
 
-    def _finish(self, count: int, *, failed: bool = False) -> None:
+    def _finish(self, count: int, size: int, *, failed: bool = False) -> None:
         with self._lock:
             self._outstanding -= count
+            self._outstanding_bytes -= size
             if failed:
                 self._dropped += count
         if self._loop is not None:
@@ -160,16 +168,17 @@ class EventStore:
             rows = self._stats["rows"] + delta if delta is not None else None
             self._stats = disk_stats(self._db, self.path, rows)
 
-    def _write_batch(self, rows: list[dict[str, Any]]) -> None:
+    def _write_batch(self, rows: list[str]) -> None:
+        safe_rows = [_safe_row(raw) for raw in rows]
         self._initialize()
         if self._db is None:
             return
         with self._db:
-            self._db.executemany(
-                "INSERT INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [tuple(row[column] for column in COLUMNS) for row in rows],
+            inserted = self._db.executemany(
+                "INSERT OR IGNORE INTO events (ts,symphony,card_id,run_id,stage,source,kind,level,message,data) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [tuple(row[column] for column in COLUMNS) for row in safe_rows],
             )
-        self._refresh_stats(len(rows))
+        self._refresh_stats(inserted.rowcount)
 
     async def start(self) -> None:
         if self._task is not None:
@@ -181,8 +190,11 @@ class EventStore:
     async def _run(self) -> None:
         next_prune = time.monotonic() + MAINTENANCE_SECONDS
         try:
-            with contextlib.suppress(Exception):
+            try:
                 await self._call(self._initialize)
+                self._writer_state = "idle"
+            except Exception as exc:
+                self._record_error(exc)
             while self._accepting or self._outstanding:
                 self._ready.clear()
                 rows = self._take_batch()
@@ -202,21 +214,42 @@ class EventStore:
             with contextlib.suppress(Exception):
                 await self._call(self._close_connection)
             self._executor.shutdown(wait=False)
+            if self._writer_state != "failed":
+                self._writer_state = "closed"
 
-    def _take_batch(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    def _take_batch(self) -> list[str]:
+        rows: list[str] = []
         while len(rows) < INSERT_BATCH_SIZE and not self._queue.empty():
             rows.append(self._queue.get_nowait())
         return rows
 
-    async def _persist(self, rows: list[dict[str, Any]]) -> None:
-        failed = False
+    def _record_error(self, exc: Exception) -> None:
+        self._writer_state = "failed"
+        # Exception text may contain secrets or attacker input. The class gives
+        # operators a safe failure category without logging back into the store.
+        self._last_error = type(exc).__name__
+
+    async def _persist(self, rows: list[str]) -> None:
+        failed = True
+        delay = RETRY_INITIAL_SECONDS
         try:
-            await self._call(lambda: self._write_batch(rows))
-        except Exception:
-            failed = True
+            for attempt in range(WRITE_ATTEMPTS):
+                self._writer_state = "writing"
+                try:
+                    await self._call(lambda: self._write_batch(rows))
+                except Exception as exc:
+                    self._record_error(exc)
+                    if attempt + 1 < WRITE_ATTEMPTS:
+                        self._writer_state = "retrying"
+                        await asyncio.sleep(delay)
+                        delay = min(delay * RETRY_BACKOFF, RETRY_MAX_SECONDS)
+                else:
+                    failed = False
+                    self._writer_state = "idle"
+                    self._last_error = None
+                    break
         finally:
-            self._finish(len(rows), failed=failed)
+            self._finish(len(rows), sum(map(len, rows)), failed=failed)
             for _ in rows:
                 self._queue.task_done()
 
@@ -232,11 +265,15 @@ class EventStore:
     async def prune(self) -> int:
         try:
             return await self._call(self._prune)
-        except Exception:
+        except Exception as exc:
+            self._record_error(exc)
             return 0
 
     def health(self) -> dict[str, Any]:
-        return {**self._stats, "dropped": self._dropped, "pruned": self._pruned}
+        return {
+            **self._stats, "dropped": self._dropped, "pruned": self._pruned,
+            "writer_state": self._writer_state, "last_error": self._last_error,
+        }
 
     async def query_events(
         self,

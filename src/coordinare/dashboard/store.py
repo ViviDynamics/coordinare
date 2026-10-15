@@ -1,6 +1,7 @@
+"""Dashboard state store: history, watcher and snapshot building (436)."""
+
 from __future__ import annotations
 
-# Dashboard state store: history, watcher and snapshot building (436).
 import asyncio
 import contextlib
 import copy

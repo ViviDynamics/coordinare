@@ -1,10 +1,11 @@
+"""Activity-feed attribution and recording for the monitor (435, 138)."""
+
 from __future__ import annotations
 
-# Activity-feed attribution and recording for the monitor (435, 138).
 import contextlib
 from typing import TYPE_CHECKING, Any
 
-from coordinare.services.event_capture import capture_performer_events
+from coordinare.services.event_capture import capture_performer_events, performer_feed_capture
 from coordinare.services.workflow_step import is_step_event
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ def _record_activity_batch(
     if log is None:
         return
     attribution = _activity_attribution(state, card_id, stage)
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception), performer_feed_capture():
         log.record_many([
             {
                 **_feed_fields(ev),
