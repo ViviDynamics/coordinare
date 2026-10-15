@@ -45,23 +45,28 @@ from coordinare.bench.artifact import (
     Timing,
 )
 from coordinare.bench.fixtures import apply_solution_branch, materialize_repo, seed_board
-from coordinare.bench.pricing import combine, price_table_for_run, price_tokens
+from coordinare.bench.pricing import combine, price_dispatch, price_table_for_run
 from coordinare.bench.recording_performer import RecordingPerformer, is_recorder
+from coordinare.config import TranscriptsConfig
 from coordinare.daemon import CoordinareDaemon
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.graph.state import _set_current_card
 from coordinare.services import performer_lifecycle
 from coordinare.services.fake_github import FakeGitHubService
+from coordinare.services.run_transcript import RootGuard, make_collector
 
 if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
     from coordinare.config import CoordinareConfiguration
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.run_transcript import TranscriptCollector
     from coordinare.services.token_usage import PriceTable
 
 logger = structlog.get_logger(__name__)
 
 _TERMINAL_COLUMNS = {"DONE": "merged", "BLOCKED": "blocked"}
+#: Where a real run's transcripts go, under its run directory (spec 242).
+_RUN_TRANSCRIPTS_DIR = "transcripts"
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -121,6 +126,10 @@ def _make_stub_dispatch(
             "status": "succeeded",
             "started_at": started,
             "finished_at": datetime.now(UTC),
+            # 242: the stub makes no model calls, so it reports zero tokens of every kind
+            # (an empty per-model usage) and prices at zero, not unknown.
+            "tokens_processed": 0,
+            "usage": {},
         })
         return state
 
@@ -181,7 +190,9 @@ def _head_ref_index(fixtures_by_card: dict[str, Fixture]) -> dict[str, str]:
     return {make_branch_name(cid, fx.title): cid for cid, fx in fixtures_by_card.items()}
 
 
-def _build_bench_performer_services(config: Any) -> dict[str, Any]:
+def _build_bench_performer_services(
+    config: Any, transcripts: TranscriptCollector | None = None,
+) -> dict[str, Any]:
     """Register one RecordingPerformer(HTTPPerformerService) per lifecycle stage.
 
     ponytail: a single-card bench needs no slot pools — each ephemeral endpoint
@@ -199,7 +210,7 @@ def _build_bench_performer_services(config: Any) -> dict[str, Any]:
     for ep in getattr(config, "performer_endpoints", []):
         if ep.mode == "subprocess":
             continue
-        svc = RecordingPerformer(HTTPPerformerService(ep))
+        svc = RecordingPerformer(HTTPPerformerService(ep, transcripts=transcripts))
         for role in ep.roles:
             stage = _ROLE_TO_STAGE.get(role, role)
             services.setdefault(stage, svc)
@@ -418,6 +429,9 @@ async def run_board(
 
     real_services: dict[str, Any] | None = None
     run_error: str | None = None
+    # 242: a real run keeps its transcripts under the run directory, so every dispatch's
+    # per-kind usage is on disk and in the ledger to price from. Stub runs make no model calls.
+    transcripts = None if stub else _run_transcripts(run_dir)
     try:
         if not stub:
             real_services = await _setup_real_mode(
@@ -429,6 +443,7 @@ async def run_board(
                 config=real_config,
                 config_path=config_path,
                 performer_services=performer_services,
+                transcripts=transcripts,
             )
         if stub:
             await daemon.start()
@@ -492,6 +507,8 @@ async def run_board(
 
     if not stub and real_services is not None:
         dispatch_log = _records_to_dispatch_log(real_services)
+    if transcripts is not None:
+        _attach_transcript_usage(dispatch_log, transcripts)
 
     finished_at = datetime.now(UTC)
     board = await fake.poll_board()
@@ -526,6 +543,7 @@ async def _setup_real_mode(
     config: Any,
     config_path: str | Path | None,
     performer_services: dict[str, Any] | None,
+    transcripts: TranscriptCollector | None = None,
 ) -> dict[str, Any]:
     """Wire the daemon for a real-performer run: start the fake boundary, point the
     coordinare's git/REST/graphql at loopback, and register real performer services."""
@@ -557,7 +575,7 @@ async def _setup_real_mode(
         "github_graphql_url": real_server.performer_graphql_url,
     })
 
-    services = performer_services or _build_bench_performer_services(config)
+    services = performer_services or _build_bench_performer_services(config, transcripts)
 
     daemon.state["config"] = config
     daemon.state["config_path"] = str(config_path) if config_path else None
@@ -568,6 +586,35 @@ async def _setup_real_mode(
     daemon.state["lifecycle_sequence"] = _FULL_LIFECYCLE_SEQUENCE
     daemon.state["performer_stage"] = _FULL_LIFECYCLE_SEQUENCE[0]
     return services
+
+
+def _run_transcripts(run_dir: Path) -> TranscriptCollector:
+    """The transcript collector of one real run, rooted under its run directory (spec 242).
+
+    Transcription is always on for a bench run: the per-kind usage it writes is what a real
+    dispatch is priced from. Limits come from the default ``transcripts`` config block.
+    """
+    defaults = TranscriptsConfig()
+    return make_collector(
+        enabled=True,
+        root=run_dir / _RUN_TRANSCRIPTS_DIR,
+        max_bytes_per_run=defaults.max_bytes_per_run,
+        retention_days=defaults.retention_days,
+        guard=RootGuard(),
+    )
+
+
+def _attach_transcript_usage(dispatch_log: list[dict[str, Any]], transcripts: TranscriptCollector) -> None:
+    """Give each dispatch its per-model usage from the ledger, keyed by its session id (spec 242).
+
+    A dispatch whose session wrote no usage gets no entry (``usage`` is None), so it is priced
+    as unknown rather than as zero. Stub entries already carry their own usage and are left alone.
+    """
+    session_ids = [d["session_id"] for d in dispatch_log if d.get("session_id") and "usage" not in d]
+    found = transcripts.usage.totals_by_run(session_ids)
+    for entry in dispatch_log:
+        if "usage" not in entry:
+            entry["usage"] = found.get(entry.get("session_id") or "")
 
 
 def _human_logins(fake: FakeGitHubService) -> set[str]:
@@ -636,6 +683,7 @@ def _build_artifact(
             GateDecision(stage="ci", verdict="pass" if c.conclusion == "success" else "bounce", head_sha=c.head_sha)
             for c in ci_results
         ]
+        card_log = [d for d in dispatch_log if d["card_id"] == card_id]
         dispatches = [
             PersonaDispatch(
                 stage=d["stage"], role=d.get("role", ""), status=d["status"],
@@ -647,7 +695,7 @@ def _build_artifact(
                 started_at=d["started_at"], finished_at=d["finished_at"],
                 seconds=d.get("seconds"), poll_error=d.get("poll_error"),
             )
-            for d in dispatch_log if d["card_id"] == card_id
+            for d in card_log
         ]
         # Distinct stages in dispatch order (real mode records many; stub, one).
         reached_stages: list[str] = []
@@ -657,8 +705,8 @@ def _build_artifact(
         # 206: each dispatch is priced with its own model. Cost is unknown, never zero,
         # when a dispatch has no token count or its model has no price.
         dispatch_costs = []
-        for dispatch in dispatches:
-            priced = price_tokens(dispatch.tokens_processed, dispatch.model, price_table)
+        for dispatch, entry in zip(dispatches, card_log, strict=True):
+            priced = price_dispatch(entry.get("usage"), dispatch.tokens_processed, dispatch.model, price_table)
             dispatch.cost_usd = priced.cost_usd
             dispatch.cost_unknown_reason = priced.unknown_reason
             dispatch.cost_basis = priced.basis

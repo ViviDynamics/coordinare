@@ -4,11 +4,14 @@ The bench and the daemon read one table, ``cost_tracking.prices`` (spec 134), th
 same loader (``price_table_from_config``). A model with no price has unknown cost and the
 reason is recorded. No flat rate is ever applied to a model.
 
-A bench dispatch records one total token count, not a split by kind: performers report a
-single ``tokens_processed``. A total cannot be priced honestly, because output and cache
-tokens cost different amounts, so a total-only dispatch is unknown with the reason
-``SPLIT_NOT_REPORTED_REASON``. Exact pricing (``price_counts``) needs the per-kind counts,
-which no bench substrate reports today.
+A bench dispatch has two token figures. ``tokens_processed`` is the performer's single
+total, and a total cannot be priced honestly, because output and cache tokens cost different
+amounts. A real-performer dispatch (spec 151) also writes a transcript (spec 129) whose
+``usage`` records carry the per-kind counts, and the daemon's ledger (spec 134) keys them by
+the dispatch's session id. Spec 242 prices from that ledger exactly (``price_usage``). A
+total-only dispatch, with no transcript usage, stays unknown with the split reason.
+A stub dispatch makes no model calls, so it reports zero tokens of every kind and is priced
+at zero (``BASIS_NO_MODEL_CALLS``).
 
 Unknown is never zero. A dispatch with no token count, no kind split, or a model with no
 price yields ``cost_usd=None`` with the reason. Rollups sum only what is priced and say so
@@ -32,10 +35,12 @@ from coordinare.services.token_usage import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
 #: How a cost was derived. Stored on every priced dispatch, card and run.
 BASIS_PER_KIND = "exact_per_kind_counts"
+#: The dispatch made no model calls, so its zero tokens of every kind price at zero (stub).
+BASIS_NO_MODEL_CALLS = "no_model_calls"
 
 NO_TOKENS_REASON = "no token count was reported for this dispatch"
 SPLIT_NOT_REPORTED_REASON = "token split by kind not reported"
@@ -57,6 +62,38 @@ def price_counts(counts: UsageCounts, model: str | None, table: PriceTable, *, b
     if priced.cost_usd is None:
         return TokenCost(None, priced.unknown_reason, None)
     return TokenCost(to_usd(priced.cost_usd), None, basis)
+
+
+def price_usage(usage: Mapping[str | None, UsageCounts], table: PriceTable, *, basis: str) -> TokenCost:
+    """Price a dispatch's per-model usage exactly: each kind at its model's own rate (spec 242).
+
+    ``usage`` maps each model to its four counts, as the transcript ledger reports them. A
+    model with no price, or no recorded model, makes the whole cost unknown with the reason.
+    """
+    priced = price_totals(usage, table)
+    if priced.cost_usd is None:
+        return TokenCost(None, priced.unknown_reason, None)
+    return TokenCost(to_usd(priced.cost_usd), None, basis)
+
+
+def price_dispatch(
+    usage: Mapping[str | None, UsageCounts] | None,
+    tokens: int | None,
+    model: str | None,
+    table: PriceTable,
+) -> TokenCost:
+    """Price one dispatch from its transcript usage when it has any, else from its total (spec 242).
+
+    ``usage`` is None when the dispatch wrote no transcript usage. Its cost then falls back to
+    the total, which cannot be priced, and the total's reason says why (the split by kind was
+    not reported). An empty mapping is a dispatch that made no model calls (the stub
+    substrate): zero of every kind is zero dollars at any rate, and the basis says so.
+    """
+    if usage is None:
+        return price_tokens(tokens, model, table)
+    if not usage:
+        return TokenCost(0.0, None, BASIS_NO_MODEL_CALLS)
+    return price_usage(usage, table, basis=BASIS_PER_KIND)
 
 
 def price_tokens(tokens: int | None, model: str | None, table: PriceTable) -> TokenCost:
