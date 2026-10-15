@@ -169,3 +169,32 @@ and harness-turn counts are available in workflow metrics. A timeout stops the i
 cancelling verification also kills its process group. The workflow adds no planning/judging
 model calls. Removing `workflow` preserves the legacy bootstrap behavior, including its
 degraded missing-verifier handling. No workflow is inherited from a fallback implementer role.
+
+## Kubernetes bootstrap verifier
+
+Roll daemon and performer together, including the verifier image. The daemon selects the trusted image through
+`kubernetes_verifier_image`; it defaults to the daemon's `performer_image`, currently `coordinare-performer:full`.
+Symphony endpoint images cannot select the verifier. Empty or malformed explicit settings fail validation. Set an
+immutable image digest if registry content pinning is required. In Helm set `config.kubernetes_verifier_image` and
+`performers.imagePullSecrets` for a private registry. Both initial verification and claim rechecks use those settings.
+
+The pod runs with fixed UID and GID 10001, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, no privilege escalation,
+all capabilities dropped and a read only root filesystem. `/tmp` is a writable `emptyDir` and also `HOME`.
+`enableServiceLinks` and service account token automount are disabled. No `fsGroup` changes the read only claim.
+Claim files must be world readable or readable by UID/GID 10001; directories must allow traversal and tool binaries
+must be executable. Root bootstrap writers must preserve these permissions.
+
+Schema v38 stores the frozen claim summary and the stat refusal counter. The first bootstrap after deployment runs
+the trusted walk and clean verification in one pod before enabling consumers. Older successful caches without a
+summary require one verified bootstrap. A restored current summary requires a walk only recheck before use.
+Kubernetes consumer payload version 2 requires a stat digest. Daemon and performer must support it together.
+
+Verification reads a bounded log tail and requires the sentinel to be the final nonempty line. Missing sentinels and
+walker infrastructure errors refuse transiently. Image pull and container configuration failures stop immediately.
+The entire serialized verifier pod has a 768 KiB bound, including base64 inputs; oversized pods refuse as
+infrastructure before creation. More than three confirmed consumer stat refusals request regeneration through the
+bootstrap budget, with an operator visible reason. The counter survives restart and resets on a successful consumer or new bootstrap
+freeze. Infrastructure rechecks do not consume this allowance.
+
+Live cluster validation remains an operational follow up. The pod has no network isolation beyond deployment policy;
+configure and validate any required egress controls separately.

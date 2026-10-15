@@ -21,7 +21,7 @@ from performer.degeneracy import (
     DegenerateArtifactError,
     classify_text,
 )
-from performer.env_provenance import frozen_scripts_dir
+from performer.env_provenance import ProvenanceMaterialiseError, frozen_scripts_dir, write_replacing
 from performer.models import Score, Stand
 from performer.noise_paths import exclude_globs, path_has_agent_config
 from performer.workflows.implementer.commits import (
@@ -1125,52 +1125,102 @@ async def run_service_readiness(
     return True, []
 
 
-async def run_env_cache_verify(
-    env_cache_path: str, cache_env: dict[str, str] | None = None,
-) -> tuple[bool | None, str]:
-    """Run ``<env_cache_path>/verify.sh`` to confirm the bootstrap installed
-    what the spec files require, BEFORE the bootstrap reports success.
+_VERIFY_SCRIPT_MODE = 0o600
+VERIFY_BASIS_DAEMON_RENDERED = "daemon_rendered"
+VERIFY_BASIS_CACHE_FILE = "cache_file"
+_VERIFY_TIMEOUT_S = 180.0
+# 265: the verify shell is not the devenv profile. BASH_ENV and ENV stop the profile from unpacking debs or
+# sourcing the cache's activate.sh before the script reads stdin. The same guards the daemon's clean verify uses.
+_VERIFY_SHELL_GUARDS = {
+    "BASH_ENV": "",
+    "ENV": "",
+    "_DEVENV_SOURCED": "1",
+    "_DEVENV_SKIP_SERVICES": "1",
+}
 
-    077: the bootstrap agent writes ``verify.sh`` asserting every installed
-    dependency is present + runnable (it sources activate.sh, then invokes the
-    tools). The env_bootstrap performer runs it after the install turn and
-    FAILS the bootstrap on a non-zero exit — so a silent install failure (e.g.
-    an ``apt-get install`` that located no package) can no longer be reported as
-    success and have the cache marked ready. "Confirm installation before
-    exiting."
+
+def _stage_verify_text(verify_text: str) -> tuple[Path, Path]:
+    """265 (review B2): the daemon's verify text as a private file, in a fresh 0700 directory outside the cache and the
+    checkout. Returns (directory, script). The caller removes the directory after the run.
+
+    Raises ``ProvenanceMaterialiseError`` for text that is not valid UTF-8, and ``OSError`` if it cannot be written.
+    """
+    try:
+        data = verify_text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        message = "the verify text is not valid UTF-8"
+        raise ProvenanceMaterialiseError(message) from exc
+    private_dir = Path(tempfile.mkdtemp(prefix="coordinare-verify-"))
+    script = private_dir / "verify.sh"
+    try:
+        write_replacing(script, data, _VERIFY_SCRIPT_MODE)
+    except ProvenanceMaterialiseError:
+        shutil.rmtree(private_dir, ignore_errors=True)
+        raise
+    return private_dir, script
+
+
+async def run_env_cache_verify(
+    env_cache_path: str,
+    cache_env: dict[str, str] | None = None,
+    *,
+    cwd: str | None = None,
+    verify_text: str | None = None,
+) -> tuple[bool | None, str]:
+    """Run the bootstrap's verification to confirm the install, BEFORE the bootstrap reports success.
+
+    The script is the daemon's when ``verify_text`` is given (265). It is piped to ``bash -s``, so the cache copy
+    of verify.sh is never read for the decision. Without it (an older daemon) the cache's ``verify.sh`` runs.
+    Either way it runs with ``cwd`` set to the repo checkout, so ``bundle`` and ``.ruby-version`` resolve the way
+    the agent saw them. ``DEVENV`` is the cache mount path, and ``COORDINARE_REPO_DIR`` is the checkout.
 
     Returns ``(passed, detail)``:
-      * ``passed is None``  → verify.sh absent (not run; caller treats as a
-        degraded-but-not-failed legacy bootstrap for backward compatibility).
-      * ``passed is False`` → verify.sh ran and failed (or errored/timed out).
-      * ``passed is True``  → verify.sh passed.
+      * ``passed is None``  -> no script to run (no daemon text and no verify.sh in the cache). The caller treats
+        it as a degraded, legacy bootstrap.
+      * ``passed is False`` -> the script ran and failed, or errored or timed out.
+      * ``passed is True``  -> the script passed. ``verify_basis`` tells which script that was.
     """
     if not env_cache_path:
         return None, "no env_cache_path"
-    verify = Path(env_cache_path) / "verify.sh"
-    if not verify.is_file():
-        return None, "verify.sh absent"
-    env = {**os.environ, **(cache_env or {})}
+    private_dir: Path | None = None
+    if verify_text is None:
+        script = Path(env_cache_path) / "verify.sh"
+        if not script.is_file():
+            return None, "verify.sh absent"
+    else:
+        try:
+            private_dir, script = _stage_verify_text(verify_text)
+        except (ProvenanceMaterialiseError, OSError) as exc:
+            return False, f"verify text refused: {exc}"
+    env = {**os.environ, **(cache_env or {}), "DEVENV": env_cache_path, **_VERIFY_SHELL_GUARDS}
+    if cwd:
+        env["COORDINARE_REPO_DIR"] = cwd
     proc = None
     try:
+        # 265 (review B2): the script is a file, never stdin, and the child's stdin is closed. A child that reads
+        # stdin cannot swallow the rest of the script.
         proc = await asyncio.create_subprocess_exec(
-            "bash", str(verify),
+            "bash", str(script),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
+            cwd=cwd or None,
             start_new_session=True,
         )
-        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180.0)
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=_VERIFY_TIMEOUT_S)
     except (OSError, asyncio.TimeoutError) as exc:
         log.warning(
             "env_cache.verify_errored", env_cache_path=env_cache_path, error=str(exc),
         )
-        return False, f"verify.sh did not run cleanly: {exc}"
+        return False, f"verify did not run cleanly: {exc}"
     finally:
         # 174: an outer workflow cancellation must not leave verify or its
         # children writing into the cache after the run has ended.
         if proc is not None:
             await _kill_cache_process_group(proc)
+        if private_dir is not None:
+            shutil.rmtree(private_dir, ignore_errors=True)
     out = out_b.decode(errors="replace")
     if proc.returncode != 0:
         log.warning(
@@ -1178,14 +1228,27 @@ async def run_env_cache_verify(
             env_cache_path=env_cache_path,
             returncode=proc.returncode,
             output_tail=out[-500:],
+            verify_basis=verify_basis_for(verify_text, passed=False),
         )
         return False, out[-1000:]
     log.info(
         "env_cache.verify_passed",
         env_cache_path=env_cache_path,
         output_tail=out[-200:],
+        verify_basis=verify_basis_for(verify_text, passed=True),
     )
     return True, out[-500:]
+
+
+def verify_basis_for(verify_text: str | None, *, passed: bool | None) -> str | None:
+    """265: which script decided a verify result. None unless the verify passed.
+
+    A pass on the daemon's text is ``daemon_rendered``. A pass on the cache copy (an older daemon) is
+    ``cache_file``. Coordinare fails closed on Kubernetes unless the basis is ``daemon_rendered``.
+    """
+    if passed is not True:
+        return None
+    return VERIFY_BASIS_DAEMON_RENDERED if verify_text is not None else VERIFY_BASIS_CACHE_FILE
 
 
 def stop_env_cache_services(

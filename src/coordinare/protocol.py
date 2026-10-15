@@ -108,6 +108,7 @@ class ProtocolResponse(BaseModel):
     # non-zero during workspace setup. Coordinare's daemon glue routes this
     # into EnvCacheService.mark_runtime_health_failed for forced regen.
     env_cache_health_failed: bool = False
+    env_cache_stat_mismatch: bool = False
     # 089: performer sets True when the implementer local-test gate ran the
     # detected test_command and it failed for a code reason (not env). The
     # monitor uses this on changes_requested to drive the bounded self-fix loop.

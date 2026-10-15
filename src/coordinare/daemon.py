@@ -5,7 +5,7 @@ import contextlib
 import copy
 import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -76,8 +76,19 @@ from coordinare.services.env_bootstrap_control import (
     BOOTSTRAP_OPEN_TOOL_LIMIT_SECONDS,
     BootstrapTools,
 )
-from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, budget_max_attempts
+from coordinare.services.env_cache import (
+    DEFAULT_DEVENV_ROOT,
+    budget_max_attempts,
+    daemon_sees_performer_cache,
+)
+from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
 from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.kubernetes_provenance import parse_summary
+from coordinare.services.kubernetes_verifier import (
+    PROJECT_FILE_PATHS,
+    VerifierSpec,
+    configured_verifier_image,
+)
 from coordinare.services.merge_review_gate import (
     DEFAULT_TARGET_BRANCH,
     ReviewProbe,
@@ -131,6 +142,7 @@ if TYPE_CHECKING:
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
     from coordinare.models.env_cache import BootstrapJobPayload
+    from coordinare.services.env_provenance import ProvenanceLimits
     from coordinare.services.intake_dispatch import IntakeRole
 
 logger = structlog.get_logger(__name__)
@@ -711,6 +723,14 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             # 234: the frozen-provenance digest survives a restart; the manifest is re-checked against it.
             provenance_digest=get("provenance_digest"),
             provenance_frozen_at=get("provenance_frozen_at"),
+            bootstrap_commit_sha=get("bootstrap_commit_sha"),
+            provenance_stat_digest=get("provenance_stat_digest"),
+            provenance_inputs=get("provenance_inputs"),
+            provenance_entry_count=int(get("provenance_entry_count") or 0),
+            provenance_total_bytes=int(get("provenance_total_bytes") or 0),
+            runtime_repair_budget=bool(get("runtime_repair_budget") or False),
+            consumer_stat_refusals=int(get("consumer_stat_refusals") or 0),
+            bootstrap_budget_sha=get("bootstrap_budget_sha"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
@@ -1021,6 +1041,14 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             # 234: the frozen-provenance digest, re-checked against the manifest file before any use.
             live.provenance_digest = persisted.provenance_digest
             live.provenance_frozen_at = persisted.provenance_frozen_at
+            live.bootstrap_commit_sha = persisted.bootstrap_commit_sha
+            live.provenance_stat_digest = persisted.provenance_stat_digest
+            live.provenance_inputs = persisted.provenance_inputs
+            live.provenance_entry_count = persisted.provenance_entry_count
+            live.provenance_total_bytes = persisted.provenance_total_bytes
+            live.runtime_repair_budget = persisted.runtime_repair_budget
+            live.consumer_stat_refusals = persisted.consumer_stat_refusals
+            live.bootstrap_budget_sha = persisted.bootstrap_budget_sha
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
@@ -4102,7 +4130,7 @@ class CoordinareDaemon:
         )
 
     async def _verify_bootstrap_in_clean_context(
-        self, symphony_name: str, svc: Any, job_id: str,
+        self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None = None,
     ) -> tuple[bool, str | None, bool]:
         """077 authoritative clean-context verify: re-run the daemon-rendered verify.sh in a
         clean consumer container. Returns the (ok, boot_err) pair to record.
@@ -4110,9 +4138,14 @@ class CoordinareDaemon:
         218: only a run that PASSED counts. A non-zero exit, a refusal and a run that could not
         start all fail the bootstrap. This is the one decision point where nothing performer-
         written can stand in for the verification, and the 088 breaker bounds the retries.
+
+        265: Kubernetes runs the clean-room verifier pod over the claim and accepts only its verdict
+        plus a validated provenance summary. The bootstrap performer's self-report is advisory.
         """
         # 266: the workload is done and the verify is running. Visible only; the verify is unchanged.
         mark_verifying(self._state, symphony_name)
+        if not daemon_sees_performer_cache(self._state):
+            return await self._verify_bootstrap_on_kubernetes(symphony_name, svc, job_id, env_verify_basis)
         _clean_ok, _clean_detail = await self._verify_env_cache_clean(
             symphony_name, svc,
         )
@@ -4130,6 +4163,129 @@ class CoordinareDaemon:
                 f"env verification failed in a clean consumer context: {_clean_detail}"
             ), _clean_ok is None
         return True, None, False
+
+    def _symphony_repo(self, symphony_name: str) -> tuple[str, str] | None:
+        """265: the (org, repo) a symphony's bootstrap reads, as the bootstrap derives them, or None when unknown."""
+        cfg = (self._state.get("symphony_configs") or {}).get(symphony_name)
+        global_cfg = self._state.get("coordinare_config")
+        if cfg is None or global_cfg is None:
+            return None
+        eff = cfg.effective_config(global_cfg.global_config)
+        return str(eff.github_org), str(eff.project_name or symphony_name)
+
+    async def _fetch_project_files(self, symphony_name: str, sha: str | None) -> dict[str, str] | None:
+        """265: the verifier's project files, read from the bootstrap's commit (never the agent's checkout).
+
+        None when the symphony's repository or the GitHub service cannot be resolved. A listed file the commit does not
+        have is simply not passed in.
+        """
+        github = (self._state.get("symphony_github_services") or {}).get(symphony_name) or self._state.get("github_service")
+        repo = self._symphony_repo(symphony_name)
+        if github is None or repo is None or not sha:
+            return None
+        org, name = repo
+        files: dict[str, str] = {}
+        for path in PROJECT_FILE_PATHS:
+            text = await github.get_file_content(org, name, path, ref=sha)
+            if text is not None:
+                files[path] = text
+        return files
+
+    def _clean_room_refusal(self, symphony_name: str, svc: Any) -> str | None:
+        """265: why the clean-room verifier cannot run for this bootstrap, or None when it can."""
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if not isinstance(ec, EnvCacheState) or ec.rendered_verify_sh is None or ec.rendered_activate_sh is None:
+            return "env verification failed: no daemon-rendered scripts on record for the clean-room verifier"
+        if not getattr(getattr(svc, "_runtime", None), "verifies_clean_room", False):
+            return (
+                "env verification failed: this performer runtime cannot run the clean-room verifier pod "
+                "(kubernetes only); upgrade or reconfigure the performer"
+            )
+        return None
+
+    @staticmethod
+    def _clean_room_verdict(ok: bool | None, detail: str) -> tuple[bool, str | None, bool]:
+        """265: the completion triple for a verifier result. Only a pass counts, and a verifier that could not run is
+        infrastructure, not a verdict."""
+        if ok is True:
+            return True, None, False
+        if ok is None:
+            return False, f"env verification could not run in the clean-room verifier: {detail}", True
+        return False, f"env verification failed in the clean-room verifier: {detail}", False
+
+    async def _verify_bootstrap_on_kubernetes(
+        self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None,
+    ) -> tuple[bool, str | None, bool]:
+        """265: the Kubernetes completion verdict is the clean-room verifier pod, not the bootstrap's self-report.
+
+        The verifier mounts the claim read-only, with no checkout and no agent, and runs the daemon's rendered verify.sh
+        against the project files from the bootstrap's commit. Only a pass counts. The bootstrap's own verify is advisory
+        here, so ``env_verify_basis`` is logged and never decides. A verifier that could not run is infrastructure.
+        """
+        refusal = self._clean_room_refusal(symphony_name, svc)
+        if refusal is not None:
+            return False, refusal, False
+        ec = (self._state.get("env_cache") or {})[symphony_name]
+        ec.verifier_provenance = None
+        cache_service = self._state.get("env_cache_service")
+        limits = cache_service._provenance_limits() if cache_service is not None else DEFAULT_LIMITS
+        bootstrap_sha = ec.bootstrap_commit_sha
+        bootstrap_activate = ec.rendered_activate_sh
+        try:
+            image = configured_verifier_image(self._state.get("coordinare_config"))
+            files = await self._fetch_project_files(symphony_name, bootstrap_sha)
+        except Exception as exc:
+            return False, f"env verification could not resolve the image or project files at the bootstrap SHA: {type(exc).__name__}", True
+        if files is None:
+            return False, "env verification could not resolve the symphony repository for the clean-room verifier", True
+        spec = VerifierSpec(
+            image=image,
+            cache_claim="",  # the runtime owns the claim it mounts
+            cache_subpath=ec.sanitised_name,
+            mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
+            verify_text=str(ec.rendered_verify_sh),
+            project_files=files,
+            max_entries=limits.max_entries,
+            max_bytes=limits.max_bytes,
+        )
+        try:
+            ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
+        except ValueError as exc:
+            return False, f"env verification refused the pod inputs: {exc}", True
+        logger.info(
+            "env_cache.clean_room_verify",
+            symphony=symphony_name,
+            job_id=job_id,
+            transport="kubernetes",
+            passed=ok,
+            bootstrap_verify_basis=env_verify_basis,
+        )
+        if ok is not True:
+            return self._clean_room_verdict(ok, detail)
+        walk_spec = replace(spec, verify_text="", project_files={}, walk_only=True,
+                            activate_text=bootstrap_activate)
+        return await self._verify_bootstrap_claim(svc, ec, walk_spec, bootstrap_sha, limits)
+
+    async def _verify_bootstrap_claim(
+        self, svc: Any, ec: EnvCacheState, walk_spec: VerifierSpec, bootstrap_sha: str,
+        limits: ProvenanceLimits,
+    ) -> tuple[bool, str | None, bool]:
+        """Freeze only the isolated walk output after verification has finished."""
+        # run_verifier returns only after removal is confirmed. The next pod executes
+        # trusted walker code only. Read only mounts keep the verified content unchanged.
+        try:
+            walk_ok, walk_detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=walk_spec)
+            if walk_ok is None:
+                return self._clean_room_verdict(walk_ok, walk_detail)
+            ec.verifier_provenance = parse_summary(
+                walk_detail, ec.rendered_activate_sh or "", limits,
+                inputs_current=ec.bootstrap_commit_sha == bootstrap_sha and ec.rendered_activate_sh == walk_spec.activate_text,
+            )
+        except (ProvenanceTransientError, ValueError, UnicodeError, RecursionError) as exc:
+            return False, f"env verification refused the provenance result: {exc}", isinstance(exc, ProvenanceTransientError)
+        if not walk_ok:
+            ec.verifier_provenance = None
+        return self._clean_room_verdict(walk_ok, walk_detail)
 
     async def _quiesce_bootstrap_container(self, svc: Any, container_id: str | None, symphony_name: str) -> bool:
         """218 (review round 3): True only when the bootstrap workload is proven unable to write the cache.
@@ -4314,6 +4470,7 @@ class CoordinareDaemon:
         if ok:
             ok, _boot_err, infra = await self._verify_bootstrap_in_clean_context(
                 symphony_name, svc, job_id,
+                env_verify_basis=status_result.get("env_verify_basis"),
             )
         # 234: freeze what was just verified. Consumers run only this frozen copy, and any later change to the
         # cache is refused at dispatch. A refusal (a bound, a link out of the cache) fails the bootstrap.

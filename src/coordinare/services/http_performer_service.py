@@ -71,6 +71,8 @@ if TYPE_CHECKING:
     from coordinare.services.run_transcript import RunTranscriptWriter, TranscriptCollector
     from coordinare.workspace import WorkspaceInfo
 
+_STAT_PROVENANCE_CAPABILITY_VERSION = 2
+
 logger = structlog.get_logger(__name__)
 
 
@@ -540,6 +542,8 @@ class HTTPPerformerService:
             except (PerformerAuthError, PerformerUnreachableError, TransportError) as exc:
                 message = f"performer status unavailable for env-cache provenance (#234): {exc}"
                 raise ValueError(message) from exc
+        if payload.env_provenance.get("stat_digest") is not None and version < _STAT_PROVENANCE_CAPABILITY_VERSION:
+            raise ValueError("performer image too old for Kubernetes stat provenance (#265); roll out daemon and performer together")
         refusal = image_capability_refusal(provenance_sent=True, performer_version=version)
         if refusal is not None:
             logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=refusal)
@@ -2004,6 +2008,28 @@ class HTTPPerformerService:
         )
 
     @staticmethod
+    def _verifier_context_block(cache_mount_path: str) -> str:
+        """265: where the bootstrap's work is checked, stated before anything else so the agent installs for that world.
+
+        Written for the verifier pod: the cache read-only at the same path, the project files from the commit, and the env
+        the verify will see. A verify run in this container is a pre-check only.
+        """
+        return (
+            "VERIFICATION CONTEXT (where your work is checked; this block is authoritative): your work is checked by a "
+            "separate verifier pod, not in this container. The pod starts after this one exits. It has:\n"
+            "  - NO checkout of your work. The project files it reads (Gemfile, Gemfile.lock, .ruby-version, "
+            ".tool-versions) are copied from the commit, so a vendored or edited copy you leave in the cache is ignored.\n"
+            f"  - the devenv cache mounted READ-ONLY at {cache_mount_path} (the same path you install into). The toolchain "
+            f"and every gem must be installed under {cache_mount_path}.\n"
+            f"  - the environment: DEVENV={cache_mount_path}; COORDINARE_REPO_DIR set to its copy of the repo; "
+            "BUNDLE_GEMFILE set to the commit's Gemfile; BUNDLE_PATH set to the bundle location, a relative path in "
+            ".bundle/config resolving against the cache root; BASH_ENV and ENV empty; stdin closed; no GitHub credentials.\n"
+            "Install so the verify passes in that layout. Point bundler at a path under the cache. Running verify.sh in "
+            "this container is a pre-check only; the verifier pod's result is the decision. The spec files below describe "
+            "the project.\n\n"
+        )
+
+    @staticmethod
     def _render_service_install_block(declared_services: list[Any], cache_mount_path: str) -> str:
         """Render the SYSTEM SERVICES install block for declared stateful services (091).
 
@@ -2102,6 +2128,9 @@ class HTTPPerformerService:
         dependency_checklist = str(card_context.get("dependency_checklist") or "").strip()
         verify_provided = bool(card_context.get("verify_provided"))
         activate_provided = bool(card_context.get("activate_provided"))
+        # 265: on Kubernetes the verifier pod decides, so the context block says where and how, and comes first.
+        clean_room = bool(getattr(getattr(self, "_runtime", None), "verifies_clean_room", False))
+        verifier_context = self._verifier_context_block(cache_mount_path) if clean_room else ""
 
         secrets: dict[str, str] = {}
         # 092: THE load-bearing dry-run fix. The service-inference start-phase
@@ -2188,17 +2217,26 @@ class HTTPPerformerService:
         # 077: when coordinare has written an authoritative verify.sh from the
         # manifest, the agent must RUN it (not author it) — coordinare owns the
         # verification contract. Otherwise fall back to having the agent write one.
-        if verify_provided:
+        if verify_provided and clean_room:
+            # 265: the verifier context block (first in the persona) says where verification runs.
+            verify_block = ""
+        elif verify_provided:
+            # 265: say exactly where and how verification runs, so the agent can reproduce it.
             verify_block = (
                 "VERIFICATION (coordinare-owned): an authoritative verify.sh has "
-                f"ALREADY been written at {cache_mount_path}/verify.sh — it is the "
-                "contract that decides whether this bootstrap succeeded. Do NOT "
-                "create, overwrite, or delete it. After installing, RUN it yourself "
-                f"(`bash {cache_mount_path}/verify.sh`); if it exits non-zero, FIX "
-                "the missing/broken dependency it reports (especially a pinned "
-                "language-runtime version) and re-run until it passes. Do NOT end "
-                "your turn until verify.sh passes — confirm the installation before "
-                "exiting.\n\n"
+                f"ALREADY been written at {cache_mount_path}/verify.sh. It is the "
+                "contract that decides whether this bootstrap succeeded. coordinare "
+                "writes its own copy over that file when this job starts, so an edit "
+                "you make to it is discarded and does not change the decision. Do NOT "
+                "create, overwrite, or delete it. Coordinare runs it from your REPO "
+                "CHECKOUT (your working directory when you start), with DEVENV="
+                f"{cache_mount_path} and COORDINARE_REPO_DIR set to that checkout. "
+                "After installing, reproduce that exact run: `cd <your repo checkout> "
+                f"&& DEVENV={cache_mount_path} bash {cache_mount_path}/verify.sh`. If it "
+                "exits non-zero, FIX the missing/broken dependency it reports (especially "
+                "a pinned language-runtime version) and re-run until it passes. Do NOT end "
+                "your turn until verify.sh passes from the checkout, and confirm the "
+                "installation before exiting.\n\n"
             )
         else:
             verify_block = (
@@ -2214,8 +2252,8 @@ class HTTPPerformerService:
                 "if verify.sh passes — a silent install failure here fails the whole "
                 "bootstrap and triggers a retry, so make the checks real (actually "
                 "invoke the tools, do not just test for file existence).\n\n"
-                "FINALLY, before you finish: run verify.sh yourself "
-                f"(`sh {cache_mount_path}/verify.sh`). If it exits non-zero, FIX the "
+                "FINALLY, before you finish: run verify.sh yourself from your repo checkout "
+                f"(`cd <your repo checkout> && bash {cache_mount_path}/verify.sh`). If it exits non-zero, FIX the "
                 "missing/broken dependency and re-run it. Do NOT end your turn until "
                 "verify.sh passes — confirm the installation before exiting.\n\n"
             )
@@ -2291,12 +2329,18 @@ class HTTPPerformerService:
             "exists (`ruby -v`, `node -v`) BEFORE moving on.\n"
             "  2. Install the dependency manager, then the project's declared "
             "dependencies via the lockfile (`gem install bundler` + "
-            "`cd /repo && bundle install`; `npm ci`; `pip install -r requirements.txt`). "
+            "`cd <your repo checkout> && bundle install`; `npm ci`; `pip install -r requirements.txt`). "
             "Confirm with `bundle -v` / installed-gem checks.\n"
             "  3. Fetch + extract any declared stateful-service and system-package "
             f"debs into {cache_mount_path}/debs (see the service-install and "
             "apt-package sections below).\n"
-            f"  4. RUN `bash {cache_mount_path}/verify.sh` yourself and read its "
+            f"  4. RUN `cd <your repo checkout> && bash {cache_mount_path}/verify.sh` yourself "
+            + (
+                "as a pre-check only (the decision is the verifier pod's; see VERIFICATION CONTEXT) "
+                if clean_room
+                else "(the run coordinare makes; see VERIFICATION) "
+            )
+            + "and read its "
             "output. If it exits non-zero, FIX the specific dependency it names and "
             "re-run. DO NOT end your turn, and DO NOT report success, until verify.sh "
             "exits 0. Every detail of HOW to do each step is in the sections below — "
@@ -2369,7 +2413,8 @@ class HTTPPerformerService:
             "install to a default or $HOME location and relocate.\n\n"
         )
         persona = (
-            retry_block
+            verifier_context
+            + retry_block
             + checklist_block
             + required_sequence
             + absolute_path_block
@@ -2451,7 +2496,7 @@ class HTTPPerformerService:
             "will be missing and verify.sh will FAIL. Specifically: if the repo has a "
             "Gemfile/Gemfile.lock, first `gem install bundler` (match the version in "
             "Gemfile.lock's `BUNDLED WITH` if one is pinned), then run `bundle install` "
-            "from the repo root (`cd /repo && bundle install`) so bundler AND every gem "
+            "from the repo root (`cd <your repo checkout> && bundle install`) so bundler AND every gem "
             "in the Gemfile are installed under the pinned Ruby — that Ruby lives in "
             f"{cache_mount_path}, so its gem dir persists in the cache automatically. "
             "Likewise run `npm ci` (or `npm install`) for a package.json, and "
@@ -2471,8 +2516,11 @@ class HTTPPerformerService:
 
         # 092: also drop test_env_vars — secret-like values ride the redacted
         # `secrets` channel, never the unredacted metadata.
+        # 265: the rendered scripts ride their own field (bootstrap_scripts), not the metadata.
         meta_src = {
-            k: v for k, v in card_context.items() if k not in ("_github_token", "test_env_vars")
+            k: v
+            for k, v in card_context.items()
+            if k not in ("_github_token", "test_env_vars", "rendered_verify_sh", "rendered_activate_sh")
         }
         # Score (performer-side dispatch payload model) requires a `title`
         # field; BootstrapJobPayload doesn't carry one, so synthesize it from
@@ -2487,6 +2535,14 @@ class HTTPPerformerService:
             f"Install dev environment into {cache_mount_path} per project spec files.",
         )
         metadata = json.loads(json.dumps(meta_src, default=str))
+        # 265: both scripts or neither. A half-set pair is not written, so the performer falls back to the cache copy.
+        rendered_verify = card_context.get("rendered_verify_sh")
+        rendered_activate = card_context.get("rendered_activate_sh")
+        bootstrap_scripts = (
+            {"verify_sh": rendered_verify, "activate_sh": rendered_activate}
+            if isinstance(rendered_verify, str) and isinstance(rendered_activate, str)
+            else None
+        )
 
         return JobInitPayload.model_validate(
             {
@@ -2504,6 +2560,7 @@ class HTTPPerformerService:
                 # performer will populate. Without this, service inference
                 # short-circuits with skipped_reason=no_env_cache_path.
                 "env_cache_path": cache_mount_path or None,
+                "bootstrap_scripts": bootstrap_scripts,
             },
         )
 

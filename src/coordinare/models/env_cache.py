@@ -8,6 +8,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# 265: bound on a daemon-rendered script carried in the bootstrap dispatch. Matches the performer's bound.
+RENDERED_SCRIPT_MAX_CHARS = 256 * 1024
+# 265: the verify basis a bootstrap reports when the performer verified the daemon's rendered text.
+ENV_VERIFY_BASIS_DAEMON_RENDERED = "daemon_rendered"
+
 
 class EnvCacheState(BaseModel):
     """Live tracking of one symphony's env-cache bootstrapping status."""
@@ -43,6 +48,7 @@ class EnvCacheState(BaseModel):
     # cache are performer-writable and are never trusted: verification runs this text on
     # stdin, and a mount or dispatch gate requires activate.sh to match it byte for byte.
     # None means no daemon-owned script is on record, so nothing verifies or mounts.
+    bootstrap_commit_sha: str | None = None
     rendered_verify_sh: str | None = None
     rendered_activate_sh: str | None = None
     # 218 (review round 3): infrastructure failures (docker could not run the verify, or the bootstrap
@@ -53,6 +59,17 @@ class EnvCacheState(BaseModel):
     # None means nothing is frozen: consumer dispatch is refused until a re-bootstrap freezes one.
     provenance_digest: str | None = None
     provenance_frozen_at: datetime | None = None
+    # 265: Kubernetes stores the bounded consumer inputs and digests, with no manifest file.
+    provenance_stat_digest: str | None = None
+    provenance_inputs: dict[str, Any] | None = None
+    provenance_entry_count: int = 0
+    provenance_total_bytes: int = 0
+    verifier_provenance: dict[str, Any] | None = None
+    # Confirmed stat refusals since the last consumer success or bootstrap freeze; persisted across restart.
+    consumer_stat_refusals: int = Field(default=0, ge=0)
+    # Keep the refusal budget through successful repair bootstraps until the spec changes.
+    runtime_repair_budget: bool = False
+    bootstrap_budget_sha: str | None = None
 
     # 088 (FR-009/FR-010): bootstrap circuit breaker. ``bootstrap_attempts``
     # counts consecutive failures for the current spec SHA; reset on success
@@ -222,5 +239,22 @@ class BootstrapJobPayload(BaseModel):
             "coordinare readiness gate; declared_services is empty so no service persona block "
             "is injected. Defaults True on the model so an older/synthetic payload preserves "
             "the managed path; coordinare always sets it explicitly from config."
+        ),
+    )
+    rendered_verify_sh: str | None = Field(
+        default=None,
+        max_length=RENDERED_SCRIPT_MAX_CHARS,
+        description=(
+            "265: the daemon-rendered verify.sh text. The bootstrap pod cannot see the daemon's cache on "
+            "Kubernetes, so the text rides the dispatch. The performer writes it into the cache at job start and "
+            "runs it (not the agent's copy) to decide success. None when no manifest was rendered."
+        ),
+    )
+    rendered_activate_sh: str | None = Field(
+        default=None,
+        max_length=RENDERED_SCRIPT_MAX_CHARS,
+        description=(
+            "265: the daemon-rendered activate.sh text, carried with rendered_verify_sh and written into the "
+            "cache at job start, overwriting the agent's copy."
         ),
     )

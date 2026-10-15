@@ -367,6 +367,8 @@ class Score(BaseModel):
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
     # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.
     env_provenance: dict[str, Any] | None = None
+    # 265: the daemon-rendered verify.sh text the bootstrap verifies. Declared so extra="ignore" keeps it.
+    bootstrap_verify_sh: str | None = None
     reasoning_policy: Literal["disable_thinking"] | None = None
     orchestration: dict | None = None  # 080: dual-model proxy block (None = single, no proxy)
     # 089: implementer local-test gate config delivered by dispatch_performer.

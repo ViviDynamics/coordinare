@@ -28,7 +28,10 @@ from coordinare.services.env_cache import (
     DEFAULT_DEVENV_ROOT,
     _cache_dir_has_activate,
     bootstrap_hold_detail,
+    daemon_sees_performer_cache,
     get_env_volume_for_symphony,
+    get_kubernetes_consumer_volume,
+    kubernetes_cache_verified,
     resolve_test_env_vars,
     verify_env_cache_clean,
 )
@@ -2387,6 +2390,30 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
     return _extra_volumes, None
 
 
+def _cache_volume_for_dispatch(
+    state: CoordinareState,
+    symphony_name: str,
+    env_cache: dict[str, Any],
+    *,
+    is_bootstrap: bool,
+    devenv_root: str,
+) -> tuple[Any, str] | None:
+    """265: the cache mount for a dispatch. On Kubernetes a consumer is gated on the bootstrap's verified success.
+
+    The daemon's own activate.sh cannot speak for the claim the consumer mounts there. Docker keeps the daemon-side check.
+    """
+    if not is_bootstrap and not daemon_sees_performer_cache(state):
+        return get_kubernetes_consumer_volume(
+            symphony_name, env_cache,
+            performer_mounts=_performer_mounts(state), container_devenv_root=devenv_root,
+        )
+    return get_env_volume_for_symphony(
+        symphony_name, env_cache,
+        is_bootstrap=is_bootstrap, performer_mounts=_performer_mounts(state),
+        container_devenv_root=devenv_root,
+    )
+
+
 def _performer_mounts(state: CoordinareState) -> tuple[Path, ...]:
     """Every host directory a performer can see, from the global config (219 review, 220).
 
@@ -2411,10 +2438,13 @@ def env_cache_current(state: CoordinareState, cache_state: EnvCacheState) -> boo
         cache_state.cache_dir_ready
         and bool(cache_state.last_bootstrap_succeeded)
         and not cache_state.bootstrap_in_flight
-        and _cache_dir_has_activate(
-            cache_state.cache_dir,
-            performer_mounts=_performer_mounts(state),
-            expected_activate=cache_state.rendered_activate_sh,
+        and (
+            # 265: on Kubernetes the daemon cannot see the claim; readiness is the verifier-backed state.
+            _cache_dir_has_activate(
+                cache_state.cache_dir,
+                performer_mounts=_performer_mounts(state),
+                expected_activate=cache_state.rendered_activate_sh,
+            ) if daemon_sees_performer_cache(state) else kubernetes_cache_verified(cache_state)
         )
         and cache_state.last_seen_spec_sha is not None
         and cache_state.readme_sha == cache_state.last_seen_spec_sha,
@@ -2469,6 +2499,8 @@ async def _env_provenance_gate(
     if service is None:
         reason = "no env-cache service to verify the frozen provenance; dispatch refused"
     else:
+        if not daemon_sees_performer_cache(state):
+            service.bind_kubernetes_state(state)
         check, payload = await service.resolve_provenance(
             _symphony_name_for_ec, _ec_state_for_sym, container_path=container_path,
         )
@@ -2597,12 +2629,9 @@ async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: st
         # Do not pass volumes to persistent performers — the container is
         # already running and Docker cannot hot-add mounts.
     else:
-        _ec_result = get_env_volume_for_symphony(
-            _symphony_name_for_ec,
-            _env_cache_for_ec,
-            is_bootstrap=_is_bootstrap_dispatch,
-            container_devenv_root=_devenv_root,
-            performer_mounts=_performer_mounts(state),
+        _ec_result = _cache_volume_for_dispatch(
+            state, _symphony_name_for_ec, _env_cache_for_ec,
+            is_bootstrap=_is_bootstrap_dispatch, devenv_root=_devenv_root,
         )
         if _ec_result is not None:
             _ec_vol, _ec_container_path = _ec_result

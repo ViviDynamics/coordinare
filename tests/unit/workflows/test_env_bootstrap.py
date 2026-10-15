@@ -103,7 +103,7 @@ async def test_readiness_precedes_verification_and_respects_mode(setup, monkeypa
     async def ready(*args):
         order.append("readiness")
         return True, []
-    async def verify(*args):
+    async def verify(*args, **kwargs):
         order.append("verify")
         return True, ""
     monkeypatch.setattr("performer.workspace.run_service_readiness", ready)

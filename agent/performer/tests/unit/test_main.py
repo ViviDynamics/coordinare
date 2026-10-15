@@ -381,6 +381,7 @@ class TestEnvBootstrapVerifyGate:
     async def test_verify_pass_completes_the_bootstrap(self, tmp_path) -> None:
         perf = _make_perf(session_id="sid")
         perf.role = "env_bootstrap"
+        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
         perf.score.env_cache_path = str(tmp_path)
         perf.backend.get_status.return_value = BackendStatus(state="done")
         (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
@@ -426,6 +427,7 @@ class TestEnvBootstrapVerifyGate:
         # 101: required services connectable (or none declared) → completes as before.
         perf = _make_perf(session_id="sid")
         perf.role = "env_bootstrap"
+        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
         perf.score.env_cache_path = str(tmp_path)
         perf.backend.get_status.return_value = BackendStatus(state="done")
         (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
@@ -452,6 +454,7 @@ class TestEnvBootstrapVerifyGate:
         # called, and bootstrap success is decided by the toolchain verify.sh.
         perf = _make_perf(session_id="sid")
         perf.role = "env_bootstrap"
+        perf.stand.path = tmp_path  # 265: verify runs from the checkout, which must be a real directory
         perf.score.env_cache_path = str(tmp_path)
         perf.score.coordinare_manages_services = False
         perf.backend.get_status.return_value = BackendStatus(state="done")

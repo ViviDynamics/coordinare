@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 37  # 234: env-cache provenance digest (frozen after a verified bootstrap)
+CURRENT_SCHEMA_VERSION: int = 38  # 265: bounded Kubernetes provenance and runtime repair budget
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -697,6 +697,15 @@ class EnvCacheStateSnapshot(BaseModel):
     # before any use, so a missing or altered file is refused. v36 snapshots load with None (one re-bootstrap).
     provenance_digest: str | None = None
     provenance_frozen_at: datetime | None = None
+    # v38: Kubernetes keeps small frozen inputs, never the manifest. Older snapshots fail closed.
+    bootstrap_commit_sha: str | None = None
+    provenance_stat_digest: str | None = None
+    provenance_inputs: dict[str, Any] | None = None
+    provenance_entry_count: int = 0
+    provenance_total_bytes: int = 0
+    consumer_stat_refusals: int = Field(default=0, ge=0)
+    runtime_repair_budget: bool = False
+    bootstrap_budget_sha: str | None = None
     # 088 (FR-009): bootstrap circuit-breaker budget. Persisted so a restart
     # does not reset a failing bootstrap's attempt count; old snapshots load
     # with the defaults (no migration).

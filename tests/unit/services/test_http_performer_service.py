@@ -1762,9 +1762,9 @@ def test_build_env_bootstrap_payload_instructs_bundle_install(monkeypatch) -> No
     persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
     assert "PROJECT DEPENDENCIES" in persona
     assert "bundle install" in persona
-    # The install must run from the in-container repo root (where verify.sh's
-    # Rails boot smoke-test also reads /repo/Gemfile).
-    assert "cd /repo && bundle install" in persona
+    # 265: the install runs from the repo checkout the agent actually has, not a hardcoded /repo.
+    assert "cd <your repo checkout> && bundle install" in persona
+    assert "cd /repo" not in persona
     # And it must steer AWAY from the piecemeal path the agent kept defaulting to.
     assert "gem install <name>" in persona
 

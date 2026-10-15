@@ -217,3 +217,11 @@ an owner label are preserved on upgrade; inspect them before removing them
 manually. Newly dispatched performers receive the owner label automatically and use owner-specific
 pod names. A conflicting pod is replaced only when its owner label can be verified. Without an owner, name collisions fail without
 deleting the existing pod.
+
+## Bootstrap verifier image
+
+Set `config.kubernetes_verifier_image` to the trusted performer image used for clean verification and provenance
+rechecks. The chart defaults it to `config.performer_image`, or `coordinare-performer:full` when that is omitted.
+Symphony endpoint images cannot override it. `performers.imagePullSecrets` also applies to verifier pods.
+Roll daemon, performer and verifier images together. See the [environment cache deployment notes](../../../docs/onboarding/06-env-cache.md#kubernetes-bootstrap-verifier)
+for schema v38, claim permissions for UID/GID 10001, pod security settings and first bootstrap behavior.
