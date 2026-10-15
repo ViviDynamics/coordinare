@@ -21,6 +21,7 @@ from performer.degeneracy import (
     DegenerateArtifactError,
     classify_text,
 )
+from performer.env_provenance import frozen_scripts_dir
 from performer.models import Score, Stand
 from performer.noise_paths import exclude_globs, path_has_agent_config
 from performer.workflows.implementer.commits import (
@@ -531,7 +532,8 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     """
     if not env_cache_path:
         return {}
-    activate = Path(env_cache_path) / "activate.sh"
+    # 234: the activation a consumer sources is the daemon's frozen copy, never the cache's own file.
+    activate = frozen_scripts_dir(env_cache_path) / "activate.sh"
     if not activate.exists():
         log.warning(
             "env_cache.activate_missing",
@@ -887,7 +889,8 @@ async def _start_env_cache_services(
     reset_services_start_failure()
     if not env_cache_path:
         return
-    start = Path(env_cache_path) / "services" / "services-start.sh"
+    # 234: the start script is the daemon's frozen copy. A script added to the cache is never run.
+    start = frozen_scripts_dir(env_cache_path) / "services" / "services-start.sh"
     if not start.is_file() or not os.access(start, os.X_OK):
         return
     env = {**os.environ, **cache_env}
@@ -988,7 +991,8 @@ async def _run_env_cache_health_check(
     env_cache_path: str, env: dict[str, str],
 ) -> None:
     """Run ``services-health.sh`` post-start; flag failures for the coordinare."""
-    health = Path(env_cache_path) / "services" / "services-health.sh"
+    # 234: the health script is the daemon's frozen copy, like the start script.
+    health = frozen_scripts_dir(env_cache_path) / "services" / "services-health.sh"
     if not health.is_file() or not os.access(health, os.X_OK):
         return
     proc = None
@@ -1195,7 +1199,10 @@ def stop_env_cache_services(
     """
     if not env_cache_path:
         return
-    stop = Path(env_cache_path) / "services" / "services-stop.sh"
+    # 234: services-stop.sh is not part of the frozen set, so a consumer never runs it from the cache. Under a
+    # frozen payload this resolves to a missing file and does nothing, which is the intended result: the
+    # consumer container ends with the job.
+    stop = frozen_scripts_dir(env_cache_path) / "services" / "services-stop.sh"
     if not stop.is_file() or not os.access(stop, os.X_OK):
         return
     env = {**os.environ, **(cache_env or {})}

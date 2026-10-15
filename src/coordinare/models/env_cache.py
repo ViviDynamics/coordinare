@@ -49,6 +49,10 @@ class EnvCacheState(BaseModel):
     # container could not be proven quiet). A separate budget from the verdict budget; reset on success.
     infra_failures: int = 0
     last_infra_failure_at: datetime | None = None
+    # 234: sha256 of the daemon-owned provenance manifest frozen after the last verified bootstrap, and when.
+    # None means nothing is frozen: consumer dispatch is refused until a re-bootstrap freezes one.
+    provenance_digest: str | None = None
+    provenance_frozen_at: datetime | None = None
 
     # 088 (FR-009/FR-010): bootstrap circuit breaker. ``bootstrap_attempts``
     # counts consecutive failures for the current spec SHA; reset on success

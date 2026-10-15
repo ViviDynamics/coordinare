@@ -1325,8 +1325,12 @@ class TestDevenvProfileActivationStartsServices:
             "_DEVENV_ROOT": str(root),
             "_DEVENV_LIB_BASE": str(lib_base),
             "_DEVENV_SYSROOT": str(sysroot),
+            # 234: the cache-root activation is the bootstrap's; a consumer with no frozen provenance
+            # activates nothing from the cache.
+            "_DEVENV_BOOTSTRAP": "1",
         }
         env.pop("_DEVENV_SOURCED", None)  # ensure the guard lets the body run
+        env.pop("_DEVENV_PROVENANCE_DIR", None)
         return self._subprocess.run(
             ["bash", "-c", f". {self.PROFILE}; echo SHELL_ALIVE"],
             capture_output=True, text=True, env=env, timeout=60,

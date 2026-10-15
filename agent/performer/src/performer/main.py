@@ -37,6 +37,13 @@ from performer.qa_capture import boot_and_capture_app_screenshot  # noqa: F401
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs  # noqa: F401 (post_issue_comment: see T049 note above)  # noqa: F401 (post_issue_comment: see T049 note above)
 from performer.io_utils import iter_lines_chunked
 from performer.process_metrics import CpuSampler
+from performer.env_provenance import (
+    DEVENV_BOOTSTRAP_ENV,
+    PROVENANCE_ROOT,
+    PROVENANCE_ROOT_ENV,
+    ProvenanceMaterialiseError,
+    materialise,
+)
 from performer.models import DIAGNOSTIC_ROLE, Performance, Score, Stand, _redact_secrets
 from performer.test_results import _strip_ansi, _reported_failure_count, _match_env_signature, _env_signature_reason, _format_failure_excerpt, _TEST_FAILURE_MARKERS  # noqa: F401
 from performer.protocol import (
@@ -2893,6 +2900,29 @@ async def _poll_job_status(
     return resp
 
 
+def _prepare_env_provenance(payload: JobInitPayload) -> str | None:
+    """234: materialise the frozen env-cache steps for this job, or return the refusal reason.
+
+    A consumer with a cache mount must carry a frozen payload. Without one the job is refused, because the
+    cache's own scripts are never run. The env_bootstrap job is the cache writer and keeps the cache root.
+    """
+    if payload.role == "env_bootstrap":
+        os.environ[DEVENV_BOOTSTRAP_ENV] = "1"
+        return None
+    if payload.env_provenance is not None:
+        try:
+            materialise(payload.env_provenance, root=PROVENANCE_ROOT)
+        except ProvenanceMaterialiseError as exc:
+            log.warning("env_cache.provenance_refused", reason=str(exc))
+            return f"env-cache provenance refused: {exc}"
+        os.environ[PROVENANCE_ROOT_ENV] = str(PROVENANCE_ROOT)
+        return None
+    if payload.env_cache_path:
+        log.warning("env_cache.provenance_missing", env_cache_path=payload.env_cache_path)
+        return "env cache without provenance (#234): refusing to run the cache's own scripts"
+    return None
+
+
 async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no cover
     """Bridge between the spec-056 HTTP job protocol and handle_dispatch/handle_status.
 
@@ -2914,8 +2944,15 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
     }
     for _secret_name, _secret_val in payload.secrets.items():
         os.environ[_secret_name] = _secret_val.get_secret_value()
+    # 234: restored in the finally below, like the secrets above.
+    for _k in (PROVENANCE_ROOT_ENV, DEVENV_BOOTSTRAP_ENV):
+        _pre_job_env.setdefault(_k, os.environ.get(_k))
 
     try:
+        refusal = _prepare_env_provenance(payload)
+        if refusal is not None:
+            return JobResult(success=False, summary=refusal, error_code="env_provenance_refused")
+
         # Prefer the payload value; fall back to any env-baseline GITHUB_TOKEN
         # (e.g. injected at container startup via the env fallback source).
         github_token = (

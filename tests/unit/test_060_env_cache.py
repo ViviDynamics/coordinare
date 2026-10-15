@@ -1437,7 +1437,7 @@ class TestPollBootstrapCompletion:
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "env_bootstrap_complete"})
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
         ec_svc.on_bootstrap_complete = MagicMock()
         # No persistent performers — skip the warning branch import side-effects
         daemon._state["performer_services"] = {}
@@ -1456,7 +1456,7 @@ class TestPollBootstrapCompletion:
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "ok"})
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         # Persistent HTTPPerformerService instance triggers the warning loop branch.
         persistent = MagicMock(spec=HTTPPerformerService)
@@ -1479,7 +1479,7 @@ class TestPollBootstrapCompletion:
         svc.get_agent_logs = MagicMock(return_value=["line-a", "line-b"])
         # Simulate no _active_jobs container_id either
         svc._active_jobs = {}
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1493,7 +1493,7 @@ class TestPollBootstrapCompletion:
         svc.check_status = AsyncMock(return_value={"status": "failed"})
         svc.get_agent_logs = MagicMock(return_value="line-1\nline-2\nline-3")
         svc._active_jobs = {}
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1506,7 +1506,7 @@ class TestPollBootstrapCompletion:
         svc.check_status = AsyncMock(return_value={"status": "failed"})
         svc.get_agent_logs = MagicMock(side_effect=RuntimeError("boom"))
         svc._active_jobs = {}
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1530,7 +1530,7 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         # Fake docker subprocesses (logs snapshot each iter + the final reap).
         stop_calls: list[tuple] = []
@@ -1577,7 +1577,7 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         async def _fake_exec(*argv, **kwargs):
             class _P:
@@ -1610,7 +1610,7 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         async def _fake_exec(*argv, **kwargs):
             if "stop" in argv:
@@ -1646,7 +1646,7 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         stop_calls: list[tuple] = []
 
@@ -1726,7 +1726,7 @@ class TestPollBootstrapCompletion:
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=statuses)
         svc._runtime = DockerRuntime()
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         # The real quiesce (not the class stub), and a verify that records when it runs.
         monkeypatch.setattr(CoordinareDaemon, "_quiesce_bootstrap_container", _ORIGINAL_QUIESCE)
@@ -1761,7 +1761,7 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         async def _fake_exec(*argv, **kwargs):
             class _P:
@@ -1788,7 +1788,7 @@ class TestPollBootstrapCompletion:
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=RuntimeError("connection lost"))
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1812,7 +1812,7 @@ class TestPollBootstrapCompletion:
                 {"status": "env_bootstrap_complete"},
             ],
         )
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1843,7 +1843,7 @@ class TestPollBootstrapCompletion:
                 {"status": "env_bootstrap_complete"},
             ],
         )
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
@@ -1875,7 +1875,7 @@ class TestPollBootstrapCompletion:
 
         monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fail_subproc)
 
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
@@ -1904,7 +1904,7 @@ class TestPollBootstrapCompletion:
         import coordinare.daemon as daemon_mod
         monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _make_proc)
 
-        ec_svc = MagicMock()
+        ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
         await daemon._poll_bootstrap_completion(
             svc, "job-1", "alpha", ec_svc, container_id="cid-xyz",
         )

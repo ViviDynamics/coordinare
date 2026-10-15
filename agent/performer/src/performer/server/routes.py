@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
+    ENV_PROVENANCE_CAPABILITY_VERSION,
     JobAcceptResponse,
     JobInitPayload,
     JobStatus,
@@ -102,6 +103,7 @@ def register_routes(app: FastAPI) -> None:
             auth_enabled=bool(request.app.state.auth_enabled),
             current_job_id=current_id,
             version=request.app.state.version,
+            env_provenance_version=ENV_PROVENANCE_CAPABILITY_VERSION,
         )
 
     @app.post("/jobs")
