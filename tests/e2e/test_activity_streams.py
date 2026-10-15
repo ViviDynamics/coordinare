@@ -10,6 +10,17 @@ from playwright.sync_api import expect
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(90)]
 
 
+# The first state_update starts a new run (afSyncRun) and clears the feed. An append
+# that lands before it is wiped, so every test waits for that run id before it
+# broadcasts. #phase is no signal: the server renders it before the stream is live.
+_READY_TIMEOUT_MS = 10_000
+
+
+def _open(page, live_server_url):
+    page.goto(live_server_url)
+    page.wait_for_function('() => typeof _afRunId === "string" && _afRunId.length > 0', timeout=_READY_TIMEOUT_MS)
+
+
 def _event(seq, **extra):
     return dict(seq=seq, timestamp='2026-09-09T18:00:00Z', card_id='card',
                 card_number=315, stage='implementing', session_id='session',
@@ -18,11 +29,7 @@ def _event(seq, **extra):
 
 
 def test_stream_groups_english_summary_and_live_expansion(page, live_server_url):
-    page.goto(live_server_url)
-    # The first state_update starts a new run (afSyncRun) and clears the feed. Wait
-    # for that run id, so the clear cannot land after the rows are drawn and detach
-    # the summary under the test. #phase is no signal: the server renders it.
-    page.wait_for_function('() => typeof _afRunId === "string" && _afRunId.length > 0', timeout=10_000)
+    _open(page, live_server_url)
     page.evaluate('entries => afAppend(entries)', [_event(i) for i in range(100)])
     rows = page.locator('#activity-feed > .af-row')
     expect(rows).to_have_count(1)
@@ -60,7 +67,7 @@ def test_stream_groups_english_summary_and_live_expansion(page, live_server_url)
 
 
 def test_stream_boundaries_filter_and_retention(page, live_server_url):
-    page.goto(live_server_url)
+    _open(page, live_server_url)
     events = [_event(0), _event(1)]
     for seq, changes in [(2, {'session_id':'new'}), (3, {'performer_id':'claude'}),
                          (4, {'card_id':'other'}), (5, {'stage':'reviewing'}),
@@ -82,7 +89,7 @@ def test_stream_boundaries_filter_and_retention(page, live_server_url):
 
 
 def test_raw_stream_reconstructs_sentences_and_separates_messages_and_tools(page, live_server_url):
-    page.goto(live_server_url)
+    _open(page, live_server_url)
     entries = []
     for i, chunk in enumerate(["We", " can", " inspect", " the", " plan", ".\nThen ", "test", "."]):
         event = _event(i)
@@ -133,7 +140,7 @@ def _usage_event(seq, **changes):
 
 
 def test_usage_reports_stay_with_their_stream(page, live_server_url):
-    page.goto(live_server_url)
+    _open(page, live_server_url)
     events = [
         _usage_event(0, text='We', is_delta=True, stream_id='message'),
         _usage_event(1, activity_type='cost', text='100 tokens, $0.01'),
@@ -182,7 +189,7 @@ def test_usage_reports_stay_with_their_stream(page, live_server_url):
 
 
 def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_server_url):
-    page.goto(live_server_url)
+    _open(page, live_server_url)
     boundaries = [
         # A message, then its usage report: the report stays with the message it followed.
         _usage_event(0, text='Working on it.', is_delta=True, stream_id='message'),
@@ -208,7 +215,7 @@ def test_usage_events_never_bridge_failures_lifecycle_or_sessions(page, live_ser
 
 
 def test_usage_only_traffic_is_coalesced_and_still_respects_the_retention_cap(page, live_server_url):
-    page.goto(live_server_url)
+    _open(page, live_server_url)
     page.evaluate('entries => afAppend(entries)', [
         _usage_event(i, activity_type='cost') for i in range(17, 2021)
     ])
