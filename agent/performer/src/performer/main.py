@@ -44,6 +44,7 @@ from performer.env_provenance import (
     PROVENANCE_ROOT_ENV,
     ProvenanceMaterialiseError,
     materialise,
+    write_bootstrap_scripts,
 )
 from performer.models import DIAGNOSTIC_ROLE, Performance, Score, Stand, _redact_secrets
 from performer.test_results import _strip_ansi, _reported_failure_count, _match_env_signature, _env_signature_reason, _format_failure_excerpt, _TEST_FAILURE_MARKERS  # noqa: F401
@@ -2902,6 +2903,81 @@ async def _poll_job_status(
     return resp
 
 
+def _bootstrap_score_fields(payload: JobInitPayload) -> dict[str, str]:
+    """265: the daemon's verify text for the Score, so the bootstrap verifies it. Empty for any other job."""
+    if payload.bootstrap_scripts is None:
+        return {}
+    return {"bootstrap_verify_sh": payload.bootstrap_scripts.verify_sh}
+
+
+def _bootstrap_scripts_refusal(payload: JobInitPayload) -> str | None:
+    """265: write the daemon's rendered scripts into the bootstrap's cache, or return the refusal reason.
+
+    They overwrite the agent's copies before anything reads the cache. With no scripts (an older daemon) nothing
+    is written, and the verify falls back to the cache copy.
+    """
+    if payload.bootstrap_scripts is None or not payload.env_cache_path:
+        return None
+    try:
+        write_bootstrap_scripts(payload.env_cache_path, payload.bootstrap_scripts)
+    except ProvenanceMaterialiseError as exc:
+        log.warning("env_cache.bootstrap_scripts_refused", reason=str(exc))
+        return f"bootstrap scripts refused (#265): {exc}"
+    return None
+
+
+def _consumer_mount_gap(payload: JobInitPayload) -> str | None:
+    """265: why a consumer's cache mount is not the verified cache, or None.
+
+    On Kubernetes the daemon cannot see the claim, so it trusts its own record. A wiped or recreated claim leaves the
+    consumer's subPath empty or without activate.sh. The job is refused before any work, and the response asks for a
+    re-bootstrap, so the next cycle rebuilds the cache instead of running against an empty mount.
+    """
+    if payload.role == "env_bootstrap" or not payload.env_cache_path:
+        return None
+    cache = Path(payload.env_cache_path)
+    if not cache.is_dir():
+        return f"env cache mount {payload.env_cache_path} is not present (#265); a re-bootstrap is required"
+    if not any(cache.iterdir()):
+        return (
+            f"env cache mount {payload.env_cache_path} is empty (#265): the devenv claim was wiped or "
+            "recreated; a re-bootstrap is required"
+        )
+    if not (cache / "activate.sh").is_file():
+        return (
+            f"env cache mount {payload.env_cache_path} has no activate.sh (#265): the devenv claim was wiped "
+            "or recreated; a re-bootstrap is required"
+        )
+    return None
+
+
+def _admission_refusal(payload: JobInitPayload) -> tuple[str, str] | None:
+    """(error_code, summary) when the job must not run, or None.
+
+    234: the frozen provenance is missing or altered. 265: a consumer's cache mount was wiped or recreated. That response
+    carries env_cache_health_failed, so the daemon re-bootstraps the cache (the existing 063 seam).
+    """
+    stat_checked = payload.env_provenance is not None and payload.env_provenance.stat_digest is not None
+    if stat_checked:
+        gap = _consumer_mount_gap(payload)
+        if gap is not None:
+            response = PerformerResponse(status="error", reason=gap, env_cache_health_failed=True)
+            return "env_cache_missing", response.model_dump_json(exclude_none=True)
+    refusal = _prepare_env_provenance(payload)
+    if refusal is not None:
+        if stat_checked:
+            response = PerformerResponse(status="error", reason=refusal, env_cache_health_failed=True,
+                                         env_cache_stat_mismatch=True)
+            return "env_provenance_refused", response.model_dump_json(exclude_none=True)
+        return "env_provenance_refused", refusal
+    gap = _consumer_mount_gap(payload)
+    if gap is None:
+        return None
+    log.warning("env_cache.mount_refused", reason=gap)
+    response = PerformerResponse(status="error", reason=gap, env_cache_health_failed=True)
+    return "env_cache_missing", response.model_dump_json(exclude_none=True)
+
+
 def _prepare_env_provenance(payload: JobInitPayload) -> str | None:
     """234: materialise the frozen env-cache steps for this job, or return the refusal reason.
 
@@ -2910,7 +2986,7 @@ def _prepare_env_provenance(payload: JobInitPayload) -> str | None:
     """
     if payload.role == "env_bootstrap":
         os.environ[DEVENV_BOOTSTRAP_ENV] = "1"
-        return None
+        return _bootstrap_scripts_refusal(payload)
     if payload.env_provenance is not None:
         try:
             materialise(payload.env_provenance, root=PROVENANCE_ROOT)
@@ -2951,9 +3027,10 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
         _pre_job_env.setdefault(_k, os.environ.get(_k))
 
     try:
-        refusal = _prepare_env_provenance(payload)
-        if refusal is not None:
-            return JobResult(success=False, summary=refusal, error_code="env_provenance_refused")
+        refused = _admission_refusal(payload)
+        if refused is not None:
+            code, summary = refused
+            return JobResult(success=False, summary=summary, error_code=code)
 
         # Prefer the payload value; fall back to any env-baseline GITHUB_TOKEN
         # (e.g. injected at container startup via the env fallback source).
@@ -2976,6 +3053,7 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
             score_dict["persona_instructions"] = payload.persona
         if payload.env_cache_path:
             score_dict["env_cache_path"] = payload.env_cache_path
+        score_dict.update(_bootstrap_score_fields(payload))
 
         dispatch_msg = PerformerMessage(action="dispatch", payload=score_dict)
         try:

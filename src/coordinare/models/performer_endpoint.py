@@ -259,6 +259,9 @@ class JobInitPayload(BaseModel):
     # 234: the daemon-frozen env-cache steps (rendered activate.sh, service scripts, deb digests).
     # Sent only to an image that reports the provenance capability; never read from the cache.
     env_provenance: dict[str, Any] | None = None
+    # 265: the daemon-rendered {verify_sh, activate_sh} for an env_bootstrap job. The performer validates and
+    # size-bounds it. An older image ignores it, so that bootstrap runs the cache copy and fails closed on kubernetes.
+    bootstrap_scripts: dict[str, Any] | None = None
     # 129: per-run transcript byte cap. None means transcripts are disabled, so
     # the performer records nothing for this job.
     transcript_max_bytes: int | None = None

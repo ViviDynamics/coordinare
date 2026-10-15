@@ -17,6 +17,7 @@ def _make_cfg(sym_name: str, cache_root: Path) -> tuple[MagicMock, MagicMock]:
     global_cfg = MagicMock()
     global_cfg.env_cache_root = cache_root
     global_cfg.github_org = "myorg"
+    global_cfg.env_bootstrap_max_attempts = 3
 
     sym = MagicMock()
     sym.name = sym_name

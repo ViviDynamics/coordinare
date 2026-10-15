@@ -56,6 +56,9 @@ data:
     {{- if .Values.performers.cacheClaim }}
     {{- $_ := set $cfg "kubernetes_cache_claim" .Values.performers.cacheClaim }}
     {{- end }}
+    {{- if not (hasKey $cfg "kubernetes_verifier_image") }}
+    {{- $_ := set $cfg "kubernetes_verifier_image" ($cfg.performer_image | default "coordinare-performer:full") }}
+    {{- end }}
     {{- $_ := set $cfg "kubernetes_image_pull_secrets" (.Values.performers.imagePullSecrets | default list) }}
 
     {{- if .Values.githubAppPrivateKey.existingSecret }}

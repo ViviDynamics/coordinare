@@ -23,6 +23,8 @@ class BootstrapRun(BaseModel):
     reason: str = Field(max_length=1000)
     repairs: int = Field(ge=0, le=2)
     inference: dict[str, Any]
+    # 265: which script decided the verify ("daemon_rendered" or "cache_file"); None when it did not pass.
+    verify_basis: str | None = Field(default=None, max_length=32)
 
 
 def _budget(env: dict[str, str], key: str, default: int, low: int, high: int) -> int:
@@ -61,12 +63,12 @@ class EnvBootstrapWorkflow:
                 durations = toolkit.metrics.step_durations_ms
                 durations[name] = durations.get(name, 0) + int((time.monotonic() - started) * 1000)
 
-        def report(status: str, reason: str = "") -> WorkflowResult:
+        def report(status: str, reason: str = "", verify_basis: str | None = None) -> WorkflowResult:
             toolkit.metrics.reached_green = status == "complete"
             toolkit.emit(BackendEvent(type=BackendEventType.progress, text=f"env_bootstrap.report {status}"))
             return WorkflowResult(report={"env_bootstrap_run": {
                 "status": status, "reason": reason[-1000:], "repairs": repairs,
-                "inference": inference,
+                "inference": inference, "verify_basis": verify_basis,
             }}, metrics=toolkit.metrics)
 
         try:
@@ -109,7 +111,7 @@ class EnvBootstrapWorkflow:
                     if checked.get("integrity_failure"):
                         return report("error", checked["reason"])
                     if checked["passed"]:
-                        return report("complete")
+                        return report("complete", verify_basis=checked.get("verify_basis"))
                     feedback = checked.get("reason") or "environment verification failed"
                 return report("error", "repair budget exhausted: " + feedback)
         except TimeoutError:

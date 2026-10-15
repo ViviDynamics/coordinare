@@ -1062,6 +1062,15 @@ async def _phase_merge_events(
     ctx.new_metrics = new_metrics
     return None
 
+def _reset_consumer_stat_refusals(state: CoordinareState, status: dict[str, Any]) -> None:
+    """A completed consumer ends the refusal sequence; a verifier refresh does not."""
+    if status.get("env_cache_health_failed") or status.get("status") not in TERMINAL_SUCCESS_STATES:
+        return
+    cache_state = (state.get("env_cache") or {}).get(state.get("current_symphony") or "")
+    if cache_state is not None and not cache_state.runtime_health_failed:
+        cache_state.consumer_stat_refusals = 0
+
+
 async def phase_651(
     state: CoordinareState,
     ctx: _BodyCtx,
@@ -1074,6 +1083,7 @@ async def phase_651(
     stage = ctx.stage
     status = ctx.status
     tokens_delta = ctx.tokens_delta
+    _reset_consumer_stat_refusals(state, status)
     # Spec 063 Phase 4 (T024): performer signalled non-zero services-health.sh
     # → flag the symphony's env-cache for forced regeneration on the next
     # check_and_trigger cycle.
@@ -1082,7 +1092,10 @@ async def phase_651(
         _sym_name = state.get("current_symphony")
         if _env_cache_svc is not None and _sym_name:
             try:
-                _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
+                if status.get("env_cache_stat_mismatch"):
+                    await _env_cache_svc.recheck_consumer_provenance(_sym_name, state)
+                else:
+                    _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
             except Exception as _exc:
                 logger.warning(
                     "monitor_performer.mark_runtime_health_failed_error",
