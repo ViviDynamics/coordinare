@@ -340,6 +340,7 @@ function symphonyHealthScope(health, choice) {
       if (symphonyHas(row, key)) copy[key] = row[key];
     }
     if (parts.length) copy.reason = 'env cache bootstrap failed: ' + parts.join('; ');
+    copy.env_failures = mine;
     return copy;
   });
   var out = {};

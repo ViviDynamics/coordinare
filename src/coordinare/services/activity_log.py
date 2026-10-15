@@ -408,7 +408,7 @@ class ActivityLog:
         # `timestamp` and `seq` are deliberately NOT in the key: a re-reported
         # event arrives with a new observation time, so including either would
         # disable suppression entirely and make a wedged agent scroll (FR-022).
-        key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{_clip(symphony, 200)[0]}|{clipped_text}"
+        key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}" + (f"|{_clip(symphony, 200)[0]}" if symphony else "")
         if clipped_summary or status_str:
             key += f"|{clipped_summary}|{status_str}"
         if source_id and (is_delta or kind in ("tool_use", "tool_result")):

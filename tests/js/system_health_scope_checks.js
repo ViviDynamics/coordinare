@@ -43,7 +43,11 @@ const shared = JSON.stringify(scoped.system_health);
 check("the beta view keeps the shared system_health row set", scoped.system_health && scoped.system_health.rows.length === snapshot.system_health.rows.length,
   `rows ${scoped.system_health && scoped.system_health.rows.length}`);
 check("the beta view carries no alpha name in the shared card", shared.indexOf("alpha") === -1, shared);
-check("the shared card is passed through unchanged", shared === original, "scope rewrote the shared card");
+// 266: the env reason is written for the chosen symphony; every other row of the card passes through unchanged.
+const otherRows = (health) => JSON.stringify((health.rows || []).filter((row) => row.key !== "disk_env_cache"));
+check("the other rows of the card are passed through unchanged",
+  otherRows(scoped.system_health) === otherRows(snapshot.system_health), "scope rewrote another row");
+check("the beta view names only its own failure, or none", original.indexOf("alpha") !== -1 && shared.indexOf("alpha") === -1, shared);
 
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

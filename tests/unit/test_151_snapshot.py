@@ -55,7 +55,11 @@ def test_with_a_config_the_disk_is_read_from_the_state_volume(tmp_path: Path) ->
     assert rows["performer_runtime"]["status"] == "unknown"
 
 
-def test_a_symphony_whose_env_cache_failed_degrades_the_disk_and_env_row(tmp_path: Path) -> None:
+def test_a_symphony_whose_env_cache_failed_degrades_the_disk_and_env_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The disk reading is the host's own. Pinned here, so the row's status is the env failure's alone.
+    monkeypatch.setattr("coordinare.dashboard.store._disk_free_fraction", lambda config: 0.6)
     daemon = _make_mock_daemon()
     daemon.state["config"] = _config(tmp_path)
     daemon.state["env_cache"] = {
@@ -64,9 +68,9 @@ def test_a_symphony_whose_env_cache_failed_degrades_the_disk_and_env_row(tmp_pat
     }
     row = _rows(DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health([])))["disk_env_cache"]
     assert row["status"] == DEGRADED
-    assert "alpha" not in row["reason"]
-    assert "beta" not in row["reason"]
+    # 266: the server row names each failing symphony; the browser scopes it to the symphony the page shows.
     assert "env cache bootstrap failed for 1 symphony" in row["reason"]
+    assert row["env_failures"] == [{"symphony": "alpha", "reason": "the reason was not recorded"}]
     assert "env cache ready for 1 of 2" in row["summary"]
 
 
