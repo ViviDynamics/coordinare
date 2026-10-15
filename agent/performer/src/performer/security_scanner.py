@@ -9,7 +9,6 @@ import json
 import os
 import stat
 import subprocess
-import tempfile
 from pathlib import Path
 
 import structlog
@@ -48,6 +47,10 @@ _OK_EXIT_CODES = {0, 1}
 _TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
 _UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
 _ROOT_UID = 0
+SCANNER_INSTALLATION_HELP = (
+    "Install semgrep and bandit system-wide as root-owned executables in "
+    "/usr/local/bin or /usr/bin, or use the container transport."
+)
 
 
 class ScannerError(Exception):
@@ -56,6 +59,10 @@ class ScannerError(Exception):
     Distinct from a *clean* or *findings-present* run : both of those return a
     (possibly empty) list. Callers treat ``ScannerError`` as fail-closed.
     """
+
+
+class ScannerSetupError(ScannerError):
+    """A trusted scanner is unavailable and needs operator installation."""
 
 
 def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
@@ -98,13 +105,13 @@ def _trusted_executable(candidate: Path) -> bool:
 
 
 def _resolve_binary(tool: str) -> str:
-    """Use only root-owned image executables, never a workspace venv or PATH."""
+    """Use only root-owned system executables, never a workspace venv or PATH."""
     for directory in _TRUSTED_BINARY_DIRS:
         candidate = directory / tool
         if _trusted_executable(candidate):
             return str(candidate)
-    reason = f"{tool} trusted image binary not found"
-    raise ScannerError(reason)
+    reason = f"{tool} trusted system binary not found. {SCANNER_INSTALLATION_HELP}"
+    raise ScannerSetupError(reason)
 
 
 def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
@@ -150,17 +157,15 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
 def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:
     if not files:
         return []
-    # A code-owned empty ignore file overrides both tree and default ignores.
-    # The config directory is outside the exported target tree.
-    with tempfile.TemporaryDirectory(prefix="coordinare-semgrep-", dir="/tmp") as directory:
-        ignore = Path(directory) / "empty.ignore"
-        ignore.touch()
-        payload = _invoke(
-            [_resolve_binary("semgrep"), "--config", "auto", "--json",
-             "--disable-nosem", "--no-git-ignore", f"--x-semgrepignore-filename={ignore}", *files],
-            repo_root,
-            "semgrep",
-        )
+    # The copy-only export contains only changed files at HEAD under neutral
+    # names, with no repository ignore or config files under their control names.
+    # Semgrep receives explicit file targets, never directories.
+    payload = _invoke(
+        [_resolve_binary("semgrep"), "--config", "auto", "--json",
+         "--disable-nosem", "--no-git-ignore", *files],
+        repo_root,
+        "semgrep",
+    )
     findings: list[Finding] = []
     for result in payload.get("results", []) or []:
         findings.append(_normalize_semgrep(result))

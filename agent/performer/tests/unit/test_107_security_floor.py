@@ -44,7 +44,8 @@ async def test_security_job_scans_in_own_clone_and_returns_report(security_head_
     ):
         _, perf = await handle_dispatch(message, Settings(AGENT_BACKEND="codex"))
         assert scan.call_count == 1
-        assert scan.call_args.args[0] == ["app.py"]
+        assert len(scan.call_args.args[0]) == len(tracked)
+        assert scan.call_args.args[0][0].endswith(".py")
         assert not scan.call_args.args[1].is_relative_to(tmp_path)
         response = await handle_status(PerformerMessage(action="status", session_id=perf.session_id), perf)
         repeated = await handle_status(PerformerMessage(action="status", session_id=perf.session_id), perf)

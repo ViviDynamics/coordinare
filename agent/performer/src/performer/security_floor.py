@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import shutil
 import subprocess
-import tarfile
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from performer.security_scanner import ScannerError, scan_diff
+from performer.security_scanner import (
+    SCANNER_INSTALLATION_HELP,
+    ScannerError,
+    ScannerSetupError,
+    scan_diff,
+)
 
 if TYPE_CHECKING:
+    from typing import BinaryIO
+
     from performer.models import Performance, Score, Stand
     from performer.protocol import PerformerResponse
 
@@ -23,18 +28,18 @@ SCAN_TOOLS = ("semgrep", "bandit")
 _GIT = shutil.which("git") or "/usr/bin/git"
 _GIT_TIMEOUT_SECONDS = 120
 _REGULAR_MODES = {"100644", "100755"}
-_SCAN_CONTROL_FILES = {".semgrepignore", ".gitignore", ".bandit"}
+_EXPORT_DEFAULT_SUFFIX = ".scanned"
 
 
 def _fail(reason: str) -> None:
     raise ScannerError(reason)
 
 
-def _git(root: Path, *args: str) -> bytes:
+def _git(root: Path, *args: str, stdout: BinaryIO | int = subprocess.PIPE) -> bytes:
     return subprocess.run(
-        [_GIT, *args], cwd=root, check=True, capture_output=True,
+        [_GIT, *args], cwd=root, check=True, stdout=stdout, stderr=subprocess.PIPE,
         timeout=_GIT_TIMEOUT_SECONDS,
-    ).stdout
+    ).stdout or b""
 
 
 def _scan_head(request: Any, root: Path) -> tuple[list[dict], bool]:
@@ -62,37 +67,32 @@ def _head_targets(files: list[str], entries: dict[str, str]) -> list[str]:
             continue
         if entries[name] not in _REGULAR_MODES:
             _fail("scan target is not a regular file")
-        if Path(name).name not in _SCAN_CONTROL_FILES:
-            targets.append(name)
+        targets.append(name)
     return targets
 
 
 def _scan_export(root: Path, head: str, targets: list[str]) -> list[dict]:
-    # Never extract archive paths, links or repository scanner configuration.
-    # Compare against ls-tree so export-ignore cannot silently remove a target.
+    # Copy only changed regular files at the verified HEAD, one at a time.
+    # Generated flat names prevent any repository path from acting as scanner
+    # configuration. Preserve extensions for language detection and remap findings.
     with tempfile.TemporaryDirectory(prefix="coordinare-security-", dir="/tmp") as directory:
         export = Path(directory).resolve()
         if export.is_relative_to(root):
             _fail("security export must be outside workspace")
-        remaining = set(targets)
-        archive_bytes = _git(root, "archive", "--format=tar", head)
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
-            for member in archive:
-                if member.name not in remaining:
-                    continue
-                if not member.isfile():
-                    _fail("archive target is not a regular file")
-                source = archive.extractfile(member)
-                if source is None:
-                    _fail("archive target unavailable")
-                target = export / member.name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with source, target.open("wb") as destination:
-                    shutil.copyfileobj(source, destination)
-                remaining.remove(member.name)
-        if remaining:
-            _fail("head files missing from security export")
-        return scan_diff(targets, export)
+        exported = {}
+        for index, name in enumerate(targets):
+            suffix = Path(name).suffix or _EXPORT_DEFAULT_SUFFIX
+            target = export / f"target_{index}{suffix}"
+            with target.open("wb") as destination:
+                _git(root, "show", f"{head}:{name}", stdout=destination)
+            exported[target.name] = name
+        findings = scan_diff(list(exported), export)
+        for finding in findings:
+            reported = Path(finding.get("file", ""))
+            if reported.is_absolute():
+                reported = reported.relative_to(export)
+            finding["file"] = exported.get(str(reported), finding.get("file", ""))
+        return findings
 
 
 async def run_security_floor(score: Score, stand: Stand) -> dict[str, Any]:
@@ -108,7 +108,9 @@ async def run_security_floor(score: Score, stand: Stand) -> dict[str, Any]:
             report["reason"] = "no files to scan"
     except Exception as exc:
         # Only code-owned summaries cross the wire, never raw scanner output.
-        report["reason"] = "scan request or tool failed"
+        report["reason"] = (
+            SCANNER_INSTALLATION_HELP if isinstance(exc, ScannerSetupError) else "scan request or tool failed"
+        )
         logger.warning("security_floor.unavailable", error_type=type(exc).__name__)
     return report
 

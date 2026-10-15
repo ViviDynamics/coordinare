@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import io
 import json
 import stat
 import sys
-import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -19,6 +17,17 @@ HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
 EXECUTABLE_MODE = 0o755
 SOURCE_MODE = "100644"
+MANY_FILE_COUNT = 128
+SCANNER_COUNT = 2
+CONTROL_PATHS = (
+    ".semgrepignore", ".gitignore", ".bandit", "src/.semgrepignore",
+    ".semgrep.yml", ".semgrep.yaml", "bandit.yaml", "pyproject.toml", "setup.cfg",
+    ".gitattributes", ".git/config", "src/.gitignore/child.py",
+)
+INSTALLATION_MESSAGE = (
+    "Install semgrep and bandit system-wide as root-owned executables in "
+    "/usr/local/bin or /usr/bin, or use the container transport."
+)
 
 
 @pytest.fixture
@@ -27,27 +36,43 @@ def head_tree(tmp_path):
     root.mkdir()
     tracked = {}
     calls = []
+    destinations = []
+    original_run = security_floor.subprocess.run
+    original_git = security_floor._git
 
-    def git(root_arg, *args):
+    def show(cmd, **kwargs):
+        if cmd[:2] != [security_floor._GIT, "show"]:
+            return original_run(cmd, **kwargs)
+        assert kwargs["cwd"] == root
+        assert kwargs["check"]
+        assert kwargs["stderr"] == security_floor.subprocess.PIPE
+        assert kwargs["timeout"] == security_floor._GIT_TIMEOUT_SECONDS
+        assert cmd[:2] == [security_floor._GIT, "show"]
+        assert all(destination.closed for destination in destinations)
+        stdout = kwargs["stdout"]
+        destinations.append(stdout)
+        assert not stdout.closed
+        name = cmd[-1].removeprefix(f"{HEAD}:")
+        stdout.write(tracked[name].encode())
+        calls.append(("show", cmd[-1]))
+        return SimpleNamespace(stdout=None)
+
+    def git(root_arg, *args, **kwargs):
         assert root_arg == root
+        if args[0] == "show":
+            return original_git(root_arg, *args, **kwargs)
         calls.append(args)
         if args == ("rev-parse", "HEAD"):
             return HEAD.encode()
-        if args[0] == "ls-tree":
-            return b"".join(
-                f"{SOURCE_MODE} blob {HEAD}\t{name}\0".encode() for name in tracked
-            )
-        assert args == ("archive", "--format=tar", HEAD)
-        archive = io.BytesIO()
-        with tarfile.open(fileobj=archive, mode="w") as stream:
-            for name, contents in tracked.items():
-                data = contents.encode()
-                entry = tarfile.TarInfo(name)
-                entry.size = len(data)
-                stream.addfile(entry, io.BytesIO(data))
-        return archive.getvalue()
+        assert args == ("ls-tree", "-r", "-z", HEAD)
+        return b"".join(
+            f"{SOURCE_MODE} blob {HEAD}\t{name}\0".encode() for name in tracked
+        )
 
-    with patch("performer.security_floor._git", side_effect=git, create=True):
+    with (
+        patch("performer.security_floor._git", side_effect=git),
+        patch("performer.security_floor.subprocess.run", side_effect=show),
+    ):
         yield root, tracked, calls
 
 
@@ -70,17 +95,16 @@ import sys
 tool = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 root = pathlib.Path.cwd()
-target = root / args[-1]
+target = next(path for arg in args if (path := root / arg).is_file() and "danger()" in path.read_text())
 text = target.read_text()
-ignore_option = next((arg for arg in args if arg.startswith("--x-semgrepignore-filename=")), None)
-ignore = root / (ignore_option.split("=", 1)[1] if ignore_option else ".semgrepignore")
+ignore = root / ".semgrepignore"
 hidden = (ignore.exists() and "app.py" in ignore.read_text()) if tool == "semgrep" else False
 flag = "--disable-nosem" if tool == "semgrep" else "--ignore-nosec"
 suppression = "nosemgrep" if tool == "semgrep" else "nosec"
 hidden = hidden or (suppression in text and flag not in args)
-row = {"check_id": "injection", "path": args[-1], "start": {"line": 1},
+row = {"check_id": "injection", "path": target.name, "start": {"line": 1},
        "extra": {"severity": "ERROR"}} if tool == "semgrep" else {
-       "test_id": "B602", "filename": args[-1], "line_number": 1,
+       "test_id": "B602", "filename": str(target), "line_number": 1,
        "issue_severity": "HIGH", "issue_confidence": "HIGH"}
 record = {"root": str(root), "args": args, "text": text,
           "ignore": str(ignore), "ignore_text": ignore.read_text() if ignore.exists() else None,
@@ -107,18 +131,20 @@ async def test_security_107_suppressions_cannot_hide_head_findings(head_tree, fa
     (root / "src/app.py").write_text("clean_checkout()\n")
     report = await run_security_floor(_score(["src/app.py", ignore_path]), Stand(path=root, branch="feature"))
     assert report["complete"] is True
-    assert len(report["findings"]) == 2
+    assert len(report["findings"]) == SCANNER_COUNT
+    assert all(finding["file"] == "src/app.py" for finding in report["findings"])
     invocations = [json.loads(line) for line in fake_scanners.read_text().splitlines()]
-    assert len(invocations) == 2
+    assert len(invocations) == SCANNER_COUNT
     for invocation in invocations:
         export = Path(invocation["root"])
         assert not export.is_relative_to(root)
         assert invocation["text"] == tracked["src/app.py"]
         assert not invocation["repo_ignore_present"]
     assert "--disable-nosem" in invocations[0]["args"]
-    assert invocations[0]["ignore_text"] == ""
+    assert invocations[0]["ignore_text"] is None
+    assert not any(arg.startswith("--x-semgrepignore-filename") for arg in invocations[0]["args"])
     assert "--ignore-nosec" in invocations[1]["args"]
-    assert ("archive", "--format=tar", HEAD) in calls
+    assert ("show", f"{HEAD}:src/app.py") in calls
     assert not Path(invocations[0]["root"]).exists()
 
 
@@ -137,7 +163,7 @@ async def test_security_107_deletions_are_filtered_at_head(head_tree, files):
         assert report["reason"] == "no files to scan"
         scan.assert_not_called()
     else:
-        assert scan.call_args.args[0] == ["app.py"]
+        assert len(scan.call_args.args[0]) == len(tracked)
         assert scan.call_args.args[1] != root
 
 
@@ -153,30 +179,33 @@ async def test_security_107_head_mismatch_is_incomplete(head_tree):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["symlink", "directory", "export_ignore", "archive_failure"])
+@pytest.mark.parametrize("failure", ["symlink", "directory", "show_failure"])
 async def test_security_107_unscannable_head_files_fail_closed(head_tree, failure):
     root, tracked, _ = head_tree
     tracked["app.py"] = "danger()\n"
     original_git = security_floor._git
 
-    def git(root_arg, *args):
-        data = original_git(root_arg, *args)
+    def git(root_arg, *args, **kwargs):
+        data = original_git(root_arg, *args, **kwargs)
         if args[0] == "ls-tree":
             if failure == "symlink":
                 return data.replace(SOURCE_MODE.encode(), b"120000")
             if failure == "directory":
                 return data.replace(b"app.py", b"app.py/child.py")
-        if args[0] == "archive":
-            if failure == "archive_failure":
-                raise OSError("archive failed")
-            if failure == "export_ignore":
-                empty = io.BytesIO()
-                with tarfile.open(fileobj=empty, mode="w"):
-                    pass
-                return empty.getvalue()
         return data
 
-    with patch("performer.security_floor._git", side_effect=git), patch("performer.security_floor.scan_diff") as scan:
+    original_run = security_floor.subprocess.run
+
+    def show(*args, **kwargs):
+        if failure == "show_failure":
+            raise OSError("show failed")
+        return original_run(*args, **kwargs)
+
+    with (
+        patch("performer.security_floor._git", side_effect=git),
+        patch("performer.security_floor.subprocess.run", side_effect=show),
+        patch("performer.security_floor.scan_diff") as scan,
+    ):
         report = await run_security_floor(_score(["app.py"]), Stand(path=root, branch="feature"))
     assert report["complete"] is False
     scan.assert_not_called()
@@ -222,3 +251,122 @@ def test_security_107_image_scanner_must_be_root_owned_and_protected(uid, mode, 
 def test_security_107_image_scanner_symlink_cannot_point_into_workspace(tmp_path):
     with patch.object(Path, "resolve", return_value=tmp_path / "semgrep"):
         assert not security_scanner._trusted_executable(Path("/usr/local/bin/semgrep"))
+
+
+@pytest.mark.asyncio
+async def test_security_107_semgrep_targets_are_explicit_files(head_tree):
+    root, tracked, _ = head_tree
+    tracked.update({"src/app.py": "danger()\n", "nested/deeper/other.py": "other()\n"})
+    semgrep_targets = []
+
+    def invoke(cmd, cwd, tool):
+        if tool == "semgrep":
+            targets = cmd[cmd.index("--no-git-ignore") + 1:]
+            assert targets
+            assert all((cwd / target).is_file() for target in targets)
+            assert all(not (cwd / target).is_dir() for target in targets)
+            assert not any(arg.startswith("--x-semgrepignore-filename") for arg in cmd)
+            semgrep_targets.extend(targets)
+        return {"results": []}
+
+    with (
+        patch.object(security_scanner, "_resolve_binary", side_effect=lambda tool: f"/usr/bin/{tool}"),
+        patch.object(security_scanner, "_invoke", side_effect=invoke),
+    ):
+        report = await run_security_floor(_score(list(tracked)), Stand(path=root, branch="feature"))
+    assert report["complete"] is True
+    assert len(semgrep_targets) == len(tracked)
+
+
+@pytest.mark.asyncio
+async def test_security_107_export_contains_no_control_or_config_names(head_tree):
+    root, tracked, _ = head_tree
+    tracked.update(dict.fromkeys(CONTROL_PATHS, "danger()\n"))
+    tracked["unchanged_config.yaml"] = "must not be exported\n"
+    observed = []
+
+    def scan(targets, export):
+        paths = list(export.rglob("*"))
+        assert all(path.is_file() for path in paths)
+        assert set(paths) == {export / target for target in targets}
+        assert all(path.name not in {Path(name).name for name in tracked} for path in paths)
+        assert all(path.read_text() == "danger()\n" for path in paths)
+        observed.extend(targets)
+        return []
+
+    with patch.object(security_floor, "scan_diff", side_effect=scan):
+        report = await run_security_floor(_score(list(CONTROL_PATHS)), Stand(path=root, branch="feature"))
+    assert report["complete"] is True
+    assert len(observed) == len(CONTROL_PATHS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [".gitignore", ".bandit", ".semgrepignore"])
+async def test_security_107_code_renamed_to_control_file_is_still_scanned(head_tree, name):
+    root, tracked, _ = head_tree
+    contents = "danger()\n"
+    tracked[name] = contents
+    observed = []
+
+    def scan(targets, export):
+        assert len(targets) == len(tracked)
+        target = targets[0]
+        assert target != name
+        assert (export / target).read_text() == contents
+        observed.append(target)
+        return [{"file": target}]
+
+    with patch.object(security_floor, "scan_diff", side_effect=scan):
+        report = await run_security_floor(_score([name]), Stand(path=root, branch="feature"))
+    assert report["complete"] is True
+    assert report["findings"] == [{"file": name}]
+    assert observed
+
+
+@pytest.mark.asyncio
+async def test_security_107_many_head_files_stream_one_at_a_time(head_tree):
+    root, tracked, calls = head_tree
+    tracked.update({f"src/file_{index}.py": f"value = {index}\n" for index in range(MANY_FILE_COUNT)})
+    observed = []
+
+    def scan(targets, export):
+        observed.extend((export / target).read_text() for target in targets)
+        assert all(Path(target).suffix == ".py" for target in targets)
+        return []
+
+    with patch.object(security_floor, "scan_diff", side_effect=scan):
+        report = await run_security_floor(_score(list(tracked)), Stand(path=root, branch="feature"))
+    assert report["complete"] is True
+    # The fixture requires a live output file for each git show and verifies that
+    # its predecessor is closed before the next target is read.
+    assert [call for call in calls if call[0] == "show"] == [
+        ("show", f"{HEAD}:{name}") for name in tracked
+    ]
+    assert not any(call[0] == "archive" for call in calls)
+    assert observed == list(tracked.values())
+
+
+@pytest.mark.parametrize("tool", ["semgrep", "bandit"])
+def test_security_107_missing_trusted_scanner_explains_installation(tool):
+    with (
+        patch.object(security_scanner, "_trusted_executable", return_value=False),
+        pytest.raises(security_scanner.ScannerError) as error,
+    ):
+        security_scanner._resolve_binary(tool)
+    assert INSTALLATION_MESSAGE in str(error.value)
+    assert tool in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_tool", ["semgrep", "bandit"])
+async def test_security_107_missing_trusted_scanner_report_explains_installation(head_tree, missing_tool):
+    root, tracked, _ = head_tree
+    tracked["app.py"] = "danger()\n"
+    with (
+        patch.object(security_scanner, "_trusted_executable", side_effect=lambda path: path.name != missing_tool),
+        patch.object(security_scanner, "_invoke", return_value={"results": []}),
+    ):
+        report = await run_security_floor(_score(list(tracked)), Stand(path=root, branch="feature"))
+    assert report["complete"] is False
+    assert report["findings"] == []
+    assert INSTALLATION_MESSAGE in report["reason"]
