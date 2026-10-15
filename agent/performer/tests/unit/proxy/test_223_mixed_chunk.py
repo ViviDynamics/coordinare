@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from performer.proxy.normalizers import NORMALIZER_REGISTRY
+from performer.proxy.normalizers.reasoning import StripReasoningNormalizer
 from performer.proxy.routing import TargetDescriptor
 from performer.proxy.shim import SelfHostedShim
 from performer.proxy.translate.sse import TranslatingSSEFilter
@@ -257,10 +258,9 @@ async def test_shim_chain_keeps_the_head_of_a_mixed_stream(field: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", REASONING_FIELDS)
-async def test_shim_chain_promotes_a_reasoning_only_stream_to_text(field: str) -> None:
+async def test_legacy_reasoning_content_only_stream_is_promoted_to_text() -> None:
     body = _sse_body([
-        _chunk({field: "ready"}),
+        _chunk({"reasoning_content": "ready"}),
         _chunk({}, finish="stop"),
     ])
     events = _events(await _post_stream(body))
@@ -269,15 +269,103 @@ async def test_shim_chain_promotes_a_reasoning_only_stream_to_text(field: str) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", REASONING_FIELDS)
-async def test_shim_chain_promotes_a_reasoning_only_json_reply(field: str) -> None:
+async def test_vllm_reasoning_only_stream_is_not_promoted() -> None:
+    """A ``reasoning`` draft is stripped, never promoted into the answer (223 BLOCK)."""
+    body = _sse_body([
+        _chunk({"reasoning": 'I think answer is {"sufficient": true}'}),
+        _chunk({}, finish="stop"),
+    ])
+    events = _events(await _post_stream(body))
+    _assert_well_formed(events)
+    assert _text_block_indices(events) == []
+    assert "sufficient" not in json.dumps(events)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_stream_truncated_at_length_is_not_promoted() -> None:
+    body = _sse_body([
+        _chunk({"reasoning_content": "half a draft"}),
+        _chunk({}, finish="length"),
+    ])
+    events = _events(await _post_stream(body))
+    _assert_well_formed(events)
+    assert _text_block_indices(events) == []
+
+
+@pytest.mark.asyncio
+async def test_vllm_reasoning_json_reply_is_stripped_not_promoted() -> None:
+    """A content-empty vLLM ``reasoning`` reply fails empty, as it did before 223."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "id": "glm-223",
             "model": MODEL,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": "", field: "ready"},
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": 'I think answer is {"sufficient": true}',
+                },
+                "finish_reason": "stop",
+            }],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        shim = SelfHostedShim(
+            target=_target(),
+            normalizers=[NORMALIZER_REGISTRY[key] for key in _target().normalizers],
+            client=upstream,
+        )
+        base = await shim.start()
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    base + "/v1/messages",
+                    json={
+                        "model": MODEL,
+                        "max_tokens": 128,
+                        "messages": [{"role": "user", "content": "Return JSON"}],
+                    },
+                )
+        finally:
+            await shim.stop()
+    assert response.json()["content"] == []
+
+
+def test_normalize_json_keeps_content_and_drops_both_reasoning_keys() -> None:
+    body = {"id": "x", "model": MODEL, "choices": [{
+        "index": 0, "finish_reason": "stop",
+        "message": {
+            "role": "assistant",
+            "content": '{"sufficient": true}',
+            "reasoning": "draft one",
+            "reasoning_content": "draft two",
+        },
+    }]}
+    message = StripReasoningNormalizer().normalize_json(body)["choices"][0]["message"]
+    assert message["content"] == '{"sufficient": true}'
+    assert "reasoning" not in message
+    assert "reasoning_content" not in message
+
+
+def test_normalize_json_does_not_promote_reasoning_content_truncated_at_length() -> None:
+    body = {"id": "x", "model": MODEL, "choices": [{
+        "index": 0, "finish_reason": "length",
+        "message": {"role": "assistant", "content": "", "reasoning_content": "half"},
+    }]}
+    message = StripReasoningNormalizer().normalize_json(body)["choices"][0]["message"]
+    assert message["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_legacy_reasoning_content_json_reply_is_promoted() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": "glm-223",
+            "model": MODEL,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "", "reasoning_content": "ready"},
                 "finish_reason": "stop",
             }],
         })

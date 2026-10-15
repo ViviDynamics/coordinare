@@ -9,8 +9,13 @@ assistant output intact (FR-078-8, FR-078-3). Two leak shapes are handled:
   JSON ``content`` array and as streamed ``content_block_*`` events. Streamed
   text blocks following a dropped thinking block are renumbered so the surviving
   block indices stay contiguous from 0.
-* **OpenAI / qwen / vLLM** ``reasoning_content`` or ``reasoning`` on the message (JSON) and on streaming
-  ``delta`` objects.
+* **OpenAI / qwen / vLLM** ``reasoning_content`` or ``reasoning`` on the message
+  (JSON) and on streaming ``delta`` objects.
+
+Promotion (a reasoning-only answer rescued into content) is LEGACY ``reasoning_content``
+behaviour only. A ``reasoning`` field is always stripped and never promoted (223): it
+is a thinking draft, and promoting it hands a JSON-contract parser the draft as the
+answer. A reply that ended on ``finish_reason=length`` is never promoted, on either key.
 
 Fail-open (FR-078-9): a response carrying neither shape is returned unchanged.
 """
@@ -24,8 +29,12 @@ from .base import StatefulSSEFilter
 
 _THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
 # OpenAI-shape reasoning fields. vLLM emits ``reasoning``; LiteLLM and older vLLM
-# emit ``reasoning_content``. Both carry the same channel (223).
+# emit ``reasoning_content``. Both are stripped. Only ``reasoning_content`` may be
+# promoted into content (legacy behaviour, unchanged from main); ``reasoning`` is
+# strip-only (223).
 _REASONING_KEYS = ("reasoning_content", "reasoning")
+_PROMOTABLE_KEY = "reasoning_content"
+_TRUNCATED_FINISH = "length"
 
 
 class _StripReasoningSSEFilter(StatefulSSEFilter):
@@ -107,18 +116,24 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
             content = delta.get("content")
             if isinstance(content, str) and content:
                 self._content_emitted = True
-            for key in _REASONING_KEYS:
-                reasoning = delta.get(key)
-                if isinstance(reasoning, str) and reasoning:
-                    self._reasoning_buf.append(reasoning)
+            reasoning = delta.get(_PROMOTABLE_KEY)
+            if isinstance(reasoning, str) and reasoning:
+                self._reasoning_buf.append(reasoning)
             if any(key in delta for key in _REASONING_KEYS):
                 delta = {k: v for k, v in delta.items() if k not in _REASONING_KEYS}
                 choice = {**choice, "delta": delta}
 
-        # Stream end with no real content: promote the buffered reasoning as a
-        # single content delta emitted just before the (reasoning-stripped) finish
-        # frame, so the agent receives parseable text instead of an empty response.
-        if finish is not None and not self._content_emitted and self._reasoning_buf:
+        # Stream end with no real content: promote the buffered legacy
+        # reasoning_content as a single content delta emitted just before the
+        # (reasoning-stripped) finish frame, so the agent receives parseable text
+        # instead of an empty response. Never on a truncated (length) reply, and
+        # never for the vLLM ``reasoning`` field (it is not buffered at all).
+        if (
+            finish is not None
+            and finish != _TRUNCATED_FINISH
+            and not self._content_emitted
+            and self._reasoning_buf
+        ):
             promoted = "".join(self._reasoning_buf)
             self._reasoning_buf = []
             self._content_emitted = True
@@ -179,7 +194,9 @@ class StripReasoningNormalizer:
         # carries ``content: ""`` with everything in ``reasoning_content``; blindly
         # stripping it hands the agent an empty response, which it reads as an
         # empty/"unknown" verdict (the qa terminal-error failure). In that case
-        # PROMOTE the reasoning into content so the harness gets parseable text.
+        # PROMOTE the legacy reasoning_content into content so the harness gets
+        # parseable text. Never promote a ``reasoning`` field, and never promote a
+        # truncated (length) reply (223).
         if has_reasoning:
             for choice in body["choices"]:
                 if not isinstance(choice, dict):
@@ -187,16 +204,20 @@ class StripReasoningNormalizer:
                 message = choice.get("message")
                 if not isinstance(message, dict):
                     continue
-                reasoning = None
+                reasoning = message.pop(_PROMOTABLE_KEY, None)
                 for key in _REASONING_KEYS:
-                    popped = message.pop(key, None)
-                    if reasoning is None:
-                        reasoning = popped
+                    message.pop(key, None)
                 content = message.get("content")
                 content_empty = content is None or (
                     isinstance(content, str) and not content.strip()
                 )
-                if content_empty and isinstance(reasoning, str) and reasoning.strip():
+                truncated = choice.get("finish_reason") == _TRUNCATED_FINISH
+                if (
+                    content_empty
+                    and not truncated
+                    and isinstance(reasoning, str)
+                    and reasoning.strip()
+                ):
                     message["content"] = reasoning
 
         return body

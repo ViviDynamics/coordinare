@@ -209,11 +209,16 @@ was harmful. The translate route repairs the wire adaptation instead.
 Symptom: the assessor's JSON reply starts mid-token (`sufficient": true, ...`)
 with a reasoning model such as glm-5.3-flash behind LiteLLM `/v1/messages`.
 LiteLLM v1.103.2's Anthropic adapter drops a `content` delta that shares a
-chunk with `reasoning`. LiteLLM `/v1/chat/completions` does not drop it. The
-performer's translate route avoids the adapter: it turns the CLI's
+chunk with `reasoning`. The issue's reproduction found `/v1/chat/completions`
+intact in 2 of 2 runs, which is a small sample. Upstream BerriAI/litellm#27492
+reports that `use_chat_completions_api: true` can also drop content when the
+provider returns `reasoning_content`, so that path is not proven safe either.
+The performer's translate route avoids the adapter: it turns the CLI's
 `/v1/messages` calls into `/v1/chat/completions` itself, reads `delta.content`
-independently of reasoning (`reasoning` and `reasoning_content` are both
-recognized), and `strip_reasoning` promotes a reasoning-only reply to text.
+independently of reasoning. `strip_reasoning` removes both `reasoning` and
+`reasoning_content`. Only a legacy `reasoning_content` reply is promoted to text,
+and never one that ended on `length`. A reasoning-only `reasoning` reply stays
+empty, so it fails loudly rather than handing the parser a draft.
 
 Set the routing entry's `model` to the exact model string the assessor
 dispatches, including any namespace prefix your gateway adds to the model name.
@@ -237,5 +242,5 @@ The `claude-ephemeral` endpoint must list `assessor` in its `roles` and carry
 the same `SELFHOSTED_ROUTING_CONFIG`, `COORDINARE_PROXY_AUTH` and routing-file
 mount shown above. Keep `disable_thinking` off for this model. Re-check the
 upstream LiteLLM release notes before removing this route: the adapter bug was
-still open upstream as of 2026-10-15 (see issue 32357 and PR 32364 on
-BerriAI/litellm).
+still open upstream as of 2026-10-15 (see issues 32357 and 27492 and PR 32364
+on BerriAI/litellm).
