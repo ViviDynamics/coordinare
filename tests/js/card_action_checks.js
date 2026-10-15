@@ -71,11 +71,24 @@ check("queued controls say when they apply",
 check("a missing body does not throw", cardActionOutcome("skip", 500, undefined).text, "The request was refused.");
 
 // --- the menu ----------------------------------------------------------------
-var menu = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer" }, state);
+var menu = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer", cancel_available: true }, state);
 has("menu offers cancel", menu, 'data-card-action="cancel"');
 has("menu offers skip", menu, 'data-card-action="skip"');
 has("menu offers restart", menu, 'data-card-action="restart"');
 check("the menu and each of its three buttons carry the card id", menu.split('data-card-id="' + NODE + '"').length - 1, 4);
+
+// --- 168: a card Cancel cannot act on (held by another symphony) ----------------
+var heldMenu = cardActionsHtml({ card_id: NODE, phase: "monitoring_performer", cancel_available: false }, state);
+has("a card cancel cannot act on gets no cancel button", heldMenu, 'data-card-action="cancel"', false);
+has("and the menu says why cancel is missing", heldMenu, "Cancel is offered only for the card the conductor is working on right now", true);
+has("skip is still offered for it", heldMenu, 'data-card-action="skip"');
+has("restart is still offered for it", heldMenu, 'data-card-action="restart"');
+check("its card id appears on the menu and its two buttons", heldMenu.split('data-card-id="' + NODE + '"').length - 1, 3);
+has("a card with no cancel flag gets no cancel button either",
+  cardActionsHtml({ card_id: NODE, phase: "dispatching" }, state), 'data-card-action="cancel"', false);
+check("the flag is read only when it is exactly true",
+  [cardCancelOffered({ cancel_available: true }), cardCancelOffered({ cancel_available: "true" }), cardCancelOffered(undefined)],
+  [true, false, false]);
 has("restart lists the lifecycle stages by display name", menu, '<option value="implementing">Implement</option>');
 has("the menu has an accessible name", menu, 'aria-label="Card actions"');
 has("the menu has a live status region", menu, 'role="status"');

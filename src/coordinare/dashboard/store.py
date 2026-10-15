@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coordinare.cancel import resolve_active_card
 from coordinare.dashboard.card_pipeline import card_pipeline_block
 from coordinare.dashboard.helpers import (
     _json_default,
@@ -104,6 +105,14 @@ def run_usage_block(daemon: Any, *, run_id: str) -> dict[str, Any]:
         "reason": None,
         **usage_summary(totals, _price_table(daemon)),
     }
+
+
+def _mark_cancel_available(rows: list[dict[str, Any]], state: Any) -> None:
+    """168: Cancel acts on one card, the one resolve_active_card names. The card menu offers it
+    only there, so a card another symphony holds is not offered a Cancel the endpoint refuses."""
+    active_id = resolve_active_card(state)[0]
+    for row in rows:
+        row["cancel_available"] = bool(active_id) and row.get("card_id") == active_id
 
 
 def _pending_control(raw: Any) -> dict[str, str] | None:
@@ -649,6 +658,7 @@ class DashboardStore:
             summaries.append(
                 self._top_state_summary(ctx, perf),
             )
+        _mark_cancel_available(summaries, ctx.daemon.state)
         return summaries
 
     @staticmethod

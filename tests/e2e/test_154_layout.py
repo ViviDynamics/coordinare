@@ -77,6 +77,8 @@ def _running(card_id: str, title: str, number: int, session: str) -> dict:
         "session_id": session,
         "agent_dispatch_at": _ago(5),
         "card_tokens_total": 1234,
+        # 168: the server offers Cancel for the card the conductor is working on.
+        "cancel_available": True,
     }
 
 
