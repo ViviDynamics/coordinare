@@ -163,3 +163,28 @@ def test_event_protocol_is_compatible_with_and_without_the_seq_key() -> None:
     dumped = keyed.model_dump()
     assert dumped["transcript_seq"] == _SEQ
     assert BackendEvent.model_validate(dumped).transcript_seq == _SEQ
+
+
+# --- 178: an unrecognised driver event is a raw output line, not narration -----
+
+
+async def test_178_an_unrecognised_event_type_is_recorded_as_output(buf: transcript.TranscriptBuffer) -> None:
+    backend = DriverBackend()
+    events = await _run(backend, {"type": "mystery_kind", "text": "stray backend line"})
+
+    [raw] = events
+    assert raw.type == BackendEventType.output
+    assert raw.text == "stray backend line"
+    assert _record_at(buf, raw.transcript_seq)["type"] == "system"
+
+
+async def test_178_an_output_event_from_an_older_driver_is_still_output(buf: transcript.TranscriptBuffer) -> None:
+    backend = DriverBackend()
+    [raw] = await _run(backend, {"type": "output", "text": "raw line"})
+    assert raw.type == BackendEventType.output
+
+
+async def test_178_a_progress_event_from_a_newer_driver_is_still_progress(buf: transcript.TranscriptBuffer) -> None:
+    backend = DriverBackend()
+    [progress] = await _run(backend, {"type": "progress", "text": "compaction_start"})
+    assert progress.type == BackendEventType.progress

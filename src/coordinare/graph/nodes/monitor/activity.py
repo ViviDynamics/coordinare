@@ -11,15 +11,16 @@ if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 
-# 138: backend event type → activity type. `output` is the backend's fallback
-# for an unrecognised line, so it reads as plain progress in the feed.
+# 138: backend event type → activity type. `output` is a raw line from the backend,
+# not model narration. It keeps its own kind (178), so the feed never presents it as
+# the agent speaking.
 _ACTIVITY_TYPE_BY_EVENT = {
     "progress": "progress",
     "tool_use": "tool_use",
     "thinking": "thinking",
     "cost": "cost",
     "error": "error",
-    "output": "progress",
+    "output": "output",
     "completed": "completed",
     "completion": "completed",
     "blocked": "blocked",
@@ -126,5 +127,6 @@ def _feed_fields(ev: dict[str, Any]) -> dict[str, str]:
         return {"activity_type": "tool_result", "summary": f"result {status}", "status": status}
     if event_type == "tool_use":
         return {"activity_type": "tool_use", "summary": _tool_summary(ev)}
-    return {"activity_type": _ACTIVITY_TYPE_BY_EVENT.get(event_type, "progress")}
+    # 178: an unrecognised event is a raw line, the same as the performer's driver maps it.
+    return {"activity_type": _ACTIVITY_TYPE_BY_EVENT.get(event_type, "output")}
 

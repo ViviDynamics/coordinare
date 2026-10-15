@@ -8,12 +8,15 @@ var AF_LABELS = {
   // 343: step boundaries are the spine of the trail; give them their own chip.
   workflow_step: 'STEP',
   // 429: an observer verdict's chip. The verb itself is in the entry text.
-  observer_verdict: 'OBSERVER'
+  observer_verdict: 'OBSERVER',
+  // 178: a raw line from the backend gets its own chip, distinct from the agent's AGENT chip.
+  output: 'OUTPUT'
 };
 function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
 var AF_SUMMARIES = {
   progress: 'Performer reported progress.', thinking: 'Performer is reasoning.',
   tool_use: 'Performer used a tool.', tool_result: 'A tool returned a result.',
+  output: 'The backend printed a raw output line.',
   cost: 'Usage updated.',
   stage_change: 'Workflow stage changed.', recovered: 'Work recovered.',
   quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
@@ -61,7 +64,7 @@ function afSaveChips() {
 function afRowKind(e) {
   var type = e.activity_type;
   if (type === 'tool_use' || type === 'tool_result') return 'tools';
-  if (type === 'progress' || type === 'thinking' || type === 'cost' || type === 'stream_truncated') return 'agent';
+  if (type === 'progress' || type === 'thinking' || type === 'output' || type === 'cost' || type === 'stream_truncated') return 'agent';
   if (type === 'error') return 'errors';
   return 'lifecycle';
 }
@@ -72,7 +75,7 @@ function afVisible(e) {
 // 148: streamed kinds fold into one collapsible group per burst. Everything
 // else (lifecycle, errors, quiet, stall) is a single row that is never folded.
 function afStreamType(type) {
-  return type === 'progress' || type === 'thinking' || type === 'tool_use' ||
+  return type === 'progress' || type === 'thinking' || type === 'output' || type === 'tool_use' ||
     type === 'tool_result' || type === 'cost';
 }
 // 353: a collapsed group line leads with the newest meaningful entry's own text.
@@ -184,14 +187,62 @@ function afDroppedText(dropped, capacity, scoped) {
   var keep = capacity > 0 ? ' to keep the newest ' + afCount(capacity) : '';
   return 'Older activity is not shown: ' + afCount(dropped) + ' entries were dropped' + scope + keep + '.';
 }
-// 237: one block of agent output. The feed and the performer page draw a tool call, a result and
-// narration through this one function, so the two cannot disagree about what a row looks like.
-function afBlockHtml(kind, text, status) {
-  if (kind === 'tool_use') return '<pre class="af-tool"><code>' + esc(text) + '</code></pre>';
-  if (kind === 'tool_result') {
-    return '<p class="af-result af-result-' + esc(status) + '">' + esc(text) + '</p>';
+// 178: each block names the backend event it came from, so tool output, a thinking block and
+// the agent's own words never look alike. The label is decided by what the entry carries, not
+// by its kind alone. A tool event the feed cannot tell apart is labelled neutrally "Tool".
+var AF_SOURCE_LABELS = {
+  progress: 'Assistant text', thinking: 'Thinking', output: 'Output line', error: 'Error'
+};
+function afToolSource(e) {
+  if (e.activity_type === 'tool_use') {
+    // Streamed command output arrives as deltas (codex). Claude and opencode never send deltas.
+    if (e.is_delta) return 'Tool output';
+    // A structured call is "Name · argument" (claude, codex). Opencode input and output are plain text.
+    return / · /.test(String(e.summary || '')) ? 'Tool call' : 'Tool';
   }
-  return '<p class="af-narration">' + esc(text) + '</p>';
+  // Claude's result text starts "result:". Codex completion's text is the bare command, so it stays neutral.
+  return /^result:/.test(String(e.text || '')) ? 'Tool output' : 'Tool';
+}
+function afSourceLabel(e) {
+  if (e.activity_type === 'tool_use' || e.activity_type === 'tool_result') return afToolSource(e);
+  var kind = String(e.activity_type || '');
+  return Object.prototype.hasOwnProperty.call(AF_SOURCE_LABELS, kind) ? AF_SOURCE_LABELS[kind] : 'Event';
+}
+// 178: a transcript record number, when the performer named one.
+function afBlockSeq(seq) {
+  return typeof seq === 'number' && seq >= 1 && Math.floor(seq) === seq ? seq : null;
+}
+// 178: a merged block spans the records of every fragment it joined. The title says so, and
+// data-transcript-seq links the first record. data-transcript-seq-last marks the span's end.
+function afBlockAttrs(b) {
+  var spans = b.seqLast && b.seqLast !== b.seq;
+  var record = !b.seq ? '' : spans
+    ? ', transcript records ' + b.seq + ' to ' + b.seqLast
+    : ', transcript record ' + b.seq;
+  return ' data-event-type="' + esc(b.kind) + '" data-source="' + esc(b.label) + '"' +
+    (b.seq ? ' data-transcript-seq="' + b.seq + '"' : '') +
+    (spans ? ' data-transcript-seq-last="' + b.seqLast + '"' : '') +
+    ' title="' + esc(b.label + record) + '"';
+}
+// 237 + 178: one block of agent output. The feed and the performer page both draw a block through
+// this one function, so they cannot disagree about what a row looks like. A block is
+// {kind, text, status, label, seq, seqLast}; afBlockFromEntry builds it from any feed entry.
+function afBlockHtml(b) {
+  var attrs = afBlockAttrs(b);
+  if (b.kind === 'tool_use') {
+    return '<div class="af-block"' + attrs + '><pre class="af-tool"><code>' + esc(b.text) + '</code></pre></div>';
+  }
+  if (b.kind === 'tool_result') {
+    return '<p class="af-result af-result-' + esc(b.status) + '"' + attrs + '>' + esc(b.text) + '</p>';
+  }
+  // 178: a raw line from the backend is set like output, never like the agent's prose.
+  if (b.kind === 'output') return '<p class="af-output"' + attrs + '>' + esc(b.text) + '</p>';
+  return '<p class="af-narration"' + attrs + '>' + esc(b.text) + '</p>';
+}
+function afBlockFromEntry(e) {
+  var seq = afBlockSeq(e.transcript_seq);
+  return {kind: e.activity_type, text: afLine(e), status: e.status || '', label: afSourceLabel(e),
+          seq: seq, seqLast: seq};
 }
 function afRawHtml(entries) {
   var blocks = [];
@@ -200,15 +251,18 @@ function afRawHtml(entries) {
     if (e.activity_type === 'cost') { usage.push(e); return; }
     var previous = blocks[blocks.length - 1];
     var fragment = afLine(e);
+    var seq = afBlockSeq(e.transcript_seq);
     if (previous && e.is_delta && previous.delta &&
         previous.kind === e.activity_type && previous.stream === (e.stream_id || '')) {
       previous.text += fragment;
+      if (seq) previous.seqLast = seq;
     } else {
-      blocks.push({text:fragment, kind:e.activity_type,
-                   delta:!!e.is_delta, stream:e.stream_id || '', status:e.status || ''});
+      blocks.push({text:fragment, kind:e.activity_type, label:afSourceLabel(e),
+                   delta:!!e.is_delta, stream:e.stream_id || '', status:e.status || '',
+                   seq:seq, seqLast:seq});
     }
   });
-  var output = blocks.map(function(b) { return afBlockHtml(b.kind, b.text, b.status); }).join('');
+  var output = blocks.map(afBlockHtml).join('');
   if (usage.length) {
     // Snapshots may be cumulative or incremental depending on the backend.
     // Preserve the reported values; never infer a total by adding them here.
@@ -399,7 +453,7 @@ function afApplyChipState() {
 // tests/unit/test_237_feed_parity.py checks every case in tests/fixtures/feed_parity_237.json
 // against both sides, and checks AF_STEP_PREFIXES against the daemon's KNOWN_STEP_PREFIXES.
 var AF_BACKEND_KIND = {
-  progress: 'progress', thinking: 'thinking', cost: 'cost', error: 'error', output: 'progress',
+  progress: 'progress', thinking: 'thinking', cost: 'cost', error: 'error', output: 'output',
   completed: 'completed', completion: 'completed', blocked: 'blocked', failed: 'error', failure: 'error'
 };
 var AF_STEP_PREFIXES = ['implementer', 'architect', 'assessor', 'qa', 'reviewer', 'security',
@@ -421,7 +475,8 @@ function afToolSummary(ev) {
 function afEntryFromBackend(ev, runId) {
   var type = String(ev.type || '');
   var status = String(ev.status || '');
-  var kind = 'progress';
+  // 178: an unrecognised event is a raw line, the same default the daemon's _feed_fields uses.
+  var kind = 'output';
   var summary = '';
   if (afIsStepEvent(ev)) {
     kind = 'workflow_step';
@@ -436,6 +491,7 @@ function afEntryFromBackend(ev, runId) {
   }
   return {
     activity_type: kind, summary: summary, status: kind === 'tool_result' ? status : '',
+    is_delta: ev.is_delta === true,
     text: String(ev.text || ev.detail || ''), session_id: String(runId || ''),
     timestamp: ev.timestamp || '', event_at: ev.timestamp || '',
     transcript_seq: ev.transcript_seq
@@ -448,6 +504,6 @@ function afEventRowHtml(e) {
   return '<div class="af-row af-plain af-row-' + esc(afRowKind(e)) + '">' +
     '<span class="af-time">' + timeHtml(e.timestamp) + '</span>' +
     '<span class="af-kind ev-' + esc(kind) + '">' + esc(afLabel(kind)) + '</span>' +
-    '<div class="af-body">' + afBlockHtml(kind, afLine(e), e.status || '') + '</div>' +
+    '<div class="af-body">' + afBlockHtml(afBlockFromEntry(e)) + '</div>' +
     runEntryLinkHtml(e) + '</div>';
 }

@@ -208,5 +208,73 @@ check("a tool call with no summary falls back to its text",
 check("narration body is its text",
   afLine(entry(1, { activity_type: "progress", text: "hello" })), "hello");
 
+// --- source labels (178) ------------------------------------------------------
+// Each raw block names the backend event it came from, and carries its transcript record.
+const sourced = afRawHtml([
+  entry(40, { activity_type: "tool_use", text: "Bash", summary: "Bash · ls", transcript_seq: 7 }),
+  entry(41, { activity_type: "tool_result", status: "ok", text: "result: a.py", transcript_seq: 8 }),
+  entry(42, { activity_type: "progress", text: "I will check the CI.", transcript_seq: 9 }),
+  entry(43, { activity_type: "thinking", text: "Actually, no.", transcript_seq: 10 }),
+  entry(44, { activity_type: "output", text: "stray line", transcript_seq: 11 }),
+]);
+truthy("a tool call is labelled as a tool call", sourced.indexOf('data-source="Tool call"') !== -1, sourced);
+truthy("a tool result is labelled as tool output", sourced.indexOf('data-source="Tool output"') !== -1, sourced);
+truthy("progress is labelled as assistant text", sourced.indexOf('data-source="Assistant text"') !== -1, sourced);
+truthy("a thinking block is labelled as thinking", sourced.indexOf('data-source="Thinking"') !== -1, sourced);
+truthy("a raw output line is labelled as an output line", sourced.indexOf('data-source="Output line"') !== -1, sourced);
+truthy("the label is an attribute, never text in the body", sourced.indexOf('<span') === -1 &&
+  sourced.indexOf('>Assistant text') === -1, sourced);
+truthy("a raw output line is set as output, not as narration", sourced.indexOf('<p class="af-output"') !== -1 &&
+  sourced.indexOf('stray line') !== -1 && sourced.indexOf('af-narration" data-event-type="output"') === -1, sourced);
+truthy("each block carries its event type", sourced.indexOf('data-event-type="thinking"') !== -1 &&
+  sourced.indexOf('data-event-type="output"') !== -1, sourced);
+truthy("each block carries its transcript record", sourced.indexOf('data-transcript-seq="9"') !== -1 &&
+  sourced.indexOf('title="Assistant text, transcript record 9"') !== -1, sourced);
+check("a raw output line is an agent row, so the Agent chip shows it", afRowKind(entry(1, { activity_type: "output" })), "agent");
+check("a raw output line folds with the burst it arrived in", afStreamType("output"), true);
+check("a block with no transcript record carries none", afRawHtml([entry(1, { activity_type: "progress", text: "x" })])
+  .indexOf("data-transcript-seq") === -1, true);
+
+// --- one event from each backend, as the feed stores it (178) -----------------
+const labelOf = (fields) => {
+  const html = afRawHtml([entry(50, fields)]);
+  const m = html.match(/data-source="([^"]*)"/);
+  return m ? m[1] : null;
+};
+check("claude: a tool call with a Name · argument summary is a tool call",
+  labelOf({ activity_type: "tool_use", text: "Bash", summary: "Bash · ls" }), "Tool call");
+check("claude: a tool result whose text starts result: is tool output",
+  labelOf({ activity_type: "tool_result", status: "ok", text: "result: a.py" }), "Tool output");
+check("codex: streamed command output (a delta tool_use) is tool output",
+  labelOf({ activity_type: "tool_use", is_delta: true, stream_id: "item1", text: "PASS test_x" }), "Tool output");
+check("codex: command completion (a tool_result whose text is the command) is neutral, not tool output",
+  labelOf({ activity_type: "tool_result", status: "ok", text: "npm test" }), "Tool");
+check("opencode: a tool input line is neutral, not a tool call",
+  labelOf({ activity_type: "tool_use", text: "bash: ls -la", summary: "bash: ls -la" }), "Tool");
+check("opencode: a tool output line is neutral, not a tool call",
+  labelOf({ activity_type: "tool_use", text: "bash → a.py", summary: "bash → a.py" }), "Tool");
+check("progress from any backend is assistant text", labelOf({ activity_type: "progress", text: "hi" }), "Assistant text");
+check("thinking is thinking", labelOf({ activity_type: "thinking", text: "hm" }), "Thinking");
+check("a raw output line is an output line", labelOf({ activity_type: "output", text: "x" }), "Output line");
+
+// --- hostile values in the title and data attributes (178) --------------------
+const hostileKind = afRawHtml([entry(60, { activity_type: '"><img src=x onerror=alert(1)>', text: "body" })]);
+check("a hostile kind never opens a tag", hostileKind.indexOf("<img") === -1, true);
+check("a hostile kind is labelled neutrally", hostileKind.indexOf('data-source="Event"') !== -1, true);
+const protoKind = afRawHtml([entry(61, { activity_type: "constructor", text: "body" })]);
+check("a prototype key falls back to Event, not a function", protoKind.indexOf('data-source="Event"') !== -1, true);
+const hostileTitle = afRawHtml([entry(62, { activity_type: "progress", text: "x", transcript_seq: 4 })]);
+check("a title with no hostile content is escaped and well formed", hostileTitle.indexOf('title="Assistant text, transcript record 4"') !== -1, true);
+
+// --- a merged block names the span of records it joined (178) -----------------
+const merged = afRawHtml([
+  entry(70, { activity_type: "progress", text: "The ", is_delta: true, stream_id: "s1", transcript_seq: 20 }),
+  entry(71, { activity_type: "progress", text: "fix", is_delta: true, stream_id: "s1", transcript_seq: 23 }),
+]);
+truthy("a merged block links its first record", merged.indexOf('data-transcript-seq="20"') !== -1, merged);
+truthy("a merged block marks its last record", merged.indexOf('data-transcript-seq-last="23"') !== -1, merged);
+truthy("a merged block says it spans records 20 to 23", merged.indexOf("transcript records 20 to 23") !== -1, merged);
+check("a merged block keeps its joined text", merged.indexOf(">The fix<") !== -1, true);
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
