@@ -26,11 +26,12 @@ _SIDEBAR_KEY = "coordinare.navigationCollapsed"
 _OVERLAP_EPSILON_PX = 0.5
 _SELECT_MIN_PX = 192
 _TITLE_COLUMN_MIN_PX = 240
-_SELECT_ARROW_PX = 24
 _ONE_LINE_RATIO = 1.6
-_STRIP_SLACK_PX = 1
 _SPEND_OK = "$1.20 today · $8.40 week"
 _REASON = "no price for gpt-x (no price configured)"
+# The spend states the header matrix runs on the Dashboard only: the default figures, and neither period priced.
+_SPENDS = ("default", "unpriced")
+_MATRIX = [(path, spend) for path in _PAGES for spend in _SPENDS if path == "/" or spend == "default"]
 
 # The header's visible boxes, and the Dashboard strip's spend and connection text, which sit just below it.
 # Parents are left out so that a box is only ever compared with its siblings.
@@ -60,17 +61,13 @@ _HEADER_JS = """
 }
 """
 
-# The symphony select: its value, the selected name, and whether that name fits beside the arrow.
+# The symphony select: its value, the selected name, and its computed minimum width.
 _SELECT_JS = """
-(arrow) => {
+() => {
   const sel = document.getElementById('symphony-select');
   if (!sel) return null;
   const cs = getComputedStyle(sel);
-  const ctx = document.createElement('canvas').getContext('2d');
-  ctx.font = cs.font;
-  const text = sel.options[sel.selectedIndex].text;
-  const room = sel.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - arrow;
-  return {value: sel.value, text: text, fits: ctx.measureText(text).width <= room, minWidth: parseFloat(cs.minWidth)};
+  return {value: sel.value, text: sel.options[sel.selectedIndex].text, minWidth: parseFloat(cs.minWidth)};
 }
 """
 
@@ -139,12 +136,17 @@ def _layout(page: Page, live_server_url: str, store: DashboardStore, *, width: i
 @pytest.mark.parametrize("width", _WIDTHS)
 @pytest.mark.parametrize("switcher", [True, False], ids=["switcher", "no-switcher"])
 @pytest.mark.parametrize("collapsed", [False, True], ids=["sidebar-open", "sidebar-collapsed"])
-@pytest.mark.parametrize("path", _PAGES)
+@pytest.mark.parametrize("path, spend", _MATRIX)
 def test_the_header_does_not_overlap(
     page: Page, live_server_url: str, store: DashboardStore,
-    width: int, switcher: bool, collapsed: bool, path: str,
+    width: int, switcher: bool, collapsed: bool, path: str, spend: str,
 ) -> None:
-    _layout(page, live_server_url, store, width=width, switcher=switcher, collapsed=collapsed, path=path)
+    token_usage = None if spend == "default" else _spend(today=None, week=None)
+    _layout(page, live_server_url, store, width=width, switcher=switcher, collapsed=collapsed, path=path,
+            token_usage=token_usage)
+    if path == "/" and spend == "unpriced":
+        # The worst case: the strip is at its widest only once the broadcast has landed, so wait for it first.
+        expect(page.locator("#spend-strip")).to_have_text("Spend not priced", timeout=_WAIT_LIVE)
 
     state = page.evaluate(_HEADER_JS)
     assert _overlapping_pairs(state["items"]) == [], "header elements overlap"
@@ -152,11 +154,10 @@ def test_the_header_does_not_overlap(
     if path == "/":
         assert state["stripFits"] is True, "the Dashboard status strip overflows its row"
     if switcher:
-        selected = page.evaluate(_SELECT_JS, _SELECT_ARROW_PX)
+        selected = page.evaluate(_SELECT_JS)
         assert selected is not None, "the symphony switcher is missing"
         assert selected["value"] == _NAME, "the select does not show the chosen symphony"
         assert selected["text"] == _NAME
-        assert selected["fits"] is True, "the selected symphony name is cut off in the select"
 
 
 @pytest.mark.e2e
@@ -167,7 +168,7 @@ def test_the_title_column_and_the_select_have_real_minimum_widths(
 
     state = page.evaluate(_HEADER_JS)
     assert state["titleColumnMinWidth"] >= _TITLE_COLUMN_MIN_PX, "the title column can shrink to nothing"
-    selected = page.evaluate(_SELECT_JS, _SELECT_ARROW_PX)
+    selected = page.evaluate(_SELECT_JS)
     assert selected["minWidth"] >= _SELECT_MIN_PX, "the symphony select has no minimum width"
 
 

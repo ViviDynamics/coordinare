@@ -115,6 +115,9 @@ const neitherPriced = { tracked: true, day: "2026-10-14", week_start: "2026-10-0
 check("neither period priced", spendStripText(neitherPriced), "Spend not priced");
 checkContains("the reason for an unpriced period is on hover", spendStripTitle(neitherPriced), "no price for gpt-unpriced");
 checkContains("the hover names the unpriced period", spendStripTitle({ ...bothPriced, week: unknown }), "This week is not priced");
+const dottedReason = { ...unknown, cost: { ...unknown.cost, unknown_reason: "no price for gpt-x." } };
+checkContains("a reason that already ends in a full stop gets no second one", spendStripTitle({ ...bothPriced, week: dottedReason }), "This week is not priced: no price for gpt-x.\n");
+check("no doubled full stop on the hover line", spendStripTitle({ ...bothPriced, week: dottedReason }).indexOf("..") === -1, true);
 check("the strip never says unknown", [spendStripText(neitherPriced), spendStripText({ ...bothPriced, week: unknown }), spendStripText(block)].some(function (t) { return t.indexOf("unknown") !== -1; }), false);
 
 // Markup: every interpolated value goes through esc().

@@ -116,7 +116,8 @@ function spendFigure(summary) {
 function spendUnpricedNote(label, summary) {
   var cost = (summary && summary.cost) || {};
   if (cost.usd != null) return '';
-  return label + ' is not priced: ' + (cost.unknown_reason || 'no price configured') + '.';
+  var reason = cost.unknown_reason || 'no price configured';
+  return label + ' is not priced: ' + reason + (/\.$/.test(reason) ? '' : '.');
 }
 
 // The header strip: "$1.20 today · $8.40 week" (#238). An unpriced period says so; when neither is priced
