@@ -23,9 +23,11 @@ import asyncio
 import contextlib
 import hashlib
 import math
+import os
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -47,15 +49,24 @@ from coordinare.bench.artifact import (
 from coordinare.bench.fixtures import apply_solution_branch, materialize_repo, seed_board
 from coordinare.bench.pricing import combine, price_dispatch, price_table_for_run
 from coordinare.bench.recording_performer import RecordingPerformer, is_recorder
-from coordinare.config import TranscriptsConfig
+from coordinare.config import ProjectConfiguration, TranscriptsConfig
+from coordinare.config_validation import _load_raw_yaml
 from coordinare.daemon import CoordinareDaemon
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.graph.state import _set_current_card
 from coordinare.services import performer_lifecycle
 from coordinare.services.fake_github import FakeGitHubService
-from coordinare.services.run_transcript import RootGuard, make_collector
+from coordinare.services.mounted_file import transcript_root_guard
+from coordinare.services.run_transcript import (
+    make_collector,
+    prune_expired,
+    resolve_transcripts_root,
+    transcript_root_conflicts,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from coordinare.bench.fixtures import Fixture
     from coordinare.config import CoordinareConfiguration
     from coordinare.graph.state import CoordinareState
@@ -65,8 +76,10 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _TERMINAL_COLUMNS = {"DONE": "merged", "BLOCKED": "blocked"}
-#: Where a real run's transcripts go, under its run directory (spec 242).
+#: Where a real run's transcripts go by default, under its run directory (spec 242).
 _RUN_TRANSCRIPTS_DIR = "transcripts"
+#: Why a real dispatch is unpriced when the performer services were injected without a collector.
+_INJECTED_SERVICES_REASON = "performer services were injected without a bench transcript collector"
 
 
 async def _no_sleep(_seconds: float) -> None:
@@ -431,7 +444,8 @@ async def run_board(
     run_error: str | None = None
     # 242: a real run keeps its transcripts under the run directory, so every dispatch's
     # per-kind usage is on disk and in the ledger to price from. Stub runs make no model calls.
-    transcripts = None if stub else _run_transcripts(run_dir)
+    project = None if stub else _bench_project(real_config, config_path)
+    transcripts = None if stub else _run_transcripts(run_dir, project, config_path)
     try:
         if not stub:
             real_services = await _setup_real_mode(
@@ -443,7 +457,7 @@ async def run_board(
                 config=real_config,
                 config_path=config_path,
                 performer_services=performer_services,
-                transcripts=transcripts,
+                transcripts=transcripts.collector if transcripts is not None else None,
             )
         if stub:
             await daemon.start()
@@ -507,8 +521,13 @@ async def run_board(
 
     if not stub and real_services is not None:
         dispatch_log = _records_to_dispatch_log(real_services)
-    if transcripts is not None:
-        _attach_transcript_usage(dispatch_log, transcripts)
+    if not stub:
+        # Injected services carry their own collector, so the bench cannot read their usage.
+        attach_to = None if performer_services is not None else transcripts
+        _attach_transcript_usage(
+            dispatch_log, attach_to,
+            undrained=_transcript_gaps(real_services or {}, dispatch_log),
+        )
 
     finished_at = datetime.now(UTC)
     board = await fake.poll_board()
@@ -588,33 +607,107 @@ async def _setup_real_mode(
     return services
 
 
-def _run_transcripts(run_dir: Path) -> TranscriptCollector:
-    """The transcript collector of one real run, rooted under its run directory (spec 242).
+@dataclass(frozen=True)
+class _RunTranscripts:
+    """A real run's transcript collector, and why it writes nothing when it cannot (spec 242)."""
 
-    Transcription is always on for a bench run: the per-kind usage it writes is what a real
-    dispatch is priced from. Limits come from the default ``transcripts`` config block.
+    collector: TranscriptCollector
+    disabled_reason: str | None
+
+
+def _bench_project(real_config: Any, config_path: str | Path | None) -> ProjectConfiguration | None:
+    """The config a real run is guarded and retained by: the injected one, else the file's."""
+    if real_config is not None:
+        return cast("ProjectConfiguration", real_config)
+    if config_path and Path(config_path).is_file():
+        return ProjectConfiguration(**_load_raw_yaml(Path(config_path)))
+    return None
+
+
+def _run_transcripts(
+    run_dir: Path,
+    project: ProjectConfiguration | None,
+    config_path: str | Path | None = None,
+) -> _RunTranscripts:
+    """The transcript collector of one real run, guarded and retained as the daemon guards its own (242).
+
+    The root follows ``transcripts.dir`` (default: under the run directory). The guard is the
+    daemon's: every performer-visible host directory from the config, and the run and config
+    directories the root may not swallow. Expired files under the root are pruned first, on the
+    daemon's retention. A disabled or refused collector reports why, and that reason makes the
+    dispatches it would have priced unknown.
     """
-    defaults = TranscriptsConfig()
-    return make_collector(
-        enabled=True,
-        root=run_dir / _RUN_TRANSCRIPTS_DIR,
-        max_bytes_per_run=defaults.max_bytes_per_run,
-        retention_days=defaults.retention_days,
-        guard=RootGuard(),
+    settings = project.transcripts if project is not None else TranscriptsConfig()
+    config_dir = Path(config_path).resolve().parent if config_path else run_dir.resolve()
+    root = resolve_transcripts_root(settings.directory, config_dir=config_dir, state_dir=run_dir)
+    guard = transcript_root_guard(project, protected=(run_dir, config_dir))
+    reason: str | None = None
+    if not settings.enabled:
+        reason = "transcripts disabled: transcripts.enabled is false"
+    else:
+        conflicts = transcript_root_conflicts(root, guard)
+        if conflicts:
+            reason = (
+                f"transcripts disabled: the transcripts root {root} overlaps "
+                f"performer mount or protected directory {conflicts[0]}"
+            )
+    collector = make_collector(
+        enabled=settings.enabled,
+        root=root,
+        max_bytes_per_run=settings.max_bytes_per_run,
+        retention_days=settings.retention_days,
+        guard=guard,
     )
+    collector.add_ambient_secrets(os.environ)
+    if collector.enabled:
+        prune_expired(root, retention_days=settings.retention_days)
+    return _RunTranscripts(collector=collector, disabled_reason=reason)
 
 
-def _attach_transcript_usage(dispatch_log: list[dict[str, Any]], transcripts: TranscriptCollector) -> None:
-    """Give each dispatch its per-model usage from the ledger, keyed by its session id (spec 242).
+def _attach_transcript_usage(
+    dispatch_log: list[dict[str, Any]],
+    transcripts: _RunTranscripts | None,
+    *,
+    undrained: Mapping[str, str] | None = None,
+) -> None:
+    """Give each dispatch its per-model usage and any reason it cannot be exact (spec 242).
 
-    A dispatch whose session wrote no usage gets no entry (``usage`` is None), so it is priced
-    as unknown rather than as zero. Stub entries already carry their own usage and are left alone.
+    The usage is read from the ledger by session id. A dispatch gets a ``usage_gap`` when its
+    usage cannot be trusted as the whole of its spend: transcripts disabled or refused, the
+    performer services injected without a bench collector, a tail not drained before the stop,
+    or message and run usage that disagree. A gap makes the dispatch's cost unknown with that
+    reason. Stub entries already carry their own usage and are left alone.
     """
-    session_ids = [d["session_id"] for d in dispatch_log if d.get("session_id") and "usage" not in d]
-    found = transcripts.usage.totals_by_run(session_ids)
-    for entry in dispatch_log:
-        if "usage" not in entry:
-            entry["usage"] = found.get(entry.get("session_id") or "")
+    gaps = dict(undrained or {})
+    unattached = [d for d in dispatch_log if "usage" not in d]
+    if transcripts is None or transcripts.disabled_reason is not None:
+        for entry in unattached:
+            entry["usage"] = None
+            entry["usage_gap"] = _INJECTED_SERVICES_REASON if transcripts is None else transcripts.disabled_reason
+        return
+    ledger = transcripts.collector.usage
+    found = ledger.totals_by_run([d["session_id"] for d in unattached if d.get("session_id")])
+    for entry in unattached:
+        session_id = entry.get("session_id")
+        entry["usage"] = found.get(session_id) if session_id else None
+        disagreement = ledger.run_disagreement(session_id) if session_id else None
+        entry["usage_gap"] = gaps.get(session_id) if session_id else None
+        entry["usage_gap"] = entry["usage_gap"] or disagreement
+
+
+def _transcript_gaps(services: dict[str, Any], dispatch_log: list[dict[str, Any]]) -> dict[str, str]:
+    """The sessions whose transcript tail was not drained before its stop, with the reason (242)."""
+    session_ids = [d["session_id"] for d in dispatch_log if d.get("session_id")]
+    gaps: dict[str, str] = {}
+    for svc in _unique_recorders(services):
+        gap_of = getattr(svc, "transcript_gap", None)
+        if gap_of is None:
+            continue
+        for session_id in session_ids:
+            reason = gap_of(session_id)
+            if reason is not None:
+                gaps[session_id] = reason
+    return gaps
 
 
 def _human_logins(fake: FakeGitHubService) -> set[str]:
@@ -706,7 +799,10 @@ def _build_artifact(
         # when a dispatch has no token count or its model has no price.
         dispatch_costs = []
         for dispatch, entry in zip(dispatches, card_log, strict=True):
-            priced = price_dispatch(entry.get("usage"), dispatch.tokens_processed, dispatch.model, price_table)
+            priced = price_dispatch(
+                entry.get("usage"), dispatch.tokens_processed, dispatch.model, price_table,
+                gap=entry.get("usage_gap"),
+            )
             dispatch.cost_usd = priced.cost_usd
             dispatch.cost_unknown_reason = priced.unknown_reason
             dispatch.cost_basis = priced.basis

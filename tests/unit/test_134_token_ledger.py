@@ -122,14 +122,24 @@ def test_records_without_usage_counts_are_not_turns() -> None:
 # --- scope rule per run --------------------------------------------------------
 
 
-def test_message_records_are_the_total_when_a_run_record_also_arrives() -> None:
+def test_the_larger_of_the_message_sum_and_the_run_total_is_the_total_and_the_gap_is_named() -> None:
+    """Spec 242: a lost message record can only make the message sum low, so the larger value wins
+    and the disagreement is reported rather than read as an exact figure."""
     ledger = TokenLedger()
     _observe(ledger, "run-a", [
         _usage(1, input_tokens=100),
         _usage(2, input_tokens=200),
         _usage(3, input_tokens=999, scope="run", model=None),
     ])
-    assert _total_input(ledger, run_id="run-a") == 300
+    assert _total_input(ledger, run_id="run-a") == 999
+    assert ledger.run_disagreement("run-a") is not None
+
+    _observe(ledger, "run-b", [
+        _usage(1, input_tokens=300),
+        _usage(2, input_tokens=50, scope="run", model=None),
+    ])
+    assert _total_input(ledger, run_id="run-b") == 300
+    assert ledger.run_disagreement("run-b") is not None
 
 
 def test_a_run_record_alone_is_the_total_and_the_last_one_wins() -> None:

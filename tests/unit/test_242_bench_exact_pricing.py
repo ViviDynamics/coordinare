@@ -27,7 +27,12 @@ from coordinare.bench.pricing import (
     price_dispatch,
     price_usage,
 )
-from coordinare.bench.runner import _attach_transcript_usage, _build_artifact
+from coordinare.bench.runner import (
+    _attach_transcript_usage,
+    _build_artifact,
+    _run_transcripts,
+    _RunTranscripts,
+)
 from coordinare.bench.score import ComponentVector, Weights, compute_scalar
 from coordinare.bench.sweep import PointResult, rank_candidates
 from coordinare.config import CostTrackingConfig, ModelPriceConfig
@@ -145,7 +150,7 @@ def test_the_ledger_is_the_source_and_is_keyed_by_session(tmp_path: Path) -> Non
     )
     log = [_dispatch_log("sess-1"), _dispatch_log("sess-unrecorded")]
 
-    _attach_transcript_usage(log, collector)
+    _attach_transcript_usage(log, _RunTranscripts(collector=collector, disabled_reason=None))
 
     assert log[0]["usage"] == {OPUS: UsageCounts(input_tokens=_MILLION, output_tokens=100_000,
                                                  cache_read=2 * _MILLION)}
@@ -304,9 +309,7 @@ async def test_a_stub_run_board_prices_every_dispatch_at_zero(tmp_path: Path) ->
 
 
 def test_a_real_run_keeps_its_transcripts_under_its_run_directory(tmp_path: Path) -> None:
-    from coordinare.bench.runner import _run_transcripts
-
-    collector = _run_transcripts(tmp_path / "run")
+    collector = _run_transcripts(tmp_path / "run", None).collector
 
     assert collector.enabled is True
     assert collector.root == tmp_path / "run" / "transcripts"

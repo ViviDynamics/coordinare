@@ -212,3 +212,28 @@ async def test_default_weights_optimizer_recommends_a_stub_run_priced_at_zero(tm
 
     assert artifact.recommendation is not None
     assert not any("no point could be priced" in n for n in artifact.notes)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_sweep_drops_its_points_and_names_the_unpriced_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec 242 restores the end-to-end unknown path. A stub is now priced at zero, so the path
+    is driven here by pricing every dispatch unknown: each point is dropped as unpriced, and the
+    deltas say the baseline is unpriced."""
+    from coordinare.bench import runner
+    from coordinare.bench.pricing import TokenCost
+
+    monkeypatch.setattr(
+        runner, "price_dispatch",
+        lambda *_args, **_kwargs: TokenCost(None, "transcripts disabled: test", None),
+    )
+    loaded = _sweep_loaded(tmp_path)
+
+    artifact = await run_sweep(loaded, "ablation", tmp_path / "session")
+
+    assert artifact.points
+    assert artifact.coverage.dropped
+    assert all(d.reason.startswith("unpriced: ") for d in artifact.coverage.dropped)
+    assert artifact.deltas
+    assert all(d.note.startswith("baseline unpriced") for d in artifact.deltas)

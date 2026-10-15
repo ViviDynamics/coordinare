@@ -62,7 +62,11 @@ from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
-from coordinare.services.mounted_file import open_mounted_file, performer_mount_hosts
+from coordinare.services.mounted_file import (
+    open_mounted_file,
+    performer_mount_hosts,
+    transcript_root_guard,
+)
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
     SkippedChannel,
@@ -953,8 +957,8 @@ def _build_transcript_collector(
             config_dir=config_dir,
             state_dir=state_dir,
         )
-        guard = RootGuard(
-            performer_mounts=tuple(_performer_mount_hosts(config)),
+        guard = transcript_root_guard(
+            config,
             protected=(
                 state_dir,
                 config_dir,

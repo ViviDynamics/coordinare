@@ -81,6 +81,8 @@ def price_dispatch(
     tokens: int | None,
     model: str | None,
     table: PriceTable,
+    *,
+    gap: str | None = None,
 ) -> TokenCost:
     """Price one dispatch from its transcript usage when it has any, else from its total (spec 242).
 
@@ -89,6 +91,10 @@ def price_dispatch(
     not reported). An empty mapping is a dispatch that made no model calls (the stub
     substrate): zero of every kind is zero dollars at any rate, and the basis says so.
     """
+    if gap is not None:
+        # The usage cannot be trusted as the whole of the dispatch's spend, so the cost is
+        # unknown with the reason, however complete the figures look.
+        return TokenCost(None, gap, None)
     if usage is None:
         return price_tokens(tokens, model, table)
     if not usage:
