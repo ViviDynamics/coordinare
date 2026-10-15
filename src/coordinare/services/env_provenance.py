@@ -40,7 +40,7 @@ from coordinare.services.mounted_file import (
     TreeEntry,
     anchored_mkdir,
     iter_mounted_tree,
-    open_mounted_file,
+    open_mounted_file_or_absent,
     read_mounted_file,
     replace_mounted_file,
 )
@@ -465,7 +465,7 @@ def open_manifest(
     if _inside_any(path, performer_mounts):
         logger.error("env_cache.provenance_refused", path=str(path), reason="inside a performer mount")
         return None
-    fh = open_mounted_file(path, mounts=performer_mounts)
+    fh = open_mounted_file_or_absent(path, mounts=performer_mounts)
     if fh is None:
         return None
     with fh:
@@ -490,7 +490,7 @@ class _RowStream:
     """The rows of a manifest, one at a time, with the file's digest checked as they are read (O(1) memory)."""
 
     def __init__(self, manifest: ManifestFile, performer_mounts: tuple[Path, ...]) -> None:
-        fh = open_mounted_file(manifest.path, mounts=performer_mounts)
+        fh = open_mounted_file_or_absent(manifest.path, mounts=performer_mounts)
         if fh is None:
             message = "the frozen manifest could not be read"
             raise ProvenanceRefusedError(message)

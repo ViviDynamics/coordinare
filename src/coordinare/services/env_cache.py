@@ -764,6 +764,8 @@ def _log_provenance_refused(symphony_name: str, reason: str) -> None:
 DEFAULT_STAT_FRESH_S = 30.0
 # 234 review 5: how long a stat walk may run before the dispatches waiting on it are refused (overridden by config).
 DEFAULT_STAT_WALK_TIMEOUT_S = 300.0
+# 234 review 6: consecutive transient refusals before the operator is told the cache cannot be verified.
+TRANSIENT_STREAK_LIMIT = 5
 
 
 class EnvCacheService:
@@ -793,6 +795,8 @@ class EnvCacheService:
         self._drift: dict[str, str] = {}
         # 234 review 4: one stat walk in flight per symphony, and the time of the last passing stat check.
         self._stat_inflight: dict[str, tuple[float, asyncio.Future[Any]]] = {}
+        # 234 review 6: consecutive transient refusals per symphony, for the operator-visible surfacing.
+        self._transient_streak: dict[str, int] = {}
         self._stat_pass_at: dict[str, tuple[str, float]] = {}
         self._full_inflight: set[str] = set()
 
@@ -1534,6 +1538,7 @@ class EnvCacheService:
         self._drift.pop(symphony_name, None)
         self._stat_pass_at.pop(symphony_name, None)
         self._stat_inflight.pop(symphony_name, None)
+        self._transient_streak.pop(symphony_name, None)
 
     async def _open(self, symphony_name: str, cache_state: EnvCacheState, digest: str) -> ManifestFile | None:
         """The manifest for *digest*, opened transiently: digest-verified, metadata read, no rows held (234 review 3)."""
@@ -1542,13 +1547,21 @@ class EnvCacheService:
         except RuntimeError as exc:
             _log_provenance_refused(symphony_name, str(exc))
             return None
-        return await asyncio.to_thread(
-            open_manifest,
-            path,
-            digest=digest,
-            performer_mounts=self._performer_mounts(),
-            max_bytes=manifest_cap_bytes(self._provenance_limits().max_entries),
-        )
+        try:
+            return await asyncio.to_thread(
+                open_manifest,
+                path,
+                digest=digest,
+                performer_mounts=self._performer_mounts(),
+                max_bytes=manifest_cap_bytes(self._provenance_limits().max_entries),
+            )
+        except MountedFileRefusedError as exc:
+            _log_provenance_refused(symphony_name, str(exc))
+            return None
+        except OSError as exc:
+            # 234 review 6: a read error is not a missing or altered manifest. It is transient, and it is not drift.
+            message = f"I/O error reading the frozen manifest: {exc}"
+            raise ProvenanceTransientError(message) from exc
 
     async def _recorded_stat(self, symphony_name: str, cache_state: EnvCacheState, digest: str) -> str | None:
         """The stat digest recorded for *digest*: from memory, else from the small sidecar. None when unknown."""
@@ -1762,6 +1775,33 @@ class EnvCacheService:
     async def resolve_provenance(
         self, symphony_name: str, cache_state: EnvCacheState, *, container_path: str,
     ) -> tuple[ProvenanceCheck, dict[str, Any] | None]:
+        """Verify the cache and return the consumer payload, counting transient refusals (234 review 6)."""
+        check, payload = await self._resolve_provenance(symphony_name, cache_state, container_path=container_path)
+        return self._count_transient(symphony_name, check), payload
+
+    def _count_transient(self, symphony_name: str, check: ProvenanceCheck) -> ProvenanceCheck:
+        """A run of transient refusals is surfaced, not retried forever (review 6). No re-bootstrap is started.
+
+        Each transient refusal adds to the streak; a pass or a real refusal clears it. At
+        ``TRANSIENT_STREAK_LIMIT`` the refusal reason says so, so the operator sees it in the activity feed and the log.
+        """
+        if check.ok or not check.transient:
+            self._transient_streak.pop(symphony_name, None)
+            return check
+        count = self._transient_streak.get(symphony_name, 0) + 1
+        self._transient_streak[symphony_name] = count
+        if count < TRANSIENT_STREAK_LIMIT:
+            return check
+        message = (
+            f"{check.reason}; {count} dispatches in a row failed transiently, so the frozen cache cannot be verified. "
+            "No re-bootstrap has been started. Check the disk and the daemon's state directory, then the manifest file."
+        )
+        logger.error("env_cache.provenance_transient_stuck", symphony=symphony_name, count=count, reason=check.reason)
+        return ProvenanceCheck(False, message, hashed=check.hashed, transient=True)
+
+    async def _resolve_provenance(
+        self, symphony_name: str, cache_state: EnvCacheState, *, container_path: str,
+    ) -> tuple[ProvenanceCheck, dict[str, Any] | None]:
         """Verify the cache and return the consumer payload for the same digest (234 review 3).
 
         The digest is read again after each await, so a regeneration that clears or replaces it mid-dispatch refuses.
@@ -1771,7 +1811,10 @@ class EnvCacheService:
             return check, None
         if cache_state.provenance_digest != digest:
             return ProvenanceCheck(False, "frozen provenance changed during the dispatch; retry"), None
-        payload = await self._payload_for(symphony_name, cache_state, digest, container_path)
+        try:
+            payload = await self._payload_for(symphony_name, cache_state, digest, container_path)
+        except ProvenanceTransientError as exc:
+            return ProvenanceCheck(False, str(exc), transient=True), None
         if payload is None:
             return ProvenanceCheck(False, "frozen provenance manifest is missing or altered; re-bootstrap"), None
         if cache_state.provenance_digest != digest:

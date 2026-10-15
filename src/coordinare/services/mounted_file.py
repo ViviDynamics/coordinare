@@ -528,6 +528,18 @@ def read_mounted_file(path: Path, *, max_bytes: int, mounts: Iterable[Path]) -> 
         return None
 
 
+def open_mounted_file_or_absent(path: Path, *, mounts: Iterable[Path]) -> BinaryIO | None:
+    """Open a regular, single-link file for streamed reading (review 6). Returns None only when the file is absent.
+
+    A refusal raises :class:`MountedFileRefusedError`, and any other OSError (EIO, a race) propagates. A caller can then
+    tell a missing file from an unreadable one. :func:`open_mounted_file` keeps its contract for the other callers.
+    """
+    try:
+        return _open_stream(path, tuple(mounts))
+    except FileNotFoundError:
+        return None
+
+
 def open_mounted_file(path: Path, *, mounts: Iterable[Path]) -> BinaryIO | None:
     """Open a regular, single-link file for streamed reading, or None when it is refused (220).
 
