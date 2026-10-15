@@ -14,6 +14,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
+from coordinare.env_placeholders import operator_workflow_env
 from coordinare.graph.nodes.check_board import (
     NON_SLOT_PHASES,
     PASSIVE_PHASES,
@@ -4376,7 +4377,7 @@ class CoordinareDaemon:
                 if getattr(rc, "workflow", None):
                     workflow_fields["workflow"] = rc.workflow
                 if getattr(rc, "workflow_env", None):
-                    workflow_fields["workflow_env"] = dict(rc.workflow_env)
+                    workflow_fields["workflow_env"] = operator_workflow_env(rc)
             if hasattr(cfg, "resolve_performer_orchestration"):
                 orchestration = cfg.resolve_performer_orchestration("tech_writer")
                 if orchestration is not None:
@@ -4582,7 +4583,7 @@ class CoordinareDaemon:
             rc = cfg.performers.resolved_role("tech_writer") if hasattr(cfg, "performers") else None
             if rc is not None and getattr(rc, "backend", None):
                 backend = rc.backend
-            role_workflow_env = dict(getattr(rc, "workflow_env", None) or {})
+            role_workflow_env = operator_workflow_env(rc)
             try:
                 model_block = cfg.resolve_performer_dispatch_model("tech_writer")
             except Exception:
@@ -4923,7 +4924,7 @@ class CoordinareDaemon:
         workflow = getattr(bootstrap_role, "workflow", None)
         if bootstrap_role is not None and isinstance(workflow, str) and workflow:
             dispatch_dict["workflow"] = workflow
-            workflow_env = dict(bootstrap_role.workflow_env)
+            workflow_env = operator_workflow_env(bootstrap_role)
             budget = int(getattr(self._state.get("coordinare_config"), "bootstrap_max_seconds", 0) or 0)
             if workflow == "env_bootstrap" and budget > 0:
                 try:

@@ -21,6 +21,7 @@ from coordinare.dashboard.routers.config_write import (
     _guard_global_hash,
     _validate_global_config,
 )
+from coordinare.services.config_write_service import candidate_warnings
 from coordinare.services.mounted_file import performer_mount_hosts
 
 if TYPE_CHECKING:
@@ -410,6 +411,7 @@ def _register_update_global_config(app: FastAPI, ctx: DashboardContext) -> None:
                 "status": "saved",
                 "reload_triggered": hasattr(daemon, "_config_reload_trigger"),
                 "new_hash": saved_hash,
+                "warnings": [w.model_dump(mode="json") for w in candidate_warnings(loaded)],  # 252
             })
 
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.transport.http_transport import (
     PerformerHTTPClient,
     PerformerUnreachableError,
@@ -217,17 +218,17 @@ async def start_ephemeral(
     for vol in config.volumes:
         args += ["-v", f"{vol.host_path}:{vol.container_path}:{vol.mode}"]
 
-    for key, val in config.env.items():
-        # config.yaml uses os.path.expandvars, which leaves unset ${VAR} as the
-        # literal string. Forwarding that literal into the container looks "set"
-        # to os.environ.get() and bypasses fallback-on-empty defaults — drop it.
-        if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-            logger.info(
-                "performer_lifecycle.env_skipped_unresolved_placeholder",
-                performer_id=config.id,
-                env_key=key,
-            )
-            continue
+    # config.yaml uses os.path.expandvars, which leaves an unset ${VAR} as the literal text. Forwarding
+    # that literal makes an unset variable look set, so an entry with an unset placeholder is left out
+    # (252; a secret-looking key was refused at boot already, so this is the plain-key warning's entry).
+    env_kept, env_dropped = drop_unset_placeholders(config.env)
+    for key in env_dropped:
+        logger.info(
+            "performer_lifecycle.env_skipped_unresolved_placeholder",
+            performer_id=config.id,
+            env_key=key,
+        )
+    for key, val in env_kept.items():
         args += ["-e", f"{key}={val}"]
 
     if backend and not env_carries_set_value(config.env, "BACKEND"):

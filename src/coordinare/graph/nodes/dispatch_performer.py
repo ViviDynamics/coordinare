@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.env_placeholders import operator_workflow_env
 from coordinare.graph.nodes.monitor_performer import _advance_stage
 from coordinare.graph.state import _set_current_card
 from coordinare.lib.redaction import redact_state_value
@@ -2244,7 +2245,7 @@ def _apply_role_tuning(state: CoordinareState, card_context: dict[str, Any], rol
             if getattr(role_config, "workflow", None):
                 card_context["workflow"] = role_config.workflow
             if getattr(role_config, "workflow_env", None):
-                card_context["workflow_env"] = dict(role_config.workflow_env)
+                card_context["workflow_env"] = operator_workflow_env(role_config)
             # 080: model + endpoint come from the role's mode (modes → model_endpoints
             # → endpoints), resolved against the root catalogs. Yields the same
             # card_context keys the downstream payload builder already consumes.
