@@ -73,8 +73,8 @@ def test_the_performer_page_renders_its_events_through_the_feed_row() -> None:
 
 def test_the_feed_and_the_performer_page_draw_a_block_through_one_function() -> None:
     assert _ACTIVITY_STREAM_JS.count("function afBlockHtml(") == 1
-    assert "afBlockHtml(b.kind, b.text, b.status)" in _ACTIVITY_STREAM_JS
-    assert "afBlockHtml(kind, afLine(e), e.status || '')" in _ACTIVITY_STREAM_JS
+    assert "blocks.map(afBlockHtml)" in _ACTIVITY_STREAM_JS
+    assert "afBlockHtml(afBlockFromEntry(e))" in _ACTIVITY_STREAM_JS
 
 
 def test_the_feed_labels_live_in_the_shared_renderer_only() -> None:

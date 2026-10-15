@@ -126,15 +126,18 @@ class TestEventStream:
         assert len(events) == 1
         assert events[0].type.value == "tool_use"
 
-    def test_unrecognized_event_type_is_progress_not_fatal(self) -> None:
-        """C5: the contract preflight is the versioning gate, not the stream."""
+    def test_unrecognized_event_type_is_output_not_fatal(self) -> None:
+        """C5: the contract preflight is the versioning gate, not the stream.
+
+        178: an unrecognized event is a raw line from the driver, so it is ``output``, not narration.
+        """
         backend = DriverBackend()
         _feed(backend, [{"type": "frobnicate", "text": "new driver event"}])
         status = backend.get_status()
         assert status.state == "working"
         events = backend.drain_events()
         assert len(events) == 1
-        assert events[0].type.value == "progress"
+        assert events[0].type.value == "output"
 
     def test_result_line_is_not_emitted_as_a_stream_event(self) -> None:
         backend = DriverBackend()

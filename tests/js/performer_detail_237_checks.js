@@ -61,9 +61,14 @@ check("a successful tool result carries ok", ok1.status, "ok");
 
 check("narration stays progress", afEntryFromBackend(ev({ type: "progress", text: "hello" }), RUN).activity_type, "progress");
 check("thinking keeps its kind", afEntryFromBackend(ev({ type: "thinking", text: "hm" }), RUN).activity_type, "thinking");
-check("an unknown event type reads as progress", afEntryFromBackend(ev({ type: "mystery" }), RUN).activity_type, "progress");
-check("a prototype name reads as progress, not as a method",
-  afEntryFromBackend(ev({ type: "constructor" }), RUN).activity_type, "progress");
+check("an unknown event type reads as a raw output line (178)", afEntryFromBackend(ev({ type: "mystery" }), RUN).activity_type, "output");
+check("a prototype name reads as a raw output line, not as a method (178)",
+  afEntryFromBackend(ev({ type: "constructor" }), RUN).activity_type, "output");
+// 178: the performer page labels its rows by source, as the feed does.
+check("a performer-page codex delta is labelled tool output (178)",
+  /data-source="Tool output"/.test(afEventRowHtml(afEntryFromBackend(ev({ type: "tool_use", is_delta: true, text: "PASS" }), RUN))), true);
+check("a performer-page command completion is neutral, not tool output (178)",
+  /data-source="Tool"/.test(afEventRowHtml(afEntryFromBackend(ev({ type: "tool_use", status: "ok", text: "npm test" }), RUN))), true);
 
 // --- the rendered Live Events list ----------------------------------------------
 const toolHtml = performerEventsHtml([ev({ type: "tool_use", tool: "Bash", arg: "uv run pytest -q", text: "Bash", transcript_seq: 7 })], RUN);
