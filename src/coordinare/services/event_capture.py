@@ -76,7 +76,7 @@ def capture_activity(entry: ActivityEntry) -> None:
     store.emit(
         {
             "ts": entry.timestamp.isoformat(),
-            "symphony": _symphony(entry.card_id),
+            "symphony": entry.symphony or _symphony(entry.card_id),
             "card_id": entry.card_id,
             "run_id": entry.session_id,
             "stage": entry.stage,

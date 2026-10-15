@@ -24,6 +24,19 @@ from coordinare.daemon import CoordinareDaemon
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.localhost_guard import build_permitted
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.bootstrap_history import (
+    BOOTSTRAP_CANCEL_COOLDOWN_S,
+    AttemptStart,
+    BootstrapHistory,
+    attach_job,
+    begin_attempt,
+)
+from coordinare.services.bootstrap_runs import (
+    BootstrapRuntime,
+    cancel_bootstrap,
+    read_bootstrap_run,
+)
+from coordinare.services.bootstrap_status import symphony_view
 from coordinare.services.env_bootstrap_control import BootstrapTools
 from coordinare.services.env_cache import EnvCacheService
 from tests.unit.test_060_env_cache import _make_daemon_for_env_cache
@@ -382,15 +395,60 @@ async def test_progressing_job_inside_the_limits_is_untouched(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_failed_stop_is_still_recorded_as_a_failed_attempt(monkeypatch) -> None:
-    daemon = _poll_daemon(monkeypatch, wall_clock_s=3600, idle_s=30)
-    svc = _svc({"status": "working", "events": []})
-    svc.stop_session_confirmed = AsyncMock(side_effect=RuntimeError("runtime unreachable"))
+@pytest.mark.parametrize("limit", ["idle", "wall"])
+@pytest.mark.parametrize("stop_error", [False, True])
+async def test_unconfirmed_reap_holds_dispatch_until_next_poll(monkeypatch, tmp_path, limit, stop_error) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=IDLE_SECONDS, idle_s=POLL_SECONDS)
+    state = daemon.state
+    state["bootstrap_history"] = BootstrapHistory()
+    cache = _cache_state(tmp_path, bootstrap_in_flight=True)
+    state["env_cache"] = {"alpha": cache}
+    begin_attempt(state, "alpha", AttemptStart(SHA_OLD, datetime.now(UTC), 1, "codex", "model", "perf"))
+    attach_job(state, "alpha", job_id="job-x", pod=None)
     ec_svc = _ec_svc()
+    svc = _svc({"status": "working", "events": []})
+    stop_results = [RuntimeError("unreachable") if stop_error else False, True]
+    svc.stop_session_confirmed = AsyncMock(side_effect=stop_results)
+    if limit == "wall":
+        assert not await daemon._bootstrap_budget_exhausted(svc, "job-x", "alpha", ec_svc, IDLE_SECONDS)
+    else:
+        poll = daemon_mod._BootstrapPollState(last_progress_at=-IDLE_SECONDS, last_progress="unchanged")
+        assert not await daemon._bootstrap_idle_reap(
+            svc, poll, {"status": "working", "events": []}, "job-x", "alpha", ec_svc, POLL_SECONDS,
+        )
+    ec_svc.on_bootstrap_complete.assert_not_called()
+    assert cache.bootstrap_in_flight
+    assert cache.bootstrap_attempts == 0
+    detail = await read_bootstrap_run(state, "alpha", state["bootstrap_history"].open_attempt("alpha").run_id)
+    assert detail["state"] == "stop_unconfirmed"
+    assert symphony_view(state, "alpha", configured=True, now=datetime.now(UTC))["state"] == "stop_unconfirmed"
+    await daemon._bootstrap_budget_exhausted(svc, "job-x", "alpha", ec_svc, IDLE_SECONDS)
+    ec_svc.on_bootstrap_complete.assert_called_once()
 
-    await daemon._poll_bootstrap_completion(svc, "job-x", "alpha", ec_svc)
 
-    ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
+@pytest.mark.asyncio
+async def test_unconfirmed_cancel_is_resolved_by_terminal_poll(monkeypatch, tmp_path) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=IDLE_SECONDS, idle_s=POLL_SECONDS)
+    state = daemon.state
+    state["bootstrap_history"] = BootstrapHistory()
+    state["env_cache"] = {"alpha": _cache_state(tmp_path, bootstrap_in_flight=True)}
+    begin_attempt(state, "alpha", AttemptStart(SHA_OLD, datetime.now(UTC), 1, "codex", "model", "perf"))
+    attach_job(state, "alpha", job_id="job-x", pod=None)
+    ec_svc = _ec_svc()
+    state["env_cache_service"] = ec_svc
+    svc = _svc({"status": "failed"})
+    svc.stop_session_confirmed = AsyncMock(return_value=False)
+    task = asyncio.create_task(asyncio.Event().wait())
+    state["bootstrap_runtimes"] = {"alpha": BootstrapRuntime(svc, "job-x", task)}
+    try:
+        assert (await cancel_bootstrap(state, "alpha", "Ada"))["status"] == "stop_unconfirmed"
+        await daemon._poll_bootstrap_completion(svc, "job-x", "alpha", ec_svc)
+        ec_svc.on_bootstrap_complete.assert_not_called()
+        ec_svc.on_bootstrap_cancelled.assert_called_once_with("alpha", state, "Ada")
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 # ---------------------------------------------------------------------------
@@ -824,3 +882,44 @@ async def test_poll_uses_limits_from_real_root_config(monkeypatch) -> None:
 
     assert daemon_mod.monotonic() == wall_seconds
     svc.stop_session_confirmed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["idle", "wall"])
+async def test_poller_retries_unconfirmed_stop_before_completing(monkeypatch, limit) -> None:
+    wall = IDLE_SECONDS if limit == "idle" else POLL_SECONDS
+    idle = POLL_SECONDS if limit == "idle" else 0
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=wall, idle_s=idle)
+    svc = _svc({"status": "working", "events": []})
+    ec_svc = _ec_svc()
+    stops = []
+
+    async def stop(job_id: str) -> bool:
+        ec_svc.on_bootstrap_complete.assert_not_called()
+        stops.append(job_id)
+        return len(stops) > 1
+
+    svc.stop_session_confirmed = AsyncMock(side_effect=stop)
+    await daemon._poll_bootstrap_completion(svc, "job-retry", "alpha", ec_svc)
+    assert stops == ["job-retry", "job-retry"]
+    ec_svc.on_bootstrap_complete.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_sha", [False, True])
+async def test_cancel_cooldown_then_dispatch_without_spending_budget(monkeypatch, tmp_path, changed_sha) -> None:
+    dispatch = AsyncMock()
+    service = _real_env_service(monkeypatch, dispatch)
+    cache = _cache_state(tmp_path, readme_sha=SHA_OLD if changed_sha else SHA_NEW, bootstrap_attempts=1)
+    state: dict[str, Any] = {"env_cache": {"alpha": cache}, "bootstrap_history": BootstrapHistory(),
+                             "config": MagicMock()}
+    begin_attempt(state, "alpha", AttemptStart(SHA_NEW, datetime.now(UTC), 1, "codex", "model", "perf"))
+    service.on_bootstrap_cancelled("alpha", state, "Ada")
+    await service.check_and_trigger("alpha", _symphony_cfg(), MagicMock(), state, dispatch)
+    dispatch.assert_not_awaited()
+    record = state["bootstrap_history"].recent("alpha", 1)[0]
+    record.ended_at -= timedelta(seconds=BOOTSTRAP_CANCEL_COOLDOWN_S) + timedelta.resolution
+    cache.last_bootstrap_at = record.ended_at
+    await service.check_and_trigger("alpha", _symphony_cfg(), MagicMock(), state, dispatch)
+    dispatch.assert_awaited_once()
+    assert cache.bootstrap_attempts == (0 if changed_sha else 1)

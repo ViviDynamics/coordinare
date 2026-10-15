@@ -1,7 +1,7 @@
-"""266: the env bootstrap's in-memory attempt history, its failure text and its feed entries.
+"""266: the env bootstrap's bounded history, failure text and feed entries.
 
 The history is per process and bounded: each symphony keeps its last ``HISTORY_LIMIT`` attempts, and
-nothing here is persisted (phase 1). The daemon opens an attempt when a bootstrap is dispatched and the
+run snapshots are persisted in the event store. The daemon opens an attempt when a bootstrap is dispatched and the
 env cache closes it when the bootstrap completes. The status derivation in ``bootstrap_status`` reads the
 history; the recorders here never decide anything, so a failure to record cannot change a bootstrap's outcome.
 
@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import contextlib
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import structlog
 
@@ -35,10 +36,13 @@ MAX_LINE_CHARS = 240
 SHORT_SHA_CHARS = 7
 # The stage the feed entries carry, so a feed row reads as a bootstrap, not a card.
 ACTIVITY_STAGE = "env_bootstrap"
+RUN_SNAPSHOT_KIND = "bootstrap_run"
 
 OUTCOME_RUNNING = "running"
 OUTCOME_SUCCEEDED = "succeeded"
 OUTCOME_FAILED = "failed"
+OUTCOME_CANCELLED = "cancelled"
+BOOTSTRAP_CANCEL_COOLDOWN_S = 120.0
 
 # Words that mark the line a verify run failed on. The first line with one is the failing line.
 _ERROR_MARKERS = (
@@ -76,6 +80,15 @@ class BootstrapAttempt:
     job_id: str | None = None
     pod: str | None = None
     verifying: bool = False
+    run_id: str = field(default_factory=lambda: uuid4().hex)
+    manifest: list[dict[str, Any]] = field(default_factory=list)
+    verify_verdict: str | None = None
+    reason_tail: list[str] = field(default_factory=list)
+    last_activity_at: datetime | None = None
+    restored: bool = False
+    stop_unconfirmed: bool = False
+    cancelled_by: str | None = None
+    seen_events: set[str] = field(default_factory=set, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +113,7 @@ class AttemptEnd:
     commit: str
     attempt: int
     infra: bool = False
+    cancelled_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +179,16 @@ class BootstrapHistory:
         if not attempts:
             return None
         newest = attempts[-1]
-        return newest if newest.ended_at is None else None
+        return newest if newest.ended_at is None and not newest.restored else None
+
+    def restore(self, symphony: str, records: list[BootstrapAttempt]) -> None:
+        """Restore newest first snapshots, without treating an old process's job as live."""
+        attempts = self._attempts(symphony)
+        attempts.clear()
+        for record in reversed(records[:self._limit]):
+            record.restored = True
+            attempts.append(record)
+            self._counter = max(self._counter, record.number)
 
     def attach(self, symphony: str, *, job_id: str | None, pod: str | None) -> None:
         """Record the job and the pod (or container) the running attempt was dispatched to."""
@@ -194,7 +217,13 @@ class BootstrapHistory:
             )
         record.ended_at = end.ended_at
         record.outcome = OUTCOME_SUCCEEDED if end.succeeded else OUTCOME_FAILED
+        if end.cancelled_by is not None:
+            record.outcome = OUTCOME_CANCELLED
+        record.cancelled_by = end.cancelled_by
+        record.stop_unconfirmed = False
         record.reason = None if end.succeeded else failure_detail(end.reason)[0]
+        if end.reason:
+            record.reason_tail = failure_detail(end.reason)[1]
         record.infra = end.infra and not end.succeeded
         record.verifying = False
         return record
@@ -219,7 +248,10 @@ def begin_attempt(state: Mapping[str, Any], symphony: str, start: AttemptStart) 
     if history is None:
         return
     with contextlib.suppress(Exception):
-        history.begin(symphony, start)
+        record = history.begin(symphony, start)
+        cache = (state.get("env_cache") or {}).get(symphony)
+        record.manifest = redact_state_value(getattr(cache, "manifest_items", []))
+        persist_attempt(state, symphony, record)
 
 
 def attach_job(state: Mapping[str, Any], symphony: str, *, job_id: str | None, pod: str | None) -> None:
@@ -229,6 +261,7 @@ def attach_job(state: Mapping[str, Any], symphony: str, *, job_id: str | None, p
         return
     with contextlib.suppress(Exception):
         history.attach(symphony, job_id=job_id, pod=pod)
+        persist_attempt(state, symphony, history.open_attempt(symphony))
 
 
 def mark_verifying(state: Mapping[str, Any], symphony: str) -> None:
@@ -238,6 +271,21 @@ def mark_verifying(state: Mapping[str, Any], symphony: str) -> None:
         return
     with contextlib.suppress(Exception):
         history.mark_verifying(symphony)
+        persist_attempt(state, symphony, history.open_attempt(symphony))
+
+
+def persist_attempt(state: Mapping[str, Any], symphony: str, record: BootstrapAttempt | None) -> None:
+    """Persist one immutable run snapshot through the event store's redaction boundary."""
+    store = state.get("event_store")
+    if store is None or record is None:
+        return
+    with contextlib.suppress(Exception):
+        data = {item.name: getattr(record, item.name) for item in fields(record) if item.name != "seen_events"}
+        for key in ("started_at", "ended_at", "last_activity_at"):
+            value = data[key]
+            data[key] = value.isoformat() if value is not None else None
+        store.emit({"symphony": symphony, "run_id": record.run_id, "stage": ACTIVITY_STAGE,
+                    "source": "bootstrap", "kind": RUN_SNAPSHOT_KIND, "data": data})
 
 
 def record_activity(state: Mapping[str, Any], symphony: str, activity_type: str, text: str) -> None:
@@ -246,6 +294,9 @@ def record_activity(state: Mapping[str, Any], symphony: str, activity_type: str,
     if log is None:
         return
     try:
+        history = history_of(state)
+        recent = history.recent(symphony, 1) if history is not None else []
+        record = recent[0] if recent else None
         log.record(
             activity_type=activity_type,
             card_id="",
@@ -253,6 +304,8 @@ def record_activity(state: Mapping[str, Any], symphony: str, activity_type: str,
             stage=ACTIVITY_STAGE,
             text=redact_state_value(text),
             symphony=symphony,
+            session_id=record.run_id if record is not None else "",
+            performer_id=record.performer_id if record is not None else "",
         )
     except Exception as exc:
         logger.warning("env_bootstrap.activity_not_recorded", symphony=symphony, error_type=type(exc).__name__)
@@ -270,8 +323,12 @@ def report_completion(state: Mapping[str, Any], symphony: str, end: AttemptEnd, 
     if history is not None:
         with contextlib.suppress(Exception):
             record = history.finish(symphony, end)
+            persist_attempt(state, symphony, record)
     number = record.attempt if record is not None else end.attempt
     failing, _ = failure_detail(end.reason)
+    if end.cancelled_by is not None:
+        record_activity(state, symphony, "operator_action", f"cancelled by {end.cancelled_by}")
+        return
     if end.succeeded:
         record_activity(state, symphony, ACT_READY, f"Ready for commit {short_commit(end.commit) or 'unknown'}")
         return

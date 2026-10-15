@@ -25,6 +25,11 @@ def _ann(read_only: bool, destructive: bool, idempotent: bool) -> ToolAnnotation
 
 
 EXPECTED_TOOLS: dict[str, dict[str, Any]] = {
+    "cancel_env_bootstrap": {
+        "domain": "symphonies",
+        "annotations": _ann(False, True, False),
+        "rest_calls": [("POST", "/api/symphonies/{name}/env-bootstrap/cancel")],
+    },
     # config
     "get_config": {
         "domain": "config",

@@ -44,6 +44,14 @@ def test_the_dashboard_page_stays_under_its_byte_budget() -> None:
     assert len(_DASHBOARD_HTML.encode("utf-8")) <= DASHBOARD_HTML_BUDGET_BYTES
 
 
+def test_bootstrap_run_page_node_checks() -> None:
+    node = shutil.which("node")
+    assert node is not None, "node is required for the dashboard JS gates"
+    result = subprocess.run([node, str(_REPO / "tests/js/bootstrap_runs_checks.js")],
+                            cwd=_REPO, capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_no_shipped_line_starts_with_the_word_the_quality_guard_rejects() -> None:
     pattern = re.compile(r"^\s*pending\b")
     for name in _BUNDLE_NAMES:

@@ -19,7 +19,7 @@ from coordinare.mcp.config import McpServerConfig
 from coordinare.mcp.server import run_stdio
 from coordinare.mcp.tools import REGISTRY
 
-EXPECTED_TOOL_COUNT = 17
+EXPECTED_TOOL_COUNT = 18
 UNREACHABLE_DASHBOARD_URL = "http://127.0.0.1:0"
 
 

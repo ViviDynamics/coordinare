@@ -496,6 +496,7 @@ class CoordinareState(TypedDict, total=False):
     # 266: the bounded, in-memory attempt history of each symphony's env bootstrap (not persisted).
     # Declared so LangGraph keeps the object across cycles, the same as env_cache_service.
     bootstrap_history: Any
+    bootstrap_runtimes: Any
     # 088 (US5): async callable the daemon wires to an immediate state-store
     # save.  Bootstrap completion changes no lifecycle signature, so without an
     # explicit flush a recorded success only reaches disk on the NEXT stage
@@ -644,6 +645,7 @@ def initial_state() -> CoordinareState:
         "env_cache": {},
         "env_cache_service": None,
         "bootstrap_history": BootstrapHistory(),
+        "bootstrap_runtimes": {},
         "performer_services_by_id": {},
         "card_checks_state": {},
         # 076 dispatcher dedup — defaults match CardSession initialisation
