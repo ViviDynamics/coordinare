@@ -36,6 +36,7 @@ from performer.qa_capture import boot_and_capture_app_screenshot  # noqa: F401
 # performer.main.<name>). Ruff sees no local use and would prune them.
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs  # noqa: F401 (post_issue_comment: see T049 note above)  # noqa: F401 (post_issue_comment: see T049 note above)
 from performer.io_utils import iter_lines_chunked
+from performer.process_metrics import CpuSampler
 from performer.models import DIAGNOSTIC_ROLE, Performance, Score, Stand, _redact_secrets
 from performer.test_results import _strip_ansi, _reported_failure_count, _match_env_signature, _env_signature_reason, _format_failure_excerpt, _TEST_FAILURE_MARKERS  # noqa: F401
 from performer.protocol import (
@@ -1549,16 +1550,22 @@ def _doc_folder(score: Score) -> str:
 # ---------------------------------------------------------------------------
 # Process-level CPU sampler — must be initialised once at startup
 # ---------------------------------------------------------------------------
-_self_process: psutil.Process | None = None
+# Accessed only from the monitor path (collect_metrics, reached from the job loop). Not thread-safe:
+# do not touch it from a worker thread.
+_cpu_sampler: CpuSampler | None = None
+
+
+def _metrics_sampler() -> CpuSampler:
+    # 237: one sampler for the life of the process, so each poll measures from the last.
+    global _cpu_sampler
+    if _cpu_sampler is None:
+        _cpu_sampler = CpuSampler(os.getpid())
+    return _cpu_sampler
 
 
 def _init_metrics() -> None:
-    global _self_process
-    try:
-        _self_process = psutil.Process(os.getpid())
-        _self_process.cpu_percent(interval=None)  # prime the counter
-    except psutil.NoSuchProcess:  # pragma: no cover
-        pass
+    # 237: prime the sampler, so the first poll after start has an earlier sample to measure from.
+    _metrics_sampler().sample()
 
 
 # ---------------------------------------------------------------------------
@@ -2568,7 +2575,7 @@ def collect_metrics(
     tokens_processed: int | None = None
 
     try:
-        p = _self_process or psutil.Process(pid)
+        p = psutil.Process(pid)
         children = p.children(recursive=True)
         child_pids = [c.pid for c in children]
 
@@ -2580,7 +2587,8 @@ def collect_metrics(
                 pass  # pragma: no cover
         memory_bytes = rss
 
-        cpu_percent = p.cpu_percent(interval=None)
+        # 237: the whole tree, since the agent runs as a child process.
+        cpu_percent = _metrics_sampler().sample()
     except psutil.NoSuchProcess:  # pragma: no cover
         pass
 

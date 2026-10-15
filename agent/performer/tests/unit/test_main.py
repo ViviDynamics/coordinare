@@ -639,7 +639,7 @@ class TestCollectMetrics:
         backend = MagicMock()
         backend.get_status.return_value = BackendStatus(state="working")
         import performer.main as m
-        m._self_process = None  # reset
+        m._cpu_sampler = None  # reset
         metrics = collect_metrics(backend)
         assert metrics.pid is not None
         assert metrics.pid > 0
@@ -648,12 +648,15 @@ class TestCollectMetrics:
         import psutil
         backend = MagicMock()
         backend.get_status.return_value = BackendStatus(state="working")
-        with patch("performer.main.psutil.Process", side_effect=psutil.NoSuchProcess(0)):
+        # The sampler owns the call that fails. The target names the module that makes it.
+        with patch("performer.process_metrics.psutil.Process", side_effect=psutil.NoSuchProcess(0)):
             import performer.main as m
-            m._self_process = None
+            m._cpu_sampler = None
             metrics = collect_metrics(backend)
-        # Should not raise; pid still set from os.getpid()
+        # Should not raise. pid still comes from os.getpid(), and the failed reads leave CPU and memory unset.
         assert metrics.pid is not None
+        assert metrics.cpu_percent is None
+        assert metrics.memory_bytes is None
 
 
 # ---------------------------------------------------------------------------
