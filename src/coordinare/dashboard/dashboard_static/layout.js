@@ -126,13 +126,14 @@ function boardCountsText(s) {
   return 'Total ' + total + ' · Done ' + counts.DONE + ' · Backlog ' + counts.BACKLOG;
 }
 
-// The cost on an active run's tile, in one vocabulary: "not tracked" when the usage ledger is off,
-// "no usage yet" when it is on and nothing is recorded for the run, otherwise the cost (or "unknown",
-// with its reason on hover).
+// The cost on an active run's tile, in one vocabulary. The daemon always reports the ledger's state on a
+// session: tracked false when the usage ledger is off ("not tracked"). When it is on, a run with nothing
+// recorded yet is "no usage yet". Otherwise the cost, or "unknown" with its reason on hover.
 function activeRunCostHtml(sess) {
+  var usage = sess && sess.usage;
+  if (!usage || usage.tracked === false) return usageCostHtml(usage || null);
   var summary = usageSummaryOf(sess, 'card');
-  if (!summary || summary.tracked === false) return usageCostHtml(summary);
-  if (!summary.tokens || !(Number(summary.tokens.total) > 0)) {
+  if (!summary || !summary.tokens || !(Number(summary.tokens.total) > 0)) {
     return '<span title="' + esc(USAGE_PENDING_NOTE) + '">no usage yet</span>';
   }
   return usageCostHtml(summary);

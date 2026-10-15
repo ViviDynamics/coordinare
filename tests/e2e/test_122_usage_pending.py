@@ -48,8 +48,10 @@ def test_running_stage_with_no_usage_shows_pending_then_the_priced_cost(
     page.goto(live_server_url)
     expect(page.locator("#phase")).not_to_be_empty(timeout=_WAIT_SSE)
 
+    # The ledger is on and nothing is recorded for the card yet, as the daemon reports it (store.py _session_usage).
     running = {**_active_session(_CARD, "Running card", "implementing"),
-               "agent_dispatch_at": "2026-10-13T12:00:00+00:00"}
+               "agent_dispatch_at": "2026-10-13T12:00:00+00:00",
+               "usage": {"tracked": True, "reason": None, "run": None, "card": None}}
     store.broadcaster.broadcast(_full_snapshot(
         phase="monitoring_performer", phase_label="Monitoring Performer",
         active_sessions=[running],
@@ -59,8 +61,8 @@ def test_running_stage_with_no_usage_shows_pending_then_the_priced_cost(
     cost = page.locator("#active-performer-tiles .ap-tile-cost")
     expect(tokens).to_have_text("no usage yet", timeout=_WAIT_LIVE)
     expect(tokens).to_have_attribute("title", "Reported when the stage ends")
-    # 134: the pending placeholder is a plain hyphen; the value itself is unchanged.
-    expect(cost).to_have_text("-")
+    # 155: the cost says the same thing as the tokens: nothing is recorded yet. Never a bare hyphen or "None".
+    expect(cost).to_have_text("no usage yet")
 
     # A priced summary from the ledger: 2,000,000 input tokens at $3.00 per million.
     reported = {**running, "card_tokens_total": 2000000, "usage": _priced_usage(2_000_000)}
