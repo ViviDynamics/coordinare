@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import run_id_js, shipped_function
+from tests.unit.dashboard_js_slices import run_id_js, shipped_function, time_helpers_js
 
 _REPO = Path(__file__).resolve().parents[2]
 _CHECKS = _REPO / "tests" / "js" / "transcript_link_checks.js"
@@ -22,6 +22,7 @@ def _sliced_js() -> str:
     # header call. The rest of helpers.js reads the document when it loads, so it is not evaluated here.
     return "\n\n".join([
         shipped_function("helpers", "esc"),
+        time_helpers_js(),
         shipped_function("helpers", "fmtCost"),
         run_id_js(),
         _DASHBOARD_JS_SOURCES["usage"],

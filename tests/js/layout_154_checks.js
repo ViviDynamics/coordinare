@@ -90,7 +90,7 @@ checkTrue("a tile carries its card id", tile.indexOf('data-card-id="PVTI_1"') !=
 checkTrue("a tile names its stage", tile.indexOf("Implement") !== -1 || tile.indexOf("Implementer") !== -1);
 checkTrue("a tile carries the card's action menu", tile.indexOf('class="card-actions"') !== -1);
 checkTrue("a tile carries the run's view link", tile.indexOf("View run") !== -1);
-checkTrue("a tile carries the elapsed readout from the dispatch", tile.indexOf('data-elapsed-since="2026-10-13T12:00:00Z"') !== -1);
+checkTrue("a tile carries the elapsed readout from the dispatch", tile.indexOf('data-rel-iso="2026-10-13T12:00:00Z"') !== -1);
 checkTrue("a tile shows the card's phase once, as the phase pill", (tile.match(/ap-tile-phase/g) || []).length === 1);
 
 var hostile = activeRunTileHtml(Object.assign({}, RUNNING, { card_title: "<img src=x onerror=alert(1)>" }), tileState);

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import app_js
+from tests.unit.dashboard_js_slices import app_js, time_helpers_js
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "question_panels_checks.js"
 
@@ -49,7 +49,7 @@ def _extract_panels_js() -> str:
     if fmt_age is None:
         raise AssertionError("the shared fmtAge() helper is no longer in helpers.js")
     return (
-        esc.group(0) + "\n\n" + fmt_age.group(0) + "\n\n"
+        esc.group(0) + "\n\n" + time_helpers_js() + "\n\n" + fmt_age.group(0) + "\n\n"
         + "function renderQuestionPanels(s) {\n" + panels_js + "\n}\n"
     )
 

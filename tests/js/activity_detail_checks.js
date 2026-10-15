@@ -56,7 +56,7 @@ global.document = {
 eval(src);
 
 function afLabel(t) { return String(t || "").toUpperCase(); }
-function afTime() { return "09:00:00"; }
+function timeHtml() { return "09:00:00"; }
 let renders = 0;
 function afRender() { renders += 1; }
 function vocabularyKindLabel(kind, value) { return value; }

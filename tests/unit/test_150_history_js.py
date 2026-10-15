@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.assets import _DASHBOARD_JS_ORDER, DASHBOARD_HTML_BUDGET_BYTES
-from tests.unit.dashboard_js_slices import shipped_function
+from tests.unit.dashboard_js_slices import shipped_function, time_helpers_js
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -23,7 +23,7 @@ def _history_slice() -> str:
     return "\n\n".join([
         shipped_function("helpers", "esc"),
         shipped_function("helpers", "fmtDuration"),
-        shipped_function("helpers", "fmtTime"),
+        time_helpers_js(),
         shipped_function("helpers", "fmtCost"),
         _DASHBOARD_JS_SOURCES["usage"],
         shipped_function("runs", "runPathFor"),

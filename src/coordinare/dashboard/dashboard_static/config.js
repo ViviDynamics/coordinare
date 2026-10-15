@@ -1140,7 +1140,8 @@ function cfgFieldRow(s, showOverrides, note) {
   }
   var help = s.help ? '<div style="' + CFG_HINT + '">' + esc(s.help) + '</div>' : '';
   var ch = constraint ? '<div style="' + CFG_HINT + '">' + constraint + '</div>' : '';
-  var def = (s.default !== null && s.default !== undefined)
+  // 157: a field with no default says nothing; an empty text default is no default either.
+  var def = (s.default !== null && s.default !== undefined && s.default !== '')
     ? '<div style="' + CFG_HINT + '">default: ' + cfgFmtValue(s.default) + '</div>' : '';
   var over = showOverrides ? cfgOverrideNote(s.key) : '';
   // 143: a read-only setting says why, in words, rather than only showing a badge.

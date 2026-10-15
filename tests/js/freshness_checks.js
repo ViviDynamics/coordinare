@@ -41,11 +41,11 @@ check("an overdue check reads 0s, never negative",
 
 // Stale: say how long, and that it is reconnecting when it is.
 check("quiet says how long there has been no update",
-  freshnessText("Updates quiet", NOW - 125000, true, state, NOW), " · no update for 2m");
+  freshnessText("Updates quiet", NOW - 125000, true, state, NOW), " · last update 2m ago");
 check("reconnecting says so",
-  freshnessText("Reconnecting", NOW - 125000, true, state, NOW), " · no update for 2m: reconnecting…");
+  freshnessText("Reconnecting", NOW - 125000, true, state, NOW), " · last update 2m ago: reconnecting…");
 check("waiting uses the stale wording too",
-  freshnessText("Waiting for updates", NOW - 5000, true, state, NOW), " · no update for 5s");
+  freshnessText("Waiting for updates", NOW - 5000, true, state, NOW), " · last update 5s ago");
 check("stale text never promises a next check",
   /next check/.test(freshnessText("Reconnecting", NOW - 60000, true, state, NOW)), false);
 
@@ -54,10 +54,11 @@ check("before the first message there is no freshness claim",
   freshnessText("Connecting", 0, false, state, NOW), "");
 
 // Age formatting.
-check("seconds", fmtShortAge(59999), "59s");
-check("minutes", fmtShortAge(60000), "1m");
-check("hours and minutes", fmtShortAge(3 * 3600000 + 12 * 60000), "3h 12m");
-check("negative and junk ages read as zero", [fmtShortAge(-5), fmtShortAge("x"), fmtShortAge(undefined)], ["0s", "0s", "0s"]);
+check("seconds", fmtAgo(new Date(NOW - 59999).toISOString(), NOW), "59s ago");
+check("minutes", fmtAgo(new Date(NOW - 60000).toISOString(), NOW), "1m ago");
+check("hours read as hours", fmtAgo(new Date(NOW - (3 * 3600000 + 12 * 60000)).toISOString(), NOW), "3h ago");
+check("a future moment reads as zero", fmtAgo(new Date(NOW + 5000).toISOString(), NOW), "0s ago");
+check("junk ages read as empty", [fmtAgo("x", NOW), fmtAgo(undefined, NOW)], ["", ""]);
 
 // The once-a-second refresh writes the text and flags a stale stream.
 var classes = {};
@@ -83,7 +84,7 @@ check("a recent heartbeat does not reset the data age", /updated (40|41)s ago/.t
 labelEl.textContent = "Reconnecting";
 _lastStateAt = Date.now() - 4000;
 refreshFreshness();
-check("refresh writes the stale text", /no update for [45]s: reconnecting…$/.test(detail.textContent), true);
+check("refresh writes the stale text", /last update [45]s ago: reconnecting…$/.test(detail.textContent), true);
 check("a reconnecting stream is flagged stale", classes["conn-stale"], true);
 _lastStateAt = 0;
 refreshFreshness();

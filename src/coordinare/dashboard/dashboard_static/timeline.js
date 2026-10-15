@@ -145,7 +145,7 @@ function timelineRunRowHtml(tl, run) {
   var readText = timelineOwn(TIMELINE_READ_TEXT, run.read_state) || 'duration not recorded';
   var outcome = run.outcome === 'failed' ? 'failed' : (run.outcome === 'completed' ? 'completed' : 'outcome not recorded');
   return '<li class="tl-run">' + runIdHtml(run.run, { href: href }) +
-    ' <span class="muted">' + esc(run.started_at ? fmtTime(run.started_at) : 'start not recorded') + '</span>' +
+    ' <span class="muted">' + (run.started_at ? timeHtml(run.started_at) : esc('start not recorded')) + '</span>' +
     ' <span>' + esc(duration || readText) + '</span>' +
     ' <span class="muted">' + esc(run.read_state === 'done' || !run.read_state ? outcome : '') + '</span></li>';
 }
@@ -183,7 +183,7 @@ function timelineEventHtml(event) {
   else if (kind === 'feedback_relayed' && detail.items !== undefined) extra = ' (' + String(detail.items) + (Number(detail.items) === 1 ? ' item)' : ' items)');
   else if (kind === 'human_action' || kind === 'override') extra = detail.action ? ': ' + String(detail.action) : '';
   var stage = event.stage ? ' · ' + stageLabel(event.stage) : '';
-  return '<li class="tl-event tl-event-' + esc(kind) + '"><span class="muted">' + esc(fmtTime(event.at)) + '</span> ' +
+  return '<li class="tl-event tl-event-' + esc(kind) + '"><span class="muted">' + timeHtml(event.at) + '</span> ' +
     esc(text + extra) + stage + '</li>';
 }
 

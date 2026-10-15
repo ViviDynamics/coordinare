@@ -253,3 +253,22 @@ function showSystemHealth() {
   card.scrollIntoView({ block: 'nearest' });
   card.focus();
 }
+
+// 157: on a desktop the activity feed is as tall as its entries, but never taller than the board beside
+// it. The log's cap is the board's height less the card's own chrome (its heading and controls). Below
+// the desktop width the two stack, so the cap is removed and the stylesheet default applies.
+// 157: the feed never collapses below this many pixels, however short the board beside it is.
+var ACTIVITY_MIN_LOG_PX = 120;
+function fitActivityToBoard() {
+  var board = document.getElementById('active-work-card');
+  var card = document.getElementById('activity-feed-card');
+  var log = card ? card.querySelector('.af-log') : null;
+  if (!board || !card || !log) return;
+  var desktop = typeof window.matchMedia === 'function' && window.matchMedia('(min-width: 1100px)').matches;
+  if (!desktop) { log.style.maxHeight = ''; return; }
+  // A hidden board (the card detail is open) measures as 0; keep the last cap rather than collapse the feed.
+  if (board.offsetHeight === 0) return;
+  log.style.maxHeight = '';
+  var chrome = card.offsetHeight - log.offsetHeight;
+  log.style.maxHeight = Math.max(ACTIVITY_MIN_LOG_PX, board.offsetHeight - chrome) + 'px';
+}

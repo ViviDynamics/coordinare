@@ -166,8 +166,8 @@ has("a hostile title is escaped", row, "&lt;img src=x onerror=alert(1)&gt;");
 has("a hostile question is escaped", row, "&lt;b&gt;why&lt;/b&gt;");
 has("the kind is a text label", row, '<span class="attention-kind">Question</span>');
 has("an external link opens in a new tab", row, 'target="_blank" rel="noopener"');
-has("the elapsed time updates on the page timer", row, 'data-elapsed-since="2026-10-13T09:00:00+00:00"');
-has("the elapsed time is labelled", row, 'data-elapsed-prefix="asked "');
+has("the age is a relative time that updates on the page timer", row, 'data-rel-iso="2026-10-13T09:00:00+00:00"');
+has("the age is labelled", row, 'asked <time');
 has("the item carries its key", row, 'data-attention-key="question:PVTI_1:&lt;b&gt;why&lt;/b&gt;"');
 
 const internal = attentionListHtml([{ kind: "needs_human", key: "k", title: "T", detail: "", href: "/performers/implementing", since: null }]);
@@ -175,7 +175,7 @@ has("a run link navigates in the page", internal, 'onclick="navigate(event,this.
 lacks("a run link opens nothing new", internal, "target=");
 const anchor = attentionListHtml([{ kind: "subsystem_down", key: "s", title: "github", detail: "", href: "#subsystems-section", since: null }]);
 lacks("an in-page anchor is not routed", anchor, "navigate(");
-lacks("an in-page anchor has no elapsed time without a since", anchor, "data-elapsed-since");
+lacks("an in-page anchor has no elapsed time without a since", anchor, "data-rel-iso");
 
 // --- the kind labels --------------------------------------------------------------
 check("question label", ATTENTION_KIND_LABELS.question, "Question");
