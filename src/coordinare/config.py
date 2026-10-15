@@ -29,6 +29,7 @@ from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
     detect_duplicate_endpoints,
 )
+from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
@@ -1503,6 +1504,7 @@ class ProjectConfiguration(BaseSettings):
 
     # 129: Full per-run transcripts. Opt-out via ``transcripts.enabled: false``.
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    event_store: EventStoreConfig = Field(default_factory=EventStoreConfig)
     # 132: Full per-run logs, kept after the container is removed. Opt-out via ``run_logs.enabled``.
     run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
 
