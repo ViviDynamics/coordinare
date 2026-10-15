@@ -14,6 +14,8 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse
 
+from coordinare.config import ProjectConfiguration, _holds_secret
+from coordinare.config_descriptors import SECRET_MASK
 from coordinare.dashboard.guards import _version_headers, _version_refusal
 from coordinare.services.config_write_service import _validate_candidate
 
@@ -23,6 +25,40 @@ if TYPE_CHECKING:
     from coordinare.dashboard.context import DashboardContext
 
 _log = structlog.get_logger(__name__)
+
+# 221: the override keys whose value is a secret, found by type as the global model declares them.
+# A secret override is shown masked, so the browser never holds its value and the DOM cannot show it.
+_SECRET_OVERRIDE_KEYS = frozenset(
+    name for name, info in ProjectConfiguration.model_fields.items() if _holds_secret(info.annotation)
+)
+
+
+def _mask_secret_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """221: the overrides as the browser may hold them: a stored secret reads as the mask."""
+    return {
+        key: (SECRET_MASK if key in _SECRET_OVERRIDE_KEYS and value not in (None, "") else value)
+        for key, value in overrides.items()
+    }
+
+
+def _restore_masked_secrets(proposed: Any, stored: dict[str, Any]) -> tuple[Any, JSONResponse | None]:
+    """221: a secret the page sent back still masked keeps its stored value, so a save never writes the mask.
+
+    A masked secret with nothing stored to keep is refused, because the mask is not a value.
+    """
+    if not isinstance(proposed, dict):
+        return proposed, None
+    restored = dict(proposed)
+    for key, value in proposed.items():
+        if key not in _SECRET_OVERRIDE_KEYS or value != SECRET_MASK:
+            continue
+        if key not in stored:
+            return proposed, JSONResponse(
+                {"error": f"{key}: there is no stored value to keep, so type the new value"},
+                status_code=422,
+            )
+        restored[key] = stored[key]
+    return restored, None
 
 
 def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | None) -> None:
@@ -158,7 +194,10 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 "name": name,
                 "github_project_number": getattr(cfg, "github_project_number", None),
                 "enabled": getattr(cfg, "enabled", True),
-                "overrides": getattr(cfg, "overrides", None) or {},
+                "overrides": _mask_secret_overrides(getattr(cfg, "overrides", None) or {}),
+                "secret_overrides": sorted(
+                    key for key in (getattr(cfg, "overrides", None) or {}) if key in _SECRET_OVERRIDE_KEYS
+                ),
                 "personas": getattr(cfg, "personas", None) or {},
                 "env_spec_files": getattr(cfg, "env_spec_files", None) or ["README.md"],
                 "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
@@ -458,12 +497,16 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
 
             cfg = symphony_configs[name]
             enabled = body.get("enabled", getattr(cfg, "enabled", True))
+            stored_overrides = getattr(cfg, "overrides", None) or {}
+            overrides, refusal = _restore_masked_secrets(body.get("overrides", stored_overrides), stored_overrides)
+            if refusal is not None:
+                return refusal
             try:
                 updated = SymphonyConfig(
                     name=name,
                     github_project_number=getattr(cfg, "github_project_number", None),  # type: ignore[arg-type]
                     enabled=enabled,
-                    overrides=body.get("overrides", getattr(cfg, "overrides", None)),
+                    overrides=overrides,
                     personas=body.get("personas", getattr(cfg, "personas", None)),
                     env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
                 )
@@ -513,7 +556,7 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({
                 "name": name,
                 "enabled": getattr(updated, "enabled", True),
-                "overrides": getattr(updated, "overrides", None) or {},
+                "overrides": _mask_secret_overrides(getattr(updated, "overrides", None) or {}),
                 "personas": getattr(updated, "personas", None) or {},
                 "env_spec_files": getattr(updated, "env_spec_files", ["README.md"]),
             }, headers=_version_headers(config_path))

@@ -53,6 +53,12 @@ def _open_detail(page: Page, live_server_url: str, store: DashboardStore) -> Non
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT_LIVE)
 
 
+def _save(page: Page) -> None:
+    # #221: a save shows the review first, and only its confirmation sends the snapshot.
+    page.click("#sym-save-btn")
+    page.locator("#sym-config-form [data-review] button", has_text="Save these changes").click()
+
+
 @pytest.mark.e2e
 def test_no_cap_is_saved_as_an_explicit_null(page: Page, live_server_url: str, store: DashboardStore) -> None:
     saved: list[Any] = []
@@ -61,7 +67,7 @@ def test_no_cap_is_saved_as_an_explicit_null(page: Page, live_server_url: str, s
 
     page.locator('[data-override-nocap="max_cards_in_review"]').check()
     expect(page.locator('[data-override-key="max_cards_in_review"]')).to_be_disabled()
-    page.click("#sym-save-btn")
+    _save(page)
 
     expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT_LIVE)
     assert saved[-1]["overrides"] == {"max_concurrent_cards": 1, "max_cards_in_review": None}
@@ -78,7 +84,7 @@ def test_an_existing_no_cap_shows_checked_and_clearing_it_removes_the_override(
     expect(page.locator('[data-override-nocap="max_cards_in_review"]')).to_be_checked()
     page.locator('[data-override-nocap="max_cards_in_review"]').uncheck()
     expect(page.locator('[data-override-key="max_cards_in_review"]')).to_be_enabled()
-    page.click("#sym-save-btn")
+    _save(page)
 
     expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT_LIVE)
     assert saved[-1]["overrides"] is None
@@ -93,11 +99,11 @@ def test_a_number_still_saves_and_an_empty_input_inherits_the_global_default(
     _open_detail(page, live_server_url, store)
 
     page.locator('[data-override-key="max_cards_in_review"]').fill("4")
-    page.click("#sym-save-btn")
+    _save(page)
     expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT_LIVE)
     assert saved[-1]["overrides"] == {"max_cards_in_review": 4}
 
     page.locator('[data-override-key="max_cards_in_review"]').fill("")
-    page.click("#sym-save-btn")
+    _save(page)
     expect(page.locator("#sym-save-msg")).to_have_text("Saved", timeout=_WAIT_LIVE)
     assert saved[-1]["overrides"] is None
