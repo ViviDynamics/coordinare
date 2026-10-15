@@ -41,6 +41,8 @@ RUN_SNAPSHOT_KIND = "bootstrap_run"
 OUTCOME_RUNNING = "running"
 OUTCOME_SUCCEEDED = "succeeded"
 OUTCOME_FAILED = "failed"
+OUTCOME_CANCELLED = "cancelled"
+BOOTSTRAP_CANCEL_COOLDOWN_S = 120.0
 
 # Words that mark the line a verify run failed on. The first line with one is the failing line.
 _ERROR_MARKERS = (
@@ -84,6 +86,8 @@ class BootstrapAttempt:
     reason_tail: list[str] = field(default_factory=list)
     last_activity_at: datetime | None = None
     restored: bool = False
+    stop_unconfirmed: bool = False
+    cancelled_by: str | None = None
     seen_events: set[str] = field(default_factory=set, repr=False)
 
 
@@ -109,6 +113,7 @@ class AttemptEnd:
     commit: str
     attempt: int
     infra: bool = False
+    cancelled_by: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +217,10 @@ class BootstrapHistory:
             )
         record.ended_at = end.ended_at
         record.outcome = OUTCOME_SUCCEEDED if end.succeeded else OUTCOME_FAILED
+        if end.cancelled_by is not None:
+            record.outcome = OUTCOME_CANCELLED
+        record.cancelled_by = end.cancelled_by
+        record.stop_unconfirmed = False
         record.reason = None if end.succeeded else failure_detail(end.reason)[0]
         if end.reason:
             record.reason_tail = failure_detail(end.reason)[1]
@@ -317,6 +326,9 @@ def report_completion(state: Mapping[str, Any], symphony: str, end: AttemptEnd, 
             persist_attempt(state, symphony, record)
     number = record.attempt if record is not None else end.attempt
     failing, _ = failure_detail(end.reason)
+    if end.cancelled_by is not None:
+        record_activity(state, symphony, "operator_action", f"cancelled by {end.cancelled_by}")
+        return
     if end.succeeded:
         record_activity(state, symphony, ACT_READY, f"Ready for commit {short_commit(end.commit) or 'unknown'}")
         return

@@ -65,6 +65,7 @@ from coordinare.services.bootstrap_history import (
 from coordinare.services.bootstrap_runs import (
     BootstrapRuntime,
     cancel_bootstrap,
+    mark_stop_unconfirmed,
     record_bootstrap_events,
     record_verification,
     release_bootstrap_runtime,
@@ -4041,10 +4042,25 @@ class CoordinareDaemon:
         )
         deadline = monotonic() + _wall_clock_s
         poll = _BootstrapPollState(last_progress_at=monotonic())
-        while monotonic() < deadline:
+        while True:
+            runtime = (self._state.get("bootstrap_runtimes") or {}).get(symphony_name)
+            if runtime is not None and runtime.cancelling:
+                await asyncio.sleep(_BOOTSTRAP_POLL_INTERVAL_SECONDS)
+                continue
+            if monotonic() >= deadline:
+                if await self._bootstrap_finished_before_stop(
+                    svc, job_id, symphony_name, env_cache_svc, container_id, poll.last_logs_snapshot,
+                ):
+                    return
+                if await self._bootstrap_budget_exhausted(
+                    svc, job_id, symphony_name, env_cache_svc, _wall_clock_s,
+                ):
+                    return
+                await asyncio.sleep(_BOOTSTRAP_POLL_INTERVAL_SECONDS)
+                continue
             await asyncio.sleep(min(_BOOTSTRAP_POLL_INTERVAL_SECONDS, deadline - monotonic()))
             if monotonic() >= deadline:
-                break
+                continue
             try:
                 # The deadline also bounds the status call itself: a poll that
                 # hangs cannot hold the job past the wall clock.
@@ -4054,7 +4070,7 @@ class CoordinareDaemon:
                     )
                     status_result = await svc.check_status(job_id)
             except TimeoutError:
-                break
+                continue
             except Exception as exc:
                 # A single status poll can fail transiently while the container
                 # is still alive and building (notably a 30 s HTTP timeout under
@@ -4078,13 +4094,12 @@ class CoordinareDaemon:
                     error=str(exc),
                     consecutive_failures=poll.consecutive_failures,
                 )
-                env_cache_svc.on_bootstrap_complete(
-                    symphony_name,
-                    False,
-                    self._state,
-                    error=f"bootstrap polling failed: {exc}",
-                )
-                return
+                if await self._stop_bootstrap_job(svc, job_id, symphony_name):
+                    self._complete_bootstrap_stop(env_cache_svc, symphony_name, f"bootstrap polling failed: {exc}")
+                    return
+                continue
+            if runtime is not None and runtime.cancelling:
+                continue
             # A successful poll clears the transient-failure streak.
             poll.consecutive_failures = 0
             record_bootstrap_events(self._state, symphony_name, job_id, status_result.get("events") or [])
@@ -4105,13 +4120,6 @@ class CoordinareDaemon:
                 container_id,
             ):
                 return
-        if await self._bootstrap_finished_before_stop(
-            svc, job_id, symphony_name, env_cache_svc, container_id, poll.last_logs_snapshot,
-        ):
-            return
-        await self._bootstrap_budget_exhausted(
-            svc, job_id, symphony_name, env_cache_svc, _wall_clock_s,
-        )
 
     async def _bootstrap_budget_exhausted(
         self,
@@ -4120,7 +4128,7 @@ class CoordinareDaemon:
         symphony_name: str,
         env_cache_svc: Any,
         wall_clock_s: int,
-    ) -> None:
+    ) -> bool:
         """270: the wall clock ran out. Stop the job through its runtime, then record
         the attempt as failed. The stop is attempted whatever the performer reports:
         a hung turn never ends its own job, so the daemon ends it."""
@@ -4130,16 +4138,22 @@ class CoordinareDaemon:
             job_id=job_id,
             budget_seconds=wall_clock_s,
         )
-        await self._stop_bootstrap_job(svc, job_id, symphony_name)
-        env_cache_svc.on_bootstrap_complete(
-            symphony_name,
-            False,
-            self._state,
-            error=(
-                f"bootstrap failed: exceeded {_minutes_text(wall_clock_s)} of wall clock; "
-                "job stopped"
-            ),
+        if not await self._stop_bootstrap_job(svc, job_id, symphony_name):
+            return False
+        self._complete_bootstrap_stop(
+            env_cache_svc, symphony_name,
+            f"bootstrap failed: exceeded {_minutes_text(wall_clock_s)} of wall clock; job stopped",
         )
+        return True
+
+    def _complete_bootstrap_stop(self, env_cache_svc: Any, symphony_name: str, reason: str) -> None:
+        """A confirmed operator stop closes as cancellation, without spending the budget."""
+        history = history_of(self._state)
+        record = history.open_attempt(symphony_name) if history is not None else None
+        if record is not None and record.cancelled_by is not None:
+            env_cache_svc.on_bootstrap_cancelled(symphony_name, self._state, record.cancelled_by)
+        else:
+            env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state, error=reason)
 
     async def _verify_bootstrap_in_clean_context(
         self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None = None,
@@ -4403,10 +4417,9 @@ class CoordinareDaemon:
             "env_cache.bootstrap_idle_reaped", symphony=symphony_name,
             job_id=job_id, reason=reason, idle_timeout_seconds=idle_timeout_s,
         )
-        await self._stop_bootstrap_job(svc, job_id, symphony_name)
-        env_cache_svc.on_bootstrap_complete(
-            symphony_name, False, self._state, error=f"bootstrap hung: {reason}; job stopped",
-        )
+        if not await self._stop_bootstrap_job(svc, job_id, symphony_name):
+            return False
+        self._complete_bootstrap_stop(env_cache_svc, symphony_name, f"bootstrap hung: {reason}; job stopped")
         return True
 
     async def _handle_bootstrap_terminal_status(
@@ -4420,6 +4433,11 @@ class CoordinareDaemon:
         last_logs_snapshot: list[str],
     ) -> None:
         """Handle a terminal bootstrap status (success or failure)."""
+        history = history_of(self._state)
+        record = history.open_attempt(symphony_name) if history is not None else None
+        if record is not None and record.cancelled_by is not None:
+            self._complete_bootstrap_stop(env_cache_svc, symphony_name, "")
+            return
         # 060/Option A: performer reports a terminal status when the
         # bootstrap session ends. "env_bootstrap_complete" is the
         # success marker emitted by the performer's env_bootstrap
@@ -4534,9 +4552,8 @@ class CoordinareDaemon:
         persistent performer, whose job has no container handle at all. The service
         stops the job by session id on either runtime (ephemeral: the runtime
         removes the Pod or container; persistent: the performer's cancel, confirmed
-        by a read). Best-effort: a failed stop must not wedge the symphony, so the
-        caller still records the attempt as failed. Returns True only when the stop
-        is confirmed.
+        by a read). An unconfirmed stop keeps the run in flight for the next
+        poll to resolve. Returns True only when the stop is confirmed.
         """
         stop = getattr(svc, "stop_session_confirmed", None)
         confirmed = False
@@ -4564,8 +4581,9 @@ class CoordinareDaemon:
                 "env_cache.bootstrap_stop_unconfirmed",
                 symphony=symphony_name,
                 job_id=job_id,
-                detail="the bootstrap job could not be proven stopped; the attempt is still recorded as failed",
+                detail="the bootstrap job could not be proven stopped; it remains in flight",
             )
+            mark_stop_unconfirmed(self._state, symphony_name, "the bootstrap job could not be proven stopped")
         return confirmed
 
     async def _dispatch_documenting_side_runs(

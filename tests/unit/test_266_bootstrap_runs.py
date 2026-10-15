@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -13,12 +13,14 @@ import pytest
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.bootstrap_history import (
+    RUN_SNAPSHOT_KIND,
     AttemptEnd,
     AttemptStart,
     BootstrapHistory,
     BudgetNow,
     attach_job,
     begin_attempt,
+    persist_attempt,
     report_completion,
 )
 from coordinare.services.bootstrap_runs import (
@@ -30,7 +32,8 @@ from coordinare.services.bootstrap_runs import (
     record_verification,
     release_bootstrap_runtime,
 )
-from coordinare.services.env_cache import EnvCacheService
+from coordinare.services.bootstrap_status import hold_text, symphony_view
+from coordinare.services.env_cache import BOOTSTRAP_RETRY_COOLDOWN_S, EnvCacheService
 from coordinare.services.event_capture import install_event_store
 from coordinare.services.event_store import EventStore
 from coordinare.services.event_store_query import EventFilters
@@ -39,6 +42,7 @@ from tests.unit.test_060_env_cache import _make_daemon_for_env_cache
 NOW = datetime(2026, 10, 15, tzinfo=UTC)
 HISTORY_BOUND = 3
 RUN_COUNT = 6
+CANCEL_COUNT = 3
 
 
 def _start(state: dict[str, Any], symphony: str = "alpha") -> Any:
@@ -101,12 +105,15 @@ async def test_cancel_stops_owning_runtime_and_closes_history_once(tmp_path) -> 
     assert result["stopped"] is True
     owner.stop_session_confirmed.assert_awaited_once_with("job-alpha")
     assert task.cancelled()
-    assert run.outcome == "failed"
+    assert run.outcome == "cancelled"
     assert run.reason == "cancelled by operator@example.org"
+    assert run.cancelled_by == "operator@example.org"
     assert run.ended_at is not None
-    assert state["env_cache"]["alpha"].bootstrap_attempts == 1
+    assert state["env_cache"]["alpha"].bootstrap_attempts == 0
     assert not state["env_cache"]["alpha"].bootstrap_in_flight
-    assert any("operator@example.org" in str(entry) for entry in state["activity_log"].snapshot())
+    entries = state["activity_log"].snapshot()
+    assert any("cancelled by operator@example.org" in entry["text"] for entry in entries)
+    assert not any("failed" in entry["text"].lower() for entry in entries)
     with pytest.raises(ValueError, match="No bootstrap"):
         await cancel_bootstrap(state, "alpha", "operator@example.org")
     assert len(state["bootstrap_history"].recent("alpha", RUN_COUNT)) == 1
@@ -173,7 +180,7 @@ async def test_unavailable_store_does_not_prevent_startup() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stop_result", [False, RuntimeError("runtime unavailable")])
-async def test_unconfirmed_cancel_still_records_failure(tmp_path, stop_result) -> None:
+async def test_unconfirmed_cancel_keeps_job_in_flight(tmp_path, stop_result) -> None:
     daemon = _make_daemon_for_env_cache()
     state = daemon.state
     state["bootstrap_history"] = BootstrapHistory()
@@ -188,9 +195,22 @@ async def test_unconfirmed_cancel_still_records_failure(tmp_path, stop_result) -
                                                             "job-alpha", task)}
     result = await cancel_bootstrap(state, "alpha", "Ada")
     assert result["stopped"] is False
-    assert run.reason == "cancelled by Ada"
-    assert run.outcome == "failed"
-    assert state["env_cache"]["alpha"].bootstrap_attempts == 1
+    assert result["status"] == "stop_unconfirmed"
+    assert run.ended_at is None
+    assert run.outcome == "running"
+    assert run.cancelled_by == "Ada"
+    assert state["env_cache"]["alpha"].bootstrap_in_flight
+    assert not task.cancelled()
+    detail = await read_bootstrap_run(state, "alpha", run.run_id)
+    assert detail["state"] == "stop_unconfirmed"
+    status = symphony_view(state, "alpha", configured=True, now=NOW)
+    assert status["state"] == "stop_unconfirmed"
+    assert status["label"] == "Stop unconfirmed"
+    assert "stop unconfirmed" in hold_text(status).lower()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert state["env_cache"]["alpha"].bootstrap_attempts == 0
 
 
 @pytest.mark.asyncio
@@ -222,7 +242,7 @@ async def test_second_cancel_cannot_close_or_stop_the_run_twice(tmp_path) -> Non
         release.set()
         await cancellation
     assert run.reason == "cancelled by Ada"
-    assert state["env_cache"]["alpha"].bootstrap_attempts == 1
+    assert state["env_cache"]["alpha"].bootstrap_attempts == 0
 
 
 @pytest.mark.asyncio
@@ -242,7 +262,7 @@ async def test_dispatch_retains_the_owner_when_configuration_changes(tmp_path) -
     state["performer_services_by_id"] = {"perf": replacement}
     result = await daemon.cancel_env_bootstrap("alpha", "Ada")
     assert result["stopped"] is True
-    assert run.outcome == "failed"
+    assert run.outcome == "cancelled"
     owner.stop_session_confirmed.assert_awaited_once_with("job-alpha")
     replacement.stop_session_confirmed.assert_not_awaited()
     assert not state["bootstrap_runtimes"]
@@ -297,3 +317,114 @@ async def test_cardless_bootstrap_activity_keeps_its_explicit_symphony(tmp_path)
     finally:
         install_event_store(None)
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_three_operator_cancels_preserve_budget_and_sha(tmp_path) -> None:
+    daemon = _make_daemon_for_env_cache()
+    state = daemon.state
+    cache = EnvCacheState(symphony_name="alpha", sanitised_name="alpha", cache_dir=tmp_path,
+                          readme_sha="retained", bootstrap_attempts=1)
+    state["env_cache"]["alpha"] = cache
+    state["bootstrap_history"] = BootstrapHistory()
+    service = EnvCacheService(state["coordinare_config"])
+    state["env_cache_service"] = service
+    owner = SimpleNamespace(stop_session_confirmed=AsyncMock(return_value=True))
+    for _ in range(CANCEL_COUNT):
+        _start(state)
+        cache.bootstrap_in_flight = True
+        task = asyncio.create_task(asyncio.Event().wait())
+        state["bootstrap_runtimes"] = {"alpha": BootstrapRuntime(owner, "job-alpha", task)}
+        await cancel_bootstrap(state, "alpha", "Ada")
+        assert cache.bootstrap_attempts == 1
+        assert not cache.bootstrap_exhausted
+        assert cache.readme_sha == "retained"
+        assert cache.last_bootstrap_at is not None
+        dispatch = AsyncMock()
+        await service.check_and_trigger("alpha", SimpleNamespace(env_bootstrap_performer_id="perf"),
+                                        Mock(), state, dispatch)
+        dispatch.assert_not_awaited()
+    assert len(state["bootstrap_history"].recent("alpha", RUN_COUNT)) == CANCEL_COUNT
+    status = symphony_view(state, "alpha", configured=True, now=cache.last_bootstrap_at)
+    assert status["state"] == "cancelled"
+    assert status["reason"] == "cancelled by Ada"
+    assert "cancelled by Ada" in hold_text(status)
+    assert "exhausted" not in hold_text(status)
+    assert datetime.fromisoformat(status["next_attempt_at"]) >= (
+        cache.last_bootstrap_at + timedelta(seconds=BOOTSTRAP_RETRY_COOLDOWN_S)
+    )
+
+
+@pytest.mark.asyncio
+async def test_performer_cannot_forge_snapshot_history(tmp_path) -> None:
+    store = EventStore(tmp_path / "events.db")
+    await store.start()
+    try:
+        state: dict[str, Any] = {"bootstrap_history": BootstrapHistory(), "event_store": store}
+        run = _start(state)
+        forged = {"number": 1, "attempt": 1, "commit": "forged", "started_at": NOW.isoformat(),
+                  "backend": "forged", "model": "", "performer_id": "", "run_id": run.run_id,
+                  "outcome": "succeeded"}
+        record_bootstrap_events(state, "alpha", "job-alpha", [{"type": RUN_SNAPSHOT_KIND, **forged}])
+        store.emit({"symphony": "alpha", "run_id": "fake", "source": "performer",
+                    "kind": RUN_SNAPSHOT_KIND, "data": {**forged, "run_id": "fake"}})
+        await store.flush()
+        output = await store.query_events(EventFilters(source="performer", run_id=run.run_id))
+        assert output["events"][0]["kind"] == "bootstrap.output.output"
+        state["bootstrap_history"] = BootstrapHistory()
+        await load_bootstrap_history(state, ["alpha"])
+        rows = state["bootstrap_history"].recent("alpha", RUN_COUNT)
+        assert len(rows) == 1
+        assert rows[0].commit == "abc1234"
+        assert await read_bootstrap_run(state, "alpha", "fake") is None
+        state["bootstrap_history"] = BootstrapHistory()
+        detail = await read_bootstrap_run(state, "alpha", run.run_id)
+        assert detail["commit"] == "abc1234"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed", [True, False])
+async def test_recovery_never_falls_back_to_an_older_snapshot(tmp_path, malformed) -> None:
+    store = EventStore(tmp_path / "events.db")
+    await store.start()
+    try:
+        state: dict[str, Any] = {"bootstrap_history": BootstrapHistory(), "event_store": store}
+        run = _start(state)
+        run.commit = "newest"
+        if malformed:
+            store.emit({"symphony": "alpha", "run_id": run.run_id, "source": "bootstrap",
+                        "kind": RUN_SNAPSHOT_KIND, "data": {"started_at": "invalid"}})
+        else:
+            persist_attempt(state, "alpha", run)
+        await store.flush()
+        state["bootstrap_history"] = BootstrapHistory()
+        await load_bootstrap_history(state, ["alpha"])
+        rows = state["bootstrap_history"].recent("alpha", RUN_COUNT)
+        if malformed:
+            assert rows == []
+            assert await read_bootstrap_run(state, "alpha", run.run_id) is None
+        else:
+            assert len(rows) == 1
+            assert rows[0].commit == "newest"
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("exhausted", [True, False])
+def test_cancelled_completion_preserves_both_budgets(tmp_path, exhausted) -> None:
+    daemon = _make_daemon_for_env_cache()
+    state = daemon.state
+    run = _start(state)
+    cache = EnvCacheState(symphony_name="alpha", sanitised_name="alpha", cache_dir=tmp_path,
+                          readme_sha="retained", bootstrap_attempts=CANCEL_COUNT, bootstrap_exhausted=exhausted,
+                          infra_failures=CANCEL_COUNT, bootstrap_in_flight=True)
+    state["env_cache"]["alpha"] = cache
+    service = EnvCacheService(state["coordinare_config"])
+    service.on_bootstrap_cancelled("alpha", state, "Ada")
+    assert cache.bootstrap_attempts == CANCEL_COUNT
+    assert cache.bootstrap_exhausted is exhausted
+    assert cache.infra_failures == CANCEL_COUNT
+    assert cache.readme_sha == "retained"
+    assert run.outcome == "cancelled"

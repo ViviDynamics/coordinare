@@ -8,6 +8,8 @@ var BOOTSTRAP_EVENT_LIMIT = 500;
 var BOOTSTRAP_JSON_INDENT = 2;
 var BOOTSTRAP_IDENTITY_TEXT_CHARS = 200;
 var BOOTSTRAP_IDENTITY_SUMMARY_CHARS = 80;
+var BOOTSTRAP_HTTP_UNAUTHORIZED = 401;
+var BOOTSTRAP_HTTP_FORBIDDEN = 403;
 
 function bootstrapEventEntry(event, run) {
   return event.activity_type ? event : afEntryFromBackend(event, run);
@@ -63,7 +65,7 @@ function bootstrapScopeAllows(name) {
 
 function bootstrapRunHtml(run) {
   var rows = [
-    ['State', run.state || run.outcome], ['Backend', run.backend], ['Model', run.model],
+    ['State', run.state === 'stop_unconfirmed' ? 'Stop unconfirmed' : run.state || run.outcome], ['Backend', run.backend], ['Model', run.model],
     ['Pod', run.pod], ['Performer', run.performer_id], ['Job', run.job_id],
     ['Commit', run.commit], ['Start', run.started_at], ['Elapsed seconds', run.duration_seconds],
     ['Last activity', run.last_activity_at]
@@ -75,7 +77,7 @@ function bootstrapRunHtml(run) {
     '" onclick="navigate(event,this.pathname)">Symphony</a></p><h2>Bootstrap run: ' + esc(run.symphony) +
     '</h2><p class="muted">' + esc(run.run_id) + '</p><div class="runs-facts">' + rows.map(function(row) {
     return '<div class="run-fact"><span class="run-fact-label">' + esc(row[0]) + '</span><span>' +
-      esc(row[1] == null ? 'Not recorded' : row[1]) + '</span></div>';
+      esc(row[1] == null ? 'Not recorded' : String(row[1])) + '</span></div>';
   }).join('') + '</div>' +
     (run.job_id ? '<p><a id="bootstrap-transcript" href="' + esc('/runs/' + encodeURIComponent(run.job_id)) +
       '" onclick="navigate(event,this.pathname)">Transcript</a></p>' : '<p>Transcript not available</p>') +
@@ -104,13 +106,24 @@ function bootstrapListMessage() {
 }
 
 function bootstrapAction(name, cancel, button, message) {
-  var effect = cancel ? 'Cancel this bootstrap and count the run as failed?' :
+  var effect = cancel ? 'Cancel this bootstrap? The retry budget will stay unchanged.' :
     'Reset the bootstrap retry budget and request a new run? Manual retries have a 15 minute cooldown.';
   if (!window.confirm(effect)) return;
   button.disabled = true;
   fetch('/api/symphonies/' + encodeURIComponent(name) + '/env-bootstrap' + (cancel ? '/cancel' : ''),
     {method: 'POST', credentials: 'same-origin'}).then(function(response) {
-    return response.json();
+    if (response.status === BOOTSTRAP_HTTP_UNAUTHORIZED) {
+      return {error: 'Sign in to perform this action.'};
+    }
+    if (response.status === BOOTSTRAP_HTTP_FORBIDDEN) {
+      return {error: 'You do not have permission to perform this action.'};
+    }
+    return response.json().then(function(body) {
+      if (!response.ok && !body.error && !body.detail) body.error = 'Action failed: HTTP ' + String(response.status);
+      return body;
+    }, function() {
+      return {error: response.ok ? 'The server returned an invalid response.' : 'Action failed: HTTP ' + String(response.status)};
+    });
   }).then(function(body) {
     var result = bootstrapActionMessage(body);
     if (message) message.textContent = result;

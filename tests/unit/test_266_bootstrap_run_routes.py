@@ -99,7 +99,8 @@ async def test_cancel_endpoint_closes_and_persists_the_real_history(tmp_path) ->
             assert (await client.post(CANCEL_PATH)).status_code == 409
             detail = await client.get(f"/api/symphonies/alpha/bootstrap-runs/{run.run_id}")
             assert detail.status_code == 200
-            assert detail.json()["history"]["outcome"] == "failed"
+            assert detail.json()["history"]["outcome"] == "cancelled"
+            assert detail.json()["cancelled_by"] == "local"
             assert detail.json()["reason"] == "cancelled by local"
         await events.flush()
         daemon.state["bootstrap_history"] = BootstrapHistory()
@@ -107,6 +108,8 @@ async def test_cancel_endpoint_closes_and_persists_the_real_history(tmp_path) ->
         history = daemon.state["bootstrap_history"].recent("alpha", RUN_COUNT)
         assert len(history) == 1
         assert history[0].reason == "cancelled by local"
+        assert history[0].outcome == "cancelled"
+        assert history[0].cancelled_by == "local"
         owner.stop_session_confirmed.assert_awaited_once_with("job-alpha")
     finally:
         task.cancel()

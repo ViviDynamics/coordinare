@@ -1587,6 +1587,7 @@ class TestPollBootstrapCompletion:
         daemon._state["coordinare_config"] = cfg
 
         svc = MagicMock()
+        svc.stop_session_confirmed = AsyncMock(return_value=True)
         svc.check_status = AsyncMock(return_value={"status": "working"})
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
@@ -1608,8 +1609,8 @@ class TestPollBootstrapCompletion:
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
-    async def test_reap_failure_is_non_fatal(self, monkeypatch) -> None:
-        """If the runtime stop fails, the bootstrap is still recorded as failed."""
+    async def test_reap_failure_retries_before_recording_failure(self, monkeypatch) -> None:
+        """An unconfirmed stop stays in flight until a later stop succeeds."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1620,7 +1621,8 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})
-        svc.stop_session_confirmed = AsyncMock(side_effect=RuntimeError("runtime unreachable"))
+        stop_results = [RuntimeError("runtime unreachable"), True]
+        svc.stop_session_confirmed = AsyncMock(side_effect=stop_results)
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         async def _fake_exec(*argv, **kwargs):
@@ -1637,6 +1639,7 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c-stuck")
 
+        assert svc.stop_session_confirmed.await_count == len(stop_results)
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
@@ -1764,6 +1767,7 @@ class TestPollBootstrapCompletion:
         daemon._state["coordinare_config"] = cfg
 
         svc = MagicMock()
+        svc.stop_session_confirmed = AsyncMock(return_value=True)
         svc.check_status = AsyncMock(return_value={"status": "working"})
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
@@ -1791,6 +1795,7 @@ class TestPollBootstrapCompletion:
 
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
+        svc.stop_session_confirmed = AsyncMock(return_value=True)
         svc.check_status = AsyncMock(side_effect=RuntimeError("connection lost"))
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 

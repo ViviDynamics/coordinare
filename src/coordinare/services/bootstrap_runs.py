@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 EVENT_LIMIT = MAX_LIMIT
 RECOVERY_PAGE_LIMIT = 20
 SEEN_EVENT_LIMIT = 4096
+OUTPUT_TYPES = frozenset({"output", "tool_use", "tool_result", "thinking", "text", "error", "message", "status"})
 _log = structlog.get_logger(__name__)
 
 
@@ -83,12 +84,14 @@ async def load_bootstrap_history(state: Mapping[str, Any], symphonies: list[str]
     for symphony in symphonies:
         records: dict[str, BootstrapAttempt] = {}
         cursor = None
+        seen_runs: set[str] = set()
         for _ in range(RECOVERY_PAGE_LIMIT):
-            page = await _query(store, EventFilters(symphony=symphony, kind=RUN_SNAPSHOT_KIND),
+            page = await _query(store, EventFilters(symphony=symphony, source="bootstrap", kind=RUN_SNAPSHOT_KIND),
                                             cursor=cursor, limit=MAX_LIMIT)
             for row in page["events"]:
-                if row["run_id"] in records:
+                if row["run_id"] in seen_runs:
                     continue
+                seen_runs.add(row["run_id"])
                 try:
                     records[row["run_id"]] = _decode(row["data"])
                 except (ValueError, TypeError, KeyError):
@@ -145,9 +148,11 @@ def _record_event(state: Mapping[str, Any], record: BootstrapAttempt, symphony: 
     record.last_activity_at = max(record.last_activity_at or at, at)
     safe["timestamp"] = at.isoformat()
     log, store = state.get("activity_log"), state.get("event_store")
+    event_type = safe.get("type")
+    output_type = event_type if isinstance(event_type, str) and event_type in OUTPUT_TYPES else "output"
     if store is not None:
         store.emit({"ts": at.isoformat(), "symphony": symphony, "run_id": record.run_id,
-                    "stage": ACTIVITY_STAGE, "source": "performer", "kind": safe.get("type", "output"),
+                    "stage": ACTIVITY_STAGE, "source": "performer", "kind": f"bootstrap.output.{output_type}",
                     "message": text, "data": safe})
     if log is not None:
         with contextlib.suppress(Exception), performer_feed_capture():
@@ -164,7 +169,7 @@ async def read_bootstrap_run(state: Mapping[str, Any], symphony: str, run_id: st
     recent = history.recent(symphony, HISTORY_LIMIT) if history is not None else []
     record = next((row for row in recent if row.run_id == run_id), None)
     if record is None and store is not None:
-        page = await _query(store, EventFilters(symphony=symphony, run_id=run_id, kind=RUN_SNAPSHOT_KIND), limit=1)
+        page = await _query(store, EventFilters(symphony=symphony, run_id=run_id, source="bootstrap", kind=RUN_SNAPSHOT_KIND), limit=1)
         if page["events"]:
             with contextlib.suppress(ValueError, TypeError, KeyError):
                 record = _decode(page["events"][0]["data"])
@@ -187,7 +192,7 @@ async def read_bootstrap_run(state: Mapping[str, Any], symphony: str, run_id: st
                  "verify_verdict": record.verify_verdict, "reason_tail": record.reason_tail,
                  "last_activity_at": record.last_activity_at.isoformat() if record.last_activity_at else None,
                  "events": events, "history": attempt_view(record, now)})
-    view["state"] = "verifying" if record.verifying else record.outcome
+    view["state"] = "stop_unconfirmed" if record.stop_unconfirmed else "verifying" if record.verifying else record.outcome
     if events:
         view["last_activity_at"] = events[-1].get("timestamp") or view["last_activity_at"]
     if record.restored and record.ended_at is None:
@@ -211,19 +216,34 @@ async def cancel_bootstrap(state: Mapping[str, Any], symphony: str, actor: str) 
         message = "Env cache service not available"
         raise RuntimeError(message)
     runtime.cancelling = True
-    runtime.task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await runtime.task
+    record.cancelled_by = str(redact_state_value(actor))
     stopped = False
     try:
         stopped = bool(await runtime.service.stop_session_confirmed(runtime.job_id))
     except Exception:
         stopped = False
-    reason = str(redact_state_value(f"cancelled by {actor}"))
-    service.on_bootstrap_complete(symphony, False, state, error=reason)
-    record_activity(state, symphony, "operator_action", reason)
+    reason = f"cancelled by {record.cancelled_by}"
+    if not stopped:
+        mark_stop_unconfirmed(state, symphony, reason)
+        runtime.cancelling = False
+        return {"status": "stop_unconfirmed", "symphony": symphony, "stopped": False}
+    runtime.task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await runtime.task
+    service.on_bootstrap_cancelled(symphony, state, record.cancelled_by)
     runtimes.pop(symphony, None)
-    return {"status": "cancelled", "symphony": symphony, "stopped": stopped}
+    return {"status": "cancelled", "symphony": symphony, "stopped": True}
+
+
+def mark_stop_unconfirmed(state: Mapping[str, Any], symphony: str, reason: str) -> None:
+    """Keep the live run open until its runtime confirms it has stopped."""
+    history = history_of(state)
+    record = history.open_attempt(symphony) if history is not None else None
+    if record is not None:
+        record.stop_unconfirmed = True
+        record.reason = str(redact_state_value(reason))
+        persist_attempt(state, symphony, record)
+    record_activity(state, symphony, "operator_action", f"Stop unconfirmed: {reason}")
 
 
 def release_bootstrap_runtime(state: Mapping[str, Any], symphony: str, task: asyncio.Task[Any]) -> None:
