@@ -379,7 +379,7 @@ class DriverBackend:
     def _handle_event(
         self, event: dict[str, object], *, transcript_seq: int | None = None,
     ) -> None:
-        """C5: ``BackendEvent`` passthrough; unrecognized → progress-equivalent."""
+        """C5: ``BackendEvent`` passthrough; unrecognized → ``output`` (178: a raw line, not model text)."""
         raw_type = str(event.get("type", ""))
         text = str(event.get("text", ""))[:_MAX_TEXT] or raw_type
         try:
@@ -387,8 +387,10 @@ class DriverBackend:
         except ValueError:
             # An unrecognized event type is recorded, never dropped silently
             # and never fatal — the --contract preflight is the versioning gate.
+            # 178: it is a raw line from the driver, not the agent's narration, so
+            # it keeps the output kind all the way to the feed.
             log.warning("driver.unrecognized_event_type", event_type=raw_type)
-            etype = BackendEventType.progress
+            etype = BackendEventType.output
         self._event_buffer.append(BackendEvent(
             type=etype, text=text, detail=str(event.get("detail", "")),
             transcript_seq=transcript_seq,
