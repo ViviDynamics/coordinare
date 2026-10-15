@@ -27,6 +27,7 @@ function control(value) {
     value: value,
     getAttribute: function(k) { return Object.prototype.hasOwnProperty.call(attributes, k) ? attributes[k] : null; },
     setAttribute: function(k, v) { attributes[k] = v; },
+    removeAttribute: function(k) { delete attributes[k]; },
     hasAttribute: function(k) { return Object.prototype.hasOwnProperty.call(attributes, k); },
     closest: function() { return null; },
   };
@@ -102,3 +103,67 @@ assert.strictEqual(cfgEntries(cfgBox(fields[0]))[0].changed, false, 'exact sourc
 console.log('persona selector and shared Config checks passed');
 
 assert.strictEqual(personaEdit('\ntext', 0, 0, 'heading').text, '## \ntext');
+
+// Exercise the mounted key handler with live textarea selection, including Home on macOS.
+var keyHandlers = {};
+root.addEventListener = function(name, handler) { keyHandlers[name] = handler; };
+var keyboardField = fields[0];
+var keyboardEditor = editors[0];
+keyboardField.addEventListener = function() {};
+keyboardField.focus = function() {};
+keyboardField.setSelectionRange = function(start, end, direction) {
+  this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction || 'none';
+};
+keyboardField.closest = function(selector) {
+  if (selector === '[data-md-editor]') return keyboardEditor;
+  if (selector === '[data-persona-context]') return root;
+  return null;
+};
+fields[1].addEventListener = function() {};
+root.querySelectorAll = (function(original) {
+  return function(selector) { return selector === '[data-md-source]' ? fields : original(selector); };
+})(root.querySelectorAll);
+personaMount(root);
+function pressPersonaKey(key, shift) {
+  var event = {target: keyboardField, key: key, shiftKey: !!shift, prevented: false,
+    preventDefault: function() { this.prevented = true; }};
+  keyHandlers.keydown(event);
+  return event;
+}
+keyboardField.value = 'abc';
+keyboardField.setSelectionRange(0, 0);
+assert(pressPersonaKey('Tab').prevented);
+assert.strictEqual(keyboardField.value, '  abc', 'Tab reads the live caret at zero');
+assert.strictEqual(keyboardField.selectionStart, PERSONA_INDENT.length);
+keyboardField.value = 'abc';
+keyboardField.setSelectionRange(keyboardField.value.length, keyboardField.value.length);
+pressPersonaKey('Home');
+pressPersonaKey('Tab');
+assert.strictEqual(keyboardField.value, '  abc', 'Home then Tab indents at the line start');
+keyboardField.setSelectionRange(0, 0);
+pressPersonaKey('Tab', true);
+assert.strictEqual(keyboardField.value, 'abc', 'Shift+Tab at zero outdents the current full line');
+keyboardField.value = '  abc\n  def\n  ghi';
+keyboardField.setSelectionRange(1, keyboardField.value.indexOf('  ghi'));
+pressPersonaKey('Tab', true);
+assert.strictEqual(keyboardField.value, 'abc\ndef\n  ghi', 'outdent excludes a line at the selection end boundary');
+keyboardField.value = 'abc\ndef';
+keyboardField.setSelectionRange(keyboardField.value.length, keyboardField.value.length);
+pressPersonaKey('Home');
+pressPersonaKey('Tab');
+assert.strictEqual(keyboardField.value, 'abc\n  def', 'Home uses the current line');
+keyboardField.setSelectionRange(keyboardField.value.length, keyboardField.value.length);
+pressPersonaKey('Tab', true);
+assert.strictEqual(keyboardField.value, 'abc\ndef', 'outdent works at the end of a line');
+assert.strictEqual(keyboardField.selectionStart, keyboardField.value.length, 'outdent preserves the caret');
+keyboardField.value = '\tabc\n def';
+keyboardField.setSelectionRange(0, keyboardField.value.length);
+pressPersonaKey('Tab', true);
+assert.strictEqual(keyboardField.value, 'abc\ndef', 'outdent handles tabs and a single space');
+keyboardField.value = 'abc';
+keyboardField.setSelectionRange(0, 0);
+pressPersonaKey('Escape');
+assert.strictEqual(pressPersonaKey('Tab').prevented, false, 'Escape then Tab leaves the source');
+assert.strictEqual(keyboardField.value, 'abc');
+assert(pressPersonaKey('Tab').prevented, 'the escape state is consumed once');
+console.log('persona mounted keyboard checks passed');

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import yaml
 
 from coordinare.config import PERSONA_MAX_LENGTH
-from coordinare.dashboard import _DASHBOARD_JS_SOURCES
+from coordinare.dashboard import _DASHBOARD_JS_SOURCES, guards
 from coordinare.services import config_write_service
 from coordinare.services.persona_service import save_persona
 from tests.unit.dashboard_js_slices import shipped_function
@@ -16,6 +19,60 @@ from tests.unit.test_dashboard import _make_personas_app
 
 _ROOT = Path(__file__).resolve().parents[2]
 _TEXT = "  # Instructions\r\n\r\nUse **care** and `code`.  \r\n\tUnicode: café\n\n"
+_CONFLICT = 409
+_FORBIDDEN = 403
+_READ_ONLY_MESSAGE = "Config is mounted read-only; persona edits need a writable config (see the Helm chart notes)"
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+def test_persona_change_after_router_guard_is_refused(tmp_path: Path, method: str) -> None:
+    client = _make_personas_app(tmp_path)
+    path = tmp_path / "config.yaml"
+    version = client.get("/api/personas").headers["etag"]
+    concurrent = path.read_text() + "\n# changed after router guard\n"
+    original_guard = guards._version_refusal
+
+    def check_then_change(config_path: Path, supplied: str | None) -> object:
+        refusal = original_guard(config_path, supplied)
+        assert refusal is None
+        path.write_text(concurrent)
+        return refusal
+
+    with patch("coordinare.dashboard.routers.personas._version_refusal", side_effect=check_then_change):
+        response = client.request(method, "/api/personas/implementer", json={"instructions": "new"},
+                                  headers={"If-Match": version})
+    assert response.status_code == _CONFLICT
+    assert response.json()["conflict"] is True
+    assert path.read_text() == concurrent
+
+
+@pytest.mark.parametrize("method", ["put", "delete"])
+@pytest.mark.parametrize("target", ["file", "directory", "mount"])
+def test_persona_read_only_config_refused_before_write(tmp_path: Path, method: str, target: str) -> None:
+    client = _make_personas_app(tmp_path)
+    path = tmp_path / "config.yaml"
+    version = client.get("/api/personas").headers["etag"]
+    before = path.read_bytes()
+    readonly_path = path if target == "file" else tmp_path
+    original_mode = readonly_path.stat().st_mode
+    write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+    mount_info = os.statvfs(path)
+    readonly_mount = SimpleNamespace(f_flag=mount_info.f_flag | os.ST_RDONLY)
+    if target != "mount":
+        readonly_path.chmod(original_mode & ~write_bits)
+    try:
+        with (
+            patch.object(os, "statvfs", return_value=readonly_mount if target == "mount" else mount_info),
+            patch.object(config_write_service, "atomic_write_yaml", wraps=config_write_service.atomic_write_yaml) as writer,
+        ):
+            response = client.request(method, "/api/personas/implementer", json={"instructions": "new"},
+                                      headers={"If-Match": version})
+        assert response.status_code == _FORBIDDEN
+        assert response.json()["error"] == _READ_ONLY_MESSAGE
+        writer.assert_not_called()
+        assert path.read_bytes() == before
+    finally:
+        readonly_path.chmod(original_mode)
 
 
 def test_shipped_editor_node_checks() -> None:

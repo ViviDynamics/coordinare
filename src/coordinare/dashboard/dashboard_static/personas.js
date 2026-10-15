@@ -120,12 +120,23 @@ function personaEdit(text, start, end, action) {
   }
   if (action === 'indent' || action === 'outdent' || action === 'heading' || action === 'list') {
     var lineStart = start ? text.lastIndexOf('\n', start - 1) + 1 : 0;
-    var block = text.slice(lineStart, end);
+    var lastSelected = end > start && text.charAt(end - 1) === '\n' ? end - 1 : end;
+    var lineEnd = text.indexOf('\n', lastSelected);
+    if (lineEnd < 0) lineEnd = text.length;
+    var block = text.slice(lineStart, lineEnd);
     var prefix = action === 'heading' ? '## ' : action === 'list' ? '- ' : PERSONA_INDENT;
+    var offset = lineStart;
+    var newStart = start;
+    var newEnd = end;
     var changed = block.split('\n').map(function(line) {
-      return action === 'outdent' ? line.replace(/^(  |\t| )/, '') : prefix + line;
+      var replacement = action === 'outdent' ? line.replace(/^(  |\t| )/, '') : prefix + line;
+      var removed = line.length - replacement.length;
+      if (offset <= start) newStart -= removed > 0 ? Math.min(removed, start - offset) : removed;
+      if (offset <= end) newEnd -= removed > 0 ? Math.min(removed, end - offset) : removed;
+      offset += line.length + 1;
+      return replacement;
     }).join('\n');
-    return {text: text.slice(0, lineStart) + changed + after, start: lineStart, end: lineStart + changed.length};
+    return {text: text.slice(0, lineStart) + changed + text.slice(lineEnd), start: newStart, end: newEnd};
   }
   var wrap = action === 'bold' ? '**' : action === 'code' ? '`' : '[';
   var suffix = action === 'link' ? '](https://example.com)' : wrap;
@@ -244,6 +255,15 @@ function personaMount(root, save) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
       if (!field.disabled && save) save(field);
+    } else if (event.target === field && event.key === 'Home' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      // Home scrolls without moving the caret on some platforms. Give source editing consistent line navigation.
+      event.preventDefault();
+      var backward = field.selectionDirection === 'backward';
+      var caret = backward ? field.selectionStart : field.selectionEnd;
+      var lineStart = caret ? field.value.lastIndexOf('\n', caret - 1) + 1 : 0;
+      var anchor = event.shiftKey ? (backward ? field.selectionEnd : field.selectionStart) : lineStart;
+      field.setSelectionRange(Math.min(anchor, lineStart), Math.max(anchor, lineStart), lineStart < anchor ? 'backward' : 'forward');
+      field.removeAttribute('data-md-escape');
     } else if (event.target === field && event.key === 'Escape') field.setAttribute('data-md-escape', 'true');
     else if (event.target === field && event.key === 'Tab') {
       if (field.hasAttribute('data-md-escape')) { field.removeAttribute('data-md-escape'); return; }

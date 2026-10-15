@@ -1,21 +1,28 @@
 """Persona read/write routes (436)."""
 from __future__ import annotations
 
-import asyncio  # noqa: F401
 import difflib
 from typing import TYPE_CHECKING, Any
 
+import fastapi
 import structlog
-from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at registration; runtime import required
-        FastAPI,
-        Request,
-)
+import yaml
 from fastapi.responses import JSONResponse, Response
 
 from coordinare.config import PERSONA_MAX_LENGTH
-from coordinare.dashboard.guards import _version_headers, _version_refusal, conflict_refusal
+from coordinare.dashboard.guards import (
+        _entity_tags,
+        _version_headers,
+        _version_refusal,
+        conflict_refusal,
+)
 from coordinare.dashboard_oidc import SESSION_COOKIE
-from coordinare.services.config_write_service import ConcurrencyConflictError
+from coordinare.services import persona_service
+from coordinare.services.config_write_service import (
+        ConcurrencyConflictError,
+        compute_content_hash,
+        safe_failure_reason,
+)
 from coordinare.services.persona_history import (
         BEARER_ACTOR,
         LOCAL_ACTOR,
@@ -26,9 +33,16 @@ from coordinare.services.persona_history import (
         history_for,
         persona_history_root,
 )
-from coordinare.services.persona_service import VALID_ROLES
+from coordinare.services.persona_service import (
+        VALID_ROLES,
+        ReadOnlyConfigError,
+        get_effective_instructions,
+        load_personas_hot,
+)
 
 if TYPE_CHECKING:
+
+        from pathlib import Path
 
         from coordinare.dashboard.context import DashboardContext
         from coordinare.dashboard_oidc import OidcFlow
@@ -37,7 +51,13 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 
-def _session_actor(request: Request) -> str:
+def _persona_base_hash(request: fastapi.Request, config_path: Path) -> str:
+    """Select a client-supplied hash, preserving the shared any-match header behavior."""
+    current = compute_content_hash(config_path)
+    return next((tag for tag in _entity_tags(request.headers.get("If-Match")) if tag == current), "")
+
+
+def _session_actor(request: fastapi.Request) -> str:
     """Who is changing a persona (spec 130 FR-008).
 
     The signed-in OIDC session names the user. Without one, a bearer-token request is
@@ -100,7 +120,7 @@ def _unified_diff(previous: PersonaVersion | None, current: PersonaVersion) -> s
     )
 
 
-def _register_get_personas(app: FastAPI, ctx: DashboardContext) -> None:
+def _register_get_personas(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
 
@@ -112,12 +132,6 @@ def _register_get_personas(app: FastAPI, ctx: DashboardContext) -> None:
             Falls back to the daemon's last-known config so the UI reflects the
             effective personas actually in use rather than bare defaults.
             """
-            from coordinare.services.persona_service import (
-                VALID_ROLES,
-                get_effective_instructions,
-                load_personas_hot,
-            )
-
             personas = load_personas_hot(config_path, daemon.state.get("config"))
 
             result: list[dict[str, Any]] = []
@@ -145,20 +159,13 @@ def _persona_instructions(body: Any) -> tuple[str, JSONResponse | None]:
     return instructions, None
 
 
-def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
+def _register_update_persona(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
 
         @app.put("/api/personas/{role}")
-        async def update_persona(role: str, request: Request) -> JSONResponse:
+        async def update_persona(role: str, request: fastapi.Request) -> JSONResponse:
             """Update persona instructions for a role. Returns 404 for unknown roles, 400 for oversized instructions."""
-            import yaml
-
-            from coordinare.services.persona_service import (
-                VALID_ROLES,
-                save_persona,
-            )
-
             if role not in VALID_ROLES:
                 return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
 
@@ -178,7 +185,7 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             if refusal is not None:
                 return refusal
             try:
-                save_persona(role, instructions, config_path)
+                persona_service.save_persona(role, instructions, config_path, base_hash=_persona_base_hash(request, config_path))
             except (yaml.YAMLError, UnicodeDecodeError) as exc:
                 # 158 (#241), sixth review round: save_persona begins with
                 # `yaml.safe_load(config_path.read_text())`, so a config file that is not
@@ -188,8 +195,6 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
                 # persist in `except Exception`, answered the same broken file with a
                 # structured refusal. UnicodeDecodeError *is* a ValueError, and so was
                 # being reported as a 400: a file corrupt on disk is not a bad request.
-                from coordinare.services.config_write_service import safe_failure_reason
-
                 _log.warning("persona_write_failed_unreadable", role=role, error=str(exc))
                 return JSONResponse(
                     {"error": f"Failed to read config: {safe_failure_reason(exc)}"},
@@ -204,10 +209,10 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
                 # otherwise has nothing.
                 _log.warning("persona_write_rejected", role=role, error=str(exc))
                 return JSONResponse({"error": str(exc)}, status_code=400)
+            except ReadOnlyConfigError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=fastapi.status.HTTP_403_FORBIDDEN)
             except OSError as exc:
                 # Not the exception itself: str(OSError) carries the absolute path.
-                from coordinare.services.config_write_service import safe_failure_reason
-
                 _log.warning("persona_write_failed", error=str(exc))
                 return JSONResponse(
                     {"error": f"Failed to write config: {safe_failure_reason(exc)}"},
@@ -221,11 +226,6 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             )
 
             # Re-read from config to return what's actually stored/effective.
-            from coordinare.services.persona_service import (
-                get_effective_instructions,
-                load_personas_hot,
-            )
-
             personas = load_personas_hot(config_path, daemon.state.get("config"))
             effective = get_effective_instructions(role, personas)
             is_default = not getattr(personas, role).instructions.strip()
@@ -235,17 +235,13 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse(response_body, headers=_version_headers(config_path))
 
 
-def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> None:
+def _register_reset_persona_endpoint(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
 
         @app.delete("/api/personas/{role}", status_code=204)
-        async def reset_persona_endpoint(role: str, request: Request) -> Response:
+        async def reset_persona_endpoint(role: str, request: fastapi.Request) -> Response:
             """Reset a role's persona to built-in defaults (clears custom instructions)."""
-            import yaml
-
-            from coordinare.services.persona_service import VALID_ROLES, reset_persona
-
             if role not in VALID_ROLES:
                 return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
 
@@ -256,12 +252,10 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
             if refusal is not None:
                 return refusal
             try:
-                reset_persona(role, config_path)
+                persona_service.reset_persona(role, config_path, base_hash=_persona_base_hash(request, config_path))
             except (yaml.YAMLError, UnicodeDecodeError) as exc:
                 # The same hole as the save above, for the same reason: reset_persona
                 # reads and re-dumps the same file.
-                from coordinare.services.config_write_service import safe_failure_reason
-
                 _log.warning("persona_reset_failed_unreadable", role=role, error=str(exc))
                 return JSONResponse(
                     {"error": f"Failed to read config: {safe_failure_reason(exc)}"},
@@ -272,10 +266,10 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
             except ValueError as exc:
                 _log.warning("persona_reset_rejected", role=role, error=str(exc))
                 return JSONResponse({"error": str(exc)}, status_code=400)
+            except ReadOnlyConfigError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=fastapi.status.HTTP_403_FORBIDDEN)
             except OSError as exc:
                 # Not the exception itself: str(OSError) carries the absolute path.
-                from coordinare.services.config_write_service import safe_failure_reason
-
                 _log.warning("persona_write_failed", error=str(exc))
                 return JSONResponse(
                     {"error": f"Failed to write config: {safe_failure_reason(exc)}"},
@@ -290,7 +284,7 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
             return Response(status_code=204, headers=_version_headers(config_path))
 
 
-def _register_persona_history(app: FastAPI, ctx: DashboardContext) -> None:
+def _register_persona_history(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
         """Spec 130: the retained versions of a persona, and one version with its diff. Read-only."""
         daemon = ctx.daemon
 
@@ -336,7 +330,7 @@ def _register_persona_history(app: FastAPI, ctx: DashboardContext) -> None:
             )
 
 
-def register(app: FastAPI, ctx: DashboardContext) -> None:
+def register(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
     _register_get_personas(app, ctx)
     _register_update_persona(app, ctx)
     _register_reset_persona_endpoint(app, ctx)
