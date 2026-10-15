@@ -128,7 +128,7 @@ def test_a_cache_without_frozen_provenance_is_refused(tmp_path: Path) -> None:
 
 
 def test_snapshot_carries_the_digest_and_v36_loads_without_it() -> None:
-    assert CURRENT_SCHEMA_VERSION == 38
+    assert CURRENT_SCHEMA_VERSION == 39
     snap = EnvCacheStateSnapshot(
         symphony_name="sym",
         sanitised_name="sym-abc",

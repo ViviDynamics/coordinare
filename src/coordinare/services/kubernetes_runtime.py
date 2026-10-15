@@ -37,12 +37,16 @@ from kubernetes.client.rest import ApiException
 from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
 from coordinare.services.kubernetes_verifier import (
+    OWNER_LABEL,
     VERIFIER_CONTAINER,
     VERIFIER_DEADLINE_S,
     VERIFIER_LOG_MAX_BYTES,
     VERIFIER_LOG_TAIL_LINES,
     VERIFIER_POLL_INTERVAL_S,
     VERIFIER_REMOVAL_TIMEOUT_S,
+    VERIFIER_ROLE,
+    VERIFIER_ROLE_LABEL,
+    VerifierConfigurationError,
     VerifierSpec,
     build_verifier_pod_manifest,
     verifier_pod_name,
@@ -63,7 +67,7 @@ _log = structlog.get_logger(__name__)
 VERIFIER_INFRASTRUCTURE_REASONS = frozenset({"DeadlineExceeded", "Evicted", "NodeLost", "Shutdown", "OutOfcpu", "OutOfmemory"})
 
 VERIFIER_WAITING_INFRASTRUCTURE_REASONS = frozenset({
-    "ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CreateContainerConfigError",
+    "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError",
 })
 
 PERFORMER_PORT = 8088
@@ -82,7 +86,6 @@ MANAGED_BY_VALUE = "coordinare"
 #: (issue #489) so pods belonging to other coordinare deployments (the
 #: controller itself) are excluded by construction.
 SESSION_ID_LABEL = "coordinare.session_id"
-OWNER_LABEL = "coordinare.vividynamics.com/owner"
 _UNOWNED_SESSION = "cannot reconcile Kubernetes session without deployment ownership"
 _AMBIGUOUS_SESSION = "multiple owned pods match restored performer session"
 _UNREADY_SESSION = "restored performer pod is not ready for adoption"
@@ -727,7 +730,7 @@ class KubernetesRuntime:
 
         ``(True, _)`` when the pod succeeded, ``(False, reason)`` when the verify failed, and ``(None, reason)``
         when the pod could not be run or timed out: infrastructure, not a verdict. The pod is removed in every path.
-        Invalid inputs are refused as infrastructure before any pod is made. Success also requires confirmed removal
+        Invalid inputs raise VerifierConfigurationError before any pod is made. Success also requires confirmed removal
         of the pod, so another pod can safely start only after this method returns a pass.
         """
         if not self._cache_claim:
@@ -738,9 +741,11 @@ class KubernetesRuntime:
                 name=verifier_pod_name(slug),
                 namespace=self._namespace,
                 image_pull_secrets=tuple(self._image_pull_secrets),
+                owner=self._owner,
             )
         except (ValueError, UnicodeError) as exc:
-            return None, f"verifier pod spec refused: {exc}"
+            message = f"verifier pod spec refused: {exc}"
+            raise VerifierConfigurationError(message) from exc
         name = str(manifest["metadata"]["name"])
         try:
             await asyncio.to_thread(
@@ -748,17 +753,23 @@ class KubernetesRuntime:
             )
         except Exception as exc:
             return None, f"verifier pod could not be created: {type(exc).__name__}"
+        configuration_error = None
         try:
-            result = await self._await_verifier(name, poll_interval_s=poll_interval_s)
+            result = await self._await_verifier(name, walk_only=spec.walk_only, poll_interval_s=poll_interval_s)
+        except VerifierConfigurationError as exc:
+            configuration_error = exc
+            result = None, str(exc)
         except Exception as exc:
             result = None, f"verifier pod could not be read: {type(exc).__name__}"
         finally:
             removed = await self._remove_verifier(name)
         if not removed:
             return None, "verifier pod could not be confirmed removed; retry before starting another pod"
+        if configuration_error is not None:
+            raise configuration_error
         return result
 
-    async def _await_verifier(self, name: str, *, poll_interval_s: float) -> tuple[bool | None, str]:
+    async def _await_verifier(self, name: str, *, walk_only: bool, poll_interval_s: float) -> tuple[bool | None, str]:
         deadline = asyncio.get_running_loop().time() + VERIFIER_DEADLINE_S
         while True:
             pod = await asyncio.to_thread(self._api.read_namespaced_pod, name=name, namespace=self._namespace)
@@ -766,15 +777,24 @@ class KubernetesRuntime:
             for container in getattr(status, "container_statuses", None) or ():
                 waiting = getattr(getattr(container, "state", None), "waiting", None)
                 reason = getattr(waiting, "reason", None)
+                if reason == "InvalidImageName":
+                    message = "verifier image refused by Kubernetes: InvalidImageName; correct kubernetes_verifier_image"
+                    raise VerifierConfigurationError(message)
                 if reason in VERIFIER_WAITING_INFRASTRUCTURE_REASONS:
                     return None, f"verifier container infrastructure failure: {reason}"
             phase = getattr(status, "phase", None)
             if phase == "Succeeded":
-                return True, await self._verifier_logs(name)
+                return True, await self._verifier_logs(name) if walk_only else ""
             if phase == "Failed" and getattr(pod.status, "reason", None) in VERIFIER_INFRASTRUCTURE_REASONS:
                 return None, f"verifier pod infrastructure failure: {pod.status.reason}"
             if phase == "Failed":
-                return False, await self._verifier_logs(name)
+                try:
+                    detail = await self._verifier_logs(name)
+                except OSError:
+                    if walk_only:
+                        raise
+                    detail = "verifier pod failed; logs unavailable"
+                return False, detail
             if asyncio.get_running_loop().time() >= deadline:
                 return None, f"verifier timed out after {VERIFIER_DEADLINE_S}s"
             await asyncio.sleep(poll_interval_s)
@@ -892,6 +912,38 @@ class KubernetesRuntime:
         if stopped:
             _log.info("kubernetes_runtime.swept", count=stopped, selector=selector)
         return stopped
+
+    async def sweep_orphaned_verifiers(self) -> list[str]:
+        """Remove this deployment's interrupted verify and walk pods at startup.
+
+        Verifiers cannot be adopted after restart, so no session keep set is needed.
+        As with the session sweep, managed-by alone would also select the controller.
+        Require the verifier role and deployment owner, and preserve legacy unowned pods.
+        """
+        if not self._owner:
+            _log.warning("kubernetes_runtime.verifier_sweep_skipped_no_owner")
+            return []
+        required = {
+            MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+            VERIFIER_ROLE_LABEL: VERIFIER_ROLE,
+            OWNER_LABEL: self._owner,
+        }
+        selector = ",".join(f"{key}={value}" for key, value in required.items())
+        try:
+            pods = await asyncio.to_thread(
+                self._api.list_namespaced_pod, namespace=self._namespace, label_selector=selector,
+            )
+        except Exception as exc:
+            _log.warning("kubernetes_runtime.verifier_sweep_list_failed", error=str(exc))
+            return []
+        swept: list[str] = []
+        for pod in pods.items:
+            labels = getattr(pod.metadata, "labels", None) or {}
+            if any(labels.get(key) != value for key, value in required.items()):
+                continue
+            if await self._remove_verifier(pod.metadata.name):
+                swept.append(pod.metadata.name)
+        return swept
 
     async def sweep_orphaned_sessions(
         self, active_session_ids: set[str],

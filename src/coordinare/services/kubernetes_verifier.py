@@ -23,18 +23,24 @@ from coordinare_service_inference.cache_provenance import (
     DEFAULT_MAX_ENTRIES,
     MAX_RESULT_BYTES,
     MAX_SCRIPT_BYTES,
+    RESULT_SENTINEL,
 )
 
 # The container name, and the label that marks a verifier pod for the operator and the orphan sweep.
 VERIFIER_CONTAINER = "verifier"
 VERIFIER_ROLE_LABEL = "coordinare.role"
 VERIFIER_ROLE = "env-verifier"
+OWNER_LABEL = "coordinare.vividynamics.com/owner"
 # A verifier that runs past this is a failed verification, and its pod is removed.
 VERIFIER_DEADLINE_S = 900
 VERIFIER_CPU_LIMIT = "2"
 VERIFIER_MEMORY_LIMIT = "4Gi"
 VERIFIER_POLL_INTERVAL_S = 2.0
 VERIFIER_LOG_TAIL_CHARS = 2000
+WALK_DIAGNOSTIC_PREFIX = "COORDINARE_WALK_DIAGNOSTIC="
+# The result bound covers JSON only. Reserve its sentinel and newline inside
+# the extra log allowance before allocating any bytes to diagnostics.
+WALK_DIAGNOSTIC_MAX_BYTES = VERIFIER_LOG_TAIL_CHARS - len(RESULT_SENTINEL.encode("utf-8")) - len("\n")
 VERIFIER_LOG_TAIL_LINES = 32
 VERIFIER_LOG_MAX_BYTES = MAX_RESULT_BYTES + VERIFIER_LOG_TAIL_CHARS
 VERIFIER_REMOVAL_TIMEOUT_S = 10
@@ -56,6 +62,11 @@ _CACHE_VOLUME = "devenv-cache"
 _POD_NAME_MAX = 63
 _POD_NAME_UUID_CHARS = 8
 _SAFE_RELATIVE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*$")
+
+
+class VerifierConfigurationError(ValueError):
+    """Operator inputs prevent verification; retrying the same configuration cannot help."""
+
 
 # The setup, run before the verify, with the verifier's own environment. It writes the daemon's verify.sh and the project
 # files (from the commit) into a private directory, and resolves the bundle path the way bundler will see it. Bundler
@@ -98,6 +109,36 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
         fh.write("export BUNDLE_PATH=" + shlex.quote(bundle) + "\n")
 '''
 
+# Stdlib only, so an unavailable performer module can still be diagnosed. Read a
+# bounded tail, discard an initial partial line, redact, then clip the encoded
+# diagnostic. JSON escaping keeps even a multiline traceback on one log line.
+WALK_DIAGNOSTICS_PY = r"""
+from __future__ import annotations
+
+import json, os, re, sys
+prefix = os.environ["WALK_DIAGNOSTIC_PREFIX"]
+limit = int(os.environ["WALK_DIAGNOSTIC_MAX_BYTES"])
+with open(sys.argv[1], "rb") as fh:
+    size = fh.seek(0, os.SEEK_END)
+    offset = max(0, size - limit)
+    fh.seek(offset)
+    raw = fh.read(limit)
+if offset:
+    raw = raw.partition(b"\n")[2]
+    if not raw:
+        raw = b"stderr line exceeds diagnostic bound"
+text = raw.decode("utf-8", "replace")
+text = re.sub(r"(?:gh[pousr]_|github_pat_|sk-|AKIA)[A-Za-z0-9_./+=-]+", "[REDACTED]", text)
+text = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", text)
+text = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+text = re.sub(r'''(?i)((?:[\w-]*(?:token|password|secret|api[_-]?key)[\w-]*)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)''', r"\1[REDACTED]", text)
+text = text.replace("COORDINARE_PROVENANCE=", "[PROVENANCE_MARKER]")
+if text.strip():
+    payload = json.dumps(text.strip(), ensure_ascii=True)
+    budget = limit - len(prefix) - len("\n")
+    print(prefix + payload[-budget:])
+"""
+
 # The container command. It runs with stdin closed, the verify's own environment, and the working directory set to the
 # checkout the verifier built. Walk mode executes only trusted image code in its own pod.
 # Both mounts are read only, so verification cannot change the content frozen by the later walk.
@@ -105,14 +146,22 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
 VERIFIER_SCRIPT = (
     "set -eu\n"
     "umask 077\n"
-    'if [ "$WALK_ONLY" = "1" ]; then exec python3 -P -m performer.cache_verifier </dev/null; fi\n'
     'mkdir -p "$HOME"\n'
+    # Kubernetes merges the streams. Emit one bounded diagnostic before the
+    # captured walker result, leaving the sentinel on the final nonempty line.
+    'if [ "$WALK_ONLY" = "1" ]; then\n'
+    '  rc=0\n'
+    '  python3 -P -m performer.cache_verifier </dev/null >"$HOME/walk.stdout" 2>"$HOME/walk.stderr" || rc=$?\n'
+    '  python3 -c "$WALK_DIAGNOSTICS_PY" "$HOME/walk.stderr"\n'
+    '  cat "$HOME/walk.stdout"\n'
+    '  exit "$rc"\n'
+    'fi\n'
     'd=$(mktemp -d)\n'
     'python3 -c "$SETUP_PY" "$d"\n'
     '. "$d/env.sh"\n'
     "export BASH_ENV= ENV= _DEVENV_SOURCED=1 _DEVENV_SKIP_SERVICES=1\n"
     'cd "$COORDINARE_REPO_DIR"\n'
-    'bash "$d/verify.sh" </dev/null\n'
+    'bash -o pipefail "$d/verify.sh" </dev/null\n'
 )
 
 
@@ -163,14 +212,18 @@ def configured_verifier_image(config: Any) -> str:
     image = getattr(global_config, "kubernetes_verifier_image", None)
     if image is None:
         image = getattr(global_config, "performer_image", None)
+    return _validate_verifier_image(image)
+
+
+def _validate_verifier_image(image: Any) -> str:
     if not isinstance(image, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", image) is None:
         message = "kubernetes_verifier_image requires a valid daemon image or performer_image"
-        raise ValueError(message)
+        raise VerifierConfigurationError(message)
     return image
 
 
 def build_verifier_pod_manifest(
-    spec: VerifierSpec, *, name: str, namespace: str, image_pull_secrets: tuple[str, ...] = (),
+    spec: VerifierSpec, *, name: str, namespace: str, image_pull_secrets: tuple[str, ...] = (), owner: str | None = None,
 ) -> dict[str, Any]:
     """The verifier Pod. Pure, so the spec can be checked without a cluster.
 
@@ -184,6 +237,7 @@ def build_verifier_pod_manifest(
         message = f"verify text exceeds the {VERIFY_TEXT_MAX_BYTES} byte bound"
         raise ValueError(message)
     cache_claim, cache_subpath, mount_path, image = spec.cache_claim, spec.cache_subpath, spec.mount_path, spec.image
+    _validate_verifier_image(image)
     env = {
         "DEVENV": mount_path,
         "HOME": VERIFIER_HOME,
@@ -191,11 +245,14 @@ def build_verifier_pod_manifest(
         "PROJECT_FILES_B64": base64.b64encode(json.dumps(spec.project_files, ensure_ascii=False).encode("utf-8")).decode("ascii"),
         "SETUP_PY": SETUP_PY,
         "WALK_ONLY": "1" if spec.walk_only else "0",
+        "WALK_DIAGNOSTICS_PY": WALK_DIAGNOSTICS_PY,
+        "WALK_DIAGNOSTIC_PREFIX": WALK_DIAGNOSTIC_PREFIX,
+        "WALK_DIAGNOSTIC_MAX_BYTES": str(WALK_DIAGNOSTIC_MAX_BYTES),
         "PROVENANCE_CONFIG": json.dumps({"activate_sh_b64": base64.b64encode(spec.activate_text.encode("utf-8")).decode("ascii"),
                                         "max_entries": spec.max_entries,
                                         "max_bytes": spec.max_bytes}) if spec.walk_only and spec.activate_text is not None else "",
     }
-    manifest = {
+    manifest: dict[str, Any] = {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
@@ -242,6 +299,8 @@ def build_verifier_pod_manifest(
         },
     }
 
+    if owner:
+        manifest["metadata"]["labels"][OWNER_LABEL] = owner
     if len(json.dumps(manifest).encode("utf-8")) > VERIFIER_POD_MAX_BYTES:
         message = f"verifier pod exceeds the {VERIFIER_POD_MAX_BYTES} byte bound"
         raise ValueError(message)

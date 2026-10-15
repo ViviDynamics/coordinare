@@ -44,6 +44,7 @@ def reset_env_bootstrap_breaker(
     previous, was_exhausted = cache_state.bootstrap_attempts, cache_state.bootstrap_exhausted
     cache_state.bootstrap_attempts = 0
     cache_state.bootstrap_exhausted = False
+    cache_state.bootstrap_exhaustion_reason = None
     cache_state.infra_failures = 0
     breaker = "tripped" if was_exhausted else "armed"
     text = (
