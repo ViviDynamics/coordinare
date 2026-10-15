@@ -261,6 +261,7 @@ jobs:
       version: ${{ needs.derive-version.outputs.version }}
       sha: ${{ needs.derive-version.outputs.sha }}
       published: ${{ steps.release.outputs.published }}
+      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -292,21 +293,19 @@ jobs:
               });
             }
 
-            try {
-              const release = await github.rest.repos.getReleaseByTag({
-                ...context.repo, tag: version,
-              });
-              core.setOutput('published', String(!release.data.draft));
+            const releases = await github.paginate(github.rest.repos.listReleases, context.repo);
+            const existing = releases.find(release => release.tag_name === version);
+            if (existing) {
+              core.setOutput('release_id', existing.id);
+              core.setOutput('published', String(!existing.draft));
               console.log(`Release ${version} already exists`);
               return;
-            } catch (e) {
-              if (e.status !== 404) throw e;
             }
 
             const commit = await github.rest.repos.getCommit({
               ...context.repo, ref: sha,
             });
-            await github.rest.repos.createRelease({
+            const release = await github.rest.repos.createRelease({
               ...context.repo,
               tag_name: version,
               target_commitish: sha,
@@ -315,25 +314,24 @@ jobs:
               draft: true,
               make_latest: 'false',
             });
+            core.setOutput('release_id', release.data.id);
             core.setOutput('published', 'false');
             console.log(`Created draft release ${version}`);
 
   release-artifacts:
     if: needs.create-tag.outputs.published != 'true'
     timeout-minutes: 20
-    name: Build and Upload Release Artifacts
+    name: Build and Smoke Test Release Artifacts
     needs: create-tag
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+      contents: read
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.create-tag.outputs.version }}
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -350,41 +348,79 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
           python scripts/release_packages.py --version "$RELEASE_VERSION" --repository "$RELEASE_REPOSITORY"
+          python -c 'import os; from scripts.release_packages import normalize_version; print("package_version=" + normalize_version(os.environ["RELEASE_VERSION"]))' >> "$GITHUB_OUTPUT"
+
+      - name: Export locked smoke dependencies with hashes
+        id: export
+        run: |
+          uv export --frozen --no-dev --no-emit-local --output-file dist.requirements.txt
+          uv export --frozen --no-dev --no-emit-local --project agent/performer --output-file performer.requirements.txt
 
       - name: Install and smoke test outside the checkout
         env:
-          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+          RELEASE_VERSION: ${{ steps.build.outputs.package_version }}
         shell: bash
         run: |
           set -euo pipefail
           tool_root="$(mktemp -d)"
-          export UV_TOOL_DIR="$tool_root/tools" UV_TOOL_BIN_DIR="$tool_root/bin"
-          echo "UV_TOOL_DIR=$UV_TOOL_DIR" >> "$GITHUB_ENV"
-          echo "UV_TOOL_BIN_DIR=$UV_TOOL_BIN_DIR" >> "$GITHUB_ENV"
-          # Only sibling URLs are overridden before the draft assets are public.
-          # Their exact built wheels are used; all external dependencies resolve normally.
-          uv tool install --overrides "$PWD/dist.overrides.txt" "$PWD"/dist/coordinare-*.whl
-          test "$("$UV_TOOL_BIN_DIR/coordinare" --version)" = "coordinare $RELEASE_VERSION"
+          export SMOKE_ENV="$tool_root/venv"
+          echo "SMOKE_ENV=$SMOKE_ENV" >> "$GITHUB_ENV"
+          uv venv "$SMOKE_ENV"
+          uv pip sync --python "$SMOKE_ENV/bin/python" --require-hashes dist.requirements.txt
+          # Install the exact local wheels without resolving unpublished draft URLs.
+          uv pip install --python "$SMOKE_ENV/bin/python" --no-deps "$PWD"/dist/coordinare*.whl
+          uv pip check --python "$SMOKE_ENV/bin/python"
+          test "$("$SMOKE_ENV/bin/coordinare" --version)" = "coordinare $RELEASE_VERSION"
           cp scripts/smoke_release.py "$tool_root/smoke_release.py"
           cd "$tool_root"
-          "$UV_TOOL_DIR/coordinare/bin/python" -I smoke_release.py "$RELEASE_VERSION"
+          "$SMOKE_ENV/bin/python" -I smoke_release.py "$RELEASE_VERSION"
 
       - name: Verify the optional subprocess performer beside the daemon
         env:
-          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+          RELEASE_VERSION: ${{ steps.build.outputs.package_version }}
         shell: bash
         run: |
           set -euo pipefail
-          uv tool install --force --overrides "$PWD/dist.overrides.txt" "$PWD"/dist/coordinare-*.whl \
-            --with "$PWD"/dist/performer-*.whl
+          # Apply the performer's own locked dependencies for the optional install.
+          uv pip install --python "$SMOKE_ENV/bin/python" --require-hashes -r performer.requirements.txt
+          uv pip install --python "$SMOKE_ENV/bin/python" --no-deps "$PWD"/dist/performer-*.whl
+          uv pip check --python "$SMOKE_ENV/bin/python"
           cd "$(mktemp -d)"
-          "$UV_TOOL_DIR/coordinare/bin/python" -I -c 'from importlib.metadata import version; import os; import performer.main; assert version("performer") == os.environ["RELEASE_VERSION"]; assert callable(performer.main.main)'
+          "$SMOKE_ENV/bin/python" -I -c 'from importlib.metadata import version; import os; import performer.main; assert version("performer") == os.environ["RELEASE_VERSION"]; assert callable(performer.main.main)'
+
+      - name: Transfer smoke tested release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          overwrite: true
+
+  publish-artifacts:
+    if: needs.create-tag.outputs.published != 'true'
+    timeout-minutes: 10
+    name: Attest and Upload Release Artifacts
+    needs:
+      - create-tag
+      - release-artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download smoke tested release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
 
       - name: Attest built release assets
         id: attest
         uses: actions/attest@v4
         with:
           subject-path: dist/*
+          create-storage-record: false
 
       - name: Upload assets and checksums to the draft
         id: upload
@@ -727,7 +763,6 @@ jobs:
       - manifest-base
       - manifest-full
       - build-daemon
-      - release-artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -770,13 +805,12 @@ jobs:
           echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION} (amd64)"
 
   publish-release:
+    if: needs.create-tag.outputs.published != 'true'
     timeout-minutes: 10
     name: Publish Complete Release as Latest
     needs:
       - create-tag
-      - release-artifacts
-      - tag-latest
-      - publish-chart
+      - publish-artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -784,15 +818,12 @@ jobs:
       - name: Publish the fully uploaded release
         uses: actions/github-script@v7
         env:
-          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+          RELEASE_ID: ${{ needs.create-tag.outputs.release_id }}
         with:
           script: |
-            const release = await github.rest.repos.getReleaseByTag({
-              ...context.repo, tag: process.env.RELEASE_VERSION,
-            });
             await github.rest.repos.updateRelease({
               ...context.repo,
-              release_id: release.data.id,
+              release_id: Number(process.env.RELEASE_ID),
               draft: false,
               make_latest: 'true',
             });

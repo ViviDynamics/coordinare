@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import patch
 
+from coordinare._version import __version__
 from coordinare.metrics import CoordinareMetrics, _coordinare_version
 
 
@@ -27,11 +28,11 @@ def test_observe_error_increments_counter() -> None:
     assert metrics.errors_total.labels(symphony="__default__", category="graph_execution")._value.get() == 1.0
 
 
-def test_coordinare_version_returns_dev_when_package_not_installed() -> None:
-    """_coordinare_version() returns 'dev' when the package is not installed."""
+def test_coordinare_version_returns_build_version_when_package_not_installed() -> None:
+    """A source checkout reports the version embedded at build time."""
     with patch("coordinare.metrics.version", side_effect=PackageNotFoundError("coordinare")):
         result = _coordinare_version()
-    assert result == "dev"
+    assert result == __version__
 
 
 def test_card_tokens_total_exists_and_increments() -> None:

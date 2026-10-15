@@ -76,9 +76,6 @@ coordinare = "coordinare.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/coordinare"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.hatch.version]
 path = "src/coordinare/_version.py"
 

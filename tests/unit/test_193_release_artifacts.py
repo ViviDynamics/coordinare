@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tomllib
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,11 +14,16 @@ import pytest
 import yaml
 
 from coordinare.__main__ import _build_arg_parser
+from coordinare._version import __version__
 from coordinare.dashboard import assets
 from coordinare.doctor import DoctorReport
+from coordinare.metrics import _coordinare_version
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = "2026.10.84"
+LEGACY_TAG = "2026.09.01.3"
+NORMALIZED_VERSION = "2026.9.1.3"
+RELEASE_ID = 193
 
 
 def release_tools():
@@ -50,7 +56,7 @@ def test_doctor_and_dashboard_report_installed_version() -> None:
         assert f"coordinare {VERSION}" in assets._page_html(True)
 
 
-def test_release_is_draft_until_assets_and_existing_publish_jobs_succeed() -> None:
+def test_release_is_draft_until_its_assets_succeed() -> None:
     jobs = workflow()["jobs"]
     create = jobs["create-tag"]["steps"][-1]["with"]["script"]
     assert "draft: true" in create
@@ -59,13 +65,18 @@ def test_release_is_draft_until_assets_and_existing_publish_jobs_succeed() -> No
     assert "github.rest.git.createRef" in create
     assert "refs/tags/" in create
     assert "published" in jobs["create-tag"]["outputs"]
+    assert jobs["create-tag"]["outputs"]["release_id"] == "${{ steps.release.outputs.release_id }}"
     publish = jobs["publish-release"]
-    assert {"create-tag", "release-artifacts", "tag-latest", "publish-chart"} <= set(publish["needs"])
-    assert "release-artifacts" in jobs["tag-latest"]["needs"]
+    assert set(publish["needs"]) == {"create-tag", "publish-artifacts"}
+    assert "published != 'true'" in publish["if"]
+    assert jobs["tag-latest"]["needs"] == [
+        "create-tag", "manifest-base", "manifest-full", "build-daemon",
+    ]
     script = publish["steps"][-1]["with"]["script"]
     assert "draft: false" in script
     assert "make_latest: 'true'" in script
     assert "always()" not in str(publish)
+    assert publish["steps"][-1]["env"]["RELEASE_ID"] == "${{ needs.create-tag.outputs.release_id }}"
 
 
 def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
@@ -74,19 +85,40 @@ def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
     steps = job["steps"]
     checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout@"))
     assert checkout["with"]["ref"] == "${{ needs.create-tag.outputs.version }}"
+    assert checkout["with"]["persist-credentials"] is False
+    assert job["permissions"] == {"contents": "read"}
     build = next(s for s in steps if s.get("id") == "build")
     assert build["env"]["RELEASE_VERSION"] == "${{ needs.create-tag.outputs.version }}"
     assert "release_packages.py" in build["run"]
     assert "smoke_release.py" in str(steps)
-    assert "uv tool install" in str(steps)
+    assert "uv pip sync" in str(steps)
     smoke_step = next(s for s in steps if "smoke_release.py" in s.get("run", ""))
-    assert "--with" not in smoke_step["run"]
+    assert "--require-hashes" in smoke_step["run"]
+    assert "--no-deps" in smoke_step["run"]
     assert any("performer-*.whl" in s.get("run", "") for s in steps)
+    export = next(s for s in steps if s.get("id") == "export")
+    assert "uv export --frozen --no-dev --no-emit-local" in export["run"]
+    assert "--no-hashes" not in export["run"]
+    assert "agent/performer" in export["run"]
+    transfer = next(s for s in steps if s.get("uses", "").startswith("actions/upload-artifact@"))
+    assert transfer["with"]["path"] == "dist/"
+    assert transfer["with"]["if-no-files-found"] == "error"
+    assert transfer["with"]["overwrite"] is True
+    upload_job = workflow()["jobs"]["publish-artifacts"]
+    assert set(upload_job["needs"]) == {"create-tag", "release-artifacts"}
+    assert upload_job["permissions"] == {
+        "contents": "write", "id-token": "write", "attestations": "write",
+    }
+    steps = upload_job["steps"]
+    assert not any(s.get("uses", "").startswith("actions/checkout@") for s in steps)
+    assert not any("uv " in s.get("run", "") for s in steps)
+    download = next(s for s in steps if s.get("uses", "").startswith("actions/download-artifact@"))
+    assert download["with"]["name"] == transfer["with"]["name"]
+    assert download["with"]["path"] == "dist/"
     attestation = next(s for s in steps if s.get("id") == "attest")
     assert attestation["uses"].startswith("actions/attest@")
     assert attestation["with"]["subject-path"] == "dist/*"
-    assert job["permissions"]["id-token"] == "write"
-    assert job["permissions"]["attestations"] == "write"
+    assert attestation["with"]["create-storage-record"] is False
     upload = next(s for s in steps if s.get("id") == "upload")
     assert "bundle-path" in upload["env"]["ATTESTATION_BUNDLE"]
     assert "SHA256SUMS" in upload["run"]
@@ -113,6 +145,9 @@ def test_staged_packages_have_tag_versions_pinned_siblings_and_legal_files(tmp_p
                 assert dependency.endswith(f"-{VERSION}-py3-none-any.whl")
     source = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert "version" in source["project"]["dynamic"]
+    assert not source["tool"]["hatch"].get("metadata", {}).get("allow-direct-references", False)
+    staged = tomllib.loads((projects[0] / "pyproject.toml").read_text())
+    assert staged["tool"]["hatch"]["metadata"]["allow-direct-references"] is True
     assert VERSION not in (ROOT / "src/coordinare/_version.py").read_text()
 
 
@@ -123,7 +158,7 @@ def test_every_example_config_is_included_in_wheels() -> None:
         assert included[example.name] == f"coordinare/data/{example.name}"
 
 
-@pytest.mark.parametrize("version", ["latest", "2026.10.84;echo bad", "v2026.10.84", "2026.01.1"])
+@pytest.mark.parametrize("version", ["latest", "2026.10.84;echo bad", "v2026.10.84"])
 def test_invalid_release_versions_are_rejected(tmp_path: Path, version: str) -> None:
     with pytest.raises(ValueError, match="version"):
         release_tools().prepare_projects(ROOT, tmp_path, version, "ViviDynamics/coordinare")
@@ -144,7 +179,7 @@ def test_optional_installer_is_copied_only_when_present(tmp_path: Path) -> None:
 
 def test_upload_failure_prevents_release_promotion(tmp_path: Path) -> None:
     """Exercise the real upload shell with a failing gh, without calling GitHub."""
-    job = workflow()["jobs"]["release-artifacts"]
+    job = workflow()["jobs"]["publish-artifacts"]
     upload = next(s for s in job["steps"] if s.get("id") == "upload")
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist/coordinare.whl").write_bytes(b"wheel")
@@ -169,25 +204,117 @@ def test_upload_failure_prevents_release_promotion(tmp_path: Path) -> None:
     assert "SHA256SUMS" not in checksums
 
 
+def run_release_scripts(*jobs: str, published: bool = False, exists: bool = True) -> dict:
+    scripts = []
+    for job in jobs:
+        script = workflow()["jobs"][job]["steps"][-1]["with"]["script"]
+        script = script.replace("${{ needs.derive-version.outputs.version }}", VERSION)
+        script = script.replace("${{ needs.derive-version.outputs.sha }}", "head")
+        scripts.append(f"await (async () => {{ {script} }})();")
+    harness = """
+const outputs = {};
+const counts = {created: 0, updated: 0, listed: 0};
+const release = {id: RELEASE_NUMBER, tag_name: TAG, draft: DRAFT};
+const releases = EXISTS ? [release] : [];
+const context = {repo: {owner: 'ViviDynamics', repo: 'coordinare'}};
+const core = {setOutput: (key, value) => {
+  outputs[key] = value;
+  if (key === 'release_id') process.env.RELEASE_ID = String(value);
+}};
+const github = {
+  paginate: async (method, params) => {
+    counts.listed++;
+    return (await method(params)).data;
+  },
+  rest: {
+    git: {getRef: async () => ({data: {object: {sha: 'head', type: 'commit'}}})},
+    repos: {
+      getCommit: async () => ({data: {sha: 'head', commit: {message: 'Release'}}}),
+      listReleases: async () => ({data: [
+        {id: RELEASE_NUMBER + 1, tag_name: 'another-tag', draft: true}, ...releases,
+      ]}),
+      getReleaseByTag: async () => {
+        if (!releases.length || release.draft) throw Object.assign(new Error('not found'), {status: 404});
+        return {data: release};
+      },
+      createRelease: async (params) => {
+        if (releases.length) throw Object.assign(new Error('duplicate release'), {status: 422});
+        if (!params.draft || params.make_latest !== 'false') throw new Error('must create draft');
+        counts.created++;
+        releases.push(release);
+        return {data: release};
+      },
+      updateRelease: async (params) => {
+        if (params.release_id !== release.id) throw new Error('wrong release id');
+        if (params.draft !== false || params.make_latest !== 'true') throw new Error('must publish latest');
+        release.draft = params.draft;
+        counts.updated++;
+      },
+    },
+  },
+};
+console.log = () => {};
+(async () => { SCRIPTS })().then(() => process.stdout.write(JSON.stringify({outputs, counts, release})));
+"""
+    harness = harness.replace("RELEASE_NUMBER", str(RELEASE_ID)).replace("TAG", json.dumps(VERSION))
+    harness = harness.replace("DRAFT", json.dumps(not published)).replace("EXISTS", json.dumps(exists))
+    harness = harness.replace("SCRIPTS", "\n".join(scripts))
+    result = subprocess.run(
+        ["node", "-e", harness], check=True, text=True, capture_output=True,
+        env={**os.environ, "RELEASE_VERSION": VERSION, "RELEASE_ID": str(RELEASE_ID)},
+    )
+    return json.loads(result.stdout)
+
+
 @pytest.mark.parametrize("published", [True, False])
 def test_existing_release_is_detected_without_recreating_it(published: bool) -> None:
-    script = workflow()["jobs"]["create-tag"]["steps"][-1]["with"]["script"]
-    harness = """
-const calls = [];
-const context = {repo: {owner: 'ViviDynamics', repo: 'coordinare'}};
-const core = {setOutput: (key, value) => calls.push([key, value])};
-const github = {rest: {
-  git: {getRef: async () => ({data: {object: {sha: 'head', type: 'commit'}}})},
-  repos: {
-    getCommit: async () => ({data: {sha: 'head'}}),
-    getReleaseByTag: async () => ({data: {draft: DRAFT}}),
-    createRelease: async () => {throw new Error('must not recreate a release');},
-  },
-}};
-console.log = () => {};
-(async () => { SCRIPT })().then(() => process.stdout.write(JSON.stringify(calls)));
-""".replace("DRAFT", json.dumps(not published)).replace("SCRIPT", script)
-    harness = harness.replace("${{ needs.derive-version.outputs.version }}", VERSION)
-    harness = harness.replace("${{ needs.derive-version.outputs.sha }}", "head")
-    result = subprocess.run(["node", "-e", harness], check=True, text=True, capture_output=True)
-    assert ["published", str(published).lower()] in json.loads(result.stdout)
+    result = run_release_scripts("create-tag", published=published)
+    assert result["outputs"]["published"] == str(published).lower()
+    assert str(result["outputs"]["release_id"]) == str(RELEASE_ID)
+    assert result["counts"]["created"] == 0
+    assert result["counts"]["listed"] == 1
+
+
+def test_failed_draft_rerun_reuses_release_and_promotes_it() -> None:
+    result = run_release_scripts("create-tag", "create-tag", "publish-release")
+    assert result["counts"]["created"] == 0
+    assert result["counts"]["updated"] == 1
+    assert result["release"]["draft"] is False
+
+
+def test_new_release_id_flows_through_rerun_without_duplicates() -> None:
+    result = run_release_scripts("create-tag", "create-tag", "publish-release", exists=False)
+    assert result["counts"]["created"] == 1
+    assert result["counts"]["updated"] == 1
+    assert result["release"]["draft"] is False
+
+
+def test_publish_promotes_draft_by_id_without_tag_lookup() -> None:
+    result = run_release_scripts("publish-release")
+    assert result["counts"] == {"created": 0, "updated": 1, "listed": 0}
+    assert result["release"]["draft"] is False
+
+
+@pytest.mark.parametrize("tag,normalized", [(LEGACY_TAG, NORMALIZED_VERSION), ("2026.01.1", "2026.1.1")])
+def test_legacy_release_tags_normalize_metadata_but_preserve_download_path(
+    tmp_path: Path, tag: str, normalized: str,
+) -> None:
+    projects = release_tools().prepare_projects(ROOT, tmp_path / "stage", tag, "ViviDynamics/coordinare")
+    for project in projects:
+        data = tomllib.loads((project / "pyproject.toml").read_text())
+        assert data["project"]["version"] == normalized
+        for dependency in data["project"].get("dependencies", []):
+            if dependency.startswith("coordinare-"):
+                assert f"/releases/download/{tag}/" in dependency
+                assert dependency.endswith(f"-{normalized}-py3-none-any.whl")
+    assert f'__version__ = "{normalized}"' in (projects[0] / "src/coordinare/_version.py").read_text()
+
+
+def test_source_checkout_version_falls_back_to_embedded_build_version() -> None:
+    with patch("coordinare.metrics.version", side_effect=PackageNotFoundError("coordinare")):
+        assert _coordinare_version() == __version__
+
+
+def test_installed_metadata_version_takes_priority() -> None:
+    with patch("coordinare.metrics.version", return_value=VERSION):
+        assert _coordinare_version() == VERSION

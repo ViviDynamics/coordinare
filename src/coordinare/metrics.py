@@ -11,12 +11,14 @@ from prometheus_client import (
     generate_latest,
 )
 
+from coordinare._version import __version__
+
 
 def _coordinare_version() -> str:
     try:
         return version("coordinare")
     except PackageNotFoundError:
-        return "dev"
+        return __version__
 
 
 class CoordinareMetrics:
