@@ -673,17 +673,17 @@ class OpenCodeAdapter:
             elif part_type in ("tool-input", "tool_input"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 input_text = str(part.get("input", ""))[:_MAX_TEXT]
-                self._emit(
-                    BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool,
-                    transcript_seq=record_seq,
-                )
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=clip_event_text(f"{tool}: {input_text}"),
+                    detail=tool, call_id=_tool_call_id(part) or "", transcript_seq=record_seq,
+                ))
             elif part_type in ("tool-output", "tool_output"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 output_text = str(part.get("output", ""))[:_MAX_TEXT]
-                self._emit(
-                    BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool,
-                    transcript_seq=record_seq,
-                )
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=clip_event_text(f"{tool} → {output_text}"),
+                    detail=tool, call_id=_tool_call_id(part) or "", status="ok", transcript_seq=record_seq,
+                ))
             elif part_type == "tool" and part.get("tool") == "question":
                 # opencode >=1.18 surfaces an interactive question as a `tool`
                 # part named "question" that sits in `state.status=running`

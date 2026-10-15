@@ -186,6 +186,7 @@ class BackendEvent(BaseModel):
     detail: str = ""        # optional longer detail (file path, tool args, etc.)
     is_delta: bool = False
     stream_id: str = ""
+    call_id: str = ""       # tool input/result correlation when the backend provides it
     # 148: a tool_use event's name and primary argument (see backends/_tool_summary),
     # and a tool result's outcome ("ok" | "error"). Empty on every other event.
     tool: str = ""

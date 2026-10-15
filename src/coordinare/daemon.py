@@ -4200,22 +4200,20 @@ class CoordinareDaemon:
         """Bound silence with monotonic time, giving unmatched tools a larger limit."""
         now = monotonic()
         events = status_result.get("events")
-        tool_finished = poll.tools.observe(events, now)
+        tool_progress = poll.tools.observe(events, now)
         progress = progress_fingerprint(events)
-        if progress != poll.last_progress or tool_finished:
+        if poll.last_progress is None or (progress and progress != poll.last_progress) or tool_progress:
             poll.last_progress = progress
             poll.last_progress_at = now
+        idle_s = now - poll.last_progress_at
+        if idle_timeout_s <= 0 or idle_s < idle_timeout_s:
+            return False
         if poll.tools.open_since:
             open_s = now - min(poll.tools.open_since.values())
             if open_s < BOOTSTRAP_OPEN_TOOL_LIMIT_SECONDS:
-                # Idle time starts fresh after the tool closes.
-                poll.last_progress_at = now
                 return False
             reason = f"tool open for {_minutes_text(open_s)}"
         else:
-            idle_s = now - poll.last_progress_at
-            if idle_timeout_s <= 0 or idle_s < idle_timeout_s:
-                return False
             reason = f"no progress for {_minutes_text(idle_s)}"
         if await self._bootstrap_finished_before_stop(
             svc, job_id, symphony_name, env_cache_svc, container_id, poll.last_logs_snapshot,

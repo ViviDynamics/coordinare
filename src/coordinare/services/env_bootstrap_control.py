@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from coordinare.services.activity_log import ActivityLog
 
 BOOTSTRAP_OPEN_TOOL_LIMIT_SECONDS = 2700
+BOOTSTRAP_ANONYMOUS_TOOL_MAX_AGE_SECONDS = 1200
 MANUAL_BOOTSTRAP_RESET_COOLDOWN = timedelta(minutes=15)
 _TOOL_START_TYPES = frozenset({"tool_use", "tool_call", "local_shell_call"})
 _TOOL_RESULT_TYPES = frozenset({"tool_result", "tool_call_result"})
@@ -70,8 +71,12 @@ class BootstrapTools:
     seen: set[str] = field(default_factory=set)
 
     def observe(self, events: Any, now: float) -> bool:
-        """Consume newly observed events. Return whether a tool finished."""
-        finished = False
+        """Consume events, expire anonymous starts, and report results or new deltas."""
+        self.open_since = {
+            key: since for key, since in self.open_since.items()
+            if not key.startswith("event:") or now - since < BOOTSTRAP_ANONYMOUS_TOOL_MAX_AGE_SECONDS
+        }
+        progressed = False
         for event in events or []:
             if not isinstance(event, dict):
                 continue
@@ -82,6 +87,9 @@ class BootstrapTools:
             if identity in self.seen:
                 continue
             self.seen.add(identity)
+            if event.get("is_delta"):
+                progressed = True
+                continue
             call_id = event.get("tool_use_id") or event.get("call_id") or event.get("tool_call_id") or event.get("id")
             is_result = kind in _TOOL_RESULT_TYPES or event.get("status") in {"ok", "error"}
             if not is_result:
@@ -94,5 +102,5 @@ class BootstrapTools:
                 key = next((k for k in self.open_since if not call_id or k.startswith("event:")), "")
             if key in self.open_since:
                 del self.open_since[key]
-            finished = True
-        return finished
+            progressed = True
+        return progressed

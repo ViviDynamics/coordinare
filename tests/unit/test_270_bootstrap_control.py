@@ -23,6 +23,7 @@ from coordinare.daemon import CoordinareDaemon
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.localhost_guard import build_permitted
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.env_bootstrap_control import BootstrapTools
 from coordinare.services.env_cache import EnvCacheService
 from tests.unit.test_060_env_cache import _make_daemon_for_env_cache
 from tests.unit.test_dashboard import (
@@ -42,6 +43,63 @@ POLL_SECONDS = 10
 IDLE_SECONDS = 120
 OPEN_TOOL_SECONDS = 2700
 DEFAULT_IDLE_SECONDS = 1800
+ANONYMOUS_TOOL_SECONDS = 1200
+STREAM_END_SECONDS = OPEN_TOOL_SECONDS + IDLE_SECONDS * 2
+TOOL_CALL_ID = "call-install"
+
+
+def _codex_delta(step: int) -> dict[str, Any]:
+    return {
+        "type": "tool_use", "text": f"installed package {step}", "detail": "shell",
+        "is_delta": True, "stream_id": TOOL_CALL_ID,
+        "timestamp": datetime.fromtimestamp(step * POLL_SECONDS, UTC).isoformat(),
+    }
+
+
+@pytest.mark.parametrize("start,result", [
+    (
+        {"type": "tool_use", "text": "Bash", "detail": "Bash", "tool": "Bash", "arg": "uv sync"},
+        {"type": "tool_use", "text": "result: installed", "detail": TOOL_CALL_ID, "status": "ok"},
+    ),
+    (
+        {"type": "tool_use", "text": "uv sync", "detail": "shell", "tool": "shell", "arg": "uv sync"},
+        {"type": "tool_use", "text": "uv sync", "detail": "shell", "tool": "shell", "arg": "uv sync", "status": "ok"},
+    ),
+    (
+        {"type": "tool_use", "text": "bash: uv sync", "detail": "bash", "call_id": TOOL_CALL_ID},
+        {"type": "tool_use", "text": "bash → installed", "detail": "bash", "call_id": TOOL_CALL_ID, "status": "ok"},
+    ),
+], ids=["claude_code", "codex", "opencode"])
+def test_backend_tool_start_and_result_pair(start, result) -> None:
+    tools = BootstrapTools()
+    assert not tools.observe([start], now=0)
+    assert len(tools.open_since) == 1
+    if start.get("detail") == "shell":
+        tools.observe([_codex_delta(step) for step in range(IDLE_SECONDS // POLL_SECONDS)], now=POLL_SECONDS)
+        assert len(tools.open_since) == 1
+    assert tools.observe([result], now=IDLE_SECONDS)
+    assert not tools.open_since
+    assert not tools.observe([start, result], now=IDLE_SECONDS + POLL_SECONDS)
+    assert not tools.open_since
+
+
+def test_codex_deltas_without_a_start_do_not_open_tools() -> None:
+    tools = BootstrapTools()
+    assert tools.observe([_codex_delta(0)], now=0)
+    assert not tools.open_since
+    assert not tools.observe([_codex_delta(0)], now=POLL_SECONDS)
+    assert tools.observe([_codex_delta(1)], now=POLL_SECONDS)
+    assert not tools.open_since
+
+
+def test_anonymous_tool_expires_even_when_its_start_is_replayed() -> None:
+    tools = BootstrapTools()
+    start = {"type": "tool_use", "text": "bash: uv sync", "detail": "bash"}
+    tools.observe([start], now=0)
+    tools.observe([], now=ANONYMOUS_TOOL_SECONDS - POLL_SECONDS)
+    assert tools.open_since
+    tools.observe([start], now=ANONYMOUS_TOOL_SECONDS)
+    assert not tools.open_since
 
 
 class _Clock:
@@ -510,6 +568,68 @@ async def test_open_tool_is_bounded_by_tool_limit_and_wall_clock(monkeypatch, wa
     assert ec_svc.on_bootstrap_complete.call_args.args[1] is False
     error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
     assert ("wall clock" if wall < OPEN_TOOL_SECONDS else "tool") in error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["complete", "silent", "wall"])
+async def test_streaming_tool_survives_open_limit_until_silent_or_wall(monkeypatch, finish) -> None:
+    wall = STREAM_END_SECONDS + IDLE_SECONDS * 2
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=wall, idle_s=IDLE_SECONDS)
+    start = {"type": "tool_use", "text": "bash: uv sync", "detail": "bash", "call_id": TOOL_CALL_ID}
+    statuses = [{"status": "working", "events": [start]}]
+    stream_end = wall if finish == "wall" else STREAM_END_SECONDS
+    statuses.extend(
+        {"status": "working", "events": [{**_codex_delta(step), "text": "."}]}
+        for step in range(1, stream_end // POLL_SECONDS)
+    )
+    if finish == "complete":
+        statuses.append({"status": "env_bootstrap_complete"})
+    else:
+        statuses.extend([{"status": "working", "events": []}] * (wall // POLL_SECONDS))
+    svc = _svc(statuses)
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-streaming", "alpha", ec_svc)
+
+    if finish == "complete":
+        svc.stop_session_confirmed.assert_not_awaited()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
+    else:
+        svc.stop_session_confirmed.assert_awaited_once()
+        expected_stop = wall if finish == "wall" else STREAM_END_SECONDS + IDLE_SECONDS
+        assert daemon_mod.monotonic() == expected_stop
+        error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
+        assert ("wall clock" if finish == "wall" else "tool open") in error
+
+
+@pytest.mark.asyncio
+async def test_codex_deltas_refresh_idle_without_opening_tools(monkeypatch) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=OPEN_TOOL_SECONDS, idle_s=IDLE_SECONDS)
+    stream_seconds = IDLE_SECONDS * 2
+    svc = _svc([
+        {"status": "working", "events": [{**_codex_delta(step), "text": "."}]}
+        for step in range(stream_seconds // POLL_SECONDS)
+    ] + [{"status": "working", "events": []}] * (IDLE_SECONDS // POLL_SECONDS + POLL_SECONDS))
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-deltas", "alpha", ec_svc)
+
+    assert daemon_mod.monotonic() == stream_seconds + IDLE_SECONDS
+    assert "no progress" in ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_silent_tool_is_reaped_after_expiry(monkeypatch) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=OPEN_TOOL_SECONDS * 2, idle_s=IDLE_SECONDS)
+    start = {"type": "tool_use", "text": "bash: uv sync", "detail": "bash"}
+    svc = _svc({"status": "working", "events": [start]})
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-anonymous", "alpha", ec_svc)
+
+    assert daemon_mod.monotonic() == ANONYMOUS_TOOL_SECONDS + POLL_SECONDS
+    svc.stop_session_confirmed.assert_awaited_once()
+    assert "no progress" in ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
 
 
 @pytest.mark.asyncio
