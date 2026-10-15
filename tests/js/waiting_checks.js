@@ -183,5 +183,15 @@ check("the kind label comes from the glossary", waitLabel("needs_human"), "Needs
 check("the glossary covers every kind the function names",
   ["queued", "waiting_on", "needs_human", "filtered"].map(waitLabel), ["Queued", "Waiting on", "Needs human", "Filtered out"]);
 
+// #99: the server's docs approval hold must appear on an In Review card.
+const docsWait = "The documenter's docs-only commit dismissed the approval; re-approve to merge, or disable 'dismiss stale reviews' for this repo";
+const docsCard = {id: "docs", column: "IN_REVIEW", has_session: true,
+  review_wait_reason: "approval_dismissed_by_daemon_docs_push", review_wait_detail: docsWait};
+check("a docs dismissal names the action on its card", waitingReason(docsCard, {}).text,
+  "Needs human: " + docsWait);
+check("a docs dismissal retains the full action in its title", waitingReason(docsCard, {}).title, docsWait);
+check("a stale docs detail does not survive a cleared reason",
+  waitingReason({...docsCard, review_wait_reason: null}, {}).kind, "none");
+
 console.log(`SUMMARY ${passed} ${failed}`);
 if (failed > 0) process.exit(1);

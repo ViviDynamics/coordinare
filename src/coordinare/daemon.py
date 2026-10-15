@@ -3629,6 +3629,7 @@ class CoordinareDaemon:
         # The closer reads the running symphony's condition from the graph state for this cycle.
         review = getattr(sym_state, "merge_review", None)
         self._state["merge_review_condition"] = review.get("state") if isinstance(review, dict) else None
+        self._state["merge_review_rules"] = dict(getattr(sym_state, "merge_review_rules", {}) or {})
 
     def _update_symphony_state(self, symphony_name: str, sym_state: Any) -> None:
         """Mirror the finished cycle's results back onto the symphony state."""

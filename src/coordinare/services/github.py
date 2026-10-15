@@ -39,9 +39,11 @@ _REST_TIMEOUT_SECONDS = 10.0
 _COMPARE_TIMEOUT_SECONDS = 30.0
 _COMPARE_PAGE_SIZE = 100
 _COMPARE_MAX_PAGES = 3
+_COMPARE_FILE_LIMIT = 300
 _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
+_MERGE_HEAD_MISMATCH_MESSAGES = ("head branch was modified", "head branch is out of date")
 _PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
@@ -321,9 +323,9 @@ query CheckMergeability($prId: ID!) {
 """
 
 SQUASH_MERGE_MUTATION = """
-mutation SquashMerge($pullRequestId: ID!) {
+mutation SquashMerge($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
   mergePullRequest(
-    input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH }
+    input: { pullRequestId: $pullRequestId, mergeMethod: SQUASH, expectedHeadOid: $expectedHeadOid }
   ) {
     pullRequest {
       id
@@ -920,6 +922,11 @@ class GitHubService(CardIdentityMap):
             # missing nodes) don't get retried forever and don't trip the
             # service-health circuit breaker.  Only true transport problems
             # (5xx, timeouts) should count as service failures.
+            if query == SQUASH_MERGE_MUTATION and any(
+                message in str(exc).lower() for message in _MERGE_HEAD_MISMATCH_MESSAGES
+            ):
+                # A new head is a new decision, never an outage to retry internally.
+                raise PermanentGitHubError(str(exc)) from exc
             errors = exc.errors or []
             err_types: set[str] = set()
             for e in errors:
@@ -1676,32 +1683,31 @@ class GitHubService(CardIdentityMap):
     async def compare_changed_files(
         self, pr_url: str, base_sha: str, head_sha: str,
     ) -> list[str]:
-        """125 — file paths touched between two commits (REST compare API).
+        """Return the complete file range, including rename sources, or raise.
 
-        Powers the documenting gate's "what changed since the last
-        documentation pass" decision (``base_sha`` = last documented head,
-        ``head_sha`` = current live head).  Paginates ``files`` at 100/page up
-        to 3 pages; beyond that raises so the caller falls back to the
-        whole-PR gate (a delta that large should be documented anyway, and the
-        gate fails open to dispatch).  Raises on malformed input, missing
-        token, or any non-2xx so the dispatch layer applies its fail-open
-        chain.  Never logs the token; logs only counts and short SHAs.
+        GitHub returns files only on the first compare page, capped at 300.
+        Reaching that cap cannot establish completeness.
         """
+        payload = await self._compare_page(pr_url, base_sha, head_sha, 1)
+        entries = payload.get("files")
+        if not isinstance(entries, list) or len(entries) >= _COMPARE_FILE_LIMIT:
+            message = "compare_changed_files: missing or truncated files list"
+            raise RuntimeError(message)
         files: list[str] = []
-        for page in range(1, _COMPARE_MAX_PAGES + 1):
-            payload = await self._compare_page(pr_url, base_sha, head_sha, page)
-            page_files = payload.get("files")
-            if not isinstance(page_files, list):
-                raise RuntimeError("compare_changed_files: response has no enumerable 'files' list")
-            files.extend(
-                str(f["filename"])
-                for f in page_files
-                if isinstance(f, dict) and f.get("filename")
-            )
-            if len(page_files) < _COMPARE_PAGE_SIZE:
-                break
-        else:
-            raise RuntimeError("compare_changed_files: truncated beyond page cap")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
+                message = "compare_changed_files: missing filename"
+                raise RuntimeError(message)
+            files.append(entry["filename"])
+            if entry.get("status") in {"renamed", "copied"} and "previous_filename" not in entry:
+                message = "compare_changed_files: missing rename source"
+                raise RuntimeError(message)
+            if "previous_filename" in entry:
+                previous = entry["previous_filename"]
+                if not isinstance(previous, str) or not previous:
+                    message = "compare_changed_files: missing rename source"
+                    raise RuntimeError(message)
+                files.append(previous)
         logger.info(
             "compare_changed_files.complete",
             file_count=len(files),
@@ -2300,8 +2306,22 @@ class GitHubService(CardIdentityMap):
             logger.warning("github.protection_read_failed", url=url, error=str(exc))
             return _PROTECTION_UNREACHABLE, None
 
-    async def squash_merge(self, pr_id: str) -> dict[str, Any]:
-        result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {"pullRequestId": pr_id})
+    async def squash_merge(self, pr_id: str, *, expected_head_oid: str | None = None) -> dict[str, Any]:
+        """Merge only the decision head; an intervening push needs a new decision."""
+        if expected_head_oid is None:
+            mergeability = await self.check_mergeability(pr_id)
+            expected_head_oid = str(mergeability.get("head_ref_oid") or "")
+        if not expected_head_oid:
+            return {"merged": False, "reason": "missing_head"}
+        try:
+            result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {
+                "pullRequestId": pr_id, "expectedHeadOid": expected_head_oid,
+            })
+        except PermanentGitHubError as exc:
+            message = str(exc).lower()
+            if any(fragment in message for fragment in _MERGE_HEAD_MISMATCH_MESSAGES):
+                return {"merged": False, "reason": "head_mismatch"}
+            raise
         node = result.get("mergePullRequest", {}).get("pullRequest", {})
         if not isinstance(node, dict):
             return {"merged": False}

@@ -9,7 +9,7 @@ from coordinare.graph.state import initial_state
 class _GitHub:
     async def check_mergeability(self, pr_id: str):
         _ = pr_id
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         _ = pr_id
@@ -22,7 +22,7 @@ class _GitHub:
 
 class _GitHubWithMergeCommit:
     async def check_mergeability(self, pr_id: str):
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         return {
@@ -198,7 +198,7 @@ class _GitHubSquashMergePermanent:
     the App lacks ruleset bypass permission ("not authorized to push")."""
 
     async def check_mergeability(self, pr_id: str):
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         from coordinare.services.github import PermanentGitHubError
@@ -245,7 +245,7 @@ async def test_merge_pr_blocks_on_check_mergeability_permanent_error() -> None:
 
 class _GitHubSquashMergeTransient:
     async def check_mergeability(self, pr_id: str):
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         raise RuntimeError("network blip")
@@ -295,7 +295,7 @@ async def test_merge_pr_loops_on_transient_mergeability_error() -> None:
 
 class _GitHubMoveCardFails:
     async def check_mergeability(self, pr_id: str):
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         return {"merged": True}
@@ -324,7 +324,7 @@ async def test_merge_pr_move_card_exception_is_swallowed() -> None:
 
 class _GitHubWithToken:
     async def check_mergeability(self, pr_id: str):
-        return {"mergeable": True}
+        return {"mergeable": True, "head_ref_oid": "test-head"}
 
     async def squash_merge(self, pr_id: str):
         return {
@@ -382,7 +382,7 @@ class _GitHubDeletable:
 
     async def check_mergeability(self, pr_id: str):
         _ = pr_id
-        return dict(self._mergeability)
+        return {"head_ref_oid": "test-head", **self._mergeability}
 
     async def squash_merge(self, pr_id: str):
         _ = pr_id
@@ -527,4 +527,4 @@ async def test_merge_pr_skips_branch_delete_when_not_merged() -> None:
     result = await merge_pr(state)
 
     assert github.deleted == []
-    assert result["current_card"]["status"] == "DONE"
+    assert result["current_card"]["status"] == "IN_REVIEW"

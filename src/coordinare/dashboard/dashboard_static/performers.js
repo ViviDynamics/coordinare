@@ -475,7 +475,9 @@ function renderActiveWorkPanels(s) {
 
     // 149: why a To Do or Blocked card is not progressing (empty for the rest).
     var waitLine = waitingLineHtml(waitingReason({id: iid, column: col, has_session: !!sess,
-      block_cause: sess ? sess.block_cause : null}, waitSnapshot));
+      block_cause: sess ? sess.block_cause : null,
+      review_wait_reason: sess ? sess.review_wait_reason : null,
+      review_wait_detail: sess ? sess.review_wait_detail : null}, waitSnapshot));
 
     // 139: with all symphonies in view, each card says which one it belongs to.
     var symphonyLine = multiView && entry.symphony

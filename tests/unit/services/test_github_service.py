@@ -605,7 +605,7 @@ class TestCompareChangedFiles:
         assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_paginates_until_short_page(self) -> None:
+    async def test_files_are_complete_on_first_page(self) -> None:
         svc = _make_branch_service()
         page1 = _compare_resp(200, [f"src/f{i}.py" for i in range(100)])
         page2 = _compare_resp(200, ["docs/readme.md"])
@@ -615,14 +615,13 @@ class TestCompareChangedFiles:
         mock_client.get = AsyncMock(side_effect=[page1, page2])
         with patch("httpx.AsyncClient", return_value=mock_client):
             files = await svc.compare_changed_files(_PR_URL, "abc123", "def456")
-        assert len(files) == 101
-        assert files[-1] == "docs/readme.md"
-        assert mock_client.get.await_count == 2
+        assert len(files) == 100
+        assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_page_cap_overflow_raises(self) -> None:
+    async def test_file_cap_overflow_raises(self) -> None:
         svc = _make_branch_service()
-        full = [_compare_resp(200, [f"src/f{i}.py" for i in range(100)])] * 3
+        full = [_compare_resp(200, [f"src/f{i}.py" for i in range(300)])]
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)

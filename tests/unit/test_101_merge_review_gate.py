@@ -785,3 +785,46 @@ async def test_a_bypassed_condition_does_not_let_review_required_claim_external_
     )
     result = await monitor_pr(state)
     assert result["review_wait_reason"] == "no_human_approval"
+
+
+@pytest.mark.parametrize("parser, payload", [
+    (gate.parse_classic_protection, {"required_pull_request_reviews": {
+        "dismiss_stale_reviews": True, "require_extra_approval_for_unattributed_changes": True,
+    }}),
+    (gate.parse_rules, [{"type": "pull_request", "parameters": {
+        "dismiss_stale_reviews_on_push": True, "require_extra_approval_for_unattributed_changes": True,
+    }}]),
+])
+def test_099_reader_preserves_dismissal_and_extra_approval_rules(parser: Any, payload: Any) -> None:
+    requirement = parser(payload)
+    assert requirement.dismiss_stale_reviews_on_push
+    assert requirement.require_extra_approval_for_unattributed_changes
+    assert requirement.requires_review
+
+
+@pytest.mark.asyncio
+async def test_099_refresh_mirrors_cached_rules_without_another_read() -> None:
+    sym = SymphonyRuntimeState(name="garden")
+    github = _Github((_OK, {"required_pull_request_reviews": {"dismiss_stale_reviews": True}}), (_OK, []))
+    state = initial_state()
+    state["github_service"] = github
+    daemon = SimpleNamespace(_state=state)
+    await Daemon._refresh_merge_review(daemon, "garden", sym, SimpleNamespace(enabled=True))
+    await Daemon._refresh_merge_review(daemon, "garden", sym, SimpleNamespace(enabled=True))
+    assert github.reads == 1
+    assert state["merge_review_rules"]["dismiss_stale_reviews_on_push"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("classic", [True, False])
+async def test_099_merge_allowance_does_not_hide_review_dismissal_on_push(classic: bool) -> None:
+    sym = SymphonyRuntimeState(name="garden")
+    if classic:
+        protection = _classic_with_app_bypass()
+        protection[1]["required_pull_request_reviews"]["dismiss_stale_reviews"] = True
+        github = _Github(protection, (_OK, []))
+    else:
+        github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
+        github.sources[gate.ruleset_source_key(_ELM_RULESET)] = _detail("active", [_integration(_APP_ID)])
+    await _refresh(sym, github, _Notifier(), ActivityLog(), now=1000.0)
+    assert sym.merge_review_rules["dismiss_stale_reviews_on_push"]

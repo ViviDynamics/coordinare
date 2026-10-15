@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from performer.workflows.documenter.models import DOC_PATH_PREFIXES as PERFORMER_DOC_PATH_PREFIXES
 from structlog.testing import capture_logs
 
+from coordinare.dashboard import DashboardStore
 from coordinare.graph.nodes.monitor.verdict import _record_stage_verdict
 from coordinare.graph.nodes.monitor_pr import monitor_pr
 from coordinare.graph.state import initial_state
+from coordinare.services.activity_log import ActivityLog
+from coordinare.services.approval_carryover import CARRYOVER_CACHE_SECONDS
+from coordinare.services.documentation_paths import DOC_PATH_PREFIXES
+from coordinare.services.documenting_side import poll_to_completion
 from coordinare.services.github import GitHubService
+from coordinare.session import session_to_state, state_to_session
 from coordinare.state_store import PersistedSession, StageVerdict
 
 _APPROVED = "a" * 40
@@ -20,6 +28,13 @@ _OTHER = "d" * 40
 _BOT = "coordinare[bot]"
 _PR_URL = "https://github.com/acme/repo/pull/99"
 _PAGE_SIZE = 100
+_FILE_LIMIT = 300
+_REPEATED_CYCLES = 3
+_DISMISSED_REASON = "approval_dismissed_by_daemon_docs_push"
+_DISMISSED_MESSAGE = (
+    "The documenter's docs-only commit dismissed the approval; re-approve to merge, "
+    "or disable 'dismiss stale reviews' for this repo"
+)
 
 
 def _commit(sha: str, parent: str, login: str | None = _BOT) -> dict[str, Any]:
@@ -43,6 +58,7 @@ def _state(commits: list[dict[str, Any]]) -> dict[str, Any]:
     }
     github.self_logins.return_value = frozenset({_BOT})
     github.compare_commits = AsyncMock(return_value=commits)
+    github.compare_changed_files.return_value = ["docs/guide.md"]
     state["github_service"] = github
     return state
 
@@ -300,3 +316,192 @@ async def test_documenter_record_without_head_movement_cannot_claim_another_push
     state = _state([_commit(_HEAD, _APPROVED)])
     state["stage_verdicts"]["documenting"]["head_before"] = _HEAD
     assert (await monitor_pr(state))["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths", [["docs/guide.md", "src/app.py"], ["README.md"],
+                                  ["docs/../src/app.py"], [], None])
+async def test_099_non_documentation_or_unknown_paths_wait(paths: list[str] | None) -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["github_service"].compare_changed_files.return_value = paths
+    assert (await monitor_pr(state))["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths", [["docs/guide.md"], ["doc/guide.md", "docs/wiki/index.md"]])
+async def test_099_documentation_paths_carry(paths: list[str]) -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["github_service"].compare_changed_files.return_value = paths
+    assert (await monitor_pr(state))["phase"] == "merging"
+    state["github_service"].compare_changed_files.assert_awaited_once_with(_PR_URL, _APPROVED, _HEAD)
+
+
+@pytest.mark.asyncio
+async def test_099_unreadable_files_wait() -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["github_service"].compare_changed_files.side_effect = RuntimeError("truncated files")
+    assert (await monitor_pr(state))["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths", [[{}], [{"filename": None}], [{"filename": "docs/a.md"}] * _FILE_LIMIT])
+async def test_099_compare_unknown_or_capped_files_wait(
+    monkeypatch: pytest.MonkeyPatch, paths: list[dict[str, Any]],
+) -> None:
+    github = GitHubService(token="test-token", org="acme", project_number=1)
+    _mock_http(monkeypatch, [{"files": paths}])
+    with pytest.raises(RuntimeError):
+        await github.compare_changed_files(_PR_URL, _APPROVED, _HEAD)
+
+
+@pytest.mark.asyncio
+async def test_099_compare_includes_rename_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    github = GitHubService(token="test-token", org="acme", project_number=1)
+    _mock_http(monkeypatch, [{"files": [{"filename": "docs/app.py", "previous_filename": "src/app.py"}]}])
+    assert set(await github.compare_changed_files(_PR_URL, _APPROVED, _HEAD)) == {"docs/app.py", "src/app.py"}
+
+
+def test_099_documentation_prefixes_match_documenter() -> None:
+    assert DOC_PATH_PREFIXES == PERFORMER_DOC_PATH_PREFIXES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review_state, rule", [
+    ("DISMISSED", "dismiss_stale_reviews_on_push"),
+    ("APPROVED", "require_extra_approval_for_unattributed_changes"),
+])
+async def test_099_docs_push_rule_wait_is_actionable_and_once_per_head(review_state: str, rule: str) -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    github = state["github_service"]
+    github.get_pr_review_context.return_value["reviews"][0]["state"] = review_state
+    state["merge_review_rules"] = {rule: True}
+    activity = ActivityLog()
+    state["activity_log"] = activity
+    notifier = AsyncMock()
+    state["notification_service"] = notifier
+    for _ in range(_REPEATED_CYCLES):
+        result = await monitor_pr(state)
+        assert result["phase"] == "monitoring_pr"
+        assert result["review_wait_reason"] == _DISMISSED_REASON
+        assert result["review_wait_detail"] == _DISMISSED_MESSAGE
+    entries = [entry for entry in activity.snapshot() if entry["activity_type"] == _DISMISSED_REASON]
+    assert len(entries) == 1
+    assert entries[0]["text"] == _DISMISSED_MESSAGE
+    notifier.dispatch.assert_awaited_once()
+    assert notifier.dispatch.call_args.args[0].payload["message"] == _DISMISSED_MESSAGE
+    github.get_branch_protection_sources.assert_not_awaited()
+    github.compare_commits.assert_awaited_once()
+    github.compare_changed_files.assert_awaited_once()
+    github.self_logins.assert_awaited_once()
+    github.get_pr_review_context.return_value["head_oid"] = _OTHER
+    github.compare_commits.return_value = [_commit(_OTHER, _APPROVED)]
+    state["stage_verdicts"]["documenting"]["head_sha"] = _OTHER
+    await monitor_pr(state)
+    assert notifier.dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, recorded", [(["src/app.py"], True), (["docs/guide.md"], False)])
+async def test_099_dismissed_review_without_proven_docs_push_is_not_misattributed(
+    paths: list[str], recorded: bool,
+) -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["merge_review_rules"] = {"dismiss_stale_reviews_on_push": True}
+    state["github_service"].get_pr_review_context.return_value["reviews"][0]["state"] = "DISMISSED"
+    state["github_service"].compare_changed_files.return_value = paths
+    if not recorded:
+        state["stage_verdicts"] = {}
+    result = await monitor_pr(state)
+    assert result["phase"] == "monitoring_pr"
+    assert result["review_wait_reason"] != _DISMISSED_REASON
+
+
+@pytest.mark.asyncio
+async def test_099_reapproval_clears_docs_push_wait() -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["merge_review_rules"] = {"dismiss_stale_reviews_on_push": True}
+    review = state["github_service"].get_pr_review_context.return_value["reviews"][0]
+    review["state"] = "DISMISSED"
+    assert (await monitor_pr(state))["review_wait_reason"] == _DISMISSED_REASON
+    review["state"] = "APPROVED"
+    review["commit_oid"] = _HEAD
+    result = await monitor_pr(state)
+    assert result["phase"] == "merging"
+    assert result.get("review_wait_detail") is None
+
+
+@pytest.mark.asyncio
+async def test_099_unverified_evaluation_cached_and_logged_once_per_head() -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    state["github_service"].compare_commits.side_effect = RuntimeError("unavailable")
+    with capture_logs() as logs:
+        for _ in range(_REPEATED_CYCLES):
+            assert (await monitor_pr(state))["phase"] == "monitoring_pr"
+    assert len([entry for entry in logs if entry["event"] == "monitor_pr.approval_carryover_unverified"]) == 1
+    state["github_service"].compare_commits.assert_awaited_once()
+    state["github_service"].self_logins.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_099_side_run_records_whole_commit_segment() -> None:
+    state = _state([_commit(_MIDDLE, _APPROVED), _commit(_HEAD, _MIDDLE)])
+    state["stage_verdicts"] = {}
+    check = AsyncMock(return_value={"status": "docs_committed", "head_before": _APPROVED, "head_sha": _HEAD})
+    await poll_to_completion(state, check, session_id="docs")
+    assert state["documenting_side"]["head_before"] == _APPROVED
+    assert (await monitor_pr(state))["phase"] == "merging"
+
+
+def test_099_carryover_cache_and_notification_markers_follow_the_card_session() -> None:
+    state = _state([])
+    state["phase"] = "monitoring_pr"
+    state["approval_carryover_cache"] = {(_APPROVED, _HEAD): (0.0, False)}
+    state["approval_carryover_unverified_head"] = _HEAD
+    state["approval_docs_notified_head"] = _HEAD
+    state["review_wait_detail"] = _DISMISSED_MESSAGE
+    session = state_to_session(state)
+    fresh = initial_state()
+    session_to_state(session, fresh)
+    for key in ("approval_carryover_cache", "approval_carryover_unverified_head", "approval_docs_notified_head", "review_wait_detail"):
+        assert fresh[key] == state[key]
+    session_to_state({}, fresh)
+    assert not fresh.get("approval_carryover_cache")
+    assert not fresh.get("approval_docs_notified_head")
+
+
+@pytest.mark.asyncio
+async def test_099_cached_failure_expires_without_repeating_warning() -> None:
+    state = _state([_commit(_HEAD, _APPROVED)])
+    github = state["github_service"]
+    github.compare_changed_files.side_effect = RuntimeError("unavailable")
+    with capture_logs() as logs:
+        await monitor_pr(state)
+        first_at, verified = state["approval_carryover_cache"][(_APPROVED, _HEAD)]
+        state["approval_carryover_cache"][(_APPROVED, _HEAD)] = (first_at - CARRYOVER_CACHE_SECONDS, verified)
+        await monitor_pr(state)
+    assert github.compare_changed_files.await_count == 2
+    assert len([entry for entry in logs if entry["event"] == "monitor_pr.approval_carryover_unverified"]) == 1
+    github.compare_changed_files.side_effect = None
+    first_at, verified = state["approval_carryover_cache"][(_APPROVED, _HEAD)]
+    state["approval_carryover_cache"][(_APPROVED, _HEAD)] = (first_at - CARRYOVER_CACHE_SECONDS, verified)
+    assert (await monitor_pr(state))["phase"] == "merging"
+
+
+def test_099_dashboard_session_exposes_docs_approval_wait() -> None:
+    daemon = SimpleNamespace(state={})
+    session = {"phase": "monitoring_pr", "review_wait_reason": _DISMISSED_REASON,
+               "review_wait_detail": _DISMISSED_MESSAGE}
+    summary = DashboardStore._session_summary(daemon, "CARD_99", session)
+    assert summary["review_wait_reason"] == _DISMISSED_REASON
+    assert summary["review_wait_detail"] == _DISMISSED_MESSAGE
+    before = DashboardStore._active_sessions_fingerprint(SimpleNamespace(state={"active_sessions": {"CARD_99": {"phase": "monitoring_pr"}}}))
+    after = DashboardStore._active_sessions_fingerprint(SimpleNamespace(state={"active_sessions": {"CARD_99": session}}))
+    assert before != after
+
+
+@pytest.mark.asyncio
+async def test_099_compare_rename_without_known_source_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    github = GitHubService(token="test-token", org="acme", project_number=1)
+    _mock_http(monkeypatch, [{"files": [{"filename": "docs/app.py", "status": "renamed"}]}])
+    with pytest.raises(RuntimeError):
+        await github.compare_changed_files(_PR_URL, _APPROVED, _HEAD)
