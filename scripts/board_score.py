@@ -27,7 +27,7 @@ from coordinare.bench.fixtures import load_manifest, tiny_fixture
 from coordinare.bench.grader import GradingError, score_run
 from coordinare.bench.judge import make_judge
 from coordinare.bench.noise import NoiseError, run_repeats
-from coordinare.bench.score import Weights
+from coordinare.bench.score import Weights, describe_scalar
 
 
 def _add_shared_flags(p: argparse.ArgumentParser) -> None:
@@ -57,7 +57,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     noise.add_argument("--config", help="coordinare config YAML (fingerprinted into each artifact)")
     noise.add_argument("--max-cycles", type=int, default=None, help="hard cycle budget per repeat")
     noise.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
-    noise.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
     noise.add_argument("--real", action="store_true", help="dispatch real performers (default: stubbed)")
     _add_shared_flags(noise)
 
@@ -116,7 +115,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
     )
     path = score.write(run_dir)
     mode = "judged" if score.judged else "deterministic-only"
-    scalar = "unrankable" if score.scalar is None else f"{score.scalar:.6g}"
+    scalar = describe_scalar(score)
     print(f"score ({mode}): scalar={scalar} "
           f"correctness={score.components.correctness_rate} "
           f"harness_failure_rate={score.components.harness_failure_rate} -> {path}")
@@ -146,7 +145,6 @@ async def _cmd_noise(args: argparse.Namespace) -> int:
         config_path=args.config,
         human_login=args.human_login,
         max_cycles=args.max_cycles,
-        cost_per_million_tokens=args.cost_rate,
         stub=not args.real,
         weights=_weights(args),
         judge=judge,

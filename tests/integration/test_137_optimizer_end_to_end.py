@@ -14,6 +14,7 @@ from scripts.board_optimize import main as optimize_main
 
 from coordinare.bench.fixtures import tiny_fixture
 from coordinare.bench.optimizer import OptimizerArtifact, real_evaluator, run_optimizer
+from coordinare.bench.score import Weights
 from coordinare.bench.space import config_fingerprint, load_space, materialize
 from tests.unit.test_136_space import BASELINE
 
@@ -53,7 +54,9 @@ class TestOptimizerEndToEnd:
         assert not hasattr(rebase_module, "asyncio")
         loaded = _space(tmp_path)
         session = tmp_path / "session"
-        evaluate = real_evaluator(loaded, [tiny_fixture()], session)
+        evaluate = real_evaluator(
+            loaded, [tiny_fixture()], session, weights=Weights(w_cost=0.0),
+        )
         artifact = await run_optimizer(
             loaded, evaluate, seed=1, max_evaluations=6, session_dir=session,
             evaluator_kind="stub",
@@ -84,7 +87,9 @@ class TestOptimizerEndToEnd:
     async def test_recommendation_overrides_rematerialize_to_fingerprint(self, tmp_path: Path) -> None:
         loaded = _space(tmp_path)
         session = tmp_path / "session"
-        evaluate = real_evaluator(loaded, [tiny_fixture()], session)
+        evaluate = real_evaluator(
+            loaded, [tiny_fixture()], session, weights=Weights(w_cost=0.0),
+        )
         artifact = await run_optimizer(
             loaded, evaluate, seed=1, max_evaluations=6, session_dir=session,
             evaluator_kind="stub",

@@ -13,15 +13,30 @@ explicit missing value rather than a zero.
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
 
-from coordinare.bench.artifact import estimate_cost_usd
 from coordinare.bench.harness_rank import score_row
 from coordinare.bench.harness_rollup import RoleHarnessRow
+from coordinare.bench.pricing import price_tokens
 from coordinare.bench.recording_performer import RecordingPerformer
 from coordinare.bench.runner import _records_to_dispatch_log
+from coordinare.config import CostTrackingConfig, ModelPriceConfig
+from coordinare.services.token_usage import price_table_from_config
+
+_OPUS = "claude-opus-4-5"
+_TABLE = price_table_from_config(CostTrackingConfig(
+    pricing_as_of=date(2026, 10, 1),
+    prices=[ModelPriceConfig(
+        models=["claude-opus-4-5*"],
+        input_per_million=15.0,
+        output_per_million=75.0,
+        cache_read_per_million=1.5,
+        cache_write_per_million=18.75,
+    )],
+))
 
 # A cache-heavy turn, the normal shape for Claude Code: almost all of the input is
 # cache reads, so input_tokens alone is a rounding error against the real total.
@@ -83,7 +98,9 @@ async def test_real_cli_usage_reaches_the_artifact_as_measured_nonzero() -> None
     row = await _dispatch_row({"tokens_processed": tokens})
     assert row["terminal_marker"] == "pr_opened"
     assert row["tokens_processed"] == CACHE_HEAVY_TOTAL
-    assert estimate_cost_usd(row["tokens_processed"], 3.0) > 0
+    assert row["tokens_processed"] > 0  # measured, not zero
+    # A bare total has no per-kind split, so it is never priced (spec 206).
+    assert price_tokens(row["tokens_processed"], _OPUS, _TABLE).cost_usd is None
 
 
 @pytest.mark.asyncio
@@ -99,7 +116,7 @@ async def test_absent_cli_usage_reaches_the_artifact_as_explicitly_missing() -> 
     row = await _dispatch_row({"tokens_processed": tokens})
     assert row["terminal_marker"] == "pr_opened"   # the dispatch is still observed
     assert row["tokens_processed"] is None         # but its usage is unknown
-    assert estimate_cost_usd(row["tokens_processed"], 3.0) is None
+    assert price_tokens(row["tokens_processed"], _OPUS, _TABLE).cost_usd is None
 
 
 @pytest.mark.asyncio
@@ -115,13 +132,11 @@ def test_unknown_tokens_flag_the_cost_component_missing() -> None:
     unknown = score_row(
         RoleHarnessRow(role="implementer", backend="claude_code",
                        credit_rate=1.0, seconds_total=100.0, tokens_total=None),
-        cost_per_million_tokens=3.0,
     )
     assert unknown.cost_component_missing is True
 
     measured = score_row(
         RoleHarnessRow(role="implementer", backend="claude_code", credit_rate=1.0,
-                       seconds_total=100.0, tokens_total=CACHE_HEAVY_TOTAL),
-        cost_per_million_tokens=3.0,
+                       seconds_total=100.0, tokens_total=CACHE_HEAVY_TOTAL, cost_usd=1.0),
     )
     assert measured.cost_component_missing is False

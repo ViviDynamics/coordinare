@@ -48,7 +48,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-repeats", type=int, default=10, help="cap on derived repeats")
     p.add_argument("--max-cycles", type=int, default=None, help="hard cycle budget per run")
     p.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
-    p.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
     p.add_argument("--real", action="store_true", help="dispatch real performers (default: stubbed)")
     p.add_argument("--judge-base-url", help="LiteLLM-proxy base URL; enables the LLM judge")
     p.add_argument("--judge-model", help="judge model id (required with --judge-base-url)")
@@ -152,7 +151,7 @@ async def _main_async(args: argparse.Namespace) -> int:
         loaded, fixtures, session,
         repeats=repeats, weights=weights, judge=judge, judge_model=judge_model,
         stub=not args.real, human_login=args.human_login,
-        max_cycles=args.max_cycles, cost_per_million_tokens=args.cost_rate,
+        max_cycles=args.max_cycles,
     )
     artifact = await run_optimizer(
         loaded, evaluate,

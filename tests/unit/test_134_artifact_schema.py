@@ -14,7 +14,6 @@ from coordinare.bench.artifact import (
     ConfigFingerprint,
     Cost,
     RunArtifact,
-    estimate_cost_usd,
 )
 
 
@@ -55,6 +54,7 @@ def test_cost_is_flagged_as_estimate_by_default() -> None:
 def test_compute_totals_aggregates_cards() -> None:
     art = _artifact()
     art.cards[0].cost.cost_usd = 3.0
+    art.cards[0].cost.cost_basis = "exact_per_kind_counts"  # priced, not legacy
     totals = art.compute_totals()
     assert totals.cards_total == 2
     assert totals.cards_merged == 1
@@ -62,12 +62,6 @@ def test_compute_totals_aggregates_cards() -> None:
     assert totals.tokens_processed == 1_000_000
     assert totals.cost_usd == 3.0
     assert totals.cost_estimated is True
-
-
-def test_estimate_cost_usd() -> None:
-    assert estimate_cost_usd(None, 3.0) is None
-    assert estimate_cost_usd(1_000_000, 3.0) == 3.0
-    assert estimate_cost_usd(500_000, 3.0) == 1.5
 
 
 def test_write_and_load(tmp_path: Path) -> None:

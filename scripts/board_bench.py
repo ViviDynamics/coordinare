@@ -30,7 +30,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="cycle ceiling (default: stub=3N+6; real=budget/poll). Real mode is "
                         "bounded by --wall-clock-budget, not by this.")
     p.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
-    p.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
     p.add_argument("--real", action="store_true", help="dispatch real performers (default: stubbed)")
     p.add_argument("--poll-interval", type=float, default=5.0,
                    help="real mode: seconds between performer status polls (default: 5)")
@@ -52,7 +51,6 @@ async def _main_async(args: argparse.Namespace) -> int:
         config_path=args.config,
         human_login=args.human_login,
         max_cycles=args.max_cycles,
-        cost_per_million_tokens=args.cost_rate,
         stub=not args.real,
         real_poll_interval_seconds=args.poll_interval,
         wall_clock_budget_seconds=args.wall_clock_budget,

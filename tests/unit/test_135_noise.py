@@ -24,7 +24,7 @@ NOW = datetime(2026, 8, 23, tzinfo=UTC)
 
 def _score(
     correctness: float | None = 1.0,
-    cost: float | None = None,
+    cost: float | None = 0.5,
     scalar: float | None = 0.99,
     category: str = "PASS",
 ) -> ScoreObject:
@@ -41,7 +41,7 @@ def _score(
             ),
         ],
         components=ComponentVector(
-            correctness_rate=correctness, cost_usd=cost, wall_clock_seconds=60.0,
+            correctness_rate=correctness, cost_usd=cost, cost_priced=True, wall_clock_seconds=60.0,
         ),
         scalar=scalar,
     )

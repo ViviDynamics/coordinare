@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from coordinare.bench.grader import score_run
 from coordinare.bench.runner import run_board
-from coordinare.bench.score import Weights
+from coordinare.bench.score import Weights, numeric_component, repeat_mean
 from coordinare.bench.space import config_fingerprint, materialize, resolve_path
 
 if TYPE_CHECKING:
@@ -70,6 +70,8 @@ class EvalOutcome(BaseModel):
     mean_components: dict[str, float] = {}
     failed: bool = False
     error: str = ""
+    #: Spec 206 review: why ``mean_scalar`` is withheld because a repeat's cost is unknown.
+    cost_unknown_reason: str | None = None
 
 
 class Evaluator(Protocol):
@@ -90,6 +92,7 @@ class EvaluationRecord(BaseModel):
     mean_components: dict[str, float] = {}
     failed: bool = False
     error: str = ""
+    cost_unknown_reason: str | None = None
     best_so_far: float | None = None
 
 
@@ -228,7 +231,6 @@ def real_evaluator(
     stub: bool = True,
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
-    cost_per_million_tokens: float = 3.0,
 ) -> Evaluator:
     """The shipped evaluator: materialize → run_board(config) → score_run x repeats.
 
@@ -249,7 +251,6 @@ def real_evaluator(
                 artifact = await run_board(
                     fixtures, repeat_dir,
                     human_login=human_login, max_cycles=max_cycles,
-                    cost_per_million_tokens=cost_per_million_tokens,
                     stub=stub, config=config,
                 )
                 score = score_run(
@@ -258,17 +259,21 @@ def real_evaluator(
                 score.write(repeat_dir)
                 scores.append(score)
                 refs.append(str(repeat_dir.relative_to(session) / "score.json"))
-            scalars = [s.scalar for s in scores if s.scalar is not None]
             components: dict[str, float] = {}
             for name in _NUMERIC_COMPONENTS:
-                values = [float(v) for s in scores if (v := getattr(s.components, name)) is not None]
+                values = [v for s in scores if (v := numeric_component(s.components, name)) is not None]
+                if name == "cost_usd" and len(values) != len(scores):
+                    continue  # 206: a partially priced cost is not a mean of this evaluation
                 if values:
                     components[name] = statistics.fmean(values)
+            # Spec 206 review: an unpriced repeat withholds the mean, never a mean of the rest.
+            mean_scalar, withheld = repeat_mean(scores)
             return EvalOutcome(
                 repeats=repeats,
                 score_refs=refs,
-                mean_scalar=statistics.fmean(scalars) if scalars else None,
+                mean_scalar=mean_scalar,
                 mean_components=components,
+                cost_unknown_reason=withheld,
             )
         except Exception as exc:  # a failed evaluation is data, not a crash (FR-007)
             return EvalOutcome(repeats=repeats, failed=True, error=f"{type(exc).__name__}: {exc}")
@@ -347,6 +352,7 @@ async def run_optimizer(
                 fingerprint=fingerprint, cache_hit=True, repeats=cached.repeats,
                 mean_scalar=cached.mean_scalar, mean_components=cached.mean_components,
                 failed=cached.failed, error=cached.error, best_so_far=_best_scalar(),
+                cost_unknown_reason=cached.cost_unknown_reason,
             )
             cache_hits += 1
             trace.append(record)
@@ -358,6 +364,7 @@ async def run_optimizer(
             fingerprint=fingerprint, repeats=outcome.repeats, score_refs=outcome.score_refs,
             mean_scalar=outcome.mean_scalar, mean_components=outcome.mean_components,
             failed=outcome.failed, error=outcome.error,
+            cost_unknown_reason=outcome.cost_unknown_reason,
         )
         if (
             not record.failed
@@ -481,7 +488,16 @@ async def run_optimizer(
             tie_note=tie_note, comparison=rows,
         )
     else:
-        notes.append("no recommendation: every evaluation failed or was unrankable")
+        # Spec 206 review: name the cost reason when pricing is why nothing could be ranked.
+        priced_out = [r.cost_unknown_reason for r in trace if r.cost_unknown_reason]
+        if priced_out:
+            notes.append(
+                f"no point could be priced: {priced_out[0]}, see #242 "
+                "(with default weights no recommendation is possible until per-kind token "
+                "counts are reported)",
+            )
+        else:
+            notes.append("no recommendation: every evaluation failed or was unrankable")
 
     artifact = OptimizerArtifact(
         space_name=loaded.definition.name,
