@@ -25,6 +25,7 @@ Day totals are keyed by the UTC day of each record's timestamp.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -42,8 +43,11 @@ from coordinare.lib.path_segments import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
     from pathlib import Path
+    from typing import BinaryIO
+
+    OpenFile = Callable[[Path], BinaryIO | None]
 
     from coordinare.config import PriceRates
 
@@ -427,15 +431,25 @@ class TokenLedger:
                 self._cache.clear()
             return len(stale)
 
-    def load_from_transcripts(self, root: Path, *, now: datetime) -> int:
+    def load_from_transcripts(
+        self,
+        root: Path,
+        *,
+        now: datetime,
+        open_file: OpenFile | None = None,
+    ) -> int:
         """Rebuild from ``<root>/<symphony>/<card>/<run>.jsonl`` files modified inside the window.
 
         Best effort: a directory or file that cannot be read is skipped and counted, and
         the rebuild never raises. Only ``usage`` lines are kept, read a line at a time with
         the line length, the total bytes and the wall-clock time all bounded. Returns how
         many usage records were counted. The outcome is in ``last_rebuild``.
+
+        ``open_file`` opens each transcript (220). The daemon passes the mounted-file reader,
+        which refuses a link anywhere on the path below a performer mount. The default refuses
+        a link at the leaf and is for callers with no mounts to guard.
         """
-        report = self._rebuild(root, now=now)
+        report = self._rebuild(root, now=now, open_file=open_file or _open_no_follow)
         self.last_rebuild = report
         logger.info(
             "token_usage.rebuilt",
@@ -451,7 +465,7 @@ class TokenLedger:
         )
         return report.usage_records
 
-    def _rebuild(self, root: Path, *, now: datetime) -> RebuildReport:
+    def _rebuild(self, root: Path, *, now: datetime, open_file: OpenFile) -> RebuildReport:
         report = RebuildReport()
         started = time.monotonic()
         window_start = (now - timedelta(days=self._window_days)).timestamp()
@@ -471,7 +485,7 @@ class TokenLedger:
             if report.bytes_read + info.st_size > REBUILD_MAX_BYTES:
                 report.stopped_by = "bytes"
                 break
-            scanned = _scan_usage(path)
+            scanned = _scan_usage(path, open_file)
             if scanned is None:
                 report.files_skipped += 1
                 continue
@@ -481,7 +495,7 @@ class TokenLedger:
             report.oversize_usage_lines += oversize
             report.usage_records += self.observe(
                 path.stem,
-                symphony=_file_symphony(path),
+                symphony=_file_symphony(path, open_file),
                 card=path.parent.name,
                 stage="",
                 records=records,
@@ -490,7 +504,18 @@ class TokenLedger:
         return report
 
 
-def _file_symphony(path: Path) -> str:
+def _open_no_follow(path: Path) -> BinaryIO | None:
+    """The default transcript opener: a read that refuses a link at the leaf (220).
+
+    Used only when a caller passes no opener. The daemon passes the mounted-file reader.
+    """
+    try:
+        return os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb")
+    except OSError:
+        return None
+
+
+def _file_symphony(path: Path, open_file: OpenFile) -> str:
     """The symphony a transcript file is attributed to (131).
 
     A symphony's runs are attributed to their folder. A conductor call is attributed to the
@@ -501,13 +526,16 @@ def _file_symphony(path: Path) -> str:
     folder = path.parent.parent.name
     if not is_conductor_folder(folder):
         return folder
-    return _header_symphony(path) or folder
+    return _header_symphony(path, open_file) or folder
 
 
-def _header_symphony(path: Path) -> str:
+def _header_symphony(path: Path, open_file: OpenFile) -> str:
     """The ``conductor.symphony`` of a file's header line, or '' when it has none. Bounded and never raises."""
     try:
-        with path.open("rb") as handle:
+        handle = open_file(path)
+        if handle is None:
+            return ""
+        with handle:
             raw = handle.readline(USAGE_LINE_MAX_BYTES)
         header = json.loads(raw)
     except (OSError, ValueError, RecursionError):
@@ -552,18 +580,21 @@ def _run_files(root: Path) -> tuple[list[Path], int]:
     return found, skipped
 
 
-def _scan_usage(path: Path) -> tuple[list[dict[str, Any]], int, int] | None:
+def _scan_usage(path: Path, open_file: OpenFile) -> tuple[list[dict[str, Any]], int, int] | None:
     """The usage records of one transcript file, read a bounded line at a time.
 
     Returns (records, bytes read, usage-looking lines skipped as oversize), or None when
-    the file cannot be read. Only lines that name ``usage`` are parsed, and a line over
-    ``USAGE_LINE_MAX_BYTES`` is skipped rather than held in memory.
+    the file cannot be read or is refused by *open_file*. Only lines that name ``usage`` are
+    parsed, and a line over ``USAGE_LINE_MAX_BYTES`` is skipped rather than held in memory.
     """
     records: list[dict[str, Any]] = []
     nbytes = 0
     oversize = 0
     try:
-        with path.open("rb") as handle:
+        handle = open_file(path)
+        if handle is None:
+            return None
+        with handle:
             while True:
                 line = handle.readline(USAGE_LINE_MAX_BYTES + 1)
                 if not line:

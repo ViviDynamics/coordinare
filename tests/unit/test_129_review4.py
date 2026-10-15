@@ -175,24 +175,17 @@ def test_retention_survives_an_entry_whose_stat_fails(
         path.write_text('{"seq":1}\n', encoding="utf-8")
         old = datetime.now(UTC).timestamp() - 90 * 86400
         os.utime(path, (old, old))
-    real_stat = Path.stat
+    # The sweep stats each entry by name relative to its folder descriptor (220), so the
+    # transient failure is injected at os.stat for that name.
+    real_os_stat = os.stat
 
-    def failing_stat(self: Path, **kwargs: Any) -> os.stat_result:
-        if self.name == "bad.jsonl":
+    def failing_os_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == "bad.jsonl":
             message = "transient"
             raise OSError(message)
-        return real_stat(self, **kwargs)
+        return real_os_stat(path, *args, **kwargs)
 
-    real_lstat = Path.lstat
-
-    def failing_lstat(self: Path) -> os.stat_result:
-        if self.name == "bad.jsonl":
-            message = "transient"
-            raise OSError(message)
-        return real_lstat(self)
-
-    monkeypatch.setattr(Path, "stat", failing_stat)
-    monkeypatch.setattr(Path, "lstat", failing_lstat)
+    monkeypatch.setattr(os, "stat", failing_os_stat)
     assert prune_expired(root, retention_days=30) == 1
     # os.path, not Path: on Python 3.12 Path.exists goes through the patched stat.
     assert os.path.exists(bad)
