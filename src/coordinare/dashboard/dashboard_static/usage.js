@@ -105,23 +105,40 @@ function usageCostHtml(summary) {
   return '<span title="' + esc(readout.title) + '">' + esc(readout.text) + '</span>';
 }
 
-function usageSpendValue(summary) {
+// One period's figure for the strip ("$1.20"), or null when its cost is not priced (#238).
+function spendFigure(summary) {
   var cost = (summary && summary.cost) || {};
-  if (cost.usd == null) return 'unknown';
+  if (cost.usd == null) return null;
   return fmtCost(cost.usd);
 }
 
-// The header strip: spend today and over the rolling UTC week.
+// The hover line for an unpriced period: which period, and the reason the daemon gave.
+function spendUnpricedNote(label, summary) {
+  var cost = (summary && summary.cost) || {};
+  if (cost.usd != null) return '';
+  var reason = cost.unknown_reason || 'no price configured';
+  return label + ' is not priced: ' + reason + (/\.$/.test(reason) ? '' : '.');
+}
+
+// The header strip: "$1.20 today · $8.40 week" (#238). An unpriced period says so; when neither is priced
+// the strip reads "Spend not priced". The reasons are on hover.
 function spendStripText(block) {
   if (!block || block.tracked === false) return 'Spend not tracked';
-  return 'Spend today ' + usageSpendValue(block.today) + ' · this week ' + usageSpendValue(block.week);
+  var today = spendFigure(block.today);
+  var week = spendFigure(block.week);
+  if (today == null && week == null) return 'Spend not priced';
+  return (today == null ? 'today not priced' : today + ' today') + ' · ' +
+    (week == null ? 'week not priced' : week + ' week');
 }
 
 function spendStripTitle(block) {
   if (!block || block.tracked === false) {
     return (block && block.reason) || 'Transcripts are off, so spend is not recorded.';
   }
-  return 'Days are UTC. Today is ' + (block.day || '') + '; this week runs from ' + (block.week_start || '') +
+  var notes = [spendUnpricedNote('Today', block.today), spendUnpricedNote('This week', block.week)]
+    .filter(function(note) { return note !== ''; });
+  return (notes.length ? notes.join('\n') + '\n\n' : '') +
+    'Days are UTC. Today is ' + (block.day || '') + '; this week runs from ' + (block.week_start || '') +
     ' to ' + (block.day || '') + '.\n\nToday:\n' + usageBreakdownText(block.today) +
     '\n\nThis week:\n' + usageBreakdownText(block.week);
 }
