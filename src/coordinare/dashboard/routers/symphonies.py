@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
+import yaml
 from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at registration; runtime import required
     FastAPI,
     Request,
@@ -14,6 +15,7 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 from fastapi.responses import JSONResponse
 
 from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.services.config_write_service import _validate_candidate
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -176,6 +178,26 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             }, headers=_version_headers(config_path))
 
 
+def _symphony_write_refusal(proposed: dict[str, Any], config_path: Path | None) -> JSONResponse | None:
+    """225 round 2: refuse a symphony write the daemon could not start with, before any state changes.
+
+    The proposed symphony list is checked as the daemon would load it, with the same candidate
+    validation and start-time checks as every other config write. In-memory-only mode (no file)
+    has nothing to check against and is allowed.
+    """
+    if config_path is None or not config_path.is_file():
+        return None
+    loaded = yaml.safe_load(config_path.read_text())
+    if not isinstance(loaded, dict):
+        return None
+    candidate = {**loaded, "symphonies": [s.model_dump(exclude_none=True) for s in proposed.values()]}
+    errors = _validate_candidate(candidate)
+    if not errors:
+        return None
+    detail = "; ".join(err.message for err in errors)
+    return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
+
+
 def _effective_config_refusal(new_cfg: Any, daemon: Any, name: str) -> JSONResponse | None:
     """Cross-check a symphony against the global defaults, or return the refusal."""
     coordinare_cfg = daemon.state.get("coordinare_config")
@@ -287,6 +309,10 @@ def _register_create_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             # update_symphony too, and the tests missed it because they compared file
             # bytes and only checked memory for delete.
             refusal = _version_refusal(config_path, request.headers.get("If-Match"))
+            if refusal is not None:
+                return refusal
+
+            refusal = _symphony_write_refusal({**symphony_configs, name: new_cfg}, config_path)
             if refusal is not None:
                 return refusal
 
@@ -454,6 +480,10 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             if refusal is not None:
                 return refusal
 
+            refusal = _symphony_write_refusal({**symphony_configs, name: updated}, config_path)
+            if refusal is not None:
+                return refusal
+
             saved_version = daemon.state.get("config_version", 0)
             previous_cfg = symphony_configs.get(name)
             symphony_configs[name] = updated
@@ -545,6 +575,12 @@ def _register_delete_symphony(app: FastAPI, ctx: DashboardContext) -> None:
 
             saved_configs = dict(symphony_configs)
             saved_states = dict(symphony_states)
+            refusal = _symphony_write_refusal(
+                {k: v for k, v in symphony_configs.items() if k != name}, config_path,
+            )
+            if refusal is not None:
+                return refusal
+
             saved_version = daemon.state.get("config_version", 0)
 
             del symphony_configs[name]

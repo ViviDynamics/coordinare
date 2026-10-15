@@ -18,7 +18,7 @@ Reads redacted configuration. Read-only, idempotent.
 
 REST mapping: `all`→GET `/api/config/all`, `effective`→GET `/api/config/effective`, `global`→GET `/api/config/global`, `section`→GET `/api/config/section/{id}`, `catalog`→GET `/api/config/catalog/{id}`, `routing`→GET `/api/config/routing`.
 
-Result includes `base_hash` when the scope supports optimistic concurrency (`global`, `section`, catalog items, routing entries). Secrets are redacted by the dashboard already; the MCP layer must not and cannot un-redact them.
+Result includes `base_hash` when the scope supports optimistic concurrency (`global`, `section`, catalog items). The routing scope returns the same value as `content_hash`; pass it as `base_hash`. Each routing entry carries its `backend` and `model`, which `update_config` takes as `expected`. Secrets are redacted by the dashboard already; the MCP layer must not and cannot un-redact them.
 
 ### update_config
 Writes configuration with optimistic concurrency. Destructive.
@@ -29,6 +29,7 @@ Writes configuration with optimistic concurrency. Destructive.
 | `id` | str | per action | section id, catalog name, catalog item id, or routing entry index |
 | `payload` | object | per action | validated by the dashboard's pydantic models |
 | `base_hash` | str | required for put/put/update/delete | must come from the latest `get_config` |
+| `expected` | object `{backend, model}`, exactly those two keys | no; routing_update and routing_delete only | 225: the routing entry the write means. Any other key (a whole entry with `target`) is a 400 naming the keys to remove. The dashboard refuses (409) when the entry at `index` is another one. Take `backend` and `model` from the same `get_config` routing read as `index` and `base_hash`. Omitting it keeps the `base_hash` guard alone. |
 | `bootstrap` | `enum: env, wiki` | no | symphony-domain chaining only; see `upsert_symphony` |
 
 REST mapping: `put_global`→PUT `/api/config/global`; `put_section`→PUT `/api/config/section/{id}`; `catalog_create`→POST `/api/config/catalog/{id}`; `catalog_update`→PUT `/api/config/catalog/{id}/{item_id}`; `catalog_delete`→DELETE `/api/config/catalog/{id}/{item_id}`; `routing_create`→POST `/api/config/routing/entry`; `routing_update`→PUT `/api/config/routing/entry/{index}`; `routing_delete`→DELETE `/api/config/routing/entry/{index}`; `reload`→POST `/api/config/reload`.

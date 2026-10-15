@@ -1,8 +1,6 @@
 """GitHub authentication layer — PAT and App auth implementations."""
 from __future__ import annotations
 
-import sys
-
 from coordinare.auth.app import AppAuth
 from coordinare.auth.pat import PatAuth
 from coordinare.auth.protocol import GitHubAuth
@@ -30,22 +28,22 @@ def build_auth(config: object) -> GitHubAuth:
 
 
 def validate_auth_config(config: object) -> None:
-    """Verify auth config is usable at startup; SystemExit with actionable message on failure."""
+    """Verify the App-mode key file is usable; ValueError with an actionable message otherwise.
+
+    225: a ValueError, so the save path can refuse with the reason. The boot call site turns it
+    into the same stderr message and exit status it always had.
+    """
     if getattr(config, "github_auth", None) != "app":
         return
     path = getattr(config, "github_private_key_path", None)
     if path is None:
         return
     if not path.exists():
-        print(
-            f"ERROR: github_private_key_path {str(path)!r} does not exist. "
-            "Create the file or correct the path in your config.",
-            file=sys.stderr,
+        msg = (
+            f"github_private_key_path {str(path)!r} does not exist. "
+            "Create the file or correct the path in your config."
         )
-        sys.exit(1)
+        raise ValueError(msg)
     if not path.is_file():
-        print(
-            f"ERROR: github_private_key_path {str(path)!r} is not a regular file.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        msg = f"github_private_key_path {str(path)!r} is not a regular file."
+        raise ValueError(msg)

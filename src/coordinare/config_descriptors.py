@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, SecretStr
 from pydantic_core import PydanticUndefined
 
 from coordinare.config_usage import UsedBy, usage_index
+from coordinare.localhost_guard import dashboard_token_required
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -84,6 +85,11 @@ class ConfigSetting(BaseModel):
     editable: bool = True
     restart_required: bool = False
     secret: bool = False
+    # 225: "required" means the current configuration refuses this field left empty: a field with
+    # no default; a credential the model needs under the current auth mode (github_token under pat);
+    # the dashboard token on a non-loopback bind with no OIDC flow. Each is derived from the rule the
+    # daemon's own validator applies, never hand-listed. A required field is not offered a Clear.
+    required: bool = False
     is_env_placeholder: bool = False
     invalid: bool = False
     section: str = ""
@@ -368,7 +374,8 @@ def setting_from_field(
     per-field annotation flags (:func:`annotation_for`), and masks secrets via the
     choke-point serializer (:func:`serialize_value`). The dotted ``<section>.<key>``
     becomes the setting ``key``. An ``invalid`` field (failed validation on disk,
-    research D8) renders read-only with its raw value shown.
+    research D8) renders read-only with its raw value shown. ``required`` is pydantic's
+    own answer (a field with no default); a caller with a conditional rule overrides it.
     """
     dotted = f"{section}.{key}"
     ann = annotation_for(dotted)
@@ -414,10 +421,26 @@ def setting_from_field(
         editable=ann.editable and not invalid,
         restart_required=ann.restart_required,
         secret=is_secret,
+        required=field_info.is_required(),
         is_env_placeholder=is_env,
         invalid=invalid,
         section=section,
     )
+
+
+def _global_field_required(pc: ProjectConfiguration, fname: str, finfo: FieldInfo) -> bool:
+    """225: is a global field required under the current configuration?
+
+    A field with no default is required (pydantic). A credential the model requires only under one
+    auth mode (``AUTH_REQUIRED_CREDENTIALS``, which the model's own validator enforces) is required
+    while that mode is set. The dashboard token is required by the same predicate the startup check
+    uses (``dashboard_token_required``). ``type(pc)`` reads the class attribute without importing
+    the model here.
+    """
+    if fname == "dashboard_auth_token":
+        return dashboard_token_required(pc.dashboard_host, oidc=pc.dashboard_oidc)
+    mode = type(pc).AUTH_REQUIRED_CREDENTIALS.get(fname)
+    return finfo.is_required() or (mode is not None and pc.github_auth == mode)
 
 
 # --- T013/T014: section grouping + snapshot assembly (data-model E2/E3/E5) -----
@@ -525,7 +548,9 @@ def _build_global_section(
         else:
             value = getattr(pc, fname, None)
         settings.append(
-            setting_from_field("global", fname, finfo, value, invalid=is_invalid),
+            setting_from_field("global", fname, finfo, value, invalid=is_invalid).model_copy(
+                update={"required": _global_field_required(pc, fname, finfo)},
+            ),
         )
     return ConfigSection(
         id="global",

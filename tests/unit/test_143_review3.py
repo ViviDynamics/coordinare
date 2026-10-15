@@ -10,12 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from tests.unit.test_dashboard_config_api import _make_client, _routing_hash
 
 _STALE = "sha256:" + "0" * 64
+
+
+@pytest.fixture(autouse=True)
+def _github_token_in_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixtures keep ${COORDINARE_GITHUB_TOKEN} in the file; the daemon reads it from the environment (225)."""
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
 
 
 def _client(config_path: Path) -> TestClient:

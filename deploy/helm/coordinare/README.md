@@ -184,7 +184,18 @@ You should see `pods` and `pods/log`, and nothing else.
 
 The dashboard requires the `COORDINARE_DASHBOARD_AUTH_TOKEN` Secret entry because
 its container binds a non-loopback address. The chart references the variable
-name; never put the token into `config` or a committed values file. Connect through
+name; never put the token into `config` or a committed values file.
+
+**If the variable is not set, the daemon refuses to start.** The chart cannot
+catch this at install time: the chart never reads the value (the Secret reaches the
+pod through `envFrom`, not through `values.yaml`), so Helm has nothing to check. The
+daemon checks instead. An unset `${COORDINARE_DASHBOARD_AUTH_TOKEN}` stays literal
+after expansion, and the daemon refuses it at boot, naming the variable
+(`dashboard_auth_token still holds ${COORDINARE_DASHBOARD_AUTH_TOKEN}: the environment
+variable COORDINARE_DASHBOARD_AUTH_TOKEN is not set`). The same holds for
+`${GITHUB_TOKEN}` and an OIDC client secret. Before installing, check the Secret has
+the entry: `kubectl get secret <name> -o jsonpath='{.data.COORDINARE_DASHBOARD_AUTH_TOKEN}'`
+must print a value. The pod's log then shows the refusal if it does not. Connect through
 port-forwarding, then use username `operator` and the token as the browser password.
 The Service stays ClusterIP. For ingress/SSO and TLS, follow
 [dashboard authentication](../../../docs/security/dashboard-auth.md).

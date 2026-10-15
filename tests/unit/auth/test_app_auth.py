@@ -416,7 +416,7 @@ class TestValidateAuthConfig:
         )
         validate_auth_config(config)  # must not raise
 
-    def test_app_mode_missing_key_calls_sys_exit(self, tmp_path: Path) -> None:
+    def test_app_mode_missing_key_raises_value_error(self, tmp_path: Path) -> None:
         from coordinare.auth import validate_auth_config
         from coordinare.config import ProjectConfiguration
 
@@ -430,5 +430,5 @@ class TestValidateAuthConfig:
             github_private_key_path=tmp_path / "does_not_exist.pem",
             github_installation_id=2,
         )
-        with pytest.raises(SystemExit):
+        with pytest.raises(ValueError, match="does not exist"):
             validate_auth_config(config)

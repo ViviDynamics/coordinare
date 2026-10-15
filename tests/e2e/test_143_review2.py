@@ -108,13 +108,14 @@ def test_s1_a_secret_can_be_cleared_from_the_ui(page: Page, live_server_url: str
     saves: list[dict[str, Any]] = []
     _stub_config(page, _snapshot(), saves)
     _open_settings(page, live_server_url)
-    page.locator('#config-page-section [data-clear-for="github_token"]').click()
+    # 225: github_token is required under pat auth, so only an optional secret has a Clear.
+    page.locator('#config-page-section [data-clear-for="dashboard_auth_token"]').click()
     _dirty_poll(page)
     _save_section(page)
     expect(page.locator("#config-page-section [data-review]")).to_contain_text("(cleared)", timeout=_WAIT)
     _review_confirm(page)
     expect(page.locator('#config-page-section [data-section="global"] [data-status]')).to_contain_text("Saved", timeout=_WAIT)
-    assert saves and saves[0]["body"]["changes"].get("github_token") == ""
+    assert saves and saves[0]["body"]["changes"].get("dashboard_auth_token") == ""
 
 
 @pytest.mark.e2e
