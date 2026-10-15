@@ -74,11 +74,17 @@ class BootstrapEnvironment:
             integrity = await self.run("integrity")
             if not integrity["passed"]:
                 return {**integrity, "integrity_failure": True}
+            # 265: the daemon's rendered text decides when it was sent, run from the checkout.
             passed, detail = await workspace.run_env_cache_verify(
                 self.score.env_cache_path, self.stand.cache_env,
+                cwd=self.stand.path, verify_text=self.score.bootstrap_verify_sh,
             )
             integrity = await self.run("integrity")
             if not integrity["passed"]:
                 return {**integrity, "integrity_failure": True}
-            return {"passed": passed is True, "reason": detail[-1000:]}
+            return {
+                "passed": passed is True,
+                "reason": detail[-1000:],
+                "verify_basis": workspace.verify_basis_for(self.score.bootstrap_verify_sh, passed=passed),
+            }
         raise ValueError(f"unknown bootstrap step: {step}")

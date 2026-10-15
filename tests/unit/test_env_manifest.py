@@ -154,7 +154,10 @@ class TestVerifyRenderer:
         # the smoke-test is a hard failure (sets FAILED), gated on the repo mount
         boot_line = next(ln for ln in sh.splitlines() if "require 'rails'" in ln)
         assert "FAILED=1" in boot_line
-        assert 'if [ -d "/repo" ]; then' in sh
+        # 265: the smoke runs in the checkout the verify was started from, not a path baked in.
+        assert '_REPO="${COORDINARE_REPO_DIR:-/repo}"' in sh
+        assert 'if [ -f "$_REPO/Gemfile" ]; then' in sh
+        assert "BUNDLE_GEMFILE=/repo/Gemfile" not in sh
 
     def test_rails_boot_smoke_test_absent_when_no_rails(self) -> None:
         """A manifest with no ``rails`` gem must NOT emit the Rails-boot block —

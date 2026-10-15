@@ -150,6 +150,7 @@ class PerformerResponse(BaseModel):
     # 063 Phase 4 (T023): True when services-health.sh exited non-zero during
     # workspace setup. Coordinare uses this to force env-cache regeneration.
     env_cache_health_failed: bool = False
+    env_cache_stat_mismatch: bool = False
     # 089: True when the implementer local-test gate ran the detected
     # test_command and it failed for a code reason (not env). Coordinare uses
     # this on changes_requested to drive the bounded self-fix loop (T023).
@@ -173,6 +174,10 @@ class PerformerResponse(BaseModel):
     # zero-commit turns (head_before == head_after) and route them to retry
     # rather than honoring a no-progress "blocked" verdict.
     head_before: str | None = None
+    # 265: where the env_bootstrap verify decided success: "daemon_rendered" (the text the daemon sent)
+    # or "cache_file" (the cache copy, an older daemon). None when no verify ran. Coordinare fails closed on
+    # Kubernetes unless this is "daemon_rendered".
+    env_verify_basis: str | None = None
     head_after: str | None = None
     # 511: the working branch this performer pushed. Set on pr_opened so the
     # coordinare's 076 artefact write-through records pushed_branch alongside

@@ -1353,6 +1353,10 @@ class ProjectConfiguration(BaseSettings):
     # describes most minikube and microk8s installs.
     kubernetes_cache_claim: str | None = None
     kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
+    # 265: daemon-owned verifier image, independent of symphony endpoints.
+    kubernetes_verifier_image: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$",
+    )
     # #526 — performer image digest pinning (opt-in; default-off keeps dispatch
     # behavior byte-identical to a pre-#526 build).
     performer_digest_pin: PerformerDigestPinConfig = Field(
@@ -1535,6 +1539,15 @@ class ProjectConfiguration(BaseSettings):
 
     # 063 — LLM-driven service inference for env-cache bootstrap.
     env_cache: EnvCacheConfig = Field(default_factory=lambda: EnvCacheConfig())
+
+    @model_validator(mode="after")
+    def _validate_kubernetes_verifier_image(self) -> ProjectConfiguration:
+        if self.agent_transport == "kubernetes" and self.kubernetes_verifier_image is None:
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", self.performer_image) is None:
+                message = "kubernetes_verifier_image is required when performer_image is not a valid daemon image"
+                raise ValueError(message)
+            self.kubernetes_verifier_image = self.performer_image
+        return self
 
     @field_validator("env_cache_root", mode="after")
     @classmethod

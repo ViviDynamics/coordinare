@@ -24,6 +24,7 @@ from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.models.performer_endpoint import VolumeMount
 from coordinare.services.bootstrap_history import (
     ACT_BUDGET_RESET,
     AttemptEnd,
@@ -56,10 +57,13 @@ from coordinare.services.env_provenance import (
     freeze_cache,
     manifest_cap_bytes,
     open_manifest,
+    provenance_slug,
     read_stat_sidecar,
     stat_digest_of,
     write_stat_sidecar,
 )
+from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
+from coordinare.services.kubernetes_verifier import VerifierSpec, configured_verifier_image
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     anchored_mkdir,
@@ -81,12 +85,12 @@ if TYPE_CHECKING:
 
     from coordinare_service_inference.schema import ServicesManifest
 
-    from coordinare.models.performer_endpoint import VolumeMount
     from coordinare.services.env_manifest_llm import ChatJson
 
     class _GitHubService(Protocol):
         async def get_file_blob_sha(self, org: str, repo: str, path: str) -> str | None: ...
-        async def get_file_content(self, org: str, repo: str, path: str) -> str | None: ...
+        async def get_file_content(self, org: str, repo: str, path: str, *, ref: str = "HEAD") -> str | None: ...
+        async def get_branch_head_sha(self, branch_name: str = "main") -> str | None: ...
 
 logger = structlog.get_logger(__name__)
 
@@ -143,6 +147,14 @@ def load_prior_manifest_bounded(
     except UnicodeDecodeError:
         return None
     return parse_prior_manifest(text)
+
+
+async def _bootstrap_file_content(
+    github: _GitHubService, org: str, repo: str, path: str, commit: str | None,
+) -> str | None:
+    if commit is None:
+        return await github.get_file_content(org, repo, path)
+    return await github.get_file_content(org, repo, path, ref=commit)
 
 
 def sanitise_symphony_name(name: str) -> str:
@@ -268,6 +280,70 @@ def _cache_dir_is_populated(cache_dir: Path, *, performer_mounts: Sequence[Path]
     return False
 
 
+def _mount_for(
+    symphony_name: str,
+    state: EnvCacheState,
+    *,
+    performer_mounts: Sequence[Path],
+    container_devenv_root: str,
+) -> tuple[Path, str] | None:
+    """(host cache dir, container path) for a cache that passed its gate, or None when it is refused.
+
+    219: the host path is bind-mounted, and docker follows a link in it, so a linked cache dir is never mounted.
+    The caller builds the VolumeMount (rw for a bootstrap, ro for a consumer).
+    """
+    refusal = _cache_dir_refusal(state.cache_dir, performer_mounts=performer_mounts)
+    if refusal is not None:
+        logger.error(
+            "env_cache.mount_refused",
+            symphony=symphony_name,
+            cache_dir=str(state.cache_dir),
+            reason=refusal,
+        )
+        return None
+    return state.cache_dir, f"{container_devenv_root}/{state.sanitised_name}"
+
+
+def kubernetes_cache_verified(ec: EnvCacheState) -> bool:
+    """Persisted verifier success plus a complete frozen claim summary gates Kubernetes readiness."""
+    return (ec.last_bootstrap_succeeded is True and ec.cache_dir_ready
+            and ec.provenance_digest is not None and ec.provenance_stat_digest is not None
+            and ec.provenance_inputs is not None)
+
+
+def get_kubernetes_consumer_volume(
+    symphony_name: str,
+    env_cache_states: dict[str, Any],
+    *,
+    performer_mounts: Sequence[Path],
+    container_devenv_root: str = DEFAULT_DEVENV_ROOT,
+) -> tuple[VolumeMount, str] | None:
+    """265: the consumer mount on Kubernetes, where the daemon cannot see the cache.
+
+    The daemon's own activate.sh is on its state volume and says nothing about the claim the consumer mounts. Readiness
+    here requires the verifier's successful bootstrap and the frozen claim digest and consumer inputs. A wiped claim is not
+    caught here. The performer refuses the mount before any work and asks for a re-bootstrap (agent main.py
+    _consumer_mount_gap).
+    """
+
+    state = env_cache_states.get(symphony_name)
+    if not isinstance(state, EnvCacheState):
+        return None
+    if not kubernetes_cache_verified(state):
+        return None
+    mount = _mount_for(
+        symphony_name, state, performer_mounts=performer_mounts, container_devenv_root=container_devenv_root,
+    )
+    if mount is None:
+        return None
+    cache_dir, container_path = mount
+    return VolumeMount(
+        host_path=cache_dir,
+        container_path=PurePosixPath(container_path),
+        mode="ro",
+    ), container_path
+
+
 def get_env_volume_for_symphony(
     symphony_name: str,
     env_cache_states: dict[str, Any],
@@ -295,7 +371,6 @@ def get_env_volume_for_symphony(
     same directory — stale-but-real beats no toolchain, and the next bootstrap
     supersedes whatever they used.
     """
-    from coordinare.models.performer_endpoint import VolumeMount
 
     state = env_cache_states.get(symphony_name)
     if state is None or not isinstance(state, EnvCacheState):
@@ -306,20 +381,14 @@ def get_env_volume_for_symphony(
         expected_activate=state.rendered_activate_sh,
     ):
         return None
-    # 219: the host path is bind-mounted, and docker follows a link in it, so a linked cache dir
-    # is never mounted (rw for a bootstrap, ro for a consumer).
-    refusal = _cache_dir_refusal(state.cache_dir, performer_mounts=performer_mounts)
-    if refusal is not None:
-        logger.error(
-            "env_cache.mount_refused",
-            symphony=symphony_name,
-            cache_dir=str(state.cache_dir),
-            reason=refusal,
-        )
+    mount = _mount_for(
+        symphony_name, state, performer_mounts=performer_mounts, container_devenv_root=container_devenv_root,
+    )
+    if mount is None:
         return None
-    container_path = f"{container_devenv_root}/{state.sanitised_name}"
+    cache_dir, container_path = mount
     return VolumeMount(
-        host_path=state.cache_dir,
+        host_path=cache_dir,
         container_path=PurePosixPath(container_path),
         mode="rw" if is_bootstrap else "ro",
     ), container_path
@@ -341,7 +410,6 @@ def _collect_env_volumes_for_persistent_performer(
     case and the operator must restart the performer container to pick up the
     mount.
     """
-    from coordinare.models.performer_endpoint import VolumeMount
 
     mounts: list[VolumeMount] = []
     for state in env_cache_states.values():
@@ -519,7 +587,32 @@ def _verify_cache_refusal(
     return None
 
 
+def daemon_sees_performer_cache(state: Mapping[str, Any]) -> bool:
+    """265: False on a transport whose performers run in a cluster the daemon cannot mount the cache from.
+
+    On Kubernetes the bootstrap pod mounts its own RWX claim (coordinare-devenv-cache). The daemon's cache_dir is on
+    its state volume and holds no toolchain, so a clean verify run from the daemon would check the wrong directory.
+    """
+    cfg = state.get("coordinare_config")
+    return getattr(cfg, "agent_transport", "subprocess") != "kubernetes"
+
+
 async def verify_env_cache_clean(
+    state: Mapping[str, Any],
+    symphony_name: str,
+    svc: Any,
+    *,
+    performer_mounts: Sequence[Path],
+) -> tuple[bool | None, str]:
+    """Use persisted verifier-backed readiness on Kubernetes and the local clean verify on Docker."""
+    if not daemon_sees_performer_cache(state):
+        ec = (state.get("env_cache") or {}).get(symphony_name)
+        ready = isinstance(ec, EnvCacheState) and kubernetes_cache_verified(ec)
+        return ready, "kubernetes readiness requires verifier success and frozen provenance"
+    return await _verify_cache_clean(state, symphony_name, svc, performer_mounts=performer_mounts)
+
+
+async def _verify_cache_clean(
     state: Mapping[str, Any],
     symphony_name: str,
     svc: Any,
@@ -798,6 +891,7 @@ class _Completion:
     dispatch_attempt: int
     was_exhausted: bool
     ended_at: datetime | None
+MAX_CONSECUTIVE_STAT_REFUSALS = 3
 
 
 class EnvCacheService:
@@ -831,6 +925,7 @@ class EnvCacheService:
         self._transient_streak: dict[str, int] = {}
         self._stat_pass_at: dict[str, tuple[str, float]] = {}
         self._full_inflight: set[str] = set()
+        self._kubernetes_state: Mapping[str, Any] = {}
 
     async def initialise(
         self,
@@ -1004,6 +1099,7 @@ class EnvCacheService:
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
         if cache_state is None:
             return
+        self.bind_kubernetes_state(state)
         self.schedule_full_pass(symphony_name, cache_state)
 
         global_config = self._coordinare_config.global_config
@@ -1034,7 +1130,6 @@ class EnvCacheService:
                 symphony=symphony_name,
                 agent_version=agent_version,
             )
-            cache_state.runtime_health_failed = False
             # 400: a forced run is keyed on forced_sha, which can never equal
             # the manifest SHA. Without remembering the manifest it was built
             # against, the in-flight cycles queue that SHA as "changed" and
@@ -1043,6 +1138,9 @@ class EnvCacheService:
             cache_state.forced_manifest_sha = await self._current_manifest_sha(
                 symphony_name, symphony_config, github_service, eff_config, cache_state,
             )
+            if cache_state.forced_manifest_sha is None:
+                return
+            cache_state.runtime_health_failed = False
             cache_state.bootstrap_forced = True
             try:
                 await self._do_dispatch(
@@ -1087,10 +1185,11 @@ class EnvCacheService:
         # 088 (FR-010): a spec change resets the circuit-breaker budget — fixing
         # the README/Gemfile is the designed self-healing path. The budget is
         # keyed by readme_sha (the SHA the attempts accumulated under).
+        budget_sha = cache_state.bootstrap_budget_sha or cache_state.forced_manifest_sha or cache_state.readme_sha
         if (
             (cache_state.bootstrap_attempts or cache_state.bootstrap_exhausted)
-            and cache_state.readme_sha is not None
-            and current_sha != cache_state.readme_sha
+            and budget_sha is not None
+            and current_sha != budget_sha
         ):
             logger.info(
                 "env_cache.bootstrap_budget_reset",
@@ -1105,6 +1204,8 @@ class EnvCacheService:
             )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            cache_state.runtime_repair_budget = False
+            cache_state.bootstrap_budget_sha = current_sha
 
         # 266: a new commit makes the previous commit's outcome stale. Clear it, so cards and the
         # Symphonies page say the new commit is waiting to bootstrap, not that the old one failed.
@@ -1273,13 +1374,18 @@ class EnvCacheService:
         llm_chat: ChatJson | None = None,
     ) -> None:
         repo = eff_config.project_name or symphony_name
+        cache_state.bootstrap_commit_sha = None
+        if getattr(self._coordinare_config, "agent_transport", None) == "kubernetes":
+            commit = await github_service.get_branch_head_sha(str(getattr(eff_config, "base_branch", None) or "main"))
+            if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+                message = "could not resolve the bootstrap repository commit"
+                raise ProvenanceTransientError(message)
+            cache_state.bootstrap_commit_sha = commit
         env_spec_contents: dict[str, str] = {}
         for spec_file in symphony_config.env_spec_files:
             try:
-                content = await github_service.get_file_content(
-                    eff_config.github_org,
-                    repo,
-                    spec_file,
+                content = await _bootstrap_file_content(
+                    github_service, eff_config.github_org, repo, spec_file, cache_state.bootstrap_commit_sha,
                 )
                 env_spec_contents[spec_file] = content or ""
             except Exception as exc:
@@ -1319,6 +1425,7 @@ class EnvCacheService:
                 repo=repo,
                 github_service=github_service,
                 symphony_name=symphony_name,
+                commit=cache_state.bootstrap_commit_sha,
             )
         else:
             declared_services = []
@@ -1332,6 +1439,11 @@ class EnvCacheService:
         # Consumers are refused until the next verified bootstrap freezes a new one.
         cache_state.provenance_digest = None
         cache_state.provenance_frozen_at = None
+        cache_state.provenance_stat_digest = None
+        cache_state.provenance_inputs = None
+        cache_state.provenance_entry_count = 0
+        cache_state.provenance_total_bytes = 0
+        cache_state.verifier_provenance = None
         self._forget_derived(symphony_name)
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             performer_mounts=self._performer_mounts(),
@@ -1388,6 +1500,9 @@ class EnvCacheService:
             declared_services=declared_services,
             test_env_vars=test_env_vars,
             coordinare_manages_services=manages_services,
+            # 265: the daemon's rendered scripts ride the dispatch. The bootstrap pod cannot read the daemon's cache.
+            rendered_verify_sh=cache_state.rendered_verify_sh,
+            rendered_activate_sh=cache_state.rendered_activate_sh,
         )
 
         # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
@@ -1399,6 +1514,7 @@ class EnvCacheService:
         # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
         # lets the in-handler reset stick; the async-success path leaves it True
         # until the poll task fires completion.
+        cache_state.bootstrap_budget_sha = cache_state.forced_manifest_sha if cache_state.bootstrap_forced else current_sha
         cache_state.readme_sha = current_sha
         cache_state.bootstrap_in_flight = True
         logger.info(
@@ -1539,12 +1655,15 @@ class EnvCacheService:
         """Freeze the just-verified cache (234). Returns ``(True, None)`` or ``(False, reason)``.
 
         Called by the completion path after the clean verify has passed and the bootstrap container is proven gone.
-        The manifest is streamed to disk. Only its digest and the cache's stat digest are kept in memory.
+        Docker streams a manifest to disk. Kubernetes consumes the verifier's bounded summary instead.
         """
         env_cache: dict[str, Any] = state.get("env_cache") or {}
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
         if cache_state is None or cache_state.rendered_activate_sh is None:
             return False, "no daemon-rendered activate.sh on record; nothing to freeze"
+        self.bind_kubernetes_state(state)
+        if not daemon_sees_performer_cache(state):
+            return self._freeze_claim(symphony_name, cache_state)
         try:
             result = await self._run_walk(
                 freeze_cache,
@@ -1576,6 +1695,102 @@ class EnvCacheService:
             digest=result.manifest.digest,
         )
         return True, None
+
+    def bind_kubernetes_state(self, state: Mapping[str, Any]) -> None:
+        """Resolve the configured bootstrap runtime afresh, including after a daemon restart."""
+        self._kubernetes_state = state
+
+    async def recheck_consumer_provenance(self, symphony_name: str, state: dict[str, Any]) -> None:
+        """A consumer stat refusal requests a full content pass before any repair or budget spend."""
+        self.bind_kubernetes_state(state)
+        ec = (state.get("env_cache") or {}).get(symphony_name)
+        if ec is None:
+            return
+        if ec.runtime_health_failed:
+            return
+        self._provenance_full_at.pop(symphony_name, None)
+        check = await self.run_full_pass(symphony_name, ec)
+        if check is None or check.transient:
+            return
+        if not check.ok:
+            self.mark_runtime_health_failed(symphony_name, state)
+            return
+        ec.consumer_stat_refusals += 1
+        count = ec.consumer_stat_refusals
+        if count > MAX_CONSECUTIVE_STAT_REFUSALS:
+            self.mark_runtime_health_failed(symphony_name, state)
+            ec.last_bootstrap_error = redact_state_value(
+                f"consumer stat digest refused {count} consecutive times; rebuilding within bootstrap budget",
+            )
+            logger.warning("env_cache.consumer_stat_refusals_exhausted", symphony=symphony_name,
+                           count=count, reason=ec.last_bootstrap_error)
+
+    def _freeze_claim(self, symphony_name: str, ec: EnvCacheState) -> tuple[bool, str | None]:
+        result = ec.verifier_provenance
+        ec.verifier_provenance = None
+        if result is None:
+            return False, "no verified kubernetes provenance result; re-bootstrap with the current performer image"
+        try:
+            result = validate_summary(result, ec.rendered_activate_sh or "", self._provenance_limits())
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            return False, f"kubernetes provenance refused: {exc}"
+        self._forget_derived(symphony_name)
+        ec.consumer_stat_refusals = 0
+        ec.provenance_digest = result["content_digest"]
+        ec.provenance_stat_digest = result["stat_digest"]
+        ec.provenance_inputs = result["inputs"]
+        ec.provenance_entry_count = result["entry_count"]
+        ec.provenance_total_bytes = result["total_bytes"]
+        ec.provenance_frozen_at = datetime.now(UTC)
+        self._provenance_full_at[symphony_name] = time.monotonic()
+        return True, None
+
+    async def _check_claim(self, symphony_name: str, ec: EnvCacheState, digest: str) -> ProvenanceCheck:
+        state = self._kubernetes_state
+        sym_cfg = (state.get("symphony_configs") or {}).get(symphony_name)
+        performer_id = getattr(sym_cfg, "env_bootstrap_performer_id", None)
+        svc = (state.get("performer_services_by_id") or {}).get(performer_id)
+        runtime = getattr(svc, "_runtime", None)
+        image = ""
+        refusal = None
+        try:
+            image = configured_verifier_image(self._coordinare_config)
+        except ValueError as exc:
+            refusal = str(exc)
+        if refusal or runtime is None or not getattr(runtime, "verifies_clean_room", False):
+            return ProvenanceCheck(False, refusal or "kubernetes verifier runtime unavailable", transient=True)
+        limits = self._provenance_limits()
+        spec = VerifierSpec(
+            image=image,
+            cache_claim="", cache_subpath=ec.sanitised_name,
+            mount_path=f"{getattr(svc, 'devenv_root', DEFAULT_DEVENV_ROOT)}/{ec.sanitised_name}",
+            verify_text="", project_files={}, activate_text=ec.rendered_activate_sh,
+            walk_only=True, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+        )
+        started = time.monotonic()
+        try:
+            ok, detail = await runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
+            if ok is None:
+                return ProvenanceCheck(False, detail, hashed=True, transient=True)
+            result = parse_summary(detail, ec.rendered_activate_sh or "", limits)
+        except (OSError, TimeoutError, ProvenanceTransientError) as exc:
+            return ProvenanceCheck(False, str(exc), hashed=True, transient=True)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            return self._record_drift(symphony_name, ec, digest, f"kubernetes provenance refused: {exc}")
+        if not ok:
+            return ProvenanceCheck(False, "kubernetes provenance walker failed", hashed=True, transient=True)
+        return self._accept_claim_recheck(symphony_name, ec, digest, result, started)
+
+    def _accept_claim_recheck(
+        self, symphony_name: str, ec: EnvCacheState, digest: str, result: dict[str, Any], started: float,
+    ) -> ProvenanceCheck:
+        if result["content_digest"] != digest or result["inputs"] != ec.provenance_inputs:
+            return self._record_drift(symphony_name, ec, digest, "kubernetes cache content changed after freeze")
+        if ec.provenance_digest != digest:
+            return ProvenanceCheck(False, "frozen provenance changed during the check; retry", transient=True)
+        ec.provenance_stat_digest = result["stat_digest"]
+        self._provenance_full_at[symphony_name] = started
+        return ProvenanceCheck(True, hashed=True)
 
     def _forget_derived(self, symphony_name: str) -> None:
         """Drop the in-memory views of a manifest: its stat digest, payload, full-pass clock and any drift."""
@@ -1696,6 +1911,8 @@ class EnvCacheService:
         case), and the stat pass is stamped with the time the check started. That stamp is kept only while the digest
         checked is still the current one.
         """
+        if getattr(self._coordinare_config, "agent_transport", None) == "kubernetes":
+            return await self._check_claim(symphony_name, cache_state, digest)
         try:
             manifest_path = self._manifest_path(cache_state)
         except RuntimeError as exc:
@@ -1743,7 +1960,19 @@ class EnvCacheService:
             logger.info("env_cache.provenance_recheck_full", symphony=symphony_name)
         return ProvenanceCheck(True, None, hashed=True)
 
-    async def _verify(self, symphony_name: str, cache_state: EnvCacheState) -> tuple[ProvenanceCheck, str | None]:
+    async def _verify(self, symphony_name: str, ec: EnvCacheState) -> tuple[ProvenanceCheck, str | None]:
+        if getattr(self._coordinare_config, "agent_transport", None) != "kubernetes":
+            return await self._verify_local(symphony_name, ec)
+        digest = ec.provenance_digest
+        if digest is None or ec.provenance_inputs is None or ec.provenance_stat_digest is None:
+            return ProvenanceCheck(False, "no frozen kubernetes provenance; re-bootstrap"), digest
+        if symphony_name in self._drift:
+            return ProvenanceCheck(False, self._drift[symphony_name]), digest
+        if symphony_name not in self._provenance_full_at:
+            return await self._content_check(symphony_name, ec, digest), digest
+        return ProvenanceCheck(True), digest
+
+    async def _verify_local(self, symphony_name: str, cache_state: EnvCacheState) -> tuple[ProvenanceCheck, str | None]:
         """The dispatch check (234 review 4 and 5). Order: a recorded drift refuses; a passing stat check younger than the
         window is reused with no walk; otherwise one shared stat walk, joined only if it started after this call arrived,
         is compared with the recorded digest; a mismatch, or the first dispatch of a process, runs the content check.
@@ -1809,6 +2038,13 @@ class EnvCacheService:
         self, symphony_name: str, cache_state: EnvCacheState, digest: str, container_path: str,
     ) -> dict[str, Any] | None:
         """The small payload for one digest and container path, built once and cached (234 review 3)."""
+        if getattr(self._coordinare_config, "agent_transport", None) == "kubernetes":
+            if cache_state.provenance_inputs is None or cache_state.provenance_stat_digest is None:
+                return None
+            limits = self._provenance_limits()
+            return {**cache_state.provenance_inputs, "version": 2, "slug": provenance_slug(cache_state.sanitised_name),
+                    "cache_path": container_path, "digest": digest, "stat_digest": cache_state.provenance_stat_digest,
+                    "max_entries": limits.max_entries, "max_bytes": limits.max_bytes}
         held = self._payloads.get(symphony_name)
         if held is not None and held[0] == digest and held[1] == container_path:
             return held[2]
@@ -1882,6 +2118,7 @@ class EnvCacheService:
         repo: str,
         github_service: _GitHubService,
         symphony_name: str,
+        commit: str | None = None,
     ) -> list[dict[str, Any]]:
         """Best-effort fetch of durably-declared services from .coordinare/score.json (091).
 
@@ -1892,8 +2129,8 @@ class EnvCacheService:
         before 091.
         """
         try:
-            content = await github_service.get_file_content(
-                github_org, repo, ".coordinare/score.json",
+            content = await _bootstrap_file_content(
+                github_service, github_org, repo, ".coordinare/score.json", commit,
             )
         except Exception:
             return []
@@ -1948,7 +2185,10 @@ class EnvCacheService:
         struct_contents: dict[str, str] = {}
         for spec_file in STRUCTURED_SPEC_FILES:
             try:
-                content = await github_service.get_file_content(github_org, repo, spec_file)
+                content = await _bootstrap_file_content(
+                    github_service, github_org, repo, spec_file,
+                    cache_state.bootstrap_commit_sha if cache_state is not None else None,
+                )
             except Exception:
                 content = None
             if content:
@@ -2084,7 +2324,13 @@ class EnvCacheService:
                 symphony=symphony_name,
             )
             return
+        if not cache_state.runtime_health_failed:
+            cache_state.runtime_repair_budget = True
+            cache_state.bootstrap_budget_sha = cache_state.bootstrap_budget_sha or cache_state.forced_manifest_sha or cache_state.readme_sha
+            self._spend_breaker_attempt(symphony_name, cache_state, state)
         cache_state.runtime_health_failed = True
+        cache_state.cache_dir_ready = False
+        getattr(self, "_provenance_full_at", {}).pop(symphony_name, None)
         logger.warning(
             "env_cache.runtime_health_failed",
             symphony=symphony_name,
@@ -2259,9 +2505,12 @@ class EnvCacheService:
         self, symphony_name: str, cache_state: EnvCacheState, state: dict[str, Any],
     ) -> None:
         """088 (FR-009): one real bootstrap failure spends the attempt budget; exhaustion trips it."""
+        # The first runtime failure requests a repair; it must allow that repair even with a one-attempt budget.
+        # Keep the charge so a failed repair or another refusal after a successful repair can trip the breaker.
+        first_runtime_failure = cache_state.runtime_repair_budget and not cache_state.bootstrap_attempts
         cache_state.bootstrap_attempts += 1
         max_attempts = budget_max_attempts(self._coordinare_config)
-        if cache_state.bootstrap_attempts >= max_attempts and not cache_state.bootstrap_exhausted:
+        if not first_runtime_failure and cache_state.bootstrap_attempts >= max_attempts and not cache_state.bootstrap_exhausted:
             cache_state.bootstrap_exhausted = True
             logger.warning(
                 "env_cache.bootstrap_exhausted",
@@ -2271,6 +2520,19 @@ class EnvCacheService:
                 last_error=cache_state.last_bootstrap_error,
             )
             self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
+
+    def _mark_bootstrap_success(self, symphony_name: str, cache_state: EnvCacheState) -> None:
+        """A finished bootstrap succeeded: the cache is usable and the budgets it may clear are cleared."""
+        cache_state.cache_dir_ready = True
+        # 218 (review round 3): a success clears the infrastructure budget.
+        cache_state.infra_failures = 0
+        # A runtime repair keeps its refusal budget, including through successful rebuilds.
+        if not cache_state.runtime_repair_budget:
+            cache_state.bootstrap_attempts = 0
+            cache_state.bootstrap_exhausted = False
+        # 088 (US5): an in-process success was already clean-verified by the
+        # completion path, so the restart honor verify must not re-fire.
+        self._restart_verified.add(symphony_name)
 
     def on_bootstrap_complete(
         self,
@@ -2309,9 +2571,11 @@ class EnvCacheService:
             # 219 review: a refused cache dir is not "wrong location". Say what was refused.
             success = False
             error = refusal_error
-        elif success and not _cache_dir_is_populated(
+        elif success and daemon_sees_performer_cache(state) and not _cache_dir_is_populated(
             cache_state.cache_dir, performer_mounts=self._performer_mounts(),
         ):
+            # 265 (review B3): on Kubernetes the daemon's cache_dir is the seed directory, so this check would always
+            # downgrade a real success. The clean-room verifier pod has already checked the claim.
             success = False
             error = (
                 "env-cache mount contains only coordinare-seeded files "
@@ -2335,15 +2599,7 @@ class EnvCacheService:
         # cache_dir_ready stays False until at least one bootstrap succeeds,
         # which prevents performers from mounting an unpopulated cache dir.
         if success:
-            cache_state.cache_dir_ready = True
-            # 218 (review round 3): a success clears the infrastructure budget.
-            cache_state.infra_failures = 0
-            # 088 (FR-009): success re-arms the circuit breaker.
-            cache_state.bootstrap_attempts = 0
-            cache_state.bootstrap_exhausted = False
-            # 088 (US5): an in-process success was already clean-verified by the
-            # completion path — the restart honor verify must not re-fire.
-            self._restart_verified.add(symphony_name)
+            self._mark_bootstrap_success(symphony_name, cache_state)
 
         # 088 (FR-009): on failure, KEEP the recorded SHA. Clearing it (the
         # pre-088 behaviour) made the next cycle recompute needs_bootstrap=True

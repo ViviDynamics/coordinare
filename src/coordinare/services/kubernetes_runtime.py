@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import re
 import time
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
@@ -35,6 +36,17 @@ from kubernetes.client.rest import ApiException
 
 from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
+from coordinare.services.kubernetes_verifier import (
+    VERIFIER_CONTAINER,
+    VERIFIER_DEADLINE_S,
+    VERIFIER_LOG_MAX_BYTES,
+    VERIFIER_LOG_TAIL_LINES,
+    VERIFIER_POLL_INTERVAL_S,
+    VERIFIER_REMOVAL_TIMEOUT_S,
+    VerifierSpec,
+    build_verifier_pod_manifest,
+    verifier_pod_name,
+)
 from coordinare.services.performer_runtime import StartedPerformer
 from coordinare.services.run_log import LOG_CHUNK_BYTES
 
@@ -48,6 +60,12 @@ _log = structlog.get_logger(__name__)
 
 #: The port the performer image serves on. Fixed by the image's entrypoint
 #: (``python -m performer --serve --port 8088``), verified in the spike.
+VERIFIER_INFRASTRUCTURE_REASONS = frozenset({"DeadlineExceeded", "Evicted", "NodeLost", "Shutdown", "OutOfcpu", "OutOfmemory"})
+
+VERIFIER_WAITING_INFRASTRUCTURE_REASONS = frozenset({
+    "ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CreateContainerConfigError",
+})
+
 PERFORMER_PORT = 8088
 
 #: Label tying a Pod back to the performer that owns it. Used by the orphan sweep
@@ -692,6 +710,92 @@ class KubernetesRuntime:
             pod=pod_name,
             detail="Pod outlived its grace period; a restart of this performer may collide",
         )
+
+    @property
+    def verifies_clean_room(self) -> bool:
+        """265: this runtime can run the clean-room verifier pod (see run_verifier)."""
+        return True
+
+    async def run_verifier(
+        self,
+        *,
+        slug: str,
+        spec: VerifierSpec,
+        poll_interval_s: float = VERIFIER_POLL_INTERVAL_S,
+    ) -> tuple[bool | None, str]:
+        """265: run the daemon's verify text in a clean-room verifier pod and return the verdict.
+
+        ``(True, _)`` when the pod succeeded, ``(False, reason)`` when the verify failed, and ``(None, reason)``
+        when the pod could not be run or timed out: infrastructure, not a verdict. The pod is removed in every path.
+        Invalid inputs are refused as infrastructure before any pod is made. Success also requires confirmed removal
+        of the pod, so another pod can safely start only after this method returns a pass.
+        """
+        if not self._cache_claim:
+            return None, "no devenv cache claim is configured, so the verifier cannot mount the cache"
+        try:
+            manifest = build_verifier_pod_manifest(
+                replace(spec, cache_claim=self._cache_claim),
+                name=verifier_pod_name(slug),
+                namespace=self._namespace,
+                image_pull_secrets=tuple(self._image_pull_secrets),
+            )
+        except (ValueError, UnicodeError) as exc:
+            return None, f"verifier pod spec refused: {exc}"
+        name = str(manifest["metadata"]["name"])
+        try:
+            await asyncio.to_thread(
+                self._api.create_namespaced_pod, namespace=self._namespace, body=manifest,
+            )
+        except Exception as exc:
+            return None, f"verifier pod could not be created: {type(exc).__name__}"
+        try:
+            result = await self._await_verifier(name, poll_interval_s=poll_interval_s)
+        except Exception as exc:
+            result = None, f"verifier pod could not be read: {type(exc).__name__}"
+        finally:
+            removed = await self._remove_verifier(name)
+        if not removed:
+            return None, "verifier pod could not be confirmed removed; retry before starting another pod"
+        return result
+
+    async def _await_verifier(self, name: str, *, poll_interval_s: float) -> tuple[bool | None, str]:
+        deadline = asyncio.get_running_loop().time() + VERIFIER_DEADLINE_S
+        while True:
+            pod = await asyncio.to_thread(self._api.read_namespaced_pod, name=name, namespace=self._namespace)
+            status = getattr(pod, "status", None)
+            for container in getattr(status, "container_statuses", None) or ():
+                waiting = getattr(getattr(container, "state", None), "waiting", None)
+                reason = getattr(waiting, "reason", None)
+                if reason in VERIFIER_WAITING_INFRASTRUCTURE_REASONS:
+                    return None, f"verifier container infrastructure failure: {reason}"
+            phase = getattr(status, "phase", None)
+            if phase == "Succeeded":
+                return True, await self._verifier_logs(name)
+            if phase == "Failed" and getattr(pod.status, "reason", None) in VERIFIER_INFRASTRUCTURE_REASONS:
+                return None, f"verifier pod infrastructure failure: {pod.status.reason}"
+            if phase == "Failed":
+                return False, await self._verifier_logs(name)
+            if asyncio.get_running_loop().time() >= deadline:
+                return None, f"verifier timed out after {VERIFIER_DEADLINE_S}s"
+            await asyncio.sleep(poll_interval_s)
+
+    async def _verifier_logs(self, name: str) -> str:
+        try:
+            text = await asyncio.to_thread(
+                self._api.read_namespaced_pod_log, name=name, namespace=self._namespace,
+                container=VERIFIER_CONTAINER, tail_lines=VERIFIER_LOG_TAIL_LINES, limit_bytes=VERIFIER_LOG_MAX_BYTES,
+            )
+        except Exception as exc:
+            message = "verifier logs unavailable"
+            raise OSError(message) from exc
+        return str(text).encode("utf-8")[-VERIFIER_LOG_MAX_BYTES:].decode("utf-8", errors="replace")
+
+    async def _remove_verifier(self, name: str) -> bool:
+        try:
+            return await self.confirm_stopped(name, timeout_s=VERIFIER_REMOVAL_TIMEOUT_S)
+        except Exception as exc:
+            _log.warning("kubernetes_runtime.verifier_remove_failed", pod=name, error=type(exc).__name__)
+            return False
 
     async def tail_logs(self, handle: str, *, lines: int = 200) -> list[str]:
         """Live log lines from a running Pod, via the same ``pods/log`` grant."""

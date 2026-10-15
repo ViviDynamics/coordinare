@@ -12,18 +12,21 @@ The profile (``devenv-profile.sh``) and the performer's own reads take their scr
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
+from coordinare_service_inference.cache_provenance import WalkRefusedError, stat_digest
 
 if TYPE_CHECKING:
-    from performer.server.models import EnvProvenance
+    from performer.server.models import BootstrapScripts, EnvProvenance
 
 log = structlog.get_logger(__name__)
 
@@ -40,6 +43,10 @@ _ROOT_MODE = 0o700
 _DIR_MODE = 0o755
 _SCRIPT_MODE = 0o755
 _FILE_MODE = 0o644
+# 265 (review B1): the create mode of a temp file before its real mode is set on the open descriptor, and the
+# number of random bytes in its name.
+_PRIVATE_CREATE_MODE = 0o600
+_TEMP_TOKEN_BYTES = 8
 
 
 class ProvenanceMaterialiseError(Exception):
@@ -124,6 +131,17 @@ def materialise(provenance: EnvProvenance, *, root: Path) -> Path:
     if provenance.slug != expected:
         message = f"slug {provenance.slug!r} does not match the cache path (expected {expected!r})"
         raise ProvenanceMaterialiseError(message)
+    if provenance.version == 2 and provenance.stat_digest is None:
+        message = "v2 provenance requires a stat digest"
+        raise ProvenanceMaterialiseError(message)
+    if provenance.stat_digest is not None:
+        try:
+            actual = stat_digest(Path(provenance.cache_path), max_entries=provenance.max_entries,
+                                 max_bytes=provenance.max_bytes)
+        except (OSError, WalkRefusedError) as exc:
+            raise ProvenanceMaterialiseError(f"stat digest check refused: {exc}") from exc
+        if actual != provenance.stat_digest:
+            raise ProvenanceMaterialiseError("stat digest differs from the verifier baseline")
     verified = {rel: _read_listed_deb(provenance.cache_path, rel, digest) for rel, digest in provenance.debs.items()}
     dest = root / provenance.slug
     if dest.is_symlink() or dest.is_file():
@@ -151,9 +169,59 @@ def materialise(provenance: EnvProvenance, *, root: Path) -> Path:
     return dest
 
 
+def write_bootstrap_scripts(cache_path: str, scripts: BootstrapScripts) -> None:
+    """265: write the daemon-rendered activate.sh and verify.sh into the bootstrap's cache at job start.
+
+    The bootstrap agent may have left its own copies there. These overwrite them, so the agent sees the
+    authoritative text and the activation this job sources is the daemon's. Each file is written to a temporary
+    name in the same directory and renamed over the old one, so a reader never sees a partial script.
+    """
+    cache = Path(cache_path)
+    if not cache.is_dir():
+        message = "the env cache directory is not present, so the bootstrap scripts cannot be written"
+        raise ProvenanceMaterialiseError(message)
+    for name, text, mode in (
+        ("activate.sh", scripts.activate_sh, _FILE_MODE),
+        ("verify.sh", scripts.verify_sh, _SCRIPT_MODE),
+    ):
+        write_replacing(cache / name, text.encode("utf-8"), mode)
+    log.info("env_cache.bootstrap_scripts_written", cache_path=cache_path)
+
+
+def _temp_name(name: str) -> str:
+    """A random temp name beside the target, so a link planted at a guessable name is never the one used."""
+    return f".{name}.{secrets.token_hex(_TEMP_TOKEN_BYTES)}.tmp"
+
+
+def write_replacing(path: Path, data: bytes, mode: int) -> None:
+    """265 (review B1): write *data* to *path* with a safe create, then rename it over *path*.
+
+    The temp file is created with O_EXCL and O_NOFOLLOW, so a link planted at its name makes the create fail and nothing
+    is written through it. The mode is set on the open descriptor. A link at *path* is replaced by the rename, never
+    written through. The file is fsynced before the rename.
+    """
+    temp = path.parent / _temp_name(path.name)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        fd = os.open(temp, flags, _PRIVATE_CREATE_MODE)
+    except OSError as exc:
+        message = f"could not create {path.name} safely: {exc.strerror or exc}"
+        raise ProvenanceMaterialiseError(message) from exc
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), mode)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
+
+
 def _write(path: Path, text: str, mode: int) -> None:
-    path.write_text(text, encoding="utf-8")
-    path.chmod(mode)
+    write_replacing(path, text.encode("utf-8"), mode)
 
 
 __all__ = [
@@ -165,4 +233,6 @@ __all__ = [
     "frozen_scripts_dir",
     "materialise",
     "provenance_slug",
+    "write_bootstrap_scripts",
+    "write_replacing",
 ]

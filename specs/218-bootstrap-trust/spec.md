@@ -267,6 +267,35 @@ Tests changed because they pinned the old path (fixture and expectation changes 
   step needs only the Python and uv setup and the dependency install. It adds about two minutes. The conftest
   prints one terminal summary line whenever it deselects the lane.
 
+## Round 5: Kubernetes (issue 265)
+
+On Kubernetes the bootstrap pod mounts its own RWX claim, so the daemon's `cache_dir` holds no toolchain. The
+decision moves as follows.
+
+- The dispatch carries the daemon-rendered `verify.sh` and `activate.sh` text as `bootstrap_scripts`. The performer
+  validates it (strict, size-bounded) and writes both files over the agent's copies at job start. The agent's
+  copies never decide.
+- The verify text runs with `bash -s` from the repo checkout, with `DEVENV` set to the cache mount path and
+  `COORDINARE_REPO_DIR` set to the checkout. `BASH_ENV` and `ENV` are cleared, as in the docker verify.
+- The bootstrap response carries `env_verify_basis`. On Kubernetes the daemon's clean verify is skipped with a logged
+  reason (`env_cache.clean_verify_skipped`), and the bootstrap passes only on basis `daemon_rendered`. Any other basis
+  (an older performer, or the cache copy) fails closed.
+- The Rails smoke test runs in the checkout (`COORDINARE_REPO_DIR`, default `/repo`). The verify exports `BUNDLE_PATH`
+  as `<cache>/project/bundle` when that directory exists and `BUNDLE_PATH` is unset.
+- The dispatch-time readiness gate reads a Kubernetes skip as degraded (None), so it does not block. That is the same
+  answer it gives when docker is unreachable today. It is a known gap, not a verdict.
+- **Consumer readiness on Kubernetes is the verified bootstrap, not a daemon file.** The consumer mount is granted
+  there on `last_bootstrap_succeeded` and `cache_dir_ready` (`get_kubernetes_consumer_volume`). The daemon's own
+  activate.sh is not evidence about the claim the consumer mounts. Docker keeps the daemon-side check.
+- **A wiped or recreated claim is refused by the performer, before any work.** A consumer whose mount is absent,
+  empty, or without activate.sh fails with `env_cache_missing`. The response carries `env_cache_health_failed`, the
+  existing 063 seam, so the daemon re-bootstraps the cache. The 234 provenance gate reads the daemon-side cache, so it
+  does not cover the claim on Kubernetes. This refusal is the check that does.
+
+Roll the daemon and the performer image together. An older performer ignores `bootstrap_scripts`, runs the cache copy
+and reports no basis, so on Kubernetes it fails closed. On docker the daemon's clean verify still decides. An older
+daemon sends no text, so the performer runs the cache copy from the checkout (the cwd fix alone).
+
 ## Quality gate
 
 `pyproject.toml` (the `docker_image` marker) and `.github/workflows/pr-ci.yml` (the Docker Images step) are

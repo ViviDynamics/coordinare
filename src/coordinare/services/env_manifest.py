@@ -446,6 +446,10 @@ def render_verify_sh(
         "# --- activation (daemon-rendered, inlined: the cache copy is never read) ---",
         *[ln for ln in activate_text.splitlines() if not ln.startswith("#!")],
         "# --- end of activation ---",
+        # 265: the bundle the bootstrap installed in the cache is found by bundler from the checkout, not the repo.
+        # Honoured only when the operator has not set BUNDLE_PATH and the cache holds that bundle directory.
+        "# --- bundle location (the cache-hosted gem dir, when the bootstrap installed the bundle there) ---",
+        'if [ -z "${BUNDLE_PATH:-}" ] && [ -d "$DEVENV/project/bundle" ]; then export BUNDLE_PATH="$DEVENV/project/bundle"; fi',
         "",
     ]
     # Runtimes first (everything else depends on them), then gems, then system.
@@ -459,8 +463,11 @@ def render_verify_sh(
         lines += [
             "",
             "# Rails boot smoke-test: catches native extension failures (e.g. psych without libyaml-dev)",
-            'if [ -d "/repo" ]; then',
-            "  BUNDLE_GEMFILE=/repo/Gemfile bundle exec ruby -e \"require 'rails'; require 'psych'\" "
+            # 265: the checkout the verify runs from (COORDINARE_REPO_DIR), never a path baked in. Outside a
+            # performer (the clean-context container has no checkout) the default /repo is absent and the smoke is skipped.
+            '_REPO="${COORDINARE_REPO_DIR:-/repo}"',
+            'if [ -f "$_REPO/Gemfile" ]; then',
+            "  (cd \"$_REPO\" && BUNDLE_GEMFILE=\"$_REPO/Gemfile\" bundle exec ruby -e \"require 'rails'; require 'psych'\") "
             '2>/dev/null && echo "OK: rails/psych native extensions load" || '
             '{ echo "FAIL: rails/psych failed to load (native extension or config error)" >&2; FAILED=1; }',
             "fi",

@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from coordinare_service_inference.cache_provenance import DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
 
 # ---- Progress streaming types ----
@@ -49,10 +50,12 @@ class PerformerStatus(BaseModel):
 
 
 # 234: the version this image implements. Reported on GET /status as env_provenance_version.
-ENV_PROVENANCE_CAPABILITY_VERSION = 1
+ENV_PROVENANCE_CAPABILITY_VERSION = 2
 
 _SHA256_HEX_LEN = 64
 _SCRIPT_MAX_CHARS = 256 * 1024
+# 265 (review): the bound a script is held to in bytes, the unit a wire size is measured in.
+_SCRIPT_MAX_BYTES = 256 * 1024
 
 
 class EnvProvenance(BaseModel):
@@ -73,6 +76,10 @@ class EnvProvenance(BaseModel):
     services_health_sh: str | None = Field(default=None, max_length=_SCRIPT_MAX_CHARS)
     debs: dict[str, str] = Field(default_factory=dict)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    version: Literal[1, 2] = 1
+    stat_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    max_entries: int = Field(default=DEFAULT_MAX_ENTRIES, ge=0, strict=True)
+    max_bytes: int = Field(default=DEFAULT_MAX_BYTES, ge=0, strict=True)
 
     @field_validator("debs")
     @classmethod
@@ -89,6 +96,33 @@ class EnvProvenance(BaseModel):
                 msg = f"deb {rel!r} must be debs/<name>.deb with a sha256 digest"
                 raise ValueError(msg)
         return debs
+
+
+class BootstrapScripts(BaseModel):
+    """265: the daemon-rendered verify.sh and activate.sh text for an env_bootstrap job.
+
+    The bootstrap pod mounts a cache the daemon cannot read on Kubernetes, so the daemon sends the text it
+    rendered. The performer writes it into the cache at job start and verifies it, never the agent's copy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    verify_sh: str = Field(min_length=1, max_length=_SCRIPT_MAX_CHARS)
+    activate_sh: str = Field(min_length=1, max_length=_SCRIPT_MAX_CHARS)
+
+    @field_validator("verify_sh", "activate_sh")
+    @classmethod
+    def _utf8_and_byte_bounded(cls, text: str) -> str:
+        """265 (review): the bound is in bytes, and the text must encode as UTF-8 (a lone surrogate does not)."""
+        try:
+            data = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            msg = "script is not valid UTF-8"
+            raise ValueError(msg) from exc
+        if len(data) > _SCRIPT_MAX_BYTES:
+            msg = f"script is larger than {_SCRIPT_MAX_BYTES} bytes"
+            raise ValueError(msg)
+        return text
 
 
 class JobInitPayload(BaseModel):
@@ -109,6 +143,8 @@ class JobInitPayload(BaseModel):
     env_cache_path: str | None = None
     # 234: the frozen env-cache steps. None for a job with no cache mount.
     env_provenance: EnvProvenance | None = None
+    # 265: the daemon-rendered bootstrap scripts. Set only on env_bootstrap jobs. An older image drops it.
+    bootstrap_scripts: BootstrapScripts | None = None
     # 129: per-run transcript byte cap. None means transcripts are disabled for
     # this job, so the runner records nothing and the wire carries nothing.
     transcript_max_bytes: int | None = None

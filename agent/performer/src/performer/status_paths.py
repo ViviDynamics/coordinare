@@ -1433,6 +1433,7 @@ async def _bootstrap_workflow_response(
                 "status": "env_bootstrap_complete" if run.status == "complete" else "error",
                 "session_id": perf.session_id,
                 "reason": run.reason or None,
+                "env_verify_basis": run.verify_basis,
             }, strict=True)
         except (ValidationError, ValueError):
             perf.state = "error"
@@ -1501,11 +1502,15 @@ async def _bootstrap_verify_response(
     # retries — instead of marking a broken cache "ready". A missing
     # verify.sh is treated as a degraded (legacy) bootstrap: logged, not
     # failed.
-    from performer.workspace import run_env_cache_verify
+    from performer.workspace import run_env_cache_verify, verify_basis_for
 
+    # 265: the daemon's rendered text when it sent one, run from the checkout (the cwd the agent saw).
+    verify_text = perf.score.bootstrap_verify_sh
     verify_passed, verify_detail = await run_env_cache_verify(
         perf.score.env_cache_path,
         getattr(perf.stand, "cache_env", None),
+        cwd=perf.stand.path,
+        verify_text=verify_text,
     )
     if verify_passed is False:
         perf.state = "error"
@@ -1535,6 +1540,7 @@ async def _bootstrap_verify_response(
     return PerformerResponse(
         status="env_bootstrap_complete",
         session_id=perf.session_id,
+        env_verify_basis=verify_basis_for(verify_text, passed=verify_passed),
         **perf.inference_state,
     )
 
