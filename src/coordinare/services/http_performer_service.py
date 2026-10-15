@@ -38,6 +38,7 @@ from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
+from coordinare.services.env_provenance import image_capability_refusal
 from coordinare.services.run_header import build_run_header
 from coordinare.services.run_log import RunLogBusyError, redact_log_text
 from coordinare.services.run_transcript import (
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
         JobInitPayload,
         JobStatus,
         PerformerEndpointConfig,
+        PerformerStatus,
         VolumeMount,
     )
     from coordinare.services.performer_runtime import PerformerRuntime
@@ -513,6 +515,28 @@ class HTTPPerformerService:
                 card_context, workspace_info, extra_volumes, run_inputs,
             )
 
+    async def _require_provenance_capability(
+        self, payload: JobInitPayload, ready_status: PerformerStatus | None,
+    ) -> None:
+        """234: raise ``ValueError`` (the job is refused before it is posted) when the image cannot take a frozen
+        payload. The old image would drop the field and run the cache's own scripts.
+
+        An ephemeral container passes the version it read in ``wait_ready``. A persistent one is asked now.
+        """
+        if payload.env_provenance is None:
+            return
+        version: int | None = ready_status.env_provenance_version if ready_status is not None else None
+        if version is None:
+            try:
+                version = (await self._ensure_client().get_status()).env_provenance_version
+            except (PerformerAuthError, PerformerUnreachableError, TransportError) as exc:
+                message = f"performer status unavailable for env-cache provenance (#234): {exc}"
+                raise ValueError(message) from exc
+        refusal = image_capability_refusal(provenance_sent=True, performer_version=version)
+        if refusal is not None:
+            logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=refusal)
+            raise ValueError(refusal)
+
     async def _dispatch_card_locked(
         self,
         card_context: dict[str, Any],
@@ -521,6 +545,7 @@ class HTTPPerformerService:
         run_inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
+        ready_status: PerformerStatus | None = None
 
         # 076 (T016) — pre-allocate the coordinare-side session_id BEFORE
         # spinning up the container so it can be set as the
@@ -616,7 +641,7 @@ class HTTPPerformerService:
                 run_id=session_id,
             )
             try:
-                await performer_lifecycle.wait_ready(
+                ready_status = await performer_lifecycle.wait_ready(
                     started.endpoint,
                     self._auth_token(),
                     timeout=float(self._config.readiness_timeout_s),
@@ -629,6 +654,7 @@ class HTTPPerformerService:
         # Build the job-init payload.
         try:
             payload = self._build_job_payload(card_context, workspace_info)
+            await self._require_provenance_capability(payload, ready_status)
         except ValueError as exc:
             if ephemeral_job is not None:
                 await self._refuse_job(ephemeral_job)
@@ -1948,7 +1974,8 @@ class HTTPPerformerService:
         # role/persona/relay_feedback/etc. without us forking the schema here.
         # 092: test_env_vars are secret-like — they ride the redacted `secrets`
         # channel above and MUST NOT be echoed into metadata (which is unredacted).
-        meta_src = {k: v for k, v in card_context.items() if k != "test_env_vars"}
+        # 234: the frozen env-cache steps ride their own field, not the unredacted metadata.
+        meta_src = {k: v for k, v in card_context.items() if k not in ("test_env_vars", "env_provenance")}
         metadata = json.loads(json.dumps(meta_src, default=str))
 
         env_cache_path = card_context.get("env_cache_path")
@@ -1964,6 +1991,7 @@ class HTTPPerformerService:
                 "secrets": secrets,
                 "metadata": metadata,
                 "env_cache_path": env_cache_path or None,
+                "env_provenance": card_context.get("env_provenance"),
             },
         )
 

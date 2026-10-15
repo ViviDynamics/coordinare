@@ -315,3 +315,13 @@ async def test_readiness_converges_after_rebootstrap(
     # Converged: dispatch proceeds, no further re-bootstrap flag.
     assert svc.dispatch_card.called
     assert env_cache_service.mark_runtime_health_failed.call_count == 1
+
+
+@pytest.fixture(autouse=True)
+def _provenance_gate_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """234: these tests drive the 093 readiness gate. The frozen-provenance gate has its own tests
+    (test_234_attacks, test_234_honest_path), so it is held in its pass-through here."""
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer._env_provenance_gate",
+        AsyncMock(return_value=None),
+    )

@@ -1422,6 +1422,16 @@ _RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (test fixture, daemon-rendered
 
 
 @pytest.fixture(autouse=True)
+def _provenance_gate_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """234: these tests drive the 093 readiness gate and the volume wiring. The frozen-provenance gate has its
+    own tests (test_234_attacks, test_234_honest_path), so it is held in its pass-through here."""
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer._env_provenance_gate",
+        AsyncMock(return_value=None),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _readiness_gate_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
     """218: the fixture cache has no daemon-run verify (it would call docker). Keep the 093 gate
     in its degraded pass-through, as before 218. A test that drives the gate patches it again."""

@@ -172,8 +172,11 @@ def fake_cache(tmp_path: Path) -> SimpleNamespace:
     activate.write_text("export DEVENV_ACTIVATED=1\n")
 
     lib_base = tmp_path / "libbase"
-    env = {**os.environ, "_DEVENV_LIB_BASE": str(lib_base)}
+    # 234: these tests exercise the bootstrap's cache-root activation. A consumer without frozen provenance
+    # activates nothing from the cache, so the bootstrap flag is what selects the cache root here.
+    env = {**os.environ, "_DEVENV_LIB_BASE": str(lib_base), "_DEVENV_BOOTSTRAP": "1"}
     env.pop("_DEVENV_SOURCED", None)
+    env.pop("_DEVENV_PROVENANCE_DIR", None)
     env.pop("LD_LIBRARY_PATH", None)
 
     return SimpleNamespace(
@@ -229,7 +232,7 @@ def test_profile_sources_under_bash_login(
 ) -> None:
     """bash -lc reads /etc/profile.d/*; the profile must activate env."""
     profile = _patched_profile(tmp_path, fake_devenv)
-    env = {**os.environ, "PATH": os.environ.get("PATH", "")}
+    env = {**os.environ, "PATH": os.environ.get("PATH", ""), "_DEVENV_BOOTSTRAP": "1"}
     env.pop("_DEVENV_SOURCED", None)
 
     result = _run(
@@ -247,7 +250,7 @@ def test_profile_sources_under_bash_env(
 ) -> None:
     """Non-login bash honors $BASH_ENV; verify activation via that path."""
     profile = _patched_profile(tmp_path, fake_devenv)
-    env = {**os.environ, "BASH_ENV": str(profile)}
+    env = {**os.environ, "BASH_ENV": str(profile), "_DEVENV_BOOTSTRAP": "1"}
     env.pop("_DEVENV_SOURCED", None)
 
     result = _run(
@@ -278,7 +281,9 @@ def test_profile_skips_services_start_when_flag_set(
         **os.environ,
         "BASH_ENV": str(profile),
         "_DEVENV_LIB_BASE": str(tmp_path / "libbase"),
+        "_DEVENV_BOOTSTRAP": "1",
     }
+    base_env.pop("_DEVENV_PROVENANCE_DIR", None)
     base_env.pop("_DEVENV_SOURCED", None)
 
     # Without the flag: env activates AND services-start runs.
@@ -313,7 +318,7 @@ def test_profile_reentry_guard_prevents_recursion(
         'export REENTRY_CHECK="$(echo inner)"\n',
     )
     profile = _patched_profile(tmp_path, devenv)
-    env = {**os.environ, "BASH_ENV": str(profile)}
+    env = {**os.environ, "BASH_ENV": str(profile), "_DEVENV_BOOTSTRAP": "1"}
     env.pop("_DEVENV_SOURCED", None)
 
     result = _run(

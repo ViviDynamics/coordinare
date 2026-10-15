@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import re
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -30,6 +31,18 @@ from coordinare.services.env_manifest import (
     render_verify_sh,
 )
 from coordinare.services.env_manifest_llm import enrich_from_readme
+from coordinare.services.env_provenance import (
+    PROVENANCE_DIR_NAME,
+    PROVENANCE_FULL_RECHECK_S,
+    ProvenanceCheck,
+    ProvenanceManifest,
+    ProvenanceRefusedError,
+    build_payload,
+    check_cache,
+    freeze_cache,
+    load_manifest,
+    save_manifest,
+)
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     anchored_mkdir,
@@ -734,6 +747,11 @@ def rearm_budgets_on_spec_change(cache_state: EnvCacheState, current_sha: str, s
         cache_state.infra_failures = 0
 
 
+def _log_provenance_refused(symphony_name: str, reason: str) -> None:
+    """234: one place for the refusal log line, called from the handlers that refuse a frozen manifest."""
+    logger.error("env_cache.provenance_refused", symphony=symphony_name, reason=reason)
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -748,6 +766,11 @@ class EnvCacheService:
         # verify.sh) instead of blindly trusted — trusting the snapshot alone
         # would re-open the phantom-success hole 23dd839 closed.
         self._restart_verified: set[str] = set()
+        # 234: the frozen manifest held in memory, keyed by symphony, with the digest it was verified against.
+        self._provenance: dict[str, tuple[str, ProvenanceManifest]] = {}
+        # 234: monotonic time of the last full re-hash per symphony. Absent after a restart, so the first
+        # dispatch of a fresh process re-hashes everything.
+        self._provenance_full_at: dict[str, float] = {}
 
     async def initialise(
         self,
@@ -1229,6 +1252,12 @@ class EnvCacheService:
         # and the verify fails closed.
         cache_state.rendered_verify_sh = None
         cache_state.rendered_activate_sh = None
+        # 234: the cache is about to be rewritten, so the frozen manifest of the previous one is no longer true.
+        # Consumers are refused until the next verified bootstrap freezes a new one.
+        cache_state.provenance_digest = None
+        cache_state.provenance_frozen_at = None
+        self._provenance.pop(symphony_name, None)
+        self._provenance_full_at.pop(symphony_name, None)
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             performer_mounts=self._performer_mounts(),
             symphony_name=symphony_name,
@@ -1401,6 +1430,125 @@ class EnvCacheService:
         trusted start of the anchored walk.
         """
         return loaded_performer_mounts(self._coordinare_config.global_config)
+
+    def _provenance_root(self) -> Path:
+        """The daemon-owned directory for frozen manifests: beside the state file, outside every mount (234)."""
+        state_file = getattr(self._coordinare_config.global_config, "state_file_path", None)
+        if state_file is None:
+            message = "no state_file_path configured; cannot keep a frozen env-cache manifest"
+            raise RuntimeError(message)
+        return Path(state_file).expanduser().parent / PROVENANCE_DIR_NAME
+
+    async def freeze_provenance(
+        self, symphony_name: str, state: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        """Freeze the just-verified cache (234). Returns ``(True, None)`` or ``(False, reason)``.
+
+        Called by the completion path after the clean verify has passed and the bootstrap container is proven gone.
+        A refusal (a bound, a link out of the cache, an unreadable file) is a bootstrap failure with its reason.
+        """
+        env_cache: dict[str, Any] = state.get("env_cache") or {}
+        cache_state: EnvCacheState | None = env_cache.get(symphony_name)
+        if cache_state is None or cache_state.rendered_activate_sh is None:
+            return False, "no daemon-rendered activate.sh on record; nothing to freeze"
+        try:
+            manifest = await asyncio.to_thread(
+                freeze_cache,
+                cache_state.cache_dir,
+                symphony=symphony_name,
+                cache_key=cache_state.readme_sha or "",
+                activate_sh=cache_state.rendered_activate_sh,
+                performer_mounts=self._performer_mounts(),
+            )
+            digest = await asyncio.to_thread(
+                save_manifest,
+                self._provenance_root() / f"{cache_state.sanitised_name}.json",
+                manifest,
+                performer_mounts=self._performer_mounts(),
+            )
+        except (ProvenanceRefusedError, OSError, RuntimeError) as exc:
+            _log_provenance_refused(symphony_name, str(exc))
+            return False, f"env-cache provenance refused: {exc}"
+        cache_state.provenance_digest = digest
+        cache_state.provenance_frozen_at = manifest.frozen_at
+        self._provenance[symphony_name] = (digest, manifest)
+        self._provenance_full_at.pop(symphony_name, None)
+        logger.info(
+            "env_cache.provenance_frozen",
+            symphony=symphony_name,
+            entries=len(manifest.entries),
+            debs=len(manifest.debs),
+            digest=digest,
+        )
+        return True, None
+
+    async def _load_provenance(
+        self, symphony_name: str, cache_state: EnvCacheState, digest: str,
+    ) -> ProvenanceManifest | None:
+        """The manifest for *digest*, from memory or from the daemon-owned file. None when not trusted."""
+        held = self._provenance.get(symphony_name)
+        if held is not None and held[0] == digest:
+            return held[1]
+        try:
+            path = self._provenance_root() / f"{cache_state.sanitised_name}.json"
+        except RuntimeError as exc:
+            _log_provenance_refused(symphony_name, str(exc))
+            return None
+        manifest = await asyncio.to_thread(
+            load_manifest, path, digest=digest, performer_mounts=self._performer_mounts(),
+        )
+        if manifest is not None:
+            self._provenance[symphony_name] = (digest, manifest)
+        return manifest
+
+    async def check_provenance(
+        self, symphony_name: str, cache_state: EnvCacheState,
+    ) -> ProvenanceCheck:
+        """Verify the cache against its frozen manifest before a consumer dispatch (234).
+
+        A stat pass runs on every call. A full re-hash runs on the first call for the symphony in this process
+        (after a restart) and then at most every ``PROVENANCE_FULL_RECHECK_S``, and any mismatch re-hashes
+        inside :func:`check_cache`.
+        """
+        digest = cache_state.provenance_digest
+        if digest is None:
+            return ProvenanceCheck(False, "no frozen provenance for this cache; re-bootstrap")
+        manifest = await self._load_provenance(symphony_name, cache_state, digest)
+        if manifest is None:
+            return ProvenanceCheck(False, "frozen provenance manifest is missing or altered; re-bootstrap")
+        last_full = self._provenance_full_at.get(symphony_name)
+        now = time.monotonic()
+        full = last_full is None or now - last_full >= PROVENANCE_FULL_RECHECK_S
+        check = await asyncio.to_thread(
+            check_cache,
+            cache_state.cache_dir,
+            manifest,
+            full=full,
+            performer_mounts=self._performer_mounts(),
+        )
+        if not check.ok:
+            logger.error(
+                "env_cache.provenance_check_failed",
+                symphony=symphony_name,
+                reason=check.reason,
+                full=full,
+            )
+        elif full:
+            self._provenance_full_at[symphony_name] = now
+            logger.info("env_cache.provenance_recheck_full", symphony=symphony_name)
+        return check
+
+    def provenance_payload(
+        self, symphony_name: str, cache_state: EnvCacheState, *, container_path: str,
+    ) -> dict[str, Any] | None:
+        """The frozen steps and debs a consumer receives (234), or None when no verified manifest is held.
+
+        Call after :meth:`check_provenance` on the same dispatch, which loads the manifest into memory.
+        """
+        held = self._provenance.get(symphony_name)
+        if held is None or held[0] != cache_state.provenance_digest:
+            return None
+        return build_payload(held[1], cache_path=container_path)
 
     async def _fetch_declared_services(
         self,

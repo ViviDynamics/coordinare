@@ -53,7 +53,17 @@ else
   # Cache root is the container mount point for env-caches. Overridable (like
   # _DEVENV_SYSROOT / _DEVENV_LIB_BASE) so the activation flow is unit-testable
   # without writing to the real /devenv.
-  _devenv_root_dir="${_DEVENV_ROOT:-/devenv}"
+  # 234: which tree this shell activates. A consumer with a frozen payload activates only the daemon's frozen
+  # copy (materialised before the job; the cache's own activate.sh, services/ and debs/ are never read). The
+  # env_bootstrap job, which writes the cache, keeps the cache root. Anything else activates nothing, so a
+  # consumer without provenance gets no toolchain from the profile and runs no cache script.
+  if [ -n "${_DEVENV_PROVENANCE_DIR:-}" ]; then
+    _devenv_root_dir="$_DEVENV_PROVENANCE_DIR"
+  elif [ -n "${_DEVENV_BOOTSTRAP:-}" ]; then
+    _devenv_root_dir="${_DEVENV_ROOT:-/devenv}"
+  else
+    _devenv_root_dir="/nonexistent-devenv-root"
+  fi
 
   for _devenv_cache in "$_devenv_root_dir"/*/; do
     [ -d "$_devenv_cache" ] || continue

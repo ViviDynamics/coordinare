@@ -82,7 +82,7 @@ async def test_completion_does_not_verify_while_the_container_is_still_running(
     docker = _Docker(stop_rc=1, inspect_rc=0, inspect_out=b"true\n")
     verify = AsyncMock(return_value=(True, None))
     daemon = _daemon(monkeypatch, docker, verify)
-    ec_svc = MagicMock()
+    ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
     await _complete(daemon, ec_svc)
 
@@ -111,7 +111,7 @@ async def test_the_container_is_stopped_before_the_verify_runs(
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", _recording)
 
-    await _complete(daemon, MagicMock())
+    await _complete(daemon, MagicMock(freeze_provenance=AsyncMock(return_value=(True, None))))
 
     assert order == ["stop", "verify"]
     stop_argv = next(c for c in docker.calls if "stop" in c)
@@ -129,7 +129,7 @@ async def test_a_container_already_removed_counts_as_quiet(
     )
     verify = AsyncMock(return_value=(True, None))
     daemon = _daemon(monkeypatch, docker, verify)
-    ec_svc = MagicMock()
+    ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
     await _complete(daemon, ec_svc)
 
@@ -144,7 +144,7 @@ async def test_docker_unavailable_at_verify_is_an_infrastructure_failure(
     docker = _Docker(stop_rc=0, inspect_rc=0, inspect_out=b"false\n")
     verify = AsyncMock(return_value=(None, "clean verify could not run: docker gone"))
     daemon = _daemon(monkeypatch, docker, verify)
-    ec_svc = MagicMock()
+    ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
     await _complete(daemon, ec_svc)
 
