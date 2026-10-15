@@ -153,8 +153,9 @@ const hostile = symphonyIdentityHtml({
 checkTrue("a hostile name is escaped", hostile.includes("&lt;img src=x onerror=alert(1)&gt;"));
 check("a hostile name is never markup", hostile.includes("<img"), false);
 check("a hostile repository is escaped", hostile.includes("&lt;b&gt;r&lt;/b&gt;"), true);
-check("a hostile owner cannot break out of the href",
-  symphonyIdentityHtml({ name: "x", github_project_number: 5, github_org: "o\"x", repo: "r" }).includes('href="https://github.com/orgs/o%22x/projects/5"'), true);
+// 156: an owner that is not a GitHub name is never linked, so it cannot reach an href at all.
+check("a hostile owner is not linked, so it cannot break out of an href",
+  symphonyIdentityHtml({ name: "x", github_project_number: 5, github_org: "o\"x", repo: "r" }).includes("href="), false);
 
 // --- the header control ------------------------------------------------------
 check("no symphonies, no control", symphonySwitcherHtml({}, ""), "");

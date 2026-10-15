@@ -467,22 +467,40 @@ function symphonyIsInactive(sym) {
   return !!note && note.kind === 'never' && symphonyCardCount(sym) === 0;
 }
 
+// 156: a GitHub owner, repository or project number that may be written into a link. Anything
+// else is shown as text and never linked, so a bad config value cannot become a URL.
+var SYMPHONY_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+var SYMPHONY_REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+
+function symphonyValidOwner(org) {
+  return typeof org === 'string' && SYMPHONY_OWNER_RE.test(org);
+}
+
+function symphonyValidRepo(repo) {
+  return typeof repo === 'string' && SYMPHONY_REPO_RE.test(repo) && repo !== '.' && repo !== '..';
+}
+
+function symphonyValidProjectNumber(num) {
+  return typeof num === 'number' && isFinite(num) && num >= 1 && Math.floor(num) === num;
+}
+
 // The identity of one symphony: "name", "GitHub Project #16" and "owner/repo".
 // A part the snapshot does not know is left out, never shown as a placeholder.
 function symphonyIdentity(sym) {
   var name = sym && typeof sym.name === 'string' ? sym.name : '';
   var num = sym ? sym.github_project_number : null;
-  var hasNum = typeof num === 'number' && isFinite(num) && num > 0;
+  var hasNum = symphonyValidProjectNumber(num);
   var org = sym && typeof sym.github_org === 'string' ? sym.github_org : '';
   var repo = sym && typeof sym.repo === 'string' ? sym.repo : '';
   var repoName = org && repo ? org + '/' + repo : repo;
   var project = hasNum ? 'GitHub Project #' + num : '';
+  var linkOwner = symphonyValidOwner(org);
   return {
     name: name,
     projectText: project,
-    projectUrl: hasNum && org ? 'https://github.com/orgs/' + encodeURIComponent(org) + '/projects/' + num : '',
+    projectUrl: hasNum && linkOwner ? 'https://github.com/orgs/' + org + '/projects/' + num : '',
     repoText: repoName,
-    repoUrl: repo && org ? 'https://github.com/' + encodeURIComponent(org) + '/' + encodeURIComponent(repo) : '',
+    repoUrl: linkOwner && symphonyValidRepo(repo) ? 'https://github.com/' + org + '/' + repo : '',
     text: [name, project, repoName].filter(Boolean).join(' · ')
   };
 }
@@ -514,6 +532,114 @@ function symphonyIdentityHtml(sym) {
   if (id.projectText) parts.push(symphonyLinkHtml(id.projectText, id.projectUrl));
   if (id.repoText) parts.push(symphonyLinkHtml(id.repoText, id.repoUrl));
   return parts.filter(Boolean).join(' · ');
+}
+
+// --- the Symphonies table (156) ------------------------------------------------------ #
+// Every column explains itself or links to more detail. The functions below build one row
+// from one symphony's snapshot entry; renderSymphoniesPage (app.js) writes the table.
+
+// The Status column: Disabled, Error, Paused or Active, with the reason. A disabled symphony is
+// not checked, so it comes first. An Error needs a person, so it comes next, then cards the board
+// paused. A never-checked symphony's reason is the #155 note, not a second classification.
+var SYMPHONY_STATUS_COLORS = {
+  muted: 'var(--color-text-muted)',
+  green: 'var(--color-accent-green)',
+  red: 'var(--color-accent-red)',
+  blue: 'var(--color-accent-blue)'
+};
+
+function symphonyStatus(sym) {
+  if (!sym || typeof sym !== 'object') {
+    return {label: 'Active', reason: 'The snapshot does not carry this symphony.', tone: 'muted'};
+  }
+  var note = symphonyUncheckedNote(sym);
+  var lastError = sym.state && typeof sym.state === 'object' && sym.state.last_error ? String(sym.state.last_error) : '';
+  var label;
+  var reason;
+  if (sym.enabled === false) {
+    label = 'Disabled';
+    reason = 'enabled: false in the config, so coordinare does not check this symphony.';
+  } else if ((note && note.kind === 'failed') || (typeof sym.error_count === 'number' && sym.error_count > 0)) {
+    label = 'Error';
+    if (note && note.kind === 'failed') reason = note.text;
+    else if (lastError) reason = 'Last check failed: ' + lastError;
+    else reason = sym.error_count + ' checks failed in a row; the error was not recorded.';
+  } else if (typeof sym.cards_paused === 'number' && sym.cards_paused > 0) {
+    label = 'Paused';
+    reason = sym.cards_paused + (sym.cards_paused === 1 ? ' card is' : ' cards are') + ' paused on the board.';
+  } else {
+    label = 'Active';
+    if (note) reason = note.text;
+    else if (typeof sym.poll_interval_seconds === 'number' && sym.poll_interval_seconds > 0) {
+      reason = 'Checked every ' + sym.poll_interval_seconds + ' seconds.';
+    } else reason = 'Checked when a webhook arrives.';
+  }
+  var tone = {Disabled: 'muted', Error: 'red', Paused: 'blue', Active: 'green'}[label];
+  return {label: label, reason: reason, tone: tone};
+}
+
+// The Env column's words for each env state the server reports (156).
+var SYMPHONY_ENV_LABELS = {
+  not_configured: 'Not configured',
+  bootstrapping: 'Bootstrapping',
+  failed: 'Failed',
+  ready: 'Ready',
+  not_bootstrapped: 'Not bootstrapped'
+};
+
+function symphonyEnvView(sym) {
+  var env = sym && sym.env_status && typeof sym.env_status === 'object' ? sym.env_status : null;
+  if (!env || !symphonyHas(SYMPHONY_ENV_LABELS, env.state)) {
+    return {label: 'Not known', reason: "The snapshot does not carry this symphony's env state."};
+  }
+  return {label: SYMPHONY_ENV_LABELS[env.state], reason: String(env.reason || '')};
+}
+
+// Under a chosen symphony, every other row's reasons, spend and card cells are hidden, so the
+// figures and error text of a symphony the viewer did not choose stay out of view. The row itself
+// stays, as the page lists every symphony by design, and the status word and env word stay too.
+//
+// This is a display filter, not a data boundary. The snapshot carries every symphony's data to
+// every browser (the Symphonies page lists them all), so a determined reader of the page's
+// scripts can still see it. Making scope a data boundary needs the server to omit other symphonies.
+function symphonyRowHidden(name, choice) {
+  return !!choice && choice !== name;
+}
+
+// A count for a table cell, or "Not known" when the snapshot does not carry it.
+function symphonyCountText(value) {
+  return typeof value === 'number' && isFinite(value) ? String(value) : 'Not known';
+}
+
+// One row of the Symphonies table. Every value is escaped. The row opens the symphony's page
+// (renderSymphoniesPage wires the click). choice is the symphony the header chose, or '' for All.
+function symphonyTableRowHtml(sym, choice) {
+  var status = symphonyStatus(sym);
+  var env = symphonyEnvView(sym);
+  var hidden = symphonyRowHidden(sym.name, choice);
+  var hiddenHtml = '<span class="muted" style="font-size:11px">Hidden: another symphony is shown</span>';
+  var unchecked = symphonyUncheckedNote(sym);
+  var checked = sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '';
+  var href = '/symphonies/' + encodeURIComponent(sym.name);
+  var bootBtn = sym.env_bootstrap_performer_id
+    ? '<div><button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button></div>'
+    : '';
+  var inactive = symphonyIsInactive(sym);
+  return '<tr class="symphony-row' + (inactive ? ' symphony-inactive' : '') + '"' + (inactive ? ' data-inactive="true"' : '') + ' data-href="' + esc(href) + '">'
+    + '<td><a href="' + esc(href) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
+    + '<td><span style="color:' + SYMPHONY_STATUS_COLORS[status.tone] + ';font-weight:bold">' + esc(status.label) + '</span>'
+    + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(status.reason)) + '</div></td>'
+    + '<td style="color:var(--color-text-muted)">' + (symphonyProjectHtml(sym) || 'No project number') + '</td>'
+    + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
+    + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' + bootBtn + '</td>'
+    + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_active))) + '</td>'
+    + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_queued))) + '</td>'
+    + '<td>' + (hidden ? hiddenHtml : usageCostHtml(sym.spend_week)) + '</td>'
+    + '<td>' + esc(symphonyCountText(sym.cycle_count)) + '</td>'
+    + '<td>' + esc(symphonyCountText(sym.error_count)) + '</td>'
+    // The unchecked note can carry the last error, so under a scope it is hidden with the rest.
+    + '<td>' + (checked || (hidden ? hiddenHtml : (unchecked ? esc(unchecked.text) : 'Not checked yet'))) + '</td>'
+    + '</tr>';
 }
 
 // The header control as HTML. One symphony: its identity, no switcher. Several:

@@ -211,4 +211,9 @@ def test_the_daemon_clips_the_error_it_stores_on_a_failed_symphony() -> None:
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[2] / "src" / "coordinare" / "daemon.py").read_text(encoding="utf-8")
-    assert "s.last_error = clip_session_error(redact_state_value(str(exc)))" in source
+    # 156: the daemon records the failure through the shared helper, which redacts and clips it.
+    assert "record_cycle_failure(s, exc)" in source
+    helper = (Path(__file__).resolve().parents[2] / "src" / "coordinare" / "services" / "symphony_failures.py").read_text(
+        encoding="utf-8",
+    )
+    assert "clip_session_error(redact_state_value(str(error)))" in helper
