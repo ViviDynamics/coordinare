@@ -680,14 +680,19 @@ function cfgClearErrors(container) {
   });
 }
 
+// 252: returns the errors it could not place beside an input. A nested key (a notification channel's
+// password, a symphony override) has no input of its own on this page, so its message goes in the
+// general message instead of being dropped.
 function cfgApplyErrors(container, errs) {
+  var unplaced = [];
   (errs || []).forEach(function(e) {
-    if (!e.key) return;
-    var f = container.querySelector('[data-field="' + e.key + '"]');
+    var f = e.key ? container.querySelector('[data-field="' + e.key + '"]') : null;
     var holder = f ? f.closest('[data-fieldrow]') : null;
     var slot = holder ? holder.querySelector('[data-err]') : null;
     if (slot) { slot.textContent = e.message; slot.style.display = ''; }
+    else unplaced.push(e);
   });
+  return unplaced;
 }
 
 // Optimistic-concurrency conflict: the file changed under us. Offer a reload so
@@ -744,8 +749,7 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
   _cfgPending = null;
   _cfgRemovedRoute = null;
   var errs = body.errors || [];
-  cfgApplyErrors(container, errs);
-  var general = errs.filter(function(e) { return !e.key; }).map(function(e) { return e.message; }).join('; ');
+  var general = cfgApplyErrors(container, errs).map(function(e) { return e.message; }).join('; ');
   cfgFlash(statusEl, general || body.message || body.error || ('Error ' + status), 'red');
   return false;
 }

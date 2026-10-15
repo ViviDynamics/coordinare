@@ -22,10 +22,9 @@ from coordinare.config import CoordinareConfiguration, ProjectConfiguration, exp
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.services.config_write_service import _validate_candidate
 from coordinare.start_checks import (
-    raw_secret_problems,
+    placeholder_problems,
+    raw_placeholder_problems,
     secret_paths,
-    secret_problems,
-    unexpanded_secret_problem,
     validate_start_time,
 )
 
@@ -127,14 +126,14 @@ def test_production_coverage_is_exactly_the_secret_fields_the_walk_finds() -> No
 
 @pytest.mark.parametrize("path", _WALKED, ids=[".".join(p) for p in _WALKED])
 def test_every_secret_field_refuses_an_unset_placeholder_at_save(path: tuple[str, ...]) -> None:
-    problems = raw_secret_problems(_doc_for(path, _PLACEHOLDER))
+    problems = raw_placeholder_problems(_doc_for(path, _PLACEHOLDER))
     assert [field for field, _ in problems] == [_display(path)]
     assert _UNSET in problems[0][1]
 
 
 @pytest.mark.parametrize("path", _WALKED, ids=[".".join(p) for p in _WALKED])
 def test_every_secret_field_refuses_an_unset_placeholder_in_a_symphony_override(path: tuple[str, ...]) -> None:
-    problems = raw_secret_problems(_multi(_doc_for(path, _PLACEHOLDER)))
+    problems = raw_placeholder_problems(_multi(_doc_for(path, _PLACEHOLDER)))
     assert [field for field, _ in problems] == [f"symphonies[0].overrides.{_display(path)}"]
     assert _UNSET in problems[0][1]
 
@@ -144,61 +143,63 @@ def test_every_secret_field_accepts_a_variable_that_is_set(
     path: tuple[str, ...], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(_UNSET, "a-value-from-the-environment")
-    assert raw_secret_problems(_doc_for(path, _PLACEHOLDER)) == []
-    assert raw_secret_problems(_multi(_doc_for(path, _PLACEHOLDER))) == []
+    assert raw_placeholder_problems(_doc_for(path, _PLACEHOLDER)) == []
+    assert raw_placeholder_problems(_multi(_doc_for(path, _PLACEHOLDER))) == []
 
 
 @pytest.mark.parametrize("path", _WALKED, ids=[".".join(p) for p in _WALKED])
 def test_every_secret_field_holding_a_secret_value_is_checked_by_its_unwrapped_value(path: tuple[str, ...]) -> None:
     """The boot check reads typed values, so a SecretStr is unwrapped before the placeholder test."""
-    problems = secret_problems(ProjectConfiguration, _doc_for(path, SecretStr(_PLACEHOLDER)))
+    problems = placeholder_problems(ProjectConfiguration, _doc_for(path, SecretStr(_PLACEHOLDER)))
     assert [field for field, _ in problems] == [_display(path)]
 
 
 # --- the shape of a placeholder ---------------------------------------------------------------
 
 
+def _refused(value: object) -> list[tuple[str, str]]:
+    return placeholder_problems(ProjectConfiguration, {"github_token": value})
+
+
 def test_only_a_braced_name_is_a_placeholder() -> None:
-    assert unexpanded_secret_problem("f", "${COORDINARE_252_UNSET_VAR}") is not None
-    assert unexpanded_secret_problem("f", "$COORDINARE_252_UNSET_VAR") is None
-    assert unexpanded_secret_problem("f", "pa$$word") is None
-    assert unexpanded_secret_problem("f", "pa$word-and-more") is None
-    assert unexpanded_secret_problem("f", "${9starts_with_a_digit}") is None
-    assert unexpanded_secret_problem("f", "${has a space}") is None
-    assert unexpanded_secret_problem("f", "plain-value") is None
-    assert unexpanded_secret_problem("f", None) is None
-    assert unexpanded_secret_problem("f", 42) is None
+    assert _refused("${COORDINARE_252_UNSET_VAR}")
+    assert _refused("$COORDINARE_252_UNSET_VAR") == []
+    assert _refused("pa$$word") == []
+    assert _refused("pa$word-and-more") == []
+    assert _refused("${9starts_with_a_digit}") == []
+    assert _refused("${has a space}") == []
+    assert _refused("plain-value") == []
+    assert _refused(None) == []
+    assert _refused(42) == []
 
 
 def test_a_placeholder_inside_a_longer_value_is_refused() -> None:
-    message = unexpanded_secret_problem("channels[0].webhook_url", f"https://hooks.example/x/{_PLACEHOLDER}/y")
-    assert message is not None
-    assert "channels[0].webhook_url" in message
-    assert _UNSET in message
+    problems = _refused(f"https://hooks.example/x/{_PLACEHOLDER}/y")
+    assert [field for field, _ in problems] == ["github_token"]
+    assert _UNSET in problems[0][1]
 
 
-def test_braced_text_in_a_set_variable_is_refused_only_while_the_text_names_an_unset_variable(
+def test_the_raw_check_accepts_a_placeholder_whose_variable_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """252 review: the raw check reads the text as written, so what a set variable holds is never inspected."""
+    monkeypatch.setenv(_UNSET, "ab${OTHER}cd")
+    assert raw_placeholder_problems({"github_token": _PLACEHOLDER}) == []
+
+
+def test_the_loaded_value_fallback_refuses_braced_text_while_the_name_is_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Known residual (252): once expanded, text from a set variable's value looks like a placeholder.
-
-    A password whose value contains a braced identifier is refused until that identifier is set.
-    The check cannot tell that text from a placeholder after expansion, and the loaders expand the
-    whole file as text, so this is the one false positive. Setting the named variable clears it.
-    """
+    """Without the text, the loaded value cannot be told from a placeholder, so the fallback refuses it."""
     monkeypatch.setenv(_UNSET, "ab${OTHER}cd")
-    message = unexpanded_secret_problem("smtp_password", SecretStr("ab${OTHER}cd"))
-    assert message is not None
-    assert "environment variable OTHER" in message
-    monkeypatch.setenv("OTHER", "x")
-    assert unexpanded_secret_problem("smtp_password", SecretStr("ab${OTHER}cd")) is None
+    problems = placeholder_problems(ProjectConfiguration, {"github_token": SecretStr("ab${OTHER}cd")})
+    assert problems
+    assert "environment variable OTHER" in problems[0][1]
 
 
-def test_the_message_names_the_variable_and_never_the_secret() -> None:
-    message = unexpanded_secret_problem("smtp_password", SecretStr(_PLACEHOLDER))
-    assert message is not None
-    assert "smtp_password" in message
-    assert _UNSET in message
+def test_the_message_names_the_field_and_the_variable() -> None:
+    problems = _refused(_PLACEHOLDER)
+    assert problems[0][0] == "github_token"
+    assert "github_token" in problems[0][1]
+    assert _UNSET in problems[0][1]
 
 
 # --- the entry points: boot, and save ----------------------------------------------------------
@@ -237,7 +238,7 @@ def test_save_refuses_an_unset_slack_webhook_and_names_the_variable() -> None:
     }
     errors = _validate_candidate(raw)
     assert errors
-    assert errors[0].key is None
+    assert errors[0].key == "notifications.channels[0].webhook_url"
     assert _UNSET in errors[0].message
     assert "notifications.channels[0].webhook_url" in errors[0].message
 
@@ -276,6 +277,5 @@ def test_the_example_configs_have_no_unexpanded_secret_with_their_variables_set(
     text = example.read_text()
     for name in set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", text)):
         monkeypatch.setenv(name, "set-for-the-example-check")
-    expanded = yaml.safe_load(expand_config_text(text))
-    assert raw_secret_problems(expanded) == []
-    assert secret_problems(ProjectConfiguration, expanded) == []
+    assert raw_placeholder_problems(yaml.safe_load(text)) == []
+    assert placeholder_problems(ProjectConfiguration, yaml.safe_load(expand_config_text(text))) == []

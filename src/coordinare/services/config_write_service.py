@@ -36,7 +36,7 @@ from coordinare.config_validation import (
     is_multi_symphony_config,
     wrap_legacy_config,
 )
-from coordinare.start_checks import raw_secret_problems, validate_start_time
+from coordinare.start_checks import StartCheckError, raw_placeholder_problems, validate_start_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -291,6 +291,13 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     from coordinare.config import CoordinareConfiguration
     from coordinare.config_descriptors import is_env_placeholder
 
+    # 252: the placeholder rules read the candidate as written, before expansion, so a value a set
+    # variable supplies is never mistaken for a placeholder, and an empty variable is named as such.
+    # The refusal is keyed by its field path, so the page can show it beside the right input.
+    problems = raw_placeholder_problems(candidate)
+    if problems:
+        field, message = problems[0]
+        return [FieldError(key=field, code="validation", message=message)]
     # Validate what the daemon will load: the text this write produces, with ${VAR} expanded as
     # ProjectConfiguration.from_yaml expands it (219 final check). Covers every write path.
     daemon_view = yaml.safe_load(
@@ -298,12 +305,6 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
             yaml.safe_dump(candidate, sort_keys=False, default_flow_style=False, allow_unicode=True),
         ),
     )
-    # 225 round 2: a secret that still holds ${VAR} after expansion is the variable unset. The daemon
-    # would read that literal as the secret, so the save is refused, naming the variable.
-    problems = raw_secret_problems(daemon_view if isinstance(daemon_view, dict) else {})
-    if problems:
-        field, message = problems[0]
-        return [FieldError(key=field if "." not in field else None, code="validation", message=message)]
     attempt = dict(daemon_view) if isinstance(daemon_view, dict) else {}
     token = attempt.get("github_token")
     if is_env_placeholder(token) or (token is None and _env_supplies_github_token()):
@@ -316,11 +317,11 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     except ValueError as exc:  # cross-field validators may raise bare ValueError
         return [FieldError(key=None, code="validation", message=str(exc))]
     try:
-        validate_start_time(loaded.global_config, loaded)
-    except ValueError as exc:
-        # The daemon refuses to start with this config, so the save is refused with the same reason.
-        key = "dashboard_oidc" if "dashboard_oidc" in str(exc) else "dashboard_auth_token"
-        return [FieldError(key=key, code="validation", message=str(exc))]
+        validate_start_time(loaded.global_config, loaded, candidate)
+    except StartCheckError as exc:
+        # The daemon refuses to start with this config, so the save is refused with the same reason,
+        # keyed by the field the check concerns (not guessed from the message).
+        return [FieldError(key=exc.field, code="validation", message=str(exc))]
     return []
 
 

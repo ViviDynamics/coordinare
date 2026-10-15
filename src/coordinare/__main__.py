@@ -28,7 +28,7 @@ import uvicorn
 
 from coordinare import configure_logging
 from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
-from coordinare.auth import build_auth, validate_auth_config
+from coordinare.auth import build_auth
 from coordinare.config import (
     CoordinareConfiguration,
     DashboardOidcConfig,
@@ -84,6 +84,11 @@ from coordinare.services.run_transcript import (
     _within,
     make_collector,
     resolve_transcripts_root,
+)
+from coordinare.start_checks import (
+    load_unexpanded_config,
+    raw_placeholder_problems,
+    validate_start_time,
 )
 from coordinare.state_store import StateStore
 from coordinare.transport.subprocess_transport import SubprocessTransport
@@ -1341,9 +1346,6 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
-    from coordinare.start_checks import validate_start_time
-
-    validate_start_time(config, coordinare_config)
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -1675,6 +1677,20 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(0 if report.ok else 1)
 
 
+def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
+    """252: refuse an unexpanded placeholder before any generic error it causes, and return the text as written.
+
+    An empty token would otherwise read as "requires a token". The refusal exits as the other
+    start-time refusals do: the message on stderr, status 1.
+    """
+    unexpanded = load_unexpanded_config(path)
+    problems = raw_placeholder_problems(unexpanded)
+    if problems:
+        print(f"ERROR: {problems[0][1]}", file=sys.stderr)
+        sys.exit(1)
+    return unexpanded
+
+
 def main() -> None:
     args = _build_arg_parser().parse_args()
 
@@ -1701,6 +1717,8 @@ def main() -> None:
     # Step 1: Validate config (discover + parse + env var merge) in one pass
     _config_t0 = perf_counter()
     result = validate_config(getattr(args, "config", None))
+
+    _unexpanded = _check_placeholders_as_written(result.config_file_path)
 
     # Spec 139: notifications are non-essential, so a channel that cannot be used
     # makes that channel inactive rather than stopping the daemon. A half-finished
@@ -1796,10 +1814,10 @@ def main() -> None:
         deprecated_fields_detected=bool(result.warnings),
     )
 
-    # Step 4b: Validate auth config (key file exists for App mode). Boot refuses with the
-    # message on stderr and exit status 1, as it always has; the save path gets the same ValueError.
+    # Step 4b: the daemon's start-time checks (placeholders, dashboard bind and OIDC, the App key file).
+    # Every refusal here prints the message on stderr and exits 1, as the auth check always has.
     try:
-        validate_auth_config(config)
+        validate_start_time(config, _coordinare_cfg, _unexpanded if result.config_file_path is not None else None)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

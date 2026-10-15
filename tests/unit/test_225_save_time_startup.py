@@ -120,7 +120,7 @@ def test_the_candidate_check_runs_the_same_start_time_checks_as_the_daemon() -> 
 
 
 def test_the_daemon_boot_calls_the_same_start_time_function() -> None:
-    assert "validate_start_time(config, coordinare_config)" in inspect.getsource(daemon_main._run)
+    assert "validate_start_time(config, _coordinare_cfg" in inspect.getsource(daemon_main.main)
 
 
 # --- the required flag is the save-time refusal, for every secret field -----------------
