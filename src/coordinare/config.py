@@ -1462,15 +1462,10 @@ class ProjectConfiguration(BaseSettings):
     # backends whose first-run install legitimately exceeds the default.
     bootstrap_max_seconds: int = Field(default=3600, ge=0, le=21600)
 
-    # 076 (live QA #150) — idle reap for env_bootstrap.  The wall-clock budget
-    # above can't tell "slow but progressing" from "hung", so a stuck bootstrap
-    # still burns the whole budget.  When the bootstrap container produces no
-    # NEW meaningful log output (LLM calls / install commands — coordinare's own
-    # status-poll lines are filtered out) for this many seconds, reap it early.
-    # Must be comfortably larger than the slowest legitimate gap (a long LLM
-    # completion or install step); 600 s is safe for slow single-tenant
-    # backends.  Set to 0 to disable idle reaping (wall-clock budget only).
-    bootstrap_idle_timeout_seconds: int = Field(default=600, ge=0, le=7200)
+    # Bootstrap silence outside a tool call is bounded separately from installs.
+    # Open tools get a 45 minute ceiling; the job wall clock still applies.
+    # Set idle timeout to 0 to disable the silence limit.
+    bootstrap_idle_timeout_seconds: int = Field(default=1800, ge=0, le=7200)
 
     # 045 — Maximum number of reviewer/security/qa → implementer feedback
     # cycles before blocking the card for human intervention.  Each
@@ -2631,6 +2626,37 @@ class CoordinareConfiguration(BaseModel):
                     f"'{symphony.env_bootstrap_performer_id}' not found in performer_endpoints"
                 )
                 raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def validate_env_bootstrap_roles(self) -> CoordinareConfiguration:
+        """270: the endpoint a symphony bootstraps on must carry the literal ``env_bootstrap`` role.
+
+        Registration maps an endpoint by its roles, so an endpoint with no roles is never
+        reachable for bootstrap: that is an error, and the message says what to add. An
+        endpoint with other roles but no ``env_bootstrap`` is reached only by id, through
+        an unrelated role, so it is a warning and the config still loads.
+        """
+        endpoints = {p.id: p for p in self.global_config.performer_endpoints}
+        for symphony in self.symphonies:
+            performer_id = symphony.env_bootstrap_performer_id
+            endpoint = endpoints.get(performer_id) if performer_id is not None else None
+            if endpoint is None or "env_bootstrap" in endpoint.roles:
+                continue
+            if not endpoint.roles:
+                msg = (
+                    f"Symphony '{symphony.name}' env_bootstrap_performer_id "
+                    f"'{performer_id}' has roles: [] and can never be registered for "
+                    "bootstrap. Set roles: [env_bootstrap] on that performer endpoint."
+                )
+                raise ValueError(msg)
+            logger.warning(
+                "config.env_bootstrap_role_missing",
+                symphony=symphony.name,
+                performer_id=performer_id,
+                roles=endpoint.roles,
+                detail="add 'env_bootstrap' to this endpoint's roles; it dispatches now only by id",
+            )
         return self
 
     @model_validator(mode="after")

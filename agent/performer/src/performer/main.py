@@ -36,6 +36,7 @@ from performer.qa_capture import boot_and_capture_app_screenshot  # noqa: F401
 # performer.main.<name>). Ruff sees no local use and would prune them.
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs  # noqa: F401 (post_issue_comment: see T049 note above)  # noqa: F401 (post_issue_comment: see T049 note above)
 from performer.io_utils import iter_lines_chunked
+from performer.server.job_runner import register_cancel_backend
 from performer.process_metrics import CpuSampler
 from performer.env_provenance import (
     DEVENV_BOOTSTRAP_ENV,
@@ -1655,6 +1656,7 @@ async def handle_dispatch(
             ))
         else:
             backend = get_backend(backend_name)
+        register_cancel_backend(backend)
         await backend.start(
             stand, score,
             model=model_name,

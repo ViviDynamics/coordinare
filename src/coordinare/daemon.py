@@ -14,6 +14,7 @@ from uuid import uuid4
 import structlog
 from pydantic import ValidationError
 
+from coordinare.config import CoordinareConfiguration, SymphonyConfig
 from coordinare.env_placeholders import operator_workflow_env
 from coordinare.graph.nodes.check_board import (
     NON_SLOT_PHASES,
@@ -71,7 +72,12 @@ from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
-from coordinare.services.env_cache import budget_max_attempts
+from coordinare.services.env_bootstrap_control import (
+    BOOTSTRAP_OPEN_TOOL_LIMIT_SECONDS,
+    BootstrapTools,
+)
+from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, budget_max_attempts
+from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.merge_review_gate import (
     DEFAULT_TARGET_BRANCH,
     ReviewProbe,
@@ -95,6 +101,7 @@ from coordinare.services.pipeline_budget import (
     review_cap_detail,
     select_pipelines,
 )
+from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.services.rebase import fetch_main_sha
 from coordinare.services.reconciliation import (
     reconcile_board_state,
@@ -1303,7 +1310,10 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 # rely on _wait_for_next_cycle() for recovery — no webhook will arrive if
 # GitHub is down. Use a fixed backoff so the circuit can probe-recover.
 _CIRCUIT_OPEN_BACKOFF_SECONDS: int = 60
+_BOOTSTRAP_POLL_INTERVAL_SECONDS: int = 10
 _BOOTSTRAP_POLL_MAX_ATTEMPTS: int = 720  # 720 x 10 s = 7200 s ~= 2 h
+_SECONDS_PER_MINUTE: int = 60
+_BOOTSTRAP_FINAL_STATUS_TIMEOUT_SECONDS: int = 5
 # A single status poll can fail transiently (e.g. a 30 s HTTP timeout while the
 # bootstrap container is mid-compile under host load) without the bootstrap
 # actually being dead. Tolerate a few *consecutive* such failures before
@@ -1311,27 +1321,26 @@ _BOOTSTRAP_POLL_MAX_ATTEMPTS: int = 720  # 720 x 10 s = 7200 s ~= 2 h
 _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES: int = 3
 
 
-def _bootstrap_progress_lines(log_lines: list[str]) -> list[str]:
-    """076 (live QA #150): the meaningful subset of an env_bootstrap container's
-    logs, for idle detection.
-
-    Coordinare polls ``GET /jobs/<id>`` every cycle, flooding the container's
-    stdout with uvicorn access lines that grow whether or not the bootstrap is
-    doing any work.  Filtering them out leaves the real progress signal — LLM
-    ``shim request`` lines, ``service_inference`` steps, and install command
-    output — which only changes when the bootstrap actually advances.  A frozen
-    result across the idle window means the container is hung, not just slow.
-    """
-    return [ln for ln in log_lines if "/jobs/" not in ln and not ln.lstrip().startswith("INFO:")]
+def _minutes_text(seconds: float) -> str:
+    """270: a duration as an operator-facing reason fragment ("10 minutes")."""
+    if seconds == _SECONDS_PER_MINUTE:
+        return "1 minute"
+    return f"{seconds / _SECONDS_PER_MINUTE:g} minutes"
 
 
 @dataclass
 class _BootstrapPollState:
-    """Loop-local state threaded through the bootstrap poll helpers."""
+    """Loop-local state threaded through the bootstrap poll helpers.
+
+    ``last_progress`` is the event fingerprint of the last status poll (270).
+    The container log snapshot is kept for the failure log tail only: it is
+    docker-specific and says nothing about a Kubernetes-hosted job.
+    """
 
     last_logs_snapshot: list[str] = field(default_factory=list)
-    last_progress: list[str] | None = None
-    last_progress_attempt: int = 0
+    last_progress: str | None = None
+    last_progress_at: float = field(default_factory=monotonic)
+    tools: BootstrapTools = field(default_factory=BootstrapTools)
     consecutive_failures: int = 0
 
 
@@ -3827,7 +3836,6 @@ class CoordinareDaemon:
             logger.warning("config_reload.no_path")
             return
         try:
-            from coordinare.config import CoordinareConfiguration
             from coordinare.config_validation import (
                 _load_raw_yaml,
                 coerce_multi_symphony_raw,
@@ -3970,43 +3978,44 @@ class CoordinareDaemon:
     ) -> None:
         """Poll a bootstrap job to completion and fire on_bootstrap_complete.
 
-        Runs for at most ``bootstrap_max_seconds`` (config; default 1 h, polled
-        every 10 s).  Past that ceiling the bootstrap is declared failed AND its
-        container reaped, so a slow/hung bootstrap can't gate the symphony for
-        the legacy ~2 h.  ``bootstrap_max_seconds=0`` restores the legacy cap.
+        The daemon bounds the job whatever the performer does (270). These limits
+        end a job that will not finish; each stops the job through the runtime
+        that owns it, then records the attempt as failed:
+
+        * the wall clock, ``bootstrap_max_seconds`` (default 1 h; ``0`` restores
+          the legacy ~2 h cap). Real time is enforced, so a status poll that
+          hangs cannot push the limit out;
+        * the idle limit, ``bootstrap_idle_timeout_seconds``: no progress for
+          that long, where progress is the event fingerprint that card stall
+          detection uses (``progress_fingerprint``), read from each status poll;
+        * an unmatched tool suspends idle timing, with its own 45 minute limit.
         """
         # 076 (live QA #150): resolve the wall-clock budget + idle timeout.
         _cfg = self._state.get("coordinare_config")
+        if isinstance(_cfg, CoordinareConfiguration):
+            _cfg = _cfg.global_config
         _budget_s = int(getattr(_cfg, "bootstrap_max_seconds", 0) or 0)
         _idle_timeout_s = int(getattr(_cfg, "bootstrap_idle_timeout_seconds", 0) or 0)
-        max_attempts = (_budget_s // 10) if _budget_s > 0 else _BOOTSTRAP_POLL_MAX_ATTEMPTS
-        if max_attempts < 1:
-            max_attempts = 1
-        poll = _BootstrapPollState()
-        for _attempt in range(max_attempts):
-            await asyncio.sleep(10)
-            poll.last_logs_snapshot = await _snapshot_container_logs(
-                container_id, poll.last_logs_snapshot,
-            )
-            # 076 idle reap: if the bootstrap's meaningful log output hasn't
-            # changed for ``bootstrap_idle_timeout_seconds``, it's hung (not just
-            # slow) — reap it now rather than waiting out the wall-clock budget.
-            if (
-                container_id
-                and _idle_timeout_s > 0
-                and await self._bootstrap_idle_reap(
-                    poll,
-                    _attempt,
-                    container_id,
-                    symphony_name,
-                    job_id,
-                    env_cache_svc,
-                    _idle_timeout_s,
-                )
-            ):
-                return
+        _wall_clock_s = (
+            _budget_s if _budget_s > 0
+            else _BOOTSTRAP_POLL_MAX_ATTEMPTS * _BOOTSTRAP_POLL_INTERVAL_SECONDS
+        )
+        deadline = monotonic() + _wall_clock_s
+        poll = _BootstrapPollState(last_progress_at=monotonic())
+        while monotonic() < deadline:
+            await asyncio.sleep(min(_BOOTSTRAP_POLL_INTERVAL_SECONDS, deadline - monotonic()))
+            if monotonic() >= deadline:
+                break
             try:
-                status_result = await svc.check_status(job_id)
+                # The deadline also bounds the status call itself: a poll that
+                # hangs cannot hold the job past the wall clock.
+                async with asyncio.timeout(max(0, deadline - monotonic())):
+                    poll.last_logs_snapshot = await _snapshot_container_logs(
+                        container_id, poll.last_logs_snapshot,
+                    )
+                    status_result = await svc.check_status(job_id)
+            except TimeoutError:
+                break
             except Exception as exc:
                 # A single status poll can fail transiently while the container
                 # is still alive and building (notably a 30 s HTTP timeout under
@@ -4045,36 +4054,50 @@ class CoordinareDaemon:
                     status_result, poll.last_logs_snapshot,
                 )
                 return
+            if await self._bootstrap_idle_reap(
+                svc,
+                poll,
+                status_result,
+                job_id,
+                symphony_name,
+                env_cache_svc,
+                _idle_timeout_s,
+                container_id,
+            ):
+                return
+        if await self._bootstrap_finished_before_stop(
+            svc, job_id, symphony_name, env_cache_svc, container_id, poll.last_logs_snapshot,
+        ):
+            return
         await self._bootstrap_budget_exhausted(
-            symphony_name, env_cache_svc, container_id, _budget_s, max_attempts,
+            svc, job_id, symphony_name, env_cache_svc, _wall_clock_s,
         )
 
     async def _bootstrap_budget_exhausted(
         self,
+        svc: Any,
+        job_id: str,
         symphony_name: str,
         env_cache_svc: Any,
-        container_id: str | None,
-        budget_s: int,
-        max_attempts: int,
+        wall_clock_s: int,
     ) -> None:
-        """076 (live QA #150): budget exhausted.  Reap the container explicitly —
-        it was started with ``--rm`` but a hung agent never exits, so without
-        an explicit stop it would linger and keep holding a backend slot."""
+        """270: the wall clock ran out. Stop the job through its runtime, then record
+        the attempt as failed. The stop is attempted whatever the performer reports:
+        a hung turn never ends its own job, so the daemon ends it."""
         logger.warning(
             "env_cache.bootstrap_poll_timeout",
             symphony=symphony_name,
-            budget_seconds=budget_s or (_BOOTSTRAP_POLL_MAX_ATTEMPTS * 10),
-            attempts=max_attempts,
+            job_id=job_id,
+            budget_seconds=wall_clock_s,
         )
-        if container_id:
-            await self._reap_bootstrap_container(container_id, symphony_name)
+        await self._stop_bootstrap_job(svc, job_id, symphony_name)
         env_cache_svc.on_bootstrap_complete(
             symphony_name,
             False,
             self._state,
             error=(
-                "bootstrap exceeded its time budget "
-                f"({budget_s or _BOOTSTRAP_POLL_MAX_ATTEMPTS * 10}s) and was reaped"
+                f"bootstrap failed: exceeded {_minutes_text(wall_clock_s)} of wall clock; "
+                "job stopped"
             ),
         )
 
@@ -4151,41 +4174,58 @@ class CoordinareDaemon:
             )
         return quiet
 
-    async def _bootstrap_idle_reap(
-        self,
-        poll: _BootstrapPollState,
-        attempt: int,
-        container_id: str,
-        symphony_name: str,
-        job_id: str,
-        env_cache_svc: Any,
-        idle_timeout_s: int,
+    async def _bootstrap_finished_before_stop(
+        self, svc: Any, job_id: str, symphony_name: str, env_cache_svc: Any,
+        container_id: str | None, last_logs: list[str],
     ) -> bool:
-        """076 idle reap: reap a hung bootstrap (no meaningful log progress for
-        ``bootstrap_idle_timeout_seconds``).  Returns True when reaped."""
-        _progress = _bootstrap_progress_lines(poll.last_logs_snapshot)
-        if _progress != poll.last_progress:
-            poll.last_progress = _progress
-            poll.last_progress_attempt = attempt
+        """Read status immediately before a reap, with a bounded final grace period."""
+        try:
+            async with asyncio.timeout(_BOOTSTRAP_FINAL_STATUS_TIMEOUT_SECONDS):
+                status = await svc.check_status(job_id)
+        except Exception as exc:
+            logger.warning("env_cache.bootstrap_final_status_failed", job_id=job_id, error=str(exc))
             return False
-        if (attempt - poll.last_progress_attempt) * 10 < idle_timeout_s:
+        if status.get("status") in ("working", None):
             return False
-        logger.warning(
-            "env_cache.bootstrap_idle_reaped",
-            symphony=symphony_name,
-            job_id=job_id,
-            idle_seconds=(attempt - poll.last_progress_attempt) * 10,
-            idle_timeout_seconds=idle_timeout_s,
+        await self._handle_bootstrap_terminal_status(
+            svc, job_id, symphony_name, env_cache_svc, container_id, status, last_logs,
         )
-        await self._reap_bootstrap_container(container_id, symphony_name)
+        return True
+
+    async def _bootstrap_idle_reap(
+        self, svc: Any, poll: _BootstrapPollState, status_result: dict[str, Any],
+        job_id: str, symphony_name: str, env_cache_svc: Any, idle_timeout_s: int,
+        container_id: str | None = None,
+    ) -> bool:
+        """Bound silence with monotonic time, giving unmatched tools a larger limit."""
+        now = monotonic()
+        events = status_result.get("events")
+        tool_progress = poll.tools.observe(events, now)
+        progress = progress_fingerprint(events)
+        if poll.last_progress is None or (progress and progress != poll.last_progress) or tool_progress:
+            poll.last_progress = progress
+            poll.last_progress_at = now
+        idle_s = now - poll.last_progress_at
+        if idle_timeout_s <= 0 or idle_s < idle_timeout_s:
+            return False
+        if poll.tools.open_since:
+            open_s = now - min(poll.tools.open_since.values())
+            if open_s < BOOTSTRAP_OPEN_TOOL_LIMIT_SECONDS:
+                return False
+            reason = f"tool open for {_minutes_text(open_s)}"
+        else:
+            reason = f"no progress for {_minutes_text(idle_s)}"
+        if await self._bootstrap_finished_before_stop(
+            svc, job_id, symphony_name, env_cache_svc, container_id, poll.last_logs_snapshot,
+        ):
+            return True
+        logger.warning(
+            "env_cache.bootstrap_idle_reaped", symphony=symphony_name,
+            job_id=job_id, reason=reason, idle_timeout_seconds=idle_timeout_s,
+        )
+        await self._stop_bootstrap_job(svc, job_id, symphony_name)
         env_cache_svc.on_bootstrap_complete(
-            symphony_name,
-            False,
-            self._state,
-            error=(
-                "bootstrap hung — no progress for "
-                f"{(attempt - poll.last_progress_attempt) * 10}s; reaped"
-            ),
+            symphony_name, False, self._state, error=f"bootstrap hung: {reason}; job stopped",
         )
         return True
 
@@ -4301,36 +4341,47 @@ class CoordinareDaemon:
                         ),
                     )
 
-    async def _reap_bootstrap_container(self, container_id: str, symphony_name: str) -> None:
-        """076 (live QA #150): force-stop a wedged env_bootstrap container.
+    async def _stop_bootstrap_job(self, svc: Any, job_id: str, symphony_name: str) -> bool:
+        """270: stop a wedged env_bootstrap job through the runtime that owns it.
 
-        Shared by the wall-clock-budget and idle-reap paths.  Best-effort: a
-        failure to stop must not wedge the symphony (the caller still marks the
-        bootstrap failed so dispatch unblocks and the next cycle re-dispatches).
+        The old reap shelled out to ``docker stop`` with the job's handle. That is
+        wrong on Kubernetes, where the handle is a Pod name, and it never ran for a
+        persistent performer, whose job has no container handle at all. The service
+        stops the job by session id on either runtime (ephemeral: the runtime
+        removes the Pod or container; persistent: the performer's cancel, confirmed
+        by a read). Best-effort: a failed stop must not wedge the symphony, so the
+        caller still records the attempt as failed. Returns True only when the stop
+        is confirmed.
         """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "stop",
-                "--time",
-                "5",
-                container_id,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=20.0)
-            logger.warning(
-                "env_cache.bootstrap_container_reaped",
+        stop = getattr(svc, "stop_session_confirmed", None)
+        confirmed = False
+        if stop is None:
+            logger.error(
+                "env_cache.bootstrap_stop_unsupported",
                 symphony=symphony_name,
-                container_id=container_id[:12],
+                job_id=job_id,
+                detail="this performer service cannot stop a job by session id",
             )
-        except Exception as exc:
-            logger.warning(
-                "env_cache.bootstrap_reap_failed",
+        else:
+            try:
+                confirmed = bool(await stop(job_id))
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.bootstrap_reap_failed",
+                    symphony=symphony_name,
+                    job_id=job_id,
+                    error=str(exc),
+                )
+        if confirmed:
+            logger.warning("env_cache.bootstrap_job_stopped", symphony=symphony_name, job_id=job_id)
+        else:
+            logger.error(
+                "env_cache.bootstrap_stop_unconfirmed",
                 symphony=symphony_name,
-                container_id=container_id[:12],
-                error=str(exc),
+                job_id=job_id,
+                detail="the bootstrap job could not be proven stopped; the attempt is still recorded as failed",
             )
+        return confirmed
 
     async def _dispatch_documenting_side_runs(
         self, sym_gh_svcs: dict[str, Any] | None, *,
@@ -4903,7 +4954,6 @@ class CoordinareDaemon:
         role config is available.  Also returns the effective config the
         resolution used (the symphony override when present, else the global
         config), for the workflow-override block."""
-        from coordinare.config import CoordinareConfiguration, SymphonyConfig
 
         resolved = _BootstrapBackend()
         cfg = self._state.get("config")
@@ -5276,6 +5326,14 @@ class CoordinareDaemon:
             # not by lifecycle stage — so use the id-keyed map populated at startup.
             _ec_performer_svcs = dict(self._state.get("performer_services_by_id") or {})
             for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
+                # 270: a paused symphony (``enabled: false``) gets no env-cache cycle at
+                # all. That covers the first dispatch at boot, the SHA-change dispatch,
+                # every retry and the restart re-verify. The cycle is skipped before any
+                # call that reads or writes EnvCacheState, so the persisted state stays as
+                # it was. A bootstrap already in flight keeps its own poll task (bounded
+                # by the reaper), but nothing new is dispatched until the symphony resumes.
+                if not getattr(_ec_sym_cfg, "enabled", True):
+                    continue
                 _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
                 if _ec_gh_svc is None:
                     continue
@@ -5291,19 +5349,12 @@ class CoordinareDaemon:
                         performer_id, payload, _sym, _svc_map, _ec_svc,
                     )
 
-                from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
-
                 _bootstrap_devenv_root = DEFAULT_DEVENV_ROOT
                 _bootstrap_svc = _ec_performer_svcs.get(
                     _ec_sym_cfg.env_bootstrap_performer_id or "",
                 )
-                if _bootstrap_svc is not None:
-                    from coordinare.services.http_performer_service import (
-                        HTTPPerformerService,
-                    )
-
-                    if isinstance(_bootstrap_svc, HTTPPerformerService):
-                        _bootstrap_devenv_root = _bootstrap_svc.devenv_root
+                if isinstance(_bootstrap_svc, HTTPPerformerService):
+                    _bootstrap_devenv_root = _bootstrap_svc.devenv_root
 
                 # 088 (US5): restart honor path — hand the service a
                 # clean-room verifier so a persisted success is
@@ -5325,34 +5376,18 @@ class CoordinareDaemon:
                     clean_verify_fn=_clean_verify_fn,
                 )
 
-            # 173: the two card-less intake runs (advocate, curator).
-            # Gated, rate limited and dispatched straight from here:
-            # neither owns a card, so neither can go through the
-            # graph node, which refuses a dispatch without one.
-            for _irole in ("advocate", "curator"):
-                _igh = _sym_gh_svcs.get(_ec_sym_name)
-                if _igh is not None:
-                    await self._maybe_dispatch_intake(_irole, _ec_sym_name, _igh)
+                # Intake and manual wiki dispatch are scoped to this enabled symphony.
+                for _irole in ("advocate", "curator"):
+                    await self._maybe_dispatch_intake(_irole, _ec_sym_name, _ec_gh_svc)
+                if _ec_sym_name in self._wiki_init_requests:
+                    self._wiki_init_requests.discard(_ec_sym_name)
+                    await self._execute_wiki_init_dispatch(_ec_sym_name, _ec_gh_svc)
 
-            # 124(US2): drain manual wiki-init requests (dashboard
-            # "Init wiki" button). Operator-initiated, so it dispatches
-            # regardless of the default-off auto-gate and holds nothing.
-            # 165: documenter side runs for cards whose blueprint has a
-            # documentation brief and that have moved past architecting.
-            if self._wiki_init_requests:
-                for _wsym in list(self._wiki_init_requests):
-                    self._wiki_init_requests.discard(_wsym)
-                    _wgh = _sym_gh_svcs.get(_wsym)
-                    if _wgh is not None:
-                        await self._execute_wiki_init_dispatch(_wsym, _wgh)
-                    else:
-                        # The symphony was removed/disabled between the
-                        # button click (202) and this drain. Surface the
-                        # drop rather than discarding it silently.
-                        logger.warning(
-                            "wiki_init.request_dropped_no_github_service",
-                            symphony=_wsym,
-                        )
+            # Removed symphonies cannot consume queued wiki requests. Paused
+            # symphonies retain theirs until they are enabled again.
+            for removed in self._wiki_init_requests.difference(symphony_configs):
+                self._wiki_init_requests.discard(removed)
+                logger.warning("wiki_init.request_dropped_no_github_service", symphony=removed)
 
     async def _run_orchestration(self, symphony_configs: dict[str, Any]) -> bool:
         """057: Multi-symphony orchestration cycle.  Returns True when the

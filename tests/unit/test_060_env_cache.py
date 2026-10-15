@@ -12,6 +12,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+import coordinare.daemon as daemon_mod
 from coordinare.daemon import CoordinareDaemon
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.docker_runtime import DockerRuntime
@@ -23,6 +24,17 @@ from coordinare.services.env_cache import (
     sanitise_symphony_name,
     write_service_scripts,
 )
+
+
+class _BootstrapClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def _combined_sha(per_file: dict[str, str]) -> str:
@@ -1406,13 +1418,10 @@ class TestPollBootstrapCompletion:
 
     @pytest.fixture(autouse=True)
     def _fast_sleep(self, monkeypatch):
-        """Patch asyncio.sleep in the daemon module to avoid real 10s delays."""
-        import coordinare.daemon as daemon_mod
-
-        async def _no_sleep(_):
-            return None
-
-        monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
+        """Advance the daemon clock with each sleep, without real delays."""
+        clock = _BootstrapClock()
+        monkeypatch.setattr(daemon_mod.asyncio, "sleep", clock.sleep)
+        monkeypatch.setattr(daemon_mod, "monotonic", clock.time)
 
     @pytest.fixture(autouse=True)
     def _clean_verify_passes(self, monkeypatch):
@@ -1515,8 +1524,8 @@ class TestPollBootstrapCompletion:
     @pytest.mark.asyncio
     async def test_budget_exhausted_reaps_container_and_marks_failure(self, monkeypatch) -> None:
         """076 (live QA #150): a bootstrap that never reports terminal status
-        must be bounded by ``bootstrap_max_seconds`` — the loop stops at the
-        derived attempt cap, reaps the container, and marks failure (which
+        must be bounded by ``bootstrap_max_seconds``. The loop stops at the
+        elapsed deadline, stops the job, and marks failure (which
         unblocks dispatch; the next cycle re-dispatches).
         """
         import coordinare.daemon as daemon_mod
@@ -1530,9 +1539,10 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
+        svc.stop_session_confirmed = AsyncMock(return_value=True)
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
-        # Fake docker subprocesses (logs snapshot each iter + the final reap).
+        # Fake docker subprocesses (logs snapshot each iter).
         stop_calls: list[tuple] = []
 
         class _FakeProc:
@@ -1556,17 +1566,18 @@ class TestPollBootstrapCompletion:
             svc, "job-1", "alpha", ec_svc, container_id="ctr-hung-deadbeef",
         )
 
-        # check_status polled exactly the budgeted number of times, never more.
+        # One regular read plus the final status read at the elapsed deadline.
         assert svc.check_status.await_count == 2
-        # Container was explicitly reaped (docker stop) at the cap.
-        assert any("stop" in argv and "ctr-hung-deadbeef" in argv for argv in stop_calls)
+        # The job was stopped through its runtime at the cap (270: not docker stop).
+        svc.stop_session_confirmed.assert_awaited_once_with("job-1")
+        assert stop_calls == []
         # Failure recorded so the cache stays un-ready and dispatch unblocks.
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
+        assert "exceeded" in ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
 
     @pytest.mark.asyncio
     async def test_sub_10s_budget_clamps_to_one_attempt(self, monkeypatch) -> None:
-        """076: a budget under one poll interval (10s) clamps to 1 attempt
-        rather than 0 (which would skip polling entirely)."""
+        """A budget below the poll interval still gets a final status read."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1598,8 +1609,7 @@ class TestPollBootstrapCompletion:
 
     @pytest.mark.asyncio
     async def test_reap_failure_is_non_fatal(self, monkeypatch) -> None:
-        """076: if the docker-stop reap itself fails, the bootstrap is still
-        marked failed (the symphony must not stay wedged on a reap error)."""
+        """If the runtime stop fails, the bootstrap is still recorded as failed."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1610,12 +1620,10 @@ class TestPollBootstrapCompletion:
 
         svc = MagicMock()
         svc.check_status = AsyncMock(return_value={"status": "working"})
+        svc.stop_session_confirmed = AsyncMock(side_effect=RuntimeError("runtime unreachable"))
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
         async def _fake_exec(*argv, **kwargs):
-            if "stop" in argv:
-                raise RuntimeError("docker daemon unreachable")
-
             class _P:
                 async def communicate(self):
                     return (b"", b"")
@@ -1632,10 +1640,10 @@ class TestPollBootstrapCompletion:
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
-    async def test_idle_reap_fires_when_no_log_progress(self, monkeypatch) -> None:
-        """076 idle reap: a bootstrap whose meaningful log output is frozen for
-        bootstrap_idle_timeout_seconds is reaped early — well before the
-        wall-clock budget — and marked failed."""
+    async def test_idle_reap_fires_when_no_event_progress(self, monkeypatch) -> None:
+        """076 / 270 idle reap: a bootstrap whose status events are frozen for
+        bootstrap_idle_timeout_seconds is reaped early, well before the wall-clock
+        budget, through its runtime, and marked failed."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1644,25 +1652,16 @@ class TestPollBootstrapCompletion:
         cfg.bootstrap_idle_timeout_seconds = 30  # 3 idle polls -> reap
         daemon._state["coordinare_config"] = cfg
 
+        # Same events on every poll: no progress.
         svc = MagicMock()
-        svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
+        svc.check_status = AsyncMock(return_value={"status": "working", "events": []})
+        svc.stop_session_confirmed = AsyncMock(return_value=True)
         ec_svc = MagicMock(freeze_provenance=AsyncMock(return_value=(True, None)))
 
-        stop_calls: list[tuple] = []
-
-        # Constant, poll-noise-only logs => no meaningful progress between polls.
-        frozen_logs = (
-            b'INFO:     172.0.0.1:1 - "GET /jobs/j HTTP/1.1" 200 OK\n'
-            b'INFO:     172.0.0.1:2 - "GET /jobs/j HTTP/1.1" 200 OK\n'
-        )
-
         async def _fake_exec(*argv, **kwargs):
-            if "stop" in argv:
-                stop_calls.append(argv)
-
             class _P:
                 async def communicate(self):
-                    return (frozen_logs, b"")
+                    return (b"", b"")
 
                 async def wait(self):
                     return 0
@@ -1673,16 +1672,17 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-idle")
 
-        # Reaped on idle (attempts 0,1,2 poll; attempt 3 = 30s idle -> reap before check_status).
-        assert svc.check_status.await_count == 3
-        assert any("stop" in argv and "ctr-idle" in argv for argv in stop_calls)
+        # Four regular reads show 30 seconds of silence, then one final read confirms it.
+        assert svc.check_status.await_count == 5
+        svc.stop_session_confirmed.assert_awaited_once_with("j")
+        error = ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
+        assert "no progress for 0.5 minutes" in error
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
-    async def test_idle_reap_not_triggered_while_logs_progress(self, monkeypatch) -> None:
-        """076 idle reap: a slow-but-progressing bootstrap (new meaningful log
-        lines each poll) is NOT reaped even past the idle window — it completes
-        normally."""
+    async def test_idle_reap_not_triggered_while_events_progress(self, monkeypatch) -> None:
+        """076 / 270 idle reap: a slow-but-progressing bootstrap (new status events
+        each poll) is NOT reaped even past the idle window. It completes normally."""
         import coordinare.daemon as daemon_mod
 
         daemon = _make_daemon_for_env_cache()
@@ -1722,7 +1722,11 @@ class TestPollBootstrapCompletion:
 
         # Terminal only after 6 polls — well past the 30s idle window — proving
         # progress kept idle-reap from firing.
-        statuses = [{"status": "working"}] * 5 + [{"status": "env_bootstrap_complete"}]
+        # 270: progress is a new status event each poll (distinct text, not a loop).
+        statuses = [
+            {"status": "working", "events": [{"text": f"install step {n} finished. "}]}
+            for n in range(5)
+        ] + [{"status": "env_bootstrap_complete"}]
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=statuses)
         svc._runtime = DockerRuntime()

@@ -251,7 +251,8 @@ agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs vi
 #   # -------------------------------------------------------------------------
 #   - id: bootstrap-env
 #     mode: ephemeral
-#     roles: []                          # env_bootstrap jobs are not tied to a lifecycle role
+#     roles: [env_bootstrap]             # the literal role registers this endpoint for bootstrap;
+#                                        # roles: [] makes it unreachable (config load fails)
 #     image: coordinare-performer:full    # swap for a custom image if extra tools are needed
 #     readiness_timeout_s: 300           # bootstrap jobs can be slow; give the container time
 #     # env_bootstrap runs an LLM-driven service-discovery step (coordinare_service_inference).

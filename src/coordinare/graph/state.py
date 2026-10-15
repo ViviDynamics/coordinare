@@ -488,6 +488,7 @@ class CoordinareState(TypedDict, total=False):
     symphony_workspace_managers: dict[str, Any]  # name → WorkspaceManager
 
     # 060: Per-symphony env-cache state (name → EnvCacheState)
+    env_bootstrap_manual_resets: dict[str, datetime]
     env_cache: dict[str, Any]
     # EnvCacheService instance — declared here so LangGraph preserves it across
     # graph.ainvoke() cycles (unknown keys are dropped during state merge).
