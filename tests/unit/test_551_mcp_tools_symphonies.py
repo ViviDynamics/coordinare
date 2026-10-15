@@ -12,8 +12,21 @@ from coordinare.mcp.client import DashboardClient, ToolResult
 from coordinare.mcp.config import McpServerConfig
 from coordinare.mcp.tools.symphony_tools import (
     UpsertSymphonyInput,
+    _NameInput,
+    cancel_env_bootstrap_handler,
     upsert_symphony_handler,
 )
+
+
+@pytest.mark.asyncio
+async def test_cancel_bootstrap_proxies_conflict_without_retrying() -> None:
+    path = "/api/symphonies/alpha/env-bootstrap/cancel"
+    client = _RecordingClient({("POST", path): ToolResult.failure("conflict", 409, "No bootstrap is running", "")})
+    result = await cancel_env_bootstrap_handler(_NameInput(name="alpha"), client)
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.status == 409
+    assert client.calls == [("POST", path)]
 
 
 class _RecordingClient(DashboardClient):

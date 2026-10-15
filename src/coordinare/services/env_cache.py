@@ -29,8 +29,11 @@ from coordinare.models.performer_endpoint import VolumeMount
 from coordinare.services.bootstrap_history import (
     ACT_BUDGET_RESET,
     ACT_EXHAUSTED,
+    BOOTSTRAP_CANCEL_COOLDOWN_S,
+    OUTCOME_CANCELLED,
     AttemptEnd,
     BudgetNow,
+    history_of,
     record_activity,
     report_completion,
     short_commit,
@@ -99,6 +102,12 @@ if TYPE_CHECKING:
         async def get_branch_head_sha(self, branch_name: str = "main") -> str | None: ...
 
 logger = structlog.get_logger(__name__)
+
+
+def _remember_manifest(cache: EnvCacheState | None, items: list[dict[str, Any]]) -> None:
+    """Keep dispatch inputs even when writing the generated scripts is refused."""
+    if cache is not None:
+        cache.manifest_items = items
 
 DEFAULT_DEVENV_ROOT = "/devenv"
 
@@ -1105,6 +1114,13 @@ class EnvCacheService:
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
         if cache_state is None:
             return
+        history = history_of(state)
+        recent = history.recent(symphony_name, 1) if history is not None else []
+        cancelled_at = (
+            recent[0].ended_at if recent and recent[0].outcome == OUTCOME_CANCELLED else None
+        )
+        if cancelled_at is not None and datetime.now(UTC) < cancelled_at + timedelta(seconds=BOOTSTRAP_CANCEL_COOLDOWN_S):
+            return
         self.bind_kubernetes_state(state)
         self.schedule_full_pass(symphony_name, cache_state)
 
@@ -1248,8 +1264,9 @@ class EnvCacheService:
         # hammering a fresh container every ~cooldown.
         if not needs_bootstrap and cache_state.last_bootstrap_succeeded is False:
             last_at = cache_state.last_bootstrap_at
-            retry_cooldown = BOOTSTRAP_RETRY_COOLDOWN_S * (
-                2 ** (cache_state.bootstrap_attempts + cache_state.infra_failures)
+            retry_cooldown = (
+                BOOTSTRAP_CANCEL_COOLDOWN_S if cancelled_at is not None else
+                BOOTSTRAP_RETRY_COOLDOWN_S * 2 ** (cache_state.bootstrap_attempts + cache_state.infra_failures)
             )
             cooldown_elapsed = (
                 last_at is None
@@ -2189,6 +2206,7 @@ class EnvCacheService:
         agent-writes-verify/activate behaviour rather than blocking.
         """
         # Fetch structured project files (missing files are normal — skip them).
+        _remember_manifest(cache_state, [])
         struct_contents: dict[str, str] = {}
         for spec_file in STRUCTURED_SPEC_FILES:
             try:
@@ -2208,6 +2226,7 @@ class EnvCacheService:
             (c for c in readme_contents.values() if c), "",
         )
         manifest = await enrich_from_readme(manifest, readme_text, llm_chat)
+        _remember_manifest(cache_state, [item.model_dump(mode="json") for item in manifest.items])
 
         if not manifest.items:
             # 218: an empty manifest still gets the daemon-owned verify.sh and activate.sh (they
@@ -2560,6 +2579,24 @@ class EnvCacheService:
         # completion path, so the restart honor verify must not re-fire.
         self._restart_verified.add(symphony_name)
 
+    def on_bootstrap_cancelled(self, symphony_name: str, state: dict[str, Any], actor: str) -> None:
+        """Close an operator stop without changing either retry budget or the recorded SHA."""
+        cache_state = (state.get("env_cache") or {}).get(symphony_name)
+        if cache_state is None:
+            return
+        cache_state.bootstrap_in_flight = False
+        cache_state.last_bootstrap_at = datetime.now(UTC)
+        cache_state.last_bootstrap_succeeded = False
+        cache_state.last_bootstrap_error = redact_state_value(f"cancelled by {actor}")
+        report_completion(
+            state, symphony_name,
+            AttemptEnd(cache_state.last_bootstrap_at, False, cache_state.last_bootstrap_error,
+                       cache_state.readme_sha or "", cache_state.bootstrap_attempts + 1, cancelled_by=actor),
+            BudgetNow(budget_max_attempts(self._coordinare_config), False,
+                      cache_state.last_bootstrap_at + timedelta(seconds=BOOTSTRAP_CANCEL_COOLDOWN_S)),
+        )
+        self._flush_bootstrap_snapshot(state, symphony_name)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
@@ -2679,6 +2716,10 @@ class EnvCacheService:
                     pending_sha=pending,
                 )
 
+        self._flush_bootstrap_snapshot(state, symphony_name)
+
+    def _flush_bootstrap_snapshot(self, state: dict[str, Any], symphony_name: str) -> None:
+        """Save completion without waiting for a later lifecycle transition."""
         # 088 (US5): flush the completion to disk NOW — it moves no lifecycle
         # signature, so the daemon's signature-gated save would defer it to the
         # next stage transition and a restart in that window would rewind it.

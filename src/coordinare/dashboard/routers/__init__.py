@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from coordinare.dashboard.routers import (
     assistant,
+    bootstrap,
     config,
     controls,
     events,
@@ -18,6 +19,7 @@ from coordinare.dashboard.routers import (
 
 __all__ = [
     "assistant",
+    "bootstrap",
     "config",
     "controls",
     "events",

@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services.bootstrap_history import (
+    BOOTSTRAP_CANCEL_COOLDOWN_S,
+    OUTCOME_CANCELLED,
     OUTCOME_RUNNING,
     TAIL_LINES,
     BootstrapAttempt,
@@ -48,11 +50,13 @@ STATE_FAILED = "failed"
 STATE_WAITING = "waiting_to_retry"
 STATE_EXHAUSTED = "budget_exhausted"
 STATE_PASSED_NOT_READY = "passed_not_ready"
+STATE_STOP_UNCONFIRMED = "stop_unconfirmed"
+STATE_CANCELLED = "cancelled"
 
 #: The states a card waits on. Ready and not configured hold nothing.
 HOLD_STATES = frozenset({
     STATE_NOT_STARTED, STATE_BOOTSTRAPPING, STATE_VERIFYING, STATE_FAILED, STATE_WAITING, STATE_EXHAUSTED,
-    STATE_PASSED_NOT_READY,
+    STATE_PASSED_NOT_READY, STATE_STOP_UNCONFIRMED, STATE_CANCELLED,
 })
 
 #: The reason a card held by the env bootstrap carries in session_skip_reasons.
@@ -164,6 +168,7 @@ def _running_fields(view: dict[str, Any], running: BootstrapAttempt | None, now:
     view["performer_id"] = running.performer_id or None
     view["pod"] = running.pod
     view["job_id"] = running.job_id
+    view["run_id"] = running.run_id
 
 
 def derive_status(
@@ -208,6 +213,10 @@ def _apply_cache(
         word = "Verifying" if verifying else "Bootstrapping"
         view["label"] = f"{word}, run {run} of {max_attempts}"
         _running_fields(view, running, now)
+        if running is not None and running.stop_unconfirmed:
+            view["state"] = STATE_STOP_UNCONFIRMED
+            view["label"] = "Stop unconfirmed"
+            _reason_fields(view, running.reason)
         return
     if cache.bootstrap_exhausted:
         _set_exhausted(view, cache, failures)
@@ -277,23 +286,27 @@ def attempt_view(record: BootstrapAttempt, now: datetime) -> dict[str, Any]:
     """One history row, in the words and figures the Symphonies page shows."""
     ended = record.ended_at
     duration = _elapsed(record.started_at, ended if ended is not None else now)
+    interrupted = record.restored and ended is None
     failing, tail = failure_detail(record.reason)
     return {
         "number": record.number,
+        "run_id": record.run_id,
         "attempt": record.attempt,
         "commit": short_commit(record.commit) or None,
         "started_at": _iso(record.started_at),
         "ended_at": _iso(ended),
-        "duration_seconds": duration,
-        "outcome": record.outcome,
-        "running": record.outcome == OUTCOME_RUNNING,
+        "duration_seconds": None if interrupted else duration,
+        "outcome": "interrupted" if interrupted else record.outcome,
+        "running": record.outcome == OUTCOME_RUNNING and not record.restored,
         "reason": failing,
         "infra": record.infra,
+        "cancelled_by": record.cancelled_by,
+        "stop_unconfirmed": record.stop_unconfirmed,
         "backend": record.backend or None,
         "model": record.model or None,
         "job_id": record.job_id,
         "pod": record.pod,
-        "reason_tail": tail,
+        "reason_tail": record.reason_tail or tail,
     }
 
 
@@ -313,12 +326,22 @@ def symphony_view(
         max_attempts=max_attempts_of(state), now=now,
     )
     recent = history.recent(symphony, RECENT_LIMIT) if history is not None else []
+    if view["state"] in (STATE_WAITING, STATE_FAILED) and recent and recent[0].outcome == OUTCOME_CANCELLED:
+        record = recent[0]
+        view["state"] = STATE_CANCELLED
+        view["label"] = "Cancelled"
+        _reason_fields(view, record.reason)
+        view["next_attempt_at"] = _iso(
+            record.ended_at + timedelta(seconds=BOOTSTRAP_CANCEL_COOLDOWN_S) if record.ended_at else None,
+        )
     view["history"] = [attempt_view(record, now) for record in recent]
     return view
 
 
 _HOLD_WORDS = {
     STATE_NOT_STARTED: "Waiting for the environment bootstrap to start",
+    STATE_STOP_UNCONFIRMED: "Environment bootstrap stop unconfirmed",
+    STATE_CANCELLED: "Environment bootstrap cancelled",
     STATE_PASSED_NOT_READY: "Waiting for the environment bootstrap to finish for the current commit",
 }
 
@@ -329,7 +352,10 @@ def hold_text(view: Mapping[str, Any]) -> str | None:
     if state not in HOLD_STATES:
         return None
     if state in _HOLD_WORDS:
-        return _HOLD_WORDS[state]
+        words = _HOLD_WORDS[state]
+        if state in (STATE_CANCELLED, STATE_STOP_UNCONFIRMED) and view.get("reason"):
+            words += f": {view['reason']}"
+        return words
     run = view.get("attempt")
     budget = view.get("max_attempts")
     reason = str(view.get("reason") or "")

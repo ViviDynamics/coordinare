@@ -121,6 +121,7 @@ def create_dashboard_app(
     )
     for area in (
         routers.pages,
+        routers.bootstrap,
         routers.state,
         routers.controls,
         routers.symphonies,

@@ -368,7 +368,7 @@ var _lastState = null;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','logs-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page','card-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','logs-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page','card-page','bootstrap-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -459,20 +459,12 @@ function renderSymphoniesPage(s) {
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
     + addFormHtml;
-  el.querySelectorAll('.sym-row-bootstrap').forEach(function(b) {
-    b.addEventListener('click', async function() {
+  document.getElementById('sym-list-msg').textContent = bootstrapListMessage();
+  el.querySelectorAll('.sym-row-bootstrap, .sym-row-bootstrap-cancel').forEach(function(b) {
+    b.addEventListener('click', function() {
       var n = b.getAttribute('data-sym');
       var msg = document.getElementById('sym-list-msg');
-      b.disabled = true;
-      msg.textContent = 'Dispatching ' + n + '...';
-      msg.style.color = 'var(--color-text-muted)';
-      try {
-        var r = await fetch('/api/symphonies/' + encodeURIComponent(n) + '/env-bootstrap', {method: 'POST'});
-        var d = await r.json();
-        if (r.ok) { msg.textContent = n + ': accepted'; msg.style.color = 'var(--color-accent-green)'; }
-        else { msg.textContent = n + ': ' + (d.error || ('error ' + r.status)); msg.style.color = 'var(--color-accent-red)'; }
-      } catch(e) { msg.textContent = n + ': network error'; msg.style.color = 'var(--color-accent-red)'; }
-      b.disabled = false;
+      bootstrapAction(n, b.classList.contains('sym-row-bootstrap-cancel'), b, msg);
     });
   });
   // 156: a click anywhere on a row opens that symphony's page. The name link and the Bootstrap
@@ -972,6 +964,9 @@ function router() {
     showPage('history-page');
     var historyNow = currentScopedState();
     if (historyNow) renderHistoryPage(historyNow);
+  } else if (isBootstrapRunPath(path)) {
+    showPage('bootstrap-page');
+    bootstrapPageRefresh();
   } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
     showPage('symphonies-page');
     if (_lastState) renderSymphoniesPage(_lastState);
@@ -1429,7 +1424,11 @@ function connectEventStream() {
   source.addEventListener('activity_event', function(e) {
     if (es !== source) return;
     afNoteMessage();
-    try { afAppend(JSON.parse(e.data).entries); }
+    try {
+      var entries = JSON.parse(e.data).entries;
+      afAppend(entries);
+      bootstrapLiveActivity(entries);
+    }
     catch(err) { console.error('activity parse error', err); }
   });
   source.addEventListener('events_changed', function() { if (es === source) { afNoteMessage(); if (typeof logsChanged === 'function') logsChanged(); } });
@@ -1453,6 +1452,7 @@ function connectEventStream() {
       if (isPerformersPath(path)) renderPerformersPage(scoped);
       else if (path === '/history') renderHistoryPage(scoped);
       else if (path === '/logs') renderLogsPage(currentScopedState());
+      else if (isBootstrapRunPath(path)) bootstrapPageRefresh();
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
       else if (isCardPath(path)) cardPageRefresh();
       else renderDashboardExtras(scoped);
