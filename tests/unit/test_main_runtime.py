@@ -58,6 +58,7 @@ def test_main_exits_1_on_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Mock ProjectConfiguration() constructor (env-vars-only path)
     monkeypatch.setattr(app_main, "ProjectConfiguration", lambda **kw: config)
+    monkeypatch.setattr(app_main, "validate_start_time", lambda *args, **kwargs: None)
 
     monkeypatch.setattr(app_main, "configure_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
