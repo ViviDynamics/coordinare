@@ -23,6 +23,7 @@ from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import WALK_DIAGNOSTIC_PREFIX
 from tests.unit.services.test_400_forced_regen_single_bootstrap import _cycle, _github
 from tests.unit.services.test_env_cache_phase4 import _make_cfg, _seed_state
+from tests.unit.test_265_k8s_verifier import _manifest, _run_in_pod
 from tests.unit.test_265_provenance_k8s import ACTIVATE, freeze, logs, setup, summary
 from tests.unit.test_276_review_blockers import (
     SHELL_EXECUTABLE_MODE,
@@ -46,6 +47,27 @@ def _run_shell(tmp_path: Path, script: str, **extra_env: str) -> subprocess.Comp
         ["bash", str(path)], capture_output=True, text=True, check=False,
         env={**os.environ, "BASH_ENV": "", "ENV": "", **extra_env}, timeout=SHELL_TIMEOUT_SECONDS,
     )
+
+
+def _run_verify(tmp_path: Path, script: str, execution: str) -> subprocess.CompletedProcess[str]:
+    if execution == "standalone":
+        return _run_shell(tmp_path, script)
+    pod = _manifest(mount_path=str(tmp_path), verify_text=script, project_files={})
+    return _run_in_pod(pod, tmp_path)
+
+
+@pytest.mark.parametrize("execution", ["standalone", "kubernetes"])
+@pytest.mark.parametrize("kind", ["runtime", "gem"])
+@pytest.mark.parametrize("check", ["false", "false; echo OK: tool", "false | cat; echo OK: tool"])
+def test_hard_check_failure_cannot_be_masked(
+    tmp_path: Path, execution: str, kind: str, check: str,
+) -> None:
+    manifest = EnvManifest(symphony_name="sym", items=[
+        ManifestItem(name="custom", kind=kind, source="README.md", check=check),
+    ])
+    result = _run_verify(tmp_path, render_verify_sh(manifest, cache_mount_path=str(tmp_path)), execution)
+    assert result.returncode == VERDICT_FAILURE, result.stdout + result.stderr
+    assert "verification FAILED" in result.stderr
 
 
 def test_walk_diagnostic_cache_filename_cannot_imitate_result_sentinel(tmp_path: Path) -> None:
@@ -90,12 +112,14 @@ def test_each_walk_diagnostic_redaction_pattern(
 
 
 @pytest.mark.parametrize("activation", ["grep -q zzzz /etc/hosts\n", "false\n"])
-def test_benign_activation_failure_does_not_fail_verify(tmp_path: Path, activation: str) -> None:
+@pytest.mark.parametrize("execution", ["standalone", "kubernetes"])
+def test_benign_activation_failure_does_not_fail_verify(tmp_path: Path, activation: str, execution: str) -> None:
     manifest = EnvManifest(symphony_name="sym", items=[
+        ManifestItem(name="required", kind="runtime", source="README.md", check="echo 'OK: required'"),
         ManifestItem(name="coordinare_missing_optional_tool", kind="system", source="README.md"),
     ])
     verify = render_verify_sh(manifest, cache_mount_path=str(tmp_path), activate_text=activation)
-    result = _run_shell(tmp_path, verify)
+    result = _run_verify(tmp_path, verify, execution)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WARN:" in result.stdout
     assert "PASSED" in result.stdout
@@ -126,12 +150,20 @@ def test_version_check_preserves_failed_producer_without_err_trap(tmp_path: Path
     assert result.returncode == (0 if exit_code == 0 else VERDICT_FAILURE), result.stdout + result.stderr
 
 
-def test_benign_failure_in_custom_soft_check_does_not_fail_verify(tmp_path: Path) -> None:
+@pytest.mark.parametrize("execution", ["standalone", "kubernetes"])
+@pytest.mark.parametrize("kind", ["system", "node_pkg"])
+@pytest.mark.parametrize("check", ["false", "false\necho 'WARN: optional'"])
+def test_benign_failure_in_custom_soft_check_does_not_fail_verify(
+    tmp_path: Path, execution: str, kind: str, check: str,
+) -> None:
     manifest = EnvManifest(symphony_name="sym", items=[
-        ManifestItem(name="optional", kind="system", source="README.md", check="false\necho 'WARN: optional'"),
+        ManifestItem(name="required", kind="runtime", source="README.md", check="echo 'OK: required'"),
+        ManifestItem(name="optional", kind=kind, source="README.md", check=check),
     ])
-    result = _run_shell(tmp_path, render_verify_sh(manifest, cache_mount_path=str(tmp_path)))
+    result = _run_verify(tmp_path, render_verify_sh(manifest, cache_mount_path=str(tmp_path)), execution)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "WARN:" in result.stdout
+    assert "verification PASSED" in result.stdout
 
 
 @pytest.mark.parametrize("exit_code", [0, WALK_EXIT_CODE])

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 38  # 265: bounded Kubernetes provenance and runtime repair budget
+CURRENT_SCHEMA_VERSION: int = 39  # 276: persist the env-cache bootstrap exhaustion reason
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -711,6 +711,7 @@ class EnvCacheStateSnapshot(BaseModel):
     # with the defaults (no migration).
     bootstrap_attempts: int = 0
     bootstrap_exhausted: bool = False
+    # v39: v38 snapshots without an exhaustion reason load with None.
     bootstrap_exhaustion_reason: Literal["configuration_refusal"] | None = None
     # 092 (FR-016/FR-017): agent-discovered test-env file PATH (e.g.
     # ".coordinare/test.env"), persisted only when no symphony-level test_env

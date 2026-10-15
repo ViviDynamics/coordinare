@@ -457,8 +457,12 @@ def render_verify_sh(
     order = {"runtime": 0, "gem": 1, "node_pkg": 2, "system": 3}
     has_rails = any(item.kind == "gem" and item.name == "rails" for item in manifest.items)
     for item in sorted(manifest.items, key=lambda i: order.get(i.kind, 9)):
-        if item.check:
-            lines.extend(["{", item.check, "} || FAILED=1"])
+        if item.kind in {"runtime", "gem"}:
+            # An OR-list would suppress ERR inside the group, hiding failures before a final success.
+            # Scope the trap to this hard check so activation and optional checks remain non-blocking.
+            lines.extend(["trap 'FAILED=1' ERR", "{", item.check or _default_check(item), "}", "trap - ERR"])
+        elif item.check:
+            lines.extend(["{", item.check, "} || echo 'WARN: optional tool check failed (test/qa-only; non-blocking)'"])
         else:
             lines.append(_default_check(item))
     # If Rails is present, boot the app to catch native-extension failures (e.g. psych/libyaml)
