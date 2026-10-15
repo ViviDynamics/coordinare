@@ -8,12 +8,14 @@ per-PR closer names the wait ``external_review_required``. Merge policy is uncha
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 import structlog.testing
 
+from coordinare.daemon import CoordinareDaemon as Daemon
 from coordinare.graph.nodes import monitor_pr as monitor_pr_module
 from coordinare.graph.nodes.monitor_pr import monitor_pr
 from coordinare.graph.state import SymphonyRuntimeState, initial_state
@@ -199,15 +201,64 @@ def test_a_disabled_ruleset_does_not_count() -> None:
     assert gate.judge(reading, _APP, "main")[0] == gate.GATE_CLEAR
 
 
-def test_the_daemon_app_as_an_always_bypass_actor_makes_the_condition_clear() -> None:
+def test_the_daemon_app_as_an_always_bypass_actor_makes_the_condition_bypassed() -> None:
     reading = _read_with(_detail("active", [_integration(_APP_ID)]))
-    assert reading.bypassed == ("7",)
-    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_CLEAR
+    assert reading.bypassed == ("7",) and reading.bypass_cleared
+    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_BYPASSED
 
 
-def test_the_daemon_app_as_a_pull_request_bypass_actor_makes_the_condition_clear() -> None:
+def test_the_daemon_app_as_a_pull_request_bypass_actor_makes_the_condition_bypassed() -> None:
     reading = _read_with(_detail("active", [_integration(_APP_ID, "pull_request")]))
+    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_BYPASSED
+
+
+def test_a_bypass_of_a_rule_that_asks_for_nothing_is_not_a_bypassed_condition() -> None:
+    """Only a bypass that removes a real requirement is reported as bypassed."""
+    sources = {
+        _CLASSIC: (_NOT_FOUND, None),
+        _RULES: (_OK, [{"type": "pull_request", "ruleset_id": 7, "parameters": {
+            "required_approving_review_count": 0}}]),
+        gate.ruleset_source_key("7"): (_OK, {"enforcement": "active", "bypass_actors": [_integration(_APP_ID)]}),
+    }
+    reading = gate.read_protection(sources, _APP_ID)
+    assert not reading.bypass_cleared
     assert gate.judge(reading, _APP, "main")[0] == gate.GATE_CLEAR
+
+
+def _classic_with_app_bypass(app_id: int = _APP_ID) -> tuple[int, object]:
+    return _OK, {"required_pull_request_reviews": {
+        "required_approving_review_count": 1,
+        "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": [{"id": app_id, "slug": "vivi-coordinare"}]},
+    }}
+
+
+def test_classic_protection_listing_the_app_in_its_bypass_allowances_is_bypassed() -> None:
+    reading = gate.read_protection(_sources(_classic_with_app_bypass(), (_OK, [])), _APP_ID)
+    assert reading.bypass_cleared and not reading.requirement.requires_review
+    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_BYPASSED
+
+
+def test_classic_protection_listing_another_app_still_requires_a_review() -> None:
+    reading = gate.read_protection(_sources(_classic_with_app_bypass(_APP_ID + 1), (_OK, [])), _APP_ID)
+    assert not reading.bypass_cleared
+    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_EXTERNAL
+
+
+def test_classic_app_bypass_without_a_known_app_id_is_not_matched() -> None:
+    reading = gate.read_protection(_sources(_classic_with_app_bypass(), (_OK, [])), None)
+    assert gate.judge(reading, _APP, "main")[0] == gate.GATE_EXTERNAL
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_ruleset_is_named_in_the_activity_entry() -> None:
+    sym = SymphonyRuntimeState(name="garden")
+    github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
+    github.sources[gate.ruleset_source_key(_ELM_RULESET)] = (_FORBIDDEN, None)
+    log = ActivityLog()
+    probe = gate.ReviewProbe(symphony="garden", branch="main", github=github, notification_service=None, activity=log)
+    await gate.refresh_merge_review(sym, probe, now=1000.0)
+    (entry,) = log.snapshot()
+    assert entry["text"].endswith(f"Rulesets kept without being verified: {_ELM_RULESET}.")
 
 
 def test_another_app_as_a_bypass_actor_does_not_clear_the_condition() -> None:
@@ -354,7 +405,6 @@ def _facts(decision: str = "", merge_state: str = "BLOCKED", author: str = "vivi
         (_facts("REVIEW_REQUIRED", author=""), None, False),
         # Elm: an empty reviewDecision on a BLOCKED daemon PR, tagged by the symphony condition.
         (_facts(""), gate.GATE_EXTERNAL, True),
-        (_facts("", checks="PENDING"), gate.GATE_EXTERNAL, True),
         (_facts("", checks=""), gate.GATE_EXTERNAL, True),
         (_facts("", author="jason"), gate.GATE_EXTERNAL, False),
         (_facts("", merge_state="CLEAN"), gate.GATE_EXTERNAL, False),
@@ -365,6 +415,15 @@ def _facts(decision: str = "", merge_state: str = "BLOCKED", author: str = "vivi
         (_facts("REVIEW_REQUIRED", checks="FAILURE"), None, False),
         (_facts("", checks="FAILURE"), gate.GATE_EXTERNAL, False),
         (_facts("", checks="ERROR"), gate.GATE_EXTERNAL, False),
+        # Checks still running: the real wait is CI, so no external review tag, even when GitHub
+        # says a review is required.
+        (_facts("", checks="PENDING"), gate.GATE_EXTERNAL, False),
+        (_facts("", checks="EXPECTED"), gate.GATE_EXTERNAL, False),
+        (_facts("REVIEW_REQUIRED", checks="PENDING"), None, False),
+        (_facts("REVIEW_REQUIRED", checks="EXPECTED"), None, False),
+        # The App bypasses the requirement: never claim an external review, whatever GitHub says.
+        (_facts("REVIEW_REQUIRED"), gate.GATE_BYPASSED, False),
+        (_facts(""), gate.GATE_BYPASSED, False),
         (_facts("REVIEW_REQUIRED", checks="error"), None, False),
     ],
 )
@@ -483,7 +542,7 @@ async def test_clearing_the_condition_is_logged_but_not_paged() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_bypassed_trap_reads_clear_and_is_silent() -> None:
+async def test_a_bypassed_trap_is_noted_once_and_never_paged() -> None:
     sym = SymphonyRuntimeState(name="garden")
     github = _Github((_NOT_FOUND, None), (_OK, _ELM_RULES))
     github.sources[gate.ruleset_source_key(_ELM_RULESET)] = (
@@ -491,8 +550,9 @@ async def test_a_bypassed_trap_reads_clear_and_is_silent() -> None:
     )
     notifier, log = _Notifier(), ActivityLog()
     await _refresh(sym, github, notifier, log, now=1000.0)
-    assert sym.merge_review is not None and sym.merge_review["state"] == gate.GATE_CLEAR
-    assert notifier.events == [] and log.snapshot() == []
+    assert sym.merge_review is not None and sym.merge_review["state"] == gate.GATE_BYPASSED
+    assert notifier.events == []
+    assert len(log.snapshot()) == 1
 
 
 @pytest.mark.asyncio
@@ -701,5 +761,27 @@ async def test_a_human_authored_pr_keeps_the_generic_approval_wait() -> None:
 @pytest.mark.asyncio
 async def test_a_daemon_pr_that_is_clean_is_not_called_external() -> None:
     state = _pr_state(_PrGithub(decision="REVIEW_REQUIRED", merge_state="CLEAN", author="vivi-coordinare"))
+    result = await monitor_pr(state)
+    assert result["review_wait_reason"] == "no_human_approval"
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_symphony_is_not_checked() -> None:
+    github = _Github(_classic(1), (_OK, []))
+    sym = SymphonyRuntimeState(name="garden")
+    fake_daemon = SimpleNamespace(_state={"github_service": github, "notification_service": None,
+                                          "activity_log": None})
+    await Daemon._refresh_merge_review(fake_daemon, "garden", sym, SimpleNamespace(enabled=False))
+    assert github.reads == 0 and sym.merge_review is None
+    await Daemon._refresh_merge_review(fake_daemon, "garden", sym, SimpleNamespace(enabled=True))
+    assert github.reads == 1 and sym.merge_review is not None
+
+
+@pytest.mark.asyncio
+async def test_a_bypassed_condition_does_not_let_review_required_claim_external_review() -> None:
+    state = _pr_state(
+        _PrGithub(decision="REVIEW_REQUIRED", merge_state="BLOCKED", author="vivi-coordinare"),
+        condition=gate.GATE_BYPASSED,
+    )
     result = await monitor_pr(state)
     assert result["review_wait_reason"] == "no_human_approval"

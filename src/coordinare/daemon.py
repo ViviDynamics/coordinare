@@ -3484,10 +3484,14 @@ class CoordinareDaemon:
         if sym_workspace_manager is not None:
             self._state["workspace_manager"] = prev_workspace_manager
 
-    async def _refresh_merge_review(self, symphony_name: str, sym_state: Any) -> None:
-        """101: read this symphony's target-branch review rules, at most every RECHECK_SECONDS."""
+    async def _refresh_merge_review(self, symphony_name: str, sym_state: Any, symphony_config: Any) -> None:
+        """101: read this symphony's target-branch review rules, at most every RECHECK_SECONDS.
+
+        A disabled symphony is not checked: the cycle loop skips it, and this guard holds even if
+        a caller does not.
+        """
         github = self._state.get("github_service")
-        if sym_state is None or github is None:
+        if sym_state is None or github is None or not getattr(symphony_config, "enabled", True):
             return
         probe = ReviewProbe(
             symphony=symphony_name,
@@ -3576,7 +3580,7 @@ class CoordinareDaemon:
             try:
                 # 101: the branch's review rules against coordinare's identity, read at
                 # most every RECHECK_SECONDS. Never raises and never holds up the cycle.
-                await self._refresh_merge_review(symphony_name, sym_state)
+                await self._refresh_merge_review(symphony_name, sym_state, symphony_config)
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits
                 # to a single graph cycle inside _invoke_multi_session.

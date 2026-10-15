@@ -40,17 +40,6 @@ _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
 _PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
-
-
-def _head_checks_state(pr_node: dict[str, Any]) -> str:
-    """101: the rollup state of the PR's head commit checks, or "" when GitHub does not say."""
-    commits = pr_node.get("commits")
-    nodes = commits.get("nodes") if isinstance(commits, dict) else None
-    if not isinstance(nodes, list) or not nodes or not isinstance(nodes[0], dict):
-        return ""
-    commit = nodes[0].get("commit")
-    rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
-    return str(rollup.get("state") or "") if isinstance(rollup, dict) else ""
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
 _PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
@@ -713,6 +702,17 @@ def _failure_kind(exc: BaseException) -> str:
     if isinstance(exc, TransientGitHubError):
         return FAILURE_TRANSIENT
     return FAILURE_OTHER
+
+
+def _head_checks_state(pr_node: dict[str, Any]) -> str:
+    """101: the rollup state of the PR's head commit checks, or "" when GitHub does not say."""
+    commits = pr_node.get("commits")
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    if not isinstance(nodes, list) or not nodes or not isinstance(nodes[0], dict):
+        return ""
+    commit = nodes[0].get("commit")
+    rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    return str(rollup.get("state") or "") if isinstance(rollup, dict) else ""
 
 
 class GitHubService(CardIdentityMap):

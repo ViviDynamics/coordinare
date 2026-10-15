@@ -17,7 +17,7 @@ merging.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
@@ -29,6 +29,9 @@ logger = structlog.get_logger(__name__)
 GATE_EXTERNAL = "external_review_required"
 GATE_CLEAR = "clear"
 GATE_UNREADABLE = "unreadable"
+# The App is a bypass actor for the review rule, so the requirement does not hold for it. It is
+# not a warning: no review is needed, and the per-PR closer never claims one.
+GATE_BYPASSED = "bypassed"
 
 # The two sources read for a branch. Both are read every time, so a repo that uses only one
 # of them is not mistaken for a repo with neither. Each ruleset that the rules list names is
@@ -45,8 +48,9 @@ RECHECK_SECONDS = 900.0
 # assume ``main`` in the same way, so this matches what the rest of the closer does.
 DEFAULT_TARGET_BRANCH = "main"
 
-# Check states that make a BLOCKED PR a failing-checks wait rather than a review wait.
-FAILING_CHECK_STATES = frozenset({"FAILURE", "ERROR"})
+# Check states that are not settled. A BLOCKED PR whose checks failed or are still running is
+# waiting on CI, not on a review, so it is never tagged external_review_required.
+UNSETTLED_CHECK_STATES = frozenset({"FAILURE", "ERROR", "PENDING", "EXPECTED"})
 
 # A bypass mode that lets the actor merge a PR past the pull_request rule.
 _BYPASS_MODES = frozenset({"always", "pull_request"})
@@ -92,18 +96,24 @@ class RuleScope:
     unverified: tuple[str, ...]
     inactive: tuple[str, ...]
     bypassed: tuple[str, ...]
+    bypassed_rules: list[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ProtectionReading:
     """The branch's combined requirement, the sources that could not be read, and the rulesets
-    that were set aside (inactive or bypassed) or kept without being verified."""
+    that were set aside (inactive or bypassed) or kept without being verified.
+
+    ``bypass_cleared`` is True when the App is a bypass actor for a requirement that would
+    otherwise hold, so the requirement is gone for coordinare's merges.
+    """
 
     requirement: ReviewRequirement
     unreadable: tuple[str, ...]
     unverified: tuple[str, ...] = ()
     inactive: tuple[str, ...] = ()
     bypassed: tuple[str, ...] = ()
+    bypass_cleared: bool = False
 
 
 @dataclass(frozen=True)
@@ -204,6 +214,7 @@ def scope_rules(
     unverified: dict[str, None] = {}
     inactive: dict[str, None] = {}
     bypassed: dict[str, None] = {}
+    bypassed_rules: list[Any] = []
     for rule in payload:
         if not isinstance(rule, Mapping) or rule.get("type") != "pull_request":
             continue
@@ -226,6 +237,7 @@ def scope_rules(
             inactive[ruleset] = None
         elif bypass:
             bypassed[ruleset] = None
+            bypassed_rules.append(rule)
         else:
             kept.append(rule)
     return RuleScope(
@@ -233,6 +245,19 @@ def scope_rules(
         unverified=tuple(unverified),
         inactive=tuple(inactive),
         bypassed=tuple(bypassed),
+        bypassed_rules=bypassed_rules,
+    )
+
+
+def classic_bypass_lists_app(payload: object, daemon_app_id: int | None) -> bool:
+    """True when the classic protection lists coordinare's App in its pull request bypass allowances."""
+    if daemon_app_id is None or not isinstance(payload, Mapping):
+        return False
+    reviews = payload.get("required_pull_request_reviews")
+    allowances = reviews.get("bypass_pull_request_allowances") if isinstance(reviews, Mapping) else None
+    apps = allowances.get("apps") if isinstance(allowances, Mapping) else None
+    return isinstance(apps, list) and any(
+        isinstance(app, Mapping) and app.get("id") == daemon_app_id for app in apps
     )
 
 
@@ -247,6 +272,7 @@ def read_protection(
     """
     requirement = ReviewRequirement()
     unreadable: list[str] = []
+    bypass_cleared = False
     scope = RuleScope(kept=[], unverified=(), inactive=(), bypassed=())
     for name in PROTECTION_SOURCES:
         status, payload = sources.get(name, (0, None))
@@ -258,9 +284,13 @@ def read_protection(
         try:
             if name == PROTECTION_CLASSIC:
                 parsed = parse_classic_protection(payload)
+                if parsed.requires_review and classic_bypass_lists_app(payload, daemon_app_id):
+                    bypass_cleared = True
+                    parsed = ReviewRequirement()
             else:
                 scope = scope_rules(payload, sources, daemon_app_id)
                 parsed = parse_rules(scope.kept)
+                bypass_cleared = bypass_cleared or parse_rules(scope.bypassed_rules).requires_review
         except ValueError:
             unreadable.append(name)
             continue
@@ -271,6 +301,7 @@ def read_protection(
         unverified=scope.unverified,
         inactive=scope.inactive,
         bypassed=scope.bypassed,
+        bypass_cleared=bypass_cleared,
     )
 
 
@@ -306,6 +337,11 @@ def judge(reading: ProtectionReading, daemon_logins: frozenset[str], branch: str
         )
     if reading.unreadable:
         return GATE_UNREADABLE, _unreadable_message(branch)
+    if reading.bypass_cleared:
+        return GATE_BYPASSED, (
+            f"{branch} needs an approving review, but coordinare's App is a bypass actor for it, "
+            "so merges are not held for one."
+        )
     return GATE_CLEAR, f"{branch} needs no approving review from another account."
 
 
@@ -314,14 +350,18 @@ def pr_waits_on_external_review(
 ) -> bool:
     """The closer's per-PR test for a wait that no one inside the loop can clear.
 
-    The PR must be BLOCKED, must not have failing checks, and must have been opened by coordinare's
-    identity. Then it is an external review wait when GitHub says a review is required, or when the
-    symphony-level condition says the branch needs a review the daemon cannot give. An empty
-    ``reviewDecision`` is common on these PRs, so the condition is what carries the tag.
+    The PR must be BLOCKED, its checks must be settled (neither failing nor still running, since
+    then the wait is CI), and it must have been opened by coordinare's identity. Then it is an
+    external review wait when GitHub says a review is required, or when the symphony-level
+    condition says the branch needs a review the daemon cannot give. An empty ``reviewDecision``
+    is common on these PRs, so the condition is what carries the tag. A bypassed condition never
+    tags, whatever GitHub's ``reviewDecision`` says.
     """
+    if condition == GATE_BYPASSED:
+        return False
     if facts.merge_state_status.upper() != "BLOCKED":
         return False
-    if facts.checks_state.upper() in FAILING_CHECK_STATES:
+    if facts.checks_state.upper() in UNSETTLED_CHECK_STATES:
         return False
     author = facts.author_login.strip().lower()
     if not author or author not in daemon_logins:
@@ -375,7 +415,8 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
         unverified_rulesets=list(unverified),
     )
     if probe.activity is not None:
-        probe.activity.record(activity_type="merge_review_gate", text=message, status=state)
+        named = f" Rulesets kept without being verified: {', '.join(unverified)}." if unverified else ""
+        probe.activity.record(activity_type="merge_review_gate", text=message + named, status=state)
     if state == GATE_EXTERNAL and probe.notification_service is not None:
         try:
             await probe.notification_service.dispatch(NotificationEvent(

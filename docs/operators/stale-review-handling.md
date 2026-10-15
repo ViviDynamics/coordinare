@@ -53,9 +53,10 @@ The check reads the classic branch protection, the branch's rules, and the detai
 each ruleset those rules name. A ruleset counts only when it is `active`
 (evaluate-mode and disabled rulesets do not block a merge), and only when coordinare's
 App is not a bypass actor for it. An organisation admin or team bypass is not taken as
-coordinare, because the API does not say whether coordinare is a member. A ruleset whose
-detail cannot be read is kept, so the condition still applies, and it is named in the
-activity log.
+coordinare, because the API does not say whether coordinare is a member. A classic
+protection that lists coordinare's App in its pull request bypass allowances is treated the
+same way. A ruleset whose detail cannot be read is kept, so the condition still applies, and
+its id is named in the activity entry for the change.
 
 - **Requirement found.** The Symphonies page's Status column says "Merges need an
   approving review from someone other than <app>. Add a human approver to the loop
@@ -64,8 +65,13 @@ activity log.
   approving review but requires the last push to be approved. One warning goes
   through the notification layer (`merge_review_required`) and one entry to the
   activity feed. It is not repeated while the condition holds. Cards waiting on it
-  show the wait reason `external_review_required` when their PR is blocked and has
-  no failing checks.
+  show the wait reason `external_review_required` when their PR is blocked and its
+  checks have settled. While checks are failing or still running, the wait is CI, so
+  the card is not tagged.
+- **Bypassed.** coordinare's App is a bypass actor for the requirement, so merges are not
+  held for a review. The Status column says nothing, no notification is sent, and one
+  activity entry records the change. A PR that GitHub reports as needing a review is not
+  tagged external in this state.
 - **Could not read.** The token could not read the protection (classic or
   rulesets). The Status column says "could not read branch protection", and nothing
   is blocked or dispatched because of it.

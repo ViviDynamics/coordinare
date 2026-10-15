@@ -34,8 +34,9 @@ from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
 from coordinare.services.merge_review_gate import (
-    FAILING_CHECK_STATES,
+    GATE_BYPASSED,
     GATE_EXTERNAL,
+    UNSETTLED_CHECK_STATES,
     PrFacts,
     pr_waits_on_external_review,
 )
@@ -233,9 +234,11 @@ async def _pr_waits_on_external_review(github: Any, facts: PrFacts, condition: s
     """#101: a daemon-authored PR that waits on a review no one inside the loop can give. The
     identity is read only when the PR's own fields already point at it, so the common path makes
     no extra call."""
+    if condition == GATE_BYPASSED:
+        return False
     if facts.merge_state_status.upper() != "BLOCKED" or not facts.author_login.strip():
         return False
-    if facts.checks_state.upper() in FAILING_CHECK_STATES:
+    if facts.checks_state.upper() in UNSETTLED_CHECK_STATES:
         return False
     if facts.review_decision.upper() != "REVIEW_REQUIRED" and condition != GATE_EXTERNAL:
         return False
