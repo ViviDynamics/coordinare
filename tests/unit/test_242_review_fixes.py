@@ -24,7 +24,13 @@ from coordinare.services.http_performer_service import (
     _EphemeralJob,
 )
 from coordinare.services.run_transcript import TranscriptCollector, make_collector
-from coordinare.services.token_usage import TokenLedger, UsageCounts
+from coordinare.services.token_usage import (
+    ModelPrice,
+    PriceTable,
+    TokenLedger,
+    UsageCounts,
+    price_totals,
+)
 from tests.unit.test_242_bench_exact_pricing import _build, _dispatch_log, _usage_record
 
 OPUS = "claude-opus-4-5"
@@ -273,7 +279,7 @@ def _as_transcripts(collector: TranscriptCollector) -> _RunTranscripts:
 
 
 def _ledger_with(records: list[dict[str, Any]]) -> TokenLedger:
-    ledger = TokenLedger()
+    ledger = TokenLedger(strict_totals=True)
     ledger.observe("run-x", symphony="alpha", card="PVTI_x", stage="implementing", records=records)
     return ledger
 
@@ -323,6 +329,7 @@ def test_a_disagreement_makes_the_dispatch_unknown_with_its_reason(tmp_path: Pat
         enabled=True, root=tmp_path / "t", max_bytes_per_run=10**6, retention_days=30,
         guard=run_transcript.RootGuard(),
     )
+    collector.use_strict_totals()
     collector.usage.observe("sess-d", symphony="alpha", card="PVTI_d", stage="implementing", records=[
         _usage_record(1, OPUS, input_tokens=100), _run_record(2, OPUS, 150),
     ])
@@ -344,3 +351,97 @@ def test_the_artifact_states_that_its_cost_covers_performers_only() -> None:
 
     assert isinstance(artifact, RunArtifact)
     assert artifact.cost_scope == "performers only"
+
+
+# --- the daemon keeps main's precedence; only the bench's strict mode takes the larger total ---
+
+_S = "claude-sonnet-4-5"
+_H = "claude-haiku-4-5"
+_PRICES = PriceTable(
+    rules={
+        _S: ModelPrice(3.0, 15.0, 0.3, 3.75),
+        _H: ModelPrice(1.0, 5.0, 0.1, 1.25),
+    },
+    source="table",
+)
+
+
+def _multi_model_message_records() -> list[dict[str, Any]]:
+    """A claude_code multi-model run: one message record per model turn, each with its model."""
+    return [
+        _usage_record(1, _S, input_tokens=10, output_tokens=60, cache_read=1000, cache_write=50),
+        _usage_record(2, _H, input_tokens=900, output_tokens=40, cache_read=0, cache_write=900),
+        _usage_record(3, _S, input_tokens=4, output_tokens=300, cache_read=9000, cache_write=0),
+    ]
+
+
+def _model_less_run_record(seq: int, *, scale_input: int) -> dict[str, Any]:
+    """The run-scope record of a multi-model run: no model, so its total is not priced per model.
+
+    ``scale_input`` raises the input total, as a subagent call outside the message stream would.
+    """
+    return {
+        "type": "usage", "seq": seq, "ts": "2026-10-14T10:00:00+00:00", "scope": "run",
+        "usage": {"input_tokens": 914 + scale_input, "output_tokens": 400,
+                  "cache_read": 10000, "cache_write": 950},
+    }
+
+
+def test_the_daemon_ledger_keeps_message_precedence_when_the_run_total_is_two_percent_larger() -> None:
+    """Regression (review of 242): a model-less run total 2% above the message sum must not
+    replace the message figures on the daemon's ledger. The cost is the one main prices."""
+    messages = _multi_model_message_records()
+    reference = TokenLedger()
+    reference.observe("run-m", symphony="alpha", card="PVTI_m", stage="implementing", records=messages)
+    daemon = TokenLedger()
+    daemon.observe(
+        "run-m", symphony="alpha", card="PVTI_m", stage="implementing",
+        records=[*messages, _model_less_run_record(4, scale_input=218)],
+    )
+
+    expected = price_totals(reference.totals(run_id="run-m"), _PRICES)
+    actual = price_totals(daemon.totals(run_id="run-m"), _PRICES)
+
+    assert actual.tokens == expected.tokens
+    assert actual.cost_usd is not None
+    assert actual.cost_usd == expected.cost_usd
+    assert actual.unknown_reason is None
+    assert daemon.run_disagreement("run-m") is None
+
+
+def test_the_strict_bench_ledger_takes_the_larger_total_and_names_the_gap() -> None:
+    messages = _multi_model_message_records()
+    strict = TokenLedger(strict_totals=True)
+    strict.observe(
+        "run-s", symphony="alpha", card="PVTI_s", stage="implementing",
+        records=[*messages, _model_less_run_record(4, scale_input=218)],
+    )
+
+    assert strict.totals(run_id="run-s")[None].input_tokens == 1132
+    reason = strict.run_disagreement("run-s")
+    assert reason is not None
+    assert "12264" in reason and "12482" in reason
+
+
+def test_the_multi_model_run_total_is_unknown_in_the_bench_and_never_priced_from_the_model_less_total(
+    tmp_path: Path,
+) -> None:
+    collector = make_collector(
+        enabled=True, root=tmp_path / "t", max_bytes_per_run=10**6, retention_days=30,
+        guard=run_transcript.RootGuard(),
+    )
+    collector.use_strict_totals()
+    collector.usage.observe(
+        "sess-multi", symphony="alpha", card="PVTI_x", stage="implementing",
+        records=[*_multi_model_message_records(), _model_less_run_record(4, scale_input=218)],
+    )
+    log = [_dispatch_log("sess-multi")]
+
+    _attach_transcript_usage(log, _as_transcripts(collector))
+    artifact = _build(log)
+
+    dispatch = artifact.cards[0].dispatches[0]
+    assert dispatch.cost_usd is None
+    assert dispatch.cost_unknown_reason is not None
+    assert "message usage sums to" in dispatch.cost_unknown_reason
+

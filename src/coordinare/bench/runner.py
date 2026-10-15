@@ -658,6 +658,7 @@ def _run_transcripts(
         retention_days=settings.retention_days,
         guard=guard,
     )
+    collector.use_strict_totals()
     collector.add_ambient_secrets(os.environ)
     if collector.enabled:
         prune_expired(root, retention_days=settings.retention_days)

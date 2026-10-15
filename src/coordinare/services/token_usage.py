@@ -181,6 +181,9 @@ class _Run:
     unscoped_buckets: dict[tuple[str, str | None], UsageCounts] = field(default_factory=dict)
     # UTC day -> (model, cumulative total as of that day's last run record).
     run_by_day: dict[str, tuple[str | None, UsageCounts]] = field(default_factory=dict)
+    # 242: strict mode (the bench only) takes the larger of message and run totals and names
+    # the gap. The daemon's ledger never sets it, so it keeps the 134 precedence exactly.
+    strict: bool = False
 
     def message_total(self) -> UsageCounts:
         total = UsageCounts()
@@ -195,8 +198,8 @@ class _Run:
         return total
 
     def disagreement(self) -> str | None:
-        """Why the message and run totals differ, when a run has both (242). None when they agree."""
-        if not self.message or not self.run_by_day:
+        """Strict mode only: why the message and run totals differ (242). None otherwise."""
+        if not self.strict or not self.message or not self.run_by_day:
             return None
         messages, run = self.message_total(), self.run_total()
         if messages == run:
@@ -204,12 +207,15 @@ class _Run:
         return f"message usage sums to {messages.total} tokens, the run total to {run.total}"
 
     def buckets(self) -> dict[tuple[str, str | None], UsageCounts]:
-        """The tier rule: message, else the cumulative run steps, else unscoped.
+        """The tier rule: message, else the cumulative run steps, else unscoped (134).
 
-        When a run has both message and run records, the larger total is used (242): a lost
-        message record can only make the message sum low, so the run total is the safer figure.
+        Strict mode (242) uses the larger of the message sum and the run total when a run has
+        both, because a lost message record can only make the message sum low.
         """
-        if self.message and self.run_by_day and self.run_total().total > self.message_total().total:
+        if (
+            self.strict and self.message and self.run_by_day
+            and self.run_total().total > self.message_total().total
+        ):
             return _cumulative_steps(self.run_by_day)
         if self.message:
             return self.message
@@ -267,8 +273,9 @@ class TokenLedger:
     the next change (``version``).
     """
 
-    def __init__(self, *, window_days: int = USAGE_WINDOW_DAYS) -> None:
+    def __init__(self, *, window_days: int = USAGE_WINDOW_DAYS, strict_totals: bool = False) -> None:
         self._window_days = window_days
+        self._strict_totals = strict_totals
         self._runs: dict[str, _Run] = {}
         self._version = 0
         self._cache: dict[tuple[object, ...], ModelTotals] = {}
@@ -304,7 +311,11 @@ class TokenLedger:
         with self._lock:
             run = self._runs.get(run_id)
             if run is None:
-                run = _Run(run_id=run_id, ingested_day=datetime.now(UTC).date().isoformat())
+                run = _Run(
+                    run_id=run_id,
+                    ingested_day=datetime.now(UTC).date().isoformat(),
+                    strict=self._strict_totals,
+                )
                 self._runs[run_id] = run
             run.symphony = run.symphony or symphony
             run.card = run.card or card

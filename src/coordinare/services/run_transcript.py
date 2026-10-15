@@ -857,6 +857,14 @@ class TranscriptCollector:
         # poll path, and it is empty whenever transcription is off.
         self.usage = TokenLedger()
 
+    def use_strict_totals(self) -> None:
+        """242: the bench's ledger takes the larger of message and run totals and names the gap.
+
+        The daemon's collector never calls this, so it keeps the 134 precedence. Call it right
+        after construction, before any run is observed (the ledger is empty then).
+        """
+        self.usage = TokenLedger(strict_totals=True)
+
     @property
     def root(self) -> Path:
         return self._root
