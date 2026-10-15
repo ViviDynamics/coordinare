@@ -84,8 +84,19 @@ def _error_text(value: Any, fallback: str) -> str:
 
 def _tool_call_id(part: dict[str, Any]) -> str | None:
     """Correlation id for a tool part: its ``callID``, else the part id."""
+    # Captured SSE pairs in tests/unit/test_211_opencode{,_compat}.py carry
+    # the same callID and id on tool-input and tool-output. Prefer callID so
+    # correlation also holds when input and output have distinct part ids.
     cid = part.get("callID") or part.get("id")
     return str(cid) if cid else None
+
+
+def _tool_output_status(part: dict[str, Any]) -> str:
+    """Report only terminal outcomes explicitly provided by the tool state."""
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return ""
+    return {"completed": "ok", "error": "error"}.get(str(state.get("status", "")), "")
 
 
 class OpenCodeTranscriptTap:
@@ -673,17 +684,18 @@ class OpenCodeAdapter:
             elif part_type in ("tool-input", "tool_input"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 input_text = str(part.get("input", ""))[:_MAX_TEXT]
-                self._emit(
-                    BackendEventType.tool_use, f"{tool}: {input_text}", detail=tool,
-                    transcript_seq=record_seq,
-                )
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=clip_event_text(f"{tool}: {input_text}"),
+                    detail=tool, call_id=_tool_call_id(part) or "", transcript_seq=record_seq,
+                ))
             elif part_type in ("tool-output", "tool_output"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 output_text = str(part.get("output", ""))[:_MAX_TEXT]
-                self._emit(
-                    BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool,
-                    transcript_seq=record_seq,
-                )
+                self._event_buffer.append(BackendEvent(
+                    type=BackendEventType.tool_use, text=clip_event_text(f"{tool} → {output_text}"),
+                    detail=tool, call_id=_tool_call_id(part) or "",
+                    status=_tool_output_status(part), transcript_seq=record_seq,
+                ))
             elif part_type == "tool" and part.get("tool") == "question":
                 # opencode >=1.18 surfaces an interactive question as a `tool`
                 # part named "question" that sits in `state.status=running`

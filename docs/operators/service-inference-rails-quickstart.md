@@ -59,7 +59,7 @@ container_devenv_root: /devenv
 performer_endpoints:
   - id: bootstrap-env
     mode: ephemeral
-    roles: []
+    roles: [env_bootstrap]
     image: coordinare-performer:full
     readiness_timeout_s: 300
     env_cache_mount: true

@@ -15,12 +15,14 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 from fastapi.responses import JSONResponse
 
 from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.dashboard.routers.personas import _session_actor
 from coordinare.dashboard.secret_overrides import (
     _mask_secret_overrides,
     _restore_masked_secrets,
     _secret_override_fields,
 )
 from coordinare.services.config_write_service import _validate_candidate
+from coordinare.services.env_bootstrap_control import reset_env_bootstrap_breaker
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -623,12 +625,12 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
         daemon = ctx.daemon
 
         @app.post("/api/symphonies/{name}/env-bootstrap")
-        async def trigger_env_bootstrap(name: str) -> JSONResponse:
+        async def trigger_env_bootstrap(name: str, request: Request) -> JSONResponse:
             """Force an env_bootstrap dispatch for a symphony.
 
-            Clears the recorded readme_sha so the next env_cache cycle treats the
-            spec files as changed, then fires the cycle trigger. Returns 202 on
-            accept; 409 if a bootstrap is already in flight.
+            Resets the retry budget and breaker (270), clears readme_sha so the next cycle
+            dispatches, and records who triggered it. Paused symphonies get 409 and nothing
+            is queued. Returns 202 on accept; 409 if paused or in flight.
             """
             symphony_configs = daemon.state.get("symphony_configs") or {}
             if name not in symphony_configs:
@@ -648,6 +650,10 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     status_code=400,
                 )
 
+            if not getattr(sym_cfg, "enabled", True):
+                msg = f"Symphony {name!r} is paused (enabled: false); enable it before forcing a bootstrap"
+                return JSONResponse({"error": msg, "status": "symphony_paused"}, status_code=409)
+
             env_cache_svc = daemon.state.get("env_cache_service")
             if env_cache_svc is None:
                 return JSONResponse(
@@ -661,7 +667,7 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     {
                         "error": (
                             f"Bootstrap performer {performer_id!r} is not "
-                            "registered with the daemon — check that it is "
+                            "registered with the daemon; check that it is "
                             "defined in config.yaml and that coordinare loaded "
                             "it at startup."
                         ),
@@ -677,7 +683,7 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     {
                         "error": (
                             f"Symphony {name!r} env cache state has not been "
-                            "initialised yet — wait one cycle and retry"
+                            "initialised yet; wait one cycle and retry"
                         ),
                     },
                     status_code=503,
@@ -692,6 +698,15 @@ def _register_trigger_env_bootstrap(app: FastAPI, ctx: DashboardContext) -> None
                     status_code=409,
                 )
 
+            next_reset = reset_env_bootstrap_breaker(
+                daemon.state, name, cache_state, _session_actor(request), ctx.store.activity_log,
+            )
+            if next_reset is not None:
+                allowed_at = next_reset.isoformat()
+                return JSONResponse({
+                    "error": f"Manual bootstrap reset cooldown; next reset is allowed at {allowed_at}",
+                    "status": "bootstrap_reset_cooldown", "next_reset_at": allowed_at,
+                }, status_code=429)
             # Force the next cycle to detect a SHA mismatch and re-dispatch.
             cache_state.readme_sha = None
             if hasattr(daemon, "_webhook_trigger"):
