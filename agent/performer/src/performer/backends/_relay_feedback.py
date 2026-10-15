@@ -7,6 +7,11 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+def _location(path: object, line: object) -> str:
+    """The location of a trusted comment, rendered as it always was."""
+    return f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+
+
 def _source_identity(item: dict) -> str:
     author = item.get("author_login") or item.get("author")
     if isinstance(author, dict):
@@ -60,16 +65,15 @@ def relay_feedback_prompt_section(feedback: Sequence[object]) -> list[str]:
                     if item.get("id"):
                         body = f"[{item['id']}] {body}"
             if body:
-                path, line = item.get("file") or item.get("path"), item.get("line")
-                location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+                # A fenced item (the closer's untrusted thread text) carries its location inside the block (spec 178).
+                location = "" if item.get("fenced") else _location(item.get("file") or item.get("path"), item.get("line"))
                 parts.append(f"- {location} — {body}" if location else f"- {body}")
             inline = item.get("comments", [])
             if isinstance(inline, list):
                 for comment in inline:
                     if not isinstance(comment, dict) or not comment.get("body"):
                         continue
-                    path, line = comment.get("path"), comment.get("line")
-                    location = f"`{path}:{line}`" if path and line else (f"`{path}`" if path else "")
+                    location = "" if comment.get("fenced") else _location(comment.get("path"), comment.get("line"))
                     identity = f" ({_source_identity(comment)})" if any(comment.get(k) for k in ("author_login", "author", "source", "stage", "raiser")) else ""
                     parts.append(f"  - {location} — {comment['body']}{identity}" if location else f"  - {comment['body']}{identity}")
         elif isinstance(item, str):
