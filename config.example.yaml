@@ -1,5 +1,5 @@
 # =============================================================================
-# Coordinare Configuration Example
+# Coordinare full configuration reference. Start with config.minimal.yaml.
 # =============================================================================
 #
 # Config Discovery (4-path search order, first match wins):

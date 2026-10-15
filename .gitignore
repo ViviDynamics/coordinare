@@ -232,6 +232,7 @@ Thumbs.db
 config.yaml
 config.*.yaml
 !config.example.yaml
+!config.minimal.yaml
 !config.example.*
 # 078 self-hosted routing table — live file is environment-specific (host paths);
 # routing.example.yaml is the committed template operators copy from.

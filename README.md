@@ -55,18 +55,25 @@ uv sync
 
 ### 2. Configure
 
-Copy the example config and fill in your values:
+Copy the starter config and fill in your values:
 
 ```bash
-cp config.example.yaml config.yaml
+cp config.minimal.yaml config.yaml
 ```
 
-Required fields:
-- `project_name` — display name for your project
-- `github_org` — your GitHub organisation
-- `github_project_number` — the V2 Project number (visible in the project URL)
-- `github_token` — a GitHub token (or use `COORDINARE_GITHUB_TOKEN` env var)
-- `human_reviewers` — list of GitHub logins who will approve PRs
+Required choices are `github_org`, `github_repo`, `github_project_number`,
+`harness` and `human_reviewers`. The starter uses `preset: solo` and enables
+only the implementer. Models, catalogs, concurrency and the local performer
+transport have defaults. Set `harness` to `codex`, `claude_code` or `opencode`.
+Install and authenticate that CLI on your PATH. Install the performer package:
+
+```bash
+uv sync --project agent/performer
+```
+
+`config.example.yaml` is the full reference. To use Docker performers instead,
+set `preset: containers` and build the images with `make docker`.
+See [first launch and the sample card](docs/first-launch.md).
 
 ### 3. Set up environment
 
@@ -74,7 +81,8 @@ Required fields:
 cp .env.example .env
 # Edit .env with your secrets:
 #   COORDINARE_GITHUB_TOKEN=ghp_...
-#   ANTHROPIC_API_KEY=sk-ant-...  (for AI-powered assessment)
+#   OPENAI_API_KEY=...  (codex or opencode starter)
+#   ANTHROPIC_API_KEY=...  (claude_code starter)
 ```
 
 ### 4. Authorize the GitHub App (or PAT) on branch protection
@@ -106,7 +114,12 @@ message in `open_questions` so you can act on it directly.
 ### 5. Validate config
 
 ```bash
+set -a && source .env && set +a
 .venv/bin/python -m coordinare config validate
+# Inspect expanded defaults, with secrets redacted:
+.venv/bin/python -m coordinare config
+# Check GitHub, board columns, harness, model API, paths and port:
+.venv/bin/python -m coordinare doctor
 ```
 
 ### 6. Run
@@ -120,6 +133,11 @@ docker-compose up
 ```
 
 ### 7. Monitor
+
+Startup prints a preflight summary before polling. A failure names its fix and
+exits nonzero. A successful launch prints the watched board, enabled and skipped
+roles, concurrency and dashboard URL. The console and dashboard explain when work
+is waiting. Try the small [first card](docs/first-launch.md#try-one-card).
 
 - **Dashboard**: http://localhost:8090 — live SSE dashboard with phase, card, health, and performer status
 - **Health**: http://localhost:8080/health — JSON health check for load balancers

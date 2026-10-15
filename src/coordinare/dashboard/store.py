@@ -23,6 +23,7 @@ from coordinare.dashboard.helpers import (
 )
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.dashboard.symphony_rows import env_status, session_counts, week_spend
+from coordinare.first_launch import board_idle_explanation
 from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
@@ -927,6 +928,11 @@ class DashboardStore:
         cycles_completed, started_at = metric_rows
         # 156: read once, so the symphony rows and the spend strip cannot disagree.
         token_block = _token_usage_block(daemon)
+        symphonies = self._build_symphonies_data(daemon, cycles_completed, token_block)
+        idle_reason = board_idle_explanation(
+            daemon.state.get("board_snapshot"), daemon.state.get("todo_waits") or {},
+            daemon.state.get("active_sessions") or {},
+        ) or " ".join(f"{sym['name']}: {sym['idle_reason']}" for sym in symphonies if sym.get("idle_reason"))
         return {
             "project_name": getattr(_cfg, "project_name", "") if (_cfg := daemon.state.get("config")) else "",
             "project_board_url": f"https://github.com/orgs/{_cfg.github_org}/projects/{_cfg.github_project_number}" if _cfg else "",
@@ -964,6 +970,7 @@ class DashboardStore:
             # ownership_policy() the gate consults. The two raw fields above are
             # kept for consumers that predate this key; the UI reads only this.
             "ownership_hint": ownership_hint(daemon.state.get("config")),
+            "idle_reason": idle_reason,
             # 053: Idle observability summary from board snapshot + poll timing.
             "board_summary": board_summary,
             "last_poll_at": last_poll_at,
@@ -973,7 +980,7 @@ class DashboardStore:
             # 054: Per-cycle skip reasons for ineligible sessions.
             "session_skip_reasons": copy.deepcopy(daemon.state.get("session_skip_reasons") or {}),
             # 057: Multi-symphony orchestration
-            "symphonies": self._build_symphonies_data(daemon, cycles_completed, token_block),
+            "symphonies": symphonies,
             # 155: the server's clock when this snapshot was taken. The browser cuts its 24-hour lane
             # against it, so a snapshot read late still counts the merges it counted when it was taken.
             "snapshot_at": datetime.now(UTC).isoformat(),
@@ -1289,6 +1296,10 @@ class DashboardStore:
                 "cards_paused": counts["paused"],
                 "spend_week": week_spend(token_usage, sym_name),
                 "ownership_hint": DashboardStore._symphony_hint(effective),
+                "idle_reason": board_idle_explanation(
+                    getattr(sym_state, "board_snapshot", None),
+                    getattr(sym_state, "todo_waits", None) or {}, runtime_sessions,
+                ),
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
                 "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),

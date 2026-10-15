@@ -198,9 +198,17 @@ function activeRunsIdleHtml(s) {
   var filterHint = s && s.ownership_hint ? esc(s.ownership_hint) : '';
   return '<div class="ap-idle">' +
     '<div class="ap-idle-title">No active performers</div>' +
+    (s && s.idle_reason ? '<p>' + esc(s.idle_reason) + '</p>' : '') +
     (filterHint ? '<div class="ap-idle-rows"><div class="ap-idle-row">' +
       '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span></div></div>' : '') +
-    '</div>';
+    '<details><summary>Try a first card</summary>' +
+    '<p>Create an issue titled <strong>Document our first Coordinare run</strong>.</p>' +
+    '<p>Create <code>FIRST_CARD.md</code> at the repository root with one sentence: ' +
+    'Coordinare can open a pull request for this repository. Change no other files. ' +
+    'Open a pull request for a human to review.</p>' +
+    '<p>Add the issue to your board and set Status to To Do or Ready. ' +
+    'Assign it according to the filter above. Watch it move to In Progress, then In Review.</p>' +
+    '</details></div>';
 }
 
 // One running card: its stage and phase, the title, the pipeline tracker, the
