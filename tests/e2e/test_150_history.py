@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import re
 import socket
 import threading
 import time
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,7 @@ PAGED_RUNS = 55
 MODEL = "claude-test-model"
 PR_URL = "https://github.com/vividynamics/coordinare/pull/150"
 WAIT_PAGE = 10_000
+SERVER_START_TIMEOUT_SECONDS = 5.0
 
 
 def _at(minutes: float) -> str:
@@ -138,9 +141,15 @@ def history_server_url(store: DashboardStore, transcript_root: Path) -> Generato
     port = _free_port()
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
-    thread = threading.Thread(target=lambda: asyncio.run(server.serve()), daemon=True)
+    server_loops: queue.SimpleQueue[asyncio.AbstractEventLoop] = queue.SimpleQueue()
+
+    async def serve() -> None:
+        server_loops.put(asyncio.get_running_loop())
+        await server.serve()
+
+    thread = threading.Thread(target=lambda: asyncio.run(serve()), daemon=True)
     thread.start()
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + SERVER_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -152,9 +161,18 @@ def history_server_url(store: DashboardStore, transcript_root: Path) -> Generato
         server.should_exit = True
         thread.join(timeout=2)
         pytest.fail("Live server did not start within 5 seconds")
-    yield f"http://127.0.0.1:{port}"
-    server.should_exit = True
-    thread.join(timeout=5)
+    server_loop = server_loops.get(timeout=SERVER_START_TIMEOUT_SECONDS)
+    # asyncio.Queue must be written on its owning loop, as in live_server_url.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            store.broadcaster, "broadcast",
+            partial(server_loop.call_soon_threadsafe, store.broadcaster.broadcast),
+        )
+        try:
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            server.should_exit = True
+            thread.join(timeout=SERVER_START_TIMEOUT_SECONDS)
 
 
 def _history(page: Page, base: str, store: DashboardStore, query: str = "") -> None:
@@ -377,7 +395,7 @@ def test_the_filters_survive_a_reload_because_they_are_in_the_url(page: Page, hi
     _apply(page, outcome="failed", card="PVTI_A1")
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
     expect(page).to_have_url(re.compile(r"h\.outcome=failed"), timeout=WAIT_PAGE)
-    page.reload()
+    page.reload(wait_until="domcontentloaded", timeout=WAIT_PAGE)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=WAIT_PAGE)
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
     expect(page.locator("#history-page-section select[name='outcome']")).to_have_value("failed", timeout=WAIT_PAGE)

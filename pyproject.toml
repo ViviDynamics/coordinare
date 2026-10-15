@@ -216,6 +216,9 @@ ignore_errors = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 30
+# A signal only raises in the test and can strand Playwright teardown.
+# The timer thread dumps stacks and exits the process, including stuck threads.
+timeout_method = "thread"
 addopts = "-m 'not e2e'"
 markers = [
     "unit: Unit tests (fast, no external dependencies)",

@@ -42,6 +42,7 @@ permissions:
 
 jobs:
   policy-response:
+    timeout-minutes: 10
     name: Apply contribution policy
     runs-on: ubuntu-latest
     # Cheap pre-filter so insider and bot pull requests do not even start a job.
