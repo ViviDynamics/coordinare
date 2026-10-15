@@ -48,7 +48,8 @@ def reset_env_bootstrap_breaker(
     cache_state.infra_failures = 0
     breaker = "tripped" if was_exhausted else "armed"
     text = (
-        f"Env bootstrap for '{symphony}' forced by {actor}: retry budget reset "
+        # The actor can be the word "token", and "token:" reads as a credential to the redactor.
+        f"Env bootstrap for '{symphony}' forced by {actor}. Retry budget reset "
         f"(was {previous} attempts, breaker {breaker})."
     )
     _log.info("symphony.env_bootstrap_forced", symphony=symphony, actor=actor, previous_attempts=previous)
