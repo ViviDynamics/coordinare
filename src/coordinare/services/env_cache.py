@@ -2393,12 +2393,12 @@ class EnvCacheService:
         self, cache_state: EnvCacheState, state: Mapping[str, Any], detail: str,
     ) -> str:
         """Refuse retries for invalid operator inputs and report the exhaustion transition once."""
-        reason = str(redact_state_value(
-            f"env verification configuration failure: {detail}; correct configuration and request env regeneration",
-        ))
         cache_state.cache_dir_ready = False
         cache_state.last_bootstrap_succeeded = False
-        cache_state.last_bootstrap_error = reason
+        cache_state.last_bootstrap_error = redact_state_value(
+            f"env verification configuration failure: {detail}; correct configuration and request env regeneration",
+        )
+        reason = str(cache_state.last_bootstrap_error)
         cache_state.verifier_provenance = None
         if not cache_state.bootstrap_exhausted:
             cache_state.bootstrap_exhausted = True
