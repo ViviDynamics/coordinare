@@ -98,11 +98,13 @@ class DashboardClient:
         }
 
     async def get_json(self, path: str, *, timeout_seconds: float) -> ToolResult:
-        return await self._send("GET", path, timeout_seconds=timeout_seconds, base_url=self._base_url)
+        return await self._send(
+            self._build("GET", path, base_url=self._base_url), timeout_seconds=timeout_seconds,
+        )
 
     async def get_text(self, path: str, *, timeout_seconds: float) -> ToolResult:
         return await self._send(
-            "GET", path, timeout_seconds=timeout_seconds, base_url=self._health_url,
+            self._build("GET", path, base_url=self._health_url), timeout_seconds=timeout_seconds,
         )
 
     async def get_stream_head(
@@ -157,38 +159,65 @@ class DashboardClient:
         *,
         json: dict[str, Any] | None = None,
         timeout_seconds: float,
+        if_match: str | None = None,
     ) -> ToolResult:
-        return await self._send(
-            method, path, timeout_seconds=timeout_seconds, json=json, base_url=self._base_url,
-        )
+        request = self._build(method, path, base_url=self._base_url, json=json, if_match=if_match)
+        return await self._send(request, timeout_seconds=timeout_seconds)
 
-    async def _send(
+    async def get_with_version(
+        self, path: str, *, timeout_seconds: float,
+    ) -> tuple[ToolResult, str | None]:
+        """A GET and the version it carries in its ``ETag`` header (257), or ``None``.
+
+        The version is the value a write sends back as ``If-Match``. It is returned as the
+        daemon sent it, quotes and all, because that is the form ``If-Match`` takes.
+        """
+        request = self._build("GET", path, base_url=self._base_url)
+        outcome = await self._exchange(request, timeout_seconds=timeout_seconds)
+        if isinstance(outcome, ToolResult):
+            return outcome, None
+        return self._map_response(outcome), outcome.headers.get("ETag")
+
+    def _build(
         self,
         method: str,
         path: str,
         *,
-        timeout_seconds: float,
         base_url: str,
         json: dict[str, Any] | None = None,
-    ) -> ToolResult:
+        if_match: str | None = None,
+    ) -> httpx.Request:
+        headers = self._headers()
+        if if_match is not None:
+            headers["If-Match"] = if_match
+        return httpx.Request(method, f"{base_url.rstrip('/')}{path}", json=json, headers=headers)
+
+    async def _send(self, request: httpx.Request, *, timeout_seconds: float) -> ToolResult:
+        outcome = await self._exchange(request, timeout_seconds=timeout_seconds)
+        if isinstance(outcome, ToolResult):
+            return outcome
+        return self._map_response(outcome)
+
+    async def _exchange(
+        self, request: httpx.Request, *, timeout_seconds: float,
+    ) -> httpx.Response | ToolResult:
+        """One request; the response, or the ToolResult for a daemon that could not be reached."""
         try:
             async with httpx.AsyncClient(
-                base_url=base_url,
-                timeout=timeout_seconds,
-                transport=self._transport,
+                timeout=timeout_seconds, transport=self._transport,
             ) as client:
-                response = await client.request(
-                    method, path, json=json, headers=self._headers(),
-                )
+                return await client.send(request)
         except (httpx.TimeoutException, httpx.ConnectError) as exc:
-            log.info("mcp_client.daemon_unreachable", path=path, error_type=type(exc).__name__)
+            log.info(
+                "mcp_client.daemon_unreachable", path=request.url.path,
+                error_type=type(exc).__name__,
+            )
             return ToolResult.failure(
                 "daemon_unreachable",
                 0,
                 f"daemon unreachable ({type(exc).__name__})",
                 _UNREACHABLE_RECOVERY_HINT,
             )
-        return self._map_response(response)
 
     def _map_response(self, response: httpx.Response) -> ToolResult:
         status = response.status_code
