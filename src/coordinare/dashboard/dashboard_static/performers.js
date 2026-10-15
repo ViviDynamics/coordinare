@@ -595,7 +595,7 @@ function fullLogLinkHtml(sess) {
 // 141: where a run's container id is shown: the run detail's technical section only.
 function containerIdHtml(containerId) {
   var full = String(containerId || '');
-  if (!full) return '<span class="muted">-</span>';
+  if (!full) return '';
   return '<span style="font-family:monospace;font-size:11px" title="' + esc(full) + '">' + esc(full.slice(0, 12)) + '</span>';
 }
 
@@ -648,6 +648,68 @@ function renderActivePerformers(s) {
 
 function renderDashboardExtras(s) {
   renderActivePerformers(s);
+}
+
+// 237: the Live Events list. Each event renders through the activity feed's own row
+// (activity_streams.js), so a tool call reads "Bash · uv run pytest -q" and a result carries its
+// outcome. The newest twelve show, oldest first, as before.
+var PERFORMER_EVENTS_SHOWN = 12;
+function performerEventsHtml(events, runId) {
+  var list = Array.isArray(events) ? events.slice(-PERFORMER_EVENTS_SHOWN) : [];
+  if (!list.length) {
+    return '<div class="muted">No events yet. Narration and tool calls appear here as the run reports them.</div>';
+  }
+  return '<div class="performer-events">' + list.map(function(ev) {
+    return afEventRowHtml(afEntryFromBackend(ev || {}, runId));
+  }).join('') + '</div>';
+}
+
+// 239: the shim's own health probes. A HEAD request is never model traffic, and /api/hello is the
+// shim's liveness check. Only these two shapes are dropped, so every other stderr line stays.
+var PERFORMER_PROBE_LOG_PATTERNS = [/claude_code shim request.*\bmethod=HEAD\b/, /\bpath=\/api\/hello\b/];
+function isPerformerProbeLog(line) {
+  var text = String(line || '');
+  return PERFORMER_PROBE_LOG_PATTERNS.some(function(pattern) { return pattern.test(text); });
+}
+var PERFORMER_LOG_LINES_SHOWN = 20;
+function performerLogsHtml(logs) {
+  var lines = Array.isArray(logs) ? logs : [];
+  // The probes are dropped before the newest lines are taken, so they cannot push real output out.
+  var shown = lines.filter(function(line) { return !isPerformerProbeLog(line); }).slice(-PERFORMER_LOG_LINES_SHOWN);
+  if (!shown.length) {
+    return lines.length
+      ? '<div class="muted">Only health probes so far. Other stderr lines appear here as the run writes them.</div>'
+      : '<div class="muted">Stderr appears here as the performer writes it during the run.</div>';
+  }
+  return '<div class="detail-log">' + shown.map(function(line) { return '<div>' + esc(line) + '</div>'; }).join('') + '</div>';
+}
+
+// 239: the metrics line. The PID is not here: it is 1 in every container, so it moves to Technical.
+// CPU is left out until a previous poll exists to measure from, and the tooltip says so.
+var PERFORMER_CPU_NOTE = 'CPU is the share of this run\'s processes used since the previous poll. It is left out until a previous poll exists to measure from.';
+var PERFORMER_METRICS_PENDING = 'Process metrics appear after the first poll of this run.';
+function performerMetricsHtml(metrics, tokenHtml) {
+  var parts = [];
+  if (!metrics) {
+    parts.push(esc(PERFORMER_METRICS_PENDING));
+  } else {
+    if (typeof metrics.cpu_percent === 'number' && isFinite(metrics.cpu_percent)) {
+      parts.push('<span title="' + esc(PERFORMER_CPU_NOTE) + '">CPU ' + esc(metrics.cpu_percent.toFixed(1)) + '%</span>');
+    }
+    if (metrics.memory_bytes != null) parts.push('Memory ' + esc(fmtBytes(metrics.memory_bytes)));
+  }
+  parts.push('Tokens ' + tokenHtml);
+  return parts.join(' · ');
+}
+
+// 239: the identifiers an operator may quote. A block with nothing to show is left out.
+function performerTechnicalHtml(metrics, containerId) {
+  var parts = [];
+  if (metrics && metrics.pid != null) parts.push('PID ' + esc(String(metrics.pid)));
+  if (containerId) parts.push('Container: ' + containerIdHtml(containerId));
+  return parts.length
+    ? '<div class="detail-block"><strong>Technical</strong><div class="muted" style="margin-top:4px">' + parts.join(' &middot; ') + '</div></div>'
+    : '';
 }
 
 // 146: the run detail is addressed as /performers/<role>. The segment is client
@@ -717,6 +779,9 @@ function renderPerformersPage(s) {
   var rawRole = performerRoleFromPath(location.pathname);
   var view = performerRouteView(rawRole, util.map(function(r) { return r.role; }));
   var selectedRole = view === 'detail' ? rawRole : null;
+  // 239: the role name heads the run's detail, so the page heading shows on the list only.
+  var pageHeading = document.getElementById('performers-page-heading');
+  if (pageHeading) pageHeading.style.display = view === 'detail' ? 'none' : '';
 
   tbody.innerHTML = util.length === 0
     ? '<tr><td colspan="5" class="empty-state">No performer roles configured</td></tr>'
@@ -767,22 +832,22 @@ function renderPerformersPage(s) {
   var statusBadge = '<span class="role-status-badge ' + (isSelectedRoleActive ? 'role-active' : 'role-idle') + ' detail-badge">' + (isSelectedRoleActive ? 'active' : 'idle') + '</span>';
   var roleCardsHtml = selectedSessions.length
     ? '<ul class="detail-list">' + selectedSessions.map(function(sess) {
-      return '<li>' + esc(sess.card_title || sess.card_id || '-') + '</li>';
+      return '<li>' + esc(sess.card_title || sess.card_id || 'Untitled card') + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No run in progress for this role.</div>';
   // 348: the panels below describe ONE card -- name it.
   var telemetryFor = selectedSessions.length > 1
-    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'unknown') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
+    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || 'Untitled card') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
     : '';
   // 348: telemetry is per-card, so read the session running this role rather
   // than top-level state (null in shared-pool mode). No fallback: a role with
   // no live session genuinely has no data.
   var sel = selectedSessions[0] || {};
   var sessionStats = sel.session_stats;
-  var statsLine = sessionStats
-    ? esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines')
-    : 'No run stats available yet.';
-  var metrics = sel.performer_metrics || {};
+  // 239: the stats line is left out until the stage has reported some.
+  var statsHtml = sessionStats
+    ? '<div class="muted" style="margin-top:4px">' + esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines') + '</div>'
+    : '';
   // 134: this run's tokens, with the breakdown on hover. The status counter is the fallback.
   var runUsage = usageSummaryOf(sel, 'run');
   var fallbackTokens = derivePerformerTokenTotal(sel);
@@ -793,36 +858,22 @@ function renderPerformersPage(s) {
   var tokenText = tokenView.pending
     ? esc(tokenView.text) + ' (' + esc(USAGE_PENDING_NOTE.toLowerCase()) + ')'
     : '<span title="' + esc(usageView.title) + '">' + esc(usageView.text) + '</span>';
-  var metricsLine = (metrics && metrics.pid != null)
-    ? (
-      'PID ' + String(metrics.pid) +
-      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : 'unknown') +
-      ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
-      ' · Tokens ' + tokenText
-    )
-    : (tokenTotal != null || tokenView.pending
-        ? 'Tokens ' + tokenText + ' · no process metrics (containerised performer)'
-        : 'No live metrics available yet.');
-  var events = Array.isArray(sel.performer_events) ? sel.performer_events.slice(-12) : [];
-  var eventsHtml = events.length
-    ? '<ul class="detail-list">' + events.map(function(ev) {
-      return '<li><strong>' + esc(ev.type || 'event') + ':</strong> ' + esc(ev.text || '') + '</li>';
-    }).join('') + '</ul>'
-    : '<div class="muted">No live events yet.</div>';
-  var logs = Array.isArray(sel.performer_logs) ? sel.performer_logs.slice(-20) : [];
-  var logsHtml = logs.length
-    ? '<div class="detail-log">' + logs.map(function(line) { return '<div>' + esc(line) + '</div>'; }).join('') + '</div>'
-    : '<div class="muted">No stderr logs yet.</div>';
+  var metrics = sel.performer_metrics || null;
+  var metricsHtml = performerMetricsHtml(metrics, tokenText);
+  var eventsHtml = performerEventsHtml(sel.performer_events, sel.session_id);
+  var logsHtml = performerLogsHtml(sel.performer_logs);
 
-  var backendLine = esc(sel.performer_backend || 'performer');
-  if (sel.backend_ui_url) {
+  // 239: the backend, and a link to its own UI when it is local. No backend, no line.
+  var backendHtml = sel.performer_backend ? esc(sel.performer_backend) : '';
+  if (backendHtml && sel.backend_ui_url) {
     try {
       var parsed = new URL(sel.backend_ui_url);
       if (parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')) {
-        backendLine += ' &middot; <a href="' + esc(parsed.href) + '" target="_blank" rel="noopener noreferrer">Open in browser &#8599;</a>';
+        backendHtml += ' &middot; <a href="' + esc(parsed.href) + '" target="_blank" rel="noopener noreferrer">Open in browser &#8599;</a>';
       }
     } catch (_ignore) {}
   }
+  var backendLineHtml = backendHtml ? '<div class="muted" style="margin-top:4px">' + backendHtml + '</div>' : '';
 
   // Build skip-reason diagnostics for sessions associated with this role only.
   var skipReasons = sessionSkipReasons(s);
@@ -839,20 +890,29 @@ function renderPerformersPage(s) {
       }).join('') + '</ul>'
     : '';
 
+  // 141: the run's name links to its transcript (the run id is the session id). Copy sits beside it.
+  // 239: the run block names only what it has: the run, the dispatch time, the backend, the stats.
+  var runKey = sel.session_id || s.agent_session_id;
+  var dispatchAt = sel.agent_dispatch_at || s.agent_dispatch_at;
+  var runParts = [];
+  if (runKey) {
+    runParts.push(runIdHtml(runKey, {
+      href: RUN_NAME_PATTERN.test(String(sel.session_id || '')) ? '/runs/' + encodeURIComponent(String(sel.session_id)) : '',
+      copy: true,
+    }));
+  }
+  if (dispatchAt) runParts.push('Dispatched ' + timeHtml(dispatchAt));
+  var runBody = (runParts.length ? '<div class="muted" style="margin-top:4px">' + runParts.join(' &middot; ') + '</div>' : '') +
+    backendLineHtml + statsHtml;
+  var runBlock = runBody ? '<div class="detail-block"><strong>Run</strong>' + runBody + '</div>' : '';
+
   detailEl.innerHTML =
-    '<div><strong>' + roleOrStageLabel(selectedRole) + '</strong>' + statusBadge + '</div>' +
+    '<div class="performer-detail-head"><h2 style="margin-bottom:12px">' + esc(roleOrStageLabel(selectedRole)) + '</h2>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">' + esc(busyText(row.active, row.max, row.queued)) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
-    // 141: the run's name links to its transcript (the run id is the session id). Copy sits beside it.
-    '<div class="detail-block"><strong>Run</strong><div class="muted" style="margin-top:4px">' +
-      runIdHtml(sel.session_id || s.agent_session_id, {
-        href: RUN_NAME_PATTERN.test(String(sel.session_id || '')) ? '/runs/' + encodeURIComponent(String(sel.session_id)) : '',
-        copy: true,
-      }) +
-      ' &middot; Dispatched ' + timeHtml(sel.agent_dispatch_at || s.agent_dispatch_at, '-') +
-      '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
-    '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
-    '<div class="detail-block"><strong>Technical</strong><div class="muted" style="margin-top:4px">Container: ' + containerIdHtml(sel.container_id) + '</div></div>' +
+    runBlock +
+    '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsHtml + '</div></div>' +
+    performerTechnicalHtml(metrics, sel.container_id) +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
     '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';
 }
