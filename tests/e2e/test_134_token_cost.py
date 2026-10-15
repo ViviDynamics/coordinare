@@ -90,17 +90,18 @@ def test_the_header_strip_shows_spend_today_and_this_week(
     block = _block(today=_SUMMARY_TODAY, week=_SUMMARY_TODAY)
     _open(page, live_server_url, store, token_usage=block, sessions=[])
     strip = page.locator("#spend-strip")
-    expect(strip).to_have_text("Spend today $0.13 · this week $0.13", timeout=_WAIT_LIVE)
+    expect(strip).to_have_text("$0.13 today · $0.13 week", timeout=_WAIT_LIVE)
     title = strip.get_attribute("title") or ""
     assert "Days are UTC" in title
     assert "Pricing as of 2026-10-01." in title
 
 
 @pytest.mark.e2e
-def test_an_unknown_price_says_unknown_not_a_number(page: Page, live_server_url: str, store: DashboardStore) -> None:
+def test_an_unpriced_spend_says_spend_not_priced_not_a_number(page: Page, live_server_url: str, store: DashboardStore) -> None:
+    # #238: the strip says "Spend not priced" (the reason is on hover; see test_238_header.py), never "unknown".
     block = _block(today=_SUMMARY_UNKNOWN, week=_SUMMARY_UNKNOWN)
     _open(page, live_server_url, store, token_usage=block, sessions=[])
-    expect(page.locator("#spend-strip")).to_have_text("Spend today unknown · this week unknown", timeout=_WAIT_LIVE)
+    expect(page.locator("#spend-strip")).to_have_text("Spend not priced", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e

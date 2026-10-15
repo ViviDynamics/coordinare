@@ -107,14 +107,14 @@ def test_choosing_a_symphony_filters_every_panel(page: Page, live_server_url: st
     expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_A1']")).to_have_count(0)
     expect(page.locator("#active-performer-tiles .ap-pill-card[title='Card PVTI_B1']")).to_have_count(1)
     expect(page.locator("#symphony-identity")).to_have_text("beta-sym · GitHub Project #2 · acme/beta-repo")
-    expect(page.locator("#spend-strip")).to_have_text("Spend today $0.00 · this week $0.00")
+    expect(page.locator("#spend-strip")).to_have_text("$0.00 today · $0.00 week")
     expect(page.locator("#attention-list")).to_contain_text("Which branch?")
 
     page.locator("#symphony-select").select_option("alpha-sym")
 
     expect(page.locator("#swimlane-section")).not_to_contain_text("Beta card")
     expect(page.locator("#attention-list")).not_to_contain_text("Which branch?")
-    expect(page.locator("#spend-strip")).to_have_text("Spend today $0.13 · this week $0.13")
+    expect(page.locator("#spend-strip")).to_have_text("$0.13 today · $0.13 week")
 
 
 @pytest.mark.e2e

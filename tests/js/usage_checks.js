@@ -99,10 +99,23 @@ checkContains("no pricing basis is named", usageBreakdownText({ tracked: true, t
 
 // Spend strip: today and the rolling week, both UTC.
 const block = { tracked: true, day: "2026-10-14", today: priced, week: unknown, pricing: priced.pricing };
-check("spend strip text", spendStripText(block), "Spend today $0.13 · this week unknown");
+check("spend strip text", spendStripText(block), "$0.13 today · week not priced");
 checkContains("spend strip says UTC", spendStripTitle(block), "UTC");
 check("untracked spend strip", spendStripText({ tracked: false, reason: "transcripts disabled" }), "Spend not tracked");
 check("missing spend strip", spendStripText(null), "Spend not tracked");
+
+// #238: the strip is short, names each unpriced period, and never says "unknown".
+const onePrice = { ...priced, cost: { usd: 1.2, partial_usd: 1.2, kind_usd: {}, unknown_reason: null } };
+const weekPrice = { ...priced, cost: { usd: 8.4, partial_usd: 8.4, kind_usd: {}, unknown_reason: null } };
+const bothPriced = { tracked: true, day: "2026-10-14", week_start: "2026-10-08", today: onePrice, week: weekPrice, pricing: priced.pricing };
+check("both periods priced", spendStripText(bothPriced), "$1.20 today · $8.40 week");
+check("today unpriced", spendStripText({ ...bothPriced, today: unknown }), "today not priced · $8.40 week");
+check("week unpriced", spendStripText({ ...bothPriced, week: unknown }), "$1.20 today · week not priced");
+const neitherPriced = { tracked: true, day: "2026-10-14", week_start: "2026-10-08", today: unknown, week: unknown, pricing: priced.pricing };
+check("neither period priced", spendStripText(neitherPriced), "Spend not priced");
+checkContains("the reason for an unpriced period is on hover", spendStripTitle(neitherPriced), "no price for gpt-unpriced");
+checkContains("the hover names the unpriced period", spendStripTitle({ ...bothPriced, week: unknown }), "This week is not priced");
+check("the strip never says unknown", [spendStripText(neitherPriced), spendStripText({ ...bothPriced, week: unknown }), spendStripText(block)].some(function (t) { return t.indexOf("unknown") !== -1; }), false);
 
 // Markup: every interpolated value goes through esc().
 const hostile = { tracked: true, tokens: { total: 1 }, cost: { usd: 0.5, kind_usd: {} }, models: [{ model: "<img src=x>", tokens: { total: 1 }, priced: true, cost_usd: 0.5, reason: null }], pricing: { as_of: "2026-10-01", source: "table" } };

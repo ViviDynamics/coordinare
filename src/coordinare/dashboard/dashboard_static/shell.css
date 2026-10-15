@@ -28,13 +28,15 @@ html[data-navigation-expanded="false"] .mascot-baton { transform: rotate(-16deg)
   html[data-navigation-collapsed="true"] #navbar a.nav-link { justify-content: center; padding-inline: var(--space-3); }
 }
 .workspace-shell { margin-left: var(--sidebar-width); padding: var(--space-6); max-width: 1900px; }
-.workspace-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); margin-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
-.workspace-header > div:first-child { flex: 1; min-width: 0; }
+/* 238: the title column keeps a real minimum width, and the controls wrap onto a second row before anything overlaps. */
+.workspace-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); margin-bottom: var(--space-6); border-bottom: 1px solid var(--color-border); }
+.workspace-header > div:first-child { flex: 1 1 240px; min-width: 240px; }
 /* 139: the symphony switcher and its identity line sit under the page title. */
 .symphony-switcher { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-1); font-size: 12px; }
-.symphony-switcher select { font: inherit; color: var(--color-text-primary); background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 2px 6px; max-width: 100%; }
+/* 238: the select keeps room for a full symphony name (the longest one is the one that gets cut). */
+.symphony-switcher select { font: inherit; color: var(--color-text-primary); background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 2px 6px; min-width: 12rem; max-width: 100%; }
 .swimlane-card-symphony { font-size: 10px; color: var(--color-text-muted); margin-bottom: 2px; }
-.header-controls { display: flex; align-items: center; gap: var(--space-4); }
+.header-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-4); min-width: 0; }
 #connection-status { font-size: 12px; color: var(--color-text-muted); white-space: nowrap; }
 .appearance-control { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--color-border); border-radius: var(--radius-control); }
 .appearance-control button { width: 36px; height: 36px; display: grid; place-items: center; background: transparent; border: 0; color: var(--color-text-muted); }
