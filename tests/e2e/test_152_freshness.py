@@ -35,7 +35,7 @@ def test_header_turns_amber_and_says_how_long_when_the_stream_goes_quiet(
     page.goto(live_server_url)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
     page.evaluate("() => { updateConnectionStatus('Reconnecting'); window._lastStateAt = Date.now() - 125000; refreshFreshness(); }")
-    expect(page.locator("#connection-detail")).to_have_text(" · no update for 2m: reconnecting…")
+    expect(page.locator("#connection-detail")).to_have_text(" · last update 2m ago: reconnecting…")
     expect(page.locator("#connection-status")).to_have_class(re.compile(r"conn-stale"))
 
 

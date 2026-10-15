@@ -341,11 +341,11 @@ function runHeaderHtml(detail) {
     : esc(persona.version != null ? String(persona.version) : (persona.reason || '-'));
   var rows = [
     ['Stage', hs.stage], ['Agent', hs.agent], ['Model', hs.model], ['Endpoint', hs.endpoint],
-    ['Duration', fmtRunSeconds(sum.duration_seconds)], ['Started', hs.started_at || sum.started_at],
+    ['Duration', fmtRunSeconds(sum.duration_seconds)], ['Started', timeHtml(hs.started_at || sum.started_at, '-'), true],
     ['Outcome', outcomeText]
   ];
   var list = rows.map(function(row) {
-    return '<div class="run-fact"><span class="run-fact-label">' + esc(row[0]) + '</span><span>' + esc(row[1] == null ? '-' : row[1]) + '</span></div>';
+    return '<div class="run-fact"><span class="run-fact-label">' + esc(row[0]) + '</span><span>' + (row[2] ? row[1] : esc(row[1] == null ? '-' : row[1])) + '</span></div>';
   }).join('');
   return '<div class="run-facts">' +
     '<div class="run-fact"><span class="run-fact-label">Run</span><span>' + runIdHtml(detail.run, {copy: true}) + '</span></div>' +
@@ -369,7 +369,7 @@ function runCardRunsHtml(runs, card) {
   return groupRunsByStage(runs).map(function(group) {
     var items = group.runs.map(function(run) {
       var outcome = run.outcome ? esc(run.outcome) : '';
-      var when = run.started_at ? esc(String(run.started_at).slice(0, 19).replace('T', ' ')) : '-';
+      var when = timeHtml(run.started_at, '-');
       var href = runPathFor(run.symphony, card, run.run);
       // 131: a conductor call is labelled with its decision; a performer run keeps its short id (141).
       var name = run.conductor

@@ -262,7 +262,7 @@ function afPlainRowHtml(e, id, where) {
   var cut = afCutHtml([e]);
   return '<div class="af-row af-plain af-row-' + esc(afRowKind(e)) + '" id="' + id + '">' +
     '<span class="af-icon" aria-hidden="true">' + esc(afIcon(e.activity_type)) + '</span>' +
-    '<span class="af-time">' + esc(afTime(e.timestamp)) + '</span>' +
+    '<span class="af-time">' + timeHtml(e.timestamp) + '</span>' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span>' +
     '<span class="af-plain-text">' + esc(text || afSummary(e)) + '</span>' + runEntryLinkHtml(e) +
@@ -285,7 +285,7 @@ function afRowHtml(e, group) {
     ? '<span class="af-truncated">truncated</span>' : '';
   return '<div class="af-row af-row-' + esc(afRowKind(e)) + '" id="' + id + '">' +
     '<details>' +
-    '<summary><span class="af-time">' + esc(afTime(latest.timestamp)) + '</span> ' +
+    '<summary><span class="af-time">' + timeHtml(latest.timestamp) + '</span> ' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
     '<span class="af-summary">' + esc(preview) + ' ' + afCountText(entries) + '</span>' +
@@ -320,7 +320,7 @@ function afSyncGroups(reset) {
     if (!raw) return;
     // Preserve the details element and its summary: open state and keyboard
     // focus survive streaming updates. Only text/diagnostic children change.
-    node.querySelector('.af-time').textContent = afTime(latest.timestamp);
+    node.querySelector('.af-time').innerHTML = timeHtml(latest.timestamp);
     var chip = node.querySelector('.af-kind');
     chip.className = 'af-kind ev-' + e.activity_type;
     chip.textContent = afLabel(e.activity_type);

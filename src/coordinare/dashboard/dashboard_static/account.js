@@ -22,9 +22,14 @@
     menu.innerHTML = '<summary aria-label="User account"><span class="account-avatar" aria-hidden="true"></span><span class="account-name"></span></summary>' +
       '<div class="account-panel"><strong class="account-full-name"></strong><div class="account-email"></div><div class="account-method"></div></div>';
     var name = profile.name || 'Operator';
-    menu.querySelector('summary').setAttribute('aria-label', 'User account: ' + name);
-    menu.querySelector('.account-avatar').textContent = name.split(/\s+/).map(function(p) {return p[0];}).slice(0,2).join('').toUpperCase();
-    menu.querySelector('.account-name').textContent = name;
+    // 157: the chip shows the short login name (preferred_username, then name, then email). The full
+    // name and the identity provider are in the title, so a cut-off chip still says who is signed in.
+    var short = profile.username || profile.name || profile.email || 'Operator';
+    var who = (profile.name || profile.email || 'Operator') + (profile.provider ? ' (' + profile.provider + ')' : '');
+    menu.querySelector('summary').setAttribute('aria-label', 'User account: ' + short);
+    menu.querySelector('summary').title = who;
+    menu.querySelector('.account-avatar').textContent = short.split(/\s+/).map(function(p) {return p[0];}).slice(0,2).join('').toUpperCase();
+    menu.querySelector('.account-name').textContent = short;
     menu.querySelector('.account-full-name').textContent = name;
     menu.querySelector('.account-email').textContent = profile.email || '';
     menu.querySelector('.account-method').textContent = profile.authentication === 'oidc' ? 'Signed in with SSO' : profile.authentication === 'token' ? 'Shared-token access' : 'Local access';

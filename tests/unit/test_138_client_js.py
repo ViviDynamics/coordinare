@@ -13,6 +13,7 @@ of scope and stay on the manual checklist (T049a).
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -21,7 +22,13 @@ from pathlib import Path
 import pytest
 
 from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import app_js, page_source, run_id_js, shipped_function
+from tests.unit.dashboard_js_slices import (
+    app_js,
+    page_source,
+    run_id_js,
+    shipped_function,
+    time_helpers_js,
+)
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
 
@@ -37,7 +44,7 @@ _FEED_START = "// 138: activity feed"
 _FEED_END = "var banner = document.getElementById('disconnected-banner');"
 
 _EXPECTED_FUNCTIONS = frozenset({
-    "esc", "afLabel", "afTime", "afRowHtml", "afMatches", "afAppend", "afRender",
+    "esc", "afLabel", "timeHtml", "afRowHtml", "afMatches", "afAppend", "afRender",
     "afUpdateEmpty", "afUpdateFilterOptions", "onActivityFilterChange",
     "afSetLive", "afNoteMessage", "afQuietTick", "afTick", "afPreview",
 })
@@ -62,7 +69,7 @@ def _extract_feed_js() -> str:
     # 139: the feed filters by the symphony choice, which lives in symphonies.js.
     run_link = shipped_function("runs", "runEntryLinkHtml")
     return (
-        esc.group(0) + "\n\n" + run_id_js() + "\n\n" + run_link + "\n\n" + _DASHBOARD_JS_SOURCES["symphonies"] + "\n\n"
+        esc.group(0) + "\n\n" + time_helpers_js() + "\n\n" + run_id_js() + "\n\n" + run_link + "\n\n" + _DASHBOARD_JS_SOURCES["symphonies"] + "\n\n"
         + _ACTIVITY_STREAM_JS + "\n" + feed_js
     )
 
@@ -87,12 +94,14 @@ def test_activity_feed_client_js(tmp_path: Path) -> None:
     feed_path = tmp_path / "feed.js"
     feed_path.write_text(_extract_feed_js(), encoding="utf-8")
 
+    # The header's time is pinned to UTC, so the check compares a literal string.
     result = subprocess.run(
         ["node", str(_CHECKS_JS), str(feed_path)],
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
+        env={**os.environ, "TZ": "UTC"},
     )
     report = result.stdout + result.stderr
     assert result.returncode == 0, f"client-side JS checks failed:\n{report}"

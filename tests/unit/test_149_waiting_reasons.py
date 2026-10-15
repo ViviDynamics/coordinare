@@ -35,7 +35,7 @@ from coordinare.services.todo_waits import (
     refresh_todo_waits,
 )
 from coordinare.vocabulary import WAITS, payload
-from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function
+from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function, time_helpers_js
 
 _STRICT = OwnershipPolicy(login="coordinare-bot", include_unassigned=False)
 _OPEN = OwnershipPolicy(login="coordinare-bot", include_unassigned=True)
@@ -307,7 +307,7 @@ def test_waiting_client_js(tmp_path: Path) -> None:
     assert node is not None, "node is required for the dashboard JS gates"
     js_path = tmp_path / "waiting.js"
     js_path.write_text(
-        "\n\n".join([shipped_function("helpers", "esc"), label_helpers_js(),
+        "\n\n".join([shipped_function("helpers", "esc"), time_helpers_js(), label_helpers_js(),
                      _DASHBOARD_JS_SOURCES["waiting"]]),
         encoding="utf-8",
     )

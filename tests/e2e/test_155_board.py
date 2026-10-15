@@ -17,7 +17,7 @@ EN_DASH = "\u2013"
 
 
 def aged_title(word: str) -> re.Pattern[str]:
-    return re.compile(rf"^PR checks at review hand-off: {re.escape(word)} \(\d+m \d+s ago\)$")
+    return re.compile(rf"^PR checks at review hand-off: {re.escape(word)} \(\d+m ago\)$")
 
 
 def _now_minus(hours: float) -> str:
@@ -138,7 +138,7 @@ def test_the_done_lane_reads_a_microsecond_merge_time_in_this_browser(
     expect(lane.locator("summary .swimlane-col-count")).to_have_text("1", timeout=_WAIT_LIVE)
     lane.locator("summary").click()
     row = lane.locator(".done-lane-list li")
-    expect(row).to_contain_text("merged 2h 0m", timeout=_WAIT_LIVE)
+    expect(row).to_contain_text("merged 2h ago", timeout=_WAIT_LIVE)
     expect(row).to_contain_text("ago")
     expect(row).not_to_contain_text("NaN")
 
@@ -215,7 +215,7 @@ def test_a_stale_result_is_neutral_and_says_it_is_an_earlier_commit(
     icon = page.locator("#swimlane-section .swimlane-card").filter(has_text="Pushed again").locator(".checks-icon")
     expect(icon).to_have_class("checks-icon checks-fail checks-stale", timeout=_WAIT_LIVE)
     expect(icon).to_have_attribute("title", re.compile(
-        r"^PR checks at review hand-off: failing \(\d+m \d+s ago\), checks as of an earlier commit$"))
+        r"^PR checks at review hand-off: failing \(\d+m ago\), checks as of an earlier commit$"))
 
 
 @pytest.mark.e2e

@@ -42,7 +42,7 @@ from coordinare.vocabulary import (
     payload,
     phase_label,
 )
-from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function
+from tests.unit.dashboard_js_slices import label_helpers_js, shipped_function, time_helpers_js
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "blocked_kinds_checks.js"
 
@@ -273,7 +273,7 @@ def test_the_chip_and_attention_checks_pass_under_node(tmp_path: Path) -> None:
     js_path.write_text(
         "\n\n".join([
             shipped_function("helpers", "esc"),
-            shipped_function("helpers", "fmtAge"),
+            time_helpers_js(),
             label_helpers_js(),
             _DASHBOARD_JS_SOURCES["waiting"],
             _DASHBOARD_JS_SOURCES["attention"],

@@ -62,6 +62,16 @@ def run_id_js() -> str:
     return "\n\n".join([shipped_function("helpers", "runIdText"), shipped_function("helpers", "runIdHtml")])
 
 
+def time_helpers_js() -> str:
+    """157: the one time helper set (helpers.js): the zone label, the exact time, the age and timeHtml.
+
+    Assumes ``esc`` is already defined by the caller's slice.
+    """
+    return "\n\n".join(
+        shipped_function("helpers", name) for name in ("timeMs", "zoneLabel", "fmtTime", "fmtAgo", "fmtAge", "fmtAgeAt", "timeHtml", "refreshRelativeTimes")
+    )
+
+
 def symphony_switcher_js() -> str:
     """139: the symphony switcher's pure functions, verbatim, with esc() in front of them."""
     return "\n\n".join([shipped_function("helpers", "esc"), _DASHBOARD_JS_SOURCES["symphonies"]])

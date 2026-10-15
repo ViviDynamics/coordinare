@@ -21,7 +21,6 @@ function stepTrailHtml(sess, slowAfterSeconds) {
   var parts = done.slice(-6).map(function(e) {
     return '<span class="muted">' + esc(shortName(e.step)) + ' &check;</span>';
   });
-  var age = fmtAge(sess.workflow_step_entered_at);
   var secs = sess.workflow_step_entered_at
     ? Math.floor((Date.now() - new Date(sess.workflow_step_entered_at).getTime()) / 1000) : 0;
   // 0 means the operator has not said what "too long" is, so say nothing.
@@ -29,7 +28,7 @@ function stepTrailHtml(sess, slowAfterSeconds) {
   var style = slow ? 'color:var(--color-degraded)' : 'color:var(--color-accent-blue)';
   parts.push('<span style="' + style + ';font-weight:bold" data-step-since="'
     + esc(sess.workflow_step_entered_at || '') + '">&bull; ' + esc(shortName(cur))
-    + (age ? ' ' + esc(age) : '') + '</span>');
+    + (sess.workflow_step_entered_at ? ' ' + timeHtml(sess.workflow_step_entered_at, '') : '') + '</span>');
   var more = done.length > 6 ? '<span class="muted">+' + String(done.length - 6) + ' earlier &middot; </span>' : '';
   return '<div class="step-trail" style="margin-top:4px;font-size:12px">' + more + parts.join('<span class="muted"> &middot; </span>') + '</div>';
 }
@@ -59,7 +58,7 @@ function renderCycleHistoryInto(container, cycleHistory, opts) {
     rows.map(function(r) {
       var many = r.count > 1;
       return '<tr>' +
-        '<td>' + fmtTime(r.timestamp) + '</td>' +
+        '<td>' + timeHtml(r.timestamp) + '</td>' +
         '<td>' + humanPhase(r.phase) + (many ? ' <span class="cycle-count" title="' + r.count + ' consecutive checks with the same result">' + r.count + ' checks</span>' : '') + '</td>' +
         '<td>' + (many ? 'avg ' : '') + fmtDuration(r.duration_seconds) + '</td>' +
         '<td><span class="badge badge-' + esc(r.outcome) + '">' + (many ? 'all ' : '') + esc(r.outcome) + '</span></td>' +
@@ -189,8 +188,7 @@ function renderState(s) {
         head = esc(obj.card_title);
       }
       if (obj.stage) head += ' <span class="muted">(' + esc(obj.stage) + ')</span>';
-      var ageTxt = obj.asked_at ? fmtAge(obj.asked_at) : null;
-      var age = ageTxt ? ' <span class="muted">asked ' + esc(ageTxt) + ' ago</span>' : '';
+      var age = obj.asked_at ? ' <span class="muted">asked ' + timeHtml(obj.asked_at) + '</span>' : '';
       var body = head ? head + ': ' + esc(text) : esc(text);
       if (!obj.card_number) {
         var issueHref = s.issue_url && /^https?:\/\//i.test(s.issue_url) ? s.issue_url : null;
@@ -288,9 +286,7 @@ function renderState(s) {
   document.getElementById('error-count').textContent = s.consecutive_error_count;
   // 119: uptime at a glance, the exact start time on hover.
   var daemonStartEl = document.getElementById('daemon-start-time');
-  var daemonUptime = fmtAge(s.daemon_start_time);
-  daemonStartEl.textContent = daemonUptime ? 'Up ' + daemonUptime : 'unknown';
-  daemonStartEl.title = s.daemon_start_time ? 'Started ' + fmtTime(s.daemon_start_time) : '';
+  daemonStartEl.innerHTML = timeHtml(s.daemon_start_time);
   // 134/154: the card's tokens and cost are on its active-run tile (layout.js); the
   // spend figures are in the status strip.
   renderSpend(s.token_usage);
@@ -418,7 +414,8 @@ function renderSymphoniesPage(s) {
       _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : 'None');
       _setTd(rows[2], sym.error_count != null ? sym.error_count : 'None');
       _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : 'None');
-      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : 'None');
+      var lastPollCell = rows[4] ? rows[4].querySelector('td') : null;
+      if (lastPollCell) lastPollCell.innerHTML = sym.last_poll_at ? timeHtml(sym.last_poll_at) : 'None';
       return;
     }
     loadSymphonyDetail(detail, el);
@@ -521,7 +518,7 @@ async function loadSymphonyDetail(name, el) {
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
     ['Failed checks in a row', st.error_count != null ? st.error_count : 'None'],
     ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : 'None'],
-    ['Last checked', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : 'None'],
+    ['Last checked', st.last_poll_at ? timeHtml(st.last_poll_at) : 'None'],
     ['Last error', st.last_error ? esc(st.last_error) : 'None'],
   ].map(function(r) {
     return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
@@ -597,10 +594,10 @@ async function loadSymphonyDetail(name, el) {
         ['Cache dir', esc(ec.cache_dir || 'None')],
         ['Cache ready', ready ? 'yes' : 'no'],
         ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
-        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : 'None'],
+        ['Last bootstrap', ec.last_bootstrap_at ? timeHtml(ec.last_bootstrap_at) : 'None'],
         ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : 'None'],
         ['Service inference', infRow],
-        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : 'None'],
+        ['Inference at', ec.last_inference_at ? timeHtml(ec.last_inference_at) : 'None'],
       ].map(function(r) {
         return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
       }).join('');
@@ -918,6 +915,29 @@ window.addEventListener('popstate', function(event) {
 // 049: Personas page. 143: read-only. Persona text is edited in Settings, under Agents,
 // so each persona has exactly one editor. Each entry links to its Settings item.
 var _personasPageLoaded = false;
+
+// 157: who made a persona's latest change, as the history records it. Nothing is invented: a blank or
+// "unknown" author (a hand edit the dashboard did not see, or the first recorded text) reads as unknown.
+function personaAuthorText(changedBy) {
+  var who = String(changedBy || '');
+  if (who === '' || who === 'unknown') return 'unknown author';
+  if (who === 'local') return 'local operator';
+  if (who === 'token') return 'shared token';
+  return who;
+}
+
+// 157: "Last edited <age> by <author>" from a persona's version history (spec 130), or "not recorded".
+function personaLastEditedHtml(history) {
+  var versions = history && Array.isArray(history.versions) ? history.versions : [];
+  var newest = null;
+  for (var i = 0; i < versions.length; i++) {
+    if (newest === null || Number(versions[i].version) > Number(newest.version)) newest = versions[i];
+  }
+  if (newest === null) return '<span class="muted">Last edited: not recorded</span>';
+  return '<span class="muted">Last edited ' + timeHtml(newest.changed_at, 'at an unknown time') + ' by ' +
+    esc(personaAuthorText(newest.changed_by)) + '</span>';
+}
+
 function loadPersonasPage(force) {
   var section = document.getElementById('personas-page-section');
   if (!section) return;
@@ -925,11 +945,21 @@ function loadPersonasPage(force) {
   _personasPageLoaded = true;
   section.innerHTML = '<span class="empty-state">Loading...</span>';
   fetch('/api/personas').then(function(r) { return r.json(); }).then(function(data) {
-    var html = data.map(function(p) {
+    // 157: each persona's last edit comes from its own version history. A failed read shows "not recorded".
+    return Promise.all(data.map(function(p) {
       var role = String(p.role || '');
+      return fetch('/api/personas/' + encodeURIComponent(role) + '/history', {credentials: 'same-origin'})
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .catch(function() { return null; })
+        .then(function(history) { return {persona: p, history: history}; });
+    }));
+  }).then(function(rows) {
+    var html = rows.map(function(row) {
+      var role = String(row.persona.role || '');
       return '<div style="margin-bottom:16px" data-persona-role="' + esc(role) + '">' +
         '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:4px">' + agentLabel(role) + personaStageNote(role) + '</div>' +
-        '<pre style="white-space:pre-wrap;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;margin:0">' + esc(p.instructions || '') + '</pre>' +
+        '<pre style="white-space:pre-wrap;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;margin:0">' + esc(row.persona.instructions || '') + '</pre>' +
+        '<div style="margin-top:4px">' + personaLastEditedHtml(row.history) + '</div>' +
         '<div style="margin-top:4px"><a href="/config#personas/' + encodeURIComponent(role) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit in Settings</a></div>' +
         '</div>';
     }).join('');
@@ -939,7 +969,7 @@ function loadPersonasPage(force) {
 
 
 // 125: one timer refreshes every elapsed readout from its own start point.
-setInterval(function() { refreshElapsedReadouts(document); refreshFreshness(); }, 1000);
+setInterval(function() { refreshElapsedReadouts(document); refreshRelativeTimes(document); refreshFreshness(); fitActivityToBoard(); }, 1000);
 
 async function forcePoll() {
   var btn = document.getElementById('force-poll-btn');
@@ -1005,10 +1035,6 @@ function afSyncRun(runId) {
 
 function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
 
-function afTime(iso) {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; }
-}
 
 
 // 148: the card filter and the kind chips both have to let an entry through.
@@ -1134,6 +1160,8 @@ function afUpdateEmpty() {
   if (!feed || !empty) return;
   empty.style.display = feed.childElementCount ? 'none' : '';
   afUpdateDropped();
+  // 157: the feed's cap follows the board whenever the rows change, not only on the next timer tick.
+  if (typeof fitActivityToBoard === 'function') fitActivityToBoard();
 }
 
 // 135: the line above the feed for entries the bounded log has dropped. Hidden when none were.
@@ -1183,7 +1211,7 @@ function updateConnectionStatus(label) {
   var text = document.getElementById('connection-label');
   if (text && text.textContent !== label) text.textContent = label;
   status.title = 'Dashboard updates: ' + label + '. Last message: ' +
-    (_afHasMessage ? new Date(_afLastMsgAt).toLocaleTimeString() : 'none received yet');
+    (_afHasMessage ? fmtTime(new Date(_afLastMsgAt).toISOString()) : 'none received yet');
   var dot = document.getElementById('nav-sse-dot');
   if (dot) { if (label === 'Live') dot.classList.remove('disconnected'); else dot.classList.add('disconnected'); }
 }

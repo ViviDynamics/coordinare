@@ -2180,8 +2180,8 @@ def test_phone_width_shows_no_node_id_and_never_scrolls_sideways(
     assert metrics["pillRight"] <= metrics["tileRight"] + 1
 
     # #125: the conductor card and the tile count from the same start point.
-    readouts = page.evaluate("""() => Array.from(document.querySelectorAll('[data-elapsed-since]'))
-        .filter(el => el.offsetParent !== null).map(el => el.getAttribute('data-elapsed-since'))""")
+    readouts = page.evaluate("""() => Array.from(document.querySelectorAll('#active-performers time[data-rel-iso]'))
+        .filter(el => el.offsetParent !== null).map(el => el.getAttribute('data-rel-iso'))""")
     # 154: the tile is the only live readout of a run's elapsed time, anchored to the run's dispatch.
     assert readouts == ["2026-10-13T12:00:00+00:00"], readouts
 

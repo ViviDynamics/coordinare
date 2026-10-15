@@ -88,6 +88,9 @@ class OidcIdentity:
     name: str = ""
     email: str = ""
     id_token: str = field(default="", repr=False)
+    # 157: the short login name (preferred_username) and the identity provider's host, for the header chip.
+    username: str = ""
+    provider: str = ""
 
 
 class OidcSessionStore:
@@ -280,9 +283,12 @@ class OidcFlow:
             raise OidcLoginError(msg)
         name = claims.get("name") or claims.get("preferred_username")
         email = claims.get("email")
+        username = claims.get("preferred_username")
         return OidcIdentity(
             subject=subject, name=name if isinstance(name, str) else "",
             email=email if isinstance(email, str) else "", id_token=token,
+            username=username if isinstance(username, str) else "",
+            provider=urlparse(str(discovery["issuer"])).netloc,
         )
 
     async def _signing_key(self, token: str, discovery: dict[str, str]) -> Any:

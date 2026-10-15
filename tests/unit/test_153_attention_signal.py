@@ -19,7 +19,7 @@ from coordinare.dashboard import (
     _DASHBOARD_JS_SOURCES,
     DashboardStore,
 )
-from tests.unit.dashboard_js_slices import app_js, shipped_function
+from tests.unit.dashboard_js_slices import app_js, shipped_function, time_helpers_js
 from tests.unit.test_dashboard import _make_mock_daemon, _make_mock_health, _make_mock_metrics
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "attention_checks.js"
@@ -132,7 +132,7 @@ def test_attention_client_js(tmp_path: Path) -> None:
     assert node is not None, "node is required for the dashboard JS gates"
     js_path = tmp_path / "attention.js"
     js_path.write_text(
-        "\n\n".join([shipped_function("helpers", "esc"), shipped_function("helpers", "fmtAge"), _attention_js()]),
+        "\n\n".join([shipped_function("helpers", "esc"), time_helpers_js(), _attention_js()]),
         encoding="utf-8",
     )
     result = subprocess.run(
