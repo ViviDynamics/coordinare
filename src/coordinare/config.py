@@ -1375,8 +1375,21 @@ class ProjectConfiguration(BaseSettings):
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)
 
-    # 035 — Multi-Card Parallelism
-    max_concurrent_cards: int = Field(default=1, ge=1, le=20)
+    # 035: Multi-Card Parallelism. 171: the budget counts cards, not containers. The
+    # description names what runs outside it (specs/171-side-run-budget/spec.md).
+    max_concurrent_cards: int = Field(
+        default=1, ge=1, le=20,
+        description=(
+            "How many cards may hold a pipeline slot at once. A card holds its slot while it has "
+            "work under way. Its documenter side run shares that slot, or takes a free one when the "
+            "card is parked on review. A side run waits while no slot is free, and also while its own "
+            "card's performer is live; it starts once that has finished. A waiting side run is shown on "
+            "the card. Env bootstrap, the advocate and curator intake, and wiki-init run outside this "
+            "budget: each is a card-less container gated by an in-flight marker, so at most one run of "
+            "each kind is in flight per symphony, per daemon process (a restart clears the marker). "
+            "Architect and assessor intake run inside it, as lifecycle stages."
+        ),
+    )
     # 179: a card waiting on PR review holds no pipeline slot, so the next card
     # can start. This caps how many cards may wait in review at once; when it is
     # reached no new card is admitted until a review lands. null removes the cap.
