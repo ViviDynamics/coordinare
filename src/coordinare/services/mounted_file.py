@@ -286,8 +286,18 @@ def _open_dir(name: str, dir_fd: int) -> int:
     except FileNotFoundError:
         raise
     except OSError as exc:
-        message = "a directory below a performer mount is a link or not a directory"
-        raise MountedFileRefusedError(message) from exc
+        raise MountedFileRefusedError(_open_dir_refusal(exc)) from exc
+
+
+def _open_dir_refusal(exc: OSError) -> str:
+    """The refusal for a directory below a performer mount that could not be opened, named for its cause (review 5)."""
+    if exc.errno == errno.ELOOP:
+        return "is a symbolic link below a performer mount"
+    if exc.errno == errno.ENOTDIR:
+        return "is not a directory below a performer mount"
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        return "is unreadable (permission denied) below a performer mount"
+    return f"could not be opened below a performer mount ({exc.strerror})"
 
 
 def _open_chain(walk: _Walk, *, create: bool) -> int:

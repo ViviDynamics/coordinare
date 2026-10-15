@@ -175,6 +175,7 @@ class _Check:
     def __init__(self, ok: bool, reason: str | None) -> None:
         self.ok = ok
         self.reason = reason
+        self.transient = False
 
 
 def _consumer_state(cache: Path) -> EnvCacheState:

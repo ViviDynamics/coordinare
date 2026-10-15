@@ -117,6 +117,9 @@ def _frozen_and_checked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
 def test_two_concurrent_dispatches_cause_one_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service, state, counter = _frozen_and_checked(tmp_path, monkeypatch)
     service._stat_pass_at.pop("sym", None)  # the window has lapsed, so the dispatches must walk
+    # Read the recorded digest from the sidecar, so each dispatch suspends before any walk starts. Both then arrive
+    # before the walk, which is the case coalescing covers. A dispatch that arrives after a walk started must walk again.
+    service._stat.pop("sym", None)
 
     async def both() -> list[Any]:
         return await asyncio.gather(

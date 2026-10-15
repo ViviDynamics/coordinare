@@ -10,7 +10,6 @@ import re
 import time
 import uuid
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -36,11 +35,13 @@ from coordinare.services.env_provenance import (
     DEFAULT_LIMITS,
     PROVENANCE_DIR_NAME,
     PROVENANCE_FULL_RECHECK_S,
+    ContentResult,
     ManifestFile,
     ProvenanceCheck,
     ProvenanceLimits,
     ProvenanceRefusedError,
     ProvenanceScope,
+    ProvenanceTransientError,
     build_payload,
     content_pass,
     freeze_cache,
@@ -761,6 +762,8 @@ def _log_provenance_refused(symphony_name: str, reason: str) -> None:
 
 # 234 review 4: the default freshness window for a passing stat check (overridden by config).
 DEFAULT_STAT_FRESH_S = 30.0
+# 234 review 5: how long a stat walk may run before the dispatches waiting on it are refused (overridden by config).
+DEFAULT_STAT_WALK_TIMEOUT_S = 300.0
 
 
 class EnvCacheService:
@@ -789,7 +792,7 @@ class EnvCacheService:
         # full passes in flight, by symphony.
         self._drift: dict[str, str] = {}
         # 234 review 4: one stat walk in flight per symphony, and the time of the last passing stat check.
-        self._stat_inflight: dict[str, asyncio.Future[Any]] = {}
+        self._stat_inflight: dict[str, tuple[float, asyncio.Future[Any]]] = {}
         self._stat_pass_at: dict[str, tuple[str, float]] = {}
         self._full_inflight: set[str] = set()
 
@@ -1530,6 +1533,7 @@ class EnvCacheService:
         self._provenance_full_at.pop(symphony_name, None)
         self._drift.pop(symphony_name, None)
         self._stat_pass_at.pop(symphony_name, None)
+        self._stat_inflight.pop(symphony_name, None)
 
     async def _open(self, symphony_name: str, cache_state: EnvCacheState, digest: str) -> ManifestFile | None:
         """The manifest for *digest*, opened transiently: digest-verified, metadata read, no rows held (234 review 3)."""
@@ -1569,25 +1573,50 @@ class EnvCacheService:
             return DEFAULT_STAT_FRESH_S
         return float(getattr(cfg, "provenance_stat_fresh_s", DEFAULT_STAT_FRESH_S))
 
+    def _stat_walk_timeout(self) -> float:
+        """How long a stat walk may run before the dispatches waiting on it are refused (234 review 5)."""
+        cfg = getattr(self._coordinare_config.global_config, "env_cache", None)
+        if cfg is None:
+            return DEFAULT_STAT_WALK_TIMEOUT_S
+        return float(getattr(cfg, "provenance_stat_walk_timeout_s", DEFAULT_STAT_WALK_TIMEOUT_S))
+
     async def _run_walk(self, fn: Any, *args: Any) -> Any:
         """Run a walk in a thread, off the event loop. Measured lag at 1M entries is p99 about 2 ms (review 4)."""
         return await asyncio.to_thread(fn, *args)
 
-    async def _shared_stat(self, symphony_name: str, cache_state: EnvCacheState) -> str:
-        """The stat digest from one walk shared by every dispatch in flight for this symphony (234 review 4).
+    async def _shared_stat(
+        self, symphony_name: str, cache_state: EnvCacheState, arrived: float,
+    ) -> tuple[str, float]:
+        """The stat digest, and the monotonic time the walk that produced it started (234 review 5).
 
-        The first caller starts the walk. Later callers await the same future, so N concurrent dispatches cost one walk.
-        ``shield`` keeps the walk running when one caller is cancelled.
+        A caller joins a walk in flight only if that walk started at or after the caller arrived, so the walk observed the
+        cache no earlier than the caller's arrival. An older walk may have seen the cache before a change the caller
+        already knows about, so the caller starts its own walk. The walk is shielded, so a cancelled caller does not cancel
+        it for the others. A walk that outlives the timeout is dropped from the in-flight table, and this caller is
+        refused with a transient error. The next dispatch then starts a new walk.
         """
-        inflight = self._stat_inflight.get(symphony_name)
-        if inflight is None:
-            inflight = asyncio.ensure_future(self._run_walk(stat_digest_of, cache_state.cache_dir, self._scope()))
-            self._stat_inflight[symphony_name] = inflight
-            inflight.add_done_callback(partial(self._stat_walk_done, symphony_name))
-        return await asyncio.shield(inflight)
+        entry = self._stat_inflight.get(symphony_name)
+        if entry is None or entry[0] < arrived:
+            started = time.monotonic()
+            fut = asyncio.ensure_future(self._run_walk(stat_digest_of, cache_state.cache_dir, self._scope()))
+            entry = (started, fut)
+            self._stat_inflight[symphony_name] = entry
+        started, walk = entry
+        timeout = self._stat_walk_timeout()
+        try:
+            value = await asyncio.wait_for(asyncio.shield(walk), timeout=timeout)
+        except TimeoutError as exc:
+            self._drop_inflight(symphony_name, walk)
+            message = (
+                f"the stat walk did not finish within {timeout:g} s (env_cache.provenance_stat_walk_timeout_s); "
+                "this dispatch is refused, and the next one starts a new walk"
+            )
+            raise ProvenanceTransientError(message) from exc
+        return value, started
 
-    def _stat_walk_done(self, symphony_name: str, fut: asyncio.Future[Any]) -> None:
-        if self._stat_inflight.get(symphony_name) is fut:
+    def _drop_inflight(self, symphony_name: str, fut: asyncio.Future[Any]) -> None:
+        current = self._stat_inflight.get(symphony_name)
+        if current is not None and current[1] is fut:
             del self._stat_inflight[symphony_name]
 
     def _record_drift(
@@ -1600,49 +1629,67 @@ class EnvCacheService:
     async def _content_check(
         self, symphony_name: str, cache_state: EnvCacheState, digest: str,
     ) -> ProvenanceCheck:
-        """The full content check, run in the walk worker (234 review 3 and 4). Records drift on failure.
+        """The full content check (234 review 3, 4 and 5).
 
-        On success the stat digest is refreshed (the ctime-churn case), the full clock is set, and a passing stat check
-        is recorded, but only while the digest checked is still the current one.
+        An I/O failure is transient: it is retried once, and if it persists the dispatch is refused without recording drift.
+        A mismatch or a refusal is real, and it records drift. On success the stat digest is refreshed (the ctime-churn
+        case), and the stat pass is stamped with the time the check started. That stamp is kept only while the digest
+        checked is still the current one.
         """
         try:
             manifest_path = self._manifest_path(cache_state)
         except RuntimeError as exc:
             return self._record_drift(symphony_name, cache_state, digest, str(exc))
-        result = await self._run_walk(
-            content_pass,
-            cache_state.cache_dir,
-            manifest_path,
-            digest,
-            self._performer_mounts(),
-            self._scope(),
-        )
+        mounts = self._performer_mounts()
+        scope = self._scope()
+        result = ContentResult(False, "content check did not run")
+        started = time.monotonic()
+        for _attempt in (1, 2):
+            started = time.monotonic()
+            try:
+                result = await self._run_walk(
+                    content_pass, cache_state.cache_dir, manifest_path, digest, mounts, scope,
+                )
+            except OSError as exc:
+                result = ContentResult(False, f"I/O error during the content check: {exc}", transient=True)
+            if not result.transient:
+                break
         still_current = cache_state.provenance_digest == digest
         if not result.ok:
+            if result.transient:
+                logger.warning(
+                    "env_cache.provenance_check_transient", symphony=symphony_name, reason=result.reason,
+                )
+                return ProvenanceCheck(False, result.reason, hashed=True, transient=True)
             logger.error(
                 "env_cache.provenance_check_failed", symphony=symphony_name, reason=result.reason, full=True,
             )
             return self._record_drift(symphony_name, cache_state, digest, result.reason or "content check failed")
         if still_current and result.stat_digest is not None:
             self._stat[symphony_name] = (digest, result.stat_digest)
-            await asyncio.to_thread(
-                write_stat_sidecar,
-                self._stat_path(cache_state),
-                manifest_digest=digest,
-                stat_digest=result.stat_digest,
-                performer_mounts=self._performer_mounts(),
-            )
-            now = time.monotonic()
-            self._provenance_full_at[symphony_name] = now
-            self._stat_pass_at[symphony_name] = (digest, now)
+            try:
+                await asyncio.to_thread(
+                    write_stat_sidecar,
+                    self._stat_path(cache_state),
+                    manifest_digest=digest,
+                    stat_digest=result.stat_digest,
+                    performer_mounts=mounts,
+                )
+            except OSError as exc:
+                # The sidecar is a restart shortcut. Without it the next restart runs the content check, so this is not fatal.
+                logger.warning("env_cache.provenance_sidecar_failed", symphony=symphony_name, error=str(exc))
+            self._provenance_full_at[symphony_name] = started
+            self._stat_pass_at[symphony_name] = (digest, started)
             logger.info("env_cache.provenance_recheck_full", symphony=symphony_name)
         return ProvenanceCheck(True, None, hashed=True)
 
     async def _verify(self, symphony_name: str, cache_state: EnvCacheState) -> tuple[ProvenanceCheck, str | None]:
-        """The dispatch check (234 review 4). Order: a recorded drift refuses; a passing stat check younger than the
-        freshness window is reused with no walk; otherwise one shared stat walk is compared with the recorded digest;
-        a mismatch, or the first dispatch of a process, runs the content check.
+        """The dispatch check (234 review 4 and 5). Order: a recorded drift refuses; a passing stat check younger than the
+        window is reused with no walk; otherwise one shared stat walk, joined only if it started after this call arrived,
+        is compared with the recorded digest; a mismatch, or the first dispatch of a process, runs the content check.
+        A transient failure refuses this dispatch only.
         """
+        arrived = time.monotonic()
         digest = cache_state.provenance_digest
         if digest is None:
             return ProvenanceCheck(False, "no frozen provenance for this cache; re-bootstrap"), None
@@ -1659,11 +1706,13 @@ class EnvCacheService:
             recorded = await self._recorded_stat(symphony_name, cache_state, digest)
             if recorded is not None:
                 try:
-                    current: str | None = await self._shared_stat(symphony_name, cache_state)
+                    current, started = await self._shared_stat(symphony_name, cache_state, arrived)
+                except ProvenanceTransientError as exc:
+                    return ProvenanceCheck(False, str(exc), transient=True), digest
                 except ProvenanceRefusedError:
-                    current = None
-                if current == recorded:
-                    self._stat_pass_at[symphony_name] = (digest, time.monotonic())
+                    current, started = None, None
+                if current == recorded and started is not None:
+                    self._stat_pass_at[symphony_name] = (digest, started)
                     return ProvenanceCheck(True, None, hashed=False), digest
         return await self._content_check(symphony_name, cache_state, digest), digest
 

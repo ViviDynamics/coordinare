@@ -2456,6 +2456,7 @@ async def _env_provenance_gate(
     if _is_bootstrap_dispatch or not isinstance(_ec_state_for_sym, EnvCacheState):
         return None, None
     service = state.get("env_cache_service")
+    transient = False
     if service is None:
         reason = "no env-cache service to verify the frozen provenance; dispatch refused"
     else:
@@ -2465,6 +2466,9 @@ async def _env_provenance_gate(
         if check.ok and payload is not None:
             return None, payload
         reason = check.reason or "frozen provenance check failed"
+        # 234 review 5: an I/O failure, a race or a timeout refuses this dispatch only. It is not drift, so it does not
+        # schedule a re-bootstrap.
+        transient = check.transient
     logger.error(
         "dispatch_performer.env_provenance_refused",
         card_id=card_id,
@@ -2481,7 +2485,7 @@ async def _env_provenance_gate(
             text=f"env cache refused: {reason}; a re-bootstrap is scheduled",
         )
     _release_slot_on_error()
-    if service is not None:
+    if service is not None and not transient:
         service.mark_runtime_health_failed(_symphony_name_for_ec, state)
     return state, None
 

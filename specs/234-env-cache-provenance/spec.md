@@ -247,6 +247,23 @@ is refused and re-bootstraps once. That is the upgrade cost.
 - **The restart full pass is inline.** The first dispatch after a restart waits for the full content check, about 95 s
   at 990 996 entries on this machine (section 4). This is the price of not trusting the recorded stat digest across a
   restart.
+- **What the shared stat pass bounds (review 5).** A walk's result is never older than its start. A caller joins a walk
+  in flight only if that walk started at or after the caller arrived. Otherwise the caller starts its own walk, so no
+  dispatch passes on a cache state that predates its arrival. The freshness window is measured from the walk's START,
+  not its completion. A passing check is therefore reused for at most `provenance_stat_fresh_s` seconds after the
+  walk that observed the cache began. A change made after the walk began, and before a reused check, can pass for up to
+  that window. This is the designed bound, and it is the detection latency for changes that do not move the stat digest.
+  The hourly content check bounds it further. Reproduced by the reviewer's join scenario, now refused by the join rule.
+- **Timeout (review 5).** A walk that has not finished within `env_cache.provenance_stat_walk_timeout_s` (default 300 s,
+  validated 10 to 3600) refuses the dispatches waiting on it, as a transient error. The in-flight entry is cleared, so the
+  next dispatch starts a new walk. The walk thread cannot be killed, so the timeout bounds the wait for the dispatch, not
+  the thread's work.
+- **Transient versus drift (review 5).** An I/O failure, a file that vanished during a walk, or a timeout is transient.
+  A transient failure refuses only the dispatch that hit it. The content check retries a transient failure once, and it
+  never records drift. A content mismatch, a structural change, a bound, or a link out of the cache is real, and it records
+  drift until the next freeze.
+- **Unreadable directories** are reported for their cause: a symbolic link, a path that is not a directory, a permission
+  refusal, or the system error text. They were all reported as "a link or not a directory" before.
 - **Event-loop lag (review 4).** Measured at 991 000 entries with a 50 ms sleeper: a thread walk gives p99 overshoot of
   about 2 ms; a worker process gives about 2 ms too, so the walk does not starve the loop and the walk stays in a thread.
   Method: the stat walk ran in `asyncio.to_thread` while a coroutine slept 50 ms and recorded how late it woke.

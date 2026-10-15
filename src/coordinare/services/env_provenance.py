@@ -11,9 +11,9 @@ verified. Nothing here holds the manifest in memory for the life of the daemon (
 - :func:`verify_content` streams the manifest rows beside the walk and compares every entry, content included. It runs
   on a stat mismatch, on the first dispatch after a restart, and in the background hourly pass.
 
-The stat digest is an additive hash: the sum, modulo 2**256, of sha256 over each record. A record is
-``(path, type, mode, size, inode, ctime_ns, link target)``. The sum does not depend on order, so it needs no sort and
-no list, which keeps it O(1) in memory.
+The stat digest is one sha256 over the records in walk order. Each record is ``(path, type, mode, size, inode,
+ctime_ns, link target)``, streamed, so it needs no list and no sort, and it is O(1) in memory. Reordering,
+swapping or dropping a record changes it.
 """
 
 from __future__ import annotations
@@ -110,6 +110,10 @@ class ProvenanceRefusedError(Exception):
     """The cache cannot be frozen or checked. The message says why, for the bootstrap failure and the log."""
 
 
+class ProvenanceTransientError(ProvenanceRefusedError):
+    """An I/O failure, a race, or a timeout. It refuses one dispatch and is never recorded as drift (review 5)."""
+
+
 def manifest_cap_bytes(max_entries: int) -> int:
     """The largest manifest file accepted for a cache of *max_entries* entries (234 review 2)."""
     return max_entries * (PROVENANCE_MAX_PATH_BYTES + _MANIFEST_OVERHEAD_BYTES_PER_ENTRY)
@@ -178,6 +182,7 @@ class ContentResult:
     ok: bool
     reason: str | None = None
     stat_digest: str | None = None
+    transient: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,6 +198,7 @@ class ProvenanceCheck:
     ok: bool
     reason: str | None = None
     hashed: bool = False
+    transient: bool = False
 
 
 def _mounts_for(cache_dir: Path, performer_mounts: tuple[Path, ...] | list[Path]) -> tuple[Path, ...]:
@@ -580,18 +586,25 @@ def content_pass(
 ) -> ContentResult:
     """The full content check as one call: open the manifest by its digest, then compare. Picklable arguments, so a
     worker process can run it (review round 4)."""
-    manifest = open_manifest(
-        manifest_path,
-        digest=digest,
-        performer_mounts=performer_mounts,
-        max_bytes=manifest_cap_bytes(scope.limits.max_entries),
-    )
+    try:
+        manifest = open_manifest(
+            manifest_path,
+            digest=digest,
+            performer_mounts=performer_mounts,
+            max_bytes=manifest_cap_bytes(scope.limits.max_entries),
+        )
+    except MountedFileRefusedError as exc:
+        return ContentResult(False, str(exc))
+    except OSError as exc:
+        return ContentResult(False, f"I/O error reading the frozen manifest: {exc}", transient=True)
     if manifest is None:
         return ContentResult(False, "frozen provenance manifest is missing or altered")
     try:
         return verify_content(cache_dir, manifest, scope)
-    except ProvenanceRefusedError as exc:
+    except (ProvenanceRefusedError, MountedFileRefusedError) as exc:
         return ContentResult(False, str(exc))
+    except OSError as exc:
+        return ContentResult(False, f"I/O error during the content check: {exc}", transient=True)
 
 
 def _compare(exp: ProvenanceEntry, cur: TreeEntry) -> str | None:
@@ -635,6 +648,9 @@ def stat_digest_of(cache_dir: Path, scope: ProvenanceScope) -> str:
         raise ProvenanceRefusedError(message) from exc
     except MountedFileRefusedError as exc:
         raise ProvenanceRefusedError(_bound_message(exc)) from exc
+    except OSError as exc:
+        message = f"I/O error while walking the cache: {exc}"
+        raise ProvenanceTransientError(message) from exc
     return stat.hexdigest()
 
 

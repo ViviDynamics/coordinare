@@ -1094,6 +1094,9 @@ class EnvCacheConfig(BaseModel):
     # 234 review 4: how long a passing stat check is reused without another walk. Concurrent dispatches share one walk
     # in flight regardless. 0 disables the reuse.
     provenance_stat_fresh_s: float = Field(default=30.0, ge=0.0, le=3600.0)
+    # 234 review 5: a stat walk that has not finished in this long refuses the dispatches waiting on it, and the next
+    # dispatch starts a new walk. The walk thread cannot be killed, so this bounds the wait, not the work.
+    provenance_stat_walk_timeout_s: float = Field(default=300.0, ge=10.0, le=3600.0)
 
 
 class PerformerDigestPinConfig(BaseModel):
