@@ -316,7 +316,7 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     except ValueError as exc:  # cross-field validators may raise bare ValueError
         return [FieldError(key=None, code="validation", message=str(exc))]
     try:
-        validate_start_time(loaded.global_config)
+        validate_start_time(loaded.global_config, loaded)
     except ValueError as exc:
         # The daemon refuses to start with this config, so the save is refused with the same reason.
         key = "dashboard_oidc" if "dashboard_oidc" in str(exc) else "dashboard_auth_token"

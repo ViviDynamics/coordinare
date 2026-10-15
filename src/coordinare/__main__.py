@@ -1343,7 +1343,7 @@ async def _run(
 ) -> None:
     from coordinare.start_checks import validate_start_time
 
-    validate_start_time(config)
+    validate_start_time(config, coordinare_config)
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
