@@ -1,11 +1,11 @@
 # Live Config Editing in the Dashboard (spec 081)
 
-The dashboard **Config** view lets you edit three parts of the running coordinare
+The dashboard **Config** view lets you edit four parts of the running coordinare
 configuration without hand-editing YAML: **global tuning**, the spec-080 model
-catalogs (`endpoints` / `model_endpoints` / `modes`), and the spec-078
-self-hosted routing table. Personas and symphonies are **view-only** here — you
-can inspect them in the Config view, but their edits are made through the
-dedicated Personas and Symphonies UIs/endpoints, not from this view.
+catalogs (`endpoints` / `model_endpoints` / `modes`), the spec-078
+self-hosted routing table, and global persona instructions. The read only Personas
+page links to the matching editor in **Config > Agents**. Symphony configuration
+uses its existing dedicated form.
 
 ## What you can do
 
@@ -72,3 +72,30 @@ If the atomic write succeeds but the live hot-reload then fails, the prior
 in-memory configuration is **retained** (no partial swap) — the change is on disk
 and the save downgrades to `staged_restart` with an operator-readable message.
 Restart the daemon to pick up the persisted change.
+
+## Persona Markdown editing (180)
+
+Select a persona in Config > Agents, or follow an Edit in Settings link from
+Personas. The selection is in the URL. The rail names each persona and its stage;
+only the selected instructions are shown. Other persona drafts remain available
+when switching selections. Unsaved drafts are marked and leaving Config asks
+before discarding them.
+
+The source and preview appear together on wide screens. On smaller screens, use
+Write and Preview. Heading, Bold, List, Code and Link insert Markdown at the
+selection. Tab indents, Shift+Tab outdents, and Escape followed by Tab moves focus
+out of the source. Ctrl/Cmd+S opens the shared review step. Reset to default also
+requires review: it restores the built in instructions and discards that persona's
+draft. A conflict offers Reload and reapply, preserving other persona drafts too.
+
+The preview supports headings, paragraphs, lists, blockquotes, fenced code, code
+spans, emphasis, and HTTP, HTTPS and email links. Raw HTML is displayed as text;
+images and unsafe link protocols are never loaded. This deliberate Markdown
+subset needs no external library or network resource. Preview formatting never
+changes the saved source, including whitespace and untouched line endings.
+
+For editor reuse, `personas.js` exports `personaEditor`, `personaMount`,
+`personaSourceValue` and `personaSetSource`. Mount an owned root with
+`data-persona-context` and pass its save callback to `personaMount`. The caller
+owns field identity, API requests, review and persistence. The selector and
+`personaMarkdown` renderer are also used by the read only Personas page.

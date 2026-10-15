@@ -12,8 +12,10 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 )
 from fastapi.responses import JSONResponse, Response
 
-from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.config import PERSONA_MAX_LENGTH
+from coordinare.dashboard.guards import _version_headers, _version_refusal, conflict_refusal
 from coordinare.dashboard_oidc import SESSION_COOKIE
+from coordinare.services.config_write_service import ConcurrencyConflictError
 from coordinare.services.persona_history import (
         BEARER_ACTOR,
         LOCAL_ACTOR,
@@ -126,6 +128,23 @@ def _register_get_personas(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse(result, headers=_version_headers(config_path))
 
 
+def _persona_instructions(body: Any) -> tuple[str, JSONResponse | None]:
+    """Validate the exact source string before the persona write path is entered."""
+    if not isinstance(body, dict):
+        return "", JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+    if "instructions" not in body:
+        return "", JSONResponse({"error": "Missing required field: instructions"}, status_code=400)
+    instructions = body["instructions"]
+    if not isinstance(instructions, str):
+        return "", JSONResponse({"error": "instructions must be a string"}, status_code=400)
+    if len(instructions) > PERSONA_MAX_LENGTH:
+        return "", JSONResponse(
+            {"error": f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"},
+            status_code=400,
+        )
+    return instructions, None
+
+
 def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
         config_path = ctx.config_path
@@ -135,7 +154,6 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             """Update persona instructions for a role. Returns 404 for unknown roles, 400 for oversized instructions."""
             import yaml
 
-            from coordinare.config import PERSONA_MAX_LENGTH
             from coordinare.services.persona_service import (
                 VALID_ROLES,
                 save_persona,
@@ -149,24 +167,12 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
             except Exception:
                 return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-            if not isinstance(body, dict):
-                return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
-
-            if "instructions" not in body:
-                return JSONResponse({"error": "Missing required field: instructions"}, status_code=400)
-            raw_instructions = body["instructions"]
-            if not isinstance(raw_instructions, str):
-                return JSONResponse({"error": "instructions must be a string"}, status_code=400)
-            instructions: str = raw_instructions
-            if len(instructions) > PERSONA_MAX_LENGTH * 2 or len(instructions.strip()) > PERSONA_MAX_LENGTH:
-                return JSONResponse(
-                    {"error": f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"},
-                    status_code=400,
-                )
+            instructions, error = _persona_instructions(body)
+            if error is not None:
+                return error
 
             if config_path is None or not config_path.is_file():
                 return JSONResponse({"error": "Config file not found"}, status_code=500)
-
 
             refusal = _version_refusal(config_path, request.headers.get("If-Match"))
             if refusal is not None:
@@ -189,6 +195,8 @@ def _register_update_persona(app: FastAPI, ctx: DashboardContext) -> None:
                     {"error": f"Failed to read config: {safe_failure_reason(exc)}"},
                     status_code=500,
                 )
+            except ConcurrencyConflictError as exc:
+                return conflict_refusal(str(exc))
             except ValueError as exc:
                 # ValueError here means malformed config shape (role/length already
                 # validated above); treat as validation error per API contract. Logged
@@ -244,7 +252,6 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
             if config_path is None or not config_path.is_file():
                 return JSONResponse({"error": "Config file not found"}, status_code=500)
 
-
             refusal = _version_refusal(config_path, request.headers.get("If-Match"))
             if refusal is not None:
                 return refusal
@@ -260,6 +267,8 @@ def _register_reset_persona_endpoint(app: FastAPI, ctx: DashboardContext) -> Non
                     {"error": f"Failed to read config: {safe_failure_reason(exc)}"},
                     status_code=500,
                 )
+            except ConcurrencyConflictError as exc:
+                return conflict_refusal(str(exc))
             except ValueError as exc:
                 _log.warning("persona_reset_rejected", role=role, error=str(exc))
                 return JSONResponse({"error": str(exc)}, status_code=400)

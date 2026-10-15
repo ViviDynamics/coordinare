@@ -1,16 +1,13 @@
 """Persona service for per-role behavioral instructions (018-performer-personas)."""
 from __future__ import annotations
 
-import contextlib
-import os
-import stat
-import tempfile
 from typing import TYPE_CHECKING, Any
 
 import structlog
 import yaml
 
-from coordinare.config import PERSONA_MAX_LENGTH
+from coordinare.config import PERSONA_MAX_LENGTH, PersonaConfig
+from coordinare.services import config_write_service
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -790,7 +787,6 @@ def get_effective_instructions(role: str, personas: PersonasConfig) -> str:
     if role not in VALID_ROLES:
         msg = f"Unknown role: {role!r}"
         raise ValueError(msg)
-    from coordinare.config import PersonaConfig
     persona: PersonaConfig = getattr(personas, role)
     raw = persona.instructions or ""
     if raw.strip():
@@ -808,24 +804,20 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
     config file, non-mapping YAML root, non-mapping ``personas`` section,
     or non-mapping role section.  Raises OSError on file I/O failures.
 
-    Note: ``yaml.safe_load`` / ``yaml.safe_dump`` round-trips strip all YAML
-    comments from the file.  This is a known limitation — any hand-written
-    comments in ``config.yaml`` will be lost on the first ``save_persona``
-    call.  Users who rely on comments should keep a separate backup or manage
-    the file manually.
+    YAML comments are not retained by the shared writer. Instruction strings
+    are preserved exactly.
 
-    Concurrency: the read-modify-write is atomic at the filesystem level
-    (``os.replace``), but two overlapping calls can still lose each other's
-    edits.  This is acceptable for the single-process daemon; add an OS-level
-    lock (``fcntl.flock``) if multi-worker deployments become a requirement.
+    Dashboard callers check the config content hash before entering this
+    synchronous read and write path. Recheck that version after parsing, before
+    the write, as the shared Config editors do. The writer preserves file modes
+    and swaps a fully flushed temporary file into place.
     """
     if role not in VALID_ROLES:
         msg = f"Unknown role: {role!r}"
         raise ValueError(msg)
 
-    # Validate length on the effective (stripped) content, but persist the
-    # original string so intentional leading/trailing whitespace is preserved.
-    if len(instructions.strip()) > PERSONA_MAX_LENGTH:
+    # Match the load-time length limit without changing the original source.
+    if len(instructions) > PERSONA_MAX_LENGTH:
         msg = f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"
         raise ValueError(msg)
 
@@ -837,6 +829,7 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
         msg = "Config file does not exist"
         raise ValueError(msg)
 
+    base_hash = config_write_service.compute_content_hash(config_path)
     loaded = yaml.safe_load(config_path.read_text())
     if not isinstance(loaded, dict):
         msg = "Config file does not contain a YAML mapping"
@@ -856,25 +849,8 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
 
     role_section["instructions"] = instructions
 
-    # Atomic write: write to a temp file in the same directory then rename so a
-    # crash or disk-full error cannot leave a partially-written config file.
-    # Preserve the original file mode so the replace does not change permissions.
-    original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp",
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            yaml.safe_dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, original_mode)
-        os.replace(tmp_path, str(config_path))
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    config_write_service.guard_concurrency(config_path, base_hash)
+    config_write_service.atomic_write_yaml(config_path, raw)
 
 
 def reset_persona(role: str, config_path: Path) -> None:
