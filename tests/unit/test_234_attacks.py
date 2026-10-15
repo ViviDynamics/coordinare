@@ -13,20 +13,20 @@ import os
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from coordinare.graph.nodes import dispatch_performer
 from coordinare.models.env_cache import EnvCacheState
 from coordinare.services import env_provenance
 from coordinare.services.env_provenance import (
     ProvenanceCheck,
     ProvenanceManifest,
+    ProvenanceScope,
     build_payload,
     check_cache,
     freeze_cache,
 )
 
 ACTIVATE = "# daemon-rendered activate\nexport PATH=$DEVENV/bin:$PATH\n"
+DIGEST = "0" * 64
 
 
 def _verified_cache(tmp_path: Path) -> tuple[Path, tuple[Path, ...], ProvenanceManifest]:
@@ -40,7 +40,7 @@ def _verified_cache(tmp_path: Path) -> tuple[Path, tuple[Path, ...], ProvenanceM
     (cache / "debs" / "libicu.deb").write_bytes(b"real-deb")
     mounts = (root,)
     manifest = freeze_cache(
-        cache, symphony="sym", cache_key="k", activate_sh=ACTIVATE, performer_mounts=mounts,
+        cache, symphony="sym", cache_key="k", activate_sh=ACTIVATE, scope=ProvenanceScope(mounts),
     )
     return cache, mounts, manifest
 
@@ -56,31 +56,31 @@ def test_file_changed_after_verification_refuses_dispatch(tmp_path: Path) -> Non
     cache, mounts, manifest = _verified_cache(tmp_path)
     original = (cache / "bin" / "ruby").read_bytes()
     _rewrite_keeping_stat(cache / "bin" / "ruby", original.replace(b"echo", b"ECHO"))
-    fast = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    fast = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert fast.ok is False
     assert "bin/ruby" in (fast.reason or "")
-    full = check_cache(cache, manifest, full=True, performer_mounts=mounts)
+    full = check_cache(cache, manifest, full=True, scope=ProvenanceScope(mounts))
     assert full.ok is False
 
 
 def test_planted_deb_not_in_manifest_is_refused_and_never_listed(tmp_path: Path) -> None:
     cache, mounts, manifest = _verified_cache(tmp_path)
     (cache / "debs" / "evil.deb").write_bytes(b"planted-fake-ruby")
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert check.ok is False
     assert "debs/evil.deb" in (check.reason or "")
     # The payload a consumer receives lists only the debs the manifest froze.
-    payload = build_payload(manifest, cache_path="/devenv/sym-abc")
+    payload = build_payload(manifest, cache_path="/devenv/sym-abc", digest=DIGEST)
     assert set(payload["debs"]) == {"debs/libicu.deb"}
 
 
 def test_swapped_activate_sh_is_refused_and_the_consumer_gets_the_rendered_text(tmp_path: Path) -> None:
     cache, mounts, manifest = _verified_cache(tmp_path)
     (cache / "activate.sh").write_text("echo PWNED > /tmp/x\n")
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert check.ok is False
     assert "activate.sh" in (check.reason or "")
-    payload = build_payload(manifest, cache_path="/devenv/sym-abc")
+    payload = build_payload(manifest, cache_path="/devenv/sym-abc", digest=DIGEST)
     assert payload["activate_sh"] == ACTIVATE
 
 
@@ -88,17 +88,17 @@ def test_services_start_added_to_the_cache_is_refused_and_not_handed_out(tmp_pat
     cache, mounts, manifest = _verified_cache(tmp_path)
     (cache / "services").mkdir()
     (cache / "services" / "services-start.sh").write_text("touch /tmp/pwned\n")
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert check.ok is False
     assert "services/services-start.sh" in (check.reason or "")
-    payload = build_payload(manifest, cache_path="/devenv/sym-abc")
+    payload = build_payload(manifest, cache_path="/devenv/sym-abc", digest=DIGEST)
     assert payload["services_start_sh"] is None
 
 
 def test_link_planted_after_verification_is_refused(tmp_path: Path) -> None:
     cache, mounts, manifest = _verified_cache(tmp_path)
     os.symlink("/bin/sh", cache / "bin" / "ruby-shim")
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert check.ok is False
     assert "bin/ruby-shim" in (check.reason or "")
 
@@ -107,19 +107,19 @@ def test_link_retargeted_after_verification_is_refused(tmp_path: Path) -> None:
     cache, mounts, _manifest = _verified_cache(tmp_path)
     os.symlink("ruby", cache / "bin" / "rb")
     manifest = freeze_cache(
-        cache, symphony="sym", cache_key="k", activate_sh=ACTIVATE, performer_mounts=mounts,
+        cache, symphony="sym", cache_key="k", activate_sh=ACTIVATE, scope=ProvenanceScope(mounts),
     )
     os.unlink(cache / "bin" / "rb")
     os.symlink("/bin/sh", cache / "bin" / "rb")
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts))
     assert check.ok is False
     assert "bin/rb" in (check.reason or "")
 
 
-def test_cache_bound_is_enforced_on_every_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cache_bound_is_enforced_on_every_check(tmp_path: Path) -> None:
     cache, mounts, manifest = _verified_cache(tmp_path)
-    monkeypatch.setattr(env_provenance, "PROVENANCE_MAX_ENTRIES", 2)
-    check = check_cache(cache, manifest, full=False, performer_mounts=mounts)
+    tight = env_provenance.ProvenanceLimits(max_entries=2, max_bytes=env_provenance.DEFAULT_LIMITS.max_bytes)
+    check = check_cache(cache, manifest, full=False, scope=ProvenanceScope(mounts, tight))
     assert check.ok is False
     assert "entries" in (check.reason or "")
 
@@ -133,8 +133,13 @@ class _ProvenanceService:
         self._mounts = mounts
         self.marked: list[str] = []
 
-    async def check_provenance(self, symphony: str, state: EnvCacheState) -> ProvenanceCheck:
-        return check_cache(self._cache, self._manifest, full=False, performer_mounts=self._mounts)
+    async def resolve_provenance(
+        self, symphony: str, state: EnvCacheState, *, container_path: str,
+    ) -> tuple[ProvenanceCheck, dict[str, Any] | None]:
+        check = check_cache(self._cache, self._manifest, full=False, scope=ProvenanceScope(self._mounts))
+        if not check.ok:
+            return check, None
+        return check, build_payload(self._manifest, cache_path=container_path, digest=DIGEST)
 
     def mark_runtime_health_failed(self, symphony: str, state: dict[str, Any]) -> None:
         self.marked.append(symphony)
@@ -160,10 +165,10 @@ def test_dispatch_gate_refuses_a_drifted_cache_and_schedules_a_rebootstrap(tmp_p
     released: list[bool] = []
     state: dict[str, Any] = {"env_cache_service": service}
 
-    terminal = asyncio.run(
+    terminal, _payload = asyncio.run(
         dispatch_performer._env_provenance_gate(
             state, "card-1", "qa", "sym", _consumer_state(cache), False,
-            lambda: released.append(True),
+            lambda: released.append(True), container_path="/devenv/sym-abc",
         ),
     )
 
@@ -178,10 +183,10 @@ def test_dispatch_gate_lets_a_verified_cache_through(tmp_path: Path) -> None:
     released: list[bool] = []
     state: dict[str, Any] = {"env_cache_service": service}
 
-    terminal = asyncio.run(
+    terminal, _payload = asyncio.run(
         dispatch_performer._env_provenance_gate(
             state, "card-1", "qa", "sym", _consumer_state(cache), False,
-            lambda: released.append(True),
+            lambda: released.append(True), container_path="/devenv/sym-abc",
         ),
     )
 
@@ -193,10 +198,10 @@ def test_dispatch_gate_lets_a_verified_cache_through(tmp_path: Path) -> None:
 def test_dispatch_gate_is_a_pass_through_for_the_bootstrap(tmp_path: Path) -> None:
     cache, _mounts, _manifest = _verified_cache(tmp_path)
     released: list[bool] = []
-    terminal = asyncio.run(
+    terminal, _payload = asyncio.run(
         dispatch_performer._env_provenance_gate(
             {}, "card-1", "env_bootstrap", "sym", _consumer_state(cache), True,
-            lambda: released.append(True),
+            lambda: released.append(True), container_path="",
         ),
     )
     assert terminal is None

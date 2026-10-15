@@ -37,7 +37,7 @@ def _payload(cache: Path, *, debs: dict[str, str] | None = None, start: str | No
 
 
 def test_materialise_writes_the_frozen_scripts_and_the_listed_deb(tmp_path: Path) -> None:
-    cache = tmp_path / "cache"
+    cache = tmp_path / "sym-abc"
     (cache / "debs").mkdir(parents=True)
     (cache / "debs" / "libicu.deb").write_bytes(GOOD_DEB)
     root = tmp_path / "provenance"
@@ -51,7 +51,7 @@ def test_materialise_writes_the_frozen_scripts_and_the_listed_deb(tmp_path: Path
 
 
 def test_an_unlisted_deb_in_the_cache_is_never_copied(tmp_path: Path) -> None:
-    cache = tmp_path / "cache"
+    cache = tmp_path / "sym-abc"
     (cache / "debs").mkdir(parents=True)
     (cache / "debs" / "libicu.deb").write_bytes(GOOD_DEB)
     (cache / "debs" / "evil.deb").write_bytes(b"planted")
@@ -63,7 +63,7 @@ def test_an_unlisted_deb_in_the_cache_is_never_copied(tmp_path: Path) -> None:
 
 
 def test_a_deb_whose_bytes_changed_refuses_and_writes_nothing(tmp_path: Path) -> None:
-    cache = tmp_path / "cache"
+    cache = tmp_path / "sym-abc"
     (cache / "debs").mkdir(parents=True)
     (cache / "debs" / "libicu.deb").write_bytes(b"swapped-after-freeze")
     root = tmp_path / "provenance"

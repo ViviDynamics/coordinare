@@ -523,7 +523,15 @@ class HTTPPerformerService:
 
         An ephemeral container passes the version it read in ``wait_ready``. A persistent one is asked now.
         """
+        if payload.role == "env_bootstrap":
+            return  # the cache writer mounts its own cache and carries no frozen payload
         if payload.env_provenance is None:
+            if payload.env_cache_path:
+                # 234 review: a cache mount with no frozen payload is refused whatever the image reports. The
+                # performer would otherwise run the cache's own scripts.
+                message = "env cache without provenance (#234): refusing to run the cache's own scripts"
+                logger.error("http_performer.env_provenance_refused", performer_id=self._config.id, reason=message)
+                raise ValueError(message)
             return
         version: int | None = ready_status.env_provenance_version if ready_status is not None else None
         if version is None:

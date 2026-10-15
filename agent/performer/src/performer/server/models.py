@@ -64,7 +64,9 @@ class EnvProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,127}$")
+    # 234 review: the slug is derived from the cache directory name by provenance_slug (the daemon has the same
+    # function). It may start with an underscore, and it is bounded to 120 characters.
+    slug: str = Field(pattern=r"^[a-z0-9_][a-z0-9_-]{0,119}$")
     cache_path: str
     activate_sh: str = Field(max_length=_SCRIPT_MAX_CHARS)
     services_start_sh: str | None = Field(default=None, max_length=_SCRIPT_MAX_CHARS)

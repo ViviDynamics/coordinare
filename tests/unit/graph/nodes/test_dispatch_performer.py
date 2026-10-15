@@ -1427,7 +1427,7 @@ def _provenance_gate_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     own tests (test_234_attacks, test_234_honest_path), so it is held in its pass-through here."""
     monkeypatch.setattr(
         "coordinare.graph.nodes.dispatch_performer._env_provenance_gate",
-        AsyncMock(return_value=None),
+        AsyncMock(return_value=(None, None)),
     )
 
 

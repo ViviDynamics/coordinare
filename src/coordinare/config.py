@@ -1087,6 +1087,11 @@ class EnvCacheConfig(BaseModel):
     # verify.sh). Flip to True to re-enable coordinare-managed services.
     coordinare_manages_services: bool = False
 
+    # 234: the bounds on one frozen env cache. A cache over either is refused at freeze (or at a later check),
+    # with a reason that names the knob. The defaults suit a real toolchain (see services/env_provenance.py).
+    provenance_max_entries: int = Field(default=1_000_000, ge=1_000, le=10_000_000)
+    provenance_max_bytes: int = Field(default=16 * 1024 * 1024 * 1024, ge=1024 * 1024, le=256 * 1024 ** 3)
+
 
 class PerformerDigestPinConfig(BaseModel):
     """Performer image digest pinning at dispatch time (#526).

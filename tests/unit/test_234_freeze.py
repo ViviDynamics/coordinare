@@ -15,10 +15,13 @@ import pytest
 from coordinare.services import env_provenance
 from coordinare.services.env_provenance import (
     ProvenanceRefusedError,
+    ProvenanceScope,
     freeze_cache,
     load_manifest,
     save_manifest,
 )
+
+GIB = 1024 * 1024 * 1024
 
 ACTIVATE = "# daemon-rendered activate\nexport PATH=$DEVENV/bin:$PATH\n"
 
@@ -42,7 +45,7 @@ def _freeze(cache: Path, mounts: tuple[Path, ...]) -> env_provenance.ProvenanceM
         symphony="sym",
         cache_key="abc123",
         activate_sh=ACTIVATE,
-        performer_mounts=mounts,
+        scope=ProvenanceScope(mounts),
     )
 
 
@@ -115,18 +118,22 @@ def test_fifo_refuses_the_freeze(tmp_path: Path) -> None:
         _freeze(cache, mounts)
 
 
-def test_entry_bound_is_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_entry_bound_is_enforced(tmp_path: Path) -> None:
     cache, mounts = _cache(tmp_path)
-    monkeypatch.setattr(env_provenance, "PROVENANCE_MAX_ENTRIES", 3)
     with pytest.raises(ProvenanceRefusedError, match="entries"):
-        _freeze(cache, mounts)
+        freeze_cache(
+            cache, symphony="s", cache_key="k", activate_sh=ACTIVATE,
+            scope=ProvenanceScope(mounts, env_provenance.ProvenanceLimits(max_entries=3, max_bytes=GIB)),
+        )
 
 
-def test_byte_bound_is_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_byte_bound_is_enforced(tmp_path: Path) -> None:
     cache, mounts = _cache(tmp_path)
-    monkeypatch.setattr(env_provenance, "PROVENANCE_MAX_BYTES", 4)
     with pytest.raises(ProvenanceRefusedError, match="bytes"):
-        _freeze(cache, mounts)
+        freeze_cache(
+            cache, symphony="s", cache_key="k", activate_sh=ACTIVATE,
+            scope=ProvenanceScope(mounts, env_provenance.ProvenanceLimits(max_entries=1000, max_bytes=4)),
+        )
 
 
 def test_oversized_script_refuses_the_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

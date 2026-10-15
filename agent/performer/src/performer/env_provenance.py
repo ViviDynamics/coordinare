@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import stat
 from pathlib import Path
@@ -45,6 +46,26 @@ class ProvenanceMaterialiseError(Exception):
     """A frozen step could not be materialised. The job is refused with this reason."""
 
 
+PROVENANCE_SLUG_MAX = 120
+PROVENANCE_SLUG_HASH_CHARS = 8
+_SLUG_VALID = re.compile(r"[a-z0-9_][a-z0-9_-]*")
+_SLUG_INVALID = re.compile(r"[^a-z0-9_-]")
+
+
+def provenance_slug(cache_dir_name: str) -> str:
+    """The directory name for a cache on the performer side (234). Identical to the daemon's ``provenance_slug``.
+
+    A name that fits the pattern and the bound is kept. Any other name is cleaned, truncated, and suffixed with a
+    short hash of the original, so every input yields a valid, bounded slug. The parity test pins both sides.
+    """
+    if len(cache_dir_name) <= PROVENANCE_SLUG_MAX and _SLUG_VALID.fullmatch(cache_dir_name):
+        return cache_dir_name
+    cleaned = _SLUG_INVALID.sub("-", cache_dir_name.lower()).lstrip("-") or "symphony"
+    head = cleaned[: PROVENANCE_SLUG_MAX - PROVENANCE_SLUG_HASH_CHARS - 1]
+    digest = hashlib.sha256(cache_dir_name.encode()).hexdigest()[:PROVENANCE_SLUG_HASH_CHARS]
+    return f"{head}-{digest}"
+
+
 def frozen_scripts_dir(env_cache_path: str) -> Path:
     """Where this job reads its activate.sh and service scripts from (234).
 
@@ -53,7 +74,7 @@ def frozen_scripts_dir(env_cache_path: str) -> Path:
     """
     root = os.environ.get(PROVENANCE_ROOT_ENV)
     if root:
-        return Path(root) / Path(env_cache_path).name
+        return Path(root) / provenance_slug(Path(env_cache_path).name)
     return Path(env_cache_path)
 
 
@@ -99,6 +120,10 @@ def materialise(provenance: EnvProvenance, *, root: Path) -> Path:
     Every listed deb is read and verified before anything is written, so a single changed deb refuses the whole
     job and leaves no partial copy. A previous copy for the same slug is removed first.
     """
+    expected = provenance_slug(Path(provenance.cache_path).name)
+    if provenance.slug != expected:
+        message = f"slug {provenance.slug!r} does not match the cache path (expected {expected!r})"
+        raise ProvenanceMaterialiseError(message)
     verified = {rel: _read_listed_deb(provenance.cache_path, rel, digest) for rel, digest in provenance.debs.items()}
     dest = root / provenance.slug
     if dest.is_symlink() or dest.is_file():
@@ -139,4 +164,5 @@ __all__ = [
     "ProvenanceMaterialiseError",
     "frozen_scripts_dir",
     "materialise",
+    "provenance_slug",
 ]

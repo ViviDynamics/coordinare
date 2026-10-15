@@ -2357,15 +2357,18 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
         )
         if terminal is not None:
             return _extra_volumes, terminal
-        terminal = await _env_provenance_gate(
-            state, card_id, performer_stage, _symphony_name_for_ec,
+        terminal = await _env_readiness_gate(
+            state, service, card_id, performer_stage, _symphony_name_for_ec,
             _ec_state_for_sym, _is_bootstrap_dispatch, _release_slot_on_error,
         )
         if terminal is not None:
             return _extra_volumes, terminal
-        terminal = await _env_readiness_gate(
-            state, service, card_id, performer_stage, _symphony_name_for_ec,
+        # 234 review: the frozen payload is taken in the same step as the verification, immediately before the
+        # mount is resolved, so the mount and the steps come from one verified state.
+        terminal, provenance = await _env_provenance_gate(
+            state, card_id, performer_stage, _symphony_name_for_ec,
             _ec_state_for_sym, _is_bootstrap_dispatch, _release_slot_on_error,
+            container_path=_provenance_container_path(service, _ec_state_for_sym),
         )
         if terminal is not None:
             return _extra_volumes, terminal
@@ -2373,6 +2376,10 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
             state, service, card_id, performer_stage, card_context,
             _symphony_name_for_ec, _env_cache_for_ec, _is_bootstrap_dispatch,
         )
+        # 234: the frozen steps travel with the mount they describe. A persistent performer mounts nothing and
+        # carries no payload.
+        if provenance is not None and card_context.get("env_cache_path"):
+            card_context["env_provenance"] = provenance
         await _inject_test_env_vars(
             state, card_context, card_id, _symphony_name_for_ec,
             _ec_state_for_sym, _is_bootstrap_dispatch,
@@ -2437,22 +2444,26 @@ async def _env_provenance_gate(
     _ec_state_for_sym: Any,
     _is_bootstrap_dispatch: bool,
     _release_slot_on_error: Callable[[], None],
-) -> CoordinareState | None:
+    container_path: str,
+) -> tuple[CoordinareState | None, dict[str, Any] | None]:
     """234: a consumer dispatch that would mount the cache runs only against the frozen, verified copy.
 
-    The cache is checked against the daemon-owned manifest before anything is mounted. A drifted, altered,
-    missing or unfrozen cache refuses dispatch, releases the slot, logs and records an activity entry, and
-    schedules a re-bootstrap through the existing forced-regeneration seam. The bootstrap is never gated.
+    The cache is checked against the daemon-owned manifest, and the consumer payload is taken from that same
+    manifest (``resolve_provenance``). Returns ``(terminal, payload)``. A drifted, altered, missing or unfrozen
+    cache refuses dispatch (``terminal`` is the state), releases the slot, logs and records an activity entry,
+    and schedules a re-bootstrap through the existing forced-regeneration seam. The bootstrap is never gated.
     """
     if _is_bootstrap_dispatch or not isinstance(_ec_state_for_sym, EnvCacheState):
-        return None
+        return None, None
     service = state.get("env_cache_service")
     if service is None:
         reason = "no env-cache service to verify the frozen provenance; dispatch refused"
     else:
-        check = await service.check_provenance(_symphony_name_for_ec, _ec_state_for_sym)
-        if check.ok:
-            return None
+        check, payload = await service.resolve_provenance(
+            _symphony_name_for_ec, _ec_state_for_sym, container_path=container_path,
+        )
+        if check.ok and payload is not None:
+            return None, payload
         reason = check.reason or "frozen provenance check failed"
     logger.error(
         "dispatch_performer.env_provenance_refused",
@@ -2472,7 +2483,15 @@ async def _env_provenance_gate(
     _release_slot_on_error()
     if service is not None:
         service.mark_runtime_health_failed(_symphony_name_for_ec, state)
-    return state
+    return state, None
+
+
+def _provenance_container_path(service: Any, ec_state: Any) -> str:
+    """The in-container path the consumer mounts this cache at (234). Mirrors ``_resolve_env_volumes``."""
+    devenv_root = DEFAULT_DEVENV_ROOT
+    if isinstance(service, HTTPPerformerService):
+        devenv_root = service.devenv_root
+    return f"{devenv_root}/{ec_state.sanitised_name}"
 
 
 async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:
@@ -2576,27 +2595,7 @@ async def _resolve_env_volumes(state: CoordinareState, service: Any, card_id: st
             _ec_vol, _ec_container_path = _ec_result
             _extra_volumes = [_ec_vol]
             card_context["env_cache_path"] = _ec_container_path
-            if not _is_bootstrap_dispatch:
-                # 234: the consumer gets the frozen steps, never the cache's own scripts. The gate above
-                # verified the cache for this dispatch, which loaded the manifest.
-                card_context["env_provenance"] = _env_provenance_for(
-                    state, _symphony_name_for_ec, _env_cache_for_ec, _ec_container_path,
-                )
     return _extra_volumes
-
-
-def _env_provenance_for(
-    state: CoordinareState, symphony_name: Any, env_cache: Any, container_path: str,
-) -> dict[str, Any] | None:
-    """234: the frozen payload for a consumer, or None (the performer then refuses the job)."""
-    service = state.get("env_cache_service")
-    ec_state = env_cache.get(symphony_name) if env_cache else None
-    if service is None or not isinstance(ec_state, EnvCacheState):
-        return None
-    payload: dict[str, Any] | None = service.provenance_payload(
-        symphony_name, ec_state, container_path=container_path,
-    )
-    return payload
 
 
 async def _inject_test_env_vars(state: CoordinareState, card_context: dict[str, Any], card_id: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool) -> None:

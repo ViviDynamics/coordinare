@@ -66,13 +66,14 @@ def test_freeze_then_check_then_dispatch_passes(tmp_path: Path) -> None:
     assert check.ok, check.reason
 
     released: list[bool] = []
-    terminal = asyncio.run(
+    terminal, payload = asyncio.run(
         dispatch_performer._env_provenance_gate(
             {"env_cache_service": service}, "card-1", "qa", "sym", state, False,
-            lambda: released.append(True),
+            lambda: released.append(True), container_path="/devenv/sym-abc",
         ),
     )
     assert terminal is None
+    assert payload is not None and payload["slug"] == "sym-abc"
     assert released == []
 
 
@@ -81,7 +82,8 @@ def test_the_payload_carries_the_rendered_steps_and_the_frozen_debs(tmp_path: Pa
     service = _service(tmp_path)
     asyncio.run(service.freeze_provenance("sym", _state_map(state)))
 
-    payload = service.provenance_payload("sym", state, container_path="/devenv/sym-abc")
+    check, payload = asyncio.run(service.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))
+    assert check.ok
     assert payload is not None
     assert payload["slug"] == "sym-abc"
     assert payload["cache_path"] == "/devenv/sym-abc"
@@ -99,7 +101,8 @@ def test_a_restart_rereads_the_manifest_by_digest_and_still_passes(tmp_path: Pat
     restarted = _service(tmp_path)
     check = asyncio.run(restarted.check_provenance("sym", state))
     assert check.ok, check.reason
-    assert restarted.provenance_payload("sym", state, container_path="/devenv/sym-abc") is not None
+    _check, payload = asyncio.run(restarted.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))
+    assert payload is not None
 
 
 def test_a_tampered_manifest_file_is_not_trusted_after_restart(tmp_path: Path) -> None:
@@ -111,7 +114,8 @@ def test_a_tampered_manifest_file_is_not_trusted_after_restart(tmp_path: Path) -
     restarted = _service(tmp_path)
     check = asyncio.run(restarted.check_provenance("sym", state))
     assert check.ok is False
-    assert restarted.provenance_payload("sym", state, container_path="/devenv/sym-abc") is None
+    _check, payload = asyncio.run(restarted.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))
+    assert payload is None
 
 
 def test_a_cache_without_frozen_provenance_is_refused(tmp_path: Path) -> None:

@@ -26,7 +26,12 @@ import pytest
 from performer.env_provenance import materialise
 from performer.server.models import EnvProvenance
 
-from coordinare.services.env_provenance import build_payload, check_cache, freeze_cache
+from coordinare.services.env_provenance import (
+    ProvenanceScope,
+    build_payload,
+    check_cache,
+    freeze_cache,
+)
 
 pytestmark = pytest.mark.docker_image
 
@@ -56,7 +61,7 @@ def _frozen_cache(tmp_path: Path) -> tuple[Path, Path, object]:
     (cache / "bin" / "ruby").chmod(0o755)
     (cache / "activate.sh").write_text(FROZEN_ACTIVATE)
     manifest = freeze_cache(
-        cache, symphony="sym-234", cache_key="k", activate_sh=FROZEN_ACTIVATE, performer_mounts=(root,),
+        cache, symphony="sym-234", cache_key="k", activate_sh=FROZEN_ACTIVATE, scope=ProvenanceScope((root,)),
     )
     return cache, root, manifest
 
@@ -70,12 +75,12 @@ def test_a_post_verification_swap_is_not_run_by_a_consumer_shell(tmp_path: Path)
     (cache / "services" / "services-start.sh").write_text(PLANTED_SERVICES)
 
     # The daemon refuses the cache a consumer would mount.
-    check = check_cache(cache, manifest, full=True, performer_mounts=(root,))
+    check = check_cache(cache, manifest, full=True, scope=ProvenanceScope((root,)))
     assert check.ok is False
 
     # Even so, the frozen steps the daemon hands over are the verified ones. Materialise them the way the
     # performer does, then run a consumer shell in the real image with the cache mounted read-only.
-    payload = build_payload(manifest, cache_path=CACHE_PATH)
+    payload = build_payload(manifest, cache_path=CACHE_PATH, digest="0" * 64)
     provenance = tmp_path / "provenance"
     materialise(EnvProvenance.model_validate({**payload, "cache_path": str(cache)}), root=provenance)
 
