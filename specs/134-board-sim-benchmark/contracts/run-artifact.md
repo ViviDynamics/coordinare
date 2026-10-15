@@ -77,3 +77,25 @@ below are additive and default to `None` or `False`, so every earlier document s
   or card with a numeric cost and no marker is a retired flat-rate figure. It loads as
   unknown with the reason `run recorded before per-model pricing (spec 206); re-run to
   price it`, and its number is dropped. The 161 evidence loads this way.
+
+## Spec 242: exact pricing from transcripts (additive fields)
+
+A real-performer dispatch is priced exactly from its transcript usage, each token kind at its own
+rate. The source is the daemon's transcript ledger (spec 134), keyed by the dispatch's session id,
+and read from the bench's own transcript root under the run directory (`transcripts.dir` overrides
+it). `cost_basis` is `exact_per_kind_counts` for these dispatches. A stub dispatch makes no model
+calls, so it reports zero tokens of every kind and its `cost_basis` is `no_model_calls` at $0.
+
+- `RunArtifact.cost_scope`: `"performers only"`. The cost figures cover performer spend. The
+  conductor's own model calls are excluded, so a run's cost is not its total model spend.
+- A dispatch is unknown, with the reason, when its usage cannot be the whole of its spend:
+  - `transcripts disabled: ...` when `transcripts.enabled` is false, or when the transcripts root
+    overlaps a performer mount or a protected directory (the run or config directory);
+  - `performer services were injected without a bench transcript collector`;
+  - `transcript not fully drained` when the tail of the run could not be pulled before its
+    container stopped (timeout, error or lost records). The usage then read is never exact;
+  - `message usage sums to N tokens, the run total to M` when the message and run totals of a
+    run disagree. The larger total is used, and the dispatch is unknown rather than exact;
+  - `token split by kind not reported` for a dispatch with no transcript usage at all.
+- Retention: expired files under the bench transcript root are pruned at the start of a run,
+  on the daemon's `transcripts.retention_days`.

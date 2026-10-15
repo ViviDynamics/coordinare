@@ -45,6 +45,7 @@ import structlog
 from coordinare.services.run_transcript import (
     _NOFOLLOW,
     _NONBLOCK,
+    RootGuard,
     _case_insensitive,
     _write_all,
     comparable_part,
@@ -84,6 +85,17 @@ def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
         hosts.extend(Path(volume.host_path).expanduser() for volume in endpoint.volumes)
     hosts.append(Path(config.env_cache_root).expanduser())
     return hosts
+
+
+def transcript_root_guard(config: ProjectConfiguration | None, *, protected: Iterable[Path]) -> RootGuard:
+    """The guard a transcripts root is checked against (129, 208, 242).
+
+    Every host directory a performer can see, plus the directories the owner must not be
+    swallowed by. The daemon and the bench both build their guard here, so they cannot
+    disagree about what a performer can reach.
+    """
+    mounts = tuple(performer_mount_hosts(config)) if config is not None else ()
+    return RootGuard(performer_mounts=mounts, protected=tuple(protected))
 
 
 def loaded_performer_mounts(global_config: ProjectConfiguration | None) -> tuple[Path, ...]:

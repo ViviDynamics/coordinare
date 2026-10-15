@@ -31,11 +31,11 @@ async def test_stub_run_scores_pass_and_score_json_round_trips(tmp_path: Path) -
     assert verdict.category == "PASS", verdict.deterministic_detail
     assert score.components.correctness_rate == 1.0
     assert score.components.harness_failure_rate == 0.0
-    # Spec 206: stub runs report no tokens, so their cost is unknown. The cost term carries
-    # weight, so the scalar is withheld rather than scored as free.
-    assert score.scalar is None
-    assert score.cost_component_missing is True
-    assert score.components.cost_unknown_reason
+    # Spec 242: a stub makes no model calls, so it prices at zero and the scalar is computed
+    # from a known cost rather than withheld.
+    assert score.scalar is not None
+    assert score.cost_component_missing is False
+    assert score.components.cost_usd == 0.0
 
 
 async def test_two_repeat_noise_session_aggregates(tmp_path: Path) -> None:
