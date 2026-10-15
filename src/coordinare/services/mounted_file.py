@@ -37,7 +37,7 @@ import hashlib
 import os
 import stat
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -53,7 +53,7 @@ from coordinare.services.run_transcript import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Generator, Iterable, Iterator, Sequence
     from typing import BinaryIO
 
     from coordinare.config import ProjectConfiguration
@@ -734,65 +734,78 @@ def walk_mounted_tree(
     max_entries: int,
     max_bytes: int,
 ) -> list[TreeEntry]:
-    """Every entry below *path*, anchored like the reads above (234).
+    """Every entry below *path*, as a list. Prefer :func:`iter_mounted_tree` where the entries can be streamed."""
+    return list(iter_mounted_tree(path, mounts=mounts, hash_files=hash_files, max_entries=max_entries, max_bytes=max_bytes))
+
+
+def iter_mounted_tree(
+    path: Path,
+    *,
+    mounts: Iterable[Path],
+    hash_files: bool,
+    max_entries: int,
+    max_bytes: int,
+) -> Generator[TreeEntry, None, None]:
+    """Every entry below *path*, streamed in walk order (234 review 3: O(depth) memory, not O(entries)).
 
     Each entry is stat'ed with ``follow_symlinks=False`` relative to its directory descriptor, and a link is read
     with ``readlink``. A directory is opened with ``O_NOFOLLOW``. A regular file is opened the same way and is
     refused when it is hard linked or when its identity changes between the stat and the open. A FIFO, socket or
     device is refused. With *hash_files* the bytes are streamed into sha256; without it only ``stat`` is taken.
 
-    The walk refuses, with a :class:`MountedFileRefusedError`, when it reaches *max_entries* entries or
-    *max_bytes* of file data. A bound is a refusal, never a truncated walk.
+    The walk refuses, with a :class:`TreeBoundError`, when it reaches *max_entries* entries or *max_bytes* of file
+    data. A bound is a refusal, never a truncated walk. The order is deterministic: a directory's entry, then its
+    children in sorted name order, depth first.
     """
     walk, resolved = _classify(path, tuple(mounts))
     fd = os.open(resolved, os.O_RDONLY | os.O_DIRECTORY) if walk is None else _open_chain(walk, create=False)
     tree = _TreeWalk(hash_files=hash_files, max_entries=max_entries, max_bytes=max_bytes)
     try:
-        tree.walk(fd, "")
+        yield from tree.walk(fd, "")
     finally:
         os.close(fd)
-    return tree.entries
 
 
 @dataclass
 class _TreeWalk:
-    """The state of one anchored walk: the bounds, the entries collected so far, and the bytes counted."""
+    """The state of one anchored walk: the bounds, the count and the bytes so far."""
 
     hash_files: bool
     max_entries: int
     max_bytes: int
-    entries: list[TreeEntry] = field(default_factory=list)
+    count: int = 0
     total: int = 0
 
-    def walk(self, dir_fd: int, prefix: str) -> None:
+    def walk(self, dir_fd: int, prefix: str) -> Iterator[TreeEntry]:
         with os.scandir(dir_fd) as scan:
             names = sorted(entry.name for entry in scan)
         for name in names:
-            if len(self.entries) >= self.max_entries:
+            if self.count >= self.max_entries:
                 message = f"has more than {self.max_entries} entries"
                 raise TreeBoundError(message, "entries")
-            self._entry(dir_fd, name, f"{prefix}{name}")
+            self.count += 1
+            yield from self._entry(dir_fd, name, f"{prefix}{name}")
 
-    def _entry(self, dir_fd: int, name: str, rel: str) -> None:
+    def _entry(self, dir_fd: int, name: str, rel: str) -> Iterator[TreeEntry]:
         info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
         mode = stat.S_IMODE(info.st_mode)
         if stat.S_ISLNK(info.st_mode):
             target = os.readlink(name, dir_fd=dir_fd)
-            self.entries.append(TreeEntry(rel, "link", mode, len(target), info.st_ino, info.st_ctime_ns, None, target))
+            yield TreeEntry(rel, "link", mode, len(target), info.st_ino, info.st_ctime_ns, None, target)
         elif stat.S_ISDIR(info.st_mode):
-            self.entries.append(TreeEntry(rel, "dir", mode, 0, info.st_ino, info.st_ctime_ns))
+            yield TreeEntry(rel, "dir", mode, 0, info.st_ino, info.st_ctime_ns)
             child = _open_dir(name, dir_fd)
             try:
-                self.walk(child, f"{rel}/")
+                yield from self.walk(child, f"{rel}/")
             finally:
                 os.close(child)
         elif stat.S_ISREG(info.st_mode):
-            self._file(dir_fd, name, rel, info, mode)
+            yield self._file(dir_fd, name, rel, info, mode)
         else:
             message = f"{rel} is not a regular file, directory or link"
             raise MountedFileRefusedError(message)
 
-    def _file(self, dir_fd: int, name: str, rel: str, info: os.stat_result, mode: int) -> None:
+    def _file(self, dir_fd: int, name: str, rel: str, info: os.stat_result, mode: int) -> TreeEntry:
         if info.st_nlink != 1:
             message = f"{rel} is hard linked"
             raise MountedFileRefusedError(message)
@@ -801,7 +814,7 @@ class _TreeWalk:
             message = f"holds more than {self.max_bytes} bytes"
             raise TreeBoundError(message, "bytes")
         digest = _hash_leaf(dir_fd, name, info, rel, self.max_bytes) if self.hash_files else None
-        self.entries.append(TreeEntry(rel, "file", mode, info.st_size, info.st_ino, info.st_ctime_ns, digest))
+        return TreeEntry(rel, "file", mode, info.st_size, info.st_ino, info.st_ctime_ns, digest)
 
 
 def _hash_leaf(dir_fd: int, name: str, info: os.stat_result, rel: str, max_bytes: int) -> str:

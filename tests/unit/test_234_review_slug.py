@@ -17,7 +17,7 @@ from performer.server.models import EnvProvenance
 from pydantic import ValidationError
 
 from coordinare.services.env_cache import sanitise_symphony_name
-from coordinare.services.env_provenance import ProvenanceManifest, build_payload, provenance_slug
+from coordinare.services.env_provenance import ProvenanceMeta, build_payload, provenance_slug
 
 DIGEST = "0" * 64
 NAMES = [
@@ -74,13 +74,15 @@ def test_materialise_refuses_a_slug_that_does_not_match_the_cache_path(tmp_path:
 
 def test_the_daemon_payload_carries_the_derived_slug() -> None:
     cache_dir_name = sanitise_symphony_name("_scratch-pad")
-    manifest = ProvenanceManifest(
+    meta = ProvenanceMeta(
         slug=cache_dir_name,
         symphony="_scratch-pad",
         cache_key="k",
-        frozen_at=datetime.now(UTC),
+        frozen_at=datetime.now(UTC).isoformat(),
         activate_sh="",
-        entries=[],
+        services_start_sh=None,
+        services_health_sh=None,
+        debs={},
     )
-    payload = build_payload(manifest, cache_path="/devenv/" + cache_dir_name, digest=DIGEST)
+    payload = build_payload(meta, cache_path="/devenv/" + cache_dir_name, digest=DIGEST)
     assert payload["slug"] == provenance_slug(cache_dir_name)

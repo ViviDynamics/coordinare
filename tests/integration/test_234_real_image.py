@@ -29,8 +29,9 @@ from performer.server.models import EnvProvenance
 from coordinare.services.env_provenance import (
     ProvenanceScope,
     build_payload,
-    check_cache,
     freeze_cache,
+    open_manifest,
+    verify_content,
 )
 
 pytestmark = pytest.mark.docker_image
@@ -60,9 +61,13 @@ def _frozen_cache(tmp_path: Path) -> tuple[Path, Path, object]:
     (cache / "bin" / "ruby").write_text("#!/bin/sh\necho ruby 3.4.2\n")
     (cache / "bin" / "ruby").chmod(0o755)
     (cache / "activate.sh").write_text(FROZEN_ACTIVATE)
-    manifest = freeze_cache(
-        cache, symphony="sym-234", cache_key="k", activate_sh=FROZEN_ACTIVATE, scope=ProvenanceScope((root,)),
+    out = tmp_path / "state" / "sym-234.json"
+    result = freeze_cache(
+        cache, identity=("sym-234", "k"), activate_sh=FROZEN_ACTIVATE,
+        scope=ProvenanceScope((root,)), out_path=out,
     )
+    manifest = open_manifest(out, digest=result.manifest.digest, performer_mounts=(root,), max_bytes=10**9)
+    assert manifest is not None
     return cache, root, manifest
 
 
@@ -75,12 +80,12 @@ def test_a_post_verification_swap_is_not_run_by_a_consumer_shell(tmp_path: Path)
     (cache / "services" / "services-start.sh").write_text(PLANTED_SERVICES)
 
     # The daemon refuses the cache a consumer would mount.
-    check = check_cache(cache, manifest, full=True, scope=ProvenanceScope((root,)))
+    check = verify_content(cache, manifest, scope=ProvenanceScope((root,)))
     assert check.ok is False
 
     # Even so, the frozen steps the daemon hands over are the verified ones. Materialise them the way the
     # performer does, then run a consumer shell in the real image with the cache mounted read-only.
-    payload = build_payload(manifest, cache_path=CACHE_PATH, digest="0" * 64)
+    payload = build_payload(manifest.meta, cache_path=CACHE_PATH, digest=manifest.digest)
     provenance = tmp_path / "provenance"
     materialise(EnvProvenance.model_validate({**payload, "cache_path": str(cache)}), root=provenance)
 

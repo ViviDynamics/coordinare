@@ -100,47 +100,47 @@ Measured on this machine (`load_manifest`, 1 000 000 entries, 222 MiB file): loa
 load 1485 MiB, from 49 MiB before. A deployment that holds several million-entry caches holds that much per symphony. The
 knob is the lever: lower `provenance_max_entries` to the size the host can carry.
 
-### 4. Verification cost
+### 4. Verification cost (third review: nothing per entry is held in memory)
 
-Each consumer dispatch runs `check_cache`:
+The daemon holds no manifest rows, and no stat table, for the life of the process. What it keeps per symphony is
+the manifest digest, the stat digest (two hex strings), the payload (small), and the full-pass clock. The
+manifest file lives on disk.
 
-- **Fast path (every dispatch).** A stat-only walk (no hashing) compares each entry with the manifest by kind,
-  mode, size, inode and `ctime_ns`, and each link by its target text. `ctime_ns` is the field that matters:
-  a process cannot set it, so a rewrite that restores the size and the mtime still changes it. The walk over
-  100 000 entries measured 0.4 s on the development Mac (warm cache, 100 000 small files, one 1 000-directory tree).
-  A full hash pass over the same tree measured 2.9 s. Both scale with the entry count and the bytes; a deployment
-  with a slower disk should re-measure before relying on the per-dispatch cost.
-- **Any mismatch, or any added or removed entry, means a full re-hash.** Every file is hashed and compared
-  with its sha256. A changed hash is drift. A stat mismatch with the same hashes (a touch) passes, and the
-  cache is not re-recorded.
-- **Periodic full re-hash, in the background (second review).** `PROVENANCE_FULL_RECHECK_S` after the last one. The
-  hourly pass is not on the dispatch path. The poll cycle schedules it (`schedule_full_pass`), and it runs in a task
-  that hashes in a thread (`run_full_pass`). A dispatch does the stat pass only. A pass that finds drift records it, and
-  every dispatch refuses until the next freeze, with the reason and a re-bootstrap. A dispatch still runs a full pass
-  inline when this process has none yet (after a restart, or after a freeze), and a stat mismatch hashes inline. Both
-  are correctness, and both run in a thread, off the event loop. Measured on this machine: a hash pass costs about
-  0.54 s per GiB (warm cache, sha256), so a full pass at the 16 GiB bound is about 9 s, in the background. The first
-  dispatch after a restart is the exception: it waits for the full pass.
-- **The first dispatch after a restart** runs the full pass inline (in a thread), as it did before. A writer who forges `ctime_ns` within the filesystem's timestamp
-  granularity is caught here, within the hour.
-- **Stat baseline after a passing hash pass (review round).** A passing full pass returns the (size, inode,
-  `ctime_ns`) it observed for every file. The service keeps that as the baseline for the next stat pass, so ctime-only
-  churn (a `chmod`, an `xattr` write) costs one hash pass and not one per dispatch. The baseline is keyed by the
-  manifest digest, so a new manifest starts from its own frozen stats. The content digest (sha256 per file) is never
-  changed by this. A content change after the baseline is still caught, because the hash pass compares sha256.
-  **Deviation from the review note:** the baseline lives in memory only, not in a sidecar file. A daemon restart
-  already forces a full pass on the first dispatch, which rebuilds the baseline, so a persisted copy would never be
-  read for correctness and would add a file of up to a million stat tuples to every hourly pass.
-- **Payload.** The consumer payload is built once per manifest and digest, off the event loop, and reused. The
-  digest in it is the digest the snapshot holds, passed in, not recomputed from a million-entry manifest on each
-  dispatch.
-- **Cost at the new bounds.** The stat pass scales with the entry count (measured 0.4 s at 100 000 entries), so a
-  1 000 000-entry cache costs about 4 s per dispatch on the same machine. The full pass is bounded by the 16 GiB
-  byte bound. Operators with large caches should size the knobs to what they can afford.
+- **Stat digest.** The stat digest is an additive hash: the sum, modulo 2**256, of sha256 over each record
+  `(path, type, mode, size, inode, ctime_ns, link target)`. A walk streams the records into it, so the memory is
+  O(1). It is order-independent, so no sort and no list are needed. This is a deliberate change from the
+  "sha256 over the sorted records" in the review note: sorting a million records is O(n) memory. Each record is
+  one sha256 call, so the cost is per entry, not per byte.
+- **Dispatch (every consumer dispatch).** The stat walk runs in a thread, and its digest is compared with the stat
+  digest recorded at the last verified freeze or content check (`<sanitised>.stat.json`, bound to the manifest
+  digest). A match is a pass, with no content read. A mismatch, or a missing record, falls to the content check.
+- **Content check (mismatch, first dispatch after a restart, and the hourly pass).** The manifest is streamed
+  beside the walk, and the two are compared entry by entry in walk order, content included (`verify_content`).
+  Rows are read one at a time, and the file's digest is checked as they are read, so a manifest that changes
+  mid-read fails. If the content matches, the new stat digest is written as the baseline, which is the ctime-churn
+  case. If it does not match, it is drift, and every dispatch refuses until a new freeze.
+- **Hourly full pass.** It runs in a background task (`schedule_full_pass`, from the poll cycle). It runs the same
+  content check, so it costs the same as the post-restart pass.
 
-The residual window is the time between two full re-hashes, for a writer who can both change bytes and
-restore `ctime_ns` inside the timestamp granularity. The bound is one hour. A full re-hash reads up to the
-configured byte bound.
+**Measured at 990 996 entries** (a real tree, 990 directories of 1 000 small files, on the development Mac, warm
+cache; `/tmp` measurement scripts, not committed):
+
+| Step | Time | Resident after |
+| --- | --- | --- |
+| baseline, process start | | 50 MiB |
+| freeze (streamed to disk; manifest file 145.5 MiB) | 93.5 s | 200 MiB |
+| first dispatch (content check, after the freeze) | 94.7 s | 202 MiB |
+| dispatch stat pass, end to end (3 runs) | 19.1 to 19.7 s | 202 MiB |
+| stat digest walk alone | 19.6 s | |
+| mismatch (one chmod), full content check | 112.7 s | 202 MiB |
+| dispatch after the refresh (stat only) | 17.9 s | 202 MiB |
+
+The stat pass is about 19 us per entry, which is above the "couple of seconds" the review asked about. The cost is
+Python per entry (a stat call, a record string, a sha256), not the disk, and it is reported here rather than
+optimised. A cache at the default bound costs about 19 s per dispatch on this machine, so an operator who wants
+faster dispatch lowers `env_cache.provenance_max_entries`, or moves the stat pass to a native walker. The first
+dispatch after a freeze or restart waits for the full content check, about 95 s at this size. Resident memory stays
+flat (about 200 MiB against a 50 MiB baseline) as the entry count grows, which is the property the review asked for.
 
 ### 5. Verify before every consumer dispatch
 
@@ -163,6 +163,12 @@ A drifted cache is never dispatched into.
 The job payload carries an `env_provenance` block (new field, `JobInitPayload.env_provenance`):
 
     slug, cache_path, activate_sh, services_start_sh, services_health_sh, debs {relpath: sha256}, digest
+
+**What the payload contains (third review).** Those seven keys and nothing else. The manifest rows are never sent.
+At 990 996 entries the payload measured 275 bytes (no debs in that tree). A real cache adds about 80 bytes per deb
+and the rendered scripts, which are capped at 256 KiB each. The performer materialises the scripts and the listed
+debs, and the digest is recorded for the audit trail. The daemon keeps one payload per symphony and digest, so the
+payload cache is small.
 
 **The slug rule (review round).** The slug is `provenance_slug(cache directory name)`. A name that already matches
 `^[a-z0-9_][a-z0-9_-]*$` and is at most 120 characters is kept as it is, so an underscore-led symphony such as
@@ -227,14 +233,19 @@ is refused and re-bootstraps once. That is the upgrade cost.
 
 ## Residuals (second review)
 
+- **Stat digest collisions.** The stat digest is an additive hash. An adversary who could both change the cache and
+  choose the change so the sum is unchanged would pass the stat pass until the hourly content check. The ctime field
+  is kernel-set, so the adversary cannot pick it, which makes such a change hard to construct. The hourly pass bounds
+  how long it could go unseen.
 - **The bootstrap exemption is by role.** `_require_provenance_capability` exempts a job whose role is `env_bootstrap`
   from the cache-mount-without-payload refusal, and the performer runs such a job with the cache root. A card or an
   operator lifecycle listing `env_bootstrap` gets that exemption. A daemon-only flag would close it, and was not done in
   this round. Until then, the role is the only thing that separates the cache writer from a consumer.
-- **The restart full pass is inline.** The first dispatch after a restart waits for a full pass over the whole cache
-  (about 0.54 s per GiB here). This is the price of not trusting the stat baseline across a restart.
-- **Residency.** A loaded manifest stays in memory for the life of the process, per symphony, at about 1.5 GB for a
-  million entries (above). The knob bounds it.
+- **The restart full pass is inline.** The first dispatch after a restart waits for the full content check, about 95 s
+  at 990 996 entries on this machine (section 4). This is the price of not trusting the recorded stat digest across a
+  restart.
+- **Residency.** No manifest is held in memory. Resident memory does not grow with the entry count (measured in
+  section 4). The rows are read from disk when a content check runs.
 
 ## Out of scope
 

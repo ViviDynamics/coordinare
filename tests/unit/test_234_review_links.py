@@ -27,7 +27,12 @@ def _cache(tmp_path: Path) -> tuple[Path, tuple[Path, ...]]:
 
 
 def _freeze(cache: Path, mounts: tuple[Path, ...]) -> None:
-    freeze_cache(cache, symphony="sym", cache_key="k", activate_sh=ACTIVATE, scope=ProvenanceScope(mounts))
+    # The manifest goes beside the caches root, outside every performer mount.
+    out = cache.parent.parent / "state" / "manifest.json"
+    freeze_cache(
+        cache, identity=("sym", "k"), activate_sh=ACTIVATE,
+        scope=ProvenanceScope(mounts), out_path=out,
+    )
 
 
 def test_the_reviewer_counterexample_is_refused(tmp_path: Path) -> None:
