@@ -193,7 +193,8 @@ def test_the_history_table_lists_runs_with_a_transcript_link(page: Page, history
     expect(link).to_have_attribute("href", "/runs/alpha-sym/PVTI_A1/run-a1")
     row = link.locator("xpath=ancestor::tr")
     expect(row).to_contain_text("Alpha card")
-    expect(row.locator("a[href='/history?h.symphony=alpha-sym&h.card=PVTI_A1']")).to_have_count(1)
+    # 233: the card cell opens the card page, not History filtered to the card.
+    expect(row.locator("a[href='/cards/alpha-sym/PVTI_A1']")).to_have_count(1)
     expect(row).to_contain_text("1,200")
     expect(row).to_contain_text("Completed")
     expect(row.locator("a[href='" + PR_URL + "']")).to_have_count(1)

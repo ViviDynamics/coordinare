@@ -368,7 +368,7 @@ var _lastState = null;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page','card-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -394,7 +394,7 @@ function updateNavActive(path) {
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
   document.getElementById('workspace-title').textContent = activeLabel ? activeLabel.textContent.trim() : 'Dashboard';
   // 153: setPageTitle keeps the "(N)" attention prefix across navigation.
-  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : isRunsPath(path) ? 'Transcript | Coordinare' : 'Coordinare'));
+  setPageTitle(titles[path] || (path.startsWith('/symphonies/') ? 'Symphony | Coordinare' : path.indexOf('/performers/') === 0 ? 'Run detail | Coordinare' : isRunsPath(path) ? 'Transcript | Coordinare' : isCardPath(path) ? 'Card | Coordinare' : 'Coordinare'));
 }
 
 function renderSymphoniesPage(s) {
@@ -866,6 +866,10 @@ function router() {
     // 133: the transcript viewer. Its own address, so Back and reload both work.
     showPage('runs-page');
     runsPageRoute(path, location.search);
+  } else if (isCardPath(path)) {
+    // 233: the card page. Its own address, so Back, Forward and reload all work.
+    showPage('card-page');
+    cardPageRoute(path);
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(scopedView(_lastState));
@@ -1342,6 +1346,7 @@ function connectEventStream() {
       if (isPerformersPath(path)) renderPerformersPage(scoped);
       else if (path === '/history') renderHistoryPage(scoped);
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
+      else if (isCardPath(path)) cardPageRefresh();
       else renderDashboardExtras(scoped);
       // 139: the feed follows the scope on every snapshot, so rows that arrived before it cannot linger.
       afUpdateFilterOptions();

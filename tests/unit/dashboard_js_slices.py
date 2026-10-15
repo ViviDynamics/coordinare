@@ -34,6 +34,15 @@ _LABEL_HELPERS = (
 )
 
 
+def shipped_var(source_name: str, var_name: str) -> str:
+    """One top-level ``var NAME = ...;`` line, verbatim, from a shipped dashboard script (233)."""
+    source = _DASHBOARD_JS_SOURCES[source_name]
+    match = re.search(rf"^var {var_name} = .*;$", source, re.MULTILINE)
+    if match is None:
+        raise AssertionError(f"{var_name} is no longer declared in {source_name}.js")
+    return match.group(0)
+
+
 def shipped_function(source_name: str, function_name: str) -> str:
     """One top-level function, verbatim, from a shipped dashboard script."""
     source = _DASHBOARD_JS_SOURCES[source_name]
