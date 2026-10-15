@@ -100,6 +100,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+
+def _remember_manifest(cache: EnvCacheState | None, items: list[dict[str, Any]]) -> None:
+    """Keep dispatch inputs even when writing the generated scripts is refused."""
+    if cache is not None:
+        cache.manifest_items = items
+
 DEFAULT_DEVENV_ROOT = "/devenv"
 
 # 077: when a bootstrap FAILED for the current spec SHA, auto-retry it on a
@@ -2189,6 +2195,7 @@ class EnvCacheService:
         agent-writes-verify/activate behaviour rather than blocking.
         """
         # Fetch structured project files (missing files are normal — skip them).
+        _remember_manifest(cache_state, [])
         struct_contents: dict[str, str] = {}
         for spec_file in STRUCTURED_SPEC_FILES:
             try:
@@ -2208,6 +2215,7 @@ class EnvCacheService:
             (c for c in readme_contents.values() if c), "",
         )
         manifest = await enrich_from_readme(manifest, readme_text, llm_chat)
+        _remember_manifest(cache_state, [item.model_dump(mode="json") for item in manifest.items])
 
         if not manifest.items:
             # 218: an empty manifest still gets the daemon-owned verify.sh and activate.sh (they

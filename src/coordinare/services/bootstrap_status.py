@@ -164,6 +164,7 @@ def _running_fields(view: dict[str, Any], running: BootstrapAttempt | None, now:
     view["performer_id"] = running.performer_id or None
     view["pod"] = running.pod
     view["job_id"] = running.job_id
+    view["run_id"] = running.run_id
 
 
 def derive_status(
@@ -277,23 +278,25 @@ def attempt_view(record: BootstrapAttempt, now: datetime) -> dict[str, Any]:
     """One history row, in the words and figures the Symphonies page shows."""
     ended = record.ended_at
     duration = _elapsed(record.started_at, ended if ended is not None else now)
+    interrupted = record.restored and ended is None
     failing, tail = failure_detail(record.reason)
     return {
         "number": record.number,
+        "run_id": record.run_id,
         "attempt": record.attempt,
         "commit": short_commit(record.commit) or None,
         "started_at": _iso(record.started_at),
         "ended_at": _iso(ended),
-        "duration_seconds": duration,
-        "outcome": record.outcome,
-        "running": record.outcome == OUTCOME_RUNNING,
+        "duration_seconds": None if interrupted else duration,
+        "outcome": "interrupted" if interrupted else record.outcome,
+        "running": record.outcome == OUTCOME_RUNNING and not record.restored,
         "reason": failing,
         "infra": record.infra,
         "backend": record.backend or None,
         "model": record.model or None,
         "job_id": record.job_id,
         "pod": record.pod,
-        "reason_tail": tail,
+        "reason_tail": record.reason_tail or tail,
     }
 
 

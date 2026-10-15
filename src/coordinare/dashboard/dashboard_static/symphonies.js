@@ -640,7 +640,7 @@ var SYMPHONY_BOOTSTRAP_LABELS = {
   budget_exhausted: 'Budget exhausted', passed_not_ready: 'Passed, not ready'
 };
 var SECONDS_PER_MINUTE = 60;
-var BOOTSTRAP_OUTCOME_LABELS = {succeeded: 'Succeeded', failed: 'Failed', running: 'Running'};
+var BOOTSTRAP_OUTCOME_LABELS = {succeeded: 'Succeeded', failed: 'Failed', running: 'Running', interrupted: 'Interrupted'};
 
 // The elapsed time of a bootstrap, in the words the cell uses: seconds, then whole minutes.
 function bootstrapElapsedText(seconds) {
@@ -663,12 +663,15 @@ function bootstrapTailHtml(boot) {
 }
 
 // One run in the history disclosure: its number, commit, start, how it ended and why.
-function bootstrapHistoryRowHtml(a) {
+function bootstrapHistoryRowHtml(a, name) {
   var outcome = symphonyHas(BOOTSTRAP_OUTCOME_LABELS, a.outcome) ? BOOTSTRAP_OUTCOME_LABELS[a.outcome] : 'Unknown';
   var when = a.started_at ? timeHtml(a.started_at) : 'time not recorded';
   var took = bootstrapElapsedText(a.duration_seconds);
   var model = [a.backend, a.model].filter(function(p) { return !!p; }).join(' ');
-  return '<li>#' + esc(String(a.number)) + ' · ' + esc(a.commit || 'no commit') + ' · ' + when +
+  var link = a.run_id && name ? '<a class="sym-boot-run-link" href="' +
+    esc('/symphonies/' + encodeURIComponent(name) + '/bootstrap/' + encodeURIComponent(a.run_id)) +
+    '" onclick="navigate(event,this.pathname)">Open run</a> · ' : '';
+  return '<li>' + link + '#' + esc(String(a.number)) + ' · ' + esc(a.commit || 'no commit') + ' · ' + when +
     ' · ' + esc(outcome) + (took ? ' after ' + esc(took) : '') +
     (a.reason ? '<div class="muted" style="font-size:11px">' + esc(a.reason) + '</div>' : '') +
     (model ? '<div class="muted" style="font-size:11px">' + esc(model) + (a.job_id ? ' · job ' + esc(a.job_id) : '') + '</div>' : '') +
@@ -677,7 +680,7 @@ function bootstrapHistoryRowHtml(a) {
 
 // The bootstrap's detail under the Env cell: what it is doing or why it stopped, and its recent runs.
 // A hidden row gets none of it, as the reason and the runs are the symphony's own.
-function symphonyBootstrapHtml(boot) {
+function symphonyBootstrapHtml(boot, name) {
   if (!boot || typeof boot !== 'object' || !symphonyHas(SYMPHONY_BOOTSTRAP_LABELS, boot.state)) return '';
   var lines = [];
   var state = boot.state;
@@ -696,12 +699,16 @@ function symphonyBootstrapHtml(boot) {
     if (boot.reset_hint) lines.push(esc(boot.reset_hint));
   }
   var out = lines.map(function(l) { return '<div class="muted" style="font-size:11px">' + l + '</div>'; }).join('');
+  var latest = boot.run_id || (boot.history && boot.history.length ? boot.history[0].run_id : '');
+  if (latest && name) out += '<a class="sym-boot-run-link" href="' +
+    esc('/symphonies/' + encodeURIComponent(name) + '/bootstrap/' + encodeURIComponent(latest)) +
+    '" onclick="navigate(event,this.pathname)">Open bootstrap run</a>';
   out += bootstrapTailHtml(boot);
   var history = Array.isArray(boot.history) ? boot.history : [];
   if (history.length) {
     out += '<details class="sym-boot-history"><summary class="muted" style="font-size:11px">History (' +
       esc(String(history.length)) + ')</summary><ul style="font-size:11px;padding-left:16px">' +
-      history.map(bootstrapHistoryRowHtml).join('') + '</ul></details>';
+      history.map(function(a) { return bootstrapHistoryRowHtml(a, name); }).join('') + '</ul></details>';
   }
   return out;
 }
@@ -746,8 +753,10 @@ function symphonyTableRowHtml(sym, choice) {
   // 157: the last check is a relative time with the exact time and zone on hover. A hidden row shows the marker, not the time.
   var checked = sym.last_poll_at ? timeHtml(sym.last_poll_at) : '';
   var href = '/symphonies/' + encodeURIComponent(sym.name);
-  var bootBtn = sym.env_bootstrap_performer_id
-    ? '<div><button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button></div>'
+  var running = sym.env_bootstrap && ['bootstrapping', 'verifying'].indexOf(sym.env_bootstrap.state) !== -1;
+  var bootBtn = sym.env_bootstrap_performer_id && !hidden
+    ? '<div><button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '">Retry now</button>' +
+      (running ? ' <button class="action-btn sym-row-bootstrap-cancel" data-sym="' + esc(sym.name) + '">Cancel</button>' : '') + '</div>'
     : '';
   var inactive = symphonyIsInactive(sym);
   return '<tr class="symphony-row' + (inactive ? ' symphony-inactive' : '') + '"' + (inactive ? ' data-inactive="true"' : '') + ' data-href="' + esc(href) + '">'
@@ -757,7 +766,7 @@ function symphonyTableRowHtml(sym, choice) {
     + '<td style="color:var(--color-text-muted)">' + (symphonyProjectHtml(sym) || 'No project number') + '</td>'
     + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
     + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' +
-    (hidden ? '' : symphonyBootstrapHtml(sym.env_bootstrap)) + bootBtn + '</td>'
+    (hidden ? '' : symphonyBootstrapHtml(sym.env_bootstrap, sym.name)) + bootBtn + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_active))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_queued))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : usageCostHtml(sym.spend_week)) + '</td>'
@@ -855,6 +864,7 @@ function refreshScopedViews() {
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
   else if (location.pathname === '/logs') renderLogsPage(currentScopedState());
+  else if (isBootstrapRunPath(location.pathname)) bootstrapPageRefresh();
   else if (isCardPath(location.pathname)) cardPageRefresh();
   else renderDashboardExtras(scoped);
   afUpdateFilterOptions();

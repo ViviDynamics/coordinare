@@ -1181,6 +1181,7 @@ def test_symphonies_page_bootstrap_503_shows_performer_id_error(
     expect(page.locator("#symphonies-page-section")).to_contain_text(
         "with-bootstrap", timeout=_WAIT_LIVE,
     )
+    page.once("dialog", lambda dialog: dialog.accept())
     page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]').click()
     msg = page.locator("#sym-list-msg")
     expect(msg).to_contain_text("codex-ephemeral", timeout=2000)

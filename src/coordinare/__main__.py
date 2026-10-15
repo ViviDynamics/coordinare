@@ -60,6 +60,7 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
+from coordinare.services.bootstrap_runs import load_bootstrap_history
 from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.event_capture import install_event_store, symphony_for_card
@@ -1452,6 +1453,7 @@ async def _run_with_events(
     # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
     # without requiring a POST /api/config/reload after startup.
     if coordinare_config is not None:
+        await load_bootstrap_history(daemon.state, [s.name for s in coordinare_config.symphonies])
         from coordinare.graph.state import SymphonyRuntimeState
 
         daemon.state["symphony_configs"] = {s.name: s for s in coordinare_config.symphonies}

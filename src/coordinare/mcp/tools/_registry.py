@@ -36,6 +36,7 @@ DEFERRED_REST_PREFIXES = (
     "/api/run-lookup",  # 133: a run id resolved to its address, for activity links.
     "/api/cards",  # 147: a card's pipeline timeline (stages, runs, lifecycle, cost), for the card detail.
     "/api/history",  # 150: the History page's paginated run listing (human dashboard, read-only).
+    "/api/symphonies/{name}/bootstrap-runs",  # Bootstrap run detail for the human dashboard.
     "/health",
     "/live",
     "/ready",
@@ -55,6 +56,7 @@ DEFERRED_PAGE_PATHS = (
     "/glossary",
     "/symphonies",
     "/symphonies/{name}",
+    "/symphonies/{name}/bootstrap/{run}",
     "/cards/{symphony}/{card}",  # 233: the card page, a card's timeline by address.
     "/cards/{rest:path}",  # 233: any other /cards path, served as the shell with a 404.
     "/admin/config",

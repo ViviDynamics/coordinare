@@ -62,6 +62,13 @@ from coordinare.services.bootstrap_history import (
     record_activity,
     report_completion,
 )
+from coordinare.services.bootstrap_runs import (
+    BootstrapRuntime,
+    cancel_bootstrap,
+    record_bootstrap_events,
+    record_verification,
+    release_bootstrap_runtime,
+)
 from coordinare.services.bootstrap_status import (
     ENV_BOOTSTRAP_HOLD,
     GATE_HOLD_TEXT,
@@ -4080,6 +4087,7 @@ class CoordinareDaemon:
                 return
             # A successful poll clears the transient-failure streak.
             poll.consecutive_failures = 0
+            record_bootstrap_events(self._state, symphony_name, job_id, status_result.get("events") or [])
             if status_result.get("status") not in ("working", None):
                 await self._handle_bootstrap_terminal_status(
                     svc, job_id, symphony_name, env_cache_svc, container_id,
@@ -4153,6 +4161,7 @@ class CoordinareDaemon:
         _clean_ok, _clean_detail = await self._verify_env_cache_clean(
             symphony_name, svc,
         )
+        record_verification(self._state, symphony_name, _clean_ok, _clean_detail)
         if _clean_ok is not True:
             logger.warning(
                 "env_cache.clean_verify_failed",
@@ -4272,6 +4281,7 @@ class CoordinareDaemon:
             passed=ok,
             bootstrap_verify_basis=env_verify_basis,
         )
+        record_verification(self._state, symphony_name, ok, detail)
         if ok is not True:
             return self._clean_room_verdict(ok, detail)
         walk_spec = replace(spec, verify_text="", project_files={}, walk_only=True,
@@ -4511,6 +4521,10 @@ class CoordinareDaemon:
                             "restart the performer container to pick up the new mount."
                         ),
                     )
+
+    async def cancel_env_bootstrap(self, symphony: str, actor: str) -> dict[str, Any]:
+        """Cancel the dispatched bootstrap through its captured runtime owner."""
+        return await cancel_bootstrap(self._state, symphony, actor)
 
     async def _stop_bootstrap_job(self, svc: Any, job_id: str, symphony_name: str) -> bool:
         """270: stop a wedged env_bootstrap job through the runtime that owns it.
@@ -5180,7 +5194,7 @@ class CoordinareDaemon:
             self._state,
             symphony_name,
             AttemptStart(
-                commit=(cache.readme_sha if cache is not None else None) or "",
+                commit=(getattr(cache, "bootstrap_commit_sha", None) or getattr(cache, "readme_sha", None)) or "",
                 started_at=datetime.now(UTC),
                 attempt=attempt_no,
                 backend=backend,
@@ -5224,6 +5238,10 @@ class CoordinareDaemon:
             )
             self._bootstrap_poll_tasks.add(bootstrap_task)
             bootstrap_task.add_done_callback(self._bootstrap_poll_tasks.discard)
+            self._state.setdefault("bootstrap_runtimes", {})[symphony_name] = BootstrapRuntime(
+                svc, job_id, bootstrap_task,
+            )
+            bootstrap_task.add_done_callback(lambda task: release_bootstrap_runtime(self._state, symphony_name, task))
         else:
             # dispatch_card returns a rich {"status","reason"} on every failure
             # mode (container start failed / readiness timeout / payload error /

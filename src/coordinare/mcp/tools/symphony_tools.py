@@ -210,7 +210,28 @@ async def delete_symphony(name: str) -> dict[str, Any]:
     )
 
 
+async def cancel_env_bootstrap_handler(input: _NameInput, client: DashboardClient) -> ToolResult:
+    """Cancel through the same authenticated operator API as the dashboard."""
+    return await client.send_json(
+        "POST", _symphony_path(input.name, "/env-bootstrap/cancel"), timeout_seconds=client.lifecycle_budget,
+    )
+
+
+async def cancel_env_bootstrap(name: str) -> dict[str, Any]:
+    """Cancel a running environment bootstrap and record its failed outcome."""
+    return (await cancel_env_bootstrap_handler(_NameInput(name=name), get_client())).model_dump(exclude_none=True)
+
+
 TOOLS: tuple[ToolDefinition, ...] = (
+    ToolDefinition(
+        name="cancel_env_bootstrap",
+        domain="symphonies",
+        description="Cancel a running environment bootstrap and record who cancelled it. Refuses when no run is live.",
+        input_model=_NameInput,
+        annotations=_DESTRUCTIVE,
+        rest_calls=(("POST", "/api/symphonies/{name}/env-bootstrap/cancel"),),
+        handler=cancel_env_bootstrap,
+    ),
     ToolDefinition(
         name="list_symphonies",
         domain="symphonies",
