@@ -74,6 +74,15 @@ function systemHealthRowHtml(row) {
   return html + '</div>';
 }
 
+// 271: cached event history statistics on one line in the existing panel.
+function systemHealthEventStoreHtml(stats) {
+  if (!stats) return '';
+  return '<div class="sh-row">Event store: ' + esc(stats.size_bytes) + ' bytes, ' +
+    esc(stats.rows) + ' rows, oldest ' + esc(stats.oldest_ts || 'none') + ', ' +
+    esc(stats.dropped) + ' dropped, ' + esc(stats.pruned) + ' pruned, writer ' +
+    esc(stats.writer_state || 'unknown') + (stats.last_error ? ': ' + esc(stats.last_error) : '') + '</div>';
+}
+
 // The whole card: the summary line, and the rows inside it.
 function systemHealthHtml(sh) {
   var sum = systemHealthSummary(sh);
@@ -83,6 +92,6 @@ function systemHealthHtml(sh) {
     '<summary class="sh-summary sh-tone-' + esc(sum.tone) + '" style="cursor:pointer;list-style:none;padding:2px 0">' +
       '<span class="sh-dot" aria-hidden="true">&#9679;</span> ' + esc(sum.text) +
     '</summary>' +
-    '<div class="sh-list">' + rows + '</div>' +
+    '<div class="sh-list">' + rows + systemHealthEventStoreHtml(sh.event_store) + '</div>' +
   '</details>';
 }

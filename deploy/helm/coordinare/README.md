@@ -103,6 +103,10 @@ in front of it at the ingress layer and treat that hostname as a trust boundary.
 The state claim is created from the StatefulSet's `volumeClaimTemplate`, so it is
 bound to the workload's identity and an upgrade reattaches the same volume.
 
+The persistent event store uses SQLite with a rollback journal. If the state
+volume is NFS, it relies on working NFS locking. Local disk is recommended for
+the state volume.
+
 ## Upgrades
 
 ```bash

@@ -4,9 +4,11 @@ Owns retention (FR-019 through FR-021), ingest-time truncation (FR-035 through
 FR-037), per-card duplicate suppression (FR-022 through FR-024), and the live
 sink fan-out to the SSE transport (FR-001, FR-004).
 
-Nothing here is persisted — the log is per-process and discarded on restart
-(FR-018). Single-process, single-threaded under asyncio, so no lock is needed.
+The live deque is per-process and discarded on restart (FR-018). The shared
+append funnel also sends accepted entries to the persistent event store (271).
+Single-process, single-threaded under asyncio, so no lock is needed.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -21,6 +23,7 @@ from uuid import uuid4
 import structlog
 
 from coordinare.lib.redaction import redact_command_text
+from coordinare.services.event_capture import capture_activity
 
 logger = structlog.get_logger(__name__)
 
@@ -468,8 +471,13 @@ class ActivityLog:
             hidden_updates=hidden_updates, log_dropped=self._dropped,
             log_capacity=self._entries.maxlen,
         )
+        return self._keep_entry(entry)
+
+    def _keep_entry(self, entry: ActivityEntry) -> ActivityEntry:
         self._next_seq += 1
         self._entries.append(entry)
+        with contextlib.suppress(Exception):
+            capture_activity(entry)
         return entry
 
     def _fan_out(self, appended: list[ActivityEntry]) -> None:

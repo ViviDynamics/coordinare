@@ -1,4 +1,5 @@
 """Dashboard state store: history, watcher and snapshot building (436)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -559,7 +560,11 @@ class DashboardStore:
             env_failures=_env_failures(daemon.state, env_states, datetime.now(UTC)),
             env_ready=sum(1 for state in env_states.values() if getattr(state, "last_bootstrap_succeeded", None) is True),
         )
-        return build_system_health(SYSTEM_HEALTH, inputs)
+        result = build_system_health(SYSTEM_HEALTH, inputs)
+        event_store = daemon.state.get("event_store")
+        if event_store is not None:
+            result["event_store"] = event_store.health()
+        return result
 
     @staticmethod
     def _subsystem_rows(health: HealthRegistry) -> list[dict[str, Any]]:

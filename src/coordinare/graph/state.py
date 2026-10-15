@@ -194,6 +194,8 @@ class CoordinareState(TypedDict, total=False):
     # 138: dashboard activity feed. Optional by construction (total=False) —
     # every reader uses state.get("activity_log") and no-ops when it is None.
     activity_log: ActivityLog | None
+    # Shared daemon-owned service, like the transcript and run-log collectors.
+    event_store: Any
     # 173: the advocate runs in a performer; coordinare holds only the two label
     # names, which card selection reads to keep escalated issues out of the board.
     advocate_handled_label: str
