@@ -180,6 +180,12 @@ image:
   repository: {IMAGE.split(":")[0]}
   tag: {IMAGE.split(":")[1]}
   pullPolicy: Never
+# kind's default StorageClass (local-path) is ReadWriteOnce only, so the
+# ReadWriteMany devenv claim the chart renders by default could never bind here.
+# Turning the cache off is the supported way to run without it. The render of
+# the claim itself is covered by tests/unit/test_147_helm_deployment.py.
+devenvCache:
+  enabled: false
 state:
   size: 1Gi
 secrets:
@@ -404,6 +410,12 @@ image:
   repository: {IMAGE.split(":")[0]}
   tag: {IMAGE.split(":")[1]}
   pullPolicy: Never
+# kind's default StorageClass (local-path) is ReadWriteOnce only, so the
+# ReadWriteMany devenv claim the chart renders by default could never bind here.
+# Turning the cache off is the supported way to run without it. The render of
+# the claim itself is covered by tests/unit/test_147_helm_deployment.py.
+devenvCache:
+  enabled: false
 state:
   size: 1Gi
 secrets:

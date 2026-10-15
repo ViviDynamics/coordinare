@@ -52,9 +52,25 @@ data:
     {{- if not (hasKey $cfg "kubernetes_owner") }}
     {{- $_ := set $cfg "kubernetes_owner" (printf "helm-%s" (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 40)) }}
     {{- end }}
-    {{- $_ := set $cfg "kubernetes_namespace" (.Values.performers.namespace | default .Release.Namespace) }}
-    {{- if .Values.performers.cacheClaim }}
-    {{- $_ := set $cfg "kubernetes_cache_claim" .Values.performers.cacheClaim }}
+    {{- $_ := set $cfg "kubernetes_namespace" (include "coordinare.performerNamespace" .) }}
+    {{- /* When the chart wires a claim, it sets kubernetes_cache_claim from devenvCache,
+           and a hand-set value in config could silently disagree with it, so that case
+           fails. When the cache is off the chart wires nothing, and a hand-set value is
+           accepted, as it is on main. */}}
+    {{- $devenvClaim := include "coordinare.devenvClaim" . }}
+    {{- if $devenvClaim }}
+    {{- if hasKey $cfg "kubernetes_cache_claim" }}
+    {{- fail "config.kubernetes_cache_claim is set by hand, but the chart wires the performer cache claim from devenvCache, so the two could disagree. Remove config.kubernetes_cache_claim, and name the claim with devenvCache.existingClaim (or let devenvCache.create create it). Or set devenvCache.enabled to false if you want to manage kubernetes_cache_claim yourself." }}
+    {{- end }}
+    {{- $_ := set $cfg "kubernetes_cache_claim" $devenvClaim }}
+    {{- end }}
+
+    {{/* The env-cache bookkeeping (manifests, rendered scripts) lives on the state
+         volume. Without this it defaults to ~/.coordinare, which is on the container
+         filesystem: lost on every reschedule, and the daemon's record of what the
+         devenv cache holds goes with it. Overridable, like the state path. */}}
+    {{- if not (hasKey $cfg "env_cache_root") }}
+    {{- $_ := set $cfg "env_cache_root" (printf "%s/env-caches" (.Values.state.mountPath | trimSuffix "/")) }}
     {{- end }}
     {{- if not (hasKey $cfg "kubernetes_verifier_image") }}
     {{- $_ := set $cfg "kubernetes_verifier_image" ($cfg.performer_image | default "coordinare-performer:full") }}

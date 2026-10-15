@@ -37,8 +37,65 @@ boundary. See docs/security/threat-model.md.
 WARNING: allowUnsafeMultiReplica is set. Replicas beyond the first will race on
 the same state file. State corruption or loss is expected, not hypothetical.
 {{- end }}
+{{- if .Values.devenvCache.enabled }}
+
+Performer environment cache: claim {{ include "coordinare.devenvClaim" . }} in namespace {{ include "coordinare.performerNamespace" . }}.
+{{- if eq (include "coordinare.devenvMode" .) "create" }}
+This release creates it, and it needs a StorageClass that supports
+ReadWriteMany (RWX). Check that it binds before the first dispatch:
+
+  kubectl get pvc -n {{ include "coordinare.performerNamespace" . }} {{ include "coordinare.devenvClaim" . }}
+
+  STATUS Bound:   the claim is ready.
+  STATUS Pending: no RWX-capable StorageClass is serving it. The bootstrap
+                  performer and every consumer that mounts this claim WAIT,
+                  and no symphony gets its environment until it binds.
+
+To find an RWX-capable class, list them with `kubectl get storageclass` and
+check each provisioner's documentation for ReadWriteMany (NFS, CephFS, EFS,
+Azure Files, and Longhorn with RWX are common). Then set
+devenvCache.storageClassName to it and upgrade. If you have none, opt out with
+devenvCache.enabled: false, which runs every performer with a cold cache.
+{{- if not (has "ReadWriteMany" .Values.devenvCache.accessModes) }}
+
+WARNING: devenvCache.accessModes does not include ReadWriteMany. Performers on
+other nodes cannot mount a ReadWriteOnce claim, so their bootstrap and cache
+reads fail or stay Pending.
+{{- end }}
+{{- else }}
+This release wires an existing claim and did not create it. Check that it exists
+and is Bound in the performer namespace:
+
+  kubectl get pvc -n {{ include "coordinare.performerNamespace" . }} {{ include "coordinare.devenvClaim" . }}
+{{- end }}
+{{- else }}
+
+WARNING: the performer environment cache is DISABLED (devenvCache.enabled is
+false). Performers run with a cold cache: every dispatch repeats the full
+environment bootstrap for its symphony, which is slower but works. To turn it
+on, set devenvCache.enabled: true and provide a ReadWriteMany StorageClass.
+{{- end }}
+{{- if .Values.performers.cacheClaim }}
+
+DEPRECATED: performers.cacheClaim is still honoured, and this release uses the
+claim {{ .Values.performers.cacheClaim }} unchanged. Nothing is created or
+modified. To migrate, move the name into the new keys and remove the old one:
+
+  devenvCache:
+    create: false
+    existingClaim: {{ .Values.performers.cacheClaim }}
+  performers:
+    cacheClaim: ""
+
+The chart will drop support for performers.cacheClaim in a future release.
+{{- end }}
 
 Your state lives on a PersistentVolumeClaim and SURVIVES `helm uninstall`, so an
-uninstall cannot destroy your work by accident. Remove it deliberately:
+uninstall cannot destroy your work by accident. The performer cache claim
+survives too (helm.sh/resource-policy: keep), because rebuilding it costs a full
+bootstrap per symphony. Remove each deliberately:
 
   kubectl -n {{ .Release.Namespace }} delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- if eq (include "coordinare.devenvMode" .) "create" }}
+  kubectl -n {{ include "coordinare.performerNamespace" . }} delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}
+{{- end }}

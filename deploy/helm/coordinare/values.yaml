@@ -87,25 +87,132 @@ securityContext:
 
 # --- State ------------------------------------------------------------------
 
+# The controller's durable state. Created from the StatefulSet's
+# volumeClaimTemplate, one claim per replica, named state-<release>-0. It is
+# ReadWriteOnce and only the controller writes it. It holds:
+#   - coordinare.state.json: the snapshot. Sessions, board cards, PR metadata,
+#     retry counters and decision history. This is the one you cannot lose.
+#   - env-cache bookkeeping under <mountPath>/env-caches (env_cache_root). The
+#     daemon's side of the performer environment cache: the rendered scripts
+#     and manifests. The toolchains themselves live on devenvCache, not here.
+#   - run transcripts and run logs under <mountPath>/transcripts and
+#     <mountPath>/run-logs. Both are on by default and both grow with work done.
+#     Retention is set in config (transcripts.retention_days, run_logs).
 state:
   # Required. Unlike the performer cache below, the controller cannot run
-  # without somewhere durable to keep its snapshot.
+  # without somewhere durable to keep its snapshot. 8Gi holds the snapshot
+  # comfortably; transcripts and run logs are what fill it. Size up for a busy
+  # board, and watch `du -sh /var/lib/coordinare/*` from inside the Pod.
   size: 8Gi
   # Leave empty to use the cluster's default StorageClass. Name one explicitly
-  # if your cluster has storage but no default — common on minikube/microk8s.
+  # if your cluster has storage but no default (common on minikube/microk8s).
+  # This claim is ReadWriteOnce, so any class that provides RWO works here.
   storageClass: ""
+  # Where the claim is mounted in the controller Pod. The snapshot path,
+  # env_cache_root and the transcript and run-log directories are all derived
+  # from this, so change it in one place only.
   mountPath: /var/lib/coordinare
+
+# --- Performer environment cache --------------------------------------------
+
+# The performer environment cache: the toolchains a symphony's performers need
+# (rbenv and gems, node modules, debs), installed once by the bootstrap
+# performer and then mounted read-only into every consumer performer. Each
+# symphony gets its own subdirectory on the claim, named with the sanitised
+# symphony name (sanitise_symphony_name in coordinare's env_cache service).
+# Each performer Pod mounts only its symphony's subdirectory, at
+# /devenv/<sanitised-name>. For a symphony called "Dettmore Platform" that is
+# subPath `dettmore-platform-4b278e` on the claim, mounted at
+# /devenv/dettmore-platform-4b278e inside the Pod.
+#
+# The chart creates it by default in the performer namespace. The default needs
+# a StorageClass that supports ReadWriteMany. Without one the claim stays
+# Pending and the bootstrap and performers wait. See the README, "Persistent
+# state". Coordinare's daemon reads the claim name from config
+# (kubernetes_cache_claim). The chart sets it from the values below, so do not
+# set it in config while the chart wires a claim.
+devenvCache:
+  # Turn this off to run performers with a cold cache. Every dispatch then
+  # repeats the environment bootstrap, which is slow but not broken. Use this
+  # on a cluster with no ReadWriteMany StorageClass (for example kind, which
+  # defaults to RWO-only local-path), or on a small cluster where you do not
+  # want a 50Gi claim. Turning it off is a supported choice, not a fault.
+  enabled: true
+
+  # TRI-STATE. Leave it null (the default) and the chart decides for you:
+  #   - null, and no claim named below: the chart CREATES the claim.
+  #   - null, and an existingClaim or performers.cacheClaim is named: the chart
+  #     WIRES that existing claim. This is how an install that predates
+  #     devenvCache keeps working unchanged.
+  #   - true: the chart creates the claim named `name`. Explicit true together
+  #     with an existing claim is a render failure, because the two disagree.
+  #   - false: the chart wires an existing claim, and `existingClaim` is then
+  #     required.
+  # Helm cannot tell an unset value from a default of true, which is why the
+  # default is null and not true.
+  #
+  # A created claim is annotated helm.sh/resource-policy: keep, and a claim that
+  # already exists and is not owned by this release makes `helm install` refuse.
+  # That refusal is deliberate, so name the claim with existingClaim rather than
+  # letting Helm adopt one it did not create.
+  create: null
+
+  # The name of an existing claim to wire in. It must be in the performer
+  # namespace, because a PersistentVolumeClaim is namespaced and performer Pods
+  # can only mount a claim from their own namespace. Setting it with create
+  # explicitly true fails the render (the two disagree).
+  existingClaim: ""
+
+  # The name the chart gives the claim it creates. Also what the daemon mounts.
+  name: coordinare-devenv-cache
+
+  # The performer namespace the claim lives in. Leave empty to use
+  # performers.namespace, which itself defaults to this release's namespace.
+  # If you set it, it must equal performers.namespace: performer Pods mount
+  # claims from their own namespace only, and the chart fails otherwise.
+  # The chart does not create the namespace. Create it first when it is not
+  # the release namespace:  kubectl create namespace coordinare-performers
+  namespace: ""
+
+  # Leave empty to use the cluster's default StorageClass. Name one explicitly
+  # if the default is RWO-only, or if your cluster has several classes and only
+  # one of them does RWX. Choose a class that supports ReadWriteMany, such as
+  # NFS, CephFS, EFS, Azure Files or Longhorn with RWX enabled. A class that does
+  # not will leave the claim Pending, or bind it to a single node that the
+  # other performers cannot reach.
+  storageClassName: ""
+
+  # Sizing: one claim holds every symphony's toolchain. Measure one symphony
+  # after a successful bootstrap with `du -sh /devenv/<sanitised-name>` (from a
+  # performer Pod, or on the NFS export), then multiply by the number of
+  # symphonies you run, and leave headroom for upgrades. 50Gi is a starting
+  # point, not a recommendation. A claim that fills up fails bootstraps
+  # mid-install, which is much harder to diagnose than a claim that is too small.
+  # Expansion is only possible if the StorageClass allows volume expansion.
+  size: 50Gi
+
+  # Requested access modes. Keep ReadWriteMany. The bootstrap performer writes
+  # the cache while consumer performers mount it read-only, and those can run
+  # on different nodes at the same time. A ReadWriteOnce claim binds to one
+  # node, so performers scheduled anywhere else stay Pending. Changing this
+  # after the claim exists is refused by Kubernetes, so get it right first.
+  accessModes:
+    - ReadWriteMany
 
 # --- Performers -------------------------------------------------------------
 
 performers:
   # Where performer Pods are created. Defaults to this release's namespace, so
-  # Pods do not scatter into an unrelated one.
+  # Pods do not scatter into an unrelated one. devenvCache.namespace, when set,
+  # must match this value.
   namespace: ""
 
-  # Optional ON PURPOSE. An environment cache makes performers faster; its
-  # absence makes them cold, not broken. Requiring it would fail to install on
-  # exactly the small clusters this is meant to support.
+  # DEPRECATED, but still supported. The name of an existing devenv claim, from
+  # before devenvCache existed. An install that sets only this keeps working
+  # unchanged: it is wired in as devenvCache.existingClaim, no PVC is rendered,
+  # and NOTES.txt prints the migration. To migrate, set devenvCache.create to
+  # false and devenvCache.existingClaim to the same name, then clear this key.
+  # It fails the render only when it contradicts an explicit devenvCache setting.
   cacheClaim: ""
 
   # Registry credentials for the performer image, if your registry needs them.
