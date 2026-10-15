@@ -1432,8 +1432,8 @@ function connectEventStream() {
     try { afAppend(JSON.parse(e.data).entries); }
     catch(err) { console.error('activity parse error', err); }
   });
-  source.addEventListener('events_changed', function() { if (es === source) { afNoteMessage(); logsChanged(); } });
-  source.addEventListener('heartbeat', function() { if (es === source) { afNoteMessage(); logsChanged(); } });
+  source.addEventListener('events_changed', function() { if (es === source) { afNoteMessage(); if (typeof logsChanged === 'function') logsChanged(); } });
+  source.addEventListener('heartbeat', function() { if (es === source) { afNoteMessage(); if (typeof logsChanged === 'function') logsChanged(); } });
   source.addEventListener('state_update', function(e) {
     if (es !== source) return;
     afNoteMessage();
@@ -1480,7 +1480,7 @@ function connectEventStream() {
   };
   source.onopen = function() {
     if (es !== source) return;
-    logsChanged();
+    if (typeof logsChanged === 'function') logsChanged();
     if (_sseRetryTimer !== null) {
       clearTimeout(_sseRetryTimer);
       _sseRetryTimer = null;
