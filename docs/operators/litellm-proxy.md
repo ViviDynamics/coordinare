@@ -216,19 +216,18 @@ independently of reasoning (`reasoning` and `reasoning_content` are both
 recognized), and `strip_reasoning` promotes a reasoning-only reply to text.
 
 Set the routing entry's `model` to the exact model string the assessor
-dispatches. Staging dispatches `spark/glm-5.3-flash`, so the key must carry the
-`spark/` prefix. `upstream_model` is the name the LiteLLM gateway advertises for
-the model:
+dispatches, including any namespace prefix your gateway adds to the model name.
+`upstream_model` is the name the LiteLLM gateway advertises for the model:
 
 ```yaml
 selfhosted_routing:
   - backend: claude_code
-    model: spark/glm-5.3-flash              # exact dispatched model string (routing key)
+    model: <dispatched-model-name>          # exact dispatched model string (routing key)
     target:
       base_url: https://litellm.example.com/v1
       wire_format: openai
       strategy: translate
-      upstream_model: spark/glm-5.3-flash   # name the gateway advertises
+      upstream_model: <gateway-model-name>  # name the gateway advertises
       upstream_auth_env: COORDINARE_PROXY_AUTH
       normalizers: [strip_control_chars, strip_reasoning]
       health_probe: completion
