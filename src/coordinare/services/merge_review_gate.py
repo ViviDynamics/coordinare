@@ -419,12 +419,13 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
         reading = read_protection(
             await probe.github.get_branch_protection_sources(probe.branch), app_id,
         )
-        sym_state.merge_review_rules = {
-            "dismiss_stale_reviews_on_push": reading.push_requirement.dismiss_stale_reviews_on_push,
-            "require_extra_approval_for_unattributed_changes": reading.push_requirement.require_extra_approval_for_unattributed_changes,
-        }
         unverified = reading.unverified
         state, message = judge(reading, await probe.github.self_logins(), probe.branch)
+        if not reading.unreadable and not unverified:
+            sym_state.merge_review_rules = {
+                "dismiss_stale_reviews_on_push": reading.push_requirement.dismiss_stale_reviews_on_push,
+                "require_extra_approval_for_unattributed_changes": reading.push_requirement.require_extra_approval_for_unattributed_changes,
+            }
     except Exception as exc:
         logger.warning("merge_review_gate.read_failed", symphony=probe.symphony, branch=probe.branch, error=str(exc))
         state, message = GATE_UNREADABLE, _unreadable_message(probe.branch)

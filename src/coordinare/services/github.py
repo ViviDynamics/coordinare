@@ -43,7 +43,9 @@ _COMPARE_FILE_LIMIT = 300
 _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
-_MERGE_HEAD_MISMATCH_MESSAGES = ("head branch was modified", "head branch is out of date")
+_MERGE_HEAD_MISMATCH_MESSAGES = ("head branch was modified",)
+_MERGE_HEAD_BEHIND_BASE_MESSAGE = "head branch is out of date"
+_MERGE_WAIT_MESSAGES = (*_MERGE_HEAD_MISMATCH_MESSAGES, _MERGE_HEAD_BEHIND_BASE_MESSAGE)
 _PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
@@ -923,9 +925,9 @@ class GitHubService(CardIdentityMap):
             # service-health circuit breaker.  Only true transport problems
             # (5xx, timeouts) should count as service failures.
             if query == SQUASH_MERGE_MUTATION and any(
-                message in str(exc).lower() for message in _MERGE_HEAD_MISMATCH_MESSAGES
+                message in str(exc).lower() for message in _MERGE_WAIT_MESSAGES
             ):
-                # A new head is a new decision, never an outage to retry internally.
+                # A merge wait needs a new decision, never an internal outage retry.
                 raise PermanentGitHubError(str(exc)) from exc
             errors = exc.errors or []
             err_types: set[str] = set()
@@ -2319,6 +2321,8 @@ class GitHubService(CardIdentityMap):
             })
         except PermanentGitHubError as exc:
             message = str(exc).lower()
+            if _MERGE_HEAD_BEHIND_BASE_MESSAGE in message:
+                return {"merged": False, "reason": "head_behind_base"}
             if any(fragment in message for fragment in _MERGE_HEAD_MISMATCH_MESSAGES):
                 return {"merged": False, "reason": "head_mismatch"}
             raise

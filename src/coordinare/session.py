@@ -313,7 +313,7 @@ class CardSession(TypedDict, total=False):
     review_wait_reason: str | None
     review_wait_head: str | None
     review_wait_expired: bool
-    approval_carryover_cache: dict[tuple[str, str], tuple[float, bool]]
+    approval_carryover_cache: dict[str, tuple[float, bool]]
     approval_carryover_unverified_head: str | None
     approval_docs_notified_head: str | None
     review_wait_detail: str | None

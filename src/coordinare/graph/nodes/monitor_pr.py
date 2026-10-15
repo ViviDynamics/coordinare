@@ -33,6 +33,7 @@ from coordinare.services import pipeline_budget
 from coordinare.services.approval_carryover import (
     DISMISSED_DOCS_REASON,
     carried_approval_ids,
+    review_rules_known,
     surface_docs_approval_wait,
 )
 from coordinare.services.board_provider import board_of, move_card_or_warn
@@ -855,7 +856,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     docs_rule_wait = bool(proven_docs) and (
         (dismissal_on and any(id(r) in proven_docs for r in dismissed)) or extra_approval
     )
-    carried = set() if dismissal_on or extra_approval else proven_docs
+    carried = proven_docs if review_rules_known(rules) and not dismissal_on and not extra_approval else set()
     approvals = [
         r for r in standing_approvals
         if _approval_is_current(r, cutoff, _pr_head_oid) or id(r) in carried
@@ -911,6 +912,10 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         state["phase"] = "relay_feedback"
         _record_review_wait(state, _decision_card, None, reason="actionable_feedback", head=_pr_head_oid)
     elif approval_review is not None and not state.get('_pr_comment_poll_incomplete'):
+        merge_ready, _ = github_operation_ready(state, f"merge_pr:{pr_node_id}:{_pr_head_oid}")
+        if not merge_ready:
+            state["phase"] = "monitoring_pr"
+            return state
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
         # the PR's *base* branch is red.  Default-off and fail-open, so when the
         # gate is disabled / indeterminate this is byte-identical to going

@@ -24,6 +24,13 @@ DISMISSED_DOCS_MESSAGE = (
 _POST_APPROVAL_PUSH_MARKERS = {"documenting": frozenset({"docs_committed"})}
 
 
+def review_rules_known(rules: dict[str, bool]) -> bool:
+    """Carry-over needs a positive reading of both push-related review rules."""
+    return all(isinstance(rules.get(key), bool) for key in (
+        "dismiss_stale_reviews_on_push", "require_extra_approval_for_unattributed_changes",
+    ))
+
+
 def _recorded_commits(
     state: CoordinareState, commits: dict[str, dict[str, Any]], approved_sha: str,
 ) -> set[str]:
@@ -103,21 +110,22 @@ async def carried_approval_ids(
     head and candidate approvals are retained. A cached result never overrides a
     withdrawn review or the target branch's review rules.
     """
-    if not reviews or not pr_url or not head_sha:
+    if not reviews or not pr_url or not head_sha or not review_rules_known(state.get("merge_review_rules") or {}):
         return set()
     approved_shas = {str(review.get("commit_oid") or "").strip() for review in reviews}
+    pairs = {f"{approved}|{head_sha}" for approved in approved_shas}
     cache = state.get("approval_carryover_cache") or {}
-    cache = {pair: entry for pair, entry in cache.items() if pair[1] == head_sha and pair[0] in approved_shas}
+    cache = {pair: entry for pair, entry in cache.items() if pair in pairs}
     state["approval_carryover_cache"] = cache
     carried: set[int] = set()
     for review in reviews:
         approved_sha = str(review.get("commit_oid") or "").strip()
         if not approved_sha or approved_sha == head_sha:
             continue
-        pair = (approved_sha, head_sha)
-        now = time.monotonic()
+        pair = f"{approved_sha}|{head_sha}"
+        now = time.time()
         cached = cache.get(pair)
-        if cached is None or now - cached[0] >= CARRYOVER_CACHE_SECONDS:
+        if cached is None or not 0 <= now - cached[0] < CARRYOVER_CACHE_SECONDS:
             verified = False
             try:
                 verified = await _verify_documenter_range(

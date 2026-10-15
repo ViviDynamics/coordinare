@@ -339,7 +339,7 @@ class CoordinareState(TypedDict, total=False):
     # 101: the symphony-level review condition for the running symphony (external_review_required,
     # clear, unreadable), set by the daemon before each cycle. None until the first read.
     merge_review_rules: dict[str, bool]
-    approval_carryover_cache: dict[tuple[str, str], tuple[float, bool]]
+    approval_carryover_cache: dict[str, tuple[float, bool]]
     approval_carryover_unverified_head: str | None
     approval_docs_notified_head: str | None
     review_wait_detail: str | None
