@@ -16,7 +16,12 @@ from coordinare.dashboard.routers import events
 from coordinare.dashboard.sse import SSEBroadcaster
 from coordinare.services import event_store_query
 from coordinare.services.event_store import EventStore
-from coordinare.services.event_store_db import CREATE_TABLE, SCHEMA_VERSION, create_schema
+from coordinare.services.event_store_db import (
+    CREATE_TABLE,
+    SCHEMA_VERSION,
+    create_schema,
+    migrate_filter_index,
+)
 from coordinare.services.event_store_query import EventFilters, read_events
 from tests.unit.test_271_logs import _app
 
@@ -31,7 +36,7 @@ FILTER_INDEXES = {
     "card_id": "events_card_ts",
     "source": "events_source_ts",
     "level": "events_level_ts",
-    "stage": "events_stage_ts",
+    "stage": None,
 }
 TOO_BROAD_MESSAGE = "query too broad, narrow the filters"
 
@@ -67,7 +72,7 @@ async def test_ignored_performer_replays_are_counted_in_health(tmp_path: Path, l
 
 @pytest.mark.parametrize("field,index", FILTER_INDEXES.items())
 @pytest.mark.parametrize("legacy", [False, True])
-def test_common_filter_migration_uses_search_index(tmp_path: Path, field: str, index: str, legacy: bool) -> None:
+def test_common_filter_migration_uses_search_index(tmp_path: Path, field: str, index: str | None, legacy: bool) -> None:
     with sqlite3.connect(tmp_path / "events.db") as db:
         if legacy:
             db.execute(CREATE_TABLE)
@@ -75,6 +80,8 @@ def test_common_filter_migration_uses_search_index(tmp_path: Path, field: str, i
             db.execute("INSERT INTO events (ts,message) VALUES ('2026-10-15T12:00:00+00:00','retained')")
             db.commit()
         create_schema(db)
+        while migrate_filter_index(db):
+            pass
         create_schema(db)
         assert SCHEMA_VERSION > LEGACY_SCHEMA_VERSION
         assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
@@ -84,8 +91,12 @@ def test_common_filter_migration_uses_search_index(tmp_path: Path, field: str, i
             + " ORDER BY ts DESC, id DESC LIMIT ?", [*values, 1],
         ).fetchall()
         details = " ".join(row[-1] for row in plan)
-        assert f"SEARCH events USING INDEX {index}" in details
-        assert "TEMP B-TREE" not in details
+        if index is None:
+            assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='events_stage_ts'").fetchone()
+            assert len(read_events(tmp_path / "events.db", EventFilters(stage=""), None, 1)["events"]) == int(legacy)
+        else:
+            assert f"SEARCH events USING INDEX {index}" in details
+            assert "TEMP B-TREE" not in details
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] == int(legacy)
 
 

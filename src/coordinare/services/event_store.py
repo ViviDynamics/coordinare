@@ -15,6 +15,7 @@ from coordinare.services.event_store_db import (
     COLUMNS,
     create_schema,
     disk_stats,
+    migrate_filter_index,
     migrate_performer_batch,
     prune_batch,
 )
@@ -115,6 +116,7 @@ class EventStore:
         self._dropped = 0
         self._pruned = 0
         self._migration_active = False
+        self._filter_migration_active = True
         self._accepting = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._owner = threading.get_ident()
@@ -240,6 +242,7 @@ class EventStore:
 
     async def _run(self) -> None:
         next_prune = time.monotonic() + MAINTENANCE_SECONDS
+        next_index = time.monotonic() + MAINTENANCE_YIELD_SECONDS
         try:
             try:
                 await self._call(self._initialize)
@@ -252,15 +255,19 @@ class EventStore:
                 if rows:
                     await self._persist(rows)
                 elif self._accepting:
+                    next_work = min(next_prune, next_index) if self._filter_migration_active else next_prune
                     with contextlib.suppress(TimeoutError):
                         await asyncio.wait_for(
                             self._ready.wait(),
-                            timeout=max(next_prune - time.monotonic(), MAINTENANCE_YIELD_SECONDS),
+                            timeout=max(next_work - time.monotonic(), MAINTENANCE_YIELD_SECONDS),
                         )
                 if self._accepting and time.monotonic() >= next_prune:
                     removed = await self.prune()
                     interval = MAINTENANCE_YIELD_SECONDS if removed or self._migration_active else MAINTENANCE_SECONDS
                     next_prune = time.monotonic() + interval
+                elif self._accepting and self._filter_migration_active and time.monotonic() >= next_index:
+                    interval = await self._maintain_filter_index()
+                    next_index = time.monotonic() + interval
                 await asyncio.sleep(0)
         finally:
             with contextlib.suppress(Exception):
@@ -307,6 +314,18 @@ class EventStore:
             self._finish(len(rows), sum(map(len, rows)), failed=failed)
             for _ in rows:
                 self._queue.task_done()
+
+    def _migrate_filter_index(self) -> bool:
+        self._initialize()
+        return self._db is not None and migrate_filter_index(self._db)
+
+    async def _maintain_filter_index(self) -> float:
+        try:
+            self._filter_migration_active = await self._call(self._migrate_filter_index)
+        except Exception as exc:
+            self._record_error(exc)
+            return MAINTENANCE_SECONDS
+        return MAINTENANCE_YIELD_SECONDS
 
     def _prune(self) -> int:
         self._initialize()

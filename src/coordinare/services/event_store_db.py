@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from coordinare.services.event_store_settings import EventStoreConfig
 
+logger = structlog.get_logger(__name__)
+
 SCHEMA_VERSION = 4
+BASELINE_INDEXES = (
+    ("ts", "ts"),
+    ("symphony_ts", "symphony, ts"),
+    ("run_ts", "run_id, ts"),
+    ("kind_ts", "kind, ts"),
+)
+FILTER_INDEXES = (
+    ("card_ts", "card_id, ts"),
+    ("source_ts", "source, ts"),
+    ("level_ts", "level, ts"),
+)
+RETIRED_INDEXES = ("events_stage_ts",)
 BUSY_TIMEOUT_MS = 1000
 VACUUM_PAGES = 256
 COLUMNS = (
@@ -143,21 +160,44 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
     with db:
         db.execute("BEGIN IMMEDIATE")
         db.execute(CREATE_TABLE)
-        for name, columns in (
-            ("ts", "ts"),
-            ("symphony_ts", "symphony, ts"),
-            ("run_ts", "run_id, ts"),
-            ("kind_ts", "kind, ts"),
-            ("card_ts", "card_id, ts"),
-            ("source_ts", "source, ts"),
-            ("level_ts", "level, ts"),
-            ("stage_ts", "stage, ts"),
-        ):
+        for name, columns in BASELINE_INDEXES:
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
         _prepare_performer_migration(db)
         fts = _create_fts(db) if enable_fts else False
         db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return fts
+
+
+def migrate_filter_index(db: sqlite3.Connection) -> bool:
+    """Build one filter index per slice, committing progress in sqlite_master.
+
+    A committed index survives restart; an interrupted build rolls back and is
+    retried. Queries remain correct while any of these optional indexes is absent.
+    Each build holds the writer for one index, so drain ingress between slices.
+    """
+    indexes = {row[1] for row in db.execute("PRAGMA index_list(events)")}
+    for index in RETIRED_INDEXES:
+        if index in indexes:
+            _migrate_index(db, index, f"DROP INDEX {index}", "event_store.index_dropped")
+            return True
+    for name, columns in FILTER_INDEXES:
+        index = f"events_{name}"
+        if index in indexes:
+            continue
+        _migrate_index(
+            db, index, f"CREATE INDEX IF NOT EXISTS {index} ON events ({columns})",
+            "event_store.index_built",
+        )
+        return True
+    return False
+
+
+def _migrate_index(db: sqlite3.Connection, index: str, statement: str, event: str) -> None:
+    started = time.monotonic()
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(statement)
+    logger.info(event, index=index, duration_seconds=time.monotonic() - started)
 
 
 def disk_stats(db: sqlite3.Connection, path: Path, rows: int | None = None) -> dict[str, Any]:

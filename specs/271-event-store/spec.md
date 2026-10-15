@@ -28,6 +28,17 @@ existing databases, duplicate cleanup scans at most one primary-key batch per ma
 turn, with its cursor and seen identities persisted across restarts. Normal writes run
 between maintenance turns. A temporary insert trigger rejects replays until cleanup
 finishes and maintenance builds the unique index. Startup never deletes legacy rows.
+Version 4 adds optional card, source and level timestamp indexes. Startup does not
+build them. Maintenance builds one index in its own transaction between write
+batches, starting after the writer is ready, and logs the index name and duration
+with event_store.index_built. The committed SQLite index catalog records progress:
+a restart skips completed indexes and retries interrupted builds. The schema version
+identifies the query contract, not completion of optional performance work. Queries
+work while indexes are absent. Existing stage indexes are removed in a separate
+maintenance slice, logged as event_store.index_dropped. Stage remains queryable;
+the write throughput measurement justified keeping seven filter indexes instead of
+eight. Each index build still holds the SQLite writer lock for that individual
+build; slices prevent all builds from holding up queued writes consecutively.
 Inserts use INSERT OR IGNORE. FTS5 indexes message when supported; otherwise literal LIKE search is used.
 
 Use DELETE rollback journaling, synchronous NORMAL and a busy timeout. WAL is unsafe on
@@ -91,9 +102,11 @@ health line.
 `await query_events(filters, cursor, limit)` uses its own read-only connection in a
 thread, with one short read transaction per page closed before returning. Filters
 support inclusive start and end UTC times, symphony, card, run, stage, source, kind,
-level and literal free text. Limits are bounded to 500 rows. Newest first means ORDER BY
-ts DESC, id DESC. An opaque (ts, id) keyset cursor avoids duplication under concurrent
-inserts and remains usable after pruning. Invalid filters or cursors fail explicitly.
+level and literal free text. Limits are bounded to 500 rows. Without text, newest
+first means ORDER BY ts DESC, id DESC with an opaque (ts, id) keyset cursor. Text
+search uses descending insertion ID order with an ID cursor, including the LIKE
+fallback. Both cursors avoid duplication under concurrent inserts and remain usable
+after pruning. Invalid filters or cursors fail explicitly.
 Authorization and symphony scope must be applied by the phase 2 callers; this internal
 service is not an exposed API.
 
@@ -132,6 +145,14 @@ validates timezone bearing ISO timestamps, an ordered inclusive range, exact sym
 card, run, stage, source, kind and level filters, literal message search, and the
 store's opaque cursor. Text filters are bounded to 1024 characters, cursors to 512,
 and limits to 1 through 500. HTTP defaults to 100 rows; the browser requests 50.
+Full text results use descending insertion ID order and ID cursors, allowing FTS5 to
+stream matches and apply the limit before sorting the whole match set. Insertion
+order differs from timestamp order only for late arriving performer events. The
+literal LIKE fallback uses the same insertion order and cursor, without choosing a
+filter index that would require sorting all matches. Queries without text keep
+descending timestamp and ID order. All reads, including LIKE scans with no matches,
+have a named 250 ms execution budget; lock waits remain limited to 50 ms. A query
+that exceeds its budget releases its transaction and asks for narrower filters.
 SQLite reads remain inside EventStore.query_events's worker thread. Storage failures
 return a generic unavailable response. Responses are never cached and receive another
 redact_state_value and sensitive key redaction pass, including legacy rows.

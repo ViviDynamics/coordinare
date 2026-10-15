@@ -26,7 +26,7 @@ class QueryEventsInput(BaseModel):
 
 
 async def query_events(query: EventQuery) -> dict[str, Any]:
-    """Query redacted events with a validated query object, newest first."""
+    """Query events newest first, by insertion ID when searching message text."""
     parsed = EventQuery.model_validate(query)
     return (await query_events_handler(parsed, get_client())).model_dump(exclude_none=True)
 
@@ -34,7 +34,7 @@ async def query_events(query: EventQuery) -> dict[str, Any]:
 TOOLS = (
     ToolDefinition(
         name="query_events", domain="state",
-        description="Query redacted persistent events with time, symphony, card, run, stage, source, kind, level and text filters. Returns at most 500 rows and an opaque cursor. Symphony is a display filter.",
+        description="Query redacted persistent events with time, symphony, card, run, stage, source, kind, level and text filters. Returns at most 500 rows and an opaque cursor. Text results use insertion order, differing from timestamp order only for late arriving performer events. Other results use timestamp order. Symphony is a display filter.",
         input_model=QueryEventsInput, annotations=READ_ONLY,
         rest_calls=(("GET", "/api/events"),), handler=query_events,
     ),
