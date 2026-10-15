@@ -277,7 +277,11 @@ function setDoneLane(s, nowMs) {
 // The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
 function doneLaneHtml(entries, nowMs) {
   var rows = entries.map(function(e) {
-    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgo(e.mergedAt, nowMs) || 'at an unknown time') + '</span></li>';
+    // 233: the card's name opens its card page, when the address is one the page can name.
+    var name = cardPageAddressOk(e.symphony, e.iid)
+      ? '<a href="' + esc(cardPathFor(e.symphony, e.iid)) + '" onclick="navigate(event,this.pathname)">' + esc(e.label) + '</a>'
+      : esc(e.label);
+    return '<li>' + name + ' <span class="muted">merged ' + esc(fmtAgo(e.mergedAt, nowMs) || 'at an unknown time') + '</span></li>';
   }).join('');
   // Only the summary shows when collapsed. The note and the list sit in the opened body, so the fold holds.
   return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
@@ -555,7 +559,9 @@ function renderCardDetailContent(sess, s) {
       }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No progress checks yet.</div>';
   // 147: the pipeline tracker and lifecycle list, loaded by timelineHydrate after this HTML is set.
-  var pipeline = timelinePlaceholderHtml(timelineSymphonyFor(s, sess.card_id), sess.card_id || '');
+  // 233: the live card links to its card page, which needs no live session.
+  var pipelineSymphony = timelineSymphonyFor(s, sess.card_id);
+  var pipeline = cardFullTimelineHtml(pipelineSymphony, sess.card_id || '') + timelinePlaceholderHtml(pipelineSymphony, sess.card_id || '');
   return '<div class="card-detail-actions">' + cardActionsHtml(sess, s) + pendingControlHtml(sess) + viewRunLinkHtml(sess) + '</div>' +
     pipeline +
     '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +

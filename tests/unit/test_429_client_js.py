@@ -20,6 +20,7 @@ from tests.unit.dashboard_js_slices import (
     label_helpers_js,
     run_id_js,
     shipped_function,
+    shipped_var,
     time_helpers_js,
     usage_helpers_js,
 )
@@ -80,7 +81,9 @@ def _extract_detail_js() -> str:
             raise AssertionError(f"the shared {name}() helper is no longer in performers.js")
         cost_helpers.append(helper.group(0))
     # 147: the detail draws the pipeline tracker, which lives in timeline.js and reads symphonies.js.
-    timeline = [_DASHBOARD_JS_SOURCES["symphonies"], _DASHBOARD_JS_SOURCES["timeline"]]
+    # 233: the card detail links to the card page, whose address helpers read RUN_NAME_PATTERN.
+    timeline = [shipped_var("runs", "RUN_NAME_PATTERN"), _DASHBOARD_JS_SOURCES["cardpage"],
+                _DASHBOARD_JS_SOURCES["symphonies"], _DASHBOARD_JS_SOURCES["timeline"]]
     # 141: the detail renders the run's short name and its Copy button.
     return "\n".join([esc.group(0), time_helpers_js(), run_id_js(), glossary, fmt.group(0), alias, fmt_age.group(0), stubs, *cost_helpers, *timeline, detail_js])
 

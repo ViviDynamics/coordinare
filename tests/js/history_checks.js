@@ -242,7 +242,12 @@ const twoReasons = historyPartialHtml({ partial: true, partial_reasons: ["a", "b
 has("the first partial reason is shown", twoReasons, "not every card was checked");
 has("the second partial reason is shown too", twoReasons, "Second reason here.");
 
-has("a card link goes to History filtered to that card", historyRunRowHtml(row()), "h.card=PVTI_1");
+// 233: the card cell links to the card page; a card id that is not a plausible name keeps the filter.
+has("a card link goes to the card page", historyRunRowHtml(row()), 'data-history-card="/cards/coordinare/PVTI_1"');
+has("the card page link is marked for the in-app router", historyRunRowHtml(row()), 'href="/cards/coordinare/PVTI_1"');
+lacks("the card link no longer filters History", historyRunRowHtml(row()), "h.card=PVTI_1");
+has("an implausible card id keeps the History filter", historyRunRowHtml(row({ card: "a b" })), "h.card=a");
+lacks("an implausible card id gets no card page link", historyRunRowHtml(row({ card: "a b" })), "/cards/");
 lacks("the run number column is gone", historyTableHtml([row()]), "Run (approx.)");
 lacks("no run number is shown", historyRunRowHtml(row({ run_number: 3 })), "Run 3");
 

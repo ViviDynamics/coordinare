@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.assets import _DASHBOARD_JS_ORDER, DASHBOARD_HTML_BUDGET_BYTES
-from tests.unit.dashboard_js_slices import shipped_function, time_helpers_js
+from tests.unit.dashboard_js_slices import shipped_function, shipped_var, time_helpers_js
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -27,6 +27,9 @@ def _history_slice() -> str:
         shipped_function("helpers", "fmtCost"),
         _DASHBOARD_JS_SOURCES["usage"],
         shipped_function("runs", "runPathFor"),
+        # 233: the card cell's link comes from the card page's address helpers.
+        shipped_var("runs", "RUN_NAME_PATTERN"),
+        _DASHBOARD_JS_SOURCES["cardpage"],
         _DASHBOARD_JS_SOURCES["history"],
     ])
 

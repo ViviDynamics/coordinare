@@ -31,6 +31,7 @@ from coordinare.services.card_timeline import (
     merged_at,
     pipeline_strip,
 )
+from tests.unit.dashboard_js_slices import shipped_var
 
 _REPO = Path(__file__).resolve().parents[2]
 _APP = _DASHBOARD_JS_SOURCES["app"]
@@ -151,8 +152,10 @@ def test_the_board_functions_pass_their_node_checks(tmp_path: Path) -> None:
     node = shutil.which("node")
     assert node is not None, "node is required for the dashboard JS gates"
     bundle = tmp_path / "board_155_bundle.js"
+    # 233: the Done lane links to the card page, whose address helpers read RUN_NAME_PATTERN.
     bundle.write_text("\n\n".join(
-        _DASHBOARD_JS_SOURCES[name] for name in ("helpers", "performers", "waiting", "timeline", "symphonies")
+        [shipped_var("runs", "RUN_NAME_PATTERN")]
+        + [_DASHBOARD_JS_SOURCES[name] for name in ("helpers", "performers", "waiting", "timeline", "cardpage", "symphonies")],
     ), encoding="utf-8")
     checks = _REPO / "tests" / "js" / "board_155_checks.js"
     result = subprocess.run([node, str(checks), str(bundle)], capture_output=True, text=True, timeout=60, check=False)
