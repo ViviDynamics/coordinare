@@ -14,6 +14,8 @@ _TEXT = "  # Instructions\r\n\r\nUse **care** and `code`.  \r\n"
 _WIDE = {"width": 1280, "height": 800}
 _NARROW = {"width": 375, "height": 800}
 _MIN_EDITOR_FRACTION = 0.6
+# Firefox reports sub-pixel layout heights (479.99997 for a 480 px box).
+_LAYOUT_TOLERANCE_PX = 1
 
 
 def _open(page: Page, url: str, *, conflict: bool = False) -> list[dict[str, Any]]:
@@ -55,7 +57,7 @@ def test_one_persona_keyboard_tools_and_responsive_preview(page: Page, live_serv
     source = page.locator(_SOURCE)
     expect(source).to_be_visible()
     bounds = source.bounding_box()
-    assert bounds is not None and bounds["height"] >= _WIDE["height"] * _MIN_EDITOR_FRACTION
+    assert bounds is not None and bounds["height"] + _LAYOUT_TOLERANCE_PX >= _WIDE["height"] * _MIN_EDITOR_FRACTION
     expect(page.locator('[data-persona-panel]:visible')).to_have_count(1)
     expect(page.locator('[data-md-preview]:visible h1')).to_have_text("Instructions")
     expect(page.locator('[data-md-highlight]:visible .md-heading')).to_have_count(1)
