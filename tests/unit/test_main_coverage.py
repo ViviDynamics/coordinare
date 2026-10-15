@@ -243,7 +243,7 @@ def test_main_exits_2_on_generic_exception(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(app_main, "validate_config", lambda *a, **kw: passing_result)
     monkeypatch.setattr(app_main, "ProjectConfiguration", lambda **kw: config)
     monkeypatch.setattr(app_main, "configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app_main, "validate_auth_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_main, "validate_start_time", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         app_main.argparse.ArgumentParser,
         "parse_args",

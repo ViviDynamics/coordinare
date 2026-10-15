@@ -1346,6 +1346,10 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
+    # The start-time checks run again on the config as written (252), so a caller other than main
+    # cannot start the daemon past a refusal main would have made.
+    unexpanded = load_unexpanded_config(config_path)
+    validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
