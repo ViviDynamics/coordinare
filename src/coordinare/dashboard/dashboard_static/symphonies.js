@@ -577,6 +577,10 @@ function symphonyStatus(sym) {
       reason = 'Checked every ' + sym.poll_interval_seconds + ' seconds.';
     } else reason = 'Checked when a webhook arrives.';
   }
+  // 101: a paused or failed symphony still has the branch condition, so it is added after the reason.
+  if (review && review.message && review.state !== 'clear' && (label === 'Error' || label === 'Paused')) {
+    reason = reason + ' ' + String(review.message);
+  }
   var tone = {Disabled: 'muted', Error: 'red', Paused: 'blue', Active: 'green'}[label];
   return {label: label, reason: reason, tone: tone};
 }

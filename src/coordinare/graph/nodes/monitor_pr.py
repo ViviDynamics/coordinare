@@ -33,7 +33,12 @@ from coordinare.services import pipeline_budget
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
-from coordinare.services.merge_review_gate import pr_waits_on_external_review
+from coordinare.services.merge_review_gate import (
+    FAILING_CHECK_STATES,
+    GATE_EXTERNAL,
+    PrFacts,
+    pr_waits_on_external_review,
+)
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
     REVIEW_WAIT_AUTOMATION,
@@ -224,16 +229,18 @@ def _log_merge_decision(card_id: str, outcome: str, reason: str, **observed: obj
         )
 
 
-async def _pr_waits_on_external_review(
-    github: Any, review_decision: str, merge_state: str, author: str,
-) -> bool:
-    """#101: a daemon-authored PR that GitHub blocks for a review. The identity is read only when
-    the PR's own fields already point at it, so the common path makes no extra call."""
-    if review_decision.upper() != "REVIEW_REQUIRED" or merge_state.upper() != "BLOCKED" or not author.strip():
+async def _pr_waits_on_external_review(github: Any, facts: PrFacts, condition: str | None) -> bool:
+    """#101: a daemon-authored PR that waits on a review no one inside the loop can give. The
+    identity is read only when the PR's own fields already point at it, so the common path makes
+    no extra call."""
+    if facts.merge_state_status.upper() != "BLOCKED" or not facts.author_login.strip():
+        return False
+    if facts.checks_state.upper() in FAILING_CHECK_STATES:
+        return False
+    if facts.review_decision.upper() != "REVIEW_REQUIRED" and condition != GATE_EXTERNAL:
         return False
     return pr_waits_on_external_review(
-        review_decision=review_decision, merge_state_status=merge_state,
-        author_login=author, daemon_logins=await github.self_logins(),
+        facts, condition=condition, daemon_logins=await github.self_logins(),
     )
 
 
@@ -624,7 +631,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
 
     # Read lifecycle state before CI can bounce a closed PR into implementation.
     live_pr_state = ""
-    _merge_state, _author_login = "", ""
+    _merge_state, _author_login, _checks_state = "", "", ""
     try:
         ready, retry_in = github_operation_ready(state, "monitor_pr")
         if not ready:
@@ -647,6 +654,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             _review_decision = str(_ctx.get("review_decision", "") or "")
             _merge_state = str(_ctx.get("merge_state_status", "") or "")
             _author_login = str(_ctx.get("author_login", "") or "")
+            _checks_state = str(_ctx.get("checks_state", "") or "")
             live_pr_state = str(_ctx.get("state") or "").upper()
             if live_pr_state == "CLOSED":
                 clear_deferred_github_operation(state, "monitor_pr")
@@ -947,7 +955,11 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             # The approval was given on a commit that is no longer the head.
             _wait_reason = "approval_predates_head"
             _observed["approved_commit"] = str(stale_approvals[-1].get("commit_oid") or "")[:7] or "unknown"
-        elif await _pr_waits_on_external_review(github, _review_decision, _merge_state, _author_login):
+        elif await _pr_waits_on_external_review(
+            github,
+            PrFacts(_review_decision, _merge_state, _author_login, _checks_state),
+            state.get("merge_review_condition"),
+        ):
             # #101: GitHub needs a review and coordinare opened this PR, so no one can approve it
             # from inside the loop. Said plainly, so the card does not read as generic waiting.
             _wait_reason = "external_review_required"

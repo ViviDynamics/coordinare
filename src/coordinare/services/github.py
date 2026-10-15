@@ -18,7 +18,12 @@ from gql.transport.exceptions import TransportQueryError, TransportServerError
 from coordinare.resilience import CircuitOpenError
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.issue_comment_service import normalize_logins
-from coordinare.services.merge_review_gate import PROTECTION_CLASSIC, PROTECTION_RULES
+from coordinare.services.merge_review_gate import (
+    PROTECTION_CLASSIC,
+    PROTECTION_RULES,
+    ruleset_ids,
+    ruleset_source_key,
+)
 from coordinare.services.system_health import (
     FAILURE_AUTH,
     FAILURE_CIRCUIT,
@@ -35,6 +40,17 @@ _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
 _PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
+
+
+def _head_checks_state(pr_node: dict[str, Any]) -> str:
+    """101: the rollup state of the PR's head commit checks, or "" when GitHub does not say."""
+    commits = pr_node.get("commits")
+    nodes = commits.get("nodes") if isinstance(commits, dict) else None
+    if not isinstance(nodes, list) or not nodes or not isinstance(nodes[0], dict):
+        return ""
+    commit = nodes[0].get("commit")
+    rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    return str(rollup.get("state") or "") if isinstance(rollup, dict) else ""
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
 _PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
@@ -259,6 +275,9 @@ query GetPRReviews($prId: ID!) {
       state
       mergeStateStatus
       author { login }
+      commits(last: 1) {
+        nodes { commit { statusCheckRollup { state } } }
+      }
       reviews(last: 50) {
         nodes {
           id
@@ -2146,6 +2165,7 @@ class GitHubService(CardIdentityMap):
             # 101: the closer names a daemon-authored PR that waits on a review it cannot give.
             "merge_state_status": str(node.get("mergeStateStatus") or ""),
             "author_login": str(author.get("login") or "") if isinstance(author, dict) else "",
+            "checks_state": _head_checks_state(node),
         }
 
     async def request_reviews(
@@ -2215,10 +2235,26 @@ class GitHubService(CardIdentityMap):
             }
         base = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}"
         ref = quote(branch, safe="")
-        return {
+        rules = await self._rest_status_retried(f"{base}/rules/branches/{ref}")
+        sources: dict[str, tuple[int, Any]] = {
             PROTECTION_CLASSIC: await self._rest_status_retried(f"{base}/branches/{ref}/protection"),
-            PROTECTION_RULES: await self._rest_status_retried(f"{base}/rules/branches/{ref}"),
+            PROTECTION_RULES: rules,
         }
+        # Each ruleset the rules name is read for its enforcement mode and bypass list.
+        for ruleset_id in ruleset_ids(rules[1]) if rules[0] == _HTTP_OK else []:
+            sources[ruleset_source_key(ruleset_id)] = await self._rest_status_retried(
+                f"{base}/rulesets/{ruleset_id}",
+            )
+        return sources
+
+    async def daemon_app_id(self) -> int | None:
+        """101: the numeric id of coordinare's GitHub App, or None when it authenticates as a token.
+
+        A ruleset's bypass list names an App by this id, so it is the only way to tell whether the
+        daemon is a bypass actor.
+        """
+        app_id = getattr(self._auth, "app_id", None)
+        return app_id if isinstance(app_id, int) and not isinstance(app_id, bool) else None
 
     async def _rest_status_retried(self, url: str) -> tuple[int, Any]:
         """One REST GET, retried on a transport error, 429 or 5xx. Status 0 when it never answered."""

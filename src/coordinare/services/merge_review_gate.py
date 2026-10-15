@@ -1,15 +1,17 @@
 """#101: the solo-author approval trap, detected and explained. Merge policy is not changed.
 
 A repo whose target branch requires an approving review (classic branch protection, a
-ruleset, or code-owner review) cannot be merged by a PR that its own author opened: GitHub
-never lets an author approve their own PR. coordinare's identity opens its PRs, so on such
-a repo the closer waits for ever.
+ruleset, a code owner's review, or a last-push approval) cannot be merged by a PR that its own
+author opened: GitHub never lets an author approve their own PR. coordinare's identity opens
+its PRs, so on such a repo the closer waits for ever.
 
 This module reads the branch's review rules at symphony startup and then about every
 ``RECHECK_SECONDS``, compares them with coordinare's own identity, and records one
-symphony-level condition. A change of condition is logged to the activity feed and, when
-the trap is found, sent once through the notification layer. The per-PR closer names the
-same wait ``external_review_required`` so a card shows why it is not merging.
+symphony-level condition. A ruleset that is not enforced (evaluate or disabled mode), or that
+lets the daemon's App bypass it, does not count. A change of condition is logged to the
+activity feed and, when the trap is found, sent once through the notification layer. The
+per-PR closer names the same wait ``external_review_required`` so a card shows why it is not
+merging.
 """
 
 from __future__ import annotations
@@ -29,16 +31,27 @@ GATE_CLEAR = "clear"
 GATE_UNREADABLE = "unreadable"
 
 # The two sources read for a branch. Both are read every time, so a repo that uses only one
-# of them is not mistaken for a repo with neither.
+# of them is not mistaken for a repo with neither. Each ruleset that the rules list names is
+# also read by its own key (``ruleset:<id>``), for its enforcement mode and bypass list.
 PROTECTION_CLASSIC = "classic"
 PROTECTION_RULES = "rules"
 PROTECTION_SOURCES = (PROTECTION_CLASSIC, PROTECTION_RULES)
-
-# The branch read when a symphony names none. Matches the daemon's own default base branch.
-DEFAULT_TARGET_BRANCH = "main"
+RULESET_SOURCE_PREFIX = "ruleset:"
 
 # Protection changes rarely. A read every cycle would spend the GitHub budget for nothing.
 RECHECK_SECONDS = 900.0
+
+# The branch the gate reads. The daemon has no per-symphony base branch: rebase and the CI gate
+# assume ``main`` in the same way, so this matches what the rest of the closer does.
+DEFAULT_TARGET_BRANCH = "main"
+
+# Check states that make a BLOCKED PR a failing-checks wait rather than a review wait.
+FAILING_CHECK_STATES = frozenset({"FAILURE", "ERROR"})
+
+# A bypass mode that lets the actor merge a PR past the pull_request rule.
+_BYPASS_MODES = frozenset({"always", "pull_request"})
+_RULESET_ACTIVE = "active"
+_INTEGRATION_ACTOR = "Integration"
 
 _HTTP_OK = 200
 _HTTP_NOT_FOUND = 404
@@ -54,8 +67,13 @@ class ReviewRequirement:
 
     @property
     def requires_review(self) -> bool:
-        """True when some account other than the PR's author must approve or be a code owner."""
-        return self.approving_reviews > 0 or self.code_owner_review
+        """True when a PR needs something its own author cannot give.
+
+        An approving review, a code owner's review, or an approval of the last push each needs
+        an approval from someone else. Elm's ruleset sets only the last one (count 0), and GitHub
+        still blocks the author's PR on it.
+        """
+        return self.approving_reviews > 0 or self.code_owner_review or self.last_push_approval
 
     def combined(self, other: ReviewRequirement) -> ReviewRequirement:
         """The stricter of two requirements: the larger count, and each flag if either sets it."""
@@ -67,11 +85,39 @@ class ReviewRequirement:
 
 
 @dataclass(frozen=True)
+class RuleScope:
+    """The pull_request rules that apply to merges, and what was decided about each ruleset."""
+
+    kept: list[Any]
+    unverified: tuple[str, ...]
+    inactive: tuple[str, ...]
+    bypassed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ProtectionReading:
-    """The branch's combined requirement, and the sources that could not be read."""
+    """The branch's combined requirement, the sources that could not be read, and the rulesets
+    that were set aside (inactive or bypassed) or kept without being verified."""
 
     requirement: ReviewRequirement
     unreadable: tuple[str, ...]
+    unverified: tuple[str, ...] = ()
+    inactive: tuple[str, ...] = ()
+    bypassed: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrFacts:
+    """The fields GitHub gives for one PR that the closer's wait test reads."""
+
+    review_decision: str
+    merge_state_status: str
+    author_login: str
+    checks_state: str
+
+
+def ruleset_source_key(ruleset_id: str) -> str:
+    return f"{RULESET_SOURCE_PREFIX}{ruleset_id}"
 
 
 def _count(value: object) -> int:
@@ -92,17 +138,10 @@ def parse_classic_protection(payload: object) -> ReviewRequirement:
     )
 
 
-def parse_rules(payload: object) -> ReviewRequirement:
-    """Rulesets (``GET .../rules/branches/{b}``): the ``pull_request`` rules of every active ruleset.
-
-    Raises ValueError when the payload is not a list of rules, so the caller reports the source
-    as unreadable rather than as clear.
-    """
-    if not isinstance(payload, list):
-        msg = "ruleset payload is not a list"
-        raise ValueError(msg)
+def parse_rules(rules: list[Any]) -> ReviewRequirement:
+    """The requirement of the ``pull_request`` rules in a rules list."""
     requirement = ReviewRequirement()
-    for rule in payload:
+    for rule in rules:
         if not isinstance(rule, Mapping) or rule.get("type") != "pull_request":
             continue
         parameters = rule.get("parameters")
@@ -116,7 +155,90 @@ def parse_rules(payload: object) -> ReviewRequirement:
     return requirement
 
 
-def read_protection(sources: Mapping[str, tuple[int, object]]) -> ProtectionReading:
+def ruleset_ids(payload: object) -> list[str]:
+    """The distinct ruleset ids named by the ``pull_request`` rules of a rules payload, in order."""
+    if not isinstance(payload, list):
+        return []
+    ids: dict[str, None] = {}
+    for rule in payload:
+        if isinstance(rule, Mapping) and rule.get("type") == "pull_request" and rule.get("ruleset_id") is not None:
+            ids[str(rule["ruleset_id"])] = None
+    return list(ids)
+
+
+def parse_ruleset_detail(payload: object, daemon_app_id: int | None) -> tuple[str, bool] | None:
+    """A ruleset's enforcement and whether the daemon's App is a bypass actor for it.
+
+    Only an Integration actor with the App's own id counts as the daemon. Organisation admins and
+    teams may include coordinare, but the API does not say, so they are not counted. Returns None
+    when the payload is not a ruleset object.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    enforcement = str(payload.get("enforcement") or "")
+    actors = payload.get("bypass_actors")
+    bypass = daemon_app_id is not None and isinstance(actors, list) and any(
+        isinstance(actor, Mapping)
+        and actor.get("actor_type") == _INTEGRATION_ACTOR
+        and actor.get("actor_id") == daemon_app_id
+        and actor.get("bypass_mode") in _BYPASS_MODES
+        for actor in actors
+    )
+    return enforcement, bypass
+
+
+def scope_rules(
+    payload: object, details: Mapping[str, tuple[int, object]], daemon_app_id: int | None,
+) -> RuleScope:
+    """Keep the ``pull_request`` rules that apply to a merge by the daemon.
+
+    A rule whose ruleset is not ``active`` is set aside (evaluate mode does not block a merge),
+    and so is one the daemon's App bypasses. A ruleset whose detail could not be read is kept:
+    the conservative reading, and it is named in ``unverified``. Raises ValueError when the rules
+    payload is not a list.
+    """
+    if not isinstance(payload, list):
+        msg = "ruleset payload is not a list"
+        raise ValueError(msg)
+    kept: list[Any] = []
+    unverified: dict[str, None] = {}
+    inactive: dict[str, None] = {}
+    bypassed: dict[str, None] = {}
+    for rule in payload:
+        if not isinstance(rule, Mapping) or rule.get("type") != "pull_request":
+            continue
+        if rule.get("ruleset_id") is None:
+            kept.append(rule)
+            continue
+        ruleset = str(rule["ruleset_id"])
+        status, detail = details.get(ruleset_source_key(ruleset), (0, None))
+        if status != _HTTP_OK:
+            kept.append(rule)
+            unverified[ruleset] = None
+            continue
+        parsed = parse_ruleset_detail(detail, daemon_app_id)
+        if parsed is None:
+            kept.append(rule)
+            unverified[ruleset] = None
+            continue
+        enforcement, bypass = parsed
+        if enforcement != _RULESET_ACTIVE:
+            inactive[ruleset] = None
+        elif bypass:
+            bypassed[ruleset] = None
+        else:
+            kept.append(rule)
+    return RuleScope(
+        kept=kept,
+        unverified=tuple(unverified),
+        inactive=tuple(inactive),
+        bypassed=tuple(bypassed),
+    )
+
+
+def read_protection(
+    sources: Mapping[str, tuple[int, object]], daemon_app_id: int | None = None,
+) -> ProtectionReading:
     """Combine the per-source (HTTP status, JSON) pairs into one reading.
 
     A 404 on the classic endpoint means the branch has no classic protection, which is a
@@ -125,6 +247,7 @@ def read_protection(sources: Mapping[str, tuple[int, object]]) -> ProtectionRead
     """
     requirement = ReviewRequirement()
     unreadable: list[str] = []
+    scope = RuleScope(kept=[], unverified=(), inactive=(), bypassed=())
     for name in PROTECTION_SOURCES:
         status, payload = sources.get(name, (0, None))
         if status == _HTTP_NOT_FOUND and name == PROTECTION_CLASSIC:
@@ -133,12 +256,22 @@ def read_protection(sources: Mapping[str, tuple[int, object]]) -> ProtectionRead
             unreadable.append(name)
             continue
         try:
-            parsed = parse_classic_protection(payload) if name == PROTECTION_CLASSIC else parse_rules(payload)
+            if name == PROTECTION_CLASSIC:
+                parsed = parse_classic_protection(payload)
+            else:
+                scope = scope_rules(payload, sources, daemon_app_id)
+                parsed = parse_rules(scope.kept)
         except ValueError:
             unreadable.append(name)
             continue
         requirement = requirement.combined(parsed)
-    return ProtectionReading(requirement=requirement, unreadable=tuple(unreadable))
+    return ProtectionReading(
+        requirement=requirement,
+        unreadable=tuple(unreadable),
+        unverified=scope.unverified,
+        inactive=scope.inactive,
+        bypassed=scope.bypassed,
+    )
 
 
 def _display_identity(logins: frozenset[str]) -> str:
@@ -157,9 +290,9 @@ def _unreadable_message(branch: str) -> str:
 def judge(reading: ProtectionReading, daemon_logins: frozenset[str], branch: str) -> tuple[str, str]:
     """The symphony's condition and the sentence that explains it to an operator.
 
-    The daemon opens its PRs, so a requirement for an approving review (or a code owner's) is a
-    trap whenever coordinare's identity is known. The identity comparison is the author check:
-    an author cannot approve their own PR.
+    The daemon opens its PRs, so a requirement for a review it cannot give is a trap whenever
+    coordinare's identity is known. The identity comparison is the author check: an author cannot
+    approve their own PR.
     """
     if reading.requirement.requires_review and daemon_logins:
         return GATE_EXTERNAL, (
@@ -177,16 +310,25 @@ def judge(reading: ProtectionReading, daemon_logins: frozenset[str], branch: str
 
 
 def pr_waits_on_external_review(
-    *, review_decision: str, merge_state_status: str, author_login: str, daemon_logins: frozenset[str],
+    facts: PrFacts, *, condition: str | None, daemon_logins: frozenset[str],
 ) -> bool:
-    """The closer's per-PR test: GitHub says a review is required, the PR is blocked, and coordinare opened it."""
-    author = author_login.strip().lower()
-    return (
-        review_decision.upper() == "REVIEW_REQUIRED"
-        and merge_state_status.upper() == "BLOCKED"
-        and bool(author)
-        and author in daemon_logins
-    )
+    """The closer's per-PR test for a wait that no one inside the loop can clear.
+
+    The PR must be BLOCKED, must not have failing checks, and must have been opened by coordinare's
+    identity. Then it is an external review wait when GitHub says a review is required, or when the
+    symphony-level condition says the branch needs a review the daemon cannot give. An empty
+    ``reviewDecision`` is common on these PRs, so the condition is what carries the tag.
+    """
+    if facts.merge_state_status.upper() != "BLOCKED":
+        return False
+    if facts.checks_state.upper() in FAILING_CHECK_STATES:
+        return False
+    author = facts.author_login.strip().lower()
+    if not author or author not in daemon_logins:
+        return False
+    if facts.review_decision.upper() == "REVIEW_REQUIRED":
+        return True
+    return condition == GATE_EXTERNAL
 
 
 @dataclass(frozen=True)
@@ -211,8 +353,13 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
     if isinstance(checked_at, float) and now - checked_at < RECHECK_SECONDS:
         return
     sym_state.merge_review_checked_at = now
+    unverified: tuple[str, ...] = ()
     try:
-        reading = read_protection(await probe.github.get_branch_protection_sources(probe.branch))
+        app_id = await probe.github.daemon_app_id()
+        reading = read_protection(
+            await probe.github.get_branch_protection_sources(probe.branch), app_id,
+        )
+        unverified = reading.unverified
         state, message = judge(reading, await probe.github.self_logins(), probe.branch)
     except Exception as exc:
         logger.warning("merge_review_gate.read_failed", symphony=probe.symphony, branch=probe.branch, error=str(exc))
@@ -223,7 +370,10 @@ async def refresh_merge_review(sym_state: Any, probe: ReviewProbe, *, now: float
     sym_state.merge_review = {"state": state, "message": message, "branch": probe.branch}
     if state == previous_state:
         return
-    logger.info("merge_review_gate.changed", symphony=probe.symphony, branch=probe.branch, state=state)
+    logger.info(
+        "merge_review_gate.changed", symphony=probe.symphony, branch=probe.branch, state=state,
+        unverified_rulesets=list(unverified),
+    )
     if probe.activity is not None:
         probe.activity.record(activity_type="merge_review_gate", text=message, status=state)
     if state == GATE_EXTERNAL and probe.notification_service is not None:

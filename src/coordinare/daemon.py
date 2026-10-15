@@ -3484,19 +3484,22 @@ class CoordinareDaemon:
         if sym_workspace_manager is not None:
             self._state["workspace_manager"] = prev_workspace_manager
 
-    async def _refresh_merge_review(self, symphony_name: str, sym_state: Any, symphony_config: Any) -> None:
+    async def _refresh_merge_review(self, symphony_name: str, sym_state: Any) -> None:
         """101: read this symphony's target-branch review rules, at most every RECHECK_SECONDS."""
         github = self._state.get("github_service")
         if sym_state is None or github is None:
             return
         probe = ReviewProbe(
             symphony=symphony_name,
-            branch=getattr(symphony_config, "base_branch", None) or DEFAULT_TARGET_BRANCH,
+            branch=DEFAULT_TARGET_BRANCH,
             github=github,
             notification_service=self._state.get("notification_service"),
             activity=self._state.get("activity_log"),
         )
         await refresh_merge_review(sym_state, probe, now=time.monotonic())
+        # The closer reads the running symphony's condition from the graph state for this cycle.
+        review = getattr(sym_state, "merge_review", None)
+        self._state["merge_review_condition"] = review.get("state") if isinstance(review, dict) else None
 
     def _update_symphony_state(self, symphony_name: str, sym_state: Any) -> None:
         """Mirror the finished cycle's results back onto the symphony state."""
@@ -3573,7 +3576,7 @@ class CoordinareDaemon:
             try:
                 # 101: the branch's review rules against coordinare's identity, read at
                 # most every RECHECK_SECONDS. Never raises and never holds up the cycle.
-                await self._refresh_merge_review(symphony_name, sym_state, symphony_config)
+                await self._refresh_merge_review(symphony_name, sym_state)
                 # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
                 # path for both N=1 and N>1.  Empty-sessions case short-circuits
                 # to a single graph cycle inside _invoke_multi_session.

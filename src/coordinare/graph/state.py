@@ -332,6 +332,9 @@ class CoordinareState(TypedDict, total=False):
     # 186: the hold bound's clock for a non-human wait (see session.CardSession).
     review_wait_since: float | None
     review_wait_reason: str | None
+    # 101: the symphony-level review condition for the running symphony (external_review_required,
+    # clear, unreadable), set by the daemon before each cycle. None until the first read.
+    merge_review_condition: str | None
     review_wait_head: str | None
     review_wait_expired: bool
     idle_timeout_retries: dict[str, dict[str, Any]]
@@ -540,6 +543,7 @@ def initial_state() -> CoordinareState:
         # detector's re-queue (see handle_blocked / CardSession).
         "consumed_loop_questions": [],
         "system_error_count": 0,
+        "merge_review_condition": None,
         "system_error_notified": False,
         "card_clarifications": [],
         "performer_events": [],

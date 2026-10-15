@@ -52,3 +52,24 @@ def test_an_unreadable_branch_protection_is_said_in_plain_words(
     _open_with(page, live_server_url, store, rows)
 
     expect(_cell(page, "garden", _STATUS)).to_contain_text("could not read branch protection on main")
+
+
+@pytest.mark.e2e
+def test_the_condition_is_still_shown_on_a_paused_and_on_a_failed_symphony(
+    page: Page, live_server_url: str, store: DashboardStore,
+) -> None:
+    rows = [
+        _row("paused-sym", cards_paused=1, merge_review={"state": "external_review_required", "message": _EXTERNAL}),
+        _row(
+            "failed-sym",
+            error_count=2,
+            state={"last_error": "GitHub 401 Bad credentials", "board_snapshot": None, "active_sessions": {}},
+            merge_review={"state": "external_review_required", "message": _EXTERNAL},
+        ),
+    ]
+    _open_with(page, live_server_url, store, rows)
+
+    expect(_cell(page, "paused-sym", _STATUS)).to_contain_text("1 card is paused on the board.")
+    expect(_cell(page, "paused-sym", _STATUS)).to_contain_text(_EXTERNAL)
+    expect(_cell(page, "failed-sym", _STATUS)).to_contain_text("Last check failed: GitHub 401 Bad credentials")
+    expect(_cell(page, "failed-sym", _STATUS)).to_contain_text(_EXTERNAL)
