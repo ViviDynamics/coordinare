@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import secrets
 
-__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "LOGIN_LIMIT", "PATH_LIMIT", "echo", "fence", "new_nonce", "untrusted_rule"]
+__all__ = ["BLOCK_TAG", "ECHO_LIMIT", "LOGIN_LIMIT", "PATH_LIMIT", "echo", "fence", "new_nonce", "unescape_inert", "untrusted_rule"]
 
 BLOCK_TAG = "untrusted_data"
 NONCE_BYTES = 16
@@ -88,6 +88,19 @@ def _break_autolinks(flat: str) -> str:
     """
     flat = flat.replace("://", ":" + _ZERO_WIDTH_SPACE + "//")
     return _WWW.sub(lambda m: m.group(0)[:-1] + _ZERO_WIDTH_SPACE + ".", flat)
+
+
+_ESCAPED_CHAR = re.compile(r"\\(.)", re.DOTALL)
+
+
+def unescape_inert(text: str) -> str:
+    """Reverse ``echo``'s escapes for a prompt that reads the text, not a renderer.
+
+    Used for the fence label, which the model must read as the file name it is
+    (``synthetic_review.py``), not as GitHub markup (``synthetic\\_review.py``).
+    The label is sanitised separately, so this never reopens the record surface.
+    """
+    return _ESCAPED_CHAR.sub(r"\1", str(text or "").replace(_ZERO_WIDTH_SPACE, ""))
 
 
 def echo(text: str, limit: int = ECHO_LIMIT) -> str:

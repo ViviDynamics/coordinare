@@ -27,7 +27,7 @@ from performer.assessor_questions import (
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
-from performer.workflows.untrusted import fence, new_nonce, untrusted_rule
+from performer.workflows.untrusted import fence, new_nonce, unescape_inert, untrusted_rule
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -539,7 +539,8 @@ def closer_feedback_comments(open_threads: list[dict[str, Any]]) -> list[dict[st
     comments: list[dict[str, Any]] = []
     for t in open_threads:
         path, line = str(t.get("path") or ""), int(t.get("line") or 0)
-        label = f"review thread at {path}:{line} raised by {t.get('author') or 'unknown'}"
+        # The record holds the escaped path and login; the label shows the model the plain text.
+        label = f"review thread at {unescape_inert(path)}:{line} raised by {unescape_inert(str(t.get('author') or '')) or 'unknown'}"
         excerpt = str(t.get("excerpt") or t.get("thread_id") or "")
         # ``fenced`` tells the relay renderer that the location lives inside the
         # block, so no path or line is rendered outside it (spec 178).
@@ -845,12 +846,14 @@ async def _reviewer_post_response(
 
     is_approved = review_output.get("approved") is True  # strict bool check
     raw_comments = review_output.get("comments", [])
-    # Normalize comments: strings become {"body": str}, dicts pass through
+    # Normalize comments: strings become {"body": str}, dicts pass through.
+    # ``fenced`` is the closer's marker (spec 178): a reviewer model must not be
+    # able to set it and hide its comment's location from the relay.
     comments = []
     if isinstance(raw_comments, list):
         for c in raw_comments:
             if isinstance(c, dict):
-                comments.append(c)
+                comments.append({k: v for k, v in c.items() if k != "fenced"})
             elif isinstance(c, str):
                 comments.append({"body": c})
     raw_suggestions = review_output.get("suggestions", [])
