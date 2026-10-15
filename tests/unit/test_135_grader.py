@@ -199,9 +199,15 @@ class TestAgreeToPass:
         w = Weights(w_correctness=2.0, time_budget_seconds=120.0)
         score = score_run(_artifact(_card()), [_fixture()], weights=w)
         assert score.weights == w
-        # 2.0*1.0 - 0.1*(60/120) = 1.95 (cost unknown -> omitted)
-        assert score.scalar == pytest.approx(1.95)
+        # Spec 206: the artifact has no priced cost, and the cost term carries weight, so
+        # the scalar is withheld rather than scored as free.
+        assert score.scalar is None
         assert score.cost_component_missing is True
+
+        credit_and_time = Weights(w_correctness=2.0, w_cost=0.0, time_budget_seconds=120.0)
+        free = score_run(_artifact(_card()), [_fixture()], weights=credit_and_time)
+        # 2.0*1.0 - 0.0 - 0.1*(60/120) = 1.95 with the cost term unweighted
+        assert free.scalar == pytest.approx(1.95)
 
 
 class TestFixtureBackwardCompat:

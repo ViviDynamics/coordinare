@@ -12,6 +12,7 @@ import yaml
 
 from coordinare.bench.fixtures import Fixture
 from coordinare.bench.runner import run_board
+from coordinare.bench.score import Weights
 from coordinare.bench.space import load_space, materialize
 from coordinare.bench.sweep import SweepArtifact, run_sweep
 from tests.unit.test_136_space import BASELINE, SPACE
@@ -55,7 +56,9 @@ class TestSweepEndToEnd:
             ],
         }
         loaded = _space(tmp_path, small)
-        artifact = await run_sweep(loaded, "ablation", tmp_path / "session")
+        artifact = await run_sweep(
+            loaded, "ablation", tmp_path / "session", weights=Weights(w_cost=0.0),
+        )
 
         assert (tmp_path / "session" / "sweep.json").exists()
         assert (tmp_path / "session" / "sweep-report.md").exists()
@@ -83,7 +86,9 @@ class TestSweepEndToEnd:
             ],
         }
         loaded = _space(tmp_path, two)
-        artifact = await run_sweep(loaded, "candidates", tmp_path / "session")
+        artifact = await run_sweep(
+            loaded, "candidates", tmp_path / "session", weights=Weights(w_cost=0.0),
+        )
         assert set(artifact.ranking) == {"candidate:serial", "candidate:parallel"}
         assert len(artifact.ranking) == 2
         assert all(not p.failed for p in artifact.points)

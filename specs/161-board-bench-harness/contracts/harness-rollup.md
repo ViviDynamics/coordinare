@@ -44,3 +44,14 @@ A `HarnessRollup` with one `RoleHarnessRow` per distinct `(role, backend)` pair 
 - **Works on already-captured artifacts.** No re-run, no live inference host. This is what
   makes US1 independently shippable.
 - **Read-only.** The rollup never mutates the artifact it reads.
+
+
+## Spec 206: priced cost per pair (additive fields)
+
+- `RoleHarnessRow.cost_usd`: the pair's priced cost summed over its dispatches. `None` when
+  none of them priced.
+- `RoleHarnessRow.cost_partial`: `True` when any dispatch of the pair was unpriced.
+- `RoleHarnessRow.cost_unknown_reasons`: why, deduplicated and sorted.
+- `HarnessRanking.cost_unknown` (in `harness_rank.json`): a pair left out of the ordering
+  because its cost is unknown or partial while the ranking weights cost. Maps backend to
+  reason. It is never ordered as if its cost were zero.

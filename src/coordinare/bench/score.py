@@ -10,12 +10,15 @@ Contract: ``specs/135-board-bench-scoring/contracts/score-object.md``.
 
 from __future__ import annotations
 
+import statistics
 from datetime import datetime  # noqa: TC003 — needed at runtime for pydantic model building
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from coordinare.bench.artifact import LEGACY_REASON
 
 #: Bumped 1 → 2 by spec 161, which adds the `view` discriminator below.
 #:
@@ -95,9 +98,26 @@ class ComponentVector(BaseModel):
     correctness_rate: float | None = None
     harness_failure_rate: float = 0.0
     tokens_processed: int | None = None
+    #: 206: the run's priced cost. Sums only the priced cards when ``cost_partial`` is set.
     cost_usd: float | None = None
     cost_estimated: bool = True
+    #: Spec 206 review: True when the cost came from the price table. None on a score written
+    #: before spec 206, whose ``cost_usd`` is the retired flat rate and loads as unknown.
+    cost_priced: bool | None = None
+    #: 206: True when any card had no price, so ``cost_usd`` is a partial sum.
+    cost_partial: bool = False
+    #: 206: why the cost is unknown or partial.
+    cost_unknown_reason: str | None = None
     wall_clock_seconds: float = 0.0
+
+    @model_validator(mode="after")
+    def _unmarked_cost_is_unknown(self) -> ComponentVector:
+        """A numeric cost with no pricing marker is a flat-rate figure, not a price. It loads
+        as unknown with the legacy reason, and a rescore cannot read it (spec 206 review)."""
+        if self.cost_priced is None and self.cost_usd is not None:
+            self.cost_usd = None
+            self.cost_unknown_reason = self.cost_unknown_reason or LEGACY_REASON
+        return self
 
 
 class ScoreObject(BaseModel):
@@ -138,20 +158,80 @@ class ScoreObject(BaseModel):
         return cls.model_validate_json(Path(path).read_text())
 
 
+def cost_is_known(components: ComponentVector) -> bool:
+    """True when the run's cost is a complete figure from the price table (spec 206)."""
+    return (
+        components.cost_priced is True
+        and components.cost_usd is not None
+        and not components.cost_partial
+    )
+
+
+def numeric_component(components: ComponentVector, name: str) -> float | None:
+    """A component as a number, or None when it is unknown.
+
+    An unpriced or partial cost is unknown, never a number: averaging or comparing it would
+    treat the unpriced part as free (spec 206).
+    """
+    if name == "cost_usd" and not cost_is_known(components):
+        return None
+    value = getattr(components, name)
+    return None if value is None else float(value)
+
+
 def compute_scalar(components: ComponentVector, weights: Weights) -> tuple[float | None, bool]:
     """The weighted objective (spec Clarifications):
 
     ``w_c*correctness_rate - w_cost*(cost/cost_budget) - w_time*(time/time_budget)``
 
     Returns ``(scalar, cost_component_missing)``. A run with zero gradeable cards
-    (``correctness_rate is None``) has no scalar — the score object is still
-    written, explicitly unrankable. Unknown cost omits the cost term (never
-    treated as free)."""
+    (``correctness_rate is None``) has no scalar. Spec 206: when the cost is unknown
+    (no price, no token count) or partial, and the cost term carries weight, the scalar is
+    also None. Dropping the term would score the unpriced run as free and rank it above
+    priced runs, so the run is unrankable instead. With ``w_cost == 0`` cost cannot change
+    the objective, so the scalar is computed and the cost flagged missing."""
+    cost_missing = not cost_is_known(components)
     if components.correctness_rate is None:
-        return None, components.cost_usd is None
+        return None, cost_missing
+    if cost_missing and weights.w_cost > 0:
+        return None, True
     scalar = weights.w_correctness * components.correctness_rate
-    cost_missing = components.cost_usd is None
     if not cost_missing:
         scalar -= weights.w_cost * (float(components.cost_usd or 0.0) / weights.cost_budget_usd)
     scalar -= weights.w_time * (components.wall_clock_seconds / weights.time_budget_seconds)
     return round(scalar, 6), cost_missing
+
+
+def scalar_withheld_reason(scores: list[ScoreObject]) -> str | None:
+    """Spec 206 review: why these repeats cannot be averaged into one scalar, or None.
+
+    Any repeat whose cost is unknown withholds the mean while the cost term carries weight.
+    A mean over only the priced repeats would read as the whole point's score.
+    """
+    for score in scores:
+        if score.weights.w_cost > 0 and not cost_is_known(score.components):
+            return score.components.cost_unknown_reason or "cost unknown"
+    return None
+
+
+def repeat_mean(scores: list[ScoreObject]) -> tuple[float | None, str | None]:
+    """The mean scalar over repeats, and the reason it is withheld (spec 206 review).
+
+    Returns ``(None, reason)`` when any repeat's cost is unknown and the cost term carries
+    weight. Otherwise the mean of the scalars present, or ``(None, None)`` when none are.
+    """
+    reason = scalar_withheld_reason(scores)
+    if reason is not None:
+        return None, reason
+    values = [s.scalar for s in scores if s.scalar is not None]
+    return (statistics.fmean(values) if values else None), None
+
+
+def describe_scalar(score: ScoreObject) -> str:
+    """The operator's one-line scalar, naming the reason when it is withheld (spec 206)."""
+    if score.scalar is not None:
+        return f"{score.scalar:.6g}"
+    if not cost_is_known(score.components) and score.components.cost_unknown_reason:
+        return f"unrankable: {score.components.cost_unknown_reason}"
+    return "unrankable"
+

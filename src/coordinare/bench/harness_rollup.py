@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from coordinare.bench.artifact import RunArtifact
+from coordinare.bench.artifact import LEGACY_REASON, RunArtifact
 from coordinare.bench.harness_outcome import OutcomeClass, classify, is_unknown_marker
 from coordinare.bench.score import KNOWN_ARTIFACT_VERSIONS
 
@@ -57,6 +58,12 @@ class RoleHarnessRow(BaseModel):
     #: all), because a partial sum looks like a complete one and would quietly understate
     #: cost — the same absent-vs-zero trap in a different place.
     tokens_partial: bool = False
+    #: 206: priced cost summed over this pair's dispatches. None when none of them priced.
+    cost_usd: float | None = None
+    #: 206: True when some dispatch of this pair had no price, so ``cost_usd`` is a partial sum.
+    cost_partial: bool = False
+    #: 206: why the unpriced dispatches are unknown, deduplicated and sorted.
+    cost_unknown_reasons: list[str] = Field(default_factory=list)
     runs_contributing: int = 0
     #: One credit rate per contributing run that had conclusive evidence (FR-025).
     #: Retained because pooled counts alone collapse the sample to a single value, which
@@ -142,6 +149,47 @@ def _unique_dispatches(artifact: RunArtifact) -> list[PersonaDispatch]:
     return out
 
 
+@dataclass
+class _CostTally:
+    """Spec 206: one pair's priced cost. Sums only dispatches with a price basis, and marks
+    the sum partial when any dispatch had none."""
+
+    total: float = 0.0
+    seen: bool = False
+    missing: bool = False
+    reasons: set[str] = field(default_factory=set)
+
+    def add(self, dispatch: PersonaDispatch) -> None:
+        if dispatch.cost_usd is None or dispatch.cost_basis is None:
+            self.missing = True
+            self.reasons.add(dispatch.cost_unknown_reason or LEGACY_REASON)
+            return
+        self.seen = True
+        self.total += dispatch.cost_usd
+
+    def apply(self, row: RoleHarnessRow) -> None:
+        row.cost_usd = round(self.total, 6) if self.seen else None
+        row.cost_partial = self.missing
+        row.cost_unknown_reasons = sorted(self.reasons)
+
+
+def _record_outcome(row: RoleHarnessRow, cls: OutcomeClass) -> int | None:
+    """Count one dispatch's class on its row. Returns the run_counts slot it fills, if any:
+    0 for a credit, 1 for a harness defect, None for a dispatch with no conclusive verdict."""
+    row.dispatches += 1
+    if cls is OutcomeClass.CREDIT:
+        row.credit += 1
+        return 0
+    if cls is OutcomeClass.HARNESS_DEFECT:
+        row.harness_defect += 1
+        return 1
+    if cls is OutcomeClass.ENVIRONMENT:
+        row.environment += 1
+    else:
+        row.inconclusive += 1
+    return None
+
+
 def roll_up(artifacts: list[RunArtifact]) -> HarnessRollup:
     """Aggregate one or more run artifacts into per-``(role, backend)`` rows.
 
@@ -168,6 +216,7 @@ def roll_up(artifacts: list[RunArtifact]) -> HarnessRollup:
     unknown: dict[tuple[str, str], set[str]] = defaultdict(set)
     token_seen: dict[tuple[str, str], bool] = defaultdict(bool)
     token_missing: dict[tuple[str, str], bool] = defaultdict(bool)
+    costs: dict[tuple[str, str], _CostTally] = defaultdict(_CostTally)
 
     for artifact in artifacts:
         run_counts: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
@@ -183,18 +232,9 @@ def roll_up(artifacts: list[RunArtifact]) -> HarnessRollup:
                 row = RoleHarnessRow(role=d.role, backend=d.backend)
                 rows[key] = row
 
-            cls = classify(d)
-            row.dispatches += 1
-            if cls is OutcomeClass.CREDIT:
-                row.credit += 1
-                run_counts[key][0] += 1
-            elif cls is OutcomeClass.HARNESS_DEFECT:
-                row.harness_defect += 1
-                run_counts[key][1] += 1
-            elif cls is OutcomeClass.ENVIRONMENT:
-                row.environment += 1
-            else:
-                row.inconclusive += 1
+            slot = _record_outcome(row, classify(d))
+            if slot is not None:
+                run_counts[key][slot] += 1
 
             if is_unknown_marker(d.terminal_marker):
                 unknown[key].add(str(d.terminal_marker))
@@ -205,6 +245,10 @@ def roll_up(artifacts: list[RunArtifact]) -> HarnessRollup:
             else:
                 token_seen[key] = True
                 row.tokens_total = (row.tokens_total or 0) + d.tokens_processed
+
+            # 206: sum only what is priced. A dispatch with no price is unknown, so the sum
+            # for its pair is partial. A dispatch written before 206 has no price at all.
+            costs[key].add(d)
 
         # One scalar per run per pair, but only where that run had conclusive evidence:
         # a run with none has no rate, and inventing 0.0 would fabricate spread.
@@ -224,6 +268,7 @@ def roll_up(artifacts: list[RunArtifact]) -> HarnessRollup:
         else:
             # Some reported and some did not: the sum is a lower bound, so say so.
             row.tokens_partial = token_missing[key]
+        costs[key].apply(row)
 
     return HarnessRollup(
         run_ids=[a.run_id for a in artifacts],
@@ -241,16 +286,26 @@ def format_table(rollup: HarnessRollup) -> str:
     """
     header = (
         f"{'role':<16}{'backend':<14}{'disp':>5}{'credit':>8}{'defect':>8}"
-        f"{'env':>5}{'incon':>7}{'defect_rate':>13}"
+        f"{'env':>5}{'incon':>7}{'defect_rate':>13}  cost"
     )
     lines = [header, "-" * len(header)]
     for r in rollup.rows:
         rate = "" if r.defect_rate is None else f"{r.defect_rate:.3f}"
         lines.append(
             f"{r.role:<16}{r.backend:<14}{r.dispatches:>5}{r.credit:>8}"
-            f"{r.harness_defect:>8}{r.environment:>5}{r.inconclusive:>7}{rate:>13}",
+            f"{r.harness_defect:>8}{r.environment:>5}{r.inconclusive:>7}{rate:>13}"
+            f"  {_cost_cell(r)}",
         )
     return "\n".join(lines)
+
+
+def _cost_cell(row: RoleHarnessRow) -> str:
+    """Spec 206: a priced sum, marked partial when any dispatch had no price, or unknown."""
+    if row.cost_usd is None:
+        return "cost unknown (" + "; ".join(row.cost_unknown_reasons) + ")"
+    if row.cost_partial:
+        return f"${row.cost_usd:.6f} partial (unpriced: " + "; ".join(row.cost_unknown_reasons) + ")"
+    return f"${row.cost_usd:.6f}"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -35,9 +35,12 @@ def _row(
     role: str = "reviewer",
     seconds: float = 0.0,
     tokens: int | None = None,
+    cost_usd: float | None = 0.0,
     per_run: list[float] | None = None,
     runs: int = 1,
 ) -> RoleHarnessRow:
+    """A row priced at $0 unless a test says otherwise, so ordering and tie tests exercise
+    credit and time, not cost. Pass ``cost_usd=None`` for an unknown cost (spec 206)."""
     return RoleHarnessRow(
         role=role,
         backend=backend,
@@ -46,6 +49,7 @@ def _row(
         harness_defect=defect,
         seconds_total=seconds,
         tokens_total=tokens,
+        cost_usd=cost_usd,
         runs_contributing=runs,
         per_run_scalars=per_run if per_run is not None else [],
     )
@@ -108,49 +112,57 @@ def test_defects_lower_the_scalar_which_is_the_whole_point() -> None:
     assert clean.scalar > broken.scalar
 
 
-def test_cost_term_converts_tokens_to_currency_before_dividing() -> None:
-    """FR-024 unit rule: USD/USD. Dividing a raw token count by a USD budget would be a
-    unit error, and with realistic token counts it would swamp every other term."""
+def test_cost_term_is_usd_over_usd_budget() -> None:
+    """FR-024 unit rule: USD/USD. The pair's priced cost divides the USD budget."""
     w = Weights(w_correctness=1.0, w_cost=1.0, w_time=0.0, cost_budget_usd=1.0)
-    # 1_000_000 tokens at $2/M = $2.00; 1.0 - 1.0*(2.0/1.0) = -1.0
-    s = score_row(_row("a", 4, 0, tokens=1_000_000), w, cost_per_million_tokens=2.0)
+    # $2.00 priced cost; 1.0 - 1.0*(2.0/1.0) = -1.0
+    s = score_row(_row("a", 4, 0, tokens=1_000_000, cost_usd=2.0), w)
     assert s.scalar == pytest.approx(-1.0)
     assert s.cost_component_missing is False
 
 
-def test_missing_tokens_omit_the_cost_term_rather_than_assuming_free() -> None:
-    """FR-024: unknown cost is recorded as unknown, never treated as zero."""
+def test_unknown_cost_withholds_the_scalar_rather_than_scoring_it_free() -> None:
+    """Spec 206: unknown cost is never treated as zero. With the cost term weighted, the
+    scalar is withheld, so the pair cannot out-rank priced pairs by omitting a penalty."""
     w = Weights(w_correctness=1.0, w_cost=1.0, w_time=0.0, cost_budget_usd=1.0)
-    s = score_row(_row("a", 4, 0, tokens=None), w, cost_per_million_tokens=2.0)
+    s = score_row(_row("a", 4, 0, tokens=None, cost_usd=None), w)
 
     assert s.cost_component_missing is True
-    assert s.scalar == pytest.approx(1.0)  # credit term only, cost omitted
+    assert s.scalar is None
 
 
-def test_a_partial_token_sum_omits_the_cost_term_rather_than_undercharging() -> None:
+def test_a_partial_cost_withholds_the_scalar_rather_than_undercharging() -> None:
     """A partial sum understates cost, so penalizing on it would flatter a harness whose
-    token reporting happens to be patchy. Decline the term and record it missing, the same
-    treatment as no tokens at all."""
+    pricing happens to be patchy. Withhold the scalar, the same as an unknown cost."""
     w = Weights(w_correctness=1.0, w_cost=1.0, w_time=0.0, cost_budget_usd=1.0)
-    row = _row("a", 4, 0, tokens=1_000_000)
-    row.tokens_partial = True
+    row = _row("a", 4, 0, tokens=1_000_000, cost_usd=2.0)
+    row.cost_partial = True
 
-    s = score_row(row, w, cost_per_million_tokens=2.0)
+    s = score_row(row, w)
 
     assert s.cost_component_missing is True
-    assert s.scalar == pytest.approx(1.0), "cost omitted, not computed from a lower bound"
+    assert s.scalar is None
 
 
-def test_a_complete_token_sum_still_charges_cost() -> None:
-    """The converse, so the partial guard cannot silently disable costing entirely."""
+def test_a_complete_priced_cost_still_charges() -> None:
+    """The converse, so the unknown guard cannot silently disable costing entirely."""
     w = Weights(w_correctness=1.0, w_cost=1.0, w_time=0.0, cost_budget_usd=1.0)
-    row = _row("a", 4, 0, tokens=1_000_000)
-    assert row.tokens_partial is False
+    row = _row("a", 4, 0, tokens=1_000_000, cost_usd=2.0)
+    assert row.cost_partial is False
 
-    s = score_row(row, w, cost_per_million_tokens=2.0)
+    s = score_row(row, w)
 
     assert s.cost_component_missing is False
     assert s.scalar == pytest.approx(-1.0)
+
+def test_zero_cost_weight_ranks_without_a_price() -> None:
+    """With w_cost == 0, cost cannot change the objective, so an unpriced pair is still
+    scored on credit and time, and its cost is flagged missing."""
+    w = Weights(w_correctness=1.0, w_cost=0.0, w_time=0.0, cost_budget_usd=1.0)
+    s = score_row(_row("a", 4, 0, tokens=None, cost_usd=None), w)
+
+    assert s.cost_component_missing is True
+    assert s.scalar == pytest.approx(1.0)
 
 
 def test_weights_are_embedded_in_the_score() -> None:
