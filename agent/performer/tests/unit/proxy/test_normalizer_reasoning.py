@@ -128,7 +128,7 @@ def test_json_openai_empty_content_promotes_reasoning(norm):
                     "content": "",
                     "reasoning_content": '{"verdict":"pass"}',
                 },
-                "finish_reason": "length",
+                "finish_reason": "stop",
             }
         ]
     }
@@ -182,7 +182,7 @@ _OPENAI_SSE_REASONING_ONLY: list[bytes] = [
     b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,'
     b'"delta":{"reasoning_content":"part two"},"finish_reason":null}]}\n\n',
     b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,'
-    b'"delta":{},"finish_reason":"length"}]}\n\n',
+    b'"delta":{},"finish_reason":"stop"}]}\n\n',
     b"data: [DONE]\n\n",
 ]
 
@@ -201,7 +201,7 @@ def test_sse_openai_empty_content_promotes_reasoning(norm):
     assert "".join(contents) == "part one part two"
     # the finish frame is still present and well-formed
     assert any(
-        p["choices"][0].get("finish_reason") == "length" for p in _frames(out)
+        p["choices"][0].get("finish_reason") == "stop" for p in _frames(out)
     )
 
 
