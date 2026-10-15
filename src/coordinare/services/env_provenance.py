@@ -98,7 +98,6 @@ _DEBS_PREFIX = "debs/"
 _REASON_LIMIT = 10
 _MAX_LINK_HOPS = 40
 _ENTRY_KINDS = frozenset({"file", "dir", "link"})
-_STAT_MODULUS = 1 << 256
 _READ_CHUNK_BYTES = 1024 * 1024
 
 _KNOB_FOR_BOUND = {
@@ -244,21 +243,31 @@ def _link_refusal(rel: str, target: str, links: dict[str, str]) -> str | None:
 
 
 class _StatDigest:
-    """The additive stat digest: the sum, modulo 2**256, of sha256 over each record. O(1) memory, order-independent."""
+    """The stat digest: one sha256 over the records in walk order. O(1) memory.
+
+    The walk is deterministic (each directory's names are sorted, depth first), so the records arrive in the same order
+    every time and need no sort. Each record is seven NUL-terminated fields. A POSIX name and a link target cannot
+    contain NUL, and every record has the same field count, so the byte stream parses back into exactly these records.
+    Reordering, swapping or dropping a record changes the digest.
+    """
 
     def __init__(self) -> None:
-        self._total = 0
+        self._hash = hashlib.sha256()
 
     def add(self, entry: TreeEntry) -> None:
-        record = (
-            f"{entry.rel}\0{entry.kind}\0{entry.mode}\0{entry.size}\0{entry.ino}\0{entry.ctime_ns}\0"
-            f"{entry.target or ''}"
+        fields = (
+            entry.rel,
+            entry.kind,
+            str(entry.mode),
+            str(entry.size),
+            str(entry.ino),
+            str(entry.ctime_ns),
+            entry.target or "",
         )
-        value = int.from_bytes(hashlib.sha256(record.encode("utf-8", "surrogateescape")).digest(), "big")
-        self._total = (self._total + value) % _STAT_MODULUS
+        self._hash.update("".join(f"{field}\0" for field in fields).encode("utf-8", "surrogateescape"))
 
     def hexdigest(self) -> str:
-        return f"{self._total:064x}"
+        return self._hash.hexdigest()
 
 
 def _row_bytes(entry: TreeEntry) -> bytes:
@@ -322,7 +331,6 @@ def _chunks(spool: IO[bytes]) -> Iterator[bytes]:
 
 def freeze_cache(
     cache_dir: Path,
-    *,
     identity: tuple[str, str],
     activate_sh: str,
     scope: ProvenanceScope,
@@ -521,7 +529,7 @@ class _RowStream:
             self._fh = None
 
 
-def verify_content(cache_dir: Path, manifest: ManifestFile, *, scope: ProvenanceScope) -> ContentResult:
+def verify_content(cache_dir: Path, manifest: ManifestFile, scope: ProvenanceScope) -> ContentResult:
     """Compare the cache with the manifest, entry by entry, content included (O(1) memory).
 
     The manifest rows and the walk are both in walk order, so they are compared as two streams. A structural difference,
@@ -563,6 +571,29 @@ def verify_content(cache_dir: Path, manifest: ManifestFile, *, scope: Provenance
     return ContentResult(True, None, stat.hexdigest())
 
 
+def content_pass(
+    cache_dir: Path,
+    manifest_path: Path,
+    digest: str,
+    performer_mounts: tuple[Path, ...],
+    scope: ProvenanceScope,
+) -> ContentResult:
+    """The full content check as one call: open the manifest by its digest, then compare. Picklable arguments, so a
+    worker process can run it (review round 4)."""
+    manifest = open_manifest(
+        manifest_path,
+        digest=digest,
+        performer_mounts=performer_mounts,
+        max_bytes=manifest_cap_bytes(scope.limits.max_entries),
+    )
+    if manifest is None:
+        return ContentResult(False, "frozen provenance manifest is missing or altered")
+    try:
+        return verify_content(cache_dir, manifest, scope)
+    except ProvenanceRefusedError as exc:
+        return ContentResult(False, str(exc))
+
+
 def _compare(exp: ProvenanceEntry, cur: TreeEntry) -> str | None:
     """Why the walked entry differs from its manifest row, or None (path, then content)."""
     if cur.rel != exp.path:
@@ -583,7 +614,7 @@ def _changed(exp: ProvenanceEntry, cur: TreeEntry) -> str | None:
     return None
 
 
-def stat_digest_of(cache_dir: Path, *, scope: ProvenanceScope) -> str:
+def stat_digest_of(cache_dir: Path, scope: ProvenanceScope) -> str:
     """The stat digest of the cache as it is now: one stat walk, O(1) memory (the dispatch fast path).
 
     Raises :class:`ProvenanceRefusedError` for a missing cache, a link or file the walk refuses, or a bound.

@@ -106,11 +106,18 @@ The daemon holds no manifest rows, and no stat table, for the life of the proces
 the manifest digest, the stat digest (two hex strings), the payload (small), and the full-pass clock. The
 manifest file lives on disk.
 
-- **Stat digest.** The stat digest is an additive hash: the sum, modulo 2**256, of sha256 over each record
-  `(path, type, mode, size, inode, ctime_ns, link target)`. A walk streams the records into it, so the memory is
-  O(1). It is order-independent, so no sort and no list are needed. This is a deliberate change from the
-  "sha256 over the sorted records" in the review note: sorting a million records is O(n) memory. Each record is
-  one sha256 call, so the cost is per entry, not per byte.
+- **Stat digest.** The stat digest is one sha256 over the records in walk order, streamed, so the memory is O(1).
+  Each record is seven NUL-terminated fields: path, type, mode, size, inode, ctime_ns, and link target. A POSIX name and
+  a link target cannot contain NUL, and every record has the same field count, so the byte stream parses back into
+  exactly these records. The walk is deterministic (each directory's names are sorted, depth first), so the order needs
+  no sort and no list. Reordering, swapping or dropping a record changes the digest. The review asked for an additive
+  hash to be replaced: the earlier additive sum (mod 2**256) was weak against generalised-birthday attacks, and it is
+  gone. The test `test_234_review4.py` pins the order and field-boundary behaviour.
+- **Freshness and coalescing (review 4).** Concurrent dispatches for one symphony share one stat walk in flight, so N
+  dispatches cost one walk. A passing stat check is reused for `env_cache.provenance_stat_fresh_s` seconds (default 30,
+  validated to 0 through 3600; 0 disables the reuse), so a dispatch inside the window causes no walk. The window is the
+  detection latency for changes that do not move the stat digest: a change made within the window is seen by the next
+  walk after it, and the hourly content check bounds the rest.
 - **Dispatch (every consumer dispatch).** The stat walk runs in a thread, and its digest is compared with the stat
   digest recorded at the last verified freeze or content check (`<sanitised>.stat.json`, bound to the manifest
   digest). A match is a pass, with no content read. A mismatch, or a missing record, falls to the content check.
@@ -233,10 +240,6 @@ is refused and re-bootstraps once. That is the upgrade cost.
 
 ## Residuals (second review)
 
-- **Stat digest collisions.** The stat digest is an additive hash. An adversary who could both change the cache and
-  choose the change so the sum is unchanged would pass the stat pass until the hourly content check. The ctime field
-  is kernel-set, so the adversary cannot pick it, which makes such a change hard to construct. The hourly pass bounds
-  how long it could go unseen.
 - **The bootstrap exemption is by role.** `_require_provenance_capability` exempts a job whose role is `env_bootstrap`
   from the cache-mount-without-payload refusal, and the performer runs such a job with the cache root. A card or an
   operator lifecycle listing `env_bootstrap` gets that exemption. A daemon-only flag would close it, and was not done in
@@ -244,6 +247,13 @@ is refused and re-bootstraps once. That is the upgrade cost.
 - **The restart full pass is inline.** The first dispatch after a restart waits for the full content check, about 95 s
   at 990 996 entries on this machine (section 4). This is the price of not trusting the recorded stat digest across a
   restart.
+- **Event-loop lag (review 4).** Measured at 991 000 entries with a 50 ms sleeper: a thread walk gives p99 overshoot of
+  about 2 ms; a worker process gives about 2 ms too, so the walk does not starve the loop and the walk stays in a thread.
+  Method: the stat walk ran in `asyncio.to_thread` while a coroutine slept 50 ms and recorded how late it woke.
+  Measured on this Mac, warm cache: 20.7 s per walk, lag p50 1.7 ms and p99 2.1 ms (threads, two runs), against
+  p50 2.1 ms and p99 2.1 ms in a worker process. Resident memory stayed at 51 MiB across the walks, so the walk does not
+  hold memory. The 150 MiB of resident growth after a freeze is not explained by the walk; it is a freeze-time transient
+  not traced further, and it does not grow with a repeated walk.
 - **Residency.** No manifest is held in memory. Resident memory does not grow with the entry count (measured in
   section 4). The rows are read from disk when a content check runs.
 

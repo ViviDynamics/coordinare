@@ -1091,6 +1091,9 @@ class EnvCacheConfig(BaseModel):
     # with a reason that names the knob. The defaults suit a real toolchain (see services/env_provenance.py).
     provenance_max_entries: int = Field(default=1_000_000, ge=1_000, le=10_000_000)
     provenance_max_bytes: int = Field(default=16 * 1024 * 1024 * 1024, ge=1024 * 1024, le=256 * 1024 ** 3)
+    # 234 review 4: how long a passing stat check is reused without another walk. Concurrent dispatches share one walk
+    # in flight regardless. 0 disables the reuse.
+    provenance_stat_fresh_s: float = Field(default=30.0, ge=0.0, le=3600.0)
 
 
 class PerformerDigestPinConfig(BaseModel):

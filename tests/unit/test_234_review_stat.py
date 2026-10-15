@@ -9,9 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 
+from coordinare.models.env_cache import EnvCacheState
+from coordinare.services.env_cache import EnvCacheService
 from tests.unit.test_234_honest_path import _bootstrapped, _service, _state_map
+
+
+def _expire_window(service: EnvCacheService, state: EnvCacheState) -> None:
+    """Age the last passing stat check past the freshness window, as if the window had lapsed."""
+    digest = state.provenance_digest
+    assert digest is not None
+    service._stat_pass_at["sym"] = (digest, time.monotonic() - 3600)
 
 
 def test_a_ctime_bump_is_refreshed_and_the_next_dispatch_is_stat_only(tmp_path: Path) -> None:
@@ -22,6 +32,7 @@ def test_a_ctime_bump_is_refreshed_and_the_next_dispatch_is_stat_only(tmp_path: 
     assert first.ok and first.hashed, "the first dispatch after a freeze runs the content check"
 
     os.chmod(cache / "bin" / "ruby", 0o755)  # ctime moves, the bytes do not
+    _expire_window(service, state)  # a passing check younger than the window is reused, so age it past the window
     churned, _ = asyncio.run(service.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))
     assert churned.ok, churned.reason
     assert churned.hashed, "the stat digest mismatch falls to the content check, which refreshes it"
@@ -37,7 +48,9 @@ def test_a_content_change_after_the_refresh_is_still_refused(tmp_path: Path) -> 
     asyncio.run(service.freeze_provenance("sym", _state_map(state)))
     asyncio.run(service.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))
     os.chmod(cache / "bin" / "ruby", 0o755)
+    _expire_window(service, state)
     asyncio.run(service.resolve_provenance("sym", state, container_path="/devenv/sym-abc"))  # refreshed
+    _expire_window(service, state)
 
     tool = cache / "bin" / "ruby"
     st = tool.stat()
