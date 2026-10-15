@@ -289,7 +289,7 @@ def test_dispatch_clock_has_a_versioned_strict_snapshot_contract() -> None:
 
     from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, WorkflowSnapshot
 
-    assert CURRENT_SCHEMA_VERSION == 38
+    assert CURRENT_SCHEMA_VERSION == 39
     contract = json.loads(Path("specs/003-state-persistence/contracts/workflow-snapshot.schema.json").read_text())
     assert contract["properties"]["schema_version"]["enum"] == list(range(1, CURRENT_SCHEMA_VERSION + 1))
     assert {"last_production_at", "last_production_fingerprint"} <= set(

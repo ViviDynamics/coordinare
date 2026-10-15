@@ -89,9 +89,9 @@ async def test_log_api_receives_both_bounds() -> None:
             assert kwargs["limit_bytes"] == LOG_BOUND_BYTES
             return "unterminated"
 
-    ok, detail = await _run(KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM,
-                                             core_v1=BoundedCore(["Succeeded"])))
-    assert ok is True
+    runtime = KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=BoundedCore(["Failed"]))
+    ok, detail = await _run(runtime)
+    assert ok is False
     assert detail == "unterminated"
 
 

@@ -13,6 +13,8 @@ Covers:
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 from coordinare_service_inference.schema import (
     COORDINARE_MANAGED_KINDS,
@@ -22,7 +24,9 @@ from coordinare_service_inference.schema import (
 from coordinare_service_inference.templater import render
 from pydantic import ValidationError
 
-from coordinare.services.env_manifest import EnvManifest
+from coordinare.services.env_manifest import EnvManifest, _service_readiness_check
+
+SHELL_SYNTAX_TIMEOUT_SECONDS = 10
 
 # ---------------------------------------------------------------- schema
 
@@ -302,8 +306,6 @@ def test_derive_install_items_for_mysql_and_memcached():
 
 
 def test_service_readiness_check_covers_new_kinds():
-    from coordinare.services.env_manifest import _service_readiness_check
-
     for kind, needle in (
         ("redis", "redis-cli"),
         ("mysql", "mariadb-admin"),
@@ -395,11 +397,13 @@ def test_memcached_runs_as_nobody():
 def test_env_manifest_mysql_readiness_line_is_valid_shell():
     # Review 475: `(command -v ... ) -h` is a syntax error — the binary must be
     # selected via command substitution before the ping invocation.
-    from coordinare.services.env_manifest import _service_readiness_check
-
     probe = _service_readiness_check(ServiceEntry(**_entry(kind="mysql", binary="mysqld")))
+    assert probe is not None
     assert 'mariadb_bin="$(command -v mariadb-admin || command -v mysqladmin)"' in probe
-    assert "[ -n \"$mariadb_bin\" ] && \"$mariadb_bin\"" in probe
+    subprocess.run(
+        ["bash", "-n"], input=probe, text=True, capture_output=True, check=True,
+        timeout=SHELL_SYNTAX_TIMEOUT_SECONDS,
+    )
     # The invalid pre-fix form invoked the command directly off the conditional.
     assert ") -h" not in probe
 

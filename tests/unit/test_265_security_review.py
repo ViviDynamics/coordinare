@@ -88,7 +88,7 @@ async def test_verifier_uses_runtime_registry_credentials() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CreateContainerConfigError"])
+@pytest.mark.parametrize("reason", ["ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError"])
 async def test_container_startup_errors_fail_fast(reason: str) -> None:
     class WaitingCore(_FakeCoreV1):
         def read_namespaced_pod(self, name: str, namespace: str) -> Any:
@@ -171,14 +171,13 @@ def test_serialized_pod_has_an_aggregate_bound() -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_pod_is_infrastructure_without_creation() -> None:
+async def test_oversized_pod_is_configuration_failure_without_creation() -> None:
     core = _FakeCoreV1(["Succeeded"])
     runtime = KubernetesRuntime(namespace=NAMESPACE, cache_claim=CLAIM, core_v1=core)
     spec = VerifierSpec(image="trusted", cache_claim=CLAIM, cache_subpath="sym", mount_path="/devenv/sym",
                         verify_text="x" * POD_SPEC_LIMIT, project_files={})
-    ok, detail = await runtime.run_verifier(slug="sym", spec=spec)
-    assert ok is None
-    assert "bound" in detail
+    with pytest.raises(ValueError, match="bound"):
+        await runtime.run_verifier(slug="sym", spec=spec)
     assert core.created == []
 
 

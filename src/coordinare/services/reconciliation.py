@@ -596,21 +596,26 @@ def find_kubernetes_sweep_runtime(state: CoordinareState) -> Any:
 
 
 async def run_kubernetes_orphan_sweep(state: CoordinareState) -> list[str]:
-    """Issue #489: delete managed pods whose ``coordinare.session_id`` is not
-    among the daemon's active sessions. Kubernetes counterpart of the FR-005
-    Docker orphan sweep, driven through the same startup-reconciliation
-    seam. Returns the swept pod names; raises propagate to the caller's
-    crash-blocker."""
+    """Delete interrupted verifier pods and orphaned performer pods at startup.
+
+    Both sweeps require deployment ownership. Verifiers cannot be resumed, while
+    performer pods need an authoritative active session set before any deletion.
+    Returns swept pod names; exceptions propagate to the caller's boot guard.
+    """
     runtime = find_kubernetes_sweep_runtime(state)
     if runtime is None:
         return []
+    # Verify and walk pods are never resumable. Sweep them even when no performer
+    # sessions were restored, using the runtime's deployment ownership safeguards.
+    verifier_sweep = getattr(runtime, "sweep_orphaned_verifiers", None)
+    swept = await verifier_sweep() if callable(verifier_sweep) else []
     active_ids = collect_active_session_ids(state)
     # SC-002 fast path, same rationale as the Docker sweep: with no
     # authoritative in-flight set we cannot tell a true orphan from
-    # legitimate work, so sweep nothing.
+    # legitimate work, so leave performer pods alone.
     if not active_ids:
-        return []
-    swept = await runtime.sweep_orphaned_sessions(active_ids)
+        return list(swept)
+    swept.extend(await runtime.sweep_orphaned_sessions(active_ids))
     if swept:
         logger.info(
             "daemon.kubernetes_orphan_sweep_complete",

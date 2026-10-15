@@ -24,9 +24,11 @@ from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.models.performer_endpoint import VolumeMount
 from coordinare.services.bootstrap_history import (
     ACT_BUDGET_RESET,
+    ACT_EXHAUSTED,
     AttemptEnd,
     BudgetNow,
     record_activity,
@@ -63,7 +65,11 @@ from coordinare.services.env_provenance import (
     write_stat_sidecar,
 )
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
-from coordinare.services.kubernetes_verifier import VerifierSpec, configured_verifier_image
+from coordinare.services.kubernetes_verifier import (
+    VerifierConfigurationError,
+    VerifierSpec,
+    configured_verifier_image,
+)
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     anchored_mkdir,
@@ -1204,6 +1210,7 @@ class EnvCacheService:
             )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            cache_state.bootstrap_exhaustion_reason = None
             cache_state.runtime_repair_budget = False
             cache_state.bootstrap_budget_sha = current_sha
 
@@ -1706,11 +1713,14 @@ class EnvCacheService:
         ec = (state.get("env_cache") or {}).get(symphony_name)
         if ec is None:
             return
-        if ec.runtime_health_failed:
+        if ec.runtime_health_failed or (ec.bootstrap_exhausted and ec.bootstrap_exhaustion_reason == "configuration_refusal"):
             return
         self._provenance_full_at.pop(symphony_name, None)
         check = await self.run_full_pass(symphony_name, ec)
         if check is None or check.transient:
+            return
+        if check.configuration_failure:
+            self.refuse_verifier_configuration(ec, state, check.reason or "invalid verifier configuration")
             return
         if not check.ok:
             self.mark_runtime_health_failed(symphony_name, state)
@@ -1751,30 +1761,27 @@ class EnvCacheService:
         performer_id = getattr(sym_cfg, "env_bootstrap_performer_id", None)
         svc = (state.get("performer_services_by_id") or {}).get(performer_id)
         runtime = getattr(svc, "_runtime", None)
-        image = ""
-        refusal = None
-        try:
-            image = configured_verifier_image(self._coordinare_config)
-        except ValueError as exc:
-            refusal = str(exc)
-        if refusal or runtime is None or not getattr(runtime, "verifies_clean_room", False):
-            return ProvenanceCheck(False, refusal or "kubernetes verifier runtime unavailable", transient=True)
+        if runtime is None or not getattr(runtime, "verifies_clean_room", False):
+            return ProvenanceCheck(False, "kubernetes verifier runtime unavailable", transient=True)
         limits = self._provenance_limits()
-        spec = VerifierSpec(
-            image=image,
-            cache_claim="", cache_subpath=ec.sanitised_name,
-            mount_path=f"{getattr(svc, 'devenv_root', DEFAULT_DEVENV_ROOT)}/{ec.sanitised_name}",
-            verify_text="", project_files={}, activate_text=ec.rendered_activate_sh,
-            walk_only=True, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
-        )
         started = time.monotonic()
         try:
+            spec = VerifierSpec(
+                image=configured_verifier_image(self._coordinare_config),
+                cache_claim="", cache_subpath=ec.sanitised_name,
+                mount_path=f"{getattr(svc, 'devenv_root', DEFAULT_DEVENV_ROOT)}/{ec.sanitised_name}",
+                verify_text="", project_files={}, activate_text=ec.rendered_activate_sh,
+                walk_only=True, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+            )
             ok, detail = await runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
             if ok is None:
                 return ProvenanceCheck(False, detail, hashed=True, transient=True)
             result = parse_summary(detail, ec.rendered_activate_sh or "", limits)
-        except (OSError, TimeoutError, ProvenanceTransientError) as exc:
-            return ProvenanceCheck(False, str(exc), hashed=True, transient=True)
+        except (VerifierConfigurationError, OSError, TimeoutError, ProvenanceTransientError) as exc:
+            configuration_failure = isinstance(exc, VerifierConfigurationError)
+            reason = f"kubernetes verifier configuration failure: {exc}" if configuration_failure else str(exc)
+            return ProvenanceCheck(False, reason, hashed=True, transient=not configuration_failure,
+                                   configuration_failure=configuration_failure)
         except (ValueError, UnicodeError, RecursionError) as exc:
             return self._record_drift(symphony_name, ec, digest, f"kubernetes provenance refused: {exc}")
         if not ok:
@@ -2383,11 +2390,35 @@ class EnvCacheService:
             test_env_source=test_env_source,
         )
 
+    def refuse_verifier_configuration(
+        self, cache_state: EnvCacheState, state: Mapping[str, Any], detail: str,
+    ) -> str:
+        """Refuse retries for invalid operator inputs and report the exhaustion transition once."""
+        cache_state.cache_dir_ready = False
+        cache_state.last_bootstrap_succeeded = False
+        cache_state.last_bootstrap_error = redact_state_value(
+            f"env verification configuration failure: {detail}; correct configuration and request env regeneration",
+        )
+        reason = str(cache_state.last_bootstrap_error)
+        cache_state.verifier_provenance = None
+        cache_state.bootstrap_exhaustion_reason = "configuration_refusal"
+        if not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            self._notify_bootstrap_exhausted(
+                cache_state.symphony_name, cache_state, state,
+                summary=f"Env bootstrap for '{cache_state.symphony_name}' halted: {reason}",
+            )
+            record_activity(state, cache_state.symphony_name, ACT_EXHAUSTED, reason)
+        logger.error("env_cache.verifier_configuration_refused", symphony=cache_state.symphony_name, reason=reason)
+        return reason
+
     def _notify_bootstrap_exhausted(
         self,
         symphony_name: str,
         cache_state: EnvCacheState,
-        state: dict[str, Any],
+        state: Mapping[str, Any],
+        *,
+        summary: str | None = None,
     ) -> None:
         """088 (FR-009): fire exactly one circuit_breaker_trip notification when
         the bootstrap budget is exhausted.
@@ -2400,17 +2431,11 @@ class EnvCacheService:
         notification_service = state.get("notification_service")
         if notification_service is None:
             return
-        from coordinare.models.notification import (
-            EventType,
-            NotificationEvent,
-            NotificationSeverity,
-        )
-
         event = NotificationEvent(
             event_type=EventType.circuit_breaker_trip,
             severity=NotificationSeverity.warning,
             payload={
-                "summary": (
+                "summary": summary or (
                     f"🔌 Env bootstrap for '{symphony_name}' exhausted its "
                     f"{cache_state.bootstrap_attempts}-try budget; no further "
                     f"bootstraps until the env spec changes."
@@ -2530,6 +2555,7 @@ class EnvCacheService:
         if not cache_state.runtime_repair_budget:
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+            cache_state.bootstrap_exhaustion_reason = None
         # 088 (US5): an in-process success was already clean-verified by the
         # completion path, so the restart honor verify must not re-fire.
         self._restart_verified.add(symphony_name)

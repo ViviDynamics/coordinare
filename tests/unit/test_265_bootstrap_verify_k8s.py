@@ -31,6 +31,7 @@ from coordinare.services.env_cache import (
     verify_env_cache_clean,
 )
 from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.kubernetes_verifier import VerifierConfigurationError
 
 RENDERED_VERIFY = "#!/bin/bash\necho 'FAIL: ruby 3.4.2 not runnable' >&2\nexit 1\n"
 RENDERED_ACTIVATE = "# AUTHORITATIVE activate.sh (daemon-rendered)\n"
@@ -282,14 +283,15 @@ async def test_a_github_read_failure_is_infrastructure_not_a_verdict(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_a_project_path_the_verifier_refuses_fails_without_a_pod(tmp_path: Path) -> None:
-    runtime = _FakeRuntime((True, "PASSED"), raises=ValueError("project file path '../x' is not a plain relative path"))
+    runtime = _FakeRuntime((True, "PASSED"), raises=VerifierConfigurationError("project file path '../x' is not a plain relative path"))
     daemon, svc = _k8s_daemon(tmp_path, runtime=runtime, github=_FakeGitHub({"Gemfile": "x"}))
     daemon._state["env_cache"]["sym"].readme_sha = "e" * 40
 
     ok, err, infra = await daemon._verify_bootstrap_in_clean_context("sym", svc, "job-1")
 
-    assert (ok, infra) == (False, True)
-    assert "refused the pod inputs" in (err or "")
+    assert (ok, infra) == (False, False)
+    assert "configuration failure" in (err or "")
+    assert daemon._state["env_cache"]["sym"].bootstrap_exhausted
 
 
 @pytest.mark.asyncio

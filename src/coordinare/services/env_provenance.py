@@ -199,6 +199,7 @@ class ProvenanceCheck:
     reason: str | None = None
     hashed: bool = False
     transient: bool = False
+    configuration_failure: bool = False
 
 
 def _mounts_for(cache_dir: Path, performer_mounts: tuple[Path, ...] | list[Path]) -> tuple[Path, ...]:

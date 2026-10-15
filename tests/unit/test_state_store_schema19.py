@@ -1,4 +1,6 @@
 """Tests for state_store schema v19: review_findings (spec 169)."""
+from __future__ import annotations
+
 import json
 from datetime import datetime
 
@@ -10,7 +12,7 @@ class TestReviewFindingsSchemaV19:
 
     def test_schema_version_is_24(self):
         """545 advances the snapshot schema to 26; review findings remain supported."""
-        assert CURRENT_SCHEMA_VERSION == 38  # 557/559: durable handoff and per-card PR identity
+        assert CURRENT_SCHEMA_VERSION == 39  # 276: persisted env-cache bootstrap exhaustion reason
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

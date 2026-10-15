@@ -78,6 +78,7 @@ from coordinare.services.env_bootstrap_control import (
 )
 from coordinare.services.env_cache import (
     DEFAULT_DEVENV_ROOT,
+    EnvCacheService,
     budget_max_attempts,
     daemon_sees_performer_cache,
 )
@@ -86,6 +87,7 @@ from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILE_PATHS,
+    VerifierConfigurationError,
     VerifierSpec,
     configured_verifier_image,
 )
@@ -733,6 +735,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             bootstrap_budget_sha=get("bootstrap_budget_sha"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
+            bootstrap_exhaustion_reason=get("bootstrap_exhaustion_reason"),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
             test_env_source=get("test_env_source"),
             # 124 (US2): docs/wiki wiki-init durable state (wiki_in_flight is
@@ -1052,6 +1055,7 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
+            live.bootstrap_exhaustion_reason = persisted.bootstrap_exhaustion_reason
             # 124 (US3): the wiki-init marker + breaker survive
             # restarts so an initialized symphony is never re-seeded.
             live.wiki_initialized = getattr(persisted, "wiki_initialized", False)
@@ -4213,6 +4217,15 @@ class CoordinareDaemon:
             return False, f"env verification could not run in the clean-room verifier: {detail}", True
         return False, f"env verification failed in the clean-room verifier: {detail}", False
 
+    def _verifier_configuration_refusal(self, ec: EnvCacheState, detail: str) -> tuple[bool, str, bool]:
+        """Stop automatic bootstraps until the operator corrects configuration and requests regeneration."""
+        cache_service = self._state.get("env_cache_service")
+        if cache_service is None:
+            cache_service = EnvCacheService(self._state.get("coordinare_config"))
+            self._state["env_cache_service"] = cache_service
+        reason = cache_service.refuse_verifier_configuration(ec, self._state, detail)
+        return False, reason, False
+
     async def _verify_bootstrap_on_kubernetes(
         self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None,
     ) -> tuple[bool, str | None, bool]:
@@ -4232,26 +4245,25 @@ class CoordinareDaemon:
         bootstrap_sha = ec.bootstrap_commit_sha
         bootstrap_activate = ec.rendered_activate_sh
         try:
-            image = configured_verifier_image(self._state.get("coordinare_config"))
             files = await self._fetch_project_files(symphony_name, bootstrap_sha)
         except Exception as exc:
-            return False, f"env verification could not resolve the image or project files at the bootstrap SHA: {type(exc).__name__}", True
+            return False, f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}", True
         if files is None:
             return False, "env verification could not resolve the symphony repository for the clean-room verifier", True
-        spec = VerifierSpec(
-            image=image,
-            cache_claim="",  # the runtime owns the claim it mounts
-            cache_subpath=ec.sanitised_name,
-            mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
-            verify_text=str(ec.rendered_verify_sh),
-            project_files=files,
-            max_entries=limits.max_entries,
-            max_bytes=limits.max_bytes,
-        )
         try:
+            spec = VerifierSpec(
+                image=configured_verifier_image(self._state.get("coordinare_config")),
+                cache_claim="",  # the runtime owns the claim it mounts
+                cache_subpath=ec.sanitised_name,
+                mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
+                verify_text=str(ec.rendered_verify_sh),
+                project_files=files,
+                max_entries=limits.max_entries,
+                max_bytes=limits.max_bytes,
+            )
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
-        except ValueError as exc:
-            return False, f"env verification refused the pod inputs: {exc}", True
+        except VerifierConfigurationError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         logger.info(
             "env_cache.clean_room_verify",
             symphony=symphony_name,
@@ -4281,6 +4293,8 @@ class CoordinareDaemon:
                 walk_detail, ec.rendered_activate_sh or "", limits,
                 inputs_current=ec.bootstrap_commit_sha == bootstrap_sha and ec.rendered_activate_sh == walk_spec.activate_text,
             )
+        except VerifierConfigurationError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         except (ProvenanceTransientError, ValueError, UnicodeError, RecursionError) as exc:
             return False, f"env verification refused the provenance result: {exc}", isinstance(exc, ProvenanceTransientError)
         if not walk_ok:
