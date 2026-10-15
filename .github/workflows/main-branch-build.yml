@@ -260,44 +260,145 @@ jobs:
     outputs:
       version: ${{ needs.derive-version.outputs.version }}
       sha: ${{ needs.derive-version.outputs.sha }}
+      published: ${{ steps.release.outputs.published }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Create GitHub release and tag
+        id: release
         uses: actions/github-script@v7
         with:
           script: |
             const version = '${{ needs.derive-version.outputs.version }}';
             const sha = '${{ needs.derive-version.outputs.sha }}';
 
+            // Draft releases do not create a git ref. Create it explicitly so
+            // every downstream checkout resolves the validated commit.
             try {
-              await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag: version,
+              const ref = await github.rest.git.getRef({
+                ...context.repo, ref: `tags/${version}`,
               });
-              console.log(`Release ${version} already exists — skipping`);
+              const tagged = ref.data.object.type === 'tag'
+                ? (await github.rest.repos.getCommit({...context.repo, ref: version})).data.sha
+                : ref.data.object.sha;
+              if (tagged !== sha) {
+                throw new Error(`Tag ${version} does not point to ${sha}`);
+              }
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.git.createRef({
+                ...context.repo, ref: `refs/tags/${version}`, sha,
+              });
+            }
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag: version,
+              });
+              core.setOutput('published', String(!release.data.draft));
+              console.log(`Release ${version} already exists`);
               return;
             } catch (e) {
               if (e.status !== 404) throw e;
             }
 
             const commit = await github.rest.repos.getCommit({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: sha,
+              ...context.repo, ref: sha,
             });
-
             await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              ...context.repo,
               tag_name: version,
               target_commitish: sha,
               name: version,
               body: commit.data.commit.message,
+              draft: true,
+              make_latest: 'false',
             });
-            console.log(`Created release ${version}`);
+            core.setOutput('published', 'false');
+            console.log(`Created draft release ${version}`);
+
+  release-artifacts:
+    if: needs.create-tag.outputs.published != 'true'
+    timeout-minutes: 20
+    name: Build and Upload Release Artifacts
+    needs: create-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Build tagged Python distributions
+        id: build
+        env:
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/release_packages.py --version "$RELEASE_VERSION" --repository "$RELEASE_REPOSITORY"
+
+      - name: Install and smoke test outside the checkout
+        env:
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_root="$(mktemp -d)"
+          export UV_TOOL_DIR="$tool_root/tools" UV_TOOL_BIN_DIR="$tool_root/bin"
+          echo "UV_TOOL_DIR=$UV_TOOL_DIR" >> "$GITHUB_ENV"
+          echo "UV_TOOL_BIN_DIR=$UV_TOOL_BIN_DIR" >> "$GITHUB_ENV"
+          # Only sibling URLs are overridden before the draft assets are public.
+          # Their exact built wheels are used; all external dependencies resolve normally.
+          uv tool install --overrides "$PWD/dist.overrides.txt" "$PWD"/dist/coordinare-*.whl
+          test "$("$UV_TOOL_BIN_DIR/coordinare" --version)" = "coordinare $RELEASE_VERSION"
+          cp scripts/smoke_release.py "$tool_root/smoke_release.py"
+          cd "$tool_root"
+          "$UV_TOOL_DIR/coordinare/bin/python" -I smoke_release.py "$RELEASE_VERSION"
+
+      - name: Verify the optional subprocess performer beside the daemon
+        env:
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool install --force --overrides "$PWD/dist.overrides.txt" "$PWD"/dist/coordinare-*.whl \
+            --with "$PWD"/dist/performer-*.whl
+          cd "$(mktemp -d)"
+          "$UV_TOOL_DIR/coordinare/bin/python" -I -c 'from importlib.metadata import version; import os; import performer.main; assert version("performer") == os.environ["RELEASE_VERSION"]; assert callable(performer.main.main)'
+
+      - name: Attest built release assets
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
+
+      - name: Upload assets and checksums to the draft
+        id: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$ATTESTATION_BUNDLE" dist/provenance.json
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          gh release upload "$RELEASE_VERSION" dist/* --clobber
 
   # 173a: image jobs are pinned to an architecture. Each arch is built on a
   # runner that IS that architecture — amd64 images on ubuntu-latest and arm64
@@ -626,6 +727,7 @@ jobs:
       - manifest-base
       - manifest-full
       - build-daemon
+      - release-artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -666,3 +768,31 @@ jobs:
           echo "Tagged ${REGISTRY}-base:latest → ${VERSION} (amd64 + arm64)"
           echo "Tagged ${REGISTRY}-full:latest → ${VERSION} (amd64 + arm64)"
           echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION} (amd64)"
+
+  publish-release:
+    timeout-minutes: 10
+    name: Publish Complete Release as Latest
+    needs:
+      - create-tag
+      - release-artifacts
+      - tag-latest
+      - publish-chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the fully uploaded release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+        with:
+          script: |
+            const release = await github.rest.repos.getReleaseByTag({
+              ...context.repo, tag: process.env.RELEASE_VERSION,
+            });
+            await github.rest.repos.updateRelease({
+              ...context.repo,
+              release_id: release.data.id,
+              draft: false,
+              make_latest: 'true',
+            });

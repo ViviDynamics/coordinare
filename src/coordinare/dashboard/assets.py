@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+from html import escape
 from pathlib import Path
 
 from coordinare import vocabulary
+from coordinare.metrics import _coordinare_version
 
 DASHBOARD_HTML_BUDGET_BYTES = 48 * 1024
 
@@ -82,9 +84,13 @@ _DASHBOARD_HTML = _DASHBOARD_HTML_RAW.replace(
 def _page_html(enabled: bool) -> str:
     """The dashboard page, with the assistant spliced in when it is switched on."""
     if not enabled:
-        return _DASHBOARD_HTML
+        return _versioned_html(_DASHBOARD_HTML)
     marker = "</div><!-- /#main-content -->"
-    return _DASHBOARD_HTML.replace(marker, _ASSISTANT_FRAGMENT + marker, 1)
+    return _versioned_html(_DASHBOARD_HTML.replace(marker, _ASSISTANT_FRAGMENT + marker, 1))
+
+
+def _versioned_html(page: str) -> str:
+    return page.replace("<!--release-version-->", escape(f"coordinare {_coordinare_version()}"))
 
 
 def _auth_page_html(*, title: str, heading: str, message: str, mascot: bool = False) -> str:

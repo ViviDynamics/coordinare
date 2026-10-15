@@ -349,7 +349,6 @@ wheels = [
 
 [[package]]
 name = "coordinare"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosmtplib" },
@@ -433,7 +432,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
-provides-extras = ["otlp", "dev"]
+provides-extras = ["dev", "otlp"]
 
 [package.metadata.requires-dev]
 dev = []

@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coordinare"
-version = "0.1.0"
+dynamic = ["version"]
+# Release builds set this version source and sibling wheel URLs in a temporary
+# tree from the release job's tag output. Development dependency pins stay intact.
 description = "Board orchestrator daemon that dispatches project cards to AI agents"
 # Elastic License 2.0 has no SPDX identifier (SPDX lists OSI/FSF licenses only), so
 # PEP 639's LicenseRef- form is the specified way to name it. Deliberately no
@@ -73,6 +75,29 @@ coordinare = "coordinare.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/coordinare"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.version]
+path = "src/coordinare/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/coordinare", "/pyproject.toml", "/README.md", "/LICENSE", "/NOTICE", "/config.example*.yaml"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config.example.yaml" = "coordinare/data/config.example.yaml"
+"config.example.anthropic.yaml" = "coordinare/data/config.example.anthropic.yaml"
+"config.example.claude_code.yaml" = "coordinare/data/config.example.claude_code.yaml"
+"config.example.codex.yaml" = "coordinare/data/config.example.codex.yaml"
+"config.example.hermes.yaml" = "coordinare/data/config.example.hermes.yaml"
+"config.example.junie.yaml" = "coordinare/data/config.example.junie.yaml"
+"config.example.ollama.yaml" = "coordinare/data/config.example.ollama.yaml"
+"config.example.openai-compatible.yaml" = "coordinare/data/config.example.openai-compatible.yaml"
+"config.example.openclaw.yaml" = "coordinare/data/config.example.openclaw.yaml"
+"config.example.opencode.yaml" = "coordinare/data/config.example.opencode.yaml"
+"config.example.opencode_compat.yaml" = "coordinare/data/config.example.opencode_compat.yaml"
+"config.example.pi.yaml" = "coordinare/data/config.example.pi.yaml"
 
 # T003: Ruff configuration
 [tool.ruff]
