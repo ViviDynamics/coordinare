@@ -729,6 +729,7 @@ function refreshScopedViews() {
   updateAttention(scoped);
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
+  else if (isCardPath(location.pathname)) cardPageRefresh();
   else renderDashboardExtras(scoped);
   afUpdateFilterOptions();
   afRender();

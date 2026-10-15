@@ -17,6 +17,7 @@ from coordinare.dashboard.assets import (
         _DASHBOARD_SHELL_CSS,
         _page_html,
 )
+from coordinare.lib.path_segments import sanitize_segment
 
 if TYPE_CHECKING:
         from coordinare.dashboard.context import DashboardContext
@@ -138,6 +139,29 @@ def _register_dashboard_symphony_detail(app: FastAPI, ctx: DashboardContext) -> 
             return HTMLResponse(_page_html(_assistant_on))
 
 
+def card_address_valid(symphony: str, card: str) -> bool:
+    """233: a card page address names two segments in the writer's sanitized form, as the run routes do."""
+    return all(bool(value) and sanitize_segment(value) == value for value in (symphony, card))
+
+
+def _register_dashboard_card_page(app: FastAPI, ctx: DashboardContext) -> None:
+        _assistant_on = ctx.assistant_on
+
+        @app.get("/cards/{symphony}/{card}", response_class=HTMLResponse)
+        async def dashboard_card(symphony: str, card: str) -> HTMLResponse:
+            """233: the card page. The client reads the timeline. An address the writer could not have made is a 404, and the shell still loads and says so."""
+            status = 200 if card_address_valid(symphony, card) else 404
+            return HTMLResponse(_page_html(_assistant_on), status_code=status)
+
+        @app.get("/cards/{rest:path}", response_class=HTMLResponse)
+        async def dashboard_card_stray(rest: str) -> HTMLResponse:
+            """233: any other /cards path is not a card address. The shell loads and says so, with a 404.
+
+            Registered after the two-segment route, and it matches only under /cards/, never /api/.
+            """
+            return HTMLResponse(_page_html(_assistant_on), status_code=404)
+
+
 def _register_dashboard_admin_config(app: FastAPI, ctx: DashboardContext) -> None:
 
         @app.get("/admin/config")
@@ -171,5 +195,6 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
     _register_dashboard_glossary(app, ctx)
     _register_dashboard_symphonies(app, ctx)
     _register_dashboard_symphony_detail(app, ctx)
+    _register_dashboard_card_page(app, ctx)
     _register_dashboard_admin_config(app, ctx)
     _register_dashboard_config(app, ctx)

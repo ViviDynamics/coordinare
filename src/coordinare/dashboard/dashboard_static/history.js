@@ -148,11 +148,13 @@ function historyRunRowHtml(row) {
   var duration = typeof row.duration_seconds === 'number' ? fmtDuration(row.duration_seconds)
     : historyNotRecorded(row.duration_reason);
   var path = runPathFor(row.symphony, row.card, row.run);
-  // The card links to this History filtered to the card. The card's pipeline timeline (#147)
-  // replaces this link once it ships.
-  var cardPath = '/history' + historySearchFor('', {
-    symphony: row.symphony, card: row.card, stage: '', outcome: '', since: '', until: '',
-  }, '');
+  // 233: the card links to its card page (the pipeline timeline, #147). A row with no symphony
+  // address to name (the conductor's own checks) keeps the History filtered to the card.
+  var cardPath = cardPageAddressOk(row.symphony, row.card)
+    ? cardPathFor(row.symphony, row.card)
+    : '/history' + historySearchFor('', {
+      symphony: row.symphony, card: row.card, stage: '', outcome: '', since: '', until: '',
+    }, '');
   return '<tr>' +
     '<td>' + timeHtml(row.started_at) + '</td>' +
     '<td>' + esc(row.attributed_symphony || row.symphony || '') + '</td>' +

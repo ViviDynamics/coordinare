@@ -275,11 +275,13 @@ function timelineLoad(node, symphony, card) {
   }
   fetch(timelineUrl(symphony, card), { credentials: 'same-origin' })
     .then(function(response) {
-      return response.json().then(function(body) { return { ok: response.ok, body: body }; });
+      return response.json().then(function(body) { return { ok: response.ok, status: response.status, body: body }; });
     })
     .then(function(res) {
       if (!res.ok) {
-        if (node.isConnected !== false) node.innerHTML = '<div class="muted">' + esc((res.body && res.body.detail) || 'The timeline could not be loaded.') + '</div>';
+        // 233: a card the daemon does not know (404) is said plainly, not as the server's detail.
+        var text = res.status === 404 ? 'No timeline recorded for this card' : ((res.body && res.body.detail) || 'The timeline could not be loaded.');
+        if (node.isConnected !== false) node.innerHTML = '<div class="muted">' + esc(text) + '</div>';
         return;
       }
       _timelineCache[key] = { at: Date.now(), body: res.body };

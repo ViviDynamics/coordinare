@@ -54,6 +54,8 @@ DEFERRED_PAGE_PATHS = (
     "/glossary",
     "/symphonies",
     "/symphonies/{name}",
+    "/cards/{symphony}/{card}",  # 233: the card page, a card's timeline by address.
+    "/cards/{rest:path}",  # 233: any other /cards path, served as the shell with a 404.
     "/admin/config",
     "/config",
 )
