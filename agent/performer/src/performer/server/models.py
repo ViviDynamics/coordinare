@@ -44,6 +44,51 @@ class PerformerStatus(BaseModel):
     auth_enabled: bool
     current_job_id: str | None = None
     version: str | None = None
+    # 234: the env-provenance capability. The daemon refuses a frozen payload to an image reporting less.
+    env_provenance_version: int = 0
+
+
+# 234: the version this image implements. Reported on GET /status as env_provenance_version.
+ENV_PROVENANCE_CAPABILITY_VERSION = 1
+
+_SHA256_HEX_LEN = 64
+_SCRIPT_MAX_CHARS = 256 * 1024
+
+
+class EnvProvenance(BaseModel):
+    """234: the daemon-frozen env-cache steps a consumer runs. Nothing here is read from the cache.
+
+    ``debs`` maps a cache-relative ``debs/<name>.deb`` to its sha256. The performer copies only these, and only
+    when the bytes it reads hash to the listed digest.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 234 review: the slug is derived from the cache directory name by provenance_slug (the daemon has the same
+    # function). It may start with an underscore, and it is bounded to 120 characters.
+    slug: str = Field(pattern=r"^[a-z0-9_][a-z0-9_-]{0,119}$")
+    cache_path: str
+    activate_sh: str = Field(max_length=_SCRIPT_MAX_CHARS)
+    services_start_sh: str | None = Field(default=None, max_length=_SCRIPT_MAX_CHARS)
+    services_health_sh: str | None = Field(default=None, max_length=_SCRIPT_MAX_CHARS)
+    debs: dict[str, str] = Field(default_factory=dict)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("debs")
+    @classmethod
+    def _debs_stay_in_the_cache(cls, debs: dict[str, str]) -> dict[str, str]:
+        for rel, digest in debs.items():
+            parts = rel.split("/")
+            if (
+                not rel.startswith("debs/")
+                or not rel.endswith(".deb")
+                or any(p in ("", ".", "..") for p in parts)
+                or len(digest) != _SHA256_HEX_LEN
+                or any(c not in "0123456789abcdef" for c in digest)
+            ):
+                msg = f"deb {rel!r} must be debs/<name>.deb with a sha256 digest"
+                raise ValueError(msg)
+        return debs
 
 
 class JobInitPayload(BaseModel):
@@ -62,6 +107,8 @@ class JobInitPayload(BaseModel):
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+    # 234: the frozen env-cache steps. None for a job with no cache mount.
+    env_provenance: EnvProvenance | None = None
     # 129: per-run transcript byte cap. None means transcripts are disabled for
     # this job, so the runner records nothing and the wire carries nothing.
     transcript_max_bytes: int | None = None
@@ -145,6 +192,8 @@ class CancelResponse(BaseModel):
 __all__ = [
     "BusyReason",
     "CancelResponse",
+    "ENV_PROVENANCE_CAPABILITY_VERSION",
+    "EnvProvenance",
     "JobAcceptResponse",
     "JobBusyResponse",
     "JobInitPayload",

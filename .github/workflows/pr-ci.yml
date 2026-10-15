@@ -366,12 +366,22 @@ jobs:
         run: |
           uv venv
           uv pip install -e ".[dev]"
+          # 234: the provenance lane imports the performer package (materialise, the server models), as the other jobs do.
+          uv pip install -e "agent/performer[dev]"
 
       - name: Verify the verify decision against the built performer image (spec 218)
         env:
           COORDINARE_DOCKER_IMAGE_TESTS: "1"
           COORDINARE_E2E_PERFORMER_IMAGE: coordinare-performer:full
         run: uv run pytest tests/integration/test_218_verify_real_image.py -v
+
+      # 234: a post-verification swap of the env cache, run through the built image. The consumer shell must
+      # run the daemon's frozen steps and must not run the swapped or planted ones. Same lane and opt-in as above.
+      - name: Verify env-cache provenance against the built performer image (spec 234)
+        env:
+          COORDINARE_DOCKER_IMAGE_TESTS: "1"
+          COORDINARE_E2E_PERFORMER_IMAGE: coordinare-performer:full
+        run: uv run pytest tests/integration/test_234_real_image.py -v
 
       - name: Verify image size gap (SC-007 — full must be ≥ 150 MB larger than base)
         run: |

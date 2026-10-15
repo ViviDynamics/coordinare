@@ -256,6 +256,9 @@ class JobInitPayload(BaseModel):
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+    # 234: the daemon-frozen env-cache steps (rendered activate.sh, service scripts, deb digests).
+    # Sent only to an image that reports the provenance capability; never read from the cache.
+    env_provenance: dict[str, Any] | None = None
     # 129: per-run transcript byte cap. None means transcripts are disabled, so
     # the performer records nothing for this job.
     transcript_max_bytes: int | None = None
@@ -391,6 +394,8 @@ class PerformerStatus(BaseModel):
     auth_enabled: bool
     current_job_id: str | None = None
     version: str | None = None
+    # 234: the env-provenance capability. An image that predates it omits the field, which reads as 0.
+    env_provenance_version: int = 0
 
 
 __all__ = [

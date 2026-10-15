@@ -30,8 +30,9 @@ def _v35_snapshot(*, env_cache: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def test_the_current_schema_is_v36() -> None:
-    assert CURRENT_SCHEMA_VERSION == 36
+def test_the_current_schema_is_v37() -> None:
+    # 234 (v37) moved the current version on from the 218 step; the v36 step's own defaults are still tested below.
+    assert CURRENT_SCHEMA_VERSION == 37
 
 
 def test_a_v35_snapshot_with_card_lifecycle_loads_under_v36() -> None:

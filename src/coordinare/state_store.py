@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 36  # 218: daemon-rendered env-cache scripts and the infrastructure budget
+CURRENT_SCHEMA_VERSION: int = 37  # 234: env-cache provenance digest (frozen after a verified bootstrap)
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -141,6 +141,9 @@ CURRENT_SCHEMA_VERSION: int = 36  # 218: daemon-rendered env-cache scripts and t
 # daemon-rendered env-cache scripts the bootstrap verification runs and the activate.sh gate
 # compares against. v1-v35 snapshots load with None (fail closed, one re-bootstrap). The same
 # step adds infra_failures and last_infra_failure_at (the infrastructure budget), defaults 0/None.
+# v37 (234) adds provenance_digest and provenance_frozen_at on EnvCacheStateSnapshot: the digest of the
+# daemon-owned frozen manifest that consumer dispatch checks. v1-v36 snapshots load with None, so the first
+# consumer dispatch is refused and re-bootstraps once.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -690,6 +693,10 @@ class EnvCacheStateSnapshot(BaseModel):
     # Old snapshots load with 0 and None.
     infra_failures: int = 0
     last_infra_failure_at: datetime | None = None
+    # 234 (schema v37): the digest of the daemon-owned frozen manifest. The manifest file is checked against it
+    # before any use, so a missing or altered file is refused. v36 snapshots load with None (one re-bootstrap).
+    provenance_digest: str | None = None
+    provenance_frozen_at: datetime | None = None
     # 088 (FR-009): bootstrap circuit-breaker budget. Persisted so a restart
     # does not reset a failing bootstrap's attempt count; old snapshots load
     # with the defaults (no migration).

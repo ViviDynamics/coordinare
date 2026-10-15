@@ -364,6 +364,8 @@ class Score(BaseModel):
     issue_url: str = ""  # GitHub issue URL for PR body reference
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
+    # 234: the daemon-frozen env-cache steps. Declared here or extra="ignore" drops them in transit.
+    env_provenance: dict[str, Any] | None = None
     reasoning_policy: Literal["disable_thinking"] | None = None
     orchestration: dict | None = None  # 080: dual-model proxy block (None = single, no proxy)
     # 089: implementer local-test gate config delivered by dispatch_performer.

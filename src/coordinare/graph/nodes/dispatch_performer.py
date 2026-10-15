@@ -2363,10 +2363,23 @@ async def _prepare_env_dispatch(state: CoordinareState, service: Any, card_id: s
         )
         if terminal is not None:
             return _extra_volumes, terminal
+        # 234 review: the frozen payload is taken in the same step as the verification, immediately before the
+        # mount is resolved, so the mount and the steps come from one verified state.
+        terminal, provenance = await _env_provenance_gate(
+            state, card_id, performer_stage, _symphony_name_for_ec,
+            _ec_state_for_sym, _is_bootstrap_dispatch, _release_slot_on_error,
+            container_path=_provenance_container_path(service, _ec_state_for_sym),
+        )
+        if terminal is not None:
+            return _extra_volumes, terminal
         _extra_volumes = await _resolve_env_volumes(
             state, service, card_id, performer_stage, card_context,
             _symphony_name_for_ec, _env_cache_for_ec, _is_bootstrap_dispatch,
         )
+        # 234: the frozen steps travel with the mount they describe. A persistent performer mounts nothing and
+        # carries no payload.
+        if provenance is not None and card_context.get("env_cache_path"):
+            card_context["env_provenance"] = provenance
         await _inject_test_env_vars(
             state, card_context, card_id, _symphony_name_for_ec,
             _ec_state_for_sym, _is_bootstrap_dispatch,
@@ -2421,6 +2434,68 @@ async def _env_cache_hold(state: CoordinareState, card_id: str, performer_stage:
             _release_slot_on_error()
             return state
     return None
+
+
+async def _env_provenance_gate(
+    state: CoordinareState,
+    card_id: str,
+    performer_stage: str,
+    _symphony_name_for_ec: Any,
+    _ec_state_for_sym: Any,
+    _is_bootstrap_dispatch: bool,
+    _release_slot_on_error: Callable[[], None],
+    container_path: str,
+) -> tuple[CoordinareState | None, dict[str, Any] | None]:
+    """234: a consumer dispatch that would mount the cache runs only against the frozen, verified copy.
+
+    The cache is checked against the daemon-owned manifest, and the consumer payload is taken from that same
+    manifest (``resolve_provenance``). Returns ``(terminal, payload)``. A drifted, altered, missing or unfrozen
+    cache refuses dispatch (``terminal`` is the state), releases the slot, logs and records an activity entry,
+    and schedules a re-bootstrap through the existing forced-regeneration seam. The bootstrap is never gated.
+    """
+    if _is_bootstrap_dispatch or not isinstance(_ec_state_for_sym, EnvCacheState):
+        return None, None
+    service = state.get("env_cache_service")
+    transient = False
+    if service is None:
+        reason = "no env-cache service to verify the frozen provenance; dispatch refused"
+    else:
+        check, payload = await service.resolve_provenance(
+            _symphony_name_for_ec, _ec_state_for_sym, container_path=container_path,
+        )
+        if check.ok and payload is not None:
+            return None, payload
+        reason = check.reason or "frozen provenance check failed"
+        # 234 review 5: an I/O failure, a race or a timeout refuses this dispatch only. It is not drift, so it does not
+        # schedule a re-bootstrap.
+        transient = check.transient
+    logger.error(
+        "dispatch_performer.env_provenance_refused",
+        card_id=card_id,
+        performer_stage=performer_stage,
+        symphony=_symphony_name_for_ec,
+        reason=reason,
+    )
+    activity_log = state.get("activity_log")
+    if activity_log is not None:
+        activity_log.record(
+            activity_type="env_provenance_refused",
+            card_id=card_id,
+            stage=performer_stage,
+            text=f"env cache refused: {reason}; a re-bootstrap is scheduled",
+        )
+    _release_slot_on_error()
+    if service is not None and not transient:
+        service.mark_runtime_health_failed(_symphony_name_for_ec, state)
+    return state, None
+
+
+def _provenance_container_path(service: Any, ec_state: Any) -> str:
+    """The in-container path the consumer mounts this cache at (234). Mirrors ``_resolve_env_volumes``."""
+    devenv_root = DEFAULT_DEVENV_ROOT
+    if isinstance(service, HTTPPerformerService):
+        devenv_root = service.devenv_root
+    return f"{devenv_root}/{ec_state.sanitised_name}"
 
 
 async def _env_readiness_gate(state: CoordinareState, service: Any, card_id: str, performer_stage: str, _symphony_name_for_ec: Any, _ec_state_for_sym: Any, _is_bootstrap_dispatch: bool, _release_slot_on_error: Callable[[], None]) -> CoordinareState | None:

@@ -675,6 +675,9 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             # 218 (review round 3): the infrastructure budget survives a restart.
             infra_failures=int(get("infra_failures") or 0),
             last_infra_failure_at=get("last_infra_failure_at"),
+            # 234: the frozen-provenance digest survives a restart; the manifest is re-checked against it.
+            provenance_digest=get("provenance_digest"),
+            provenance_frozen_at=get("provenance_frozen_at"),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
@@ -982,6 +985,9 @@ def _rehydrate_env_cache(state: CoordinareState, snapshot: WorkflowSnapshot) -> 
             live.rendered_activate_sh = persisted.rendered_activate_sh
             live.infra_failures = persisted.infra_failures
             live.last_infra_failure_at = persisted.last_infra_failure_at
+            # 234: the frozen-provenance digest, re-checked against the manifest file before any use.
+            live.provenance_digest = persisted.provenance_digest
+            live.provenance_frozen_at = persisted.provenance_frozen_at
             # 088 (FR-009): the breaker budget survives restarts.
             live.bootstrap_attempts = persisted.bootstrap_attempts
             live.bootstrap_exhausted = persisted.bootstrap_exhausted
@@ -4162,6 +4168,10 @@ class CoordinareDaemon:
             ok, _boot_err, infra = await self._verify_bootstrap_in_clean_context(
                 symphony_name, svc, job_id,
             )
+        # 234: freeze what was just verified. Consumers run only this frozen copy, and any later change to the
+        # cache is refused at dispatch. A refusal (a bound, a link out of the cache) fails the bootstrap.
+        if ok:
+            ok, _boot_err = await env_cache_svc.freeze_provenance(symphony_name, self._state)
         if infra:
             env_cache_svc.on_bootstrap_complete(
                 symphony_name, ok, self._state, error=_boot_err, infra_failure=True,
