@@ -479,7 +479,9 @@ function renderSymphoniesPage(s) {
   // button keep their own clicks.
   el.querySelectorAll('tr.symphony-row').forEach(function(tr) {
     tr.addEventListener('click', function(e) {
+      // 266: a disclosure in the row (the bootstrap history) opens itself; it does not open the symphony.
       if (e.target && e.target.closest && e.target.closest('a,button')) return;
+      if (e.target && e.target.closest && e.target.closest('summary,details')) return;
       navigate(e, tr.getAttribute('data-href'));
     });
   });
@@ -1146,7 +1148,7 @@ function afSyncRun(runId) {
 // 139: the symphony choice narrows the feed to the cards of that symphony.
 function afInScope(e) {
   var s = typeof _lastState !== 'undefined' ? _lastState : null;
-  return symphonyKeepsCard(s, currentSymphonyChoice(s), e.card_id);
+  return symphonyKeepsFeedEntry(s, currentSymphonyChoice(s), e);
 }
 function afMatches(e) { return (!_afFilter || e.card_id === _afFilter) && afVisible(e) && afInScope(e); }
 

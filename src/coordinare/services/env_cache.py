@@ -9,7 +9,8 @@ import json
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,14 @@ from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.services.bootstrap_history import (
+    ACT_BUDGET_RESET,
+    AttemptEnd,
+    BudgetNow,
+    record_activity,
+    report_completion,
+    short_commit,
+)
 from coordinare.services.env_manifest import (
     STRUCTURED_SPEC_FILES,
     derive_manifest,
@@ -768,6 +777,29 @@ DEFAULT_STAT_WALK_TIMEOUT_S = 300.0
 TRANSIENT_STREAK_LIMIT = 5
 
 
+def budget_max_attempts(coordinare_config: Any) -> int:
+    """The verdict budget the daemon runs with (``env_bootstrap_max_attempts``), default 3."""
+    return int(
+        getattr(
+            getattr(coordinare_config, "global_config", None),
+            "env_bootstrap_max_attempts",
+            3,
+        )
+        or 3,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Completion:
+    """266: one bootstrap's completion facts, read before the completion changes the state."""
+
+    success: bool
+    infra: bool
+    dispatch_attempt: int
+    was_exhausted: bool
+    ended_at: datetime | None
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -1067,8 +1099,23 @@ class EnvCacheService:
                 was_exhausted=cache_state.bootstrap_exhausted,
                 new_sha=current_sha,
             )
+            record_activity(
+                state, symphony_name, ACT_BUDGET_RESET,
+                f"Budget reset for commit {short_commit(current_sha)}: the env spec changed, so runs start again.",
+            )
             cache_state.bootstrap_attempts = 0
             cache_state.bootstrap_exhausted = False
+
+        # 266: a new commit makes the previous commit's outcome stale. Clear it, so cards and the
+        # Symphonies page say the new commit is waiting to bootstrap, not that the old one failed.
+        if (
+            cache_state.readme_sha is not None
+            and current_sha != cache_state.readme_sha
+            and cache_state.last_bootstrap_succeeded is not None
+            and not cache_state.bootstrap_in_flight
+        ):
+            cache_state.last_bootstrap_succeeded = None
+            cache_state.last_bootstrap_error = None
 
         # 218 (round 4): a new spec re-arms the infrastructure budget at any count.
         rearm_budgets_on_spec_change(cache_state, current_sha, symphony_name)
@@ -2178,19 +2225,42 @@ class EnvCacheService:
             )
             self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
 
+    def _report_outcome(
+        self,
+        state: dict[str, Any],
+        symphony_name: str,
+        cache_state: EnvCacheState,
+        facts: _Completion,
+    ) -> None:
+        """266: say how a bootstrap run ended, in the history and the feed. Read-only for the decisions.
+
+        The retry time is the backoff the next cycle applies to this failure.
+        """
+        ended_at = facts.ended_at or datetime.now(UTC)
+        retry_at = None
+        if not facts.success and not cache_state.bootstrap_exhausted:
+            backoff = BOOTSTRAP_RETRY_COOLDOWN_S * 2 ** (cache_state.bootstrap_attempts + cache_state.infra_failures)
+            retry_at = ended_at + timedelta(seconds=backoff)
+        report_completion(
+            state,
+            symphony_name,
+            AttemptEnd(
+                ended_at=ended_at, succeeded=facts.success, reason=cache_state.last_bootstrap_error,
+                commit=cache_state.readme_sha or "", attempt=facts.dispatch_attempt, infra=facts.infra,
+            ),
+            BudgetNow(
+                max_attempts=budget_max_attempts(self._coordinare_config),
+                exhausted_now=cache_state.bootstrap_exhausted and not facts.was_exhausted,
+                retry_at=retry_at,
+            ),
+        )
+
     def _spend_breaker_attempt(
         self, symphony_name: str, cache_state: EnvCacheState, state: dict[str, Any],
     ) -> None:
         """088 (FR-009): one real bootstrap failure spends the attempt budget; exhaustion trips it."""
         cache_state.bootstrap_attempts += 1
-        max_attempts = int(
-            getattr(
-                getattr(self._coordinare_config, "global_config", None),
-                "env_bootstrap_max_attempts",
-                3,
-            )
-            or 3,
-        )
+        max_attempts = budget_max_attempts(self._coordinare_config)
         if cache_state.bootstrap_attempts >= max_attempts and not cache_state.bootstrap_exhausted:
             cache_state.bootstrap_exhausted = True
             logger.warning(
@@ -2222,6 +2292,8 @@ class EnvCacheService:
         if cache_state is None:
             return
 
+        # 266: the budget number this run was dispatched under, and the budget state, read before any change.
+        pre_completion = (cache_state.bootstrap_attempts + 1, cache_state.bootstrap_exhausted)
         cache_state.bootstrap_in_flight = False
         cache_state.last_bootstrap_at = datetime.now(UTC)
 
@@ -2289,6 +2361,14 @@ class EnvCacheService:
             "env_cache.bootstrap_complete",
             symphony=symphony_name,
             success=success,
+        )
+        # 266: the one place a finished run is closed in the history and the feed.
+        self._report_outcome(
+            state, symphony_name, cache_state,
+            _Completion(
+                success=success, infra=infra_failure, dispatch_attempt=pre_completion[0],
+                was_exhausted=pre_completion[1], ended_at=cache_state.last_bootstrap_at,
+            ),
         )
 
         # 400: a forced run was keyed on the forced key; the cache it built

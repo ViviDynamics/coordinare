@@ -287,7 +287,7 @@ def test_serialised_entry_shape_matches_the_wire_contract() -> None:
     )
     (entry,) = log.snapshot()
     assert set(entry) == {
-        "seq", "timestamp", "card_id", "card_number", "card_title",
+        "seq", "timestamp", "card_id", "card_number", "card_title", "symphony",
         "stage", "activity_type", "text", "truncated", "session_id", "performer_id", "is_delta", "stream_id",
         "summary", "status",  # 148: additive, empty on every entry that is not a tool call or result
         "event_at",  # 133: additive, the performer's own event time (empty when the event has none)

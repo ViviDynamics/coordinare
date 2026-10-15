@@ -148,8 +148,8 @@ var SNAPSHOT_FIELD_SCOPE = {
   active_sessions: 'scoped',
   subsystems: 'shared',
   overall_health: 'shared',
-  // 151: the System health card's rows. The daemon's, not a symphony's, so every scope shows them.
-  system_health: 'shared',
+  // 151, 266: the System health card's rows. The env reason is written for the symphony the page shows.
+  system_health: 'derived',
   project_name: 'shared',
   project_board_url: 'shared',
   cycles_completed: 'derived',
@@ -305,6 +305,8 @@ function symphonyScope(s, choice) {
   });
   scoped.board_summary = symphonyBoardSummary(scoped.symphonies);
   scoped.token_usage = symphonySpend(s.token_usage, choice);
+  // 266: the health row's env reason is written for this symphony (symphonyHealthScope).
+  scoped.system_health = symphonyHealthScope(s.system_health, choice);
   // 147: the board strips of this symphony's cards, and no other symphony's.
   var strips = s.card_pipeline && typeof s.card_pipeline === 'object' ? s.card_pipeline : {};
   scoped.card_pipeline = {};
@@ -320,6 +322,40 @@ function symphonyScope(s, choice) {
   scoped.last_rebase_round = symphonyRebaseAttention(s, s.last_rebase_round);
   scoped.session_stats = null;
   return scoped;
+}
+
+// 266: the System health row's env reason for the symphony the page shows. The failure is named only for
+// that symphony; the other failing symphonies are counted. All symphonies (choice '') keeps every reason.
+// A row without env failures, or a health object without rows, is returned unchanged.
+function symphonyHealthScope(health, choice) {
+  if (!health || typeof health !== 'object' || !Array.isArray(health.rows) || !choice) return health;
+  var rows = health.rows.map(function(row) {
+    if (!row || row.key !== 'disk_env_cache' || !Array.isArray(row.env_failures) || row.env_failures.length === 0) return row;
+    var mine = row.env_failures.filter(function(f) { return !!f && f.symphony === choice; });
+    var others = row.env_failures.length - mine.length;
+    var parts = mine.map(function(f) { return String(f.reason || 'the reason was not recorded'); });
+    if (others > 0) parts.push(others === 1 ? '1 other symphony has a failing bootstrap' : others + ' other symphonies have failing bootstraps');
+    var copy = {};
+    for (var key in row) {
+      if (symphonyHas(row, key)) copy[key] = row[key];
+    }
+    if (parts.length) copy.reason = 'env cache bootstrap failed: ' + parts.join('; ');
+    copy.env_failures = mine;
+    return copy;
+  });
+  var out = {};
+  for (var field in health) {
+    if (symphonyHas(health, field)) out[field] = health[field];
+  }
+  out.rows = rows;
+  return out;
+}
+
+// 266: whether one feed entry shows under the choice. A bootstrap row carries its symphony and shows only under
+// that symphony, or under All. Any other entry is kept by its card, as symphonyKeepsCard decides.
+function symphonyKeepsFeedEntry(s, choice, entry) {
+  if (entry && entry.symphony) return !choice || choice === SYMPHONY_ALL || entry.symphony === choice;
+  return symphonyKeepsCard(s, choice, entry ? entry.card_id : '');
 }
 
 // The branch-divergence round under a symphony. A blocked or failed branch needs a person, so
@@ -596,7 +632,86 @@ var SYMPHONY_ENV_LABELS = {
   not_bootstrapped: 'Not bootstrapped'
 };
 
+// 266: the env bootstrap in words. The server derives one state per symphony (services/bootstrap_status.py);
+// the Symphonies page shows its state, its figures and its recent attempts, and says nothing it was not sent.
+var SYMPHONY_BOOTSTRAP_LABELS = {
+  not_configured: 'Not configured', not_started: 'Not started', bootstrapping: 'Bootstrapping',
+  verifying: 'Verifying', ready: 'Ready', failed: 'Failed', waiting_to_retry: 'Waiting to retry',
+  budget_exhausted: 'Budget exhausted', passed_not_ready: 'Passed, not ready'
+};
+var SECONDS_PER_MINUTE = 60;
+var BOOTSTRAP_OUTCOME_LABELS = {succeeded: 'Succeeded', failed: 'Failed', running: 'Running'};
+
+// The elapsed time of a bootstrap, in the words the cell uses: seconds, then whole minutes.
+function bootstrapElapsedText(seconds) {
+  if (typeof seconds !== 'number' || !isFinite(seconds) || seconds < 0) return '';
+  if (seconds < SECONDS_PER_MINUTE) return Math.floor(seconds) + 's';
+  return Math.floor(seconds / SECONDS_PER_MINUTE) + 'm';
+}
+
+// One line of a bootstrap's figures, each one present only when the snapshot carries it.
+function bootstrapFigures(parts) {
+  return parts.filter(function(p) { return !!p; }).join(' · ');
+}
+
+// The verify output tail, in a closed disclosure so a long log does not fill the cell.
+function bootstrapTailHtml(boot) {
+  var tail = Array.isArray(boot.reason_tail) ? boot.reason_tail : [];
+  if (!tail.length) return '';
+  return '<details class="sym-boot-tail"><summary>Verify output</summary><pre style="white-space:pre-wrap;font-size:11px">' +
+    esc(tail.join('\n')) + '</pre></details>';
+}
+
+// One run in the history disclosure: its number, commit, start, how it ended and why.
+function bootstrapHistoryRowHtml(a) {
+  var outcome = symphonyHas(BOOTSTRAP_OUTCOME_LABELS, a.outcome) ? BOOTSTRAP_OUTCOME_LABELS[a.outcome] : 'Unknown';
+  var when = a.started_at ? timeHtml(a.started_at) : 'time not recorded';
+  var took = bootstrapElapsedText(a.duration_seconds);
+  var model = [a.backend, a.model].filter(function(p) { return !!p; }).join(' ');
+  return '<li>#' + esc(String(a.number)) + ' · ' + esc(a.commit || 'no commit') + ' · ' + when +
+    ' · ' + esc(outcome) + (took ? ' after ' + esc(took) : '') +
+    (a.reason ? '<div class="muted" style="font-size:11px">' + esc(a.reason) + '</div>' : '') +
+    (model ? '<div class="muted" style="font-size:11px">' + esc(model) + (a.job_id ? ' · job ' + esc(a.job_id) : '') + '</div>' : '') +
+    '</li>';
+}
+
+// The bootstrap's detail under the Env cell: what it is doing or why it stopped, and its recent runs.
+// A hidden row gets none of it, as the reason and the runs are the symphony's own.
+function symphonyBootstrapHtml(boot) {
+  if (!boot || typeof boot !== 'object' || !symphonyHas(SYMPHONY_BOOTSTRAP_LABELS, boot.state)) return '';
+  var lines = [];
+  var state = boot.state;
+  if (state === 'bootstrapping' || state === 'verifying') {
+    lines.push(bootstrapFigures([
+      boot.started_at ? 'Started ' + timeHtml(boot.started_at) : '',
+      bootstrapElapsedText(boot.elapsed_seconds) ? 'elapsed ' + bootstrapElapsedText(boot.elapsed_seconds) : '',
+      boot.backend ? esc([boot.backend, boot.model].filter(function(p) { return !!p; }).join(' ')) : '',
+      boot.pod ? 'Pod ' + esc(boot.pod) : ''
+    ]));
+  }
+  if (state === 'ready' && boot.ready_since) lines.push('Since ' + timeHtml(boot.ready_since));
+  if (state === 'waiting_to_retry' && boot.next_attempt_at) lines.push('Next run ' + timeHtml(boot.next_attempt_at));
+  if (state === 'failed' || state === 'waiting_to_retry' || state === 'budget_exhausted') {
+    if (boot.reason) lines.push('<span style="color:var(--color-text)">' + esc(boot.reason) + '</span>');
+    if (boot.reset_hint) lines.push(esc(boot.reset_hint));
+  }
+  var out = lines.map(function(l) { return '<div class="muted" style="font-size:11px">' + l + '</div>'; }).join('');
+  out += bootstrapTailHtml(boot);
+  var history = Array.isArray(boot.history) ? boot.history : [];
+  if (history.length) {
+    out += '<details class="sym-boot-history"><summary class="muted" style="font-size:11px">History (' +
+      esc(String(history.length)) + ')</summary><ul style="font-size:11px;padding-left:16px">' +
+      history.map(bootstrapHistoryRowHtml).join('') + '</ul></details>';
+  }
+  return out;
+}
+
 function symphonyEnvView(sym) {
+  // 266: the bootstrap's own state, when the snapshot carries it.
+  var boot = sym && sym.env_bootstrap && typeof sym.env_bootstrap === 'object' ? sym.env_bootstrap : null;
+  if (boot && symphonyHas(SYMPHONY_BOOTSTRAP_LABELS, boot.state)) {
+    return {label: SYMPHONY_BOOTSTRAP_LABELS[boot.state], reason: String(boot.label || '')};
+  }
   var env = sym && sym.env_status && typeof sym.env_status === 'object' ? sym.env_status : null;
   if (!env || !symphonyHas(SYMPHONY_ENV_LABELS, env.state)) {
     return {label: 'Not known', reason: "The snapshot does not carry this symphony's env state."};
@@ -641,7 +756,8 @@ function symphonyTableRowHtml(sym, choice) {
     + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(status.reason)) + '</div></td>'
     + '<td style="color:var(--color-text-muted)">' + (symphonyProjectHtml(sym) || 'No project number') + '</td>'
     + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
-    + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' + bootBtn + '</td>'
+    + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' +
+    (hidden ? '' : symphonyBootstrapHtml(sym.env_bootstrap)) + bootBtn + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_active))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_queued))) + '</td>'
     + '<td>' + (hidden ? hiddenHtml : usageCostHtml(sym.spend_week)) + '</td>'
