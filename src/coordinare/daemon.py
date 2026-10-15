@@ -86,6 +86,7 @@ from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILE_PATHS,
+    VerifierConfigurationError,
     VerifierSpec,
     configured_verifier_image,
 )
@@ -4213,6 +4214,14 @@ class CoordinareDaemon:
             return False, f"env verification could not run in the clean-room verifier: {detail}", True
         return False, f"env verification failed in the clean-room verifier: {detail}", False
 
+    @staticmethod
+    def _verifier_configuration_refusal(ec: EnvCacheState, detail: str) -> tuple[bool, str, bool]:
+        """Stop automatic bootstraps until the operator corrects configuration and requests regeneration."""
+        ec.bootstrap_exhausted = True
+        reason = f"env verification configuration failure: {detail}; correct configuration and request env regeneration"
+        logger.error("env_cache.verifier_configuration_refused", symphony=ec.symphony_name, reason=reason)
+        return False, reason, False
+
     async def _verify_bootstrap_on_kubernetes(
         self, symphony_name: str, svc: Any, job_id: str, env_verify_basis: str | None,
     ) -> tuple[bool, str | None, bool]:
@@ -4232,26 +4241,25 @@ class CoordinareDaemon:
         bootstrap_sha = ec.bootstrap_commit_sha
         bootstrap_activate = ec.rendered_activate_sh
         try:
-            image = configured_verifier_image(self._state.get("coordinare_config"))
             files = await self._fetch_project_files(symphony_name, bootstrap_sha)
         except Exception as exc:
-            return False, f"env verification could not resolve the image or project files at the bootstrap SHA: {type(exc).__name__}", True
+            return False, f"env verification could not resolve project files at the bootstrap SHA: {type(exc).__name__}", True
         if files is None:
             return False, "env verification could not resolve the symphony repository for the clean-room verifier", True
-        spec = VerifierSpec(
-            image=image,
-            cache_claim="",  # the runtime owns the claim it mounts
-            cache_subpath=ec.sanitised_name,
-            mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
-            verify_text=str(ec.rendered_verify_sh),
-            project_files=files,
-            max_entries=limits.max_entries,
-            max_bytes=limits.max_bytes,
-        )
         try:
+            spec = VerifierSpec(
+                image=configured_verifier_image(self._state.get("coordinare_config")),
+                cache_claim="",  # the runtime owns the claim it mounts
+                cache_subpath=ec.sanitised_name,
+                mount_path=f"{getattr(svc, 'devenv_root', '/devenv')}/{ec.sanitised_name}",
+                verify_text=str(ec.rendered_verify_sh),
+                project_files=files,
+                max_entries=limits.max_entries,
+                max_bytes=limits.max_bytes,
+            )
             ok, detail = await svc._runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
-        except ValueError as exc:
-            return False, f"env verification refused the pod inputs: {exc}", True
+        except VerifierConfigurationError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         logger.info(
             "env_cache.clean_room_verify",
             symphony=symphony_name,
@@ -4281,6 +4289,8 @@ class CoordinareDaemon:
                 walk_detail, ec.rendered_activate_sh or "", limits,
                 inputs_current=ec.bootstrap_commit_sha == bootstrap_sha and ec.rendered_activate_sh == walk_spec.activate_text,
             )
+        except VerifierConfigurationError as exc:
+            return self._verifier_configuration_refusal(ec, str(exc))
         except (ProvenanceTransientError, ValueError, UnicodeError, RecursionError) as exc:
             return False, f"env verification refused the provenance result: {exc}", isinstance(exc, ProvenanceTransientError)
         if not walk_ok:

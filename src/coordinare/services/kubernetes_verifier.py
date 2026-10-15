@@ -57,6 +57,11 @@ _POD_NAME_MAX = 63
 _POD_NAME_UUID_CHARS = 8
 _SAFE_RELATIVE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*$")
 
+
+class VerifierConfigurationError(ValueError):
+    """Operator inputs prevent verification; retrying the same configuration cannot help."""
+
+
 # The setup, run before the verify, with the verifier's own environment. It writes the daemon's verify.sh and the project
 # files (from the commit) into a private directory, and resolves the bundle path the way bundler will see it. Bundler
 # resolves a relative BUNDLE_PATH against the Gemfile's directory. A cache whose bundle was installed against a vendored
@@ -105,7 +110,11 @@ with open(os.path.join(d, "env.sh"), "w", encoding="utf-8") as fh:
 VERIFIER_SCRIPT = (
     "set -eu\n"
     "umask 077\n"
-    'if [ "$WALK_ONLY" = "1" ]; then exec python3 -P -m performer.cache_verifier </dev/null; fi\n'
+    # Kubernetes merges stdout and stderr in pods/log. Keep walker diagnostics in
+    # private scratch so a bounded log read contains only the result line.
+    'if [ "$WALK_ONLY" = "1" ]; then\n'
+    '  exec python3 -P -m performer.cache_verifier </dev/null 2>"$HOME/walk.stderr"\n'
+    'fi\n'
     'mkdir -p "$HOME"\n'
     'd=$(mktemp -d)\n'
     'python3 -c "$SETUP_PY" "$d"\n'
@@ -163,9 +172,13 @@ def configured_verifier_image(config: Any) -> str:
     image = getattr(global_config, "kubernetes_verifier_image", None)
     if image is None:
         image = getattr(global_config, "performer_image", None)
+    return _validate_verifier_image(image)
+
+
+def _validate_verifier_image(image: Any) -> str:
     if not isinstance(image, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", image) is None:
         message = "kubernetes_verifier_image requires a valid daemon image or performer_image"
-        raise ValueError(message)
+        raise VerifierConfigurationError(message)
     return image
 
 
@@ -184,6 +197,7 @@ def build_verifier_pod_manifest(
         message = f"verify text exceeds the {VERIFY_TEXT_MAX_BYTES} byte bound"
         raise ValueError(message)
     cache_claim, cache_subpath, mount_path, image = spec.cache_claim, spec.cache_subpath, spec.mount_path, spec.image
+    _validate_verifier_image(image)
     env = {
         "DEVENV": mount_path,
         "HOME": VERIFIER_HOME,

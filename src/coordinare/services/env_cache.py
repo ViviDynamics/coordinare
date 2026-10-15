@@ -63,7 +63,11 @@ from coordinare.services.env_provenance import (
     write_stat_sidecar,
 )
 from coordinare.services.kubernetes_provenance import parse_summary, validate_summary
-from coordinare.services.kubernetes_verifier import VerifierSpec, configured_verifier_image
+from coordinare.services.kubernetes_verifier import (
+    VerifierConfigurationError,
+    VerifierSpec,
+    configured_verifier_image,
+)
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
     anchored_mkdir,
@@ -1751,30 +1755,26 @@ class EnvCacheService:
         performer_id = getattr(sym_cfg, "env_bootstrap_performer_id", None)
         svc = (state.get("performer_services_by_id") or {}).get(performer_id)
         runtime = getattr(svc, "_runtime", None)
-        image = ""
-        refusal = None
-        try:
-            image = configured_verifier_image(self._coordinare_config)
-        except ValueError as exc:
-            refusal = str(exc)
-        if refusal or runtime is None or not getattr(runtime, "verifies_clean_room", False):
-            return ProvenanceCheck(False, refusal or "kubernetes verifier runtime unavailable", transient=True)
+        if runtime is None or not getattr(runtime, "verifies_clean_room", False):
+            return ProvenanceCheck(False, "kubernetes verifier runtime unavailable", transient=True)
         limits = self._provenance_limits()
-        spec = VerifierSpec(
-            image=image,
-            cache_claim="", cache_subpath=ec.sanitised_name,
-            mount_path=f"{getattr(svc, 'devenv_root', DEFAULT_DEVENV_ROOT)}/{ec.sanitised_name}",
-            verify_text="", project_files={}, activate_text=ec.rendered_activate_sh,
-            walk_only=True, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
-        )
         started = time.monotonic()
         try:
+            spec = VerifierSpec(
+                image=configured_verifier_image(self._coordinare_config),
+                cache_claim="", cache_subpath=ec.sanitised_name,
+                mount_path=f"{getattr(svc, 'devenv_root', DEFAULT_DEVENV_ROOT)}/{ec.sanitised_name}",
+                verify_text="", project_files={}, activate_text=ec.rendered_activate_sh,
+                walk_only=True, max_entries=limits.max_entries, max_bytes=limits.max_bytes,
+            )
             ok, detail = await runtime.run_verifier(slug=ec.sanitised_name, spec=spec)
             if ok is None:
                 return ProvenanceCheck(False, detail, hashed=True, transient=True)
             result = parse_summary(detail, ec.rendered_activate_sh or "", limits)
-        except (OSError, TimeoutError, ProvenanceTransientError) as exc:
-            return ProvenanceCheck(False, str(exc), hashed=True, transient=True)
+        except (VerifierConfigurationError, OSError, TimeoutError, ProvenanceTransientError) as exc:
+            configuration_failure = isinstance(exc, VerifierConfigurationError)
+            reason = f"kubernetes verifier configuration failure: {exc}" if configuration_failure else str(exc)
+            return ProvenanceCheck(False, reason, hashed=True, transient=not configuration_failure)
         except (ValueError, UnicodeError, RecursionError) as exc:
             return self._record_drift(symphony_name, ec, digest, f"kubernetes provenance refused: {exc}")
         if not ok:

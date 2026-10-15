@@ -241,7 +241,7 @@ async def test_a_succeeded_pod_is_a_pass_and_is_removed() -> None:
     ok, detail = await _run(_runtime(core))
 
     assert ok is True
-    assert "PASSED" in detail
+    assert detail == ""
     assert len(core.created) == 1
     assert core.created[0]["body"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"] == CLAIM
     assert core.deleted == [core.created[0]["body"]["metadata"]["name"]]

@@ -48,7 +48,7 @@ and use the same hardened security context.
   commit.
 - The rendered verify text is passed in the pod spec (base64 env), written privately, and run with stdin closed. The
   pod has a deadline, resource limits, and is deleted in every exit path.
-- Verify result: pod phase `Succeeded` is pass, `Failed` is fail (logs tail as the reason), and an API failure or timeout
+- Verify result: pod phase `Succeeded` is pass without reading logs, `Failed` is fail (best effort logs tail as the reason), and an API failure or timeout
   is infrastructure (`None`, not counted as a verdict). Verify output is never parsed as provenance. A passing verify
   without a trailing newline remains a pass. Only the later walk pod can supply a provenance summary.
 
@@ -63,6 +63,8 @@ authoritative on Kubernetes. `env_verify_basis` is advisory there.
   Python uses `-P` to disable implicit cwd imports. No cache binary executes in this pod. Its stdout comes only from
   the walker, so an unterminated `printf` or forged sentinel from verification cannot hide or replace the result.
   Exactly one sentinel must be the final nonempty line; duplicated sentinels, including ones hidden midline, refuse.
+  Kubernetes combines stdout and stderr in pod logs. The walk command redirects stderr to private scratch
+  (`$HOME/walk.stderr`), discarded with the pod, so diagnostics cannot truncate or contaminate the result log.
   The `COORDINARE_PROVENANCE=` JSON line carries `content_digest`, `stat_digest`, `entry_count`, `total_bytes`
   and frozen activation inputs, including the deb list with SHA256 per deb. No manifest is transmitted or stored.
 - Freeze integrity still covers the content present before any cache binary ran: the bootstrap writer is gone and
@@ -152,8 +154,9 @@ The second security review fixes are covered by regression tests written before 
 - Log tail (B1): request the last 32 lines, retain a bounded byte tail, and require exactly one sentinel as the final
   nonempty line in the isolated walk output. Large verify output retains the exit code verdict. Missing final sentinels, including failed walk pods without
   results, are infrastructure during rechecks and never record drift.
-- Private registries (B2): the verifier receives the runtime's image pull secrets. ErrImagePull, ImagePullBackOff,
-  InvalidImageName and CreateContainerConfigError stop polling immediately with an infrastructure result.
+- Private registries (B2): the verifier receives the runtime's image pull secrets. ErrImagePull, ImagePullBackOff
+  and CreateContainerConfigError stop polling immediately with an infrastructure result. InvalidImageName is a
+  configuration refusal.
 - Pod hardening (B3): fixed UID and GID 10001, runAsNonRoot, RuntimeDefault seccomp, no privilege escalation, all
   capabilities dropped, readOnlyRootFilesystem, and enableServiceLinks disabled. A writable emptyDir at /tmp is also
   HOME. No fsGroup is set, so the verifier does not change claim ownership. Image packages are installed globally and
@@ -162,7 +165,9 @@ The second security review fixes are covered by regression tests written before 
 - Image and size (B3): both initial verification and rechecks use only the daemon's kubernetes_verifier_image,
   defaulting to its performer_image. Invalid or missing usable images fail configuration clearly. Helm renders the
   same default. The entire serialized pod, including base64 and JSON expansion of all inputs, is bounded to 900 KiB;
-  refusal is infrastructure and creates no pod.
+  refusal is a configuration failure and creates no pod. Invalid image names and size or encoding refusals stop
+  automatic bootstrap retries with an operator visible reason. Correct configuration and request env regeneration
+  to rearm the bootstrap breaker. API and cleanup failures remain infrastructure.
 - Stat refusal loop (F1): count confirmed consumer stat refusals per symphony across restarts. More than three
   consecutive refusals request regeneration through the existing bootstrap budget, with an operator visible reason.
   Repeated signals during requested regeneration do not create pods or spend again. A successful consumer or new bootstrap freeze resets
