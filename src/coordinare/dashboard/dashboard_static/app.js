@@ -1116,18 +1116,6 @@ async function forcePoll() {
 // ---------------------------------------------------------------------------
 var AF_MAX_ROWS = 2000;
 var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
-var AF_LABELS = {
-  operator_action: 'OPERATOR', progress: 'AGENT', tool_use: 'TOOL', tool_result: 'RESULT', thinking: 'THINKING', cost: 'COST',
-  stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
-  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'NEEDS HUMAN', completed: 'COMPLETED',
-  // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
-  // back to the raw uppercased type while every other type had a short label.
-  stream_truncated: 'TRUNCATED',
-  // 343: step boundaries are the spine of the trail; give them their own chip.
-  workflow_step: 'STEP',
-  // 429: an observer verdict's chip. The verb itself is in the entry text.
-  observer_verdict: 'OBSERVER'
-};
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
 var _afDropped = 0;         // 135: entries the server's bounded log has dropped, as of the newest seen
@@ -1154,7 +1142,6 @@ function afSyncRun(runId) {
   afUpdateFilterOptions();
 }
 
-function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
 
 
 

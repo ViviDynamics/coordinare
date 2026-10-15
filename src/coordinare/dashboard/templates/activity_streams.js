@@ -1,3 +1,16 @@
+var AF_LABELS = {
+  operator_action: 'OPERATOR', progress: 'AGENT', tool_use: 'TOOL', tool_result: 'RESULT', thinking: 'THINKING', cost: 'COST',
+  stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'NEEDS HUMAN', completed: 'COMPLETED',
+  // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
+  // back to the raw uppercased type while every other type had a short label.
+  stream_truncated: 'TRUNCATED',
+  // 343: step boundaries are the spine of the trail; give them their own chip.
+  workflow_step: 'STEP',
+  // 429: an observer verdict's chip. The verb itself is in the entry text.
+  observer_verdict: 'OBSERVER'
+};
+function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
 var AF_SUMMARIES = {
   progress: 'Performer reported progress.', thinking: 'Performer is reasoning.',
   tool_use: 'Performer used a tool.', tool_result: 'A tool returned a result.',
@@ -171,6 +184,15 @@ function afDroppedText(dropped, capacity, scoped) {
   var keep = capacity > 0 ? ' to keep the newest ' + afCount(capacity) : '';
   return 'Older activity is not shown: ' + afCount(dropped) + ' entries were dropped' + scope + keep + '.';
 }
+// 237: one block of agent output. The feed and the performer page draw a tool call, a result and
+// narration through this one function, so the two cannot disagree about what a row looks like.
+function afBlockHtml(kind, text, status) {
+  if (kind === 'tool_use') return '<pre class="af-tool"><code>' + esc(text) + '</code></pre>';
+  if (kind === 'tool_result') {
+    return '<p class="af-result af-result-' + esc(status) + '">' + esc(text) + '</p>';
+  }
+  return '<p class="af-narration">' + esc(text) + '</p>';
+}
 function afRawHtml(entries) {
   var blocks = [];
   var usage = [];
@@ -186,13 +208,7 @@ function afRawHtml(entries) {
                    delta:!!e.is_delta, stream:e.stream_id || '', status:e.status || ''});
     }
   });
-  var output = blocks.map(function(b) {
-    if (b.kind === 'tool_use') return '<pre class="af-tool"><code>' + esc(b.text) + '</code></pre>';
-    if (b.kind === 'tool_result') {
-      return '<p class="af-result af-result-' + esc(b.status) + '">' + esc(b.text) + '</p>';
-    }
-    return '<p class="af-narration">' + esc(b.text) + '</p>';
-  }).join('');
+  var output = blocks.map(function(b) { return afBlockHtml(b.kind, b.text, b.status); }).join('');
   if (usage.length) {
     // Snapshots may be cumulative or incremental depending on the backend.
     // Preserve the reported values; never infer a total by adding them here.
@@ -375,4 +391,46 @@ function afApplyChipState() {
   for (var i = 0; i < buttons.length; i++) {
     buttons[i].setAttribute('aria-pressed', _afChips[buttons[i].getAttribute('data-chip')] ? 'true' : 'false');
   }
+}
+
+// 237: the client's mirror of the daemon's feed mapping (monitor/activity.py _feed_fields). A tool
+// call is tool_use with its summary, a tool result is tool_result with its outcome, and narration
+// stays progress. The performer page reads a run's events through this, so both views agree.
+var AF_BACKEND_KIND = {progress: 'progress', thinking: 'thinking', cost: 'cost', error: 'error', output: 'progress'};
+// "Bash · uv run pytest -q", or the tool's name alone when the call carried no argument.
+function afToolSummary(ev) {
+  var name = String(ev.tool || ev.text || 'tool');
+  var arg = String(ev.arg || '');
+  return arg ? name + ' · ' + arg : name;
+}
+function afEntryFromBackend(ev, runId) {
+  var type = String(ev.type || '');
+  var status = String(ev.status || '');
+  var kind = 'progress';
+  var summary = '';
+  if (type === 'tool_use' && status) {
+    kind = 'tool_result';
+    summary = 'result ' + status;
+  } else if (type === 'tool_use') {
+    kind = 'tool_use';
+    summary = afToolSummary(ev);
+  } else if (Object.prototype.hasOwnProperty.call(AF_BACKEND_KIND, type)) {
+    kind = AF_BACKEND_KIND[type];
+  }
+  return {
+    activity_type: kind, summary: summary, status: kind === 'tool_result' ? status : '',
+    text: String(ev.text || ev.detail || ''), session_id: String(runId || ''),
+    timestamp: ev.timestamp || '', event_at: ev.timestamp || '',
+    transcript_seq: ev.transcript_seq
+  };
+}
+// 237: one entry as one row, for a surface that shows a single run's events. It carries the feed's
+// chip, body and run link, so a tool call reads as the feed reads it.
+function afEventRowHtml(e) {
+  var kind = e.activity_type;
+  return '<div class="af-row af-plain af-row-' + esc(afRowKind(e)) + '">' +
+    '<span class="af-time">' + timeHtml(e.timestamp) + '</span>' +
+    '<span class="af-kind ev-' + esc(kind) + '">' + esc(afLabel(kind)) + '</span>' +
+    '<div class="af-body">' + afBlockHtml(kind, afLine(e), e.status || '') + '</div>' +
+    runEntryLinkHtml(e) + '</div>';
 }
