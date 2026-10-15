@@ -83,6 +83,26 @@ check("a backend named __proto__ is an ordinary pair",
   cfgDuplicatePairs([entry("__proto__", "x"), entry("__proto__", "x")]),
   [{backend: "__proto__", model: "x", positions: [1, 2]}]);
 
+// --- backend normalisation, as the routing model applies it (225 review) -----------
+check("claude-code and claude_code are one backend",
+  cfgDuplicatePairs([entry("claude-code", "m"), entry("claude_code", "m")]),
+  [{backend: "claude-code", model: "m", positions: [1, 2]}]);
+check("the case of a backend does not matter",
+  cfgDuplicatePairs([entry("VLLM", "q"), entry("vllm", "q")]),
+  [{backend: "VLLM", model: "q", positions: [1, 2]}]);
+check("kebab and case together collide",
+  cfgDuplicatePairs([entry("Claude-Code", "m"), entry("claude_code", "m")]),
+  [{backend: "Claude-Code", model: "m", positions: [1, 2]}]);
+check("a model that differs only in case is another pair",
+  cfgDuplicatePairs([entry("vllm", "qwen"), entry("vllm", "QWEN")]), []);
+check("a backend that differs after normalisation is another pair",
+  cfgDuplicatePairs([entry("claude-code", "m"), entry("claude-codes", "m")]), []);
+check("normalised names keep their first spelling for display",
+  cfgDuplicatePairs([entry("VLLM", "q"), entry("vllm", "q"), entry("Vllm", "q")]),
+  [{backend: "VLLM", model: "q", positions: [1, 2, 3]}]);
+check("normalisation matches the routing model's own rule on a hard case",
+  cfgNormalizeBackend("A-B_C-D"), "a_b_c_d");
+
 // --- the warning ---------------------------------------------------------------
 check("no warning without duplicates", cfgDuplicateNotice([]), "");
 check("no warning for null", cfgDuplicateNotice(null), "");

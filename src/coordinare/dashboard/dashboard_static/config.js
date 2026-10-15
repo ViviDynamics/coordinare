@@ -283,7 +283,7 @@ function cfgSecretToggle(input) {
 function cfgHideSecret(input) {
   input.type = 'password';
   var btn = cfgSecretToggle(input);
-  if (btn) btn.setAttribute('aria-pressed', 'false');
+  if (btn) { btn.setAttribute('aria-pressed', 'false'); btn.textContent = 'Show'; }
 }
 
 // 225: Show and Hide for a secret input. Show reveals only typed text. When the field still
@@ -300,6 +300,7 @@ function cfgToggleSecret(btn) {
   }
   input.type = 'text';
   btn.setAttribute('aria-pressed', 'true');
+  btn.textContent = 'Hide';
 }
 
 // 143 second review: a cleared secret is sent as the empty string the server accepts.
@@ -994,16 +995,24 @@ function cfgRoutingSection(sec, banner) {
     + '<h3 style="margin:0 0 8px 0;font-size:14px;color:var(--color-text-primary)">' + esc(sec.title) + '</h3>'
     + desc + banner + body + '</section>';
 }
+// 225: the routing model's backend rule (coordinare_routing_models._normalize_backend): kebab
+// becomes snake and the case folds, so claude-code and claude_code are one backend. The model is
+// compared exactly, as the routing model resolves it. Pure.
+function cfgNormalizeBackend(backend) {
+  return String(backend).replace(/-/g, '_').toLowerCase();
+}
+
 // 225: the (backend, model) pairs that the table lists more than once, each with the 1-based
 // positions of its entries, in the order the pairs first appear. An older table can hold
-// duplicates that the server now refuses to create. Pure, so the node check runs it as it ships.
+// duplicates that the server now refuses to create. Backends are compared after the routing
+// model's normalisation, and shown as the table first wrote them. Pure, so the node check runs it.
 function cfgDuplicatePairs(entries) {
   var seen = {};
   var order = [];
   (entries || []).forEach(function(e, i) {
     var backend = e && e.backend !== null && e.backend !== undefined ? String(e.backend) : '';
     var model = e && e.model !== null && e.model !== undefined ? String(e.model) : '';
-    var key = JSON.stringify([backend, model]);
+    var key = JSON.stringify([cfgNormalizeBackend(backend), model]);
     if (!seen[key]) {
       seen[key] = {backend: backend, model: model, positions: []};
       order.push(key);

@@ -170,10 +170,12 @@ def test_show_reveals_typed_text_and_never_the_mask(page: Page, live_server_url:
     toggle.click()
     expect(field).to_have_attribute("type", "text")
     expect(toggle).to_have_attribute("aria-pressed", "true")
+    expect(toggle).to_have_text("Hide")
     assert field.input_value() == _TOKEN_TYPED
     toggle.click()
     expect(field).to_have_attribute("type", "password")
     expect(toggle).to_have_attribute("aria-pressed", "false")
+    expect(toggle).to_have_text("Show")
 
 
 @pytest.mark.e2e

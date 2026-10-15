@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from coordinare import config_descriptors as cd
 from coordinare.config import CoordinareConfiguration, ProjectConfiguration, SymphonyConfig
@@ -65,23 +64,15 @@ def test_a_field_without_a_default_is_required_by_pydantic() -> None:
     assert settings["global.poll_interval_seconds"].required is False
 
 
-def test_the_flag_matches_what_the_model_refuses_to_leave_empty() -> None:
-    """Derived, not hand-listed: a required secret is one the model refuses to clear."""
-    secrets = {"github_token", "dashboard_auth_token"}
-    settings = _global_settings(_pat(dashboard_auth_token="a-dashboard-token-of-some-length"))
-    checked = 0
-    for key, setting in settings.items():
-        name = key.split(".", 1)[1]
-        if name not in secrets:
-            continue
-        try:
-            _pat(**{name: ""})
-            refused = False
-        except ValidationError:
-            refused = True
-        assert setting.required is refused, f"{key}: required={setting.required} but model refused={refused}"
-        checked += 1
-    assert checked == 2
+def test_the_dashboard_token_is_required_on_a_remote_bind_with_no_oidc() -> None:
+    """The same predicate as the startup check: a non-loopback bind with no OIDC flow needs it."""
+    settings = _global_settings(_pat(dashboard_host="0.0.0.0"))
+    assert settings["global.dashboard_auth_token"].required is True
+
+
+def test_the_dashboard_token_is_optional_on_loopback() -> None:
+    settings = _global_settings(_pat(dashboard_host="127.0.0.1"))
+    assert settings["global.dashboard_auth_token"].required is False
 
 
 def test_the_credential_rule_is_declared_on_the_model() -> None:

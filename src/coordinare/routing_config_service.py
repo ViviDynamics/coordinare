@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 import yaml
 from coordinare_routing_models import RoutingEntry, RoutingTable
+from coordinare_routing_models.routing import _normalize_backend
 from pydantic import BaseModel, Field, ValidationError
 
 from coordinare.lib.redaction import redact_secrets
@@ -373,13 +374,25 @@ def _write_entries(
     return SaveResult(ok=True, applied="staged_next_job", new_hash=new_hash)
 
 
+def _pair_key(backend: Any, model: Any) -> tuple[Any, Any]:
+    """The identity of a routing entry, as the routing model resolves it (225).
+
+    The backend is normalised by the routing model's own rule (``claude-code`` and ``claude_code``
+    name one backend, and ``VLLM`` and ``vllm`` do too); the model is compared exactly, as
+    ``RoutingTable.resolve`` compares it.
+    """
+    if isinstance(backend, str):
+        backend = _normalize_backend(backend)
+    return (backend, model)
+
+
 def _pair(entry: dict[str, Any]) -> tuple[Any, Any]:
-    return (entry.get("backend"), entry.get("model"))
+    return _pair_key(entry.get("backend"), entry.get("model"))
 
 
 def _duplicate_refusal(others: list[dict[str, Any]], backend: Any, model: Any) -> Any:
     """143 third check: a (backend, model) pair appears once. Refuse a write that makes a second one."""
-    if any(_pair(e) == (backend, model) for e in others):
+    if any(_pair(e) == _pair_key(backend, model) for e in others):
         return SaveResult(ok=False, errors=[FieldError(
             key="model", code="validation",
             message=f"A routing entry for backend {backend!r} and model {model!r} already exists; "

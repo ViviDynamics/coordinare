@@ -15,9 +15,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+from coordinare_routing_models.routing import _normalize_backend
 from fastapi.testclient import TestClient
 
+from coordinare import routing_config_service as svc
 from coordinare.config_descriptors import SECRET_MASK
 from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 from tests.unit.test_dashboard_config_api import _make_client, _routing_hash
@@ -75,6 +78,7 @@ def _sliced_js(tmp_path: Path) -> Path:
         _fn(_CONFIG_JS, "cfgRefSelect"),
         _fn(_CONFIG_JS, "cfgInput"),
         _fn(_CONFIG_JS, "cfgMayReveal"),
+        _fn(_CONFIG_JS, "cfgNormalizeBackend"),
         _fn(_CONFIG_JS, "cfgDuplicatePairs"),
         _fn(_CONFIG_JS, "cfgDuplicateNotice"),
     ]
@@ -170,3 +174,54 @@ def test_a_new_duplicate_is_still_refused_and_an_unrelated_write_still_lands(
     )
     assert applied.status_code == 200
     assert yaml.safe_load(routing_path.read_text())["entries"][3]["model"] == "coder-34b"
+
+
+def _table(routing_path: Path, entries: list[dict[str, Any]]) -> None:
+    routing_path.write_text(yaml.safe_dump({"entries": entries}, sort_keys=False))
+
+
+@pytest.mark.parametrize(
+    ("existing", "new"),
+    [
+        (("claude-code", "m"), ("claude_code", "m")),
+        (("claude_code", "m"), ("claude-code", "m")),
+        (("vllm", "qwen"), ("VLLM", "qwen")),
+        (("Claude-Code", "m"), ("claude_code", "m")),
+    ],
+)
+def test_a_new_duplicate_by_the_routing_models_backend_rule_is_refused(
+    temp_config_with_routing: tuple[Path, Path], existing: tuple[str, str], new: tuple[str, str],
+) -> None:
+    config_path, routing_path = temp_config_with_routing
+    _table(routing_path, [_entry(*existing)])
+    client = _client(config_path)
+    before = routing_path.read_text()
+
+    refused = client.post(
+        "/api/config/routing/entry",
+        json={"entry": _entry(*new), "base_hash": _routing_hash(client)},
+    )
+
+    assert refused.status_code == 422
+    assert "already exists" in refused.json()["errors"][0]["message"]
+    assert routing_path.read_text() == before
+
+
+def test_a_model_name_is_compared_exactly_not_normalised(temp_config_with_routing: tuple[Path, Path]) -> None:
+    """The routing model normalises the backend only; a model that differs in case is another pair."""
+    config_path, routing_path = temp_config_with_routing
+    _table(routing_path, [_entry("vllm", "qwen")])
+    client = _client(config_path)
+
+    created = client.post(
+        "/api/config/routing/entry",
+        json={"entry": _entry("vllm", "QWEN"), "base_hash": _routing_hash(client)},
+    )
+
+    assert created.status_code == 200, created.text
+
+
+def test_the_refusal_helper_uses_the_routing_models_normaliser() -> None:
+    assert svc._pair_key("claude-code", "m") == (_normalize_backend("claude-code"), "m")
+    assert svc._pair_key("VLLM", "m") == ("vllm", "m")
+    assert svc._pair_key(7, "m") == (7, "m")

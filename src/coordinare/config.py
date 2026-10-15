@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, get_args
 from urllib.parse import urlparse
 
 import structlog
@@ -1215,10 +1215,30 @@ def expand_config_text(text: str) -> str:
     return os.path.expandvars(text)
 
 
+def _holds_secret(annotation: Any) -> bool:
+    """True when a field annotation is a ``SecretStr``, or a union (``Optional``) that holds one."""
+    return annotation is SecretStr or any(_holds_secret(arg) for arg in get_args(annotation))
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
     model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_secret_is_unset(cls, data: Any) -> Any:
+        """225: an empty secret means unset. A cleared optional secret is written as absent, and an
+        empty value that reaches the loader (an unset ``${VAR}``, an older save) is read the same way."""
+        if not isinstance(data, dict):
+            return data
+        cleared = {
+            name: None
+            for name, info in cls.model_fields.items()
+            if _holds_secret(info.annotation)
+            and isinstance(data.get(name), str) and not data[name].strip()
+        }
+        return {**data, **cleared} if cleared else data
 
     project_name: str = ""
     github_org: str

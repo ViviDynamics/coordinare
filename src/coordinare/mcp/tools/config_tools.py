@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from coordinare.mcp.client import ToolResult, get_client
 from coordinare.mcp.tools._registry import ToolDefinition
@@ -98,6 +98,8 @@ class RoutingIdentity(BaseModel):
     can take them from the same read that gave it ``index`` and ``content_hash``.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     backend: str
     model: str
 
@@ -178,9 +180,23 @@ async def update_config(action: str, **kwargs: Any) -> dict[str, Any]:
 
     Keyword arguments mirror ``UpdateConfigInput``: the optional ``id``,
     ``item_id``, ``index``, ``payload``, ``base_hash`` and, for routing_update and
-    routing_delete, ``expected`` (``{"backend": ..., "model": ...}``).
+    routing_delete, ``expected`` (``{"backend": ..., "model": ...}``). A malformed argument
+    comes back as a validation ``ToolResult`` error, never as an exception.
     """
-    parsed = UpdateConfigInput.model_validate({"action": action, **kwargs})
+    try:
+        parsed = UpdateConfigInput.model_validate({"action": action, **kwargs})
+    except ValidationError as exc:
+        errors = exc.errors()
+        loc = errors[0]["loc"] if errors else ()
+        msg = errors[0]["msg"] if errors else "invalid value"
+        where = ".".join(str(part) for part in loc) or "arguments"
+        failure = ToolResult.failure(
+            "validation",
+            400,
+            f"invalid update_config argument '{where}': {msg}",
+            "check the arguments: expected takes exactly backend and model, as strings",
+        )
+        return failure.model_dump(exclude_none=True)
     return (await update_config_handler(parsed, get_client())).model_dump(exclude_none=True)
 
 

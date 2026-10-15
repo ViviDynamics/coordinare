@@ -27,6 +27,7 @@ from coordinare.mcp.tools.config_tools import (
     RoutingIdentity,
     UpdateConfigInput,
     get_config_handler,
+    update_config,
     update_config_handler,
 )
 
@@ -183,3 +184,29 @@ async def test_the_dashboard_applies_an_mcp_write_that_names_the_entry_at_its_in
     )
     assert applied.ok, applied.error
     assert yaml.safe_load(routing_path.read_text())["entries"][0]["model"] == "qwen2.5-coder-32b"
+
+
+def test_routing_identity_refuses_an_extra_key() -> None:
+    with pytest.raises(ValueError):
+        RoutingIdentity.model_validate({"backend": "vllm", "model": "m", "index": 9})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "expected",
+    [
+        {"backend": "vllm", "model": "m", "index": 9},  # an extra key
+        "vllm/m",  # not an object
+        {"backend": "vllm"},  # missing model
+        {"backend": 1, "model": "m"},  # wrong type
+    ],
+)
+async def test_a_malformed_expected_is_a_tool_error_not_an_exception(expected: Any) -> None:
+    """The agent-facing update_config returns the error as a result; it never raises ValidationError."""
+    result = await update_config(
+        "routing_update", index=0, base_hash="h", payload={"model": "m"}, expected=expected,
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "validation"
+    assert "update_config argument 'expected" in result["error"]["detail"]

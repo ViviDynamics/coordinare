@@ -31,6 +31,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from coordinare.config import expand_config_text
+from coordinare.start_checks import validate_start_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -274,9 +275,11 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
 
     Builds a throwaway :class:`CoordinareConfiguration` — this enforces both
     field-level constraints AND cross-catalog referential integrity (the
-    ``_validate_orchestration_catalogs`` validator) in a single pass. A ``${VAR}``
-    / unset ``github_token`` is substituted with a placeholder for the validation
-    pass only (never written back); the substitute is never surfaced.
+    ``_validate_orchestration_catalogs`` validator) in a single pass. Then it runs the
+    daemon's own start-time checks (225), so a save cannot write a config the daemon refuses at
+    boot. A ``${VAR}`` ``github_token`` is substituted with a placeholder for the validation
+    pass only (never written back); an absent one is substituted only when the daemon's
+    environment would supply it, so a cleared token is refused as the daemon would refuse it.
     """
     from pydantic import ValidationError
 
@@ -293,16 +296,27 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     )
     attempt = dict(daemon_view) if isinstance(daemon_view, dict) else {}
     token = attempt.get("github_token")
-    if is_env_placeholder(token) or token is None:
+    if is_env_placeholder(token) or (token is None and _env_supplies_github_token()):
         attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
 
     try:
-        CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
+        loaded = CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
     except ValidationError as exc:
         return [_field_error_from_pydantic(e) for e in exc.errors()]
     except ValueError as exc:  # cross-field validators may raise bare ValueError
         return [FieldError(key=None, code="validation", message=str(exc))]
+    try:
+        validate_start_time(loaded.global_config)
+    except ValueError as exc:
+        # The daemon refuses to start with this config, so the save is refused with the same reason.
+        key = "dashboard_oidc" if "dashboard_oidc" in str(exc) else "dashboard_auth_token"
+        return [FieldError(key=key, code="validation", message=str(exc))]
     return []
+
+
+def _env_supplies_github_token() -> bool:
+    """True when the daemon's environment supplies a GitHub token (``COORDINARE_GITHUB_TOKEN``)."""
+    return bool(os.environ.get("COORDINARE_GITHUB_TOKEN", "").strip())
 
 
 def _load_config_for_refs(candidate: dict[str, Any]) -> CoordinareConfiguration:
@@ -473,6 +487,11 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
         ann = annotation_for(f"{request.section}.{field}")
         if ann.secret and value == SECRET_MASK:
             continue  # masked-unchanged secret → never overwrite with the mask
+        if ann.secret and value == "":
+            # 225: a cleared secret is written as absent, never as "". The validator then decides
+            # whether the daemon can start without it (a required one is refused with the reason).
+            candidate.pop(field, None)
+            continue
         candidate[field] = value
 
     # No-op short-circuit: an empty changes payload, or one that reduces to no
