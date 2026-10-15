@@ -78,6 +78,7 @@ from coordinare.services.env_bootstrap_control import (
 )
 from coordinare.services.env_cache import (
     DEFAULT_DEVENV_ROOT,
+    EnvCacheService,
     budget_max_attempts,
     daemon_sees_performer_cache,
 )
@@ -4214,12 +4215,13 @@ class CoordinareDaemon:
             return False, f"env verification could not run in the clean-room verifier: {detail}", True
         return False, f"env verification failed in the clean-room verifier: {detail}", False
 
-    @staticmethod
-    def _verifier_configuration_refusal(ec: EnvCacheState, detail: str) -> tuple[bool, str, bool]:
+    def _verifier_configuration_refusal(self, ec: EnvCacheState, detail: str) -> tuple[bool, str, bool]:
         """Stop automatic bootstraps until the operator corrects configuration and requests regeneration."""
-        ec.bootstrap_exhausted = True
-        reason = f"env verification configuration failure: {detail}; correct configuration and request env regeneration"
-        logger.error("env_cache.verifier_configuration_refused", symphony=ec.symphony_name, reason=reason)
+        cache_service = self._state.get("env_cache_service")
+        if cache_service is None:
+            cache_service = EnvCacheService(self._state.get("coordinare_config"))
+            self._state["env_cache_service"] = cache_service
+        reason = cache_service.refuse_verifier_configuration(ec, self._state, detail)
         return False, reason, False
 
     async def _verify_bootstrap_on_kubernetes(

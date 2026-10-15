@@ -13,8 +13,9 @@ from coordinare_service_inference.cache_provenance import (
     RESULT_SENTINEL,
 )
 
+from coordinare.lib.redaction import redact_command_text
 from coordinare.services.env_provenance import ProvenanceTransientError
-from coordinare.services.kubernetes_verifier import VERIFIER_LOG_TAIL_CHARS
+from coordinare.services.kubernetes_verifier import VERIFIER_LOG_TAIL_CHARS, WALK_DIAGNOSTIC_PREFIX
 
 if TYPE_CHECKING:
     from coordinare.services.env_provenance import ProvenanceLimits
@@ -82,6 +83,9 @@ def parse_summary(
     nonempty = [line for line in logs.splitlines() if line.strip()]
     if not nonempty or not nonempty[-1].startswith(RESULT_SENTINEL):
         message = "verifier final provenance sentinel is missing; retry or upgrade the performer image"
+        diagnostics = " ".join(line for line in nonempty if line.startswith(WALK_DIAGNOSTIC_PREFIX))
+        if diagnostics:
+            message += ": " + redact_command_text(diagnostics)[-VERIFIER_LOG_TAIL_CHARS:]
         raise ProvenanceTransientError(message)
     lines = [line[len(RESULT_SENTINEL):] for line in nonempty if line.startswith(RESULT_SENTINEL)]
     if logs.count(RESULT_SENTINEL) != 1 or len(lines) != 1 or len(lines[0].encode("utf-8")) > MAX_RESULT_BYTES:

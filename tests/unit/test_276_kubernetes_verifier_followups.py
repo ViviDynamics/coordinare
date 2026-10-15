@@ -20,6 +20,7 @@ from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_runtime import KubernetesRuntime
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILES_MAX_BYTES,
+    VERIFIER_LOG_TAIL_CHARS,
     VERIFIER_POD_MAX_BYTES,
     VERIFY_TEXT_MAX_BYTES,
     VerifierSpec,
@@ -221,7 +222,11 @@ async def test_walk_diagnostics_cannot_truncate_a_near_limit_result(tmp_path: Pa
         f"sys.stdout.write(pathlib.Path({str(result_file)!r}).read_text())"
     )
     python = shim / "python3"
-    python.write_text(f"#!/bin/bash\nexec {shlex.quote(sys.executable)} -c {shlex.quote(code)}\n")
+    python.write_text(
+        '#!/bin/bash\nif [ "$1" = "-P" ]; then\n'
+        f"  exec {shlex.quote(sys.executable)} -c {shlex.quote(code)}\nfi\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n',
+    )
     python.chmod(0o755)
     pod = _manifest(walk_only=True, activate_text=ACTIVATE)
     result = _run_in_pod(pod, tmp_path, {"HOME": str(tmp_path), "PATH": str(shim) + os.pathsep + os.environ["PATH"]})
@@ -240,7 +245,8 @@ async def test_walk_diagnostics_cannot_truncate_a_near_limit_result(tmp_path: Pa
     ok, detail = await runtime.run_verifier(slug="sym", spec=spec)
     assert ok is True
     assert parse_summary(detail, ACTIVATE, DEFAULT_LIMITS) == doc
-    assert result.stdout == output
+    assert result.stdout.endswith(output)
+    assert len(result.stdout.removesuffix(output).encode()) <= VERIFIER_LOG_TAIL_CHARS
     assert (tmp_path / "walk.stderr").read_text().startswith("diagnostic")
     assert len(core.deleted) == 1
 

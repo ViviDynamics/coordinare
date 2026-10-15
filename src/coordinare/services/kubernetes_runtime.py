@@ -37,12 +37,15 @@ from kubernetes.client.rest import ApiException
 from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
 from coordinare.services.kubernetes_verifier import (
+    OWNER_LABEL,
     VERIFIER_CONTAINER,
     VERIFIER_DEADLINE_S,
     VERIFIER_LOG_MAX_BYTES,
     VERIFIER_LOG_TAIL_LINES,
     VERIFIER_POLL_INTERVAL_S,
     VERIFIER_REMOVAL_TIMEOUT_S,
+    VERIFIER_ROLE,
+    VERIFIER_ROLE_LABEL,
     VerifierConfigurationError,
     VerifierSpec,
     build_verifier_pod_manifest,
@@ -83,7 +86,6 @@ MANAGED_BY_VALUE = "coordinare"
 #: (issue #489) so pods belonging to other coordinare deployments (the
 #: controller itself) are excluded by construction.
 SESSION_ID_LABEL = "coordinare.session_id"
-OWNER_LABEL = "coordinare.vividynamics.com/owner"
 _UNOWNED_SESSION = "cannot reconcile Kubernetes session without deployment ownership"
 _AMBIGUOUS_SESSION = "multiple owned pods match restored performer session"
 _UNREADY_SESSION = "restored performer pod is not ready for adoption"
@@ -739,6 +741,7 @@ class KubernetesRuntime:
                 name=verifier_pod_name(slug),
                 namespace=self._namespace,
                 image_pull_secrets=tuple(self._image_pull_secrets),
+                owner=self._owner,
             )
         except (ValueError, UnicodeError) as exc:
             message = f"verifier pod spec refused: {exc}"
@@ -909,6 +912,38 @@ class KubernetesRuntime:
         if stopped:
             _log.info("kubernetes_runtime.swept", count=stopped, selector=selector)
         return stopped
+
+    async def sweep_orphaned_verifiers(self) -> list[str]:
+        """Remove this deployment's interrupted verify and walk pods at startup.
+
+        Verifiers cannot be adopted after restart, so no session keep set is needed.
+        As with the session sweep, managed-by alone would also select the controller.
+        Require the verifier role and deployment owner, and preserve legacy unowned pods.
+        """
+        if not self._owner:
+            _log.warning("kubernetes_runtime.verifier_sweep_skipped_no_owner")
+            return []
+        required = {
+            MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+            VERIFIER_ROLE_LABEL: VERIFIER_ROLE,
+            OWNER_LABEL: self._owner,
+        }
+        selector = ",".join(f"{key}={value}" for key, value in required.items())
+        try:
+            pods = await asyncio.to_thread(
+                self._api.list_namespaced_pod, namespace=self._namespace, label_selector=selector,
+            )
+        except Exception as exc:
+            _log.warning("kubernetes_runtime.verifier_sweep_list_failed", error=str(exc))
+            return []
+        swept: list[str] = []
+        for pod in pods.items:
+            labels = getattr(pod.metadata, "labels", None) or {}
+            if any(labels.get(key) != value for key, value in required.items()):
+                continue
+            if await self._remove_verifier(pod.metadata.name):
+                swept.append(pod.metadata.name)
+        return swept
 
     async def sweep_orphaned_sessions(
         self, active_session_ids: set[str],

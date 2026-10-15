@@ -76,7 +76,10 @@ def test_the_pod_has_no_checkout_no_credentials_and_no_stdin() -> None:
     assert spec["automountServiceAccountToken"] is False
     assert _container(manifest)["stdin"] is False
     env_names = {e["name"] for e in _container(manifest)["env"]}
-    assert env_names == {"DEVENV", "HOME", "VERIFY_B64", "PROJECT_FILES_B64", "SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY"}
+    assert env_names == {
+        "DEVENV", "HOME", "VERIFY_B64", "PROJECT_FILES_B64", "SETUP_PY", "PROVENANCE_CONFIG", "WALK_ONLY",
+        "WALK_DIAGNOSTICS_PY", "WALK_DIAGNOSTIC_PREFIX", "WALK_DIAGNOSTIC_MAX_BYTES",
+    }
     assert "GITHUB_TOKEN" not in env_names
 
 
@@ -89,7 +92,7 @@ def test_the_pod_has_a_deadline_limits_and_never_restarts() -> None:
 
 
 def test_the_verify_runs_with_stdin_closed_from_a_file() -> None:
-    assert "bash \"$d/verify.sh\" </dev/null" in VERIFIER_SCRIPT
+    assert 'bash -o pipefail "$d/verify.sh" </dev/null' in VERIFIER_SCRIPT
 
 
 def test_the_pod_name_is_a_bounded_dns_label() -> None:

@@ -24,9 +24,11 @@ from coordinare_service_inference.manual_override import SERVICES_SUBDIR
 
 from coordinare.lib.redaction import redact_state_value
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.models.performer_endpoint import VolumeMount
 from coordinare.services.bootstrap_history import (
     ACT_BUDGET_RESET,
+    ACT_EXHAUSTED,
     AttemptEnd,
     BudgetNow,
     record_activity,
@@ -1710,11 +1712,14 @@ class EnvCacheService:
         ec = (state.get("env_cache") or {}).get(symphony_name)
         if ec is None:
             return
-        if ec.runtime_health_failed:
+        if ec.runtime_health_failed or ec.bootstrap_exhausted:
             return
         self._provenance_full_at.pop(symphony_name, None)
         check = await self.run_full_pass(symphony_name, ec)
         if check is None or check.transient:
+            return
+        if check.configuration_failure:
+            self.refuse_verifier_configuration(ec, state, check.reason or "invalid verifier configuration")
             return
         if not check.ok:
             self.mark_runtime_health_failed(symphony_name, state)
@@ -1774,7 +1779,8 @@ class EnvCacheService:
         except (VerifierConfigurationError, OSError, TimeoutError, ProvenanceTransientError) as exc:
             configuration_failure = isinstance(exc, VerifierConfigurationError)
             reason = f"kubernetes verifier configuration failure: {exc}" if configuration_failure else str(exc)
-            return ProvenanceCheck(False, reason, hashed=True, transient=not configuration_failure)
+            return ProvenanceCheck(False, reason, hashed=True, transient=not configuration_failure,
+                                   configuration_failure=configuration_failure)
         except (ValueError, UnicodeError, RecursionError) as exc:
             return self._record_drift(symphony_name, ec, digest, f"kubernetes provenance refused: {exc}")
         if not ok:
@@ -2383,11 +2389,34 @@ class EnvCacheService:
             test_env_source=test_env_source,
         )
 
+    def refuse_verifier_configuration(
+        self, cache_state: EnvCacheState, state: Mapping[str, Any], detail: str,
+    ) -> str:
+        """Refuse retries for invalid operator inputs and report the exhaustion transition once."""
+        reason = str(redact_state_value(
+            f"env verification configuration failure: {detail}; correct configuration and request env regeneration",
+        ))
+        cache_state.cache_dir_ready = False
+        cache_state.last_bootstrap_succeeded = False
+        cache_state.last_bootstrap_error = reason
+        cache_state.verifier_provenance = None
+        if not cache_state.bootstrap_exhausted:
+            cache_state.bootstrap_exhausted = True
+            self._notify_bootstrap_exhausted(
+                cache_state.symphony_name, cache_state, state,
+                summary=f"Env bootstrap for '{cache_state.symphony_name}' halted: {reason}",
+            )
+            record_activity(state, cache_state.symphony_name, ACT_EXHAUSTED, reason)
+        logger.error("env_cache.verifier_configuration_refused", symphony=cache_state.symphony_name, reason=reason)
+        return reason
+
     def _notify_bootstrap_exhausted(
         self,
         symphony_name: str,
         cache_state: EnvCacheState,
-        state: dict[str, Any],
+        state: Mapping[str, Any],
+        *,
+        summary: str | None = None,
     ) -> None:
         """088 (FR-009): fire exactly one circuit_breaker_trip notification when
         the bootstrap budget is exhausted.
@@ -2400,17 +2429,11 @@ class EnvCacheService:
         notification_service = state.get("notification_service")
         if notification_service is None:
             return
-        from coordinare.models.notification import (
-            EventType,
-            NotificationEvent,
-            NotificationSeverity,
-        )
-
         event = NotificationEvent(
             event_type=EventType.circuit_breaker_trip,
             severity=NotificationSeverity.warning,
             payload={
-                "summary": (
+                "summary": summary or (
                     f"🔌 Env bootstrap for '{symphony_name}' exhausted its "
                     f"{cache_state.bootstrap_attempts}-try budget; no further "
                     f"bootstraps until the env spec changes."
