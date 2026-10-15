@@ -272,7 +272,8 @@ class EventStore:
     def health(self) -> dict[str, Any]:
         return {
             **self._stats, "dropped": self._dropped, "pruned": self._pruned,
-            "writer_state": self._writer_state, "last_error": self._last_error,
+            "writer_state": self._writer_state,
+            "last_error": redact_state_value(self._last_error),
         }
 
     async def query_events(
