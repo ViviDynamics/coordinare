@@ -44,6 +44,7 @@ from coordinare.services.env_provenance import (
     check_cache,
     freeze_cache,
     load_manifest,
+    manifest_cap_bytes,
     save_manifest,
 )
 from coordinare.services.mounted_file import (
@@ -778,6 +779,10 @@ class EnvCacheService:
         # symphony and by the digest they were derived from.
         self._baseline: dict[str, tuple[str, dict[str, tuple[int, int, int]]]] = {}
         self._payloads: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        # 234 review 2: a drift found by a full pass refuses dispatch until the next freeze; the background
+        # full passes in flight, by symphony.
+        self._drift: dict[str, str] = {}
+        self._full_inflight: set[str] = set()
 
     async def initialise(
         self,
@@ -951,6 +956,7 @@ class EnvCacheService:
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
         if cache_state is None:
             return
+        self.schedule_full_pass(symphony_name, cache_state)
 
         global_config = self._coordinare_config.global_config
         eff_config = symphony_config.effective_config(global_config)
@@ -1482,6 +1488,7 @@ class EnvCacheService:
                 self._provenance_root() / f"{cache_state.sanitised_name}.json",
                 manifest,
                 performer_mounts=self._performer_mounts(),
+                max_bytes=manifest_cap_bytes(self._provenance_limits().max_entries),
             )
         except (ProvenanceRefusedError, OSError, RuntimeError) as exc:
             _log_provenance_refused(symphony_name, str(exc))
@@ -1504,6 +1511,7 @@ class EnvCacheService:
         self._baseline.pop(symphony_name, None)
         self._payloads.pop(symphony_name, None)
         self._provenance_full_at.pop(symphony_name, None)
+        self._drift.pop(symphony_name, None)
 
     async def _load_provenance(
         self, symphony_name: str, cache_state: EnvCacheState, digest: str,
@@ -1518,52 +1526,108 @@ class EnvCacheService:
             _log_provenance_refused(symphony_name, str(exc))
             return None
         manifest = await asyncio.to_thread(
-            load_manifest, path, digest=digest, performer_mounts=self._performer_mounts(),
+            load_manifest,
+            path,
+            digest=digest,
+            performer_mounts=self._performer_mounts(),
+            max_bytes=manifest_cap_bytes(self._provenance_limits().max_entries),
         )
         if manifest is not None:
             self._provenance[symphony_name] = (digest, manifest)
         return manifest
 
     async def _check_manifest(
-        self, symphony_name: str, cache_state: EnvCacheState, digest: str, manifest: ProvenanceManifest,
+        self,
+        symphony_name: str,
+        cache_state: EnvCacheState,
+        digest: str,
+        manifest: ProvenanceManifest,
+        *,
+        full: bool | None = None,
     ) -> ProvenanceCheck:
-        """One verification of the cache against *manifest* (234). Full on the first pass of a process."""
-        last_full = self._provenance_full_at.get(symphony_name)
-        now = time.monotonic()
-        full = last_full is None or now - last_full >= PROVENANCE_FULL_RECHECK_S
+        """One verification of the cache against *manifest* (234).
+
+        A dispatch (``full`` left None) runs the stat pass, and a full pass only when this process has none yet
+        (after a restart, or after a freeze). A recorded drift refuses before anything runs. The hourly full pass is
+        :meth:`run_full_pass`, which runs in the background. Any failure records a drift, so the next dispatch refuses
+        until a new freeze. The full clock is set only while the digest checked is still the current one.
+        """
+        if full is None and symphony_name in self._drift:
+            return ProvenanceCheck(False, self._drift[symphony_name])
+        inline_full = (symphony_name not in self._provenance_full_at) if full is None else full
         held_baseline = self._baseline.get(symphony_name)
         baseline = held_baseline[1] if held_baseline is not None and held_baseline[0] == digest else None
+        now = time.monotonic()
         check = await asyncio.to_thread(
             check_cache,
             cache_state.cache_dir,
             manifest,
-            full=full,
+            full=inline_full,
             scope=ProvenanceScope(self._performer_mounts(), self._provenance_limits()),
             baseline=baseline,
         )
+        still_current = cache_state.provenance_digest == digest
         if not check.ok:
             logger.error(
                 "env_cache.provenance_check_failed",
                 symphony=symphony_name,
                 reason=check.reason,
-                full=full,
+                full=inline_full,
             )
+            if still_current:
+                self._drift[symphony_name] = check.reason or "frozen provenance check failed"
             return check
-        if check.stats is not None:
+        if still_current and check.stats is not None:
             self._baseline[symphony_name] = (digest, check.stats)
-        if full:
+        if inline_full and still_current:
             self._provenance_full_at[symphony_name] = now
             logger.info("env_cache.provenance_recheck_full", symphony=symphony_name)
         return check
+
+    def schedule_full_pass(self, symphony_name: str, cache_state: EnvCacheState) -> None:
+        """Start the hourly full pass in the background when it is due (234 review 2). Never blocks, never raises."""
+        if symphony_name in self._full_inflight or cache_state.provenance_digest is None:
+            return
+        last = self._provenance_full_at.get(symphony_name)
+        if last is None or time.monotonic() - last < PROVENANCE_FULL_RECHECK_S:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._full_inflight.add(symphony_name)
+        task = loop.create_task(self._scheduled_full_pass(symphony_name, cache_state))
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notify_tasks.discard)
+
+    async def _scheduled_full_pass(self, symphony_name: str, cache_state: EnvCacheState) -> None:
+        try:
+            await self.run_full_pass(symphony_name, cache_state)
+        finally:
+            self._full_inflight.discard(symphony_name)
+
+    async def run_full_pass(self, symphony_name: str, cache_state: EnvCacheState) -> ProvenanceCheck | None:
+        """The full re-hash of the frozen cache, off the dispatch path (234 review 2).
+
+        A failure records a drift, which the next dispatch refuses (and which triggers a re-bootstrap through the
+        gate). A pass that passes refreshes the baseline and the full clock.
+        """
+        digest = cache_state.provenance_digest
+        if digest is None:
+            return None
+        manifest = await self._load_provenance(symphony_name, cache_state, digest)
+        if manifest is None:
+            self._drift[symphony_name] = "frozen provenance manifest is missing or altered"
+            return None
+        return await self._check_manifest(symphony_name, cache_state, digest, manifest, full=True)
 
     async def resolve_provenance(
         self, symphony_name: str, cache_state: EnvCacheState, *, container_path: str,
     ) -> tuple[ProvenanceCheck, dict[str, Any] | None]:
         """Verify the cache and return the consumer payload from the same manifest (234 review).
 
-        The digest is read once. The check and the payload are both taken from the manifest that digest names, so
-        a regeneration that clears the digest mid-dispatch cannot pair a verified check with a different payload.
-        A digest that changes during the check refuses the dispatch.
+        The digest is read once. The check and the payload are both taken from the manifest that digest names. The
+        digest is read again after each await, so a regeneration that clears or replaces it mid-dispatch refuses.
         """
         digest = cache_state.provenance_digest
         if digest is None:
@@ -1576,7 +1640,10 @@ class EnvCacheService:
             return check, None
         if cache_state.provenance_digest != digest:
             return ProvenanceCheck(False, "frozen provenance changed during the dispatch; retry"), None
-        return check, await self._payload_for(symphony_name, digest, manifest, container_path)
+        payload = await self._payload_for(symphony_name, digest, manifest, container_path)
+        if cache_state.provenance_digest != digest:
+            return ProvenanceCheck(False, "frozen provenance changed during the dispatch; retry"), None
+        return check, payload
 
     async def _payload_for(
         self, symphony_name: str, digest: str, manifest: ProvenanceManifest, container_path: str,

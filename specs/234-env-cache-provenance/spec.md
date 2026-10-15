@@ -84,7 +84,21 @@ and refused if its directory lies inside a performer mount. The snapshot keeps o
 (`provenance_digest`) and the freeze time. Before every use the file must hash to the recorded digest. A
 missing or altered file means no frozen provenance, which holds dispatch and re-bootstraps.
 
-The per-file list stays out of the snapshot: a 100 000 entry list would bloat every save.
+The per-file list stays out of the snapshot: a million-entry list would bloat every save.
+
+**The file's size is bounded by the entry bound (second review).** The saved form is one JSON array per entry, and each
+entry may carry a path of up to `PROVENANCE_MAX_PATH_BYTES` (512). The per-entry budget is that path plus 256 bytes of
+fixed JSON overhead, so the cap is `manifest_cap_bytes(max_entries)` = `max_entries * 768`. At the default bound that is
+about 768 MB. The reviewer measured 258 to 297 MiB for a million entries with 70 and 110 character paths, so a cache at
+the default bound fits. A cache with a longer path is refused at freeze with the path length. A manifest over its cap
+names `env_cache.provenance_max_entries`.
+
+**Format and load cost.** Each row is a named tuple, not a validated model, and the file is version 2 of the format. The
+first attempt used a pydantic model per entry and held about 2.7 GB resident for a 1M-entry manifest. The named-tuple
+form holds about 1.5 GB resident and loads in about 2.1 s. The load runs in `asyncio.to_thread`, off the event loop.
+Measured on this machine (`load_manifest`, 1 000 000 entries, 222 MiB file): load and validate 2.1 s, resident after
+load 1485 MiB, from 49 MiB before. A deployment that holds several million-entry caches holds that much per symphony. The
+knob is the lever: lower `provenance_max_entries` to the size the host can carry.
 
 ### 4. Verification cost
 
@@ -99,8 +113,15 @@ Each consumer dispatch runs `check_cache`:
 - **Any mismatch, or any added or removed entry, means a full re-hash.** Every file is hashed and compared
   with its sha256. A changed hash is drift. A stat mismatch with the same hashes (a touch) passes, and the
   cache is not re-recorded.
-- **Periodic full re-hash.** `PROVENANCE_FULL_RECHECK_S` after the last one, and on the first dispatch for a
-  symphony after a daemon restart. A writer who forges `ctime_ns` within the filesystem's timestamp
+- **Periodic full re-hash, in the background (second review).** `PROVENANCE_FULL_RECHECK_S` after the last one. The
+  hourly pass is not on the dispatch path. The poll cycle schedules it (`schedule_full_pass`), and it runs in a task
+  that hashes in a thread (`run_full_pass`). A dispatch does the stat pass only. A pass that finds drift records it, and
+  every dispatch refuses until the next freeze, with the reason and a re-bootstrap. A dispatch still runs a full pass
+  inline when this process has none yet (after a restart, or after a freeze), and a stat mismatch hashes inline. Both
+  are correctness, and both run in a thread, off the event loop. Measured on this machine: a hash pass costs about
+  0.54 s per GiB (warm cache, sha256), so a full pass at the 16 GiB bound is about 9 s, in the background. The first
+  dispatch after a restart is the exception: it waits for the full pass.
+- **The first dispatch after a restart** runs the full pass inline (in a thread), as it did before. A writer who forges `ctime_ns` within the filesystem's timestamp
   granularity is caught here, within the hour.
 - **Stat baseline after a passing hash pass (review round).** A passing full pass returns the (size, inode,
   `ctime_ns`) it observed for every file. The service keeps that as the baseline for the next stat pass, so ctime-only
@@ -203,6 +224,17 @@ is refused and re-bootstraps once. That is the upgrade cost.
 - performer: `env_cache.provenance_materialised` (on success), `env_cache.provenance_refused` (a deb changed, or a
   step could not be read: the job is refused with the reason), `env_cache.provenance_missing` (a consumer with a
   cache path and no frozen payload)
+
+## Residuals (second review)
+
+- **The bootstrap exemption is by role.** `_require_provenance_capability` exempts a job whose role is `env_bootstrap`
+  from the cache-mount-without-payload refusal, and the performer runs such a job with the cache root. A card or an
+  operator lifecycle listing `env_bootstrap` gets that exemption. A daemon-only flag would close it, and was not done in
+  this round. Until then, the role is the only thing that separates the cache writer from a consumer.
+- **The restart full pass is inline.** The first dispatch after a restart waits for a full pass over the whole cache
+  (about 0.54 s per GiB here). This is the price of not trusting the stat baseline across a restart.
+- **Residency.** A loaded manifest stays in memory for the life of the process, per symphony, at about 1.5 GB for a
+  million entries (above). The knob bounds it.
 
 ## Out of scope
 

@@ -18,6 +18,7 @@ from coordinare.services.env_provenance import (
     ProvenanceScope,
     freeze_cache,
     load_manifest,
+    manifest_cap_bytes,
     save_manifest,
 )
 
@@ -151,14 +152,14 @@ def test_manifest_round_trips_and_is_trusted_only_by_digest(tmp_path: Path) -> N
     manifest = _freeze(cache, mounts)
     daemon_dir = tmp_path / "state" / "env-provenance"
     path = daemon_dir / "sym-abc.json"
-    digest = save_manifest(path, manifest, performer_mounts=mounts)
-    loaded = load_manifest(path, digest=digest, performer_mounts=mounts)
+    digest = save_manifest(path, manifest, performer_mounts=mounts, max_bytes=manifest_cap_bytes(1_000_000))
+    loaded = load_manifest(path, digest=digest, performer_mounts=mounts, max_bytes=manifest_cap_bytes(1_000_000))
     assert loaded is not None
     assert loaded.activate_sh == ACTIVATE
     assert [e.path for e in loaded.entries] == [e.path for e in manifest.entries]
     # A manifest that no longer hashes to the recorded digest is not trusted.
     path.write_text(path.read_text().replace("abc123", "abc124"))
-    assert load_manifest(path, digest=digest, performer_mounts=mounts) is None
+    assert load_manifest(path, digest=digest, performer_mounts=mounts, max_bytes=manifest_cap_bytes(1_000_000)) is None
 
 
 def test_manifest_inside_a_performer_mount_is_refused(tmp_path: Path) -> None:
@@ -167,5 +168,5 @@ def test_manifest_inside_a_performer_mount_is_refused(tmp_path: Path) -> None:
     # The state directory sits under the env-cache root, which is a performer mount.
     path = mounts[0] / "state" / "sym-abc.json"
     with pytest.raises(ProvenanceRefusedError, match="performer mount"):
-        save_manifest(path, manifest, performer_mounts=mounts)
-    assert load_manifest(path, digest="0" * 64, performer_mounts=mounts) is None
+        save_manifest(path, manifest, performer_mounts=mounts, max_bytes=manifest_cap_bytes(1_000_000))
+    assert load_manifest(path, digest="0" * 64, performer_mounts=mounts, max_bytes=manifest_cap_bytes(1_000_000)) is None

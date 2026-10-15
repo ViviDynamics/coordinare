@@ -24,14 +24,14 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, NamedTuple
 
 import structlog
 from coordinare_service_inference.manual_override import SERVICES_SUBDIR
-from pydantic import BaseModel
 
 from coordinare.services.mounted_file import (
     MountedFileRefusedError,
+    TreeBoundError,
     TreeEntry,
     anchored_mkdir,
     read_mounted_file,
@@ -57,7 +57,16 @@ class ProvenanceLimits:
 DEFAULT_LIMITS = ProvenanceLimits(max_entries=1_000_000, max_bytes=16 * _GIB)
 
 PROVENANCE_MAX_SCRIPT_BYTES = 256 * 1024
-PROVENANCE_MAX_MANIFEST_BYTES = 256 * 1024 * 1024
+# 234 review 2: the manifest is bounded by the entry bound. Each entry may carry a path up to
+# PROVENANCE_MAX_PATH_BYTES, plus the fixed JSON overhead of one entry. The cap is their product, so a cache at the
+# default bound fits and a cache over the entry bound is refused on the entry knob.
+PROVENANCE_MAX_PATH_BYTES = 512
+_MANIFEST_OVERHEAD_BYTES_PER_ENTRY = 256
+
+
+def manifest_cap_bytes(max_entries: int) -> int:
+    """The largest saved manifest accepted for a cache of *max_entries* entries (234 review 2)."""
+    return max_entries * (PROVENANCE_MAX_PATH_BYTES + _MANIFEST_OVERHEAD_BYTES_PER_ENTRY)
 
 # 234: the periodic full re-hash. The stat pass cannot see a rewrite that restores size, inode and ctime
 # inside the filesystem's timestamp granularity, so a full pass runs at least this often.
@@ -106,9 +115,11 @@ def provenance_slug(cache_dir_name: str) -> str:
     return f"{head}-{digest}"
 
 
-class ProvenanceEntry(BaseModel, frozen=True):
+class ProvenanceEntry(NamedTuple):
+    """One manifest row. A named tuple, not a model: a million validated models cost gigabytes on restart (234 review 2)."""
+
     path: str
-    kind: Literal["file", "dir", "link"]
+    kind: str  # "file", "dir" or "link"
     mode: int
     size: int
     ino: int
@@ -117,7 +128,11 @@ class ProvenanceEntry(BaseModel, frozen=True):
     target: str | None = None
 
 
-class ProvenanceManifest(BaseModel):
+_ENTRY_KINDS = frozenset({"file", "dir", "link"})
+
+
+@dataclass(frozen=True)
+class ProvenanceManifest:
     slug: str
     symphony: str
     cache_key: str
@@ -125,7 +140,7 @@ class ProvenanceManifest(BaseModel):
     activate_sh: str
     services_start_sh: str | None = None
     services_health_sh: str | None = None
-    entries: list[ProvenanceEntry]
+    entries: tuple[ProvenanceEntry, ...] = ()
 
     @property
     def debs(self) -> dict[str, str]:
@@ -235,11 +250,18 @@ def _read_script(
         raise ProvenanceRefusedError(message) from exc
 
 
+_KNOB_FOR_BOUND = {
+    "entries": "env_cache.provenance_max_entries",
+    "bytes": "env_cache.provenance_max_bytes",
+}
+
+
 def _bound_message(exc: MountedFileRefusedError) -> str:
-    """A walk bound names the knob to raise, so an operator can act on the refusal (234 review)."""
-    text = str(exc)
-    knob = "env_cache.provenance_max_entries" if "entries" in text else "env_cache.provenance_max_bytes"
-    return f"cache {text}; raise {knob} if this cache is legitimately this large"
+    """A refusal from the walk. A bound names the knob for its kind (234 review 2: from the structured kind, not text)."""
+    if isinstance(exc, TreeBoundError):
+        knob = _KNOB_FOR_BOUND[exc.bound]
+        return f"cache {exc}; raise {knob} if this cache is legitimately this large"
+    return f"cache {exc}"
 
 
 def freeze_cache(
@@ -265,6 +287,10 @@ def freeze_cache(
         )
     except MountedFileRefusedError as exc:
         raise ProvenanceRefusedError(_bound_message(exc)) from exc
+    longest = max((t for t in tree), key=lambda t: len(t.rel.encode()), default=None)
+    if longest is not None and len(longest.rel.encode()) > PROVENANCE_MAX_PATH_BYTES:
+        message = f"path longer than {PROVENANCE_MAX_PATH_BYTES} bytes cannot be frozen: {longest.rel[:80]}..."
+        raise ProvenanceRefusedError(message)
     links = {t.rel: t.target or "" for t in tree if t.kind == "link"}
     for rel, target in links.items():
         reason = _link_refusal(rel, target, links)
@@ -285,12 +311,50 @@ def freeze_cache(
         activate_sh=activate_sh,
         services_start_sh=_read_script(cache_dir, _START_RELPATH, by_path, mounts),
         services_health_sh=_read_script(cache_dir, _HEALTH_RELPATH, by_path, mounts),
-        entries=sorted(entries, key=lambda e: e.path),
+        entries=tuple(sorted(entries, key=lambda e: e.path)),
     )
 
 
 def _canonical(manifest: ProvenanceManifest) -> bytes:
-    return json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+    """The saved form: metadata, then one JSON array per entry. Compact, and canonical for the digest."""
+    doc = {
+        "v": _MANIFEST_FORMAT,
+        "slug": manifest.slug,
+        "symphony": manifest.symphony,
+        "cache_key": manifest.cache_key,
+        "frozen_at": manifest.frozen_at.isoformat(),
+        "activate_sh": manifest.activate_sh,
+        "services_start_sh": manifest.services_start_sh,
+        "services_health_sh": manifest.services_health_sh,
+        "entries": [list(e) for e in manifest.entries],
+    }
+    return json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+
+
+_MANIFEST_FORMAT = 2
+
+
+def _parse_manifest(data: bytes) -> ProvenanceManifest | None:
+    """The manifest from its saved form, or None for anything malformed. Rows are checked for shape, not re-validated."""
+    try:
+        doc = json.loads(data)
+        if doc.get("v") != _MANIFEST_FORMAT:
+            return None
+        entries = tuple(ProvenanceEntry(*row) for row in doc["entries"])
+        if any(e.kind not in _ENTRY_KINDS for e in entries):
+            return None
+        return ProvenanceManifest(
+            slug=str(doc["slug"]),
+            symphony=str(doc["symphony"]),
+            cache_key=str(doc["cache_key"]),
+            frozen_at=datetime.fromisoformat(doc["frozen_at"]),
+            activate_sh=str(doc["activate_sh"]),
+            services_start_sh=doc["services_start_sh"],
+            services_health_sh=doc["services_health_sh"],
+            entries=entries,
+        )
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 def _inside_any(path: Path, mounts: tuple[Path, ...] | list[Path]) -> bool:
@@ -303,14 +367,21 @@ def save_manifest(
     manifest: ProvenanceManifest,
     *,
     performer_mounts: tuple[Path, ...] | list[Path],
+    max_bytes: int,
 ) -> str:
-    """Write the manifest to the daemon-owned file and return its digest. Refused inside a performer mount."""
+    """Write the manifest to the daemon-owned file and return its digest. Refused inside a performer mount.
+
+    *max_bytes* is :func:`manifest_cap_bytes` of the configured entry bound. Over it, the refusal names the knob.
+    """
     if _inside_any(path, performer_mounts):
         message = f"{path} is inside a performer mount; the frozen manifest must be daemon-owned"
         raise ProvenanceRefusedError(message)
     data = _canonical(manifest)
-    if len(data) > PROVENANCE_MAX_MANIFEST_BYTES:
-        message = f"manifest exceeds {PROVENANCE_MAX_MANIFEST_BYTES} bytes"
+    if len(data) > max_bytes:
+        message = (
+            f"the frozen manifest is {len(data)} bytes, over the {max_bytes} bytes its entry bound allows; "
+            "raise env_cache.provenance_max_entries if this cache is legitimately this large"
+        )
         raise ProvenanceRefusedError(message)
     anchored_mkdir(path.parent, mounts=performer_mounts)
     replace_mounted_file(path, data, mounts=performer_mounts)
@@ -322,21 +393,19 @@ def load_manifest(
     *,
     digest: str,
     performer_mounts: tuple[Path, ...] | list[Path],
+    max_bytes: int,
 ) -> ProvenanceManifest | None:
     """The saved manifest, but only when it hashes to *digest*. Anything else is None (not trusted)."""
     if _inside_any(path, performer_mounts):
         logger.error("env_cache.provenance_refused", path=str(path), reason="inside a performer mount")
         return None
-    data = read_mounted_file(path, max_bytes=PROVENANCE_MAX_MANIFEST_BYTES, mounts=performer_mounts)
+    data = read_mounted_file(path, max_bytes=max_bytes, mounts=performer_mounts)
     if data is None:
         return None
     if hashlib.sha256(data).hexdigest() != digest:
         logger.error("env_cache.provenance_digest_mismatch", path=str(path))
         return None
-    try:
-        return ProvenanceManifest.model_validate_json(data)
-    except ValueError:
-        return None
+    return _parse_manifest(data)
 
 
 def _changed(rel: str, exp: ProvenanceEntry, cur: TreeEntry) -> str | None:

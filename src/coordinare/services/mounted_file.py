@@ -70,6 +70,14 @@ class MountedFileRefusedError(OSError):
     """A read or write the daemon will not perform on a performer-writable path."""
 
 
+class TreeBoundError(MountedFileRefusedError):
+    """A tree walk reached one of its bounds. ``bound`` says which, so callers name the right knob (234 review)."""
+
+    def __init__(self, message: str, bound: Literal["entries", "bytes"]) -> None:
+        super().__init__(message)
+        self.bound = bound
+
+
 def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
     """Every host directory a performer container can see (129, 208).
 
@@ -762,7 +770,7 @@ class _TreeWalk:
         for name in names:
             if len(self.entries) >= self.max_entries:
                 message = f"has more than {self.max_entries} entries"
-                raise MountedFileRefusedError(message)
+                raise TreeBoundError(message, "entries")
             self._entry(dir_fd, name, f"{prefix}{name}")
 
     def _entry(self, dir_fd: int, name: str, rel: str) -> None:
@@ -791,7 +799,7 @@ class _TreeWalk:
         self.total += info.st_size
         if self.total > self.max_bytes:
             message = f"holds more than {self.max_bytes} bytes"
-            raise MountedFileRefusedError(message)
+            raise TreeBoundError(message, "bytes")
         digest = _hash_leaf(dir_fd, name, info, rel, self.max_bytes) if self.hash_files else None
         self.entries.append(TreeEntry(rel, "file", mode, info.st_size, info.st_ino, info.st_ctime_ns, digest))
 
