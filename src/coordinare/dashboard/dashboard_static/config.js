@@ -433,6 +433,18 @@ function cfgLock(container, locked) {
     if (el.closest('[data-review]')) return;
     el.disabled = locked;
   });
+  if (!locked) cfgSyncOffTargets(container);
+}
+
+// 221: a box that switches a field off (No cap, which turns off the number beside it) keeps that field
+// off after the form unlocks. The box names its target by id, so the rule lives in one place.
+function cfgSyncOffTarget(box) {
+  var target = document.getElementById(box.getAttribute('data-off-target'));
+  if (target) target.disabled = box.checked;
+}
+
+function cfgSyncOffTargets(container) {
+  container.querySelectorAll('[data-off-target]').forEach(cfgSyncOffTarget);
 }
 
 // 143: the review step. A save first lists each changed setting, old and new, and goes
@@ -526,7 +538,8 @@ function cfgReapplyPending() {
 function cfgFindEntry(item) {
   var found = null;
   var seen = 0;
-  document.querySelectorAll('#config-page-section [data-scope]').forEach(function(el) {
+  // 221: the symphony form's scope is found the same way as a Settings editor's.
+  document.querySelectorAll('#config-page-section [data-scope], #sym-config-form[data-scope]').forEach(function(el) {
     if (found || el.getAttribute('data-scope') !== item.scope) return;
     if (item.index !== undefined && item.index !== null) {
       if (el.getAttribute('data-entry-index') === String(item.index)) found = el;
@@ -559,6 +572,8 @@ function cfgRestoreEdits(list) {
       }
       cfgSetControl(el, item.changes[key]);
     });
+    // 221: a number that a No cap box switches off follows the box it was restored with.
+    cfgSyncOffTargets(box);
   });
 }
 
@@ -627,17 +642,36 @@ function cfgOnSettingsPage() {
 }
 
 // 143 review: unsaved work includes a New form that has been typed into, not only saved entries.
+// 221: the symphony page's form is an editor too. Only the editor on the page being shown counts.
+function cfgOnSymphonyPage() {
+  var el = document.getElementById('symphonies-page');
+  return !!el && el.style.display !== 'none';
+}
+
+// 221: the editors on screen, whose unsaved edits a move would lose.
+function cfgEditorRoots() {
+  var roots = [];
+  var settings = document.getElementById('config-page-section');
+  if (settings && cfgOnSettingsPage()) roots.push(settings);
+  var form = document.getElementById('sym-config-form');
+  if (form && cfgOnSymphonyPage()) roots.push(form);
+  return roots;
+}
+
+// 143 review: unsaved work includes a New form that has been typed into, not only saved entries.
+// 221: and a symphony's form, which is an editor on the same terms.
 function cfgHasUnsaved() {
-  var root = document.getElementById('config-page-section');
-  if (!root || !cfgOnSettingsPage()) return false;
-  return cfgEntries(root, true).some(cfgChanged);
+  return cfgEditorRoots().some(function(root) {
+    return cfgEntries(root, true).some(cfgChanged);
+  });
 }
 
 // 143: may the reader leave for nextPath? Only the unsaved-changes prompt can say no.
 // 143 review: the page's own path, exactly. A path that only starts with /config is another page.
+// 221: a move to /config from anywhere but Settings loses a symphony's edits, so it is asked about.
 function cfgLeaveAllowed(nextPath) {
   if (!cfgHasUnsaved()) return true;
-  if (nextPath === '/config') return true;
+  if (nextPath === '/config' && cfgOnSettingsPage()) return true;
   return window.confirm('You have unsaved changes on this page. Leave without saving?');
 }
 
@@ -697,7 +731,9 @@ function cfgApplyErrors(container, errs) {
 
 // Optimistic-concurrency conflict: the file changed under us. Offer a reload so
 // the operator picks up the latest baseline before re-applying their edit.
-function cfgConflict(statusEl, status, body) {
+// 221: the reload is the editor's own: Settings reloads its page, a symphony reloads its form. The
+// edits the refused save kept are put back after that reload (cfgReapplyPending).
+function cfgConflict(statusEl, status, body, reload) {
   if (!statusEl) return;
   statusEl.innerHTML = '';
   var text = document.createElement('span');
@@ -708,14 +744,32 @@ function cfgConflict(statusEl, status, body) {
   btn.type = 'button';
   btn.className = 'cfg-btn';
   btn.textContent = 'Reload and reapply';
-  btn.addEventListener('click', function() { loadConfigPage(); });
+  btn.addEventListener('click', function() { (reload || loadConfigPage)(); });
   statusEl.appendChild(btn);
+}
+
+// 221: what a symphony's save or delete says when the server refuses it, in plain words. A stale
+// version is the conflict message; a deleted symphony and a start-time refusal each say what happened.
+function cfgSymphonyRefusal(status, body) {
+  var text = body && body.error ? String(body.error) : '';
+  if (status === 404) return 'This symphony was deleted by someone else, so nothing was saved.';
+  if (status === 422) {
+    return 'Not saved: ' + text.replace(/^Validation failed: /, '') + '. Nothing was changed.';
+  }
+  return text || ('Error ' + status);
+}
+
+// 221: the symphony form's Reload and reapply reloads that form, through the function app.js sets.
+var _cfgSymReload = null;
+function cfgReloadSymphony() {
+  if (_cfgSymReload) _cfgSymReload();
 }
 
 // Map a save response onto field errors + a status badge. Returns true on success.
 // `store` selects which optimistic-concurrency baseline the returned new_hash
 // refreshes: 'routing_yaml' → _cfgRoutingHash, otherwise the config.yaml baseline.
 function cfgHandleSave(status, body, container, statusEl, store, newHash) {
+  if (store === 'symphony') return cfgHandleSymphonySave(status, body, container, statusEl, newHash);
   cfgClearErrors(container);
   // Persona writes answer 204 with the new version in the ETag header.
   var saved = store === 'persona' ? (status === 200 || status === 204) : (status === 200 && body.ok);
@@ -755,6 +809,33 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
   var errs = body.errors || [];
   var general = cfgApplyErrors(container, errs).map(function(e) { return e.message; }).join('; ');
   cfgFlash(statusEl, general || body.message || body.error || ('Error ' + status), 'red');
+  return false;
+}
+
+// 221: a symphony's answer. The review, the lock, the conflict and the reapply are the Settings ones;
+// what differs is the version a success keeps (the symphony's own ETag) and where a delete leads.
+function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
+  cfgClearErrors(container);
+  if (status === 200) {
+    if (newHash) _symCfgHash = newHash;
+    _cfgPending = null;
+    cfgRebaseline(container);
+    if (body && body.deleted) {
+      navigate(null, '/symphonies');
+      return true;
+    }
+    cfgFlash(statusEl, 'Saved', 'green');
+    // The form is drawn again from the server after a moment, as Settings is, so a cleared secret's row and the
+    // base the next save starts from match what was stored. A reader who has typed since is left alone.
+    setTimeout(function() { if (!cfgHasUnsaved()) cfgReloadSymphony(); }, 1000);
+    return true;
+  }
+  if (status === 428 || (status === 409 && body && body.conflict)) {
+    cfgConflict(statusEl, status, body, cfgReloadSymphony);
+    return false;
+  }
+  _cfgPending = null;
+  cfgFlash(statusEl, cfgSymphonyRefusal(status, body), 'red');
   return false;
 }
 
@@ -1346,15 +1427,19 @@ function cfgSelectTab(secId) {
 // 143 review: one listener for every control on the page. It reads the data-* attributes
 // and calls the same functions the inline handlers used to, with values that are never
 // written into code.
-var _cfgWired = false;
-function cfgWireControls() {
-  if (_cfgWired) return;
-  var root = document.getElementById('config-page-section');
-  if (!root) return;
-  _cfgWired = true;
+// 221: the listeners go on a root once. A root that a render replaces (the symphony form) is new each
+// time and gets its own; the Settings root is kept across renders and is wired the first time only.
+// dispatch is the page's action table: cfgRunAction for Settings, and the symphony form's own.
+function cfgWireControls(root, dispatch) {
+  if (!root || root.getAttribute('data-cfg-wired') !== null) return;
+  root.setAttribute('data-cfg-wired', '');
   root.addEventListener('click', function(event) {
     var el = event.target && event.target.closest ? event.target.closest('[data-cfg-action]') : null;
-    if (el && root.contains(el)) cfgRunAction(el, event);
+    if (el && root.contains(el)) dispatch(el, event);
+  });
+  root.addEventListener('change', function(event) {
+    var box = event.target;
+    if (box && box.hasAttribute && box.hasAttribute('data-off-target')) cfgSyncOffTarget(box);
   });
   root.addEventListener('keydown', function(event) {
     var tab = event.target && event.target.closest ? event.target.closest('[data-cfg-tab]') : null;
@@ -1484,7 +1569,7 @@ async function loadConfigPage() {
   }).join('');
   el.innerHTML = header + cfgTabBar(sections, active) + panels;
   _cfgShown = true;
-  cfgWireControls();
+  cfgWireControls(el, cfgRunAction);
   // The New forms are baselined before any refused edit is put back into them.
   cfgBaselineCreate();
   if (_cfgRoutingAvail) loadRoutingEntries();
