@@ -13,7 +13,11 @@ import stamina
 import structlog
 from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
-from gql.transport.exceptions import TransportQueryError, TransportServerError
+from gql.transport.exceptions import (
+    TransportConnectionFailed,
+    TransportQueryError,
+    TransportServerError,
+)
 
 from coordinare.resilience import CircuitOpenError
 from coordinare.services.card_identity import CardIdentityMap
@@ -949,8 +953,12 @@ class GitHubService(CardIdentityMap):
                 # error — route it to AuthGitHubError so _execute can
                 # refresh-and-retry once with a freshly minted credential.
                 raise AuthGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
+            if code is not None and httpx.codes.is_client_error(code) and code not in (
+                httpx.codes.REQUEST_TIMEOUT, httpx.codes.TOO_MANY_REQUESTS,
+            ):
+                raise PermanentGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
             raise TransientGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
-        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+        except (TimeoutError, aiohttp.ClientError, OSError, TransportConnectionFailed) as exc:
             raise TransientGitHubError(str(exc)) from exc
         except ValueError as exc:
             raise PermanentGitHubError(str(exc)) from exc
@@ -1105,6 +1113,8 @@ class GitHubService(CardIdentityMap):
         return board
 
     async def _read_board(self) -> dict[str, Any]:
+        if not self.project_id or not self.field_cache:
+            await self.initialize()
         self._ensure_initialized()
         items: list[dict[str, Any]] = []
         cursor: str | None = None

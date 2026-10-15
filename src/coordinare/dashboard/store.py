@@ -929,10 +929,6 @@ class DashboardStore:
         # 156: read once, so the symphony rows and the spend strip cannot disagree.
         token_block = _token_usage_block(daemon)
         symphonies = self._build_symphonies_data(daemon, cycles_completed, token_block)
-        idle_reason = board_idle_explanation(
-            daemon.state.get("board_snapshot"), daemon.state.get("todo_waits") or {},
-            daemon.state.get("active_sessions") or {},
-        ) or " ".join(f"{sym['name']}: {sym['idle_reason']}" for sym in symphonies if sym.get("idle_reason"))
         return {
             "project_name": getattr(_cfg, "project_name", "") if (_cfg := daemon.state.get("config")) else "",
             "project_board_url": f"https://github.com/orgs/{_cfg.github_org}/projects/{_cfg.github_project_number}" if _cfg else "",
@@ -970,7 +966,6 @@ class DashboardStore:
             # ownership_policy() the gate consults. The two raw fields above are
             # kept for consumers that predate this key; the UI reads only this.
             "ownership_hint": ownership_hint(daemon.state.get("config")),
-            "idle_reason": idle_reason,
             # 053: Idle observability summary from board snapshot + poll timing.
             "board_summary": board_summary,
             "last_poll_at": last_poll_at,

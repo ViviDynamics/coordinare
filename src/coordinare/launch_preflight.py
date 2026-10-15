@@ -7,28 +7,89 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
+from gql.transport.exceptions import TransportConnectionFailed
 
 from coordinare.auth import build_auth
 from coordinare.dashboard.app import check_port_available
 from coordinare.doctor import CheckResult, DoctorReport, Status, run_checks
 from coordinare.lifecycle import CANONICAL_ORDER
+from coordinare.network_probe import (
+    PROBE_ATTEMPTS,
+    PROBE_RETRY_DELAY_SECONDS,
+    error_status,
+    probe_http,
+    response_status,
+)
 from coordinare.presets import HARNESS_COMMANDS
-from coordinare.services.github import BOARD_COLUMN_TO_STATUS, GitHubService
+from coordinare.services.github import BOARD_COLUMN_TO_STATUS, GitHubService, TransientGitHubError
+from coordinare.services.system_health import SYSTEM_HEALTH
 from coordinare.start_checks import validate_start_time
 from coordinare.transport.base import TransportError
 from coordinare.transport.subprocess_transport import SubprocessTransport
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from coordinare.config import CoordinareConfiguration, ProjectConfiguration
+
+logger = structlog.get_logger(__name__)
 
 PROBE_TIMEOUT_SECONDS = 5.0
 HTTP_OK = 200
 REQUIRED_SCOPES = {"repo", "project", "read:org"}
 REQUIRED_COLUMNS = {"TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED", "DONE"}
+
+
+def _failure_status(error: Exception) -> Status:
+    if isinstance(error, (TransientGitHubError, TransportConnectionFailed)):
+        return Status.WARN
+    return error_status(error)
+
+
+async def _async_probe[ProbeValue](operation: Callable[[], Awaitable[ProbeValue]]) -> ProbeValue:
+    attempts_left = PROBE_ATTEMPTS
+    while True:
+        attempts_left -= 1
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                return await operation()
+        except Exception as exc:
+            if _failure_status(exc) is not Status.WARN or not attempts_left:
+                raise
+        await asyncio.sleep(PROBE_RETRY_DELAY_SECONDS)
+
+
+async def initialize_github_at_start(github: GitHubService) -> None:
+    """Defer transient bootstrap failures to polling, which updates live health."""
+    try:
+        await _async_probe(github.initialize)
+    except Exception as exc:
+        if _failure_status(exc) is not Status.WARN:
+            raise
+        SYSTEM_HEALTH.record_board_poll(
+            f"{github._org}/{github._project_number}", ok=False, error=type(exc).__name__,
+        )
+        logger.warning(
+            "startup.github_initialization_deferred",
+            detail="GitHub is temporarily unavailable; the daemon will retry during board polling.",
+            error_type=type(exc).__name__,
+        )
+
+
+def _compatible_results(results: list[CheckResult], *, strict: bool) -> list[CheckResult]:
+    if strict:
+        return results
+    return [
+        replace(result, status=Status.WARN)
+        if result.status is Status.FAIL else result
+        for result in results
+    ]
 
 
 @dataclass(frozen=True)
@@ -85,7 +146,7 @@ def check_port(config: ProjectConfiguration) -> CheckResult:
     return CheckResult("dashboard port", Status.OK, f"Port {config.dashboard_port} is available.")
 
 
-def _token_and_repo(config: ProjectConfiguration, token: str) -> list[CheckResult]:
+def _token_and_repo(config: ProjectConfiguration, token: str, *, probe_repo: bool) -> list[CheckResult]:
     results = []
     try:
         with httpx.Client(
@@ -93,13 +154,13 @@ def _token_and_repo(config: ProjectConfiguration, token: str) -> list[CheckResul
         ) as client:
             # Installation tokens have no /user identity; /installation/repositories validates them.
             identity = "/installation/repositories" if config.github_auth == "app" else "/user"
-            response = client.get(config.github_api_url.rstrip("/") + identity)
+            response = probe_http(lambda: client.get(config.github_api_url.rstrip("/") + identity))
             if response.status_code != HTTP_OK:
                 return [
                     CheckResult(
                         "GitHub token",
-                        Status.FAIL,
-                        "GitHub rejected the token or could not validate its identity.",
+                        response_status(response),
+                        "GitHub rejected the token or could not validate its identity after bounded retries.",
                         "Set COORDINARE_GITHUB_TOKEN to a valid token; for App auth check github_app_id, github_installation_id and github_private_key_path.",
                     ),
                 ]
@@ -138,10 +199,10 @@ def _token_and_repo(config: ProjectConfiguration, token: str) -> list[CheckResul
                         "For a fine-grained token or App, grant repository Contents, Issues and Pull requests read/write, and organization Projects read/write.",
                     ),
                 )
-            if config.github_repo:
-                response = client.get(
+            if probe_repo and config.github_repo:
+                response = probe_http(lambda: client.get(
                     f"{config.github_api_url.rstrip('/')}/repos/{config.github_org}/{config.github_repo}",
-                )
+                ))
                 permissions = (
                     response.json().get("permissions", {})
                     if response.status_code == HTTP_OK
@@ -151,7 +212,7 @@ def _token_and_repo(config: ProjectConfiguration, token: str) -> list[CheckResul
                     results.append(
                         CheckResult(
                             "GitHub repository",
-                            Status.FAIL,
+                            response_status(response) if response.status_code != HTTP_OK else Status.FAIL,
                             "The configured repository is inaccessible or the token cannot push to it.",
                             "Correct github_org and github_repo; grant the token repository Contents, Issues and Pull requests read/write access.",
                         ),
@@ -164,34 +225,41 @@ def _token_and_repo(config: ProjectConfiguration, token: str) -> list[CheckResul
                             "The configured repository is reachable.",
                         ),
                     )
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
         results.append(
             CheckResult(
                 "GitHub API",
-                Status.FAIL,
-                "Could not reach or read the GitHub API.",
+                error_status(exc),
+                "Could not reach or read the GitHub API after bounded retries.",
                 "Check github_api_url and network access, then run coordinare doctor again.",
             ),
         )
     return results
 
 
-async def check_github(config: ProjectConfiguration) -> list[CheckResult]:
+async def check_github(
+    config: ProjectConfiguration, *, explicit: bool = False,
+) -> list[CheckResult]:
     try:
         auth = build_auth(config)
-        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
-            token = await auth.get_token()
-    except Exception:
+        token = await _async_probe(auth.get_token)
+    except Exception as exc:
         return [
             CheckResult(
                 "GitHub credential",
-                Status.FAIL,
-                "Could not obtain a GitHub credential.",
+                _failure_status(exc),
+                "Could not obtain a GitHub credential after bounded retries.",
                 "Set COORDINARE_GITHUB_TOKEN, or correct github_auth and the github_app_id, github_installation_id and github_private_key_path settings.",
             ),
         ]
-    results = await asyncio.to_thread(_token_and_repo, config, token)
-    if any(result.status is Status.FAIL for result in results):
+    strict = explicit or config.preset is not None
+    results = _compatible_results(
+        await asyncio.to_thread(_token_and_repo, config, token, probe_repo=strict),
+        strict=strict,
+    )
+    if any(result.status is Status.FAIL for result in results) or not any(
+        result.name == "GitHub token" and result.status is Status.OK for result in results
+    ):
         return results
     github = GitHubService(
         config.github_org,
@@ -200,8 +268,7 @@ async def check_github(config: ProjectConfiguration) -> list[CheckResult]:
         auth=auth,
     )
     try:
-        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
-            await github.initialize()
+        await _async_probe(github.initialize)
         options = github.field_cache.get("status_option_ids", {})
         found = {BOARD_COLUMN_TO_STATUS.get(name) for name in options}
         missing = REQUIRED_COLUMNS - found
@@ -209,7 +276,7 @@ async def check_github(config: ProjectConfiguration) -> list[CheckResult]:
             results.append(
                 CheckResult(
                     "board columns",
-                    Status.FAIL,
+                    Status.FAIL if strict else Status.WARN,
                     f"The board is missing columns: {', '.join(sorted(missing))}.",
                     "In the board's Status field add To Do (or Ready), In Progress, In Review, Blocked and Done options.",
                 ),
@@ -222,18 +289,37 @@ async def check_github(config: ProjectConfiguration) -> list[CheckResult]:
                     "Board is reachable and all lifecycle Status columns exist.",
                 ),
             )
-    except Exception:
+    except Exception as exc:
         results.append(
             CheckResult(
                 "GitHub board",
-                Status.FAIL,
-                "Could not read the project board and its Status field.",
+                _failure_status(exc),
+                "Could not read the project board and its Status field after bounded retries.",
                 "Correct github_org, github_project_number and github_graphql_url; grant Projects access and add a Status field with To Do, In Progress, In Review, Blocked and Done.",
             ),
         )
     finally:
         await github.aclose()
-    return results
+    return _compatible_results(results, strict=strict)
+
+
+def _probe_process(command: list[str], options: ProbeOptions) -> subprocess.CompletedProcess[str]:
+    attempts_left = PROBE_ATTEMPTS
+    while True:
+        attempts_left -= 1
+        try:
+            return subprocess.run(
+                command,
+                input=options.stdin,
+                env=options.env,
+                capture_output=True,
+                text=True,
+                timeout=options.timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            if not attempts_left:
+                raise
 
 
 def _command_probe(
@@ -241,22 +327,18 @@ def _command_probe(
 ) -> CheckResult:
     options = options or ProbeOptions()
     try:
-        process = subprocess.run(
-            command,
-            input=options.stdin,
-            env=options.env,
-            capture_output=True,
-            text=True,
-            timeout=options.timeout,
-            check=False,
-        )
+        process = _probe_process(command, options)
         answered = process.returncode == 0
         if options.stdin is not None:
             response = SubprocessTransport._parse_response(
                 process.stdout.encode(), one_shot=True, returncode=process.returncode,
             )
             answered = answered and response.status == "healthy"
-    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError, TransportError):
+    except subprocess.TimeoutExpired:
+        return CheckResult(
+            name, Status.WARN, f"{name} timed out after bounded retries; startup can continue.", fix,
+        )
+    except (OSError, ValueError, AttributeError, TransportError):
         answered = False
     if not answered:
         return CheckResult(
@@ -333,7 +415,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             CheckResult("container runtime", Status.FAIL, "Docker is not installed on PATH.", fix),
         ]
     result = _command_probe("container runtime", [docker, "info"], fix)
-    if result.status is Status.FAIL:
+    if result.status is not Status.OK:
         return [result]
     results = [result]
     for endpoint in config.performer_endpoints:
@@ -344,7 +426,7 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
             f"performer image {endpoint.id}", [docker, "image", "inspect", image], fix,
         )
         results.append(result)
-        if result.status is Status.FAIL:
+        if result.status is not Status.OK:
             continue
         harnesses = {
             resolved.backend.replace("-", "_").lower()
@@ -386,7 +468,9 @@ def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     return results
 
 
-async def check_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
+async def check_harnesses(
+    config: ProjectConfiguration, *, probe_containers: bool = True,
+) -> list[CheckResult]:
     results = []
     if config.agent_transport in {"kubernetes", "ssh"}:
         results.append(
@@ -398,7 +482,7 @@ async def check_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
         )
     else:
         results.extend(await asyncio.to_thread(_local_harnesses, config))
-        if any(endpoint.mode == "ephemeral" for endpoint in config.performer_endpoints):
+        if probe_containers and any(endpoint.mode == "ephemeral" for endpoint in config.performer_endpoints):
             results.extend(await asyncio.to_thread(_container_harnesses, config))
     results.extend(await _persistent_harnesses(config))
     return results
@@ -416,23 +500,25 @@ async def _persistent_harnesses(config: ProjectConfiguration) -> list[CheckResul
                 else {}
             )
             response = await asyncio.to_thread(
-                httpx.get,
-                str(endpoint.endpoint).rstrip("/") + "/status",
-                headers=headers,
-                timeout=PROBE_TIMEOUT_SECONDS,
+                probe_http,
+                partial(
+                    httpx.get, str(endpoint.endpoint).rstrip("/") + "/status",
+                    headers=headers,
+                    timeout=PROBE_TIMEOUT_SECONDS,
+                ),
             )
-            ok = response.status_code == HTTP_OK
-        except httpx.HTTPError:
-            ok = False
+            status = response_status(response)
+        except httpx.HTTPError as exc:
+            status = error_status(exc)
         results.append(
             CheckResult(
                 f"performer {endpoint.id}",
-                Status.OK if ok else Status.FAIL,
+                status,
                 "Performer status endpoint answered."
-                if ok
-                else "Performer status endpoint did not answer successfully.",
+                if status is Status.OK
+                else "Performer status endpoint did not answer successfully after bounded retries.",
                 None
-                if ok
+                if status is Status.OK
                 else f"Start the performer and correct performer_endpoints[{endpoint.id}].endpoint and auth_token.",
             ),
         )
@@ -472,18 +558,18 @@ def check_native_models(config: ProjectConfiguration) -> list[CheckResult]:
             url = "https://api.openai.com/v1/models"
             headers = {"Authorization": f"Bearer {credential}"}
         try:
-            response = httpx.get(url, headers=headers, timeout=PROBE_TIMEOUT_SECONDS)
-            ok = response.status_code == HTTP_OK
-        except httpx.HTTPError:
-            ok = False
+            response = probe_http(partial(httpx.get, url, headers=headers, timeout=PROBE_TIMEOUT_SECONDS))
+            status = response_status(response)
+        except httpx.HTTPError as exc:
+            status = error_status(exc)
         results.append(
             CheckResult(
                 f"model endpoint {endpoint.name}",
-                Status.OK if ok else Status.FAIL,
+                status,
                 "Native model API answered with valid authentication."
-                if ok
-                else "Native model API is unreachable or rejected its credential.",
-                None if ok else fix,
+                if status is Status.OK
+                else "Native model API is unreachable after bounded retries or rejected its credential.",
+                None if status is Status.OK else fix,
             ),
         )
     return results
@@ -493,6 +579,8 @@ async def run_preflight(
     config: ProjectConfiguration,
     coordinare_config: CoordinareConfiguration | None = None,
     raw: dict[str, Any] | None = None,
+    *,
+    explicit: bool = False,
 ) -> DoctorReport:
     """Shared startup and doctor gate, also callable by init before writing a config."""
     report = DoctorReport()
@@ -508,17 +596,27 @@ async def run_preflight(
             ),
         )
         return report
-    report.results.extend(await asyncio.to_thread(check_directories, config))
+    report.results.extend(_compatible_results(
+        await asyncio.to_thread(check_directories, config),
+        strict=explicit or config.preset is not None,
+    ))
     report.results.append(check_port(config))
     configs = [config]
     if coordinare_config is not None:
         configs = [s.effective_config(config) for s in coordinare_config.symphonies if s.enabled]
     for effective in configs:
-        probes = _active_model_config(effective)
-        report.results.extend((await asyncio.to_thread(run_checks, probes)).results)
-        report.results.extend(await check_github(effective))
-        report.results.extend(await check_harnesses(effective))
-        report.results.extend(await asyncio.to_thread(check_native_models, probes))
+        probes = effective if explicit else _active_model_config(effective)
+        strict = explicit or effective.preset is not None
+        results = (await asyncio.to_thread(run_checks, probes)).results
+        results.extend(await check_github(effective, explicit=explicit))
+        results.extend(await check_harnesses(
+            effective,
+            probe_containers=explicit or (
+                effective.preset is not None and not config.state_file_path.expanduser().exists()
+            ),
+        ))
+        results.extend(await asyncio.to_thread(check_native_models, probes))
+        report.results.extend(_compatible_results(results, strict=strict))
     return report
 
 

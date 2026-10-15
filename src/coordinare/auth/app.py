@@ -88,7 +88,7 @@ class AppAuth:
 
         Raises:
             PermanentGitHubError: on 4xx responses (invalid credentials, not retryable).
-            TransientGitHubError: on 5xx / network errors (retryable).
+            TransientGitHubError: on 408, 429, 5xx or network errors (retryable).
         """
         from coordinare.services.github import PermanentGitHubError, TransientGitHubError
 
@@ -105,7 +105,9 @@ class AppAuth:
 
         if response.status_code in (200, 201):
             pass  # success — parse below
-        elif 400 <= response.status_code < 500:
+        elif response.is_client_error and response.status_code not in (
+            httpx.codes.REQUEST_TIMEOUT, httpx.codes.TOO_MANY_REQUESTS,
+        ):
             msg = f"installation token request rejected (HTTP {response.status_code}): check app_id, installation_id, and private key"
             raise PermanentGitHubError(msg)
         else:

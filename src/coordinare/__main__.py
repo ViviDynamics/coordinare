@@ -50,11 +50,11 @@ from coordinare.config_validation import (
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
 from coordinare.dashboard_oidc import OidcFlow
-from coordinare.doctor import check_kubernetes_egress_enforcement
-from coordinare.first_launch import expanded_config_view, running_summary
+from coordinare.doctor import Status, check_kubernetes_egress_enforcement
+from coordinare.first_launch import expanded_config_view, resolved_config_view, running_summary
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
-from coordinare.launch_preflight import run_preflight
+from coordinare.launch_preflight import initialize_github_at_start, run_preflight
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.localhost_guard import build_permitted, warn_if_dashboard_exposed
@@ -1148,7 +1148,7 @@ async def _bootstrap_services(
     )
     github._project_name = config.project_name
     if config.github_project_number:
-        await github.initialize()
+        await initialize_github_at_start(github)
 
     # Decided on the transport NAME, not caught as an exception. An earlier
     # version wrapped this in a broad `except ValueError`, which also swallowed the
@@ -1373,6 +1373,9 @@ async def _run(
     validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
     report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
     print(report.render())
+    for result in report.results:
+        if result.status is Status.WARN:
+            logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
     if not report.ok:
         raise SystemExit(1)
     exporter = None
@@ -1515,7 +1518,7 @@ async def _run_with_events(
                 _sym_svc._project_name = _eff.project_name
                 bind_symphony(_sym.name)
                 try:
-                    await _sym_svc.initialize()
+                    await initialize_github_at_start(_sym_svc)
                 finally:
                     clear_symphony()
                 _sym_github_services[_sym.name] = _sym_svc
@@ -1618,7 +1621,14 @@ async def _run_with_events(
     )
     dashboard_server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
-    print(running_summary(config, coordinare_config))
+    board_services = daemon.state.get("symphony_github_services") or {
+        config.project_name or "default": daemon.state["github_service"],
+    }
+    board_columns = {
+        name: list(service.field_cache.get("status_option_ids", {}))
+        for name, service in board_services.items()
+    }
+    print(running_summary(config, coordinare_config, board_columns=board_columns))
     daemon_task = asyncio.create_task(daemon.start())
     server_task = asyncio.create_task(server.serve())
     dashboard_task = asyncio.create_task(dashboard_server.serve())
@@ -1733,7 +1743,7 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         if is_multi_symphony_config(raw):
             root = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
     unexpanded = load_unexpanded_config(result.config_file_path) if result.config_file_path is not None else None
-    report = asyncio.run(run_preflight(config, root, unexpanded))
+    report = asyncio.run(run_preflight(config, root, unexpanded, explicit=True))
 
     # Opt-in extras. Kept out of the default run because this one creates Pods,
     # and a preflight that quietly schedules workloads is a surprise.
@@ -1751,13 +1761,13 @@ def _cmd_config_show(args: argparse.Namespace) -> None:
             print(f"{error.field_path}: {error.fix_hint}", file=sys.stderr)
         raise SystemExit(1)
     config = _load_project_config_for_doctor(result)
-    expanded = config.model_dump(mode="json")
+    expanded = resolved_config_view(config)
     if result.config_file_path is not None:
         raw = _load_raw_yaml(result.config_file_path)
         if is_multi_symphony_config(raw):
             root = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
             expanded["symphonies"] = [
-                {"name": s.name, "enabled": s.enabled, "effective_config": s.effective_config(config).model_dump(mode="json")}
+                {"name": s.name, "enabled": s.enabled, "effective_config": resolved_config_view(s.effective_config(config))}
                 for s in root.symphonies
             ]
     print(yaml.safe_dump(expanded_config_view(expanded), sort_keys=False))

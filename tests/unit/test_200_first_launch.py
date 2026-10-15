@@ -173,7 +173,8 @@ async def test_harness_failure_is_actionable(
         probe = MagicMock(return_value=subprocess.CompletedProcess([], 1, "", "secret"))
     monkeypatch.setattr("coordinare.launch_preflight.subprocess.run", probe)
     results = await check_harnesses(ProjectConfiguration(**minimal))
-    failures = [r for r in results if r.status is Status.FAIL]
+    expected_status = Status.WARN if failure == "timeout" else Status.FAIL
+    failures = [r for r in results if r.status is expected_status]
     assert failures and all(r.fix for r in failures)
     assert "codex" in " ".join(r.detail + (r.fix or "") for r in failures)
     assert "secret" not in str(results)
@@ -257,7 +258,7 @@ def test_running_summary_names_board_roles_skips_and_concurrency(minimal: dict) 
         "Coordinare is running",
         "example",
         "projects/1",
-        "To Do",
+        "to do",
         "implementer",
         "reviewer",
         "not configured",
@@ -305,7 +306,7 @@ def test_native_model_failure_names_credential(
         probe.side_effect = httpx.ConnectError("private-key")
     monkeypatch.setattr("coordinare.launch_preflight.httpx.get", probe)
     results = check_native_models(ProjectConfiguration(**minimal))
-    assert results[0].status is Status.FAIL
+    assert results[0].status is (Status.WARN if failure == "unreachable" else Status.FAIL)
     assert "OPENAI_API_KEY" in results[0].fix
     assert "private-key" not in str(results)
 
@@ -348,6 +349,7 @@ def test_doctor_uses_same_preflight_and_exit_code(
         cli.main()
     assert exc.value.code == 1
     preflight.assert_awaited_once()
+    assert preflight.call_args.kwargs["explicit"] is True
     assert "change dashboard_port" in capsys.readouterr().out
 
 
@@ -532,7 +534,7 @@ async def test_compat_backend_uses_opencode_cli_name(
     minimal: dict, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = ProjectConfiguration(**minimal)
-    config.performers.default.backend = "opencode_compat"
+    config.performers.implementer.backend = "opencode_compat"
     which = MagicMock(return_value="/bin/mock")
     monkeypatch.setattr("coordinare.launch_preflight.shutil.which", which)
     monkeypatch.setattr(
@@ -567,7 +569,7 @@ async def test_persistent_performer_failure_names_endpoint_and_auth(
         probe.side_effect = httpx.ConnectError("secret detail")
     monkeypatch.setattr("coordinare.launch_preflight.httpx.get", probe)
     results = await check_harnesses(config)
-    assert results[0].status is Status.FAIL
+    assert results[0].status is (Status.WARN if network_error else Status.FAIL)
     assert "performer_endpoints[remote].endpoint" in results[0].fix
     assert "auth_token" in results[0].fix
     assert "secret detail" not in str(results)
@@ -578,7 +580,7 @@ async def test_github_network_failure_names_api_setting(minimal: dict, github_pr
     client, _ = github_probes
     client.get.side_effect = httpx.ConnectError("secret detail")
     results = await check_github(ProjectConfiguration(**minimal))
-    assert results[0].status is Status.FAIL
+    assert results[0].status is Status.WARN
     assert "github_api_url" in results[0].fix
     assert "secret detail" not in str(results)
 

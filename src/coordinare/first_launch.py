@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from coordinare.env_placeholders import is_secret_env_key
 from coordinare.lib.redaction import redact_mapping, redact_state_value
 from coordinare.lifecycle import CANONICAL_ORDER
+from coordinare.services.github import BOARD_COLUMN_TO_STATUS
 from coordinare.services.pipeline_budget import has_live_work
 
 if TYPE_CHECKING:
@@ -39,9 +40,20 @@ def expanded_config_view(value: dict[str, Any], *, environment: bool = False) ->
     return redacted
 
 
+def resolved_config_view(config: ProjectConfiguration) -> dict[str, Any]:
+    """Render every role through the runtime inheritance resolver."""
+    expanded = config.model_dump(mode="json")
+    for role in (*CANONICAL_ORDER, "env_bootstrap"):
+        resolved = config.performers.resolved_role(role)
+        expanded["performers"][role] = resolved.model_dump(mode="json") if resolved else None
+    return expanded
+
+
 def running_summary(
     config: ProjectConfiguration,
     coordinare_config: CoordinareConfiguration | None = None,
+    *,
+    board_columns: dict[str, list[str]] | None = None,
 ) -> str:
     """Describe the effective configuration without credentials."""
     configs = [(config.project_name or "default", config)]
@@ -51,9 +63,13 @@ def running_summary(
         ]
     lines = ["", "Coordinare is running"]
     for name, effective in configs:
+        columns = (board_columns or {}).get(name)
+        labels = columns if columns is not None else list(BOARD_COLUMN_TO_STATUS)
+        watched = [label for label in labels if BOARD_COLUMN_TO_STATUS.get(label.lower()) == "TODO"]
+        watching = ", ".join(watched) if watched else "TODO (board columns unavailable)"
         lines.append(
             f"  {name}: https://github.com/orgs/{effective.github_org}/projects/{effective.github_project_number}; "
-            "watches To Do (Ready or TODO).",
+            f"watches {watching}.",
         )
         enabled = []
         skipped = []

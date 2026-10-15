@@ -77,16 +77,19 @@ if [ -n "${PERFORMER_EGRESS_ALLOWLIST:-}" ]; then
   fi
 fi
 
-# Install (or upgrade) the backend CLI specified by $BACKEND, then exec the
-# performer server.  Upgrade failure is non-fatal: we log a warning and
+# Install the backend CLI specified by $BACKEND, then exec the performer
+# server. Codex reuses a working installed version. Install failure is
+# non-fatal: we log a warning and
 # continue so a transient network error does not knock a container out of
 # the pool.  If BACKEND is unset the performer starts without any CLI
 # installed; the capability probe will advertise no backends.
 
 case "${BACKEND:-}" in
   codex)
-    npm install -g @openai/codex@latest --no-fund --no-audit 2>&1 \
-      || echo "WARNING: codex upgrade failed, continuing with installed version" >&2
+    if ! codex --version >/dev/null 2>&1; then
+      npm install -g @openai/codex@latest --no-fund --no-audit 2>&1 \
+        || echo "WARNING: codex install failed, continuing with installed version" >&2
+    fi
     ;;
   pi)
     # Pi (pi.dev) ships on npm; not baked into the base image, so this is a

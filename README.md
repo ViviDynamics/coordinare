@@ -134,8 +134,11 @@ docker-compose up
 
 ### 7. Monitor
 
-Startup prints a preflight summary before polling. A failure names its fix and
-exits nonzero. A successful launch prints the watched board, enabled and skipped
+Startup prints a preflight summary before polling. Deterministic setup failures
+block preset launches; new checks warn for existing full configs. Transient
+network failures warn after a bounded retry and the daemon starts, with live
+System health reporting the outage. Doctor shows all checks explicitly.
+A successful launch prints the watched board, enabled and skipped
 roles, concurrency and dashboard URL. The console and dashboard explain when work
 is waiting. Try the small [first card](docs/first-launch.md#try-one-card).
 

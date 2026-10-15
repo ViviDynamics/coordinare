@@ -12,7 +12,7 @@ var context = {
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, 'layout.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'symphonies.js'), 'utf8'), context);
-var html = context.activeRunsIdleHtml({idle_reason: '<img src=x onerror=alert(1)>', ownership_hint: '<script>'});
+var html = context.activeRunsIdleHtml({idle_reason: '<img src=x onerror=alert(1)>', ownership_hint: '<script>', board_summary: {TODO: 0, BLOCKED: 0}});
 assert(html.indexOf('<img') === -1);
 assert(html.indexOf('&lt;img') !== -1);
 assert(html.indexOf('<script>') === -1);
@@ -26,3 +26,10 @@ var state = {
 };
 assert.strictEqual(context.symphonyScope(state, 'beta').idle_reason, 'beta reason');
 console.log('First launch client checks passed');
+['BLOCKED', 'TODO', 'IN_REVIEW', 'DONE', 'BACKLOG'].forEach(function(status) {
+  var counts = {};
+  counts[status] = 1;
+  assert(!context.activeRunsIdleHtml({board_summary: counts}).includes('Try a first card'));
+});
+assert(!context.activeRunsIdleHtml({}).includes('Try a first card'));
+assert(context.activeRunsIdleHtml({board_summary: {TODO: 0, BLOCKED: 0}}).includes('Try a first card'));
