@@ -379,13 +379,13 @@ remove it by its name in place of the label selector in step 3. Step 4
 recreates a claim only if the chart creates it. For an `existingClaim`, re-create
 the claim yourself before step 4.
 
-**Known gap.** The daemon's state snapshot also records, per symphony, whether the
-last bootstrap succeeded (`env_cache` in `coordinare.state.json`). These steps do
-not clear that flag. Whether the daemon then re-runs the bootstrap on an empty cache
-depends on how it reads that flag and the cache. That is tracked with the #265
-work. After step 4, check that the symphony's bootstrap actually runs and that its
-dispatches see a populated cache. If a symphony reports ready over an empty cache,
-say so on #265.
+The daemon's state snapshot still records, per symphony, the last verified bootstrap
+and its frozen cache fingerprint (`env_cache` in `coordinare.state.json`). These steps
+do not clear it, and they do not need to: on Kubernetes every consumer checks the
+mounted cache against that fingerprint before using it (#265), so the first dispatch
+after a reset is refused and a fresh bootstrap is requested. To rebuild straight away
+instead of waiting for that first dispatch, trigger the bootstrap with
+`POST /api/symphonies/<name>/env-bootstrap`, which also resets the retry budget (#270).
 
 The persistent event store uses SQLite with a rollback journal. If the state
 volume is NFS, it relies on working NFS locking. Local disk is recommended for
