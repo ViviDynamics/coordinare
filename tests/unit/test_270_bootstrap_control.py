@@ -14,6 +14,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from performer.backends.claude_code import ClaudeCodeBackend
 from pydantic import SecretStr, ValidationError
 
 import coordinare.daemon as daemon_mod
@@ -44,6 +45,7 @@ IDLE_SECONDS = 120
 OPEN_TOOL_SECONDS = 2700
 DEFAULT_IDLE_SECONDS = 1800
 ANONYMOUS_TOOL_SECONDS = 1200
+LONG_TOOL_SECONDS = 1500
 STREAM_END_SECONDS = OPEN_TOOL_SECONDS + IDLE_SECONDS * 2
 TOOL_CALL_ID = "call-install"
 
@@ -95,6 +97,52 @@ def test_codex_deltas_without_a_start_do_not_open_tools() -> None:
 def test_anonymous_tool_expires_even_when_its_start_is_replayed() -> None:
     tools = BootstrapTools()
     start = {"type": "tool_use", "text": "bash: uv sync", "detail": "bash"}
+    tools.observe([start], now=0)
+    tools.observe([], now=ANONYMOUS_TOOL_SECONDS - POLL_SECONDS)
+    assert tools.open_since
+    tools.observe([start], now=ANONYMOUS_TOOL_SECONDS)
+    assert not tools.open_since
+
+
+def _claude_code_start(*, keyed: bool = True) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": "tool_use", "name": "Bash", "input": {"command": "bundle install"}}
+    if keyed:
+        block["id"] = TOOL_CALL_ID
+    backend = ClaudeCodeBackend()
+    backend._handle_event({"type": "assistant", "message": {"content": [block]}})
+    [start] = backend.drain_events()
+    assert start.text == start.detail == "Bash"
+    assert start.arg == "bundle install"
+    return start.model_dump(mode="json")
+
+
+def _claude_code_result() -> dict[str, Any]:
+    backend = ClaudeCodeBackend()
+    backend._handle_event({"type": "tool_result", "tool_use_id": TOOL_CALL_ID, "content": "installed"})
+    [result] = backend.drain_events()
+    assert result.text == "result: installed"
+    assert result.detail == TOOL_CALL_ID
+    return result.model_dump(mode="json")
+
+
+def test_claude_code_keyed_tool_survives_25_minutes_and_closes_on_result() -> None:
+    tools = BootstrapTools()
+    start = _claude_code_start()
+    assert start["call_id"] == TOOL_CALL_ID
+    tools.observe([start], now=0)
+    tools.observe([], now=LONG_TOOL_SECONDS)
+    assert tools.open_since == {f"call:{TOOL_CALL_ID}": 0}
+
+    result = _claude_code_result()
+    assert result["call_id"] == TOOL_CALL_ID
+    assert tools.observe([result], now=LONG_TOOL_SECONDS)
+    assert not tools.open_since
+
+
+def test_claude_code_unkeyed_tool_still_expires() -> None:
+    tools = BootstrapTools()
+    start = _claude_code_start(keyed=False)
+    assert not start["call_id"]
     tools.observe([start], now=0)
     tools.observe([], now=ANONYMOUS_TOOL_SECONDS - POLL_SECONDS)
     assert tools.open_since
@@ -547,6 +595,31 @@ async def test_open_tool_survives_idle_silence_then_completes(monkeypatch) -> No
 
     svc.stop_session_confirmed.assert_not_awaited()
     assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["complete", "silent"])
+async def test_claude_code_long_tool_survives_until_result_then_restarts_idle(monkeypatch, finish) -> None:
+    daemon = _poll_daemon(monkeypatch, wall_clock_s=OPEN_TOOL_SECONDS, idle_s=IDLE_SECONDS)
+    statuses = [{"status": "working", "events": [_claude_code_start()]}]
+    statuses.extend([{"status": "working", "events": []}] * (LONG_TOOL_SECONDS // POLL_SECONDS - 1))
+    statuses.append({"status": "working", "events": [_claude_code_result()]})
+    if finish == "complete":
+        statuses.append({"status": "env_bootstrap_complete"})
+    else:
+        statuses.extend([{"status": "working", "events": []}] * (IDLE_SECONDS // POLL_SECONDS + 1))
+    svc = _svc(statuses)
+    ec_svc = _ec_svc()
+
+    await daemon._poll_bootstrap_completion(svc, "job-claude-code-install", "alpha", ec_svc)
+
+    if finish == "complete":
+        svc.stop_session_confirmed.assert_not_awaited()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
+    else:
+        svc.stop_session_confirmed.assert_awaited_once()
+        assert daemon_mod.monotonic() == LONG_TOOL_SECONDS + POLL_SECONDS + IDLE_SECONDS
+        assert "no progress" in ec_svc.on_bootstrap_complete.call_args.kwargs["error"]
 
 
 @pytest.mark.asyncio

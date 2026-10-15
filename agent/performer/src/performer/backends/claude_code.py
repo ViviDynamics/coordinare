@@ -944,6 +944,7 @@ class ClaudeCodeBackend:
                     self._event_buffer.append(BackendEvent(
                         type=BackendEventType.tool_use, text=tool, detail=tool,
                         tool=tool, arg=primary_argument(tool, block.get("input")),
+                        call_id=str(block.get("id") or ""),
                         transcript_seq=_seq_at(seqs, index),
                     ))
                 elif block_type == "thinking":
@@ -964,7 +965,7 @@ class ClaudeCodeBackend:
             status = "error" if event.get("is_error") is True else "ok"
             self._event_buffer.append(BackendEvent(
                 type=BackendEventType.tool_use, text=f"result: {text}"[:_MAX_TEXT],
-                detail=tool_id, status=status, transcript_seq=_seq_at(seqs, 0),
+                detail=tool_id, call_id=tool_id, status=status, transcript_seq=_seq_at(seqs, 0),
             ))
 
         elif event_type == "result":
