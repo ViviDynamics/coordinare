@@ -209,8 +209,8 @@ def test_no_user_facing_board_or_swimlane_text_remains(page: Page, live_server_u
 
     _connected(page, f"{live_server_url}/symphonies")
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
-    expect(page.locator("#symphonies-page-section th").nth(1)).to_have_text("GitHub Project", timeout=_WAIT_LIVE)
-    expect(page.locator("#symphonies-page-section th").nth(2)).to_have_text("Repository")
-    expect(page.locator("#symphonies-page-section td").nth(1)).to_have_text("#16")
+    expect(page.locator("#symphonies-page-section th").nth(2)).to_have_text("GitHub Project", timeout=_WAIT_LIVE)
+    expect(page.locator("#symphonies-page-section th").nth(3)).to_have_text("Repository")
+    expect(page.locator("#symphonies-page-section td").nth(2)).to_have_text("#16")
     board_text = page.locator("body").inner_text()
     assert not re.search(r"\bBoard\b", board_text), "a Board label is still visible on Symphonies"
