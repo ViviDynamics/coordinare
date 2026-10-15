@@ -149,7 +149,8 @@ async def test_redaction_yields_between_rows(tmp_path: Path) -> None:
         return original(raw)
 
     def yield_thread(seconds: float) -> None:
-        assert seconds == 0
+        # A zero sleep never hands the GIL to the event loop thread; the yield must be real.
+        assert seconds == event_store.REDACTION_YIELD_SECONDS > 0
         calls.append("yield")
 
     with (
