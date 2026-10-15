@@ -132,6 +132,11 @@ function waitingReason(card, snapshot) {
     return needsHumanReason(cause, cause ? 'The conductor stopped this card: ' + cause + '.' : undefined);
   }
 
+  // 266: a card the symphony's env bootstrap holds. The words are the server's, so they match the Symphonies page.
+  if (skip && skip.reason === 'env_bootstrap') {
+    return {kind: 'queued', text: String(skip.detail || ''), title: String(skip.detail || '')};
+  }
+
   // 171: a card in review whose documentation run waits for a free slot. Not a To Do
   // card, so it is handled before the To Do branch below.
   if (c.has_session && skip && skip.reason === 'side_run_waiting') {

@@ -57,7 +57,8 @@ def test_app_renders_the_card_from_the_snapshot_and_keeps_the_legacy_path() -> N
 
 def test_system_health_is_a_shared_scope_row() -> None:
     source = (_STATIC / "symphonies.js").read_text(encoding="utf-8")
-    assert re.search(r"^\s*system_health: 'shared',", source, re.MULTILINE)
+    # 266: the row is written per symphony (symphonyHealthScope), so it is a derived row, not a shared one.
+    assert re.search(r"^\s*system_health: 'derived',", source, re.MULTILINE)
 
 
 def test_the_card_styles_ship_with_the_shell_css() -> None:

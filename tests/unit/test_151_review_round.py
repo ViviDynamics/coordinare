@@ -170,7 +170,7 @@ def test_the_scoped_view_of_another_symphony_carries_no_failing_symphony_name(tm
     )
     report = result.stdout + result.stderr
     assert result.returncode == 0, report
-    assert "SUMMARY 3 0" in result.stdout, report
+    assert "SUMMARY 4 0" in result.stdout, report
 
 
 # --- Block 3: GitHub failures of every class are recorded -------------------------------

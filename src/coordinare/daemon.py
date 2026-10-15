@@ -21,6 +21,7 @@ from coordinare.graph.nodes.check_board import (
     _refresh_current_card_metadata,
     check_board,
 )
+from coordinare.graph.nodes.dispatch_performer import env_cache_current
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -41,16 +42,36 @@ from coordinare.lib.redaction import redact_state_value
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
+from coordinare.models.env_cache import EnvCacheState
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
 from coordinare.services.board_provider import (
     GitHubProjectsBoardProvider,
     board_of,
 )
+from coordinare.services.bootstrap_history import (
+    ACT_DISPATCHED,
+    AttemptEnd,
+    AttemptStart,
+    BudgetNow,
+    attach_job,
+    begin_attempt,
+    history_of,
+    mark_verifying,
+    record_activity,
+    report_completion,
+)
+from coordinare.services.bootstrap_status import (
+    ENV_BOOTSTRAP_HOLD,
+    GATE_HOLD_TEXT,
+    hold_text,
+    symphony_view,
+)
 from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.closed_pr import is_closed_pr_block
 from coordinare.services.conductor_calls import SHUTDOWN_DRAIN_SECONDS, ConductorCallLog
 from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.env_cache import budget_max_attempts
 from coordinare.services.merge_review_gate import (
     DEFAULT_TARGET_BRANCH,
     ReviewProbe,
@@ -1757,8 +1778,63 @@ def _compute_session_eligibilities(
         # Only where the card has no reason of its own: a real skip reason always wins.
         if card_id in active_sessions and card_id not in skip_reasons:
             skip_reasons[card_id] = {"reason": SIDE_RUN_WAITING, "detail": detail}
+    _record_env_bootstrap_holds(state, selected, skip_reasons)
     state["session_skip_reasons"] = skip_reasons
     return eligibilities
+
+
+def _record_env_bootstrap_holds(state: CoordinareState, selected: Any, skip_reasons: dict[str, dict[str, Any]]) -> None:
+    """266: name a selected card the env-cache gate would hold, with the bootstrap's words.
+
+    The test is the gate's own predicate (``env_cache_current``), so a card is named exactly when the
+    gate holds it. A card with a reason of its own keeps it. Earlier gates (review capacity, dependencies)
+    are not repeated here: a card only reaches this list once it is selected to run.
+    """
+    symphony = str(state.get("current_symphony") or "")
+    if not symphony:
+        return
+    cache = (state.get("env_cache") or {}).get(symphony)
+    if not isinstance(cache, EnvCacheState) or env_cache_current(state, cache):
+        return
+    sym_cfg = (state.get("symphony_configs") or {}).get(symphony)
+    configured = getattr(sym_cfg, "env_bootstrap_performer_id", None) is not None
+    view = symphony_view(state, symphony, configured=configured, now=datetime.now(UTC))
+    text = hold_text(view) or GATE_HOLD_TEXT
+    for card_id in selected:
+        if card_id in skip_reasons:
+            continue
+        skip_reasons[card_id] = {
+            "reason": ENV_BOOTSTRAP_HOLD,
+            "detail": text,
+            "bootstrap_state": view["state"],
+            "attempt": view["attempt"],
+            "max_attempts": view["max_attempts"],
+        }
+
+
+def _close_raised_dispatch(state: CoordinareState, symphony_name: str, exc: BaseException) -> None:
+    """266: a bootstrap dispatch that raised closes its open run as failed, through the one exit (report_completion)."""
+    history = history_of(state)
+    open_run = history.open_attempt(symphony_name) if history is not None else None
+    if open_run is None:
+        return
+    report_completion(
+        state,
+        symphony_name,
+        AttemptEnd(
+            ended_at=datetime.now(UTC),
+            succeeded=False,
+            reason=f"the bootstrap dispatch raised: {exc}",
+            commit=open_run.commit,
+            attempt=open_run.attempt,
+        ),
+        BudgetNow(
+            max_attempts=budget_max_attempts(state.get("coordinare_config")),
+            exhausted_now=False,
+            retry_at=None,
+        ),
+    )
+
 
 
 async def _poll_held_backlog_comments(state: CoordinareState, card_ids: list[str]) -> None:
@@ -4012,6 +4088,8 @@ class CoordinareDaemon:
         start all fail the bootstrap. This is the one decision point where nothing performer-
         written can stand in for the verification, and the 088 breaker bounds the retries.
         """
+        # 266: the workload is done and the verify is running. Visible only; the verify is unchanged.
+        mark_verifying(self._state, symphony_name)
         _clean_ok, _clean_detail = await self._verify_env_cache_clean(
             symphony_name, svc,
         )
@@ -4872,6 +4950,29 @@ class CoordinareDaemon:
                     break
         return resolved, cfg
 
+    def _open_bootstrap_attempt(self, symphony_name: str, performer_id: str, backend: str, model: str) -> None:
+        """266: open the attempt in the history and say so in the feed. Read-only for the dispatch that follows."""
+        cache = (self._state.get("env_cache") or {}).get(symphony_name)
+        attempt_no = (cache.bootstrap_attempts if cache is not None else 0) + 1
+        budget = budget_max_attempts(self._state.get("coordinare_config"))
+        begin_attempt(
+            self._state,
+            symphony_name,
+            AttemptStart(
+                commit=(cache.readme_sha if cache is not None else None) or "",
+                started_at=datetime.now(UTC),
+                attempt=attempt_no,
+                backend=backend,
+                model=model,
+                performer_id=performer_id,
+            ),
+        )
+        record_activity(
+            self._state, symphony_name, ACT_DISPATCHED,
+            f"Bootstrap run {attempt_no} of {budget} started on {backend}"
+            + (f" ({model})" if model else "") + ".",
+        )
+
     async def _finish_bootstrap_dispatch(
         self,
         svc: Any,
@@ -4887,6 +4988,8 @@ class CoordinareDaemon:
         result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
         job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
         bootstrap_container_id = (result or {}).get("container_id")
+        # 266: the job and pod the running attempt was dispatched to, for the bootstrap view.
+        attach_job(self._state, symphony_name, job_id=job_id, pod=bootstrap_container_id)
         if job_id and hasattr(svc, "check_status"):
             bootstrap_task = asyncio.create_task(
                 self._poll_bootstrap_completion(
@@ -5013,9 +5116,15 @@ class CoordinareDaemon:
                 )
         if gh_token:
             dispatch_dict["_github_token"] = gh_token
-        await self._finish_bootstrap_dispatch(
-            svc, performer_id, symphony_name, dispatch_dict, dispatch_kw, env_cache_svc,
-        )
+        self._open_bootstrap_attempt(symphony_name, performer_id, bootstrap_backend, bootstrap_model or "")
+        try:
+            await self._finish_bootstrap_dispatch(
+                svc, performer_id, symphony_name, dispatch_dict, dispatch_kw, env_cache_svc,
+            )
+        except Exception as exc:
+            # 266: the run is closed as failed before the error reaches the env cache, which rolls its own state back.
+            _close_raised_dispatch(self._state, symphony_name, exc)
+            raise
 
     def _announce_paused_symphonies(self) -> None:
         """Emit a one-time startup line for each symphony paused via ``enabled: false``.

@@ -81,6 +81,24 @@ function statusStripModel(s, activeSess) {
   };
 }
 
+// 266: the bootstrap states the strip shows: a bootstrap that is running, or one that is failing.
+var STRIP_BOOTSTRAP_STATES = ['bootstrapping', 'verifying', 'failed', 'waiting_to_retry', 'budget_exhausted'];
+
+// 266: the strip's bootstrap item. One symphony's bootstrap is named in words, with its reason when it failed.
+// Several are counted, so the strip never names a symphony the page is not showing. Empty when none needs a word.
+function bootstrapStripText(s) {
+  var syms = s && Array.isArray(s.symphonies) ? s.symphonies : [];
+  var live = syms.filter(function(sym) {
+    var b = sym && sym.env_bootstrap;
+    return !!b && typeof b === 'object' && STRIP_BOOTSTRAP_STATES.indexOf(b.state) !== -1;
+  });
+  if (!live.length) return '';
+  if (live.length > 1) return 'Env bootstrap: ' + live.length + ' symphonies need attention';
+  var b = live[0].env_bootstrap;
+  var failing = b.state === 'failed' || b.state === 'waiting_to_retry' || b.state === 'budget_exhausted';
+  return 'Env bootstrap: ' + String(b.label || '') + (failing && b.reason ? ' · ' + String(b.reason) : '');
+}
+
 // Writes the strip's dynamic parts. The strip's elements are static markup in the page.
 function renderStatusStrip(s, activeSess) {
   var model = statusStripModel(s, activeSess);
@@ -88,6 +106,20 @@ function renderStatusStrip(s, activeSess) {
   if (phaseEl) phaseEl.textContent = model.headline;
   var countsEl = document.getElementById('status-counts');
   if (countsEl) countsEl.textContent = statusCountsText(model.counts);
+  // 266: the bootstrap item sits after the counts. It is created once, and hidden when there is nothing to say.
+  var bootEl = document.getElementById('status-bootstrap');
+  if (!bootEl && countsEl && countsEl.parentNode) {
+    bootEl = document.createElement('span');
+    bootEl.id = 'status-bootstrap';
+    bootEl.className = 'status-counts';
+    countsEl.parentNode.insertBefore(bootEl, countsEl.nextSibling);
+  }
+  if (bootEl) {
+    var bootText = bootstrapStripText(s);
+    bootEl.textContent = bootText;
+    bootEl.title = bootText;
+    bootEl.hidden = !bootText;
+  }
   var dot = document.getElementById('health-dot');
   if (dot) {
     dot.className = 'status-health sh-tone-' + esc(model.health.tone);

@@ -221,6 +221,8 @@ class SystemHealthInputs:
     env_symphonies: int
     env_failed: tuple[str, ...]
     env_ready: int
+    # 266: each failing symphony's name and reason, so the row can be read per symphony.
+    env_failures: tuple[tuple[str, str], ...] = ()
     # The oldest running performer's dispatch time, the newest activity on a running card,
     # and the threshold past which a quiet running performer is hung (role timeout, else stall timeout).
     running_since: datetime | None = None
@@ -489,6 +491,14 @@ def _model_row(rec: SystemHealthRecorder, inputs: SystemHealthInputs) -> dict[st
     return _row("model_backends", status, summary, fresh, reason)
 
 
+def _env_failure_text(inputs: SystemHealthInputs) -> str:
+    """266: the env failure in words: how many symphonies, and why the first of them failed."""
+    text = f"env cache bootstrap failed for {_count(len(inputs.env_failed), 'symphony', 'symphonies')}"
+    if not inputs.env_failures:
+        return text
+    return text + ": " + "; ".join(f"{name}: {reason}" for name, reason in inputs.env_failures)
+
+
 def _disk_env_row(inputs: SystemHealthInputs) -> dict[str, Any]:
     free = inputs.disk_free_fraction
     findings: list[tuple[str, str]] = []
@@ -498,7 +508,7 @@ def _disk_env_row(inputs: SystemHealthInputs) -> dict[str, Any]:
         findings.append((DEGRADED, "disk is running low"))
     # This row is shown to every scope, so it counts failing symphonies and never names one.
     if inputs.env_failed:
-        findings.append((DEGRADED, f"env cache bootstrap failed for {_count(len(inputs.env_failed), 'symphony', 'symphonies')}"))
+        findings.append((DEGRADED, _env_failure_text(inputs)))
 
     summary = f"{round(free * 100)}% of disk free" if free is not None else "disk usage unknown"
     if inputs.env_symphonies == 0:
@@ -511,7 +521,10 @@ def _disk_env_row(inputs: SystemHealthInputs) -> dict[str, Any]:
     status, reason = _worst(findings)
     if status == HEALTHY and free is None:
         status, reason = UNKNOWN, "disk usage could not be read"
-    return _row("disk_env_cache", status, summary, _Fresh("measured", inputs.now), reason)
+    row = _row("disk_env_cache", status, summary, _Fresh("measured", inputs.now), reason)
+    # 266: the per-symphony failures, so the browser can write the row for the symphony the page shows.
+    row["env_failures"] = [{"symphony": name, "reason": reason} for name, reason in inputs.env_failures]
+    return row
 
 
 def _overall(rows: list[dict[str, Any]]) -> str:

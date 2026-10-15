@@ -15,6 +15,7 @@ from coordinare.services.activity_log import (
 from coordinare.services.board_provider import (
     BoardProvider,  # get_type_hints() on this TypedDict, so it must resolve at runtime
 )
+from coordinare.services.bootstrap_history import BootstrapHistory
 
 if TYPE_CHECKING:
     from coordinare.models.notification import NotificationEvent
@@ -489,6 +490,9 @@ class CoordinareState(TypedDict, total=False):
     # EnvCacheService instance — declared here so LangGraph preserves it across
     # graph.ainvoke() cycles (unknown keys are dropped during state merge).
     env_cache_service: Any
+    # 266: the bounded, in-memory attempt history of each symphony's env bootstrap (not persisted).
+    # Declared so LangGraph keeps the object across cycles, the same as env_cache_service.
+    bootstrap_history: Any
     # 088 (US5): async callable the daemon wires to an immediate state-store
     # save.  Bootstrap completion changes no lifecycle signature, so without an
     # explicit flush a recorded success only reaches disk on the NEXT stage
@@ -636,6 +640,7 @@ def initial_state() -> CoordinareState:
         "symphony_workspace_managers": {},
         "env_cache": {},
         "env_cache_service": None,
+        "bootstrap_history": BootstrapHistory(),
         "performer_services_by_id": {},
         "card_checks_state": {},
         # 076 dispatcher dedup — defaults match CardSession initialisation
