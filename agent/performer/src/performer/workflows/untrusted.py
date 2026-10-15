@@ -25,6 +25,8 @@ _ELLIPSIS = "..."
 _NEUTRAL_TAG = "untrusted-data"
 _LABEL_CHARS = str.maketrans({'"': "'", "<": "(", ">": ")"})
 _WHITESPACE = re.compile(r"\s+")
+_ZERO_WIDTH_SPACE = "​"
+_MARKDOWN_SPECIAL = frozenset("\\[]!<>`")
 
 
 def new_nonce() -> str:
@@ -54,9 +56,36 @@ def untrusted_rule(nonce: str) -> str:
     )
 
 
+def _inert(ch: str) -> str:
+    """One character made inert in GitHub markdown.
+
+    ``@`` gets a zero-width space after it, so no mention is parsed. Brackets,
+    ``!`` (images), ``<`` and backticks get a backslash, which GitHub renders
+    as the bare character, so no link, image, tag or code span can open. The
+    backslash itself is escaped so an attacker cannot pre-escape the rest.
+    """
+    if ch == "@":
+        return "@" + _ZERO_WIDTH_SPACE
+    if ch in _MARKDOWN_SPECIAL:
+        return "\\" + ch
+    return ch
+
+
 def echo(text: str, limit: int = ECHO_LIMIT) -> str:
-    """A short, whitespace-flattened slice of untrusted text for a posted review."""
+    """A short, inert slice of untrusted text for a posted review.
+
+    Whitespace is flattened, then markup is neutralised, then the output is
+    capped: ``limit`` counts characters of the output, so the attacker controls
+    at most ``limit`` inert characters (plus the ellipsis). The cap never splits
+    an escape pair.
+    """
     flat = _WHITESPACE.sub(" ", str(text or "")).strip()
-    if len(flat) <= limit:
-        return flat
-    return flat[:limit].rstrip() + _ELLIPSIS
+    out: list[str] = []
+    size = 0
+    for ch in flat:
+        token = _inert(ch)
+        if size + len(token) > limit:
+            return "".join(out).rstrip() + _ELLIPSIS
+        out.append(token)
+        size += len(token)
+    return "".join(out)

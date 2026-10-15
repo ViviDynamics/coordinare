@@ -13,13 +13,22 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+BODY_MAX = 4000
+
+
 class ThreadComment(BaseModel):
     """A comment in a review thread."""
 
     author: str = Field(..., description="GitHub login or empty string if deleted")
-    body: str = Field(..., max_length=4000, description="Comment text")
+    body: str = Field(..., description="Comment text, truncated to BODY_MAX (spec 178: a long comment must not hold the run)")
     created_at: str = Field(..., description="ISO 8601 timestamp")
     author_association: str = Field(default="NONE", description="GitHub author association (MEMBER, COLLABORATOR, OWNER, NONE, ...)")
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def truncate_body(cls, v: object) -> object:
+        """Any commenter can write past the cap; truncate rather than fail validation."""
+        return v[:BODY_MAX] if isinstance(v, str) else v
 
     @property
     def is_bot(self) -> bool:

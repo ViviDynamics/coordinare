@@ -31,6 +31,7 @@ from performer.workflows.closer.judge import run_judge_step
 from performer.workflows.closer.models import ClosingRecord, Thread
 from performer.workflows.closer.post import post_closing_review
 from performer.workflows.closer.report import build_report
+from performer.workflows.untrusted import echo
 
 if TYPE_CHECKING:
     from performer.models import Score, Stand
@@ -39,6 +40,12 @@ log = structlog.get_logger(__name__)
 
 STATES: tuple[str, ...] = ("intake", "classify", "judge", "gate", "act", "post", "report")
 _FETCH_TUPLE_WITH_CONTEXT = 3  # (threads, pages, review_context) — injected fetchers may omit the third
+
+
+def open_thread_entries(threads: list[Thread]) -> list[dict[str, Any]]:
+    """The record's view of an open thread (spec 178): ids and a capped, inert excerpt, never the raw body."""
+    return [{"thread_id": th.id, "path": th.path, "line": th.line, "author": th.first_author,
+             "excerpt": echo(th.comments[0].body) if th.comments else ""} for th in threads]
 
 
 class CloserWorkflow:
@@ -128,9 +135,10 @@ class CloserWorkflow:
 
         record = ClosingRecord(
             head_sha=str(getattr(score, "head_sha", "") or "") or None,
-            threads_read=len(threads), pages_read=pages, classifications=classifications, judgements=outcome.judgements,
-            open_threads=[{"thread_id": th.id, "path": th.path, "line": th.line,
-                           "excerpt": (th.comments[0].body.strip()[:300] if th.comments else "")} for th in open_threads],
+            threads_read=len(threads), pages_read=pages, classifications=classifications,
+            # the gate matched raw quotes; the record carries inert copies only (spec 178)
+            judgements=[j.model_copy(update={"quote": echo(j.quote)}) for j in outcome.judgements],
+            open_threads=open_thread_entries(open_threads),
             verdict=outcome.verdict,
         )
 
@@ -157,8 +165,7 @@ class CloserWorkflow:
         resolved_ids_done = {tid for tid, _reason in resolved_pairs}
         remaining_open = [th for th in open_threads if th.id not in resolved_ids_done]
         remaining_open += [by_id[tid] for tid, _reason in outcome.resolve if tid not in resolved_ids_done and tid in by_id and by_id[tid] not in remaining_open]
-        record.open_threads = [{"thread_id": th.id, "path": th.path, "line": th.line,
-                                "excerpt": (th.comments[0].body.strip()[:300] if th.comments else "")} for th in remaining_open]
+        record.open_threads = open_thread_entries(remaining_open)
 
         # post: one review, after resolution so it reports what actually resolved.
         # Every failed resolution leaves its thread in remaining_open, so the

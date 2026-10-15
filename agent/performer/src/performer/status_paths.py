@@ -27,6 +27,7 @@ from performer.assessor_questions import (
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
+from performer.workflows.untrusted import fence, new_nonce, untrusted_rule
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -527,6 +528,26 @@ async def intake_path(
     )
 
 
+def closer_feedback_comments(open_threads: list[dict]) -> list[dict]:
+    """The implementer's feedback for each open thread (spec 178).
+
+    The excerpt is already an inert, capped copy (the closer's record never
+    carries a raw body). It still reaches the implementer's prompt as relayed
+    feedback, so it arrives fenced as untrusted data with the rule stated.
+    """
+    nonce = new_nonce()
+    comments: list[dict] = []
+    for t in open_threads:
+        path, line = str(t.get("path") or ""), int(t.get("line") or 0)
+        label = f"review thread at {path}:{line} raised by {t.get('author') or 'unknown'}"
+        excerpt = str(t.get("excerpt") or t.get("thread_id") or "")
+        comments.append({
+            "path": path, "line": line,
+            "body": f"unresolved review thread. {untrusted_rule(nonce)}\n{fence(label, excerpt, nonce)}",
+        })
+    return comments
+
+
 async def closing_record_path(
     perf: Performance,
     backend_status,
@@ -567,11 +588,7 @@ async def closing_record_path(
             perf.state = "approved"
             perf.review_suggestions = []
             return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_cr)
-        _comments = [
-            {"path": str(t.get("path") or ""), "line": int(t.get("line") or 0),
-             "body": f"unresolved review thread: {t.get('excerpt') or t.get('thread_id')}"}
-            for t in _open
-        ]
+        _comments = closer_feedback_comments(_open)
         max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
         perf.review_cycle += 1
         if perf.review_cycle >= max_cycles:
