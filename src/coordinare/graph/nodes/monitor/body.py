@@ -1216,7 +1216,14 @@ async def _phase_security_scan_gate(
                 f for f in scanner_findings
                 if str(f.get("severity", "")).lower() in ("critical", "high")
             ]
-            if gating:
+            existing_raw = status.get("findings", [])
+            environment_only = (
+                marker == "env_blocked"
+                and all(f.get("category") == "scanner_unavailable" for f in scanner_findings)
+                and isinstance(existing_raw, list)
+                and all(isinstance(f, dict) and f.get("category") == "scanner_unavailable" for f in existing_raw)
+            )
+            if gating and not environment_only:
                 if marker != "security_failed":
                     logger.warning(
                         "monitor_performer.security_floor_override",
@@ -1232,7 +1239,6 @@ async def _phase_security_scan_gate(
                 # Merge scanner findings into the response findings, deduped by
                 # (file, line, category). Copy status so we never mutate the
                 # performer service's response object.
-                existing_raw = status.get("findings", [])
                 existing = list(existing_raw) if isinstance(existing_raw, list) else []
                 merged = list(existing)
                 for f in scanner_findings:

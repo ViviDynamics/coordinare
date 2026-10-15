@@ -1837,6 +1837,9 @@ class _GitHubWithDiff(_GitHub):
             raise self._raise_exc
         return self._diff_raw, list(self._diff_files)
 
+    async def check_mergeability(self, pr_node_id: str) -> dict[str, str]:
+        return {"head_ref_oid": "security-head"}
+
 
 _SEC_CARD = {
     "id": "ITEM_1",
@@ -1861,6 +1864,7 @@ async def test_security_role_without_workflow_requests_performer_floor() -> None
     assert result["scanner_findings"] == []
     assert security_svc.dispatched[0]["security_floor"] == {
         "version": 1, "files": ["src/app/vuln.py"], "diff_status": "ok",
+        "head_sha": "security-head",
     }
     assert github.get_pr_diff_calls == [_SEC_CARD["pr_url"]]
 

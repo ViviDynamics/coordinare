@@ -727,6 +727,25 @@ async def _fetch_pr_data(
     return sanitized, files, "injected"
 
 
+async def _fetch_security_pr_data(
+    state: CoordinareState, card: dict[str, Any],
+) -> tuple[tuple[str | None, list[str] | None, str], str | None]:
+    """Bind the mutable PR diff to a head verified before and after fetching."""
+    github = state.get("github_service")
+    try:
+        if github is None:
+            return (None, None, "unavailable"), None
+        before = await github.check_mergeability(card["pr_node_id"])
+        head = before.get("head_ref_oid")
+        data = await _fetch_pr_data(state, card)
+        after = await github.check_mergeability(card["pr_node_id"])
+        if isinstance(head, str) and head and head == after.get("head_ref_oid"):
+            return data, head
+    except Exception as exc:
+        logger.warning("security_floor.head_fetch_failed", error_type=type(exc).__name__)
+    return (None, None, "failed"), None
+
+
 def _pending_disputes(state: CoordinareState, stage: str) -> list[dict[str, Any]]:
     """126 (D1/D6): current-round disputed ledger records raised by ``stage``.
 
@@ -2051,6 +2070,17 @@ async def _inject_documentation_findings(state: CoordinareState, ctx: dict[str, 
     # there is none. Then hand each reader its slice.
 
 
+def _security_floor_request(
+    pr_data: tuple[str | None, list[str] | None, str], head: str | None,
+) -> dict[str, Any]:
+    files = pr_data[1] or []
+    status = "ok" if pr_data[2] == "injected" else pr_data[2]
+    if len(files) > _MAX_DISPATCH_CHANGED_PATHS:
+        status = "overflow"
+    return {"version": SCAN_VERSION, "files": files[:_MAX_DISPATCH_CHANGED_PATHS],
+            "diff_status": status, "head_sha": head}
+
+
 async def _inject_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> None:
     """PR diff for review roles, disputes, QA main sha, GitHub URLs."""
     performer_stage = ctx["performer_stage"]
@@ -2069,19 +2099,15 @@ async def _inject_pr_context(state: CoordinareState, ctx: dict[str, Any]) -> Non
     # since the workflow intake needs to parse the diff (R-b).
     inject_pr_diff = role in _DIFF_REVIEW_ROLES or role == "security"
     if inject_pr_diff:
-        if pr_data is None:
+        security_head = None
+        prose_security = role == "security" and not _role_runs_workflow(state, role, "security")
+        if prose_security:
+            pr_data, security_head = await _fetch_security_pr_data(state, card)
+        elif pr_data is None:
             pr_data = await _fetch_pr_data(state, card)
         pr_diff_text = pr_data[0]
-        if role == "security" and not _role_runs_workflow(state, role, "security"):
-            scan_files = pr_data[1] or []
-            scan_status = "ok" if pr_data[2] == "injected" else pr_data[2]
-            if len(scan_files) > _MAX_DISPATCH_CHANGED_PATHS:
-                scan_status = "overflow"
-            card_context["security_floor"] = {
-                "version": SCAN_VERSION,
-                "files": scan_files[:_MAX_DISPATCH_CHANGED_PATHS],
-                "diff_status": scan_status,
-            }
+        if prose_security:
+            card_context["security_floor"] = _security_floor_request(pr_data, security_head)
         # 412: the workflow decides "empty" from a delivered-and-empty diff.
         # An outage ("failed"/"unavailable") is not an empty diff — the status
         # rides along so the workflow holds instead of advancing on nothing.

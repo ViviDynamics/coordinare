@@ -12,11 +12,17 @@ from performer.models import Score, Stand
 from performer.protocol import PerformerMessage
 from performer.security_floor import run_security_floor
 from performer.security_scanner import ScannerError, scan_diff
+from tests.unit.test_107_security_hardening import HEAD
+from tests.unit import test_107_security_hardening
+
+security_head_tree = test_107_security_hardening.head_tree
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed", [False, True])
-async def test_security_job_scans_in_own_clone_and_returns_report(tmp_path, failed):
+async def test_security_job_scans_in_own_clone_and_returns_report(security_head_tree, failed):
+    tmp_path, tracked, _ = security_head_tree
+    tracked["app.py"] = "print(1)\n"
     (tmp_path / "app.py").write_text("print(1)\n")
     backend = MagicMock()
     backend.start = AsyncMock()
@@ -26,7 +32,7 @@ async def test_security_job_scans_in_own_clone_and_returns_report(tmp_path, fail
                "file": "app.py", "line": 1, "routing": "implementer"}
     message = PerformerMessage(action="dispatch", payload={
         "title": "Card", "repo_url": "https://github.com/a/b", "branch": "feature", "role": "security",
-        "security_floor": {"version": 1, "files": ["app.py"], "diff_status": "ok"},
+        "security_floor": {"version": 1, "files": ["app.py"], "diff_status": "ok", "head_sha": HEAD},
     })
     with (
         patch("performer.main.clone_repository", new=AsyncMock(return_value=stand)),
@@ -38,7 +44,8 @@ async def test_security_job_scans_in_own_clone_and_returns_report(tmp_path, fail
     ):
         _, perf = await handle_dispatch(message, Settings(AGENT_BACKEND="codex"))
         assert scan.call_count == 1
-        scan.assert_called_once_with(["app.py"], tmp_path)
+        assert scan.call_args.args[0] == ["app.py"]
+        assert not scan.call_args.args[1].is_relative_to(tmp_path)
         response = await handle_status(PerformerMessage(action="status", session_id=perf.session_id), perf)
         repeated = await handle_status(PerformerMessage(action="status", session_id=perf.session_id), perf)
         assert repeated.report == response.report
@@ -71,7 +78,7 @@ async def test_invalid_or_old_dispatch_cannot_report_clean_scan(tmp_path, scan_r
     ('{"results": [], "errors": [{"message": "scan failed"}]}', 0),
     ('{}', 0), ('[]', 0), ('{"results": "broken"}', 0)])
 def test_scanner_failure_json_is_never_a_clean_scan(tmp_path, stdout, code):
-    with patch("performer.security_scanner.subprocess.run", return_value=MagicMock(stdout=stdout, returncode=code)):
+    with patch("performer.security_scanner._resolve_binary", side_effect=lambda tool: f"/usr/bin/{tool}"), patch("performer.security_scanner.subprocess.run", return_value=MagicMock(stdout=stdout, returncode=code)):
         with pytest.raises(ScannerError):
             scan_diff(["app.py"], tmp_path)
 
@@ -93,7 +100,7 @@ async def test_scan_paths_cannot_escape_workspace_through_symlink(tmp_path):
 
 
 def test_scan_paths_starting_with_dash_are_operands(tmp_path):
-    with patch("performer.security_scanner.subprocess.run", return_value=MagicMock(
+    with patch("performer.security_scanner._resolve_binary", side_effect=lambda tool: f"/usr/bin/{tool}"), patch("performer.security_scanner.subprocess.run", return_value=MagicMock(
         stdout='{"results": [], "errors": []}', returncode=0,
     )) as run:
         assert scan_diff(["-config.py"], tmp_path) == []

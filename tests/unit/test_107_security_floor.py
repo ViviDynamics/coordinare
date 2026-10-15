@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from performer.models import Score
 from performer.server.models import JobInitPayload
 
+from coordinare.graph.nodes.dispatch_performer import _inject_pr_context
 from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.services.http_performer_service import HTTPPerformerService
 from coordinare.workspace import WorkspaceManager
@@ -123,3 +124,55 @@ async def test_scanner_replaces_a_model_downgrade_of_the_same_finding():
     assert result["performer_stage"] == "implementing"
     assert len(result["relay_feedback"]) == 1
     assert result["relay_feedback"][0]["severity"] == "critical"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("real_finding", [False, True])
+@pytest.mark.parametrize("response_findings", [[], [{
+    "severity": "critical", "category": "scanner_unavailable", "description": "scanner unavailable",
+    "file": "", "line": 0, "routing": "halt",
+}]])
+async def test_security_107_environment_hold_keeps_self_heal_unless_real_findings(real_finding, response_findings):
+    finding = {"severity": "high", "category": "injection", "description": "semgrep:rule",
+               "file": "app.py", "line": 1, "routing": "implementer"}
+    scan = _scan([finding]) if real_finding else {**_scan(), "complete": False}
+    state = _sec_state(response={
+        "status": "env_blocked", "reason": "scanner environment unavailable",
+        "report": {"security_floor": scan},
+        "findings": [finding] if real_finding else response_findings,
+    })
+    cache = MagicMock()
+    state["env_cache_service"] = cache
+    state["current_symphony"] = "project"
+    result = await monitor_performer(state)
+    if real_finding:
+        assert result["performer_stage"] == "implementing"
+        cache.mark_runtime_health_failed.assert_not_called()
+    else:
+        assert result["performer_stage"] == "security"
+        assert result["phase"] == "blocked"
+        assert result["env_blocked"]
+        assert result["transient_error_cycles"] == 1
+        cache.mark_runtime_health_failed.assert_called_once()
+        assert not result.get("relay_feedback")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heads", [["head", "head"], ["old", "new"], [None, None]])
+async def test_security_107_request_pins_file_list_to_verified_head(heads):
+    github = SimpleNamespace(
+        check_mergeability=AsyncMock(side_effect=[{"head_ref_oid": head} for head in heads]),
+        get_pr_diff=AsyncMock(return_value=("diff --git a/app.py b/app.py", ["app.py"])),
+    )
+    state = {"github_service": github}
+    ctx = {"performer_stage": "security", "role": "security", "card_id": "card",
+           "card": {"id": "card", "pr_url": "https://github.com/a/b/pull/1", "pr_node_id": "PR1"},
+           "card_context": {}}
+    await _inject_pr_context(state, ctx)
+    request = ctx["card_context"]["security_floor"]
+    if heads == ["head", "head"]:
+        assert request["head_sha"] == "head"
+        assert request["files"] == ["app.py"]
+        assert request["diff_status"] == "ok"
+    else:
+        assert request["diff_status"] not in ("ok", "empty")

@@ -6,9 +6,10 @@ from __future__ import annotations
 # Logs contain only counts and severities, never tool output or source text.
 
 import json
-import shutil
+import os
+import stat
 import subprocess
-import sys
+import tempfile
 from pathlib import Path
 
 import structlog
@@ -44,6 +45,9 @@ _DANGEROUS_CWES = frozenset(
 _DEFAULT_ROUTING = "implementer"
 _SUBPROCESS_TIMEOUT_S = 120
 _OK_EXIT_CODES = {0, 1}
+_TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
+_UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
+_ROOT_UID = 0
 
 
 class ScannerError(Exception):
@@ -81,27 +85,26 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
     return findings
 
 
+def _trusted_executable(candidate: Path) -> bool:
+    resolved = candidate.resolve()
+    if not any(resolved.is_relative_to(directory) for directory in _TRUSTED_BINARY_DIRS):
+        return False
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return False
+    return all(
+        path.stat().st_uid == _ROOT_UID and not path.stat().st_mode & _UNTRUSTED_WRITE_BITS
+        for path in (resolved, *resolved.parents, candidate, *candidate.parents)
+    )
+
+
 def _resolve_binary(tool: str) -> str:
-    """Resolve a scanner executable, preferring the active venv's bin dir.
-
-    The performer is commonly launched as ``.venv/bin/coordinare`` *without*
-    activating the venv, so ``.venv/bin`` is not on ``PATH``. A bare-name
-    subprocess call then raises ``FileNotFoundError`` -> :class:`ScannerError`,
-    which fails the security floor closed and wedges the card in ``blocked``.
-
-    Resolution order:
-      1. ``<dir of sys.executable>/<tool>`` : the venv that's running us.
-      2. ``shutil.which(tool)`` : a PATH lookup.
-      3. the bare ``tool`` name : last resort (subprocess will raise if absent,
-         preserving the documented fail-closed behavior).
-    """
-    candidate = Path(sys.executable).parent / tool
-    if candidate.exists():
-        return str(candidate)
-    found = shutil.which(tool)
-    if found:
-        return found
-    return tool
+    """Use only root-owned image executables, never a workspace venv or PATH."""
+    for directory in _TRUSTED_BINARY_DIRS:
+        candidate = directory / tool
+        if _trusted_executable(candidate):
+            return str(candidate)
+    reason = f"{tool} trusted image binary not found"
+    raise ScannerError(reason)
 
 
 def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
@@ -122,7 +125,7 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
         raise ScannerError(f"{tool} binary not found") from exc
     except subprocess.TimeoutExpired as exc:
         raise ScannerError(f"{tool} timed out") from exc
-    except OSError as exc: 
+    except OSError as exc:
         raise ScannerError(f"{tool} failed to launch") from exc
 
     if not (proc.stdout or "").strip():
@@ -147,11 +150,17 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
 def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:
     if not files:
         return []
-    payload = _invoke(
-        [_resolve_binary("semgrep"), "--config", "auto", "--json", *files],
-        repo_root,
-        "semgrep",
-    )
+    # A code-owned empty ignore file overrides both tree and default ignores.
+    # The config directory is outside the exported target tree.
+    with tempfile.TemporaryDirectory(prefix="coordinare-semgrep-", dir="/tmp") as directory:
+        ignore = Path(directory) / "empty.ignore"
+        ignore.touch()
+        payload = _invoke(
+            [_resolve_binary("semgrep"), "--config", "auto", "--json",
+             "--disable-nosem", "--no-git-ignore", f"--x-semgrepignore-filename={ignore}", *files],
+            repo_root,
+            "semgrep",
+        )
     findings: list[Finding] = []
     for result in payload.get("results", []) or []:
         findings.append(_normalize_semgrep(result))
@@ -162,7 +171,7 @@ def _run_bandit(files: list[str], repo_root: Path) -> list[Finding]:
     if not files:
         return []
     payload = _invoke(
-        [_resolve_binary("bandit"), "-f", "json", "-r", *files],
+        [_resolve_binary("bandit"), "--ignore-nosec", "-f", "json", "-r", *files],
         repo_root,
         "bandit",
     )
