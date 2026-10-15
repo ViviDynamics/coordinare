@@ -18,6 +18,7 @@ from gql.transport.exceptions import TransportQueryError, TransportServerError
 from coordinare.resilience import CircuitOpenError
 from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.issue_comment_service import normalize_logins
+from coordinare.services.merge_review_gate import PROTECTION_CLASSIC, PROTECTION_RULES
 from coordinare.services.system_health import (
     FAILURE_AUTH,
     FAILURE_CIRCUIT,
@@ -27,6 +28,13 @@ from coordinare.services.system_health import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# 101: the protection read is one small REST call per source, every 15 minutes at most.
+_REST_TIMEOUT_SECONDS = 10.0
+_HTTP_OK = 200
+_HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_SERVER_ERROR = 500
+_PROTECTION_UNREACHABLE = 0  # status recorded when a source never answered
 _PR_CONVERSATION_REPOSITORY_MISSING = 'PR conversation repository is unavailable'
 _PR_CONVERSATION_PAGINATION_INVALID = 'Invalid PR conversation pagination'
 _PR_CONVERSATION_PAGE_INCOMPLETE = 'Incomplete PR conversation page'
@@ -249,6 +257,8 @@ query GetPRReviews($prId: ID!) {
   node(id: $prId) {
     ... on PullRequest {
       state
+      mergeStateStatus
+      author { login }
       reviews(last: 50) {
         nodes {
           id
@@ -2126,12 +2136,16 @@ class GitHubService(CardIdentityMap):
                         "review_id": review_id,
                     },
                 )
+        author = node.get("author")
         return {
             "reviews": reviews,
             "review_threads": threads,
             "head_oid": str(node.get("headRefOid") or ""),
             "review_decision": str(node.get("reviewDecision") or ""),
             "state": str(node.get("state") or ""),
+            # 101: the closer names a daemon-authored PR that waits on a review it cannot give.
+            "merge_state_status": str(node.get("mergeStateStatus") or ""),
+            "author_login": str(author.get("login") or "") if isinstance(author, dict) else "",
         }
 
     async def request_reviews(
@@ -2186,6 +2200,48 @@ class GitHubService(CardIdentityMap):
             "head_ref_name": str(node.get("headRefName", "")),
             "head_repo_name_with_owner": str((node.get("headRepository") or {}).get("nameWithOwner") or ""),
         }
+
+    async def get_branch_protection_sources(self, branch: str) -> dict[str, tuple[int, Any]]:
+        """101: one branch's classic protection and its rulesets, as (HTTP status, JSON) per source.
+
+        Read-only REST, through the same token and API base as the rest of the service. A source
+        that never answers, even after retries, reports status 0, so the caller reads it as
+        unreadable. A permission failure (403) is reported as its status, not raised.
+        """
+        if not self._project_name:
+            return {
+                PROTECTION_CLASSIC: (_PROTECTION_UNREACHABLE, None),
+                PROTECTION_RULES: (_PROTECTION_UNREACHABLE, None),
+            }
+        base = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}"
+        ref = quote(branch, safe="")
+        return {
+            PROTECTION_CLASSIC: await self._rest_status_retried(f"{base}/branches/{ref}/protection"),
+            PROTECTION_RULES: await self._rest_status_retried(f"{base}/rules/branches/{ref}"),
+        }
+
+    async def _rest_status_retried(self, url: str) -> tuple[int, Any]:
+        """One REST GET, retried on a transport error, 429 or 5xx. Status 0 when it never answered."""
+
+        @stamina.retry(on=TransientGitHubError, **self._retry_kwargs)
+        async def _inner() -> tuple[int, Any]:
+            token = await self._current_token()
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+            try:
+                async with httpx.AsyncClient(timeout=_REST_TIMEOUT_SECONDS) as client:
+                    resp = await client.get(url, headers=headers)
+            except httpx.HTTPError as exc:
+                raise TransientGitHubError(str(exc)) from exc
+            if resp.status_code == _HTTP_TOO_MANY_REQUESTS or resp.status_code >= _HTTP_SERVER_ERROR:
+                raise TransientGitHubError(f"HTTP {resp.status_code}")
+            payload = resp.json() if resp.status_code == _HTTP_OK else None
+            return resp.status_code, payload
+
+        try:
+            return await _inner()
+        except (TransientGitHubError, ValueError) as exc:
+            logger.warning("github.protection_read_failed", url=url, error=str(exc))
+            return _PROTECTION_UNREACHABLE, None
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:
         result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {"pullRequestId": pr_id})

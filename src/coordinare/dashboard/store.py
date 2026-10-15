@@ -25,6 +25,7 @@ from coordinare.lib.clarifications import annotate_clarifications
 from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
+from coordinare.services.merge_review_gate import merge_review_view
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
 from coordinare.services.system_health import (
@@ -1266,6 +1267,8 @@ class DashboardStore:
                 ),
                 "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
                 "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
+                # 101: the target branch's review requirement against coordinare's identity, or None before the first read.
+                "merge_review": merge_review_view(sym_state),
                 "last_poll_at": (
                     last_poll_raw.isoformat() if isinstance(last_poll_raw, datetime) else None
                 ),

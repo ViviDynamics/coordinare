@@ -553,6 +553,8 @@ function symphonyStatus(sym) {
     return {label: 'Active', reason: 'The snapshot does not carry this symphony.', tone: 'muted'};
   }
   var note = symphonyUncheckedNote(sym);
+  // 101: a branch review the daemon identity cannot give is said here, in the Active reason.
+  var review = sym.merge_review && typeof sym.merge_review === 'object' ? sym.merge_review : null;
   var lastError = sym.state && typeof sym.state === 'object' && sym.state.last_error ? String(sym.state.last_error) : '';
   var label;
   var reason;
@@ -569,7 +571,8 @@ function symphonyStatus(sym) {
     reason = sym.cards_paused + (sym.cards_paused === 1 ? ' card is' : ' cards are') + ' paused on the board.';
   } else {
     label = 'Active';
-    if (note) reason = note.text;
+    if (review && review.message && review.state !== 'clear') reason = String(review.message);
+    else if (note) reason = note.text;
     else if (typeof sym.poll_interval_seconds === 'number' && sym.poll_interval_seconds > 0) {
       reason = 'Checked every ' + sym.poll_interval_seconds + ' seconds.';
     } else reason = 'Checked when a webhook arrives.';

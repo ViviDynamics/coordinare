@@ -154,6 +154,10 @@ class SymphonyRuntimeState:
     board_issue_numbers: dict[str, int] = dc_field(default_factory=dict)
     board_issue_urls: dict[str, str] = dc_field(default_factory=dict)
     board_pr_urls: dict[str, str] = dc_field(default_factory=dict)
+    # 101: the target branch's review requirement against coordinare's own identity, and when
+    # it was last read. In-memory: a restart reads it again at its first cycle.
+    merge_review: dict[str, str] | None = None
+    merge_review_checked_at: float | None = None
 
 
 DaemonPhase = Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]

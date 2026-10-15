@@ -37,6 +37,36 @@ from head **and** at least one later commit exists (never a review on the
 current head). A configurable commits-behind / hours-behind threshold is the
 follow-up knob (T019); the default is wired in the evaluator today.
 
+## The solo-author approval trap (#101)
+
+coordinare opens its PRs as its own GitHub identity, and GitHub never lets a PR's
+author approve it. So when the target branch requires an approving review, from a
+ruleset or classic branch protection, or a code owner's review, merges can never
+happen without a human approver. Without this note the closer waits silently.
+
+coordinare checks each symphony's target branch (`base_branch`, default `main`)
+about every 15 minutes, and at its first cycle after start:
+
+- **Requirement found.** The Symphonies page's Status column says "Merges need an
+  approving review from someone other than <app>. Add a human approver to the loop
+  or relax the rule." One warning goes through the notification layer
+  (`merge_review_required`) and one entry to the activity feed. It is not repeated
+  while the condition holds. Cards waiting on it show the wait reason
+  `external_review_required`.
+- **Could not read.** The token could not read the protection (classic or
+  rulesets). The Status column says "could not read branch protection", and nothing
+  is blocked or dispatched because of it.
+- **Cleared.** One activity entry, no notification.
+
+To fix it, either add a human approver to the loop, or relax the rule for the
+branch. coordinare does not change merge behaviour itself.
+
+The read calls GitHub's branch protection and branch rules endpoints for the target branch.
+A token that cannot read them gets a 403, and the condition reads "could not read branch
+protection". The classic `repo` scope reads both. A fine-grained token needs repository
+access that includes branch protection, so check its permissions if the condition reads
+unreadable.
+
 ## Related
 
 Review threads are resolved by the reviewer stage (`resolve_pr_review_threads`)
