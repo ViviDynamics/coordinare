@@ -285,6 +285,17 @@ running coordinare on someone else's behalf. Get in touch at
 you received under the Elastic License 2.0 stays available to you under those
 terms.
 
+## Optional observability export
+
+Set `observability.otlp.endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` to export
+redacted event history as OTLP logs. Export is off by default and cannot stall
+local event storage. Prometheus metrics are enabled by default on the existing
+health listener. Set `observability.metrics_enabled: false` to disable `/metrics`;
+restrict that port to trusted scrapers.
+The [chart guide](deploy/helm/coordinare/README.md#optional-observability-export)
+covers standard OTEL settings, protocol dependencies, delivery limits and a
+Collector example feeding Loki, Grafana and Prometheus.
+
 ## Contributing
 
 Bug reports, feature requests, and feedback are genuinely welcome, and they

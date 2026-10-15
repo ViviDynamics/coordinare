@@ -25,6 +25,7 @@ from coordinare.services.event_capture import (
     symphony_for_card,
 )
 from coordinare.services.event_store import EventStore
+from coordinare.services.otlp_settings import ObservabilityConfig
 from tests.unit.dashboard_js_slices import shipped_function
 
 
@@ -154,7 +155,7 @@ async def test_store_failure_cannot_break_logging_or_live_feed(capture_store: Ev
 async def test_daemon_wrapper_always_flushes_on_startup_failure(tmp_path: Path) -> None:
     install_event_store(None)
     path = tmp_path / "state.json"
-    config = SimpleNamespace(state_file_path=path, event_store=EventStoreConfig())
+    config = SimpleNamespace(state_file_path=path, event_store=EventStoreConfig(), observability=ObservabilityConfig())
 
     async def fail(*args: Any) -> None:
         assert args[-1].path == tmp_path / "events.db"
@@ -181,7 +182,7 @@ async def test_health_snapshot_exposes_cached_store_statistics(capture_store: Ev
     daemon = SimpleNamespace(state={"event_store": capture_store})
     snapshot = DashboardStore._system_health(daemon, [], _Running(0, None, None, 1))
     assert snapshot["event_store"] == capture_store.health()
-    assert set(snapshot["event_store"]) == {"size_bytes", "rows", "oldest_ts", "dropped", "pruned", "writer_state", "last_error"}
+    assert set(snapshot["event_store"]) == {"size_bytes", "rows", "oldest_ts", "dropped", "pruned", "writer_state", "last_error", "export_dropped", "export_failed", "export_error"}
     await capture_store.close()
 
 
@@ -191,9 +192,10 @@ def test_health_line_uses_shipped_javascript_and_escapes_values() -> None:
         [
             shipped_function("helpers", "esc"),
             source,
-            "const stats = {size_bytes: 10, rows: 2, oldest_ts: '<secret>', dropped: 3, pruned: 4, writer_state: 'failed', last_error: '<error>'};",
+            "const stats = {size_bytes: 10, rows: 2, oldest_ts: '<secret>', dropped: 3, pruned: 4, writer_state: 'failed', last_error: '<error>', export_error: '<disabled>'};",
             "const html = systemHealthHtml({overall: 'healthy', rows: [], event_store: stats});",
             "if (!html.includes('10 bytes, 2 rows') || !html.includes('3 dropped, 4 pruned') || html.includes('<secret>') || !html.includes('writer failed: &lt;error&gt;')) throw Error(html);",
+            "if (!html.includes('export disabled: &lt;disabled&gt;') || html.includes('<disabled>')) throw Error(html);",
         ],
     )
     node = shutil.which("node")

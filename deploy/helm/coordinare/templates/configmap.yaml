@@ -81,4 +81,11 @@ data:
     {{- $_ := set $cfg "github_private_key_path" (printf "%s/%s" (.Values.githubAppPrivateKey.mountPath | trimSuffix "/") .Values.githubAppPrivateKey.key) }}
     {{- end }}
 
+    {{- $observability := mergeOverwrite (deepCopy .Values.observability) ($cfg.observability | default dict) }}
+    {{- if or (hasKey (.Values.observability.otlp | default dict) "headers") (hasKey (($cfg.observability | default dict).otlp | default dict) "headers") }}
+    {{- fail "OTLP headers must use a Secret via OTEL_EXPORTER_OTLP_HEADERS; remove observability.otlp.headers and config.observability.otlp.headers" }}
+    {{- end }}
+    {{- $_ := unset $observability.otlp "headersSecret" }}
+    {{- $_ := set $cfg "observability" $observability }}
+
     {{ toYaml $cfg | nindent 4 }}

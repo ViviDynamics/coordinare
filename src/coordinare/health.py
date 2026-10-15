@@ -22,6 +22,7 @@ def create_health_app(
     *,
     circuit_breakers: dict[str, CircuitBreaker] | None = None,
     health_registry: HealthRegistry | None = None,
+    metrics_enabled: bool = True,
 ) -> FastAPI:
     app = FastAPI(title="coordinare-health")
     cbs = circuit_breakers or {}
@@ -108,6 +109,8 @@ def create_health_app(
 
     @app.get("/metrics")
     async def metrics() -> Response:
+        if not metrics_enabled:
+            return Response(status_code=status.HTTP_404_NOT_FOUND)
         return Response(content=METRICS.render(), media_type="text/plain; version=0.0.4")
 
     return app

@@ -28,6 +28,7 @@ def _make_client(
         daemon,
         circuit_breakers=circuit_breakers or {},
         health_registry=registry,
+        metrics_enabled=True,
     )
     return TestClient(app, raise_server_exceptions=True)
 

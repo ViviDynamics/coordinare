@@ -478,8 +478,11 @@ You should see `pods` and `pods/log`, and nothing else.
 - **The dashboard is unauthenticated** until spec 143.
 - **The daemon must run in-cluster.** Pod IPs are generally not routable from
   outside, so coordinare could not reach the performers it starts.
-- **`/metrics` is not exposed** by default; it discloses card counts, model
-  identifiers and error rates.
+- **`/metrics` is enabled on the health listener by default**, but the Service
+  publishes that port only when `metrics.expose: true`. Anyone who can reach the
+  Pod health port can read card counts, model identifiers and error rates without
+  dashboard authentication. Restrict access to trusted scrapers with network
+  policy, or disable the route with `config.observability.metrics_enabled: false`.
 
 
 The dashboard requires the `COORDINARE_DASHBOARD_AUTH_TOKEN` Secret entry because
@@ -521,3 +524,133 @@ rechecks. The chart defaults it to `config.performer_image`, or `coordinare-perf
 Symphony endpoint images cannot override it. `performers.imagePullSecrets` also applies to verifier pods.
 Roll daemon, performer and verifier images together. See the [environment cache deployment notes](../../../docs/onboarding/06-env-cache.md#kubernetes-bootstrap-verifier)
 for schema v38, claim permissions for UID/GID 10001, pod security settings and first bootstrap behavior.
+
+## Optional observability export
+
+Export is off when both endpoints are empty. Enable outbound logs with these values:
+
+```yaml
+observability:
+  otlp:
+    endpoint: http://otel-collector.observability:4318
+    protocol: http/json
+    service_name: coordinare
+metrics:
+  expose: true
+```
+
+Prometheus uses the existing registry and health listener. `/metrics` is enabled
+by default and MCP `get_metrics` continues to work without opting in. The chart's
+`metrics.expose` controls only publication of the health port through the Service.
+It defaults to false, including when `dashboard.service.type` is LoadBalancer, so
+the dashboard Service does not publish metrics unless explicitly requested.
+The health listener has no dashboard authentication. Restrict port 8080 to trusted
+scrapers with network policy when enabling Service publication.
+
+For non Helm deployments use the same `observability.otlp` block in config.yaml.
+The standard environment variables override the corresponding YAML fields:
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_SERVICE_NAME`.
+Signal specific endpoint, headers and protocol take precedence over general
+settings. HTTP general endpoints append `/v1/logs`; logs endpoints are used
+verbatim. Headers are comma separated `name=value` pairs with URL encoded values.
+Put authorization headers in `OTEL_EXPORTER_OTLP_HEADERS` in `existingSecret`,
+which is already injected through envFrom. Alternatively select a dedicated Secret:
+
+```yaml
+observability:
+  otlp:
+    endpoint: https://collector.example
+    headersSecret:
+      name: collector
+      key: OTEL_EXPORTER_OTLP_HEADERS
+```
+
+Create that Secret separately with an `OTEL_EXPORTER_OTLP_HEADERS` key containing comma separated
+`name=value` pairs. The chart injects its reference as `OTEL_EXPORTER_OTLP_HEADERS`.
+Never put credential values in chart values. Rendering refuses
+`observability.otlp.headers` and `config.observability.otlp.headers`.
+Empty environment values clear the corresponding YAML setting, including endpoints.
+An empty `OTEL_SERVICE_NAME` falls back to the default service name, `coordinare`.
+An empty general endpoint does not clear a separately configured logs endpoint;
+clear `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` too when both YAML fields were set.
+`config.observability` overrides chart defaults before environment resolution.
+
+JSON export uses the existing httpx dependency. `http/protobuf` and `grpc` require
+an image with `pip install 'coordinare[otlp]'`, or the equivalent `uv sync --extra
+otlp` during the image build. This extra adds only generated protobuf messages,
+protobuf runtime and gRPC bindings. Invalid YAML telemetry settings fail config
+validation at save and startup, following the shared configuration checks from #225.
+Invalid environment overrides or missing bindings disable export and produce a
+safe error in the logs and System health line without stopping the daemon. HTTP and HTTPS
+URLs are supported, including gRPC with TLS selected by an HTTPS endpoint.
+Plain HTTP with any configured auth headers is refused unless `insecure: true`
+is explicitly set. Prefer HTTPS. HTTP export honours `HTTP_PROXY`, `HTTPS_PROXY`
+and `NO_PROXY` through httpx's environment support by default. Even with
+`insecure: true`, HTTP export refuses auth headers when a proxy applies to a plain
+HTTP endpoint, because the proxy would receive those headers in cleartext. Use
+HTTPS or a matching `NO_PROXY` entry for direct delivery.
+A successful collector response counts as delivered even when its optional JSON
+partial success body cannot be parsed. Oversize event data retains a bounded
+JSON preview with `truncated: true`.
+
+Export gets committed, redacted rows from the store writer. A separate bounded
+worker batches sends, times out and backs off; collector failures never retry
+local inserts. Defaults are 1024 rows and 4 MiB including the batch in flight,
+128 records per batch, one second flush, three second request timeout, and three
+attempts with exponential backoff. The System health line and Prometheus counters
+show export drops and failed attempts. Shutdown waits at most one second for
+export and counts remaining rows as dropped. Delivery is best effort, with no
+replay after restart; an ambiguous network failure can duplicate a remote batch.
+The JSON data attribute is bounded to 16 KiB, replaced with a truncation marker
+when larger. Resource attributes include package version, service name, and Pod
+name and namespace from the downward API. `OTEL_DEPLOYMENT_ENVIRONMENT` adds the
+deployment environment when set.
+
+Counters cover accepted runs and monitor exits by stage and outcome, canonical
+bootstrap completions, store writes, drops and pruning, and export drops and
+failed sends. They reset with the process. Lifecycle outcomes are completed,
+blocked, system_error and redispatched, describing monitor exit rather than a
+card's final merge. The existing token counters and cost estimate gauge are also
+available. Labels are bounded enums without card or run identifiers.
+
+Example Collector configuration for Loki logs and Prometheus metrics:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: coordinare
+          static_configs:
+            - targets: [coordinare.coordinare:8080]
+processors:
+  batch: {}
+exporters:
+  otlphttp/loki:
+    endpoint: http://loki.observability:3100/otlp
+  prometheus:
+    endpoint: 0.0.0.0:8889
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki]
+    metrics:
+      receivers: [prometheus]
+      processors: [batch]
+      exporters: [prometheus]
+```
+
+Have Prometheus scrape `otel-collector.observability:8889`. Configure Grafana data
+sources for that Prometheus server and `http://loki.observability:3100`. Replace
+Service names and namespaces with your releases. Loki must allow structured
+metadata; see its [OTLP ingestion instructions](https://grafana.com/docs/loki/latest/send-data/otel/).
+Protect Collector listeners and downstream credentials according to your cluster.
+The chart does not install this stack. For the local SQLite store, prefer a local
+disk storage class; NFS needs working locking and rollback journaling.

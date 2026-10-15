@@ -31,6 +31,7 @@ from coordinare.models.performer_endpoint import (
 )
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
+from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
 
@@ -1235,7 +1236,7 @@ def _holds_secret(annotation: Any) -> bool:
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
-    model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True)
+    model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True, hide_input_in_errors=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -1504,6 +1505,7 @@ class ProjectConfiguration(BaseSettings):
     # 129: Full per-run transcripts. Opt-out via ``transcripts.enabled: false``.
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
     event_store: EventStoreConfig = Field(default_factory=EventStoreConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     # 132: Full per-run logs, kept after the container is removed. Opt-out via ``run_logs.enabled``.
     run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
 
@@ -2591,7 +2593,7 @@ class DispatcherDedupConfig(BaseModel):
 class CoordinareConfiguration(BaseModel):
     """Root configuration combining global defaults + multiple symphonies + orchestra."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     global_config: ProjectConfiguration
     symphonies: list[SymphonyConfig]

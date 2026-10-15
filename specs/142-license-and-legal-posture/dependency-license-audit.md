@@ -170,3 +170,16 @@ Reachable only through marker-gated edges, so absent from this environment and *
 2. **Platform-conditional packages are unverified** on the platform where the check runs. See above.
 3. **Licence metadata is self-reported** by each package. A package that misdeclares its licence would be misclassified here. Verifying every upstream against its actual licence text is out of proportion to the risk for a permissive-heavy tree, and is recorded as an accepted limitation rather than silently assumed away.
 
+
+## Optional OTLP runtime packages
+
+Audited 2026-10-15 with the extra installed. Generated from the same lock closure
+and installed metadata helpers as the licence gate. CI installs this extra and
+checks its full transitive closure. These packages are absent from JSON only
+installations. All three are Tier 1, permitted.
+
+| Package | Version | Licence | Metadata field |
+|---|---|---|---|
+| `grpcio` | 1.80.0 | `Apache-2.0` | `License-Expression` |
+| `opentelemetry-proto` | 1.40.0 | `Apache-2.0` | `License-Expression` |
+| `protobuf` | 6.33.6 | `3-Clause BSD License` | `License` |
