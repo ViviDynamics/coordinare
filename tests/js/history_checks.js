@@ -248,6 +248,9 @@ has("the card page link is marked for the in-app router", historyRunRowHtml(row(
 lacks("the card link no longer filters History", historyRunRowHtml(row()), "h.card=PVTI_1");
 has("an implausible card id keeps the History filter", historyRunRowHtml(row({ card: "a b" })), "h.card=a");
 lacks("an implausible card id gets no card page link", historyRunRowHtml(row({ card: "a b" })), "/cards/");
+// 233: the unattributed folder is not a symphony's card page, so its card keeps the History filter.
+has("an unattributed row keeps the History filter", historyRunRowHtml(row({ symphony: "unattributed" })), "h.card=PVTI_1");
+lacks("an unattributed row gets no card page link", historyRunRowHtml(row({ symphony: "unattributed" })), "/cards/");
 lacks("the run number column is gone", historyTableHtml([row()]), "Run (approx.)");
 lacks("no run number is shown", historyRunRowHtml(row({ run_number: 3 })), "Run 3");
 

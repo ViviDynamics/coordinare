@@ -90,5 +90,20 @@ has("the full timeline link has its label", link, ">Full timeline</a>");
 check("a card with no address gets no link", cardFullTimelineHtml("", "PVTI_1"), "");
 check("a hostile card id gets no link", cardFullTimelineHtml("alpha-sym", "<x>"), "");
 
+// The address rule mirrors sanitize_segment: the same charset and length, and no edge dot or underscore.
+const EDGE = [
+  ["a/b", false], ["a b", false], ["abc.", false], ["-abc", true], ["-", true], ["a-", true],
+  ["a..b", true], ["_abc", false], ["a_b_", false], ["x", true], ["1", true], ["a-b", true],
+  ["ab_cd", true], ["unattributed", true], ["", false], [".", false], ["..", false],
+  ["a\u00e9", false], ["a".repeat(120), true], ["a".repeat(121), false], ["a".repeat(119) + ".", false],
+];
+for (const [value, valid] of EDGE) {
+  check("the segment rule for " + JSON.stringify(value.slice(0, 20)) + " (" + value.length + ")", cardSegmentOk(value), valid);
+  const got = cardAddressFromPath("/cards/alpha-sym/" + encodeURIComponent(value));
+  check("the route agrees for " + JSON.stringify(value.slice(0, 20)), got.invalid !== true, valid);
+}
+check("a symphony named unattributed gets no card page link", cardPageAddressOk("unattributed", "PVTI_1"), false);
+check("a plausible symphony still gets one", cardPageAddressOk("alpha-sym", "PVTI_1"), true);
+
 console.log(`SUMMARY ${passed} ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

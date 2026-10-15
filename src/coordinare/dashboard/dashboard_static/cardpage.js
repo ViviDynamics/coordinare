@@ -4,9 +4,24 @@
 // Loaded before app.js. The pure helpers come first and are checked under node
 // (tests/js/card_page_233_checks.js). Every value shown goes through esc().
 
+// Scope on this page is a display filter, not an access control. The timeline API is not scoped
+// (as /api/runs is not), so the header's choice only decides what the page shows.
 var CARD_PAGE_SECTION = 'card-page-section';
-// The scope note the page last drew, so a snapshot redraws the page only when the scope changes.
-var _cardPageNote = null;
+// The address rule mirrors lib/path_segments.sanitize_segment: a segment is valid only when the
+// writer would return it unchanged. tests/unit/test_233_card_page.py pins the two together.
+var CARD_SEGMENT_MAX_LEN = 120;
+var CARD_SEGMENT_PATTERN = /^[A-Za-z0-9-](?:[A-Za-z0-9._-]*[A-Za-z0-9-])?$/;
+// The folder name the writer uses for an unknown symphony (lib/path_segments.UNATTRIBUTED).
+var CARD_PAGE_UNATTRIBUTED = 'unattributed';
+// The scope note the page last drew against a snapshot. Undefined until the first snapshot
+// arrives, so the page waits for its scope rather than fetching a timeline the scope may not allow.
+var _cardPageNote;
+
+// Whether one address segment is one the writer could have made.
+function cardSegmentOk(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= CARD_SEGMENT_MAX_LEN &&
+    CARD_SEGMENT_PATTERN.test(value);
+}
 
 // Whether a path is a card page address. The segments are checked by cardAddressFromPath.
 function isCardPath(path) {
@@ -24,7 +39,7 @@ function cardAddressFromPath(path) {
   for (var i = 0; i < parts.length; i++) {
     var value;
     try { value = decodeURIComponent(parts[i]); } catch (_malformed) { return { invalid: true }; }
-    if (!RUN_NAME_PATTERN.test(value)) return { invalid: true };
+    if (!cardSegmentOk(value)) return { invalid: true };
     decoded.push(value);
   }
   return { symphony: decoded[0], card: decoded[1] };
@@ -35,9 +50,11 @@ function cardPathFor(symphony, card) {
   return '/cards/' + encodeURIComponent(symphony) + '/' + encodeURIComponent(card);
 }
 
-// Whether a symphony and a card name a page the viewer can open. Anything else gets no link.
+// Whether a symphony and a card name a page the viewer can open. Anything else gets no link. The
+// unattributed folder is not a symphony, so a card filed under it keeps the History filter.
 function cardPageAddressOk(symphony, card) {
-  return RUN_NAME_PATTERN.test(String(symphony || '')) && RUN_NAME_PATTERN.test(String(card || ''));
+  return cardSegmentOk(String(symphony || '')) && cardSegmentOk(String(card || '')) &&
+    symphony !== CARD_PAGE_UNATTRIBUTED;
 }
 
 // The note a card page shows when the header's symphony choice is another symphony, or ''.
@@ -71,10 +88,16 @@ function cardPageRoute(path) {
     section.innerHTML = '<div class="muted">This is not a card address.</div>';
     return;
   }
-  var note = cardPageScopeNote(cardPageChoice(), addr.symphony);
-  _cardPageNote = note;
   var heading = '<div class="card-page-title">' + esc(addr.card) + '</div>' +
     '<div class="muted">' + esc(addr.symphony) + '</div>';
+  // No snapshot yet means no scope yet: nothing is fetched until the first snapshot redraws the page.
+  if (!currentScopedState()) {
+    _cardPageNote = undefined;
+    section.innerHTML = heading + '<div class="muted">Loading&hellip;</div>';
+    return;
+  }
+  var note = cardPageScopeNote(cardPageChoice(), addr.symphony);
+  _cardPageNote = note;
   if (note) {
     section.innerHTML = heading + '<div class="muted card-page-scope">' + esc(note) + '</div>';
     return;

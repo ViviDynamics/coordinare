@@ -153,6 +153,14 @@ def _register_dashboard_card_page(app: FastAPI, ctx: DashboardContext) -> None:
             status = 200 if card_address_valid(symphony, card) else 404
             return HTMLResponse(_page_html(_assistant_on), status_code=status)
 
+        @app.get("/cards/{rest:path}", response_class=HTMLResponse)
+        async def dashboard_card_stray(rest: str) -> HTMLResponse:
+            """233: any other /cards path is not a card address. The shell loads and says so, with a 404.
+
+            Registered after the two-segment route, and it matches only under /cards/, never /api/.
+            """
+            return HTMLResponse(_page_html(_assistant_on), status_code=404)
+
 
 def _register_dashboard_admin_config(app: FastAPI, ctx: DashboardContext) -> None:
 

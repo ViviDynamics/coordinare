@@ -297,3 +297,19 @@ def test_choosing_all_symphonies_shows_the_scoped_card_on_the_card_page(
     expect(page.locator("#card-page-section .tl-tracker")).to_be_attached(timeout=WAIT_PAGE)
     expect(page.locator("#card-page-section")).not_to_contain_text(NOTE_START)
 
+
+
+@pytest.mark.e2e
+def test_a_direct_load_under_a_stored_choice_fetches_no_card_outside_it(
+    page: Page, card_url: str,
+) -> None:
+    """A stored choice of alpha, then a direct load of beta's card. Nothing of beta's is fetched."""
+    timeline_requests: list[str] = []
+    page.on("request", lambda request: timeline_requests.append(request.url) if "/api/cards/" in request.url else None)
+    page.add_init_script("window.localStorage.setItem('coordinare.symphony', 'alpha-sym')")
+    page.goto(f"{card_url}/cards/{BETA}/{BETA_CARD}")
+    expect(page.locator("#card-page")).to_be_visible(timeout=WAIT_PAGE)
+    expect(page.locator("#card-page-section")).to_contain_text(NOTE_START, timeout=WAIT_PAGE)
+    expect(page.locator("#card-page-section .tl-tracker")).to_have_count(0)
+    page.wait_for_timeout(500)
+    assert timeline_requests == [], f"a timeline outside the stored choice was requested: {timeline_requests}"

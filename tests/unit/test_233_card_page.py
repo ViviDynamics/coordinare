@@ -7,6 +7,7 @@ tests/e2e/test_233_card_page.py, and the client helpers are in test_233_card_pag
 """
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -15,10 +16,16 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from coordinare.dashboard import _DASHBOARD_HTML, DashboardStore, create_dashboard_app
+from coordinare.dashboard import (
+    _DASHBOARD_HTML,
+    _DASHBOARD_JS_SOURCES,
+    DashboardStore,
+    create_dashboard_app,
+)
 from coordinare.dashboard.assets import _DASHBOARD_JS_ORDER, DASHBOARD_HTML_BUDGET_BYTES
 from coordinare.dashboard.routers.pages import card_address_valid
 from coordinare.dashboard_auth import _OIDC_PUBLIC_PATHS
+from coordinare.lib.path_segments import UNATTRIBUTED
 from coordinare.localhost_guard import build_permitted
 from coordinare.mcp.tools import is_deferred
 from coordinare.services.card_lifecycle import CardLifecycleLog
@@ -135,3 +142,45 @@ def test_the_run_routes_and_the_card_page_share_no_route_shadowing() -> None:
     paths = [getattr(route, "path", "") for route in app.routes]
     assert "/cards/{symphony}/{card}" in paths
     assert "/runs/{symphony}/{card}/{run}" in paths
+
+
+# The address rule is the writer's: a segment is valid only when sanitize_segment returns it unchanged.
+# Each value is the decoded segment the route receives, with whether the writer could have made it.
+EDGE_SEGMENTS = [
+    ("a/b", False), ("a b", False), ("abc.", False), ("-abc", True), ("-", True), ("a-", True),
+    ("a..b", True), ("_abc", False), ("a_b_", False), ("x", True), ("1", True), ("a-b", True),
+    ("ab_cd", True), ("unattributed", True), ("", False), (".", False), ("..", False),
+    ("a\u00e9", False), ("a" * 120, True), ("a" * 121, False), ("a" * 119 + ".", False),
+]
+
+
+@pytest.mark.parametrize(("value", "valid"), EDGE_SEGMENTS)
+def test_the_edge_cases_follow_the_writers_rule(value: str, valid: bool) -> None:
+    assert card_address_valid("alpha-sym", value) is valid
+
+
+@pytest.mark.parametrize("path", [
+    "/cards/a%2Fb/c",
+    "/cards/a/b/c",
+    "/cards/alpha-sym",
+    "/cards/a/b/c/d",
+])
+def test_a_card_path_of_the_wrong_shape_serves_the_shell_as_a_404(path: str) -> None:
+    response = _client().get(path)
+    assert response.status_code == 404
+    assert SHELL_MARKER in response.text
+
+
+def test_the_catch_all_never_answers_an_api_route() -> None:
+    response = _client().get("/api/cards/x/y/z/w")
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/json")
+    assert SHELL_MARKER not in response.text
+    timeline = _client().get(f"/api/cards/{ALPHA}/NOPE/timeline")
+    assert timeline.headers["content-type"].startswith("application/json")
+
+
+def test_the_unattributed_constant_is_shared_with_the_client() -> None:
+    match = re.search(r"^var CARD_PAGE_UNATTRIBUTED = '([^']*)';", _DASHBOARD_JS_SOURCES["cardpage"], re.MULTILINE)
+    assert match is not None
+    assert match.group(1) == UNATTRIBUTED
