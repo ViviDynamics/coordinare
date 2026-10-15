@@ -74,6 +74,8 @@ class ConfigValidationResult:
     config_file_path: Path | None = None
     env_var_fields_count: int = 0
     passed: bool = True
+    # 252: placeholders left out of the launch (a plain key), reported as warnings: (field, message).
+    placeholder_warnings: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def passed_strict(self) -> bool:

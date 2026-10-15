@@ -36,7 +36,12 @@ from coordinare.config_validation import (
     is_multi_symphony_config,
     wrap_legacy_config,
 )
-from coordinare.start_checks import StartCheckError, raw_placeholder_problems, validate_start_time
+from coordinare.start_checks import (
+    StartCheckError,
+    raw_placeholder_problems,
+    raw_placeholder_warnings,
+    validate_start_time,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -46,7 +51,7 @@ if TYPE_CHECKING:
 
 Store = Literal["config_yaml", "routing_yaml"]
 Applied = Literal["hot_reloaded", "staged_restart", "staged_next_job"]
-ErrorCode = Literal["validation", "conflict", "referenced", "forbidden"]
+ErrorCode = Literal["validation", "conflict", "referenced", "forbidden", "warning"]
 
 # The spec-080 catalogs editable via the catalog CRUD endpoints (research D6).
 CATALOG_KEYS: tuple[str, ...] = ("endpoints", "model_endpoints", "modes")
@@ -87,6 +92,8 @@ class SaveResult(BaseModel):
     applied: Applied | None = None
     new_hash: str | None = None
     errors: list[FieldError] = Field(default_factory=list)
+    # 252: advisories on a saved config (a placeholder left out of the launch). They do not block a save.
+    warnings: list[FieldError] = Field(default_factory=list)
     message: str | None = None
 
 
@@ -325,6 +332,14 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     return []
 
 
+def candidate_warnings(candidate: dict[str, Any]) -> list[FieldError]:
+    """The advisories for a candidate that is saved anyway: placeholders left out of the launch (252)."""
+    return [
+        FieldError(key=field, code="warning", message=message)
+        for field, message in raw_placeholder_warnings(candidate)
+    ]
+
+
 def _env_supplies_github_token() -> bool:
     """True when the daemon's environment supplies a GitHub token (``COORDINARE_GITHUB_TOKEN``)."""
     return bool(os.environ.get("COORDINARE_GITHUB_TOKEN", "").strip())
@@ -532,6 +547,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
     errors = _validate_candidate(candidate)
     if errors:
         return SaveResult(ok=False, errors=errors)
+    warnings = candidate_warnings(candidate)
 
     # FR-016 ("reject immediately before swap"): re-check optimistic concurrency
     # here, after read/validate and immediately before the atomic write, to close
@@ -547,7 +563,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
     if write_error is not None:
         return write_error
     applied = classify_section_applied(request.section, request.changes.keys())
-    return SaveResult(ok=True, applied=applied, new_hash=new_hash)
+    return SaveResult(ok=True, applied=applied, new_hash=new_hash, warnings=warnings)
 
 
 # --- T025: spec-080 catalog create / update / delete --------------------------

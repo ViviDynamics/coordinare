@@ -732,6 +732,10 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
     else if (body.applied === 'staged_restart') cfgFlash(statusEl, body.message || 'Saved · restart required to apply', 'orange');
     else if (body.applied === 'staged_next_job') cfgFlash(statusEl, 'Saved · applies on next job', 'blue');
     else cfgFlash(statusEl, 'Saved', 'green');
+    // 252: a placeholder left out of the launch is saved, and the page says so.
+    if (body.warnings && body.warnings.length) {
+      cfgFlash(statusEl, 'Saved, with a warning: ' + body.warnings.map(function(w) { return w.message; }).join('; '), 'orange');
+    }
     if (store === 'routing_yaml') {
       cfgRefreshRouting(_cfgRemovedRoute);
       _cfgRemovedRoute = null;

@@ -103,7 +103,8 @@ def _doc_for(path: tuple[str, ...], value: object) -> Any:
     if segment == "[]":
         return [_doc_for(rest, value)]
     if segment == "{}":
-        return {"NAME": _doc_for(rest, value)}
+        # A secret-looking key, so the env refusal applies (a plain key is a warning, see test_252_env_policy).
+        return {"API_KEY": _doc_for(rest, value)}
     return {segment: _doc_for(rest, value)}
 
 

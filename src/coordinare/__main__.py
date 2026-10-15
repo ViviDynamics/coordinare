@@ -38,7 +38,9 @@ from coordinare.config import (
     validate_persona_scope_config,
 )
 from coordinare.config_validation import (
+    ConfigFieldError,
     ConfigValidationResult,
+    ErrorType,
     _load_raw_yaml,
     coerce_multi_symphony_raw,
     is_multi_symphony_config,
@@ -88,6 +90,7 @@ from coordinare.services.run_transcript import (
 from coordinare.start_checks import (
     load_unexpanded_config,
     raw_placeholder_problems,
+    raw_placeholder_warnings,
     validate_start_time,
 )
 from coordinare.state_store import StateStore
@@ -257,7 +260,7 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
     explicit_path: Path | None = getattr(args, "config", None)
     strict: bool = getattr(args, "strict", False)
 
-    result = validate_config(explicit_path)
+    result = _with_placeholder_report(validate_config(explicit_path), strict)
 
     if result.passed:
         if result.config_file_path is not None:
@@ -289,7 +292,7 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
                 print(f"    Replace with: {w.replacement_path}")
                 print(f"    Migration: {w.migration_hint}")
 
-        sys.exit(1 if (strict and result.warnings) else 0)
+        sys.exit(1 if (strict and (result.warnings or result.placeholder_warnings)) else 0)
 
     # Validation failed
     if result.config_file_path is not None:
@@ -319,6 +322,7 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
             if e.source and e.source.startswith("env_var:"):
                 print(f"    Source: {e.source}")
             print(f"    {e.fix_hint}")
+
 
     if result.warnings:
         header = (
@@ -1681,6 +1685,39 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
     sys.exit(0 if report.ok else 1)
 
 
+def _warn_unset_placeholders(unexpanded: dict[str, Any]) -> list[tuple[str, str]]:
+    """252: log each placeholder left out of the launch (a plain key); the daemon still starts.
+
+    Returns the warnings so ``config validate`` and the tests can report the same list.
+    """
+    warnings = raw_placeholder_warnings(unexpanded)
+    for field_path, message in warnings:
+        logger.warning("config_placeholder_omitted", field=field_path, message=message)
+    return warnings
+
+
+def _with_placeholder_report(result: ConfigValidationResult, strict: bool) -> ConfigValidationResult:
+    """252: ``config validate`` reports the placeholder refusals and warnings that boot would (the same checks).
+
+    A refusal becomes an error, so the config fails as boot would refuse it. A warning is printed, and
+    fails the run only under ``--strict``.
+    """
+    unexpanded = load_unexpanded_config(result.config_file_path)
+    for field_path, message in raw_placeholder_problems(unexpanded):
+        result.errors.append(
+            ConfigFieldError(field_path=field_path, error_type=ErrorType.invalid_value, fix_hint=message, source="file"),
+        )
+        result.passed = False
+    result.placeholder_warnings = raw_placeholder_warnings(unexpanded)
+    if result.placeholder_warnings:
+        header = "PLACEHOLDER WARNINGS (use --strict to treat as errors)" if not strict else "PLACEHOLDER ERRORS"
+        print(f"\n{header}:")
+        for field_path, message in result.placeholder_warnings:
+            print(f"  [PLACEHOLDER] {field_path}")
+            print(f"    {message}")
+    return result
+
+
 def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
     """252: refuse an unexpanded placeholder before any generic error it causes, and return the text as written.
 
@@ -1798,6 +1835,7 @@ def main() -> None:
     resolved_output_mode = "structured" if args.structured_output else config.output_mode
     resolved_log_level = args.log_level or config.log_level
     configure_logging(log_level=resolved_log_level, structured=resolved_output_mode == "structured")
+    _warn_unset_placeholders(_unexpanded)
 
     # Step 3: Log deprecation warnings at startup (non-strict; daemon always warns)
     for warning in result.warnings:

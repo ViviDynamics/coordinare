@@ -8,7 +8,9 @@ Placeholders (252). A ``${NAME}`` is refused when NAME is not set, and a secret 
 but empty gets a message naming it. The fields are found by type, from the config model's annotations:
 
 * ``secret``: every ``SecretStr``, at any depth (nested models, lists, tuples, sets, dicts, unions).
-* ``env``: every ``dict[str, str]`` value (performer ``env``, role ``workflow_env``).
+* ``env``: every ``dict[str, str]`` value (performer ``env``, role ``workflow_env``). An unset
+  placeholder is refused under a secret-looking key (``env_placeholders.ENV_SECRET_KEY``). Under any
+  other key it is a warning, and the entry is left out of the launch (``env_placeholders``).
 * ``url``: every string or URL field whose name ends in ``url`` or ``endpoint``, or that is a URL type.
 * ``text``: every other string field. Its value is refused only when the whole value is a URL with a
   scheme and a host, because that is what a URL carrying a credential looks like.
@@ -24,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 import types
+from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 from urllib.parse import urlparse
@@ -35,6 +38,7 @@ from coordinare.auth import validate_auth_config
 from coordinare.config import ProjectConfiguration
 from coordinare.dashboard_auth import validate_dashboard_bind
 from coordinare.dashboard_oidc import validate_dashboard_oidc
+from coordinare.env_placeholders import is_secret_env_key
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -158,14 +162,21 @@ def checked_fields(model: type[BaseModel]) -> tuple[tuple[SecretPath, str], ...]
     return tuple(checked)
 
 
-def _unset_message(field: str, name: str) -> str:
+def _unset_refusal(field: str, name: str) -> str:
     return (
         f"{field} still holds ${{{name}}}: the environment variable {name} is not set. "
         f"Set {name} in the daemon's environment, or write the value in config.yaml."
     )
 
 
-def _empty_message(field: str, name: str) -> str:
+def _unset_omission(field: str, name: str) -> str:
+    return (
+        f"{field} uses ${{{name}}}, which is not set. The entry is left out of the performer's "
+        f"environment; set {name} to pass it."
+    )
+
+
+def _empty_refusal(field: str, name: str) -> str:
     return (
         f"{field} uses ${{{name}}}, but the environment variable {name} is set but empty. "
         f"Set {name} to the value, or write the value in config.yaml."
@@ -177,39 +188,55 @@ def _is_whole_url(value: str) -> bool:
     return bool(parsed.scheme and parsed.netloc)
 
 
-def _placeholder_problem(field: str, value: object, rule: str) -> str | None:
-    """The refusal for one checked value, or None (252)."""
+@dataclass(frozen=True)
+class PlaceholderFinding:
+    """One placeholder problem: a refusal (boot and save stop) or a warning (the entry is left out)."""
+
+    field: str
+    message: str
+    refuses: bool
+
+
+def _leaf_findings(field: str, value: object, rule: str, key: str) -> list[PlaceholderFinding]:
     raw = value.get_secret_value() if isinstance(value, SecretStr) else value
     if not isinstance(raw, str):
-        return None
+        return []
     if rule == "text" and not _is_whole_url(raw):
-        return None
+        return []
+    findings: list[PlaceholderFinding] = []
     for match in _ENV_REFERENCE.finditer(raw):
         name = match.group(1)
         if name not in os.environ:
-            return _unset_message(field, name)
-        # A secret that is empty means unset (225), so an empty variable gets its own message. A blank
-        # URL or env value is a legitimate value and is not refused.
-        if rule == "secret" and os.environ[name] == "":
-            return _empty_message(field, name)
-    return None
+            # An env entry under a plain key is left out of the launch, so it is a warning (252). Every
+            # other unset placeholder, a secret or a URL, is refused.
+            if rule == "env" and not is_secret_env_key(key):
+                findings.append(PlaceholderFinding(field, _unset_omission(field, name), refuses=False))
+            else:
+                findings.append(PlaceholderFinding(field, _unset_refusal(field, name), refuses=True))
+        elif rule == "secret" and os.environ[name] == "":
+            # A secret that is empty means unset (225), so an empty variable gets its own message. A
+            # blank URL or env value is a legitimate value and is not refused.
+            findings.append(PlaceholderFinding(field, _empty_refusal(field, name), refuses=True))
+    return findings
 
 
-def _values_at(value: object, path: SecretPath, display: str) -> Iterator[tuple[str, object]]:
-    """Yield ``(display path, value)`` for every value at ``path`` below ``value``."""
+def _values_at(
+    value: object, path: SecretPath, display: str, key: str = "",
+) -> Iterator[tuple[str, object, str]]:
+    """Yield ``(display path, value, dict key)`` for every value at ``path`` below ``value``."""
     if not path:
-        yield display, value
+        yield display, value, key
         return
     segment, rest = path[0], path[1:]
     if segment == _LIST_ITEM:
         if isinstance(value, (list, tuple, set, frozenset)):
             for index, item in enumerate(value):
-                yield from _values_at(item, rest, f"{display}[{index}]")
+                yield from _values_at(item, rest, f"{display}[{index}]", key)
         return
     if segment == _DICT_VALUE:
         if isinstance(value, dict):
-            for key, item in value.items():
-                yield from _values_at(item, rest, f"{display}.{key}")
+            for dict_key, item in value.items():
+                yield from _values_at(item, rest, f"{display}.{dict_key}", str(dict_key))
         return
     if isinstance(value, dict):
         child: object = value.get(segment)
@@ -217,39 +244,61 @@ def _values_at(value: object, path: SecretPath, display: str) -> Iterator[tuple[
         child = getattr(value, segment, None)
     else:
         return
-    yield from _values_at(child, rest, f"{display}.{segment}" if display else segment)
+    yield from _values_at(child, rest, f"{display}.{segment}" if display else segment, key)
+
+
+def placeholder_findings(
+    model: type[BaseModel], value: object, prefix: str = "",
+) -> list[PlaceholderFinding]:
+    """Every placeholder problem in ``value``, refusals and warnings (252).
+
+    ``value`` is a loaded model, or a dict of ``model``'s shape as written (a partial one is fine).
+    ``prefix`` names where ``value`` sits, so a symphony override is reported at its own path.
+    """
+    findings: list[PlaceholderFinding] = []
+    for path, rule in checked_fields(model):
+        for display, leaf, key in _values_at(value, path, prefix):
+            findings += _leaf_findings(display, leaf, rule, key)
+    return findings
 
 
 def placeholder_problems(
     model: type[BaseModel], value: object, prefix: str = "",
 ) -> list[tuple[str, str]]:
-    """The ``(field path, refusal)`` pairs for every refused placeholder in ``value`` (252).
-
-    ``value`` is a loaded model, or a dict of ``model``'s shape as written (a partial one is fine).
-    ``prefix`` names where ``value`` sits, so a symphony override is reported at its own path.
-    """
-    problems: list[tuple[str, str]] = []
-    for path, rule in checked_fields(model):
-        for display, leaf in _values_at(value, path, prefix):
-            message = _placeholder_problem(display, leaf, rule)
-            if message is not None:
-                problems.append((display, message))
-    return problems
+    """The ``(field path, refusal)`` pairs for the refused placeholders in ``value`` (252)."""
+    return [(f.field, f.message) for f in placeholder_findings(model, value, prefix) if f.refuses]
 
 
-def raw_placeholder_problems(daemon_view: dict[str, Any]) -> list[tuple[str, str]]:
-    """The refusals for a config as written, before ``${VAR}`` expansion (252).
+def placeholder_warnings(
+    model: type[BaseModel], value: object, prefix: str = "",
+) -> list[tuple[str, str]]:
+    """The ``(field path, warning)`` pairs for placeholders that are left out, not refused (252)."""
+    return [(f.field, f.message) for f in placeholder_findings(model, value, prefix) if not f.refuses]
+
+
+def raw_placeholder_findings(daemon_view: dict[str, Any]) -> list[PlaceholderFinding]:
+    """Every placeholder problem in a config as written, before ``${VAR}`` expansion (252).
 
     The on-disk shape is flat (the global fields at the root, next to ``symphonies``), so the root
     is checked as ``ProjectConfiguration`` and each symphony's overrides as its partial.
     """
-    problems = placeholder_problems(ProjectConfiguration, daemon_view)
+    findings = placeholder_findings(ProjectConfiguration, daemon_view)
     symphonies = daemon_view.get("symphonies")
     if isinstance(symphonies, list):
         for index, symphony in enumerate(symphonies):
             overrides = symphony.get("overrides") if isinstance(symphony, dict) else None
-            problems += placeholder_problems(ProjectConfiguration, overrides or {}, f"symphonies[{index}].overrides")
-    return problems
+            findings += placeholder_findings(ProjectConfiguration, overrides or {}, f"symphonies[{index}].overrides")
+    return findings
+
+
+def raw_placeholder_problems(daemon_view: dict[str, Any]) -> list[tuple[str, str]]:
+    """The refusals for a config as written (boot and save stop on these) (252)."""
+    return [(f.field, f.message) for f in raw_placeholder_findings(daemon_view) if f.refuses]
+
+
+def raw_placeholder_warnings(daemon_view: dict[str, Any]) -> list[tuple[str, str]]:
+    """The warnings for a config as written: placeholders left out of the launch (252)."""
+    return [(f.field, f.message) for f in raw_placeholder_findings(daemon_view) if not f.refuses]
 
 
 def validate_start_time(

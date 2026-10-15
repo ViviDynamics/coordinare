@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 import structlog
 from kubernetes.client.rest import ApiException
 
+from coordinare.env_placeholders import drop_unset_placeholders
 from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
 from coordinare.services.run_log import LOG_CHUNK_BYTES
@@ -381,7 +382,10 @@ class KubernetesRuntime:
         # already set it. An unresolved ${VAR} placeholder in the operator env
         # does not count as set (the docker path drops those literals, and the
         # entrypoint would treat the literal as an unknown backend either way).
-        pod_env = dict(config.env or {})
+        # 252: an entry with an unset placeholder is left out of the pod, as the docker path leaves it out.
+        pod_env, env_dropped = drop_unset_placeholders(config.env or {})
+        for env_key in env_dropped:
+            _log.info("kubernetes_runtime.env_skipped_unresolved_placeholder", pod=pod_name, env_key=env_key)
         if backend and not performer_lifecycle.env_carries_set_value(pod_env, "BACKEND"):
             pod_env["BACKEND"] = performer_lifecycle.normalize_backend_name(backend)
             _log.info(
