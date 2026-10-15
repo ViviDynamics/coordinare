@@ -13,7 +13,7 @@ from pathlib import Path
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.assets import _DASHBOARD_JS_ORDER, DASHBOARD_HTML_BUDGET_BYTES
 from coordinare.services import run_viewer
-from tests.unit.dashboard_js_slices import run_id_js, shipped_function
+from tests.unit.dashboard_js_slices import run_id_js, shipped_function, time_helpers_js
 
 _NEW_FILES = (
     "src/coordinare/services/run_viewer.py",
@@ -31,6 +31,7 @@ def test_runs_checks_under_node(tmp_path: Path) -> None:
         # 211: the header reads the ledger through usage.js, so its readouts and fmtCost load with runs.js.
         "\n\n".join([
             shipped_function("helpers", "esc"),
+        time_helpers_js(),
             shipped_function("helpers", "fmtCost"),
             run_id_js(),
             _DASHBOARD_JS_SOURCES["usage"],

@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
-from tests.unit.dashboard_js_slices import label_helpers_js
+from tests.unit.dashboard_js_slices import label_helpers_js, time_helpers_js
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "layout_154_checks.js"
 # The scripts the tile and the strip call, in the order the page loads them.
@@ -21,7 +21,7 @@ _MIN_CHECKS = 28
 
 
 def _concatenated_js() -> str:
-    return "\n\n".join([_DASHBOARD_JS_SOURCES["vocabulary"], label_helpers_js()]
+    return "\n\n".join([_DASHBOARD_JS_SOURCES["vocabulary"], label_helpers_js(), time_helpers_js()]
                        + [_DASHBOARD_JS_SOURCES[name] for name in _LAYOUT_SCRIPTS])
 
 

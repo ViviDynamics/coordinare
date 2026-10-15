@@ -117,12 +117,13 @@ def register_account_route(app: FastAPI, flow: OidcFlow | None, *, token_enabled
                 "authentication": "oidc", "subject": identity.subject,
                 "name": identity.name or identity.email or identity.subject,
                 "email": identity.email,
+                "username": identity.username, "provider": identity.provider,
             }
         else:
             profile = {
                 "authentication": "token" if token_enabled else "local",
                 "name": "Shared operator" if token_enabled else "Local operator",
-                "email": "",
+                "email": "", "username": "", "provider": "",
             }
         return JSONResponse(profile, headers={"Cache-Control": "no-store"})
 

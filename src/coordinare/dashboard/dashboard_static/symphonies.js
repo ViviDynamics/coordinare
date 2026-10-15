@@ -619,7 +619,8 @@ function symphonyTableRowHtml(sym, choice) {
   var hidden = symphonyRowHidden(sym.name, choice);
   var hiddenHtml = '<span class="muted" style="font-size:11px">Hidden: another symphony is shown</span>';
   var unchecked = symphonyUncheckedNote(sym);
-  var checked = sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '';
+  // 157: the last check is a relative time with the exact time and zone on hover. A hidden row shows the marker, not the time.
+  var checked = sym.last_poll_at ? timeHtml(sym.last_poll_at) : '';
   var href = '/symphonies/' + encodeURIComponent(sym.name);
   var bootBtn = sym.env_bootstrap_performer_id
     ? '<div><button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button></div>'
@@ -638,7 +639,7 @@ function symphonyTableRowHtml(sym, choice) {
     + '<td>' + esc(symphonyCountText(sym.cycle_count)) + '</td>'
     + '<td>' + esc(symphonyCountText(sym.error_count)) + '</td>'
     // The unchecked note can carry the last error, so under a scope it is hidden with the rest.
-    + '<td>' + (checked || (hidden ? hiddenHtml : (unchecked ? esc(unchecked.text) : 'Not checked yet'))) + '</td>'
+    + '<td>' + (hidden ? hiddenHtml : (checked || (unchecked ? esc(unchecked.text) : 'Not checked yet'))) + '</td>'
     + '</tr>';
 }
 

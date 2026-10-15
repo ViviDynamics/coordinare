@@ -32,14 +32,9 @@ function waitBlockersText(blockers) {
 }
 
 // "2h ago" from an ISO timestamp, or '' when there is no usable timestamp.
+// 157: the one relative age (fmtAgo, helpers.js), so the waiting reasons read like every other age.
 function waitAgo(iso, now) {
-  if (!iso) return '';
-  var ms = new Date(iso).getTime();
-  if (!isFinite(ms)) return '';
-  var mins = Math.floor((now - ms) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return mins + 'm ago';
-  return Math.floor(mins / 60) + 'h ago';
+  return fmtAgo(iso, now);
 }
 
 function waitHas(map, key) {

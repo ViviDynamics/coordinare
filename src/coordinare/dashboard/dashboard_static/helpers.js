@@ -7,40 +7,98 @@ function fmtDuration(secs) {
   return secs.toFixed(2) + 's';
 }
 
-function fmtTime(iso) {
-  if (!iso) return 'unknown';
-  try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+// 157: the one parse for every dashboard timestamp. The daemon writes ISO 8601 strings. A string with
+// no zone designator is UTC, as the daemon means it, and so is read as UTC (the moment is then shown in
+// the viewer's zone, labelled). Microseconds are dropped first, because not every browser reads them.
+// Only strings are timestamps here: a number (epoch seconds or milliseconds) reads as unreadable.
+function timeMs(iso) {
+  if (typeof iso !== 'string' || iso === '') return NaN;
+  // Fractions are kept to the millisecond: not every browser reads six digits, and a dropped fraction moves an age.
+  var text = iso.replace(/\.(\d+)/, function(m, digits) { return '.' + (digits + '000').slice(0, 3); }).replace(' ', 'T');
+  if (!/(Z|[+-]\d\d:?\d\d)$/i.test(text)) text += 'Z';
+  return Date.parse(text);
 }
 
-// 155: a timestamp in milliseconds, or NaN. The daemon writes microseconds, and not every browser
-// reads them, so a fraction of a second is dropped before the parse. The board's ages read through this.
+// 157: a timestamp in milliseconds, or NaN. Kept for the callers that name it; it is timeMs.
 function isoMs(iso) {
-  return Date.parse(String(iso || '').replace(/\.\d+/, ''));
+  return timeMs(iso);
 }
 
-// The age of a timestamp, as "12m 3s" or "2h 0m", or null when it cannot be read. Each function below is
-// self-contained: the tests slice them out of this file one at a time, so none calls another.
+// 157: the zone's short name ("EDT") for a moment in the viewer's zone, or '' when the browser names none.
+// One formatter serves the page. It is rebuilt when the browser's time zone changes, so a laptop that
+// travels is labelled correctly without a reload.
+function zoneLabel(d) {
+  try {
+    var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!zoneLabel.formatter || zoneLabel.zone !== zone) {
+      zoneLabel.formatter = new Intl.DateTimeFormat('en-US', {timeZoneName: 'short'});
+      zoneLabel.zone = zone;
+    }
+    var parts = zoneLabel.formatter.formatToParts(d);
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].type === 'timeZoneName' && parts[i].value) return parts[i].value;
+    }
+  } catch(e) { /* no Intl: the caller shows UTC */ }
+  return '';
+}
+
+// 157: the exact time with its zone, "2026-10-13 17:00:50 EDT". With no zone name the time is shown in
+// UTC and labelled UTC. An unreadable timestamp is "unknown". The relative text is fmtAgo's.
+function fmtTime(iso) {
+  var at = timeMs(iso);
+  if (isNaN(at)) return 'unknown';
+  var d = new Date(at);
+  var zone = zoneLabel(d);
+  var u = zone === '';
+  var two = function(n) { return (n < 10 ? '0' : '') + n; };
+  var y = u ? d.getUTCFullYear() : d.getFullYear();
+  var mo = (u ? d.getUTCMonth() : d.getMonth()) + 1;
+  var day = u ? d.getUTCDate() : d.getDate();
+  var h = u ? d.getUTCHours() : d.getHours();
+  var mi = u ? d.getUTCMinutes() : d.getMinutes();
+  var s = u ? d.getUTCSeconds() : d.getSeconds();
+  return y + '-' + two(mo) + '-' + two(day) + ' ' + two(h) + ':' + two(mi) + ':' + two(s) + ' ' + (u ? 'UTC' : zone);
+}
+
+// 157: the one relative age: "35s ago", "12m ago", "3h ago", "2d ago". '' when the timestamp is unreadable.
+// A moment after nowMs reads as "0s ago". Every relative time on the dashboard is this text.
+function fmtAgo(iso, nowMs) {
+  var at = timeMs(iso);
+  if (isNaN(at)) return '';
+  var now = nowMs == null ? Date.now() : nowMs;
+  var secs = Math.max(0, Math.floor((now - at) / 1000));
+  if (secs < 60) return secs + 's ago';
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ago';
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ago';
+  return Math.floor(hours / 24) + 'd ago';
+}
+
+// The names older callers and tests use. Each is fmtAgo: one implementation, one format.
 function fmtAge(iso) {
-  if (!iso) return null;
-  var at = Date.parse(String(iso).replace(/\.\d+/, ''));
-  if (isNaN(at)) return null;
-  var secs = Math.floor((Date.now() - at) / 1000);
-  if (secs < 60) return secs + 's';
-  var mins = Math.floor(secs / 60);
-  if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
-  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+  return fmtAgo(iso);
 }
 
-// The same age at an instant the caller names, such as the snapshot's server time.
 function fmtAgeAt(iso, nowMs) {
-  if (!iso) return null;
-  var at = isoMs(iso);
-  if (isNaN(at)) return null;
-  var secs = Math.floor((nowMs - at) / 1000);
-  if (secs < 60) return secs + 's';
-  var mins = Math.floor(secs / 60);
-  if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
-  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+  return fmtAgo(iso, nowMs);
+}
+
+// 157: the one way a dashboard page shows an absolute time: the relative age as the text, the exact
+// time with its zone on hover. refreshRelativeTimes keeps the age current. Every absolute time goes here.
+function timeHtml(iso, fallback) {
+  var exact = fmtTime(iso);
+  if (exact === 'unknown') return esc(fallback || 'unknown');
+  return '<time title="' + esc(exact) + '" data-rel-iso="' + esc(String(iso)) + '">' + esc(fmtAgo(iso)) + '</time>';
+}
+
+// 157: re-reads the age of every timeHtml time under root. Called once a second with the other readouts.
+function refreshRelativeTimes(root) {
+  var nodes = (root || document).querySelectorAll('time[data-rel-iso]');
+  for (var i = 0; i < nodes.length; i++) {
+    var text = fmtAgo(nodes[i].getAttribute('data-rel-iso'));
+    if (text && nodes[i].textContent !== text) nodes[i].textContent = text;
+  }
 }
 
 // 136: every display label for an internal code comes from the glossary
@@ -186,23 +244,15 @@ function nextCheckSeconds(s, now) {
 
 // 152: how fresh the data on screen is, beside the header's connection label.
 // "Live · updated 3s ago · next check in 18s", or, when the stream is quiet or
-// reconnecting, "Updates quiet · no update for 2m".
-function fmtShortAge(ms) {
-  var secs = Math.max(0, Math.floor(Number(ms) / 1000) || 0);
-  if (secs < 60) return secs + 's';
-  var mins = Math.floor(secs / 60);
-  if (mins < 60) return mins + 'm';
-  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-}
-
+// reconnecting, "Updates quiet · last update 2m ago".
 function freshnessText(label, lastMessageAt, hasMessage, s, now) {
   if (!hasMessage) return '';
-  var age = fmtShortAge(now - lastMessageAt);
+  var age = fmtAgo(new Date(lastMessageAt).toISOString(), now);
   if (label === 'Live') {
     var next = nextCheckSeconds(s, now);
-    return ' · updated ' + age + ' ago' + (next == null ? '' : ' · next check in ' + next + 's');
+    return ' · updated ' + age + (next == null ? '' : ' · next check in ' + next + 's');
   }
-  return ' · no update for ' + age + (label === 'Reconnecting' ? ': reconnecting…' : '');
+  return ' · last update ' + age + (label === 'Reconnecting' ? ': reconnecting…' : '');
 }
 
 // Called once a second. Reads the page's own connection bookkeeping.

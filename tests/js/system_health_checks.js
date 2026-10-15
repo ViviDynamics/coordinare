@@ -102,18 +102,18 @@ check('a card with nothing checked yet is not tone healthy', unknownSum.tone, 'n
 const freshRow = systemHealthRowHtml(row('board_check', 'Board check', 'healthy', {
   checked_at: agoMs(125000), fresh_label: 'last checked', last_success_at: agoMs(125000),
 }));
-checkMatches('freshness reads how long ago the status was checked', freshRow, /last checked 2m \d+s ago/);
-checkMatches('freshness reads how long ago the last success was', freshRow, /last success 2m \d+s ago/);
-checkContains('freshness ticks: the checked time is an elapsed readout', freshRow, 'data-elapsed-since="');
-checkContains('freshness ticks with its prefix', freshRow, 'data-elapsed-prefix="last checked "');
-checkContains('freshness ticks with its suffix', freshRow, 'data-elapsed-suffix=" ago"');
+checkMatches('freshness reads how long ago the status was checked', freshRow, /last checked <time[^>]*>2m ago<\/time>/);
+checkMatches('freshness reads how long ago the last success was', freshRow, /last success <time[^>]*>2m ago<\/time>/);
+checkContains('freshness ticks: the checked time is a relative time', freshRow, 'data-rel-iso="');
+checkContains('freshness names its check beside the time', freshRow, 'last checked <time');
+checkContains('freshness shows the exact time on hover', freshRow, 'title="20');
 
 const notMonitoredRow = systemHealthRowHtml(row('github_webhooks', 'GitHub webhooks', 'not_monitored', {
   summary: 'not in use', reason: 'coordinare polls the board on a timer',
 }));
 checkContains('a not-monitored row says not monitored in words', notMonitoredRow, 'not monitored');
 checkContains('a not-monitored row says why', notMonitoredRow, 'coordinare polls the board on a timer');
-checkAbsent('a not-monitored row has no freshness, since it observes nothing', notMonitoredRow, 'data-elapsed-since');
+checkAbsent('a not-monitored row has no freshness, since it observes nothing', notMonitoredRow, 'data-rel-iso');
 
 const unknownRow = systemHealthRowHtml(row('model_backends', 'Model backends', 'unknown'));
 checkContains('an unknown row says not checked yet', unknownRow, 'not checked yet');

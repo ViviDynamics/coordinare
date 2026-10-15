@@ -69,17 +69,17 @@ check("missing session does not throw", visibleText(cardRefHtml(undefined)), "Ca
 // --- 125: readouts carry their start point -----------------------------------
 var since = "2026-10-13T12:00:00Z";
 var el = elapsedSinceHtml(since);
-has("elapsed readout carries its start point", el, 'data-elapsed-since="' + since + '"');
-has("elapsed readout says what it measures", el, "Time since this stage run was dispatched");
+has("elapsed readout is a relative time from its start point", el, 'data-rel-iso="' + since + '"');
+has("elapsed readout shows the exact time on hover", el, 'title="');
 check("no start point says unknown, never a dash (155)", elapsedSinceHtml(null), "<strong>unknown</strong>");
 // Two readouts for the same run, refreshed by the one timer, agree.
-var a = { attrs: { "data-elapsed-since": since }, textContent: "stale-a",
+var a = { attrs: { "data-rel-iso": since }, textContent: "stale-a",
   getAttribute(k) { return this.attrs[k] || null; } };
-var b = { attrs: { "data-elapsed-since": since, "data-elapsed-prefix": "Stage running for: " }, textContent: "stale-b",
+var b = { attrs: { "data-rel-iso": since }, textContent: "stale-b",
   getAttribute(k) { return this.attrs[k] || null; } };
-refreshElapsedReadouts({ querySelectorAll() { return [a, b]; } });
-check("prefixed and bare readouts show the same elapsed value", b.textContent, "Stage running for: " + a.textContent);
-check("readout was refreshed from its own start point", a.textContent, fmtAge(since));
+refreshRelativeTimes({ querySelectorAll() { return [a, b]; } });
+check("two readouts for one run show the same age", b.textContent, a.textContent);
+check("readout was refreshed from its own start point", a.textContent, fmtAgo(since));
 
 // --- 128: identical consecutive checks collapse ------------------------------
 function row(phase, outcome, duration, ts) { return { phase: phase, outcome: outcome, duration_seconds: duration, timestamp: ts }; }

@@ -154,7 +154,7 @@ function historyRunRowHtml(row) {
     symphony: row.symphony, card: row.card, stage: '', outcome: '', since: '', until: '',
   }, '');
   return '<tr>' +
-    '<td>' + esc(fmtTime(row.started_at)) + '</td>' +
+    '<td>' + timeHtml(row.started_at) + '</td>' +
     '<td>' + esc(row.attributed_symphony || row.symphony || '') + '</td>' +
     '<td><a href="' + esc(cardPath) + '" data-history-card="' + esc(cardPath) + '">' + esc(row.card || '') +
       '</a>' + title + '</td>' +
@@ -186,7 +186,7 @@ function historyChecksHtml(checks) {
   var groups = historyCollapseChecks(checks);
   var lines = groups.map(function(group) {
     var newest = group.rows[0];
-    return '<tr><td>' + esc(fmtTime(newest.started_at)) + '</td>' +
+    return '<tr><td>' + timeHtml(newest.started_at) + '</td>' +
       '<td>' + esc(newest.stage || '') + (newest.decision ? ' · ' + esc(newest.decision) : '') + '</td>' +
       '<td>' + esc(historyCheckSummary(group)) + '</td></tr>';
   });

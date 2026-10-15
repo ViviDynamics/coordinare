@@ -16,7 +16,7 @@ from tests.unit.dashboard_js_slices import page_source, shipped_function
 
 def test_header_has_the_freshness_slot_and_the_page_refreshes_it_every_second() -> None:
     assert '<span id="connection-label" role="status" aria-live="polite">Connecting</span><span id="connection-detail"></span>' in page_source()
-    assert "refreshElapsedReadouts(document); refreshFreshness(); }, 1000);" in page_source()
+    assert "refreshElapsedReadouts(document); refreshRelativeTimes(document); refreshFreshness(); fitActivityToBoard(); }, 1000);" in page_source()
 
 
 def test_stale_state_is_styled_amber() -> None:
@@ -31,7 +31,7 @@ def test_freshness_client_js(tmp_path: Path) -> None:
     js_path = tmp_path / "freshness.js"
     js_path.write_text(
         "\n\n".join(shipped_function("helpers", name) for name in (
-            "nextCheckSeconds", "fmtShortAge", "freshnessText", "refreshFreshness",
+            "nextCheckSeconds", "timeMs", "fmtAgo", "freshnessText", "refreshFreshness",
         )),
         encoding="utf-8",
     )

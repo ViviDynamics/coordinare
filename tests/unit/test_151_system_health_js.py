@@ -13,7 +13,7 @@ from pathlib import Path
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_SOURCES
 from coordinare.dashboard.assets import _DASHBOARD_JS_DIR
-from tests.unit.dashboard_js_slices import app_js, shipped_function
+from tests.unit.dashboard_js_slices import app_js, shipped_function, time_helpers_js
 
 _CHECKS = Path(__file__).resolve().parents[1] / "js" / "system_health_checks.js"
 _STATIC = _DASHBOARD_JS_DIR
@@ -22,6 +22,7 @@ _STATIC = _DASHBOARD_JS_DIR
 def _sliced_js() -> str:
     return "\n\n".join([
         shipped_function("helpers", "esc"),
+        time_helpers_js(),
         shipped_function("helpers", "fmtAge"),
         _DASHBOARD_JS_SOURCES["systemhealth"],
     ])

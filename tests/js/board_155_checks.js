@@ -36,8 +36,8 @@ function checks(state, extra) {
 check('a pass, fail or running state gets its own class and a hand-off title with the age', () => {
   const pass = checksIconHtml(checks('pass'), NOW);
   assert.ok(pass.indexOf('checks-pass') !== -1, 'pass class');
-  assert.ok(pass.indexOf('title="PR checks at review hand-off: passing (12m 0s ago)"') !== -1, pass);
-  assert.ok(checksIconHtml(checks('fail'), NOW).indexOf('PR checks at review hand-off: failing (12m 0s ago)') !== -1);
+  assert.ok(pass.indexOf('title="PR checks at review hand-off: passing (12m ago)"') !== -1, pass);
+  assert.ok(checksIconHtml(checks('fail'), NOW).indexOf('PR checks at review hand-off: failing (12m ago)') !== -1);
   assert.ok(checksIconHtml(checks('running'), NOW).indexOf('checks-running') !== -1);
 });
 
@@ -63,7 +63,7 @@ check('an environment block is its own neutral state, not failing', () => {
 check('a recorded unknown result shows the unknown icon with the age, under the hand-off title', () => {
   const html = checksIconHtml(checks('unknown'), NOW);
   assert.ok(html.indexOf('checks-unknown') !== -1);
-  assert.ok(html.indexOf('PR checks at review hand-off: unknown (12m 0s ago)') !== -1, html);
+  assert.ok(html.indexOf('PR checks at review hand-off: unknown (12m ago)') !== -1, html);
 });
 
 check('a gate result with no current commit checked is neutral, never green or red', () => {
@@ -98,19 +98,19 @@ check('a state from the snapshot is escaped, never written as markup', () => {
 
 // --- timestamps: microseconds and the server clock ------------------------------------ //
 
-check('a microsecond timestamp reads as the same instant as its whole-second form', () => {
-  assert.strictEqual(isoMs('2026-10-13T13:00:00.123456+00:00'), Date.parse('2026-10-13T13:00:00+00:00'));
+check('a microsecond timestamp reads to the millisecond, not the second', () => {
+  assert.strictEqual(isoMs('2026-10-13T13:00:00.123456+00:00'), Date.parse('2026-10-13T13:00:00.123+00:00'));
 });
 
-check('the age of a microsecond timestamp is read, not NaN, and is the age of its whole second', () => {
-  // The fraction is dropped before the parse, so the age is the whole-second one (2h 0m), never NaN.
-  assert.strictEqual(fmtAgeAt('2026-10-14T10:00:00.123456+00:00', NOW), '2h 0m');
-  assert.strictEqual(fmtAgeAt('2026-10-14T10:00:00+00:00', NOW), '2h 0m');
+check('the age of a microsecond timestamp is read, not NaN', () => {
+  // Read to the millisecond: 2h less 123 ms is 1h 59m 59s, which floors to 1h, never NaN.
+  assert.strictEqual(fmtAgeAt('2026-10-14T10:00:00.123456+00:00', NOW), '1h ago');
+  assert.strictEqual(fmtAgeAt('2026-10-14T10:00:00+00:00', NOW), '2h ago');
 });
 
 check('a malformed timestamp has no age rather than a wrong one', () => {
-  assert.strictEqual(fmtAgeAt('not a time', NOW), null);
-  assert.strictEqual(fmtAgeAt(null, NOW), null);
+  assert.strictEqual(fmtAgeAt('not a time', NOW), '');
+  assert.strictEqual(fmtAgeAt(null, NOW), '');
 });
 
 // --- the Done (last 24h) lane ---------------------------------------------------------- //
@@ -171,7 +171,7 @@ check('the lane is collapsed by default and its summary carries the count', () =
   assert.ok(html.indexOf('<details class="done-lane"') === 0);
   assert.ok(html.indexOf(' open') === -1);
   assert.ok(html.indexOf('<summary>Done (last 24h) <span class="swimlane-col-count">3</span></summary>') !== -1);
-  assert.ok(html.indexOf('merged 1h 0m ago') !== -1, 'the age is read from the server clock');
+  assert.ok(html.indexOf('merged 1h ago') !== -1, 'the age is read from the server clock');
 });
 
 check('the lane says what the count covers, and an empty lane says so', () => {

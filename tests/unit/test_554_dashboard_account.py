@@ -37,6 +37,7 @@ def test_account_uses_verified_profile_without_exposing_tokens() -> None:
         assert response.json() == {
             'authentication': 'oidc', 'name': 'Sample Operator',
             'email': 'operator@example.test', 'subject': SUBJECT,
+            'username': '', 'provider': 'provider.test',
         }
         assert response.headers['cache-control'] == 'no-store'
         assert provider.last_token not in response.text

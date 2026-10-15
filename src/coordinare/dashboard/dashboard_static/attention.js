@@ -177,9 +177,7 @@ function attentionRowHtml(it) {
   var since = '';
   if (it.since) {
     var prefix = it.kind === 'subsystem_down' ? 'checked ' : 'asked ';
-    var age = fmtAge(it.since) || '';
-    since = ' <span class="muted" data-elapsed-since="' + esc(it.since) + '" data-elapsed-prefix="' + esc(prefix) +
-      '" data-elapsed-suffix=" ago">' + esc(prefix + age + ' ago') + '</span>';
+    since = ' <span class="muted">' + esc(prefix) + timeHtml(it.since, '') + '</span>';
   }
   return '<li class="attention-item" data-attention-key="' + esc(it.key) + '">' +
     '<span class="attention-kind">' + esc(kind) + '</span> ' + link + detail + since + '</li>';

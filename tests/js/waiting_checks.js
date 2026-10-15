@@ -116,10 +116,10 @@ check("an open question with no text and no timestamp is Needs human alone",
   waitingReason({ id: "PVTI_3", column: "BLOCKED" },
     { open_questions: [{ card_id: "PVTI_3", asked_at: null }], now: NOW }).text,
   "Needs human");
-check("a question asked a minute ago reads as just now in the title",
+check("a question asked half a minute ago reads in seconds in the title",
   waitingReason({ id: "PVTI_3", column: "BLOCKED" },
     { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: "2026-10-13T11:59:30Z" }], now: NOW }).title,
-  "Asked just now. Which provider?");
+  "Asked 30s ago. Which provider?");
 check("an open question for another card does not leak across",
   waitingReason({ id: "PVTI_4", column: "BLOCKED" },
     { open_questions: [{ card_id: "PVTI_3", text: "Which provider?", asked_at: TWO_HOURS_AGO }], now: NOW }).text,

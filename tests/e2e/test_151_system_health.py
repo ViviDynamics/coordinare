@@ -107,12 +107,12 @@ def test_each_row_shows_how_fresh_its_status_is(page: Page, live_server_url: str
     card = page.locator("#subsystems-section")
     expect(card.locator(".sh-row").first).to_be_visible(timeout=_WAIT_LIVE)
     github = card.locator(".sh-row").first
-    expect(github.locator(".sh-fresh").first).to_have_text(re.compile(r"^last call 2m \d+s ago$"))
-    expect(github.locator(".sh-fresh").last).to_have_text(re.compile(r"^last success 2m \d+s ago$"))
+    expect(github.locator(".sh-fresh").first).to_have_text(re.compile(r"^last call 2m ago$"))
+    expect(github.locator(".sh-fresh").last).to_have_text(re.compile(r"^last success 2m ago$"))
     # The freshness is a live readout, so it keeps counting rather than freezing at the render.
-    expect(github.locator(".sh-fresh").first).to_have_attribute("data-elapsed-since", re.compile(r"^\d{4}-"))
+    expect(github.locator("time[data-rel-iso]").first).to_have_attribute("data-rel-iso", re.compile(r"^\d{4}-"))
     board = card.locator(".sh-row").nth(2)
-    expect(board.locator(".sh-fresh").first).to_have_text(re.compile(r"^last checked \d+s ago$"))
+    expect(board.locator(".sh-fresh").first).to_have_text(re.compile(r"^last checked \d+(s|m) ago$"))
 
 
 @pytest.mark.e2e

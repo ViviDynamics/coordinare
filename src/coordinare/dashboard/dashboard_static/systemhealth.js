@@ -62,15 +62,13 @@ function systemHealthRowHtml(row) {
     '<span class="sh-name">' + esc(row.name) + '</span>' +
     '<span class="sh-word">' + esc(word) + '</span>' +
     '<span class="sh-summary">' + esc(row.summary || '') + '</span>';
+  // 157: the ages are timeHtml times: the relative text, the exact time and zone on hover.
   if (row.checked_at) {
     var label = row.fresh_label || 'checked';
-    html += ' <span class="sh-fresh" data-elapsed-since="' + esc(row.checked_at) + '" data-elapsed-prefix="' + esc(label + ' ') +
-      '" data-elapsed-suffix=" ago">' + esc(label + ' ' + (fmtAge(row.checked_at) || '-') + ' ago') + '</span>';
+    html += ' <span class="sh-fresh">' + esc(label) + ' ' + timeHtml(row.checked_at, '-') + '</span>';
   }
   if (row.last_success_at) {
-    html += ' <span class="sh-fresh" data-elapsed-since="' + esc(row.last_success_at) +
-      '" data-elapsed-prefix="last success " data-elapsed-suffix=" ago">' +
-      esc('last success ' + (fmtAge(row.last_success_at) || '-') + ' ago') + '</span>';
+    html += ' <span class="sh-fresh">last success ' + timeHtml(row.last_success_at, '-') + '</span>';
   }
   if (row.reason) html += '<div class="sh-reason">' + esc(row.reason) + '</div>';
   return html + '</div>';

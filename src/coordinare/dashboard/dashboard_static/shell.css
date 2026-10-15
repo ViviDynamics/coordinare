@@ -42,8 +42,13 @@ html[data-navigation-expanded="false"] .mascot-baton { transform: rotate(-16deg)
 .appearance-control button[aria-pressed="true"] { background: var(--color-bg-row-selected); color: var(--color-brand-ink); }
 .appearance-control svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #main-content { min-width: 0; }
-#workflow-card summary { font-weight: 600; }
-#workflow-card details[open] summary { margin-bottom: var(--space-5); }
+/* 157: the whole row is the control. A chevron turns when the section opens, and the open row has a rule under it. */
+#workflow-card > details > summary { display: flex; align-items: center; gap: var(--space-3); font-weight: 600; padding: var(--space-3) var(--space-2); margin: calc(var(--space-3) * -1) calc(var(--space-2) * -1); border-radius: var(--radius-control); list-style: none; }
+#workflow-card > details > summary::-webkit-details-marker { display: none; }
+#workflow-card > details > summary::before { content: "\25B6"; display: inline-block; width: 12px; font-size: 10px; color: var(--color-text-muted); transition: transform 0.15s ease; }
+#workflow-card > details > summary:hover { background: var(--color-bg-row-hover); }
+#workflow-card > details[open] > summary { margin-bottom: var(--space-5); border-bottom: 1px solid var(--color-border); }
+#workflow-card > details[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 899px) {
   #navbar { position: sticky; inset: auto; top: 0; width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-4); border-right: none; border-bottom: 1px solid var(--color-border); }
   .nav-header { width: 100%; }

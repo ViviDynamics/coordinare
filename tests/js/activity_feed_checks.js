@@ -137,7 +137,7 @@ section('harness — the shipped JS actually loaded');
 // `typeof` on an undeclared identifier yields "undefined" rather than throwing,
 // so this is safe even if the slice failed to define one of them.
 const REQUIRED = {
-  esc: typeof esc, afLabel: typeof afLabel, afTime: typeof afTime,
+  esc: typeof esc, afLabel: typeof afLabel, timeHtml: typeof timeHtml,
   afRowHtml: typeof afRowHtml, afMatches: typeof afMatches, afAppend: typeof afAppend,
   afRender: typeof afRender, afUpdateEmpty: typeof afUpdateEmpty,
   afUpdateFilterOptions: typeof afUpdateFilterOptions,
@@ -192,7 +192,11 @@ afNoteMessage();
 afTick();
 check('live while messages are arriving', _afLive === true);
 check('header describes live dashboard updates', els['connection-label'].textContent === 'Live');
-check('header reports the last message time', els['connection-status'].title.includes(new Date(_afLastMsgAt).toLocaleTimeString()));
+_afLastMsgAt = Date.parse('2026-10-13T21:00:50Z');
+updateConnectionStatus('Live');
+check('header reports the last message time, exact and zoned',
+      els['connection-status'].title === 'Dashboard updates: Live. Last message: 2026-10-13 21:00:50 UTC',
+      els['connection-status'].title);
 _afLastMsgAt = Date.now() - 39000;
 afTick();
 check('still live at 39 s — one dropped keepalive cannot trip it', _afLive === true);

@@ -16,6 +16,7 @@ from tests.unit.dashboard_js_slices import (
     label_helpers_js,
     run_id_js,
     shipped_function,
+    time_helpers_js,
     usage_helpers_js,
 )
 
@@ -29,7 +30,7 @@ def _sliced(tmp_path: Path) -> Path:
     js_path.write_text(
         "\n\n".join([
             shipped_function("helpers", "esc"),
-            shipped_function("helpers", "fmtTime"),
+            time_helpers_js(),
             shipped_function("helpers", "fmtCost"),
             label_helpers_js(),
             run_id_js(),

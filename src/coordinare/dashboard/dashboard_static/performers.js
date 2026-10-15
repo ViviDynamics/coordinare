@@ -72,17 +72,11 @@ function cardRefHtml(sess) {
 // dispatch of that run) and is refreshed by one timer, so two readouts for the
 // same run can never disagree. The element carries its start point.
 function elapsedSinceHtml(iso) {
-  if (!iso) return '<strong>unknown</strong>';
-  return '<strong data-elapsed-since="' + esc(iso) + '" title="Time since this stage run was dispatched">' + esc(fmtAge(iso) || 'unknown') + '</strong>';
+  return '<strong>' + timeHtml(iso) + '</strong>';
 }
 
 function refreshElapsedReadouts(root) {
-  var nodes = (root || document).querySelectorAll('[data-elapsed-since]');
-  for (var i = 0; i < nodes.length; i++) {
-    var prefix = nodes[i].getAttribute('data-elapsed-prefix') || '';
-    var suffix = nodes[i].getAttribute('data-elapsed-suffix') || '';
-    nodes[i].textContent = prefix + (fmtAge(nodes[i].getAttribute('data-elapsed-since')) || 'unknown') + suffix;
-  }
+  // 157: the ages themselves are refreshed by refreshRelativeTimes, so only the headline is left here.
   // 138: the same tick keeps the headline's "next check in Ns" counting down.
   if (typeof refreshConductorHeadline === 'function') refreshConductorHeadline();
 }
@@ -239,8 +233,8 @@ function checksIconHtml(checks, nowMs) {
     return '<span class="checks-icon checks-unchecked" role="img" aria-label="' + esc(last) +
       '" title="' + esc(last) + '">?</span>';
   }
-  var age = fmtAgeAt(checks.at, nowMs);
-  var title = 'PR checks at review hand-off: ' + icon.word + (age ? ' (' + age + ' ago)' : '');
+  var age = fmtAgo(checks.at, nowMs);
+  var title = 'PR checks at review hand-off: ' + icon.word + (age ? ' (' + age + ')' : '');
   var cls = 'checks-icon checks-' + key;
   if (checks.stale) {
     cls += ' checks-stale';
@@ -283,7 +277,7 @@ function setDoneLane(s, nowMs) {
 // The Done lane. Collapsed by default: its summary carries the count, and the cards show when opened.
 function doneLaneHtml(entries, nowMs) {
   var rows = entries.map(function(e) {
-    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgeAt(e.mergedAt, nowMs) || '') + ' ago</span></li>';
+    return '<li>' + esc(e.label) + ' <span class="muted">merged ' + esc(fmtAgo(e.mergedAt, nowMs) || 'at an unknown time') + '</span></li>';
   }).join('');
   // Only the summary shows when collapsed. The note and the list sit in the opened body, so the fold holds.
   return '<details class="done-lane" id="done-lane"><summary>Done (last 24h) ' +
@@ -455,7 +449,7 @@ function renderActiveWorkPanels(s) {
       // Queued wait is measured from the queued stamp; an actively
       // dispatching card measures from when its dispatch began.
       var waitSource = queuedLabel ? sess.slot_queued_since : sess.agent_dispatch_at;
-      var elapsed = waitSource ? (fmtAge(waitSource) || '') : '';
+      var elapsed = waitSource ? (fmtAgo(waitSource) || '') : '';
       var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
       var elapsedHtml = elapsed
         ? (queuedLabel
@@ -533,7 +527,7 @@ function renderCardDetailContent(sess, s) {
   var cardLink = sess.issue_url && /^https?:\/\//i.test(sess.issue_url)
     ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || 'unknown') + ' &#8599;</a>'
     : esc(sess.card_title || sess.card_id || 'unknown');
-  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || 'unknown') : 'None';
+  var rawElapsed = sess.agent_dispatch_at ? (fmtAgo(sess.agent_dispatch_at) || 'unknown') : 'None';
   var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
   var elapsedHtml = stale
     ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
@@ -849,7 +843,7 @@ function renderPerformersPage(s) {
         href: RUN_NAME_PATTERN.test(String(sel.session_id || '')) ? '/runs/' + encodeURIComponent(String(sel.session_id)) : '',
         copy: true,
       }) +
-      ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '-') +
+      ' &middot; Dispatched ' + timeHtml(sel.agent_dispatch_at || s.agent_dispatch_at, '-') +
       '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Technical</strong><div class="muted" style="margin-top:4px">Container: ' + containerIdHtml(sel.container_id) + '</div></div>' +
