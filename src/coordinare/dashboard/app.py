@@ -105,7 +105,10 @@ def create_dashboard_app(
         }
         if is_sse:
             log_kwargs["streaming"] = True
-        _log.info("http_request", **log_kwargs)
+        # Live readers re-query after commits. Capturing their own INFO log
+        # would create another row and an endless commit/query feedback loop.
+        request_log = _log.debug if request.url.path == "/api/events" else _log.info
+        request_log("http_request", **log_kwargs)
         return response
 
     ctx = DashboardContext(
@@ -128,6 +131,7 @@ def create_dashboard_app(
         routers.runs,
         routers.timeline,
         routers.history,
+        routers.events,
     ):
         area.register(app, ctx)
     return app

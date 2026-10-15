@@ -854,6 +854,7 @@ function refreshScopedViews() {
   updateAttention(scoped);
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
+  else if (location.pathname === '/logs') renderLogsPage(currentScopedState());
   else if (isCardPath(location.pathname)) cardPageRefresh();
   else renderDashboardExtras(scoped);
   afUpdateFilterOptions();

@@ -8,14 +8,14 @@ newest-first entries narrowed by the optional ``card_id``.
 
 from __future__ import annotations
 
-import socket
-import threading
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
-import uvicorn
+from fastapi.responses import StreamingResponse
 from pydantic import SecretStr
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
@@ -45,32 +45,22 @@ def _asgi_client(store: DashboardStore, daemon: MagicMock) -> DashboardClient:
     return DashboardClient(_config(), transport=httpx.ASGITransport(app=app))
 
 
-class _Server:
-    """uvicorn in a daemon thread for an ASGI app (stream endpoints need it)."""
+STREAM_SILENCE_SECONDS = 0.01
 
-    def __init__(self, app: Any) -> None:
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            self.port = int(sock.getsockname()[1])
-        self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="error"),
-        )
-        self.thread = threading.Thread(target=self.server.run, daemon=True)
 
-    def __enter__(self) -> _Server:
-        self.thread.start()
-        for _ in range(100):
-            if self.server.started:
-                break
-            threading.Event().wait(0.1)
-        return self
+class _LogStream(httpx.AsyncByteStream):
+    """Read the real route iterator with a socket-like silence timeout."""
 
-    def __exit__(self, *exc: Any) -> None:
-        self.server.should_exit = True
-        self.thread.join(timeout=5)
+    def __init__(self, response: StreamingResponse) -> None:
+        self.response = response
 
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async with asyncio.timeout(STREAM_SILENCE_SECONDS):
+                async for chunk in self.response.body_iterator:
+                    yield chunk.encode() if isinstance(chunk, str) else bytes(chunk)
+        except TimeoutError as exc:
+            raise httpx.ReadTimeout("performer log stream is quiet") from exc
 
 
 def _daemon(phase: str = "idle", **state_extra: Any) -> MagicMock:
@@ -98,9 +88,16 @@ async def test_get_performer_logs_returns_buffered_head() -> None:
     """The stream endpoint never ends; the tool must return its buffered head."""
     daemon = _daemon(agent_service=_log_service(["line one", "line two"]))
     app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock())
-    with _Server(app) as server:
-        client = DashboardClient(_config(server.url()))
-        result = await get_performer_logs_handler(client)
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/api/performer-logs")
+
+    async def stream_response(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/performer-logs"
+        assert request.headers["authorization"] == "Bearer " + "d" * 32
+        response = await route.endpoint()
+        return httpx.Response(response.status_code, headers=response.headers, stream=_LogStream(response))
+
+    client = DashboardClient(_config(), transport=httpx.MockTransport(stream_response))
+    result = await get_performer_logs_handler(client)
     assert result.ok, result.error
     text = (result.data or {}).get("text", "")
     assert "line one" in text and "line two" in text

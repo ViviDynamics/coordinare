@@ -368,7 +368,7 @@ var _lastState = null;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page','card-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','logs-page','glossary-page','symphonies-page','config-page','assistant-page','runs-page','card-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -388,7 +388,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/history':'History | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
+  var titles = {'/':'Dashboard | Coordinare','/performers':'Performers | Coordinare','/personas':'Personas | Coordinare','/logs':'Logs | Coordinare','/history':'History | Coordinare','/glossary':'Glossary | Coordinare','/symphonies':'Symphonies | Coordinare','/config':'Settings | Coordinare'};
   var activeLink = document.querySelector('.nav-link.nav-active');
   // 153: the label, not the link's text: a needs-attention badge sits in the link.
   var activeLabel = activeLink ? activeLink.querySelector('.nav-link-label') || activeLink : null;
@@ -965,6 +965,9 @@ function router() {
   } else if (path === '/personas') {
     showPage('personas-page');
     loadPersonasPage();
+  } else if (path === '/logs') {
+    showPage('logs-page');
+    renderLogsPage(currentScopedState(), true);
   } else if (path === '/history') {
     showPage('history-page');
     var historyNow = currentScopedState();
@@ -1429,7 +1432,8 @@ function connectEventStream() {
     try { afAppend(JSON.parse(e.data).entries); }
     catch(err) { console.error('activity parse error', err); }
   });
-  source.addEventListener('heartbeat', function() { if (es === source) afNoteMessage(); });
+  source.addEventListener('events_changed', function() { if (es === source) { afNoteMessage(); if (typeof logsChanged === 'function') logsChanged(); } });
+  source.addEventListener('heartbeat', function() { if (es === source) { afNoteMessage(); if (typeof logsChanged === 'function') logsChanged(); } });
   source.addEventListener('state_update', function(e) {
     if (es !== source) return;
     afNoteMessage();
@@ -1448,6 +1452,7 @@ function connectEventStream() {
       var path = location.pathname;
       if (isPerformersPath(path)) renderPerformersPage(scoped);
       else if (path === '/history') renderHistoryPage(scoped);
+      else if (path === '/logs') renderLogsPage(currentScopedState());
       else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
       else if (isCardPath(path)) cardPageRefresh();
       else renderDashboardExtras(scoped);
@@ -1475,6 +1480,7 @@ function connectEventStream() {
   };
   source.onopen = function() {
     if (es !== source) return;
+    if (typeof logsChanged === 'function') logsChanged();
     if (_sseRetryTimer !== null) {
       clearTimeout(_sseRetryTimer);
       _sseRetryTimer = null;
