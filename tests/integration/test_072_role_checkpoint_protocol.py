@@ -12,6 +12,7 @@ import pytest
 
 from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.state import initial_state
+from tests.unit.test_107_security_floor import _scan
 
 
 class _Performer:
@@ -24,6 +25,9 @@ class _Performer:
 
 
 def _state_for(stage: str, response: dict) -> dict:
+    if stage == "security":
+        # Checkpoint tests assume the mandatory performer scan completed cleanly.
+        response = {**response, "report": {"security_floor": _scan()}}
     state = initial_state()
     state["performer_services"] = {stage: _Performer(response)}
     state["performer_stage"] = stage

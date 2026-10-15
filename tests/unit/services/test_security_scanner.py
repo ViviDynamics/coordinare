@@ -103,8 +103,13 @@ def test_resolve_binary_uses_system_installation(monkeypatch):
 
 def test_resolve_binary_missing_image_tool_fails_closed(monkeypatch):
     monkeypatch.setattr(security_scanner, "_trusted_executable", lambda path: False)
-    with pytest.raises(ScannerError, match="trusted image binary not found"):
+    with pytest.raises(ScannerError) as exc_info:
         security_scanner._resolve_binary("semgrep")
+    assert str(exc_info.value) == (
+        "semgrep trusted system binary not found. "
+        "Install semgrep and bandit system-wide as root-owned executables "
+        "in /usr/local/bin or /usr/bin, or use the container transport."
+    )
 
 
 # --- tests -----------------------------------------------------------------
