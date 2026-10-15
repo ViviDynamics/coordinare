@@ -180,14 +180,22 @@ def test_workspace_root_outside_every_mount_loads(tmp_path: Path) -> None:
     assert cfg.workspace_root == workspace
 
 
-def test_default_workspace_under_a_mount_that_holds_the_temp_dir_fails_to_load() -> None:
-    """With no ``workspace_root`` the clones go under the temp dir, so a mount over it is refused."""
-    temp_dir = Path(tempfile.gettempdir()).resolve()
-    # The env-cache root sits beside the volume, not inside it, so only the workspace rule fires.
-    cache_root = temp_dir.parent.parent / "coordinare-env-cache-probe"
+def test_default_workspace_under_a_mount_that_holds_the_temp_dir_fails_to_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``workspace_root`` the clones go under the temp dir, so a mount over it is refused.
+
+    The system temp dir is replaced with one inside a test mount: on Linux the real one is /tmp, whose
+    parent is /, and a mount at / would also cover the state file, so the state rule fired first.
+    """
+    mount = tmp_path / "mount"
+    fake_temp = mount / "tmp"
+    fake_temp.mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_temp))
     with pytest.raises(pydantic.ValidationError, match="workspace_root"):
         ProjectConfiguration(
             **_BASE,
-            env_cache_root=cache_root,
-            performer_endpoints=[_ephemeral(temp_dir.parent)],
+            env_cache_root=tmp_path / "caches",
+            state_file_path=tmp_path / "state" / "coordinare.state.json",
+            performer_endpoints=[_ephemeral(mount)],
         )
