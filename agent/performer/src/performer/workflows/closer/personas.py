@@ -3,10 +3,14 @@
 One JUDGE persona, used only for threads code could not classify: unresolved,
 not outdated, and answered by someone other than the raiser. The model decides
 whether the reply addresses the concern and must quote the words that show it.
+
+Thread text is written by anyone who can comment on the PR, so every part of it
+(file location, author, body) is fenced as data (spec 178).
 """
 from __future__ import annotations
 
-from performer.workflows.closer.models import Thread
+from performer.workflows.closer.models import Thread, visible_body
+from performer.workflows.untrusted import fence
 
 __all__ = ["JUDGE_PERSONA", "render_threads"]
 
@@ -25,18 +29,24 @@ Rules:
 - When the thread is a question and the reply answers it, that is addressed.
 - Return one entry per thread given, no more.
 
+{rule}
+
 ## Threads
 {threads}
 """
 
 
-def render_threads(threads: list[Thread]) -> str:
-    """The full comment transcript per thread, which is all the model may judge from."""
+def render_threads(threads: list[Thread], nonce: str) -> str:
+    """The full comment transcript per thread, which is all the model may judge from.
+
+    Every untrusted span is fenced with ``nonce``: the file location, then each
+    comment with its author and time in the block label.
+    """
     parts: list[str] = []
     for t in threads:
         where = f"{t.path}:{t.line}" if t.path else "(no file anchor)"
-        lines = [f"### thread {t.id} at {where}"]
+        lines = [f"### thread {t.id}", fence("file location", where, nonce)]
         for c in t.comments:
-            lines.append(f"- {c.author} ({c.created_at}): {c.body.strip()[:2000]}")
+            lines.append(fence(f"comment by {c.author or 'unknown'} at {c.created_at}", visible_body(c.body), nonce))
         parts.append("\n".join(lines))
     return "\n\n".join(parts) if parts else "(none)"

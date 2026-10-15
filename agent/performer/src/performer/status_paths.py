@@ -14,7 +14,7 @@ letting tests reach real git and GitHub. Same pattern as
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -27,6 +27,7 @@ from performer.assessor_questions import (
 from performer.degeneracy import DegenerateArtifactError, classify_file, classify_text
 from performer.models import _redact_secrets
 from performer.protocol import PerformerResponse
+from performer.workflows.untrusted import fence, new_nonce, unescape_inert, untrusted_rule
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -527,6 +528,29 @@ async def intake_path(
     )
 
 
+def closer_feedback_comments(open_threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The implementer's feedback for each open thread (spec 178).
+
+    The excerpt is already an inert, capped copy (the closer's record never
+    carries a raw body). It still reaches the implementer's prompt as relayed
+    feedback, so it arrives fenced as untrusted data with the rule stated.
+    """
+    nonce = new_nonce()
+    comments: list[dict[str, Any]] = []
+    for t in open_threads:
+        path, line = str(t.get("path") or ""), int(t.get("line") or 0)
+        # The record holds the escaped path and login; the label shows the model the plain text.
+        label = f"review thread at {unescape_inert(path)}:{line} raised by {unescape_inert(str(t.get('author') or '')) or 'unknown'}"
+        excerpt = str(t.get("excerpt") or t.get("thread_id") or "")
+        # ``fenced`` tells the relay renderer that the location lives inside the
+        # block, so no path or line is rendered outside it (spec 178).
+        comments.append({
+            "path": path, "line": line, "fenced": True,
+            "body": f"unresolved review thread. {untrusted_rule(nonce)}\n{fence(label, excerpt, nonce)}",
+        })
+    return comments
+
+
 async def closing_record_path(
     perf: Performance,
     backend_status,
@@ -567,11 +591,7 @@ async def closing_record_path(
             perf.state = "approved"
             perf.review_suggestions = []
             return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_cr)
-        _comments = [
-            {"path": str(t.get("path") or ""), "line": int(t.get("line") or 0),
-             "body": f"unresolved review thread: {t.get('excerpt') or t.get('thread_id')}"}
-            for t in _open
-        ]
+        _comments = closer_feedback_comments(_open)
         max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
         perf.review_cycle += 1
         if perf.review_cycle >= max_cycles:
@@ -826,12 +846,14 @@ async def _reviewer_post_response(
 
     is_approved = review_output.get("approved") is True  # strict bool check
     raw_comments = review_output.get("comments", [])
-    # Normalize comments: strings become {"body": str}, dicts pass through
+    # Normalize comments: strings become {"body": str}, dicts pass through.
+    # ``fenced`` is the closer's marker (spec 178): a reviewer model must not be
+    # able to set it and hide its comment's location from the relay.
     comments = []
     if isinstance(raw_comments, list):
         for c in raw_comments:
             if isinstance(c, dict):
-                comments.append(c)
+                comments.append({k: v for k, v in c.items() if k != "fenced"})
             elif isinstance(c, str):
                 comments.append({"body": c})
     raw_suggestions = review_output.get("suggestions", [])

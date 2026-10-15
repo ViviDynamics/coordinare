@@ -19,9 +19,10 @@ class TestThreadComment:
         assert c.author == "alice"
         assert c.body == "fix this"
 
-    def test_rejects_body_over_4000_chars(self) -> None:
-        with pytest.raises(ValueError):
-            ThreadComment(author="alice", body="x" * 4001, created_at="2026-01-01T00:00:00Z")
+    def test_truncates_body_over_4000_chars_instead_of_rejecting(self) -> None:
+        """Spec 178: any commenter can write past the cap; the run must not hold on it."""
+        c = ThreadComment(author="alice", body="x" * 4001, created_at="2026-01-01T00:00:00Z")
+        assert len(c.body) == 4000
 
 
 class TestThread:

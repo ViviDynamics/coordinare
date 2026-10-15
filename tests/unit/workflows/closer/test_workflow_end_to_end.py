@@ -63,7 +63,7 @@ async def test_a_pull_request_with_no_threads_passes():
 async def test_an_answered_thread_is_judged_then_resolved_with_its_quote():
     judgements = [{"thread_id": "t1", "addressed": True, "quote": "Confirmed, works now", "reason": ""}]
     record, _r, gh, _e, calls = await _run([thread("t1", ASK, REPLY, CONFIRM)], judgements)
-    assert calls["n"] == 1 and "thread t1 at src/app.py:10" in calls["personas"][0]
+    assert calls["n"] == 1 and "### thread t1" in calls["personas"][0] and "src/app.py:10" in calls["personas"][0]
     assert record.verdict == "approved" and gh.resolved == ["t1"]
     assert record.resolved[0]["thread_id"] == "t1" and "Confirmed" in record.resolved[0]["reason"]
     assert record.judgements[0].accepted and record.judgements[0].discard_reason is None
@@ -78,7 +78,7 @@ async def test_a_quote_that_appears_nowhere_in_the_thread_is_discarded():
     j = record.judgements[0]
     assert not j.accepted and j.discard_reason == "quote_not_found"
     assert [t["thread_id"] for t in record.open_threads] == ["t1"]
-    assert "1 review thread(s) still open" in gh.reviews[0]["body"] and "`src/app.py:10`" in gh.reviews[0]["body"]
+    assert "1 review thread(s) still open" in gh.reviews[0]["body"] and "- src/app.py:10: " in gh.reviews[0]["body"]
 
 
 @pytest.mark.asyncio

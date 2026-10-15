@@ -9,13 +9,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from performer.workflows.closer.models import Classification, Judgement, Thread
+from performer.workflows.closer.models import Classification, Judgement, Thread, visible_body
+from performer.workflows.untrusted import echo
 
 __all__ = ["quote_found", "accept_judgement", "verdict", "to_resolve", "GateOutcome", "run_gate"]
 
 
 def _fold(text: str) -> str:
     return " ".join(str(text or "").split()).lower()
+
+
+def _seen_by_judge(body: str) -> str:
+    """The gate matches a quote only inside the text the judge was shown (spec 178)."""
+    return _fold(visible_body(body))
 
 
 _MAINTAINER_ASSOCIATIONS = {"MEMBER", "COLLABORATOR", "OWNER"}
@@ -39,7 +45,7 @@ def _quote_authoritative(quote: str, thread: Thread, pr_author: str | None) -> b
     for c in thread.comments:
         if pr_author and c.author == pr_author:
             continue
-        if needle in _fold(c.body) and (c.author == raiser or getattr(c, "author_association", "NONE") in _MAINTAINER_ASSOCIATIONS):
+        if needle in _seen_by_judge(c.body) and (c.author == raiser or getattr(c, "author_association", "NONE") in _MAINTAINER_ASSOCIATIONS):
             return True
     return False
 
@@ -49,7 +55,7 @@ def quote_found(quote: str, thread: Thread) -> bool:
     needle = _fold(quote)
     if not needle:
         return False
-    return any(needle in _fold(c.body) for c in thread.comments)
+    return any(needle in _seen_by_judge(c.body) for c in thread.comments)
 
 
 def accept_judgement(j: Judgement, sent_ids: Iterable[str], threads_by_id: dict[str, Thread], pr_author: str | None = None) -> tuple[bool, str | None]:
@@ -79,7 +85,7 @@ def to_resolve(classifications: list[Classification], judgements: list[Judgement
     seen: set[str] = set()
     for tid, reason in (
         [(c.thread_id, "outdated: the code the thread pointed at has changed") for c in classifications if c.state == "stale"]
-        + [(j.thread_id, f"addressed: {j.quote[:200]}") for j in judgements if j.accepted and j.addressed]
+        + [(j.thread_id, f"addressed: {echo(j.quote)}") for j in judgements if j.accepted and j.addressed]
     ):
         if tid in seen:  # one entry per thread: a thread is resolved once, for one reason
             continue

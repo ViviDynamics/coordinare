@@ -11,6 +11,7 @@ import structlog
 
 from performer.workflows.closer.models import Thread
 from performer.workflows.reviewer.post import PostOutcome, Poster, pr_number_from_url
+from performer.workflows.untrusted import LOGIN_LIMIT, PATH_LIMIT, echo
 
 log = structlog.get_logger(__name__)
 
@@ -30,12 +31,12 @@ def build_closing_review(resolved: list[tuple[str, str]], open_threads: list[Thr
     verdict = "CHANGES REQUESTED" if open_threads or changes_requested_by else "APPROVED"
     body = f"{header}\n\n**Bot Closer Review: {verdict}**\n\n"
     if changes_requested_by:
-        body += f"A human reviewer requested changes: {', '.join(changes_requested_by)}.\n"
+        body += f"A human reviewer requested changes: {', '.join(echo(login, LOGIN_LIMIT) for login in changes_requested_by)}.\n"
     if open_threads:
         body += f"{len(open_threads)} review thread(s) still open:\n"
         for t in open_threads:
-            where = f"`{t.path}:{t.line}`" if t.path else "(no file anchor)"
-            first = t.comments[0].body.strip().replace("\n", " ")[:200] if t.comments else ""
+            where = f"{echo(t.path, PATH_LIMIT)}:{t.line}" if t.path else "(no file anchor)"  # spec 178: an inert, flat path, never a code span
+            first = echo(t.comments[0].body) if t.comments else ""  # spec 178: a capped echo of thread text
             body += f"- {where}: {first}\n"
     else:
         body += "Every review thread is resolved. Handing off for human review; coordinare's checks gate remains.\n"
