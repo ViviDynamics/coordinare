@@ -828,10 +828,10 @@ def _is_run_log_entry(name: str) -> bool:
     return bool(stem) and sanitize_segment(stem) == stem
 
 
-def _expired(entry: Path, cutoff: float) -> bool:
-    """Is ``entry`` a regular file (never a link) last modified before ``cutoff``?"""
+def _expired_at(dir_fd: int, name: str, cutoff: float) -> bool:
+    """Is *name* in *dir_fd* a regular file (never a link) last modified before *cutoff*?"""
     try:
-        info = os.lstat(entry)
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except OSError:
         return False
     return stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff
@@ -841,11 +841,16 @@ def prune_run_logs(root: Path, *, retention_days: int, now: datetime | None = No
     """Delete run logs older than ``retention_days``, direct children of the root only.
 
     Only names the writer could have produced (a log or its stale partial) are
-    considered. Links are never followed or removed. A file modified within
-    ``MIN_RETENTION_AGE_SECONDS`` is kept, so a run still writing is safe. Returns the
-    number of files removed.
+    considered. Links are never followed or removed, and a link at the root itself is refused
+    (220): the root is opened with ``O_NOFOLLOW`` and every entry is checked and removed by name
+    relative to that descriptor. A file modified within ``MIN_RETENTION_AGE_SECONDS`` is kept,
+    so a run still writing is safe. Returns the number of files removed.
     """
-    if retention_days <= 0 or not root.is_dir():
+    if retention_days <= 0:
+        return 0
+    try:
+        dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
         return 0
     current = now or datetime.now(UTC)
     cutoff = min(
@@ -853,14 +858,19 @@ def prune_run_logs(root: Path, *, retention_days: int, now: datetime | None = No
         current.timestamp() - MIN_RETENTION_AGE_SECONDS,
     )
     removed = 0
-    for entry in list(root.iterdir()):
-        if not _is_run_log_entry(entry.name) or not _expired(entry, cutoff):
-            continue
-        try:
-            entry.unlink()
-        except OSError:
-            logger.warning("run_log.retention_skipped", path=str(entry))
-            continue
-        removed += 1
+    try:
+        with os.scandir(dir_fd) as entries:
+            names = [entry.name for entry in entries]
+        for name in names:
+            if not _is_run_log_entry(name) or not _expired_at(dir_fd, name, cutoff):
+                continue
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except OSError:
+                logger.warning("run_log.retention_skipped", path=str(root / name))
+                continue
+            removed += 1
+    finally:
+        os.close(dir_fd)
     logger.info("run_log.retention_pruned", removed=removed, retention_days=retention_days)
     return removed

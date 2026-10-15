@@ -7,6 +7,7 @@ import os
 import platform
 import signal
 import sys
+import tempfile
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,7 +62,7 @@ from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.github import GitHubService
 from coordinare.services.image_digest import PerformerImageResolver
-from coordinare.services.mounted_file import performer_mount_hosts
+from coordinare.services.mounted_file import open_mounted_file, performer_mount_hosts
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
     SkippedChannel,
@@ -898,6 +899,34 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
+_TASK_DUMP_NAME = "coordinare-tasks.log"
+
+
+def task_dump_directory(holder: list[Path]) -> Path:
+    """The private directory for SIGUSR1 dumps: made on the first dump, reused after (220).
+
+    *holder* is the caller's one-slot cache. Nothing is created at startup, so a daemon that never
+    receives SIGUSR1 leaves nothing behind in the temp directory.
+    """
+    if not holder:
+        holder.append(Path(tempfile.mkdtemp(prefix="coordinare-tasks-")))
+    return holder[0]
+
+
+def write_task_dump(directory: Path, text: str) -> Path:
+    """Write a SIGUSR1 task dump into *directory*, replacing the last one (220, item 7).
+
+    *directory* is private to this process. The file is opened ``O_NOFOLLOW``, so a link planted
+    at its name is refused rather than written through, and truncated, so a long-lived daemon
+    does not grow it without bound. Each dump stands alone.
+    """
+    path = directory / _TASK_DUMP_NAME
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return path
+
+
 def _performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
     """Every host directory a performer container can see (129 HIGH 1, 208).
 
@@ -947,20 +976,25 @@ def _build_transcript_collector(
             error=str(exc),
         )
         return None
-    _rebuild_usage_ledger(collector)
+    _rebuild_usage_ledger(collector, tuple(_performer_mount_hosts(config)))
     return collector
 
 
-def _rebuild_usage_ledger(collector: TranscriptCollector) -> None:
+def _rebuild_usage_ledger(collector: TranscriptCollector, mounts: tuple[Path, ...]) -> None:
     """134: recount usage from the transcripts on disk, after the collector is built.
 
     Outside the collector's own try: a failed rebuild is logged and leaves the ledger
-    empty for the window. It never disables transcription.
+    empty for the window. It never disables transcription. Transcripts are opened through
+    the mounted-file reader (220), so a link on the way in is refused.
     """
     if not collector.enabled:
         return
     try:
-        collector.usage.load_from_transcripts(collector.root, now=datetime.now(UTC))
+        collector.usage.load_from_transcripts(
+            collector.root,
+            now=datetime.now(UTC),
+            open_file=lambda path: open_mounted_file(path, mounts=mounts),
+        )
     except Exception as exc:  # best effort: the rebuild reports, it never fails the daemon
         logger.exception(
             "token_usage.rebuild_failed",
@@ -1566,13 +1600,12 @@ async def _run(
                         f'  File "{f.f_code.co_filename}", line {f.f_lineno}, in {f.f_code.co_name}\n',
                     )
             out.write("\n")
-        # Truncate per dump so a long-lived daemon receiving repeated SIGUSR1
-        # doesn't grow the file unbounded; each dump stands alone anyway.
-        path = Path("/tmp/coordinare-tasks.log")
-        with path.open("w") as fh:
-            fh.write(out.getvalue())
+        path = write_task_dump(task_dump_directory(task_dump_holder), out.getvalue())
         logger.info("sigusr1_task_dump_written", path=str(path), task_count=len(tasks))
 
+    # 220: the dump goes to a directory this process makes on its first SIGUSR1 (mkdtemp, mode
+    # 0700), never to a fixed name in the shared /tmp where another local user could plant a link.
+    task_dump_holder: list[Path] = []
     with contextlib.suppress(NotImplementedError, AttributeError):
         loop.add_signal_handler(signal.SIGUSR1, _dump_tasks)
 

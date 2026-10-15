@@ -273,18 +273,17 @@ def test_an_unreadable_card_directory_is_skipped_and_the_rest_still_loads(
     assert ledger.last_rebuild.dirs_skipped == 1
 
 
-def test_a_file_that_raises_mid_read_is_skipped_not_fatal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_file_that_raises_mid_read_is_skipped_not_fatal(tmp_path: Path) -> None:
     _write_run(tmp_path, symphony="acme", card="PVTI_1", run_id="run-x", lines=[_usage_line(1, 3)])
-    real_open = Path.open
 
-    def _broken_open(self: Path, *args: Any, **kwargs: Any) -> Any:
-        if self.name == "run-x.jsonl":
+    def _broken_open(path: Path) -> Any:
+        """The transcript opener (220): a failure to read this file skips it, it does not stop the rebuild."""
+        if path.name == "run-x.jsonl":
             raise OSError("simulated read failure")
-        return real_open(self, *args, **kwargs)
+        return path.open("rb")
 
-    monkeypatch.setattr(Path, "open", _broken_open)
     ledger = TokenLedger()
-    assert ledger.load_from_transcripts(tmp_path, now=NOW) == 0
+    assert ledger.load_from_transcripts(tmp_path, now=NOW, open_file=_broken_open) == 0
     assert ledger.last_rebuild.files_skipped == 1
 
 

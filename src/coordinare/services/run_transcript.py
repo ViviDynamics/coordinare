@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -967,17 +968,6 @@ def make_collector(
     )
 
 
-def _layout_dirs(parent: Path) -> list[Path]:
-    """Immediate subdirectories whose names the writer could have created (the conductor's folder included)."""
-    found: list[Path] = []
-    for entry in parent.iterdir():
-        if entry.is_symlink() or not entry.is_dir():
-            continue
-        if is_conductor_folder(entry.name) or sanitize_segment(entry.name) == entry.name:
-            found.append(entry)
-    return found
-
-
 def _is_run_file(entry: Path) -> bool:
     """A file the writer could have named: ``<sanitized run id>.jsonl`` and nothing else."""
     if not entry.name.endswith(_TRANSCRIPT_SUFFIX):
@@ -1011,22 +1001,16 @@ def _remove_quietly(action: Callable[[], None], path: Path) -> bool:
     return True
 
 
-def _expired_run_file(entry: Path, keep_resolved: set[Path], older_than: float) -> bool:
-    """Is ``entry`` one of the writer's own run files, not live, and old enough?
 
-    Every filesystem call is inside the guard: an entry that cannot be read is
-    skipped, never allowed to stop the sweep. One ``lstat`` answers "regular
-    file, not a link" and the age together.
-    """
-    if not _is_run_file(entry):
-        return False
-    try:
-        info = entry.lstat()
-        if not stat.S_ISREG(info.st_mode) or entry.resolve() in keep_resolved:
-            return False
-    except OSError:
-        return False
-    return info.st_mtime < older_than
+@dataclass(frozen=True)
+class _Sweep:
+    """What one retention sweep holds: the root (path and descriptor), the base, keep set and cutoff."""
+
+    root: Path
+    root_fd: int
+    base: Path
+    keep: frozenset[Path]
+    older_than: float
 
 
 def prune_expired(
@@ -1044,29 +1028,162 @@ def prune_expired(
     removed, and neither is a file modified within ``MIN_RETENTION_AGE_SECONDS``.
     Folders left empty are removed, but the root is not. A writer creating a folder
     at the same moment is not an error (review item 7). Returns the files deleted.
+
+    The sweep holds a descriptor to the root and to each folder it enters, and removes
+    by name relative to the folder's descriptor (220, defense in depth). A folder can be
+    renamed out of the root while the sweep holds its descriptor, and the descriptor
+    would then still reach its contents. So each folder is checked against its name when
+    it is opened, and again before every removal: the check walks the chain of
+    descriptors up to the root and compares each one's identity with the entry at its
+    name. A folder that is no longer where the sweep entered it is not walked, and
+    nothing more is removed under it. The window that remains is one syscall between that
+    check and the removal. macOS has no ``openat2`` with ``RESOLVE_BENEATH``, so the sweep
+    detects a move rather than preventing it.
     """
-    if retention_days <= 0 or not root.is_dir():
+    if retention_days <= 0:
+        return 0
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
         return 0
     base = root.resolve()
-    keep_resolved = {path.resolve() for path in keep}
     current = now or datetime.now(UTC)
     cutoff = (current - timedelta(days=retention_days)).timestamp()
     youngest_allowed = current.timestamp() - MIN_RETENTION_AGE_SECONDS
+    sweep = _Sweep(
+        root=root,
+        root_fd=root_fd,
+        base=base,
+        keep=frozenset(path.resolve() for path in keep),
+        older_than=min(cutoff, youngest_allowed),
+    )
     removed = 0
-    for symphony in _layout_dirs(base):
-        for card in _layout_dirs(symphony):
-            for entry in list(card.iterdir()):
-                if _expired_run_file(entry, keep_resolved, min(cutoff, youngest_allowed)) and _remove_quietly(
-                    entry.unlink, entry,
-                ):
-                    removed += 1
-            if not any(card.iterdir()):
-                _remove_quietly(card.rmdir, card)
-        if symphony.exists() and not any(symphony.iterdir()):
-            _remove_quietly(symphony.rmdir, symphony)
+    try:
+        for symphony_name in _layout_names(root_fd):
+            removed += _prune_symphony(sweep, symphony_name)
+    finally:
+        os.close(root_fd)
     logger.info("run_transcript.retention_pruned", removed=removed, retention_days=retention_days)
     return removed
 
+
+def _open_layout_dir(name: str, dir_fd: int) -> int | None:
+    """Open a layout folder by name, never following a link. None when it is not a real folder."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+
+
+def _layout_names(dir_fd: int) -> list[str]:
+    """Folder names in *dir_fd* the writer could have created (the conductor's folder included)."""
+    with os.scandir(dir_fd) as entries:
+        names = [entry.name for entry in entries]
+    return [name for name in names if is_conductor_folder(name) or sanitize_segment(name) == name]
+
+
+def _is_empty(dir_fd: int) -> bool:
+    with os.scandir(dir_fd) as entries:
+        return next(entries, None) is None
+
+
+def _placed(name: str, parent_fd: int, child_fd: int) -> bool:
+    """Is the folder held by *child_fd* still the entry *name* under *parent_fd*? (220 review)
+
+    Compares identities, so a rename away or a replacement at the name is seen. A failed
+    stat means the name is gone, which is also "not placed".
+    """
+    try:
+        here = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    held = os.fstat(child_fd)
+    return stat.S_ISDIR(here.st_mode) and (here.st_dev, here.st_ino) == (held.st_dev, held.st_ino)
+
+
+def _chain_placed(sweep: _Sweep, links: tuple[tuple[str, int, int], ...]) -> bool:
+    """Is every folder from the root down still at its name? *links* are (name, parent fd, fd)."""
+    try:
+        here = sweep.root.lstat()
+    except OSError:
+        return False
+    held = os.fstat(sweep.root_fd)
+    if not (stat.S_ISDIR(here.st_mode) and (here.st_dev, here.st_ino) == (held.st_dev, held.st_ino)):
+        return False
+    return all(_placed(name, parent_fd, fd) for name, parent_fd, fd in links)
+
+
+def _prune_symphony(sweep: _Sweep, symphony_name: str) -> int:
+    """Prune one symphony folder. Nothing under a folder that has moved is touched (220)."""
+    symphony_fd = _open_layout_dir(symphony_name, sweep.root_fd)
+    if symphony_fd is None:
+        return 0
+    removed = 0
+    try:
+        if _placed(symphony_name, sweep.root_fd, symphony_fd):
+            for card_name in _layout_names(symphony_fd):
+                removed += _prune_card(sweep, symphony_name, symphony_fd, card_name)
+            links = ((symphony_name, sweep.root_fd, symphony_fd),)
+            if _is_empty(symphony_fd) and _chain_placed(sweep, links):
+                _remove_quietly(
+                    functools.partial(os.rmdir, symphony_name, dir_fd=sweep.root_fd),
+                    sweep.base / symphony_name,
+                )
+    finally:
+        os.close(symphony_fd)
+    return removed
+
+
+def _prune_card(sweep: _Sweep, symphony_name: str, symphony_fd: int, card_name: str) -> int:
+    """Prune one card folder: expired run files by name, then the folder if it is empty."""
+    card_fd = _open_layout_dir(card_name, symphony_fd)
+    if card_fd is None:
+        return 0
+    card_path = sweep.base / symphony_name / card_name
+    links = (
+        (symphony_name, sweep.root_fd, symphony_fd),
+        (card_name, symphony_fd, card_fd),
+    )
+    removed = 0
+    try:
+        if _placed(card_name, symphony_fd, card_fd):
+            with os.scandir(card_fd) as entries:
+                names = [entry.name for entry in entries]
+            for name in names:
+                entry_path = card_path / name
+                if not _is_run_file(Path(name)):
+                    continue
+                if not _expired_at(card_fd, name, entry_path, sweep.keep, sweep.older_than):
+                    continue
+                if not _chain_placed(sweep, links):
+                    break
+                if _remove_quietly(functools.partial(os.unlink, name, dir_fd=card_fd), entry_path):
+                    removed += 1
+            if _is_empty(card_fd) and _chain_placed(sweep, links):
+                _remove_quietly(
+                    functools.partial(os.rmdir, card_name, dir_fd=symphony_fd),
+                    card_path,
+                )
+    finally:
+        os.close(card_fd)
+    return removed
+
+
+def _expired_at(
+    dir_fd: int,
+    name: str,
+    entry_path: Path,
+    keep: frozenset[Path],
+    older_than: float,
+) -> bool:
+    """Is *name* in *dir_fd* a regular file (never a link), not live, and older than *older_than*?"""
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or entry_path in keep:
+        return False
+    return info.st_mtime < older_than
 
 __all__ = [
     "MAX_BATCH_BYTES",

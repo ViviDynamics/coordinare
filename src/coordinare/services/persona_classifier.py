@@ -264,6 +264,11 @@ def _read_project_context(workspace_path: Path | None) -> dict[str, str]:
     return out
 
 
+async def _read_project_context_async(workspace_path: Path | None) -> dict[str, str]:
+    """220: :func:`_read_project_context` in a worker thread, so the clone reads stay off the loop."""
+    return await asyncio.to_thread(_read_project_context, workspace_path)
+
+
 async def _fetch_project_context(
     github_service: Any, owner: str, repo: str, head_sha: str,
 ) -> dict[str, str]:
@@ -574,7 +579,7 @@ async def classify(
             file_count=len(files_summary),
         )
     if workspace_path is not None:
-        project_context = _read_project_context(workspace_path)
+        project_context = await _read_project_context_async(workspace_path)
     else:
         # 107: no daemon-side clone for this card; read the same two files
         # through the platform API at the PR head.

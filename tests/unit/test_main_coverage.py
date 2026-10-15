@@ -594,5 +594,10 @@ def test_sigusr1_dump_uses_truncate_mode() -> None:
     start = src.index("def _dump_tasks(")
     end = src.index("\n    with contextlib.suppress(NotImplementedError, AttributeError):", start)
     body = src[start:end]
-    assert 'path.open("w")' in body, "SIGUSR1 dump must truncate (mode='w') to avoid unbounded growth"
-    assert 'path.open("a")' not in body, "SIGUSR1 dump must not append"
+    # 220: the dump goes through write_task_dump, which truncates (O_TRUNC) and refuses links
+    # (O_NOFOLLOW). The fixed /tmp name is gone.
+    assert "write_task_dump(task_dump_directory(" in body
+    assert "/tmp/coordinare-tasks.log" not in src
+    writer = src[src.index("def write_task_dump("):src.index("def _performer_mount_hosts(")]
+    assert "os.O_TRUNC" in writer
+    assert "os.O_NOFOLLOW" in writer
