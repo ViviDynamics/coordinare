@@ -130,6 +130,8 @@ var window = globalThis;
 let asked = 0;
 window.confirm = function() { asked += 1; return false; };
 cfgHasUnsaved = function() { return true; };
+// 221: the /config exception is for Settings' own tabs, so the harness says the Settings page is shown.
+cfgOnSettingsPage = function() { return true; };
 if (cfgLeaveAllowed('/configuration') !== false) throw new Error('/configuration skipped the prompt');
 if (asked !== 1) throw new Error('prompt not shown for /configuration');
 if (cfgLeaveAllowed('/config') !== true) throw new Error('/config itself must stay allowed');

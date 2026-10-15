@@ -15,6 +15,11 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
 from fastapi.responses import JSONResponse
 
 from coordinare.dashboard.guards import _version_headers, _version_refusal
+from coordinare.dashboard.secret_overrides import (
+    _mask_secret_overrides,
+    _restore_masked_secrets,
+    _secret_override_fields,
+)
 from coordinare.services.config_write_service import _validate_candidate
 
 if TYPE_CHECKING:
@@ -23,7 +28,6 @@ if TYPE_CHECKING:
     from coordinare.dashboard.context import DashboardContext
 
 _log = structlog.get_logger(__name__)
-
 
 def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | None) -> None:
     """Atomically write the current symphony list to config.yaml (FR-020)."""
@@ -158,7 +162,8 @@ def _register_get_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 "name": name,
                 "github_project_number": getattr(cfg, "github_project_number", None),
                 "enabled": getattr(cfg, "enabled", True),
-                "overrides": getattr(cfg, "overrides", None) or {},
+                "overrides": _mask_secret_overrides(getattr(cfg, "overrides", None) or {}),
+                "secret_overrides": _secret_override_fields(daemon, getattr(cfg, "overrides", None) or {}),
                 "personas": getattr(cfg, "personas", None) or {},
                 "env_spec_files": getattr(cfg, "env_spec_files", None) or ["README.md"],
                 "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
@@ -458,12 +463,16 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
 
             cfg = symphony_configs[name]
             enabled = body.get("enabled", getattr(cfg, "enabled", True))
+            stored_overrides = getattr(cfg, "overrides", None) or {}
+            overrides, refusal = _restore_masked_secrets(body.get("overrides", stored_overrides), stored_overrides)
+            if refusal is not None:
+                return refusal
             try:
                 updated = SymphonyConfig(
                     name=name,
                     github_project_number=getattr(cfg, "github_project_number", None),  # type: ignore[arg-type]
                     enabled=enabled,
-                    overrides=body.get("overrides", getattr(cfg, "overrides", None)),
+                    overrides=overrides,
                     personas=body.get("personas", getattr(cfg, "personas", None)),
                     env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
                 )
@@ -513,7 +522,7 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse({
                 "name": name,
                 "enabled": getattr(updated, "enabled", True),
-                "overrides": getattr(updated, "overrides", None) or {},
+                "overrides": _mask_secret_overrides(getattr(updated, "overrides", None) or {}),
                 "personas": getattr(updated, "personas", None) or {},
                 "env_spec_files": getattr(updated, "env_spec_files", ["README.md"]),
             }, headers=_version_headers(config_path))
