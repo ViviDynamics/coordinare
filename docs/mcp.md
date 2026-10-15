@@ -139,7 +139,9 @@ whose recovery hint is to re-read. A routing update or delete also takes
 `expected` (`{"backend": ..., "model": ...}`), the entry the write means, so the
 dashboard refuses it if another entry has moved into that index. The routing
 scope of `get_config` gives the entries with their backend and model, and its
-`content_hash` is the `base_hash`. `expected` is optional: a caller that omits
+`content_hash` is the `base_hash`. `expected` takes exactly two keys, `backend` and
+`model`; a whole routing entry (with its `target`, for example) is refused with a 400
+that names the keys to remove. `expected` is optional: a caller that omits
 it is still guarded by `base_hash`.
 
 ## Security notes

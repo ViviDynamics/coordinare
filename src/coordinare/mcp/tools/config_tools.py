@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from coordinare.mcp.client import ToolResult, get_client
 from coordinare.mcp.tools._registry import ToolDefinition
@@ -103,6 +103,20 @@ class RoutingIdentity(BaseModel):
     backend: str
     model: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def _only_backend_and_model(cls, data: Any) -> Any:
+        """Name the keys that are allowed, so an agent that copied a whole entry knows what to remove."""
+        if isinstance(data, dict):
+            extra = sorted(str(key) for key in data if key not in ("backend", "model"))
+            if extra:
+                msg = (
+                    "expected takes exactly two keys, backend and model; "
+                    f"remove {', '.join(extra)} (pass the entry's backend and model only)"
+                )
+                raise ValueError(msg)
+        return data
+
 
 class UpdateConfigInput(BaseModel):
     action: UpdateAction
@@ -188,7 +202,7 @@ async def update_config(action: str, **kwargs: Any) -> dict[str, Any]:
     except ValidationError as exc:
         errors = exc.errors()
         loc = errors[0]["loc"] if errors else ()
-        msg = errors[0]["msg"] if errors else "invalid value"
+        msg = (errors[0]["msg"] if errors else "invalid value").removeprefix("Value error, ")
         where = ".".join(str(part) for part in loc) or "arguments"
         failure = ToolResult.failure(
             "validation",

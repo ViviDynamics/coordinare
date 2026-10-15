@@ -1884,9 +1884,11 @@ class ProjectConfiguration(BaseSettings):
                 raise ValueError(msg)
             token = self.github_token.get_secret_value().strip()
             if token.startswith("${") and token.endswith("}"):
+                name = token[2:-1]
                 msg = (
-                    "github_token must be a real token value; unresolved placeholder detected. "
-                    "Set COORDINARE_GITHUB_TOKEN or update config.yaml."
+                    f"github_token still holds ${{{name}}}, an unresolved placeholder: "
+                    f"the environment variable {name} is not set. "
+                    f"Set {name} in the daemon's environment, or write the token in config.yaml."
                 )
                 raise ValueError(msg)
         elif self.github_auth == "app":

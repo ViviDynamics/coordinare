@@ -210,3 +210,21 @@ async def test_a_malformed_expected_is_a_tool_error_not_an_exception(expected: A
     assert result["ok"] is False
     assert result["error"]["kind"] == "validation"
     assert "update_config argument 'expected" in result["error"]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_whole_routing_entry_in_expected_names_the_allowed_keys() -> None:
+    """An agent that copies a whole entry gets a 400-class error that says exactly what is allowed."""
+    from coordinare.mcp.tools.config_tools import update_config
+
+    result = await update_config(
+        "routing_update", index=0, base_hash="h", payload={"model": "m"},
+        expected={"backend": "vllm", "model": "m", "target": {"base_url": "http://x"}},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "validation"
+    assert result["error"]["status"] == 400
+    detail = result["error"]["detail"]
+    assert "backend and model" in detail
+    assert "remove target" in detail

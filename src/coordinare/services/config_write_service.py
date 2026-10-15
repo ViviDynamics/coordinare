@@ -31,7 +31,12 @@ import yaml
 from pydantic import BaseModel, Field
 
 from coordinare.config import expand_config_text
-from coordinare.start_checks import validate_start_time
+from coordinare.config_validation import (
+    coerce_multi_symphony_raw,
+    is_multi_symphony_config,
+    wrap_legacy_config,
+)
+from coordinare.start_checks import raw_secret_problems, validate_start_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -285,7 +290,6 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
 
     from coordinare.config import CoordinareConfiguration
     from coordinare.config_descriptors import is_env_placeholder
-    from coordinare.config_validation import coerce_multi_symphony_raw
 
     # Validate what the daemon will load: the text this write produces, with ${VAR} expanded as
     # ProjectConfiguration.from_yaml expands it (219 final check). Covers every write path.
@@ -294,13 +298,19 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
             yaml.safe_dump(candidate, sort_keys=False, default_flow_style=False, allow_unicode=True),
         ),
     )
+    # 225 round 2: a secret that still holds ${VAR} after expansion is the variable unset. The daemon
+    # would read that literal as the secret, so the save is refused, naming the variable.
+    problems = raw_secret_problems(daemon_view if isinstance(daemon_view, dict) else {})
+    if problems:
+        field, message = problems[0]
+        return [FieldError(key=field if "." not in field else None, code="validation", message=message)]
     attempt = dict(daemon_view) if isinstance(daemon_view, dict) else {}
     token = attempt.get("github_token")
     if is_env_placeholder(token) or (token is None and _env_supplies_github_token()):
         attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
 
     try:
-        loaded = CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
+        loaded = CoordinareConfiguration(**_daemon_shape(attempt))
     except ValidationError as exc:
         return [_field_error_from_pydantic(e) for e in exc.errors()]
     except ValueError as exc:  # cross-field validators may raise bare ValueError
@@ -327,13 +337,24 @@ def _load_config_for_refs(candidate: dict[str, Any]) -> CoordinareConfiguration:
     """
     from coordinare.config import CoordinareConfiguration
     from coordinare.config_descriptors import is_env_placeholder
-    from coordinare.config_validation import coerce_multi_symphony_raw
 
     attempt = dict(candidate)
     token = attempt.get("github_token")
     if is_env_placeholder(token) or token is None:
         attempt["github_token"] = "ghp_placeholder_for_validation"  # placeholder for the validator, never a real token
-    return CoordinareConfiguration(**coerce_multi_symphony_raw(attempt))
+    return CoordinareConfiguration(**_daemon_shape(attempt))
+
+
+def _daemon_shape(raw: dict[str, Any]) -> dict[str, Any]:
+    """The CoordinareConfiguration dict the daemon builds from a raw config (225 round 2).
+
+    A legacy single-project file (no symphonies, or an empty list) is wrapped the way boot wraps it;
+    a multi-symphony file is coerced the way boot coerces it. Validating anything else would refuse a
+    config the daemon loads fine.
+    """
+    if is_multi_symphony_config(raw):
+        return coerce_multi_symphony_raw(raw)
+    return wrap_legacy_config(raw)
 
 
 def _referrers(config: CoordinareConfiguration, catalog: str, item_id: str) -> list[str]:

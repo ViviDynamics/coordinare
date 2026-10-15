@@ -1796,8 +1796,13 @@ def main() -> None:
         deprecated_fields_detected=bool(result.warnings),
     )
 
-    # Step 4b: Validate auth config (key file exists for App mode)
-    validate_auth_config(config)
+    # Step 4b: Validate auth config (key file exists for App mode). Boot refuses with the
+    # message on stderr and exit status 1, as it always has; the save path gets the same ValueError.
+    try:
+        validate_auth_config(config)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Step 4c: Warn when polling is disabled but no webhook trigger is configured
     if config.poll_interval_seconds == 0 and not config.webhooks.enabled:
