@@ -18,12 +18,13 @@ if TYPE_CHECKING:
 
 def validate_start_time(config: ProjectConfiguration) -> None:
     """Raise ``ValueError`` with the operator-facing reason for a config the daemon refuses at boot."""
-    validate_dashboard_bind(
-        config.dashboard_host, config.dashboard_auth_token, oidc=config.dashboard_oidc,
-    )
-    if config.dashboard_oidc is not None:
+    # getattr keeps the boot contract the #143 startup test pins: a config object that lacks the OIDC
+    # fields is read as having none.
+    oidc = getattr(config, "dashboard_oidc", None)
+    validate_dashboard_bind(config.dashboard_host, config.dashboard_auth_token, oidc=oidc)
+    if oidc is not None:
         validate_dashboard_oidc(
-            config.dashboard_oidc,
+            oidc,
             dashboard_host=config.dashboard_host,
-            trusted_hosts=config.trusted_dashboard_hosts,
+            trusted_hosts=getattr(config, "trusted_dashboard_hosts", []),
         )
