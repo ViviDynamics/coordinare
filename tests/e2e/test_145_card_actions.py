@@ -15,7 +15,7 @@ _CARD = "PVTI_145"
 def _broadcast(store: DashboardStore, **session_overrides) -> None:
     session = {
         **_active_session(_CARD, "Add login", "implementing"),
-        "issue_number": 57, "agent_dispatch_at": "2026-10-13T12:00:00+00:00",
+        "issue_number": 57, "agent_dispatch_at": "2026-10-13T12:00:00+00:00", "cancel_available": True,
         **session_overrides,
     }
     store.broadcaster.broadcast(_full_snapshot(

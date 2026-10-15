@@ -89,11 +89,22 @@ function cardActionMsgHtml(cardId, now) {
   return esc(entry.text) + retry;
 }
 
+// 168: the server says which card Cancel would act on (cancel_available). Cancel acts on that
+// one card only, so a card another symphony holds gets no Cancel button, and the menu says why.
+var CARD_CANCEL_NOTE = 'Cancel is offered only for the card the conductor is working on right now. This card is not it, so it cannot be cancelled from here.';
+
+function cardCancelOffered(sess) {
+  return !!sess && sess.cancel_available === true;
+}
+
 // The actions menu for a card, or '' when the card has nothing to act on.
 function cardActionsHtml(sess, s, now) {
   if (!sess || !sess.card_id || !CARD_ACTION_PHASES[sess.phase]) return '';
   var cardId = String(sess.card_id);
   var id = esc(cardId);
+  var cancel = cardCancelOffered(sess)
+    ? '<button type="button" class="card-action-btn card-action-danger" data-card-action="cancel" data-card-id="' + id + '">Cancel card</button>'
+    : '<span class="card-action-note" style="color:var(--color-text-muted);font-size:12px">' + esc(CARD_CANCEL_NOTE) + '</span>';
   var stages = Array.isArray(s && s.lifecycle_sequence) ? s.lifecycle_sequence : [];
   var options = stages.map(function(stage) {
     return '<option value="' + esc(stage) + '">' + stageLabel(stage) + '</option>';
@@ -107,7 +118,7 @@ function cardActionsHtml(sess, s, now) {
   return '<details class="card-actions" data-card-id="' + id + '"' + open + '>' +
     '<summary aria-label="Card actions" title="Card actions">&#8943;</summary>' +
     '<div class="card-actions-menu">' +
-      '<button type="button" class="card-action-btn card-action-danger" data-card-action="cancel" data-card-id="' + id + '">Cancel card</button>' +
+      cancel +
       '<button type="button" class="card-action-btn" data-card-action="skip" data-card-id="' + id + '">Skip current stage</button>' +
       restart +
       '<div class="card-action-msg" role="status" aria-live="polite">' + msg + '</div>' +

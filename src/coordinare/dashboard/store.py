@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coordinare.cancel import resolve_active_card
 from coordinare.dashboard.card_pipeline import card_pipeline_block
 from coordinare.dashboard.helpers import (
     _json_default,
@@ -283,8 +284,10 @@ class DashboardStore:
         Compared between watcher ticks to decide whether a broadcast is needed.
         Includes the fields the Active Performers panel renders (title, stage,
         phase, urls) plus dispatch identity (container_id) so a re-dispatch
-        of the same card_id still trips a broadcast.
+        of the same card_id still trips a broadcast. The resolved active card
+        also controls which row offers Cancel, including in single-card mode.
         """
+        active_id, _ = resolve_active_card(daemon.state)
         active = daemon.state.get("active_sessions") or {}
         parts: list[tuple[Any, ...]] = []
         for sid in sorted(active.keys()):
@@ -310,7 +313,7 @@ class DashboardStore:
                 bool(sess.get("env_blocked")),
                 block_cause(sess),
             ))
-        return tuple(parts)
+        return active_id, tuple(parts)
 
     async def _watch_active_sessions(
         self,
@@ -363,8 +366,10 @@ class DashboardStore:
         the transition is free here. It is the watcher's only recording duty
         besides releasing dedup bookkeeping for departed cards (FR-024).
         """
-        old = {p[0]: (p[4], p[5]) for p in (previous or ())}
-        new = {p[0]: (p[4], p[5]) for p in current}
+        _, previous_sessions = previous if previous is not None else ("", ())
+        _, current_sessions = current
+        old = {p[0]: (p[4], p[5]) for p in previous_sessions}
+        new = {p[0]: (p[4], p[5]) for p in current_sessions}
         active = daemon.state.get("active_sessions") or {}
         batch: list[dict[str, Any]] = []
         for sid, (phase, stage) in new.items():
@@ -659,6 +664,7 @@ class DashboardStore:
         _sess_stage = _sess_raw_stage if isinstance(_sess_raw_stage, str) else ""
         _sess_dispatch = sess.get("agent_dispatch_at")
         _sess_agent_dispatch = sess.get("agent_dispatch") or {}
+        active_id, _ = resolve_active_card(daemon.state)
         return {
             # 348: per-session performer telemetry. These fields round-trip
             # through _SESSION_FIELDS, so in shared-pool/multi-symphony mode
@@ -692,6 +698,7 @@ class DashboardStore:
             "workflow_step_trail": list(sess.get("workflow_step_trail") or []),
             "performer_logs": DashboardStore._session_performer_logs(daemon, _sess_stage, sid),
             "card_id": sid,
+            "cancel_available": bool(active_id) and sid == active_id,
             "card_title": str(sess_card.get("title", "")),
             # 145: a control the operator queued that the graph has not applied yet.
             "pending_control": _pending_control(sess.get("pending_override")),
@@ -746,6 +753,7 @@ class DashboardStore:
         _dispatch = daemon.state.get("agent_dispatch") or {}
         _top_card_id = str(card_dict.get("id") or _dispatch.get("session_id") or "active")
         _top_card_title = str(card_dict.get("title") or (snapshot.active_card_title if snapshot else "") or "")
+        active_id, _ = resolve_active_card(daemon.state)
         return {
             # 348: mirror the per-session telemetry keys from top-level state
             # so the UI can read the session row unconditionally, without a
@@ -767,6 +775,7 @@ class DashboardStore:
             "workflow_step_trail": list(daemon.state.get("workflow_step_trail") or []),
             "performer_logs": performer_logs,
             "card_id": _top_card_id,
+            "cancel_available": bool(active_id) and _top_card_id == active_id,
             "card_title": _top_card_title,
             "issue_number": card_dict.get("issue_number"),
             "issue_url": str(card_dict.get("issue_url", "")) or None,
