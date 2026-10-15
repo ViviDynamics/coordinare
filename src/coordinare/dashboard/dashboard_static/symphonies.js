@@ -553,6 +553,10 @@ function symphonyStatus(sym) {
     return {label: 'Active', reason: 'The snapshot does not carry this symphony.', tone: 'muted'};
   }
   var note = symphonyUncheckedNote(sym);
+  // 101: a branch review the daemon identity cannot give is said here, in the Active reason.
+  var review = sym.merge_review && typeof sym.merge_review === 'object' ? sym.merge_review : null;
+  // Only a requirement that holds, or one that cannot be read, is a warning. A bypassed or clear branch says nothing.
+  var reviewWarns = !!(review && review.message && (review.state === 'external_review_required' || review.state === 'unreadable'));
   var lastError = sym.state && typeof sym.state === 'object' && sym.state.last_error ? String(sym.state.last_error) : '';
   var label;
   var reason;
@@ -569,10 +573,15 @@ function symphonyStatus(sym) {
     reason = sym.cards_paused + (sym.cards_paused === 1 ? ' card is' : ' cards are') + ' paused on the board.';
   } else {
     label = 'Active';
-    if (note) reason = note.text;
+    if (reviewWarns) reason = String(review.message);
+    else if (note) reason = note.text;
     else if (typeof sym.poll_interval_seconds === 'number' && sym.poll_interval_seconds > 0) {
       reason = 'Checked every ' + sym.poll_interval_seconds + ' seconds.';
     } else reason = 'Checked when a webhook arrives.';
+  }
+  // 101: a paused or failed symphony still has the branch condition, so it is added after the reason.
+  if (reviewWarns && (label === 'Error' || label === 'Paused')) {
+    reason = reason + ' ' + String(review.message);
   }
   var tone = {Disabled: 'muted', Error: 'red', Paused: 'blue', Active: 'green'}[label];
   return {label: label, reason: reason, tone: tone};

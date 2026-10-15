@@ -26,6 +26,7 @@ class EventType(StrEnum):
     wiki_init_exhausted = "wiki_init_exhausted"  # 124: wiki-init budget exhausted / auto-merge blocked
     stale_review_surfaced = "stale_review_surfaced"  # 128: stale human change-request re-surfaced (re-review/dismiss)
     card_auto_recovered = "card_auto_recovered"  # 129: BLOCKED card auto-recovered after its blocker cleared
+    merge_review_required = "merge_review_required"  # 101: branch needs a review the daemon identity cannot give
 
 
 class NotificationSeverity(StrEnum):
