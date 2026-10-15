@@ -30,6 +30,7 @@ from coordinare.models.review import (
     classify_reviewer,
 )
 from coordinare.services import pipeline_budget
+from coordinare.services.approval_carryover import carried_approval_ids
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.card_lifecycle import (
     CardLifecycleLog,
@@ -825,13 +826,21 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
     # Only HUMAN approval triggers merge — trusted bots can provide
     # feedback but cannot approve on behalf of a human. When several human
     # approvals are effective, the latest one names the deferral event.
-    approvals = [
+    standing_approvals = [
         r
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
         and id(r) not in withdrawn
-        and _approval_is_current(r, cutoff, _pr_head_oid)
+    ]
+    carried = await carried_approval_ids(
+        state, github,
+        [r for r in standing_approvals if not _approval_is_current(r, cutoff, _pr_head_oid)],
+        pr_url=pr_url, head_sha=_pr_head_oid,
+    )
+    approvals = [
+        r for r in standing_approvals
+        if _approval_is_current(r, cutoff, _pr_head_oid) or id(r) in carried
     ]
     # #100: approvals that exist but no longer stand, for the decision log.
     stale_approvals = [
@@ -839,7 +848,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         for r in effective
         if r.get("author_type") == ReviewerType.HUMAN.value
         and r.get("state") == "APPROVED"
-        and (id(r) in withdrawn or not _approval_is_current(r, cutoff, _pr_head_oid))
+        and (id(r) in withdrawn or (not _approval_is_current(r, cutoff, _pr_head_oid) and id(r) not in carried))
     ]
     _decision_card = str(card.get("id", ""))
     _observed: dict[str, object] = {
@@ -945,7 +954,8 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             except Exception as exc:
                 logger.warning("stale_review.handler_failed", error=str(exc))
             return state
-        _log_merge_decision(_decision_card, "merge", "approved", **_observed)
+        approval_reason = "approval_carried_over_daemon_commits" if id(approval_review) in carried else "approved"
+        _log_merge_decision(_decision_card, "merge", approval_reason, **_observed)
         state["phase"] = "merging"
         _record_approved_merge(state, _decision_card, head=_pr_head_oid)
     else:

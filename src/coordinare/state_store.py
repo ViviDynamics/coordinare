@@ -200,6 +200,8 @@ class StageVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     head_sha: str = Field(min_length=1)
+    # #99: the performer's own starting head, when reported, bounds its commits.
+    head_before: str | None = None
     verdict: str = Field(min_length=1)
     recorded_at: str  # ISO-8601 stamp (set by the node, not a pure path)
 

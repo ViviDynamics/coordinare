@@ -36,6 +36,9 @@ logger = structlog.get_logger(__name__)
 
 # 101: the protection read is one small REST call per source, every 15 minutes at most.
 _REST_TIMEOUT_SECONDS = 10.0
+_COMPARE_TIMEOUT_SECONDS = 30.0
+_COMPARE_PAGE_SIZE = 100
+_COMPARE_MAX_PAGES = 3
 _HTTP_OK = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_SERVER_ERROR = 500
@@ -1684,65 +1687,21 @@ class GitHubService(CardIdentityMap):
         token, or any non-2xx so the dispatch layer applies its fail-open
         chain.  Never logs the token; logs only counts and short SHAs.
         """
-        m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
-        if not m:
-            raise ValueError("compare_changed_files: unrecognized PR URL")
-        owner, repo = m.group(1), m.group(2)
-        if not base_sha.strip() or not head_sha.strip():
-            raise ValueError("compare_changed_files: empty SHA")
-
-        token = await self._current_token()
-        if not token.strip():
-            raise RuntimeError("compare_changed_files: no GH token available")
-
-        base = self._rest_api_base()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-        }
-        per_page = 100
-        max_pages = 3
         files: list[str] = []
-        async with httpx.AsyncClient(timeout=30) as client:
-            for page in range(1, max_pages + 1):
-                resp = await client.get(
-                    f"{base}/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
-                    params={"per_page": per_page, "page": page},
-                    headers=headers,
-                )
-                if not resp.is_success:
-                    logger.warning(
-                        "compare_changed_files.fetch_failed",
-                        status=resp.status_code,
-                        page=page,
-                    )
-                    raise RuntimeError(
-                        f"compare_changed_files: fetch failed (status {resp.status_code})",
-                    )
-                payload = resp.json() or {}
-                # The compare API returns a ``files`` list for an enumerable
-                # comparison (empty is legitimate — identical commits). A
-                # MISSING or non-list ``files`` means the API could not
-                # enumerate (e.g. a >300-file comparison omits it) — treat that
-                # as "cannot answer" and raise so the caller falls back to the
-                # whole-PR gate, rather than silently reporting zero changed
-                # files (which would wrongly skip the documenting stage).
-                page_files = payload.get("files")
-                if not isinstance(page_files, list):
-                    raise RuntimeError(
-                        "compare_changed_files: response has no enumerable 'files' list",
-                    )
-                files.extend(
-                    str(f["filename"])
-                    for f in page_files
-                    if isinstance(f, dict) and f.get("filename")
-                )
-                if len(page_files) < per_page:
-                    break
-            else:
-                # Three full pages — the delta may extend further; refuse to
-                # answer partially (the caller's fallback chain handles it).
-                raise RuntimeError("compare_changed_files: truncated beyond page cap")
+        for page in range(1, _COMPARE_MAX_PAGES + 1):
+            payload = await self._compare_page(pr_url, base_sha, head_sha, page)
+            page_files = payload.get("files")
+            if not isinstance(page_files, list):
+                raise RuntimeError("compare_changed_files: response has no enumerable 'files' list")
+            files.extend(
+                str(f["filename"])
+                for f in page_files
+                if isinstance(f, dict) and f.get("filename")
+            )
+            if len(page_files) < _COMPARE_PAGE_SIZE:
+                break
+        else:
+            raise RuntimeError("compare_changed_files: truncated beyond page cap")
         logger.info(
             "compare_changed_files.complete",
             file_count=len(files),
@@ -1750,6 +1709,68 @@ class GitHubService(CardIdentityMap):
             head=head_sha[:7],
         )
         return files
+
+    async def _compare_page(
+        self, pr_url: str, base_sha: str, head_sha: str, page: int,
+    ) -> dict[str, Any]:
+        """Shared SHA compare transport for documentation deltas and approvals."""
+        match = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
+        if not match:
+            raise ValueError("compare: unrecognized PR URL")
+        if not base_sha.strip() or not head_sha.strip():
+            raise ValueError("compare: empty SHA")
+        owner, repo = match.group(1), match.group(2)
+        token = await self._current_token()
+        if not token.strip():
+            raise RuntimeError("compare: no GH token available")
+        async with httpx.AsyncClient(timeout=_COMPARE_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{self._rest_api_base()}/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
+                params={"per_page": _COMPARE_PAGE_SIZE, "page": page},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            )
+        if not response.is_success:
+            raise RuntimeError(f"compare: fetch failed (status {response.status_code})")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise TypeError("compare: response is not an object")
+        return payload
+
+    async def compare_commits(
+        self, pr_url: str, base_sha: str, head_sha: str,
+    ) -> list[dict[str, Any]]:
+        """#99: enumerate a complete forward range or raise, using #125's transport.
+
+        The approved commit must be the merge base. Diverged, behind, missing,
+        malformed or truncated history cannot establish approval carry-over.
+        Commit pagination is independent of the compare response's files list.
+        """
+        commits: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        for page in range(1, _COMPARE_MAX_PAGES + 1):
+            payload = await self._compare_page(pr_url, base_sha, head_sha, page)
+            merge_base = payload.get("merge_base_commit")
+            if (payload.get("status") != "ahead" or not isinstance(merge_base, dict)
+                    or merge_base.get("sha") != base_sha):
+                raise RuntimeError("compare_commits: approved commit is not an ancestor")
+            total = payload.get("total_commits")
+            if type(total) is not int or total <= 0 or (expected_total is not None and total != expected_total):
+                raise RuntimeError("compare_commits: invalid commit count")
+            expected_total = total
+            batch = payload.get("commits")
+            if not isinstance(batch, list) or any(not isinstance(c, dict) for c in batch):
+                raise RuntimeError("compare_commits: missing commit list")
+            commits.extend(batch)
+            if len(commits) == total:
+                shas = [c.get("sha") for c in commits]
+                if any(not isinstance(sha, str) or not sha for sha in shas):
+                    raise RuntimeError("compare_commits: missing commit SHA")
+                if len(set(shas)) != total or head_sha not in shas or base_sha in shas:
+                    raise RuntimeError("compare_commits: inconsistent commit range")
+                return commits
+            if len(commits) > total or len(batch) < _COMPARE_PAGE_SIZE:
+                raise RuntimeError("compare_commits: incomplete commit range")
+        raise RuntimeError("compare_commits: truncated beyond page cap")
 
     @staticmethod
     def _parse_diff_paths(raw_diff: str) -> list[str]:
