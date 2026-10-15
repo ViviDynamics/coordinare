@@ -155,6 +155,8 @@ def test_every_cost_readout_goes_through_the_shared_estimate() -> None:
     # The card detail and the non-running board card read the same cost; the active-run tile reads it
     # through its own pending check (154), so it is pinned separately below.
     assert shipped.count("? costHtml(sess, s) :") == 2
-    assert ": costHtml(sess, s));" in _DASHBOARD_JS_SOURCES["layout"]
+    # 155: the active-run tile's cost goes through activeRunCostHtml, which reads the ledger's state.
+    assert "costCell = activeRunCostHtml(sess);" in _DASHBOARD_JS_SOURCES["layout"]
+    assert "function activeRunCostHtml(sess)" in _DASHBOARD_JS_SOURCES["layout"]
     # 154: the card's cost is read on its active-run tile (costHtml), which goes through usageCostHtml.
     assert "usageCostHtml(summary)" in shipped and "costHtml(sess, s)" in shipped
