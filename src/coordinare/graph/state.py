@@ -319,6 +319,8 @@ class CoordinareState(TypedDict, total=False):
     # dispatch_has_pipeline_slot. Underscore keys are written via state[...], so
     # the TypedDict must carry it for strict typing.
     _pipeline_selected: set[str] | None
+    # 171: card id -> why its documenter side run is waiting for a slot this cycle.
+    _side_run_waiting: dict[str, str]
     # 186: what monitor_pr last found the card in monitoring_pr waiting on:
     # "human" (releases the slot), "automation" (keeps it), or absent/None when
     # not evaluated. Mirrored to the session; see session.CardSession.
