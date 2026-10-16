@@ -46,7 +46,7 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # 233: "cardpage" (the card page at /cards/<symphony>/<card>) defines functions only, and app calls
 # them at route time, so it loads after the timeline it renders into.
 _DASHBOARD_JS_FILES = (
-    "helpers", "usage", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
+    "helpers", "usage", "personas", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
     "runs", "history", "timeline", "symphonies", "systemhealth", "layout", "cardpage", "logs", "bootstrap", "app",
 )
 

@@ -244,7 +244,7 @@ function cfgInput(s) {
 function cfgCoerce(el) {
   var t = el.getAttribute('data-type');
   if (t === 'bool') return el.checked;
-  var v = el.value;
+  var v = el.getAttribute('data-md-source') !== null ? personaSourceValue(el) : el.value;
   if (t === 'enum' && el.getAttribute('data-nullable') === 'true' && v === '') return null;
   // A nullable reference left at "— none —" serializes as null (field omitted),
   // matching the prior free-text-empty-means-unset behavior.
@@ -507,19 +507,24 @@ function cfgShowReview(container, rows, onConfirm) {
   keep.addEventListener('click', function() {
     if (box.parentNode) box.parentNode.removeChild(box);
     cfgLock(container, false);
+    var field = container.querySelector('textarea, input, select');
+    if (field) field.focus();
   });
   actions.appendChild(save);
   actions.appendChild(keep);
   box.appendChild(actions);
   container.appendChild(box);
   cfgLock(container, true);
+  save.focus();
 }
 
 // 143: put a saved value back into its control after a reload.
 function cfgSetControl(el, value) {
   if (el.type === 'checkbox') { el.checked = !!value; return; }
   if (Array.isArray(value)) { el.value = value.join(', '); return; }
-  el.value = value === null || value === undefined ? '' : String(value);
+  var text = value === null || value === undefined ? '' : String(value);
+  if (el.hasAttribute('data-md-source')) personaSetSource(el, text);
+  else el.value = text;
 }
 
 // 143: after "Reload and reapply", the edits a conflict refused are back in their form, against
@@ -579,6 +584,8 @@ function cfgRestoreEdits(list) {
     });
     // 221: a number that a No cap box switches off follows the box it was restored with.
     cfgSyncOffTargets(box);
+    var personas = box.closest('[data-persona-context]');
+    if (personas) personaRefresh(personas);
   });
 }
 
@@ -788,6 +795,8 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
     }
     _cfgPending = null;
     cfgRebaseline(container);
+    var personas = container.closest('[data-persona-context]');
+    if (personas) personaRefresh(personas);
     if (body.applied === 'hot_reloaded') cfgFlash(statusEl, 'Saved · applied live', 'green');
     else if (body.applied === 'staged_restart') cfgFlash(statusEl, body.message || 'Saved · restart required to apply', 'orange');
     else if (body.applied === 'staged_next_job') cfgFlash(statusEl, 'Saved · applies on next job', 'blue');
@@ -866,7 +875,11 @@ async function cfgPut(url, payload, container, statusEl, btn) {
     var body = {};
     try { body = await r.json(); } catch(e) { body = {}; }
     clearTimeout(timer);
-    if (payload.reload && r.ok) loadConfigPage();
+    if (payload.reload && r.ok) {
+      _cfgPending = null;
+      cfgRebaseline(container);
+      loadConfigPage();
+    }
     else cfgHandleSave(r.status, body, container, statusEl, payload.store, r.headers.get('ETag'));
   } catch(e) {
     if (e && e.name === 'AbortError') {
@@ -1292,9 +1305,7 @@ function cfgPersonaBlock(p, usedBy) {
     + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
     + agentLabel(role) + personaStageNote(role) + '</div>'
     + '<div style="' + CFG_HINT + '">' + (p.is_default ? 'Using the default text.' : 'Custom text.') + '</div>'
-    + '<textarea data-field="instructions" data-label="Instructions" data-type="text"'
-    + ' data-orig="' + esc(JSON.stringify(text)) + '" rows="8" style="' + CFG_INPUT + ';margin-top:6px">'
-    + esc(text) + '</textarea>'
+    + personaEditor(text, role + ' instructions')
     + cfgUsedByHtml(usedBy)
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
     + '<button type="button" class="cfg-btn" data-cfg-action="save-item" data-cfg-catalog="personas" data-cfg-id="' + esc(role) + '">Save</button>'
@@ -1307,7 +1318,7 @@ function cfgPersonaBlock(p, usedBy) {
 function cfgResetPersona(btn, role) {
   var container = btn.closest('[data-item]');
   var statusEl = container.querySelector('[data-status]');
-  var rows = [{label: 'Persona text', before: 'the text in use', after: 'the default text', secret: false}];
+  var rows = [{label: 'Persona text', before: 'the text in use', after: 'the built-in default text', secret: false}];
   if (cfgEntries(container).some(cfgChanged)) {
     rows.push({label: 'Unsaved text in this box', before: '(your edit)', after: '(discarded)', secret: false});
   }
@@ -1324,7 +1335,10 @@ function cfgPersonasSection(sec, banner) {
   var usage = {};
   (sec.items || []).forEach(function(it) { usage[it.id] = it.used_by || []; });
   var body = _cfgPersonas
-    ? _cfgPersonas.map(function(p) { return cfgPersonaBlock(p, usage[String(p.role || '')] || []); }).join('')
+    ? '<div class="persona-workspace" data-persona-context="config">' + personaSelector(_cfgPersonas, 'config')
+      + _cfgPersonas.map(function(p) {
+        return personaPanel(p.role, 'config', cfgPersonaBlock(p, usage[String(p.role || '')] || []));
+      }).join('') + '</div>'
     : '<div class="empty-state">Could not load the agents\' instructions. Reload the page to try again.</div>';
   var desc = sec.description ? '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">' + esc(sec.description) + '</div>' : '';
   return '<section data-section="personas" data-scope="section:personas" aria-label="' + esc(sec.title)
@@ -1414,19 +1428,23 @@ function cfgTabBar(sections, active) {
 // tabs (the existing popstate -> router() -> loadConfigPage() re-derives state).
 function cfgSelectTab(secId) {
   _cfgTab = secId;
-  document.querySelectorAll('#config-page-section [role="tab"]').forEach(function(t) {
+  document.querySelectorAll('#config-page-section > .cfg-tabs [role="tab"]').forEach(function(t) {
     var on = t.id === cfgTabId(secId);
     t.classList.toggle('active', on);
     t.setAttribute('aria-selected', on ? 'true' : 'false');
     t.setAttribute('tabindex', on ? '0' : '-1');
   });
-  document.querySelectorAll('#config-page-section [role="tabpanel"]').forEach(function(p) {
+  document.querySelectorAll('#config-page-section > [role="tabpanel"]').forEach(function(p) {
     p.hidden = (p.id !== cfgPanelId(secId));
   });
+  var personas = document.querySelector('#config-page-section [data-persona-context]');
+  if (personas) personaSyncPanels(personas);
   // The hash may carry an item after the tab ("#personas/implementer"), so compare the tab only.
   var current = (location.hash || '').replace(/^#/, '').split('/')[0];
   if (current !== secId) {
-    pushRoute('/config#' + secId);
+    var selected = secId === 'personas'
+      ? document.querySelector('#config-page-section [data-persona-tab][aria-selected="true"]') : null;
+    pushRoute('/config#' + secId + (selected ? '/' + encodeURIComponent(selected.getAttribute('data-persona-tab')) : ''));
   }
 }
 
@@ -1496,7 +1514,7 @@ function cfgFocusItem(path) {
   });
   if (!box) return;
   if (box.scrollIntoView) box.scrollIntoView({block: 'start'});
-  var field = box.querySelector('textarea, input, select, button');
+  var field = box.querySelector('textarea, input, select') || box.querySelector('button');
   if (field && field.focus) field.focus();
 }
 
@@ -1505,6 +1523,8 @@ function cfgFocusItem(path) {
 function cfgSyncTab() {
   var parts = (location.hash || '').replace(/^#/, '').split('/');
   if (parts[0] && document.getElementById(cfgTabId(parts[0]))) cfgSelectTab(parts[0]);
+  var personas = document.querySelector('#config-page-section [data-persona-context]');
+  if (personas && parts[0] === 'personas') personaSelect(personas, personaHashRole('config'), false);
   if (parts.length > 1) cfgFocusItem(parts.join('/'));
 }
 
@@ -1514,7 +1534,7 @@ function cfgTabKey(event, secId) {
   if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Home' && key !== 'End') return;
   event.preventDefault();
   var tabs = Array.prototype.slice.call(
-    document.querySelectorAll('#config-page-section [role="tab"]'));
+    document.querySelectorAll('#config-page-section > .cfg-tabs [role="tab"]'));
   if (!tabs.length) return;
   var i = tabs.findIndex(function(t) { return t.id === cfgTabId(secId); });
   var next;
@@ -1603,7 +1623,18 @@ function cfgConfirmChart() {
   });
 }
 
+// Keep other persona drafts when a save, reset or conflict reloads the shared Config page.
+function cfgSnapshotPersonaEdits() {
+  var edits = [];
+  document.querySelectorAll('#config-page-section [data-persona-panel] [data-item]').forEach(function(box) {
+    var changed = cfgEntries(box).filter(cfgChanged);
+    if (changed.length) edits.push(cfgPendingFor(box, changed));
+  });
+  return edits;
+}
+
 async function loadConfigPage() {
+  var drafts = _cfgShown ? cfgSnapshotPersonaEdits() : [];
   var el = document.getElementById('config-page-section');
   el.innerHTML = '<span class="empty-state">Loading...</span>';
   var res, data;
@@ -1652,6 +1683,13 @@ async function loadConfigPage() {
   el.innerHTML = header + cfgSeedBanner(data.config_seed) + cfgTabBar(sections, active) + panels;
   _cfgShown = true;
   cfgWireControls(el, cfgRunAction);
+  var personas = el.querySelector('[data-persona-context]');
+  personaMount(personas, function(field) {
+    var box = field.closest('[data-item]');
+    var save = box.querySelector('[data-cfg-action="save-item"]');
+    cfgSaveItem(save, 'personas', box.getAttribute('data-scope').split('/')[1]);
+  });
+  cfgRestoreEdits(drafts);
   // The New forms are baselined before any refused edit is put back into them.
   cfgBaselineCreate();
   if (_cfgRoutingAvail) loadRoutingEntries();

@@ -946,6 +946,7 @@ function router() {
   var path = location.pathname;
   // 143: leaving Settings ends its rendered state, so the next visit loads it fresh.
   if (path !== '/config') _cfgShown = false;
+  if (path !== '/personas') _personasPageLoaded = false;
   // 221: a symphony's form is drawn again when its page is entered again, so a discarded edit does not come back.
   if (path !== '/symphonies' && path.indexOf('/symphonies/') !== 0) _symShown = null;
   updateNavActive(path);
@@ -1062,7 +1063,11 @@ function personaLastEditedHtml(history) {
 function loadPersonasPage(force) {
   var section = document.getElementById('personas-page-section');
   if (!section) return;
-  if (_personasPageLoaded && !force) return;  // skip if already loaded
+  if (_personasPageLoaded && !force) {
+    var existing = section.querySelector('[data-persona-context]');
+    if (existing) personaSelect(existing, personaHashRole('read'), false);
+    return;
+  }
   _personasPageLoaded = true;
   section.innerHTML = '<span class="empty-state">Loading...</span>';
   fetch('/api/personas').then(function(r) { return r.json(); }).then(function(data) {
@@ -1077,14 +1082,18 @@ function loadPersonasPage(force) {
   }).then(function(rows) {
     var html = rows.map(function(row) {
       var role = String(row.persona.role || '');
-      return '<div style="margin-bottom:16px" data-persona-role="' + esc(role) + '">' +
+      return personaPanel(role, 'read', '<div data-persona-role="' + esc(role) + '">' +
         '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:4px">' + agentLabel(role) + personaStageNote(role) + '</div>' +
-        '<pre style="white-space:pre-wrap;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;margin:0">' + esc(row.persona.instructions || '') + '</pre>' +
+        '<div class="muted">' + (row.persona.is_default ? 'Using the built-in default text.' : 'Custom text. Differs from the built-in default.') + '</div>' +
+        '<div class="persona-markdown persona-read" tabindex="0">' + personaMarkdown(row.persona.instructions || '') + '</div>' +
         '<div style="margin-top:4px">' + personaLastEditedHtml(row.history) + '</div>' +
-        '<div style="margin-top:4px"><a href="/config#personas/' + encodeURIComponent(role) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit in Settings</a></div>' +
-        '</div>';
+        '<div style="margin-top:4px"><a href="/config#personas/' + esc(encodeURIComponent(role)) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit in Settings</a></div>' +
+        '</div>');
     }).join('');
-    section.innerHTML = html || '<span class="empty-state">No personas configured</span>';
+    section.innerHTML = html ? '<div class="persona-workspace" data-persona-context="read">'
+      + personaSelector(rows.map(function(row) { return row.persona; }), 'read') + html + '</div>'
+      : '<span class="empty-state">No personas configured</span>';
+    personaMount(section.querySelector('[data-persona-context]'));
   }).catch(function() { section.innerHTML = '<span class="empty-state">Failed to load personas</span>'; });
 }
 
