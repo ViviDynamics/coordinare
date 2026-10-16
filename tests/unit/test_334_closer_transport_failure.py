@@ -98,3 +98,38 @@ def test_noncritical_role_retains_partial_concurrency(monkeypatch: pytest.Monkey
         entry["event"] == "performer_transport_build_failed.partial_concurrency"
         and entry["built"] == 1 for entry in logs
     )
+
+
+@pytest.mark.parametrize("mode", ["ephemeral", "persistent"])
+def test_kubernetes_http_only_closer_reaches_composed_service(mode: str) -> None:
+    from coordinare.__main__ import _build_http_performer_services, _compose_performer_pools
+    from coordinare.models.performer_endpoint import PerformerEndpointConfig
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    config = _config(closer=PerformerRoleConfig())
+    config.agent_transport = "kubernetes"
+    config.performer_endpoints = [PerformerEndpointConfig(
+        id="closer-http", mode=mode, roles=["closer"],
+        image="test-performer:latest", endpoint="http://127.0.0.1:9001",
+    )]
+    services = _build_performer_services(config, _build_circuit_breakers(config))
+    http_services, bootstrap = _build_http_performer_services(config)
+    pools, caps, _ = _compose_performer_pools(
+        config=config, service_lists={}, http_services_by_stage=http_services,
+        performer_services=services, bootstrap_services_by_id=bootstrap,
+    )
+    assert isinstance(services["closing_review"], HTTPPerformerService)
+    assert pools["closing_review"] == [services["closing_review"]]
+    assert caps["closing_review"] == 1
+
+
+def test_explicit_broken_closer_transport_is_fatal_even_with_http_coverage() -> None:
+    from coordinare.models.performer_endpoint import PerformerEndpointConfig
+
+    config = _config(closer=PerformerRoleConfig(transport="kubernetes"))
+    config.agent_transport = "kubernetes"
+    config.performer_endpoints = [PerformerEndpointConfig(
+        id="closer-http", mode="ephemeral", roles=["closer"], image="test-performer:latest",
+    )]
+    with pytest.raises(ValueError, match="closer"):
+        _build_performer_services(config, _build_circuit_breakers(config))

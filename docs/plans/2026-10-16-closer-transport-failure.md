@@ -10,7 +10,7 @@ Out: Live garden configuration, cluster state, new transport implementations, an
 - The closer is lifecycle-critical. A configured, enabled closer's transport build failure is fatal at boot: emit an error event with role, stage, transport, and cause, then raise `ValueError` chained from the original exception. A warning or dashboard condition could still permit work that cannot finish.
 - Conservative scope means only the closer becomes required by this policy. Other roles retain the existing warning and skip or reduced-concurrency behavior.
 - An absent closer, an explicitly disabled closer (`max_concurrency: 0`), and an HTTP-only closer without a configured wire-protocol transport retain their existing behavior. This policy handles build failures, rather than requiring every deployment to configure a closer.
-- A configured broken closer transport fails even if HTTP coverage could later exist. Operators must remove the broken wire-protocol configuration instead of relying on fallback to hide it.
+- An explicitly configured broken closer transport fails even if HTTP coverage could later exist. The global Kubernetes runtime selector alone is not a wire-protocol request when an HTTP endpoint covers the role. Operators must remove the broken wire-protocol configuration instead of relying on fallback to hide it.
 
 ## Tasks
 - [x] 1. Add failing regression tests for the real SSH and Kubernetes transport failures on an enabled closer. Assert fatal error, original cause, and error-level diagnostic context. Run with pytest and observe the current silent return.
@@ -19,3 +19,6 @@ Out: Live garden configuration, cluster state, new transport implementations, an
 
 ## Shipping validation
 Run house-rule checks, full tests, preflight, and quality guard before pushing. Shipping stages are recorded in the issue checkpoint through PR creation, required CI, Copilot and adversarial review, and squash merge.
+
+## Adversarial review correction
+An independent review reproduced a valid HTTP-only Kubernetes closer being rejected before HTTP composition. Two new regression tests failed for ephemeral and persistent endpoint coverage, then passed after transport detection stopped treating the global Kubernetes runtime selector alone as a wire-protocol request when HTTP coverage exists. Explicit closer wire overrides remain fatal, including with HTTP coverage. Live garden access, requiring absent closers, dashboard display after fatal exit, and dispatch-time executable availability remain outside scope.

@@ -678,11 +678,16 @@ def _build_performer_services(
         from coordinare.config import PerformerRoleConfig
 
         if isinstance(role_config, PerformerRoleConfig):
+            # Kubernetes selects the HTTP container runtime too. With HTTP
+            # coverage it does not by itself request a wire-protocol transport.
+            kubernetes_http_only = config.agent_transport == "kubernetes" and any(
+                ep.mode != "subprocess" and role in ep.roles for ep in config.performer_endpoints
+            )
             has_explicit_transport = bool(
                 role_config.transport
                 or role_config.executable
                 or config.agent_executable
-                or config.agent_transport != "subprocess",
+                or (config.agent_transport != "subprocess" and not kubernetes_http_only),
             )
             if not has_explicit_transport:
                 logger.debug(

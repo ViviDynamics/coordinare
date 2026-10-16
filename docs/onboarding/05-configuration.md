@@ -97,7 +97,10 @@ the cause. Other roles retain the existing warning and skip or reduced-concurren
 Correct the closer transport or executable before restarting. SSH has no transport
 implementation; Kubernetes performers use HTTP endpoints rather than a wire-protocol
 transport. For HTTP-only closer deployments, leave wire-protocol transport settings
-unset and configure an endpoint covering `closer`. A configured broken transport is
+unset and configure an endpoint covering `closer`. Global `agent_transport: kubernetes`
+selects the Pod runtime and is compatible with this HTTP-only configuration. Without
+HTTP coverage, that global setting still cannot build a closer wire transport. An
+explicitly configured broken transport is
 fatal even if an HTTP endpoint could cover the role later. This policy does not
 require an absent closer, enable a closer disabled with `max_concurrency: 0`, or
 change the existing HTTP-only path when no wire-protocol transport is configured.
