@@ -37,7 +37,7 @@ function personaStatsTiles(body) {
   var tiles = [
     ['Runs', 'runs', 'count', totals.runs, 'Recorded runs started in this cohort.'],
     ['Success rate', 'success_rate', 'rate', totals.success_rate, 'Passing verdicts divided by pass or fail verdicts; no verdict means not recorded.'],
-    ['First pass rate', 'first_pass_rate', 'rate', totals.first_pass_rate, 'Resolved card and stage pairs passing on their only retained attempt.'],
+    ['First pass rate', 'first_pass_rate', 'rate', totals.first_pass_rate, 'Resolved card and stage pairs that passed on their first and only recorded run.'],
     ['Median duration', 'duration_seconds', 'duration', duration.median, 'Median recorded run duration.'],
     ['p90 duration', 'duration_seconds', 'duration', duration.p90, '90th percentile recorded run duration.'],
     ['Tokens', 'tokens', 'tokens', (totals.tokens || {}).total, 'Recorded input, output, cache read and cache write tokens.'],
@@ -89,7 +89,7 @@ function personaStatsActivity(body) {
   return '<h3>Current activity</h3>' + (activity.length ? '<ul>' + activity.map(function(row) {
     var path = runPathFor(row.symphony, row.card, row.run);
     return '<li>Running on <a href="' + esc(path) + '" data-persona-link>' + esc(row.card_title || row.card) + '</a> in ' + esc(row.symphony) + '</li>';
-  }).join('') + '</ul>' : '<p>No running session observed.</p>');
+  }).join('') + '</ul>' : '<p>No run in progress.</p>');
 }
 
 function personaStatsRecent(body, role, scope) {
