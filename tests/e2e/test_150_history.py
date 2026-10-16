@@ -1,11 +1,3 @@
-"""#150: the History page is a table of card runs, read from the server, in a real browser.
-
-Each test serves a transcript root written into a temporary directory: two symphonies the
-daemon runs, one folder for a symphony it does not run, and the conductor's checks. The API
-and the server-side listing are in tests/unit/test_150_run_history.py, and the client helpers
-in tests/unit/test_150_history_js.py. Runs in Chromium and Firefox (--browser firefox).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -37,6 +29,13 @@ from tests.e2e.conftest import (
 )
 from tests.e2e.test_139_symphony_switcher import _connected, _snapshot, _two_symphonies
 from tests.e2e.test_dashboard_browser import _WAIT_NAV
+
+# Issue 150: the History page is a table of card runs, read from the server, in a real browser.
+#
+# Each test serves a transcript root written into a temporary directory: two symphonies the
+# daemon runs, one folder for a symphony it does not run, and the conductor's checks. The API
+# and the server-side listing are in tests/unit/test_150_run_history.py, and the client helpers
+# in tests/unit/test_150_history_js.py. Runs in Chromium and Firefox (--browser firefox).
 
 ALPHA = "alpha-sym"
 BETA = "beta-sym"
@@ -462,7 +461,7 @@ def test_the_filters_survive_a_reload_because_they_are_in_the_url(page: Page, hi
     _apply(page, outcome="failed", card="PVTI_A1")
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
     expect(page).to_have_url(re.compile(r"h\.outcome=failed"), timeout=WAIT_PAGE)
-    page.reload(wait_until="domcontentloaded", timeout=WAIT_PAGE)
+    page.reload(wait_until="domcontentloaded")
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=WAIT_PAGE)
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
     expect(page.locator("#history-page-section select[name='outcome']")).to_have_value("failed", timeout=WAIT_PAGE)
