@@ -13,6 +13,7 @@ from coordinare.dashboard.routers import (
     run_logs,
     runs,
     state,
+    stats,
     symphonies,
     timeline,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "run_logs",
     "runs",
     "state",
+    "stats",
     "symphonies",
     "timeline",
 ]

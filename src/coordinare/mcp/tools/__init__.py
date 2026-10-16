@@ -12,6 +12,7 @@ from . import (
     lifecycle_tools,
     persona_tools,
     state_tools,
+    stats_tools,
     symphony_tools,
 )
 from ._registry import (
@@ -30,6 +31,7 @@ def _all_tools() -> tuple[ToolDefinition, ...]:
         persona_tools.TOOLS,
         lifecycle_tools.TOOLS,
         state_tools.TOOLS,
+        stats_tools.TOOLS,
         event_tools.TOOLS,
     )
     return tuple(tool for module_tools in modules for tool in module_tools)

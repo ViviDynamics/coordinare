@@ -64,6 +64,7 @@ from coordinare.graph.nodes.monitor.verdict import (
     _stamp_feedback_bounce,
     _summarise_feedback_items,
 )
+from coordinare.services.card_lifecycle import record_lifecycle
 from coordinare.services.export_metrics import EXPORT_METRICS
 from coordinare.services.system_health import SYSTEM_HEALTH
 from coordinare.vocabulary import phase_label
@@ -85,12 +86,21 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     """
     phase_before = state.get("phase")
     stage_before = str(state.get("performer_stage") or "")
+    run_before = str((state.get("agent_dispatch") or {}).get("session_id") or "")
+    card_before = str((state.get("current_card") or {}).get("id") or "")
     result = await _monitor_performer_body(state)
     _record_model_turn(phase_before, result)
     if phase_before == "monitoring_performer" and result.get("phase") != phase_before:
         phase = str(result.get("phase") or "")
         outcome = phase if phase in {"blocked", "system_error"} else "redispatched" if phase == "dispatching" else "completed"
         EXPORT_METRICS.run_finished(stage_before, outcome)
+        if phase in {"blocked", "system_error"}:
+            record_lifecycle(
+                result, "run_outcome", card_id=card_before, stage=stage_before,
+                detail={"run_id": run_before, "outcome": phase,
+                        "reason": str(result.get("system_error_reason") or phase)},
+                key=f"outcome:{run_before}:{phase}" if run_before else None,
+            )
     if isinstance(result, dict) and result.get("phase") in {"blocked", "system_error"}:
         reason = result.get("system_error_reason") or "no reason reported"
         _record_activity(
