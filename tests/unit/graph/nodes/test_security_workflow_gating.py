@@ -321,6 +321,7 @@ async def test_a_security_env_blocked_hold_names_the_scanners_not_the_local_test
     from tests.unit.graph.nodes.test_monitor_performer import _sec_state
 
     state = _sec_state(response={"status": "env_blocked", "reason": "semgrep: binary not found", "report": {"security": {"verdict": "env_blocked"}}})
+    state["config"] = _make_config_with_security_workflow()
     result = await monitor_performer(state)
     assert result["phase"] == "blocked"
     text = " ".join(result["open_questions"]) + result["system_error_reason"]

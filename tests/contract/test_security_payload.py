@@ -65,16 +65,8 @@ def _prose_security_card_context() -> dict[str, Any]:
         "persona_instructions": "Review for security issues.",
         "pr_url": "https://github.com/org/repo/pull/100",
         "pr_node_id": "PR_kwDO123457",
-        # 412: no scanner_findings here -- the floor findings (below) relay
-        # verbatim on the prose path.
-        # No pr_diff for prose security (083 fetches it itself)
-        # No workflow for prose path
-        # 412 round 27: the prose path relays the floor findings verbatim
-        # (the workflow path is where they are emptied) -- keep a non-empty
-        # finding here so the relay preservation is actually verified.
-        "scanner_findings": [
-            {"severity": "high", "path": "app.py", "line": 3, "category": "sql_injection", "message": "tainted query"},
-        ],
+        "security_floor": {"version": 1, "files": ["app.py"], "diff_status": "ok"},
+        "scanner_findings": [],
         # Backend selection
         "backend": "claude_code",
         "model": "claude-opus-4-1-20250805",
@@ -108,24 +100,15 @@ class TestSecurityWorkflowPayload:
 
 
     @pytest.mark.asyncio
-    async def test_prose_security_scanner_findings_survive(self) -> None:
-        """412: the coordinare floor is gone on the workflow path, but the
-        prose path relays its floor findings verbatim through dispatch."""
+    async def test_prose_security_scan_request_survives(self) -> None:
+        """107: the runtime scan request crosses the dispatch boundary intact."""
         transport = _CaptureTransport()
         service = AgentService(transport)
         card_context = _prose_security_card_context()
-
         await service.dispatch_card(card_context)
-
         payload = transport.captured_payload
-        # 412 round 27: a non-empty floor finding must survive the dispatch
-        # boundary -- an empty-list assertion here would be vacuous.
-        assert "scanner_findings" in payload, "scanner_findings was dropped"
-        assert payload["scanner_findings"] == card_context["scanner_findings"]
-        assert payload["scanner_findings"], "fixture must carry a non-empty finding"
-
-        # pr_diff should not be present for prose security
-        assert "pr_diff" not in payload
+        assert payload["security_floor"] == card_context["security_floor"]
+        assert payload["scanner_findings"] == []
 
 
     @pytest.mark.asyncio

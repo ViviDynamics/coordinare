@@ -312,6 +312,7 @@ async def test_four_role_lifecycle_full_advancement() -> None:
     for role in roles:
         services[role] = _Performer({
             "status": "pr_opened",
+            "report": {"security_floor": {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}},
             "pr_url": "https://github.com/org/repo/pull/99",
             "pr_node_id": "PR_NODE_99",
         })
@@ -1315,7 +1316,7 @@ async def test_security_failed_routes_findings_to_implementer() -> None:
     """security_failed with implementer-routed findings resets to implementing."""
     state = initial_state()
     findings = [{"severity": "critical", "category": "injection", "routing": "implementer"}]
-    svc = _Performer(response={"status": "security_failed", "findings": findings})
+    svc = _Performer(response={"status": "security_failed", "findings": findings, "report": {"security_floor": {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}}})
     state["performer_services"] = {"security": svc}
     state["performer_stage"] = "security"
     state["lifecycle_sequence"] = ["implementing", "security", "qa"]
@@ -1334,7 +1335,7 @@ async def test_security_failed_routes_architecture_findings_to_architect() -> No
     """security_failed with architect-routed findings resets to architecting."""
     state = initial_state()
     findings = [{"severity": "high", "category": "insecure_design", "routing": "architect"}]
-    svc = _Performer(response={"status": "security_failed", "findings": findings})
+    svc = _Performer(response={"status": "security_failed", "findings": findings, "report": {"security_floor": {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}}})
     state["performer_services"] = {"security": svc}
     state["performer_stage"] = "security"
     state["lifecycle_sequence"] = ["architecting", "implementing", "security"]
@@ -1363,7 +1364,7 @@ async def test_security_failed_halt_findings_block_the_card() -> None:
         },
         {"severity": "high", "category": "injection", "routing": "implementer"},
     ]
-    svc = _Performer(response={"status": "security_failed", "findings": findings})
+    svc = _Performer(response={"status": "security_failed", "findings": findings, "report": {"security_floor": {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}}})
     state["performer_services"] = {"security": svc}
     state["performer_stage"] = "security"
     state["lifecycle_sequence"] = ["implementing", "security", "qa"]
@@ -1398,7 +1399,7 @@ def _sec_state(*, response: dict) -> dict:
 @pytest.mark.asyncio
 async def test_security_passed_advances() -> None:
     """The plain pass: security_passed stands and the stage advances."""
-    state = _sec_state(response={"status": "security_passed", "findings": []})
+    state = _sec_state(response={"status": "security_passed", "findings": [], "report": {"security_floor": {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}}})
 
     result = await monitor_performer(state)
 
@@ -1409,7 +1410,8 @@ async def test_security_passed_advances() -> None:
 async def test_nothing_to_scan_advances_and_records_slot() -> None:
     """412: nothing_to_scan is terminal-success for the security stage; the
     verdict slot records it so the same head is not re-scanned."""
-    state = _sec_state(response={"status": "nothing_to_scan", "head_sha": "abc123"})
+    state = _sec_state(response={"status": "nothing_to_scan", "head_sha": "abc123", "report": {"security": {"verdict": "nothing_to_scan"}}})
+    state["config"] = SimpleNamespace(performers=SimpleNamespace(resolved_role=lambda role: SimpleNamespace(workflow="security")))
 
     result = await monitor_performer(state)
 
@@ -1422,7 +1424,8 @@ async def test_nothing_to_scan_advances_and_records_slot() -> None:
 async def test_not_applicable_advances_and_records_slot() -> None:
     """412: a no-scannable-source diff ends the security stage with a note,
     not a pass."""
-    state = _sec_state(response={"status": "not_applicable", "head_sha": "def456"})
+    state = _sec_state(response={"status": "not_applicable", "head_sha": "def456", "report": {"security": {"verdict": "not_applicable"}}})
+    state["config"] = SimpleNamespace(performers=SimpleNamespace(resolved_role=lambda role: SimpleNamespace(workflow="security")))
 
     result = await monitor_performer(state)
 

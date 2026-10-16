@@ -1,24 +1,14 @@
-"""Coordinare-side static-analysis scanner (spec 083, Contract 1).
-
-Runs semgrep + bandit over a PR's changed files and normalizes both tools'
-output into the spec-022 finding schema. This is the *authoritative floor*: its
-findings gate the security verdict in the monitor, independent of the model.
-
-Design notes:
-- Pure transform over subprocess results — deterministic given fixed tool output.
-- "Tool found issues" (non-zero exit with parseable JSON) is NOT an error; only
-  tool-missing / crash / unparseable output raises :class:`ScannerError`, so the
-  dispatch layer can apply fail-closed handling (FR-008).
-- INFO logs are limited to a scan summary (counts/severities). Raw diff text,
-  finding messages, and ``auth_env`` values MUST NOT be logged (FR-011).
-"""
-
 from __future__ import annotations
 
+# Mandatory prose security scanner (083, 107). Tool execution and normalization
+# live in the performer; the daemon gates the runtime response findings.
+# A missing tool, abnormal exit, malformed JSON or scan error fails closed.
+# Logs contain only counts and severities, never tool output or source text.
+
 import json
-import shutil
+import os
+import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import structlog
@@ -53,14 +43,26 @@ _DANGEROUS_CWES = frozenset(
 
 _DEFAULT_ROUTING = "implementer"
 _SUBPROCESS_TIMEOUT_S = 120
+_OK_EXIT_CODES = {0, 1}
+_TRUSTED_BINARY_DIRS = (Path("/usr/local/bin"), Path("/usr/bin"))
+_UNTRUSTED_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
+_ROOT_UID = 0
+SCANNER_INSTALLATION_HELP = (
+    "Install semgrep and bandit system-wide as root-owned executables in "
+    "/usr/local/bin or /usr/bin, or use the container transport."
+)
 
 
 class ScannerError(Exception):
     """Raised when a scanner tool is missing, crashes, or emits unparseable output.
 
-    Distinct from a *clean* or *findings-present* run — both of those return a
+    Distinct from a *clean* or *findings-present* run : both of those return a
     (possibly empty) list. Callers treat ``ScannerError`` as fail-closed.
     """
+
+
+class ScannerSetupError(ScannerError):
+    """A trusted scanner is unavailable and needs operator installation."""
 
 
 def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
@@ -71,7 +73,7 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
     unparseable output.
     """
     repo_root = Path(repo_root)
-    files = list(changed_files)
+    files = [f"./{name}" if name.startswith("-") else name for name in changed_files]
 
     findings: list[Finding] = []
     findings.extend(_run_semgrep(files, repo_root))
@@ -90,27 +92,26 @@ def scan_diff(changed_files: list[str], repo_root: str | Path) -> list[Finding]:
     return findings
 
 
+def _trusted_executable(candidate: Path) -> bool:
+    resolved = candidate.resolve()
+    if not any(resolved.is_relative_to(directory) for directory in _TRUSTED_BINARY_DIRS):
+        return False
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        return False
+    return all(
+        path.stat().st_uid == _ROOT_UID and not path.stat().st_mode & _UNTRUSTED_WRITE_BITS
+        for path in (resolved, *resolved.parents, candidate, *candidate.parents)
+    )
+
+
 def _resolve_binary(tool: str) -> str:
-    """Resolve a scanner executable, preferring the active venv's bin dir.
-
-    The coordinare daemon is commonly launched as ``.venv/bin/coordinare`` *without*
-    activating the venv, so ``.venv/bin`` is not on ``PATH``. A bare-name
-    subprocess call then raises ``FileNotFoundError`` -> :class:`ScannerError`,
-    which fails the security floor closed and wedges the card in ``blocked``.
-
-    Resolution order:
-      1. ``<dir of sys.executable>/<tool>`` — the venv that's running us.
-      2. ``shutil.which(tool)`` — a PATH lookup.
-      3. the bare ``tool`` name — last resort (subprocess will raise if absent,
-         preserving the documented fail-closed behavior).
-    """
-    candidate = Path(sys.executable).parent / tool
-    if candidate.exists():
-        return str(candidate)
-    found = shutil.which(tool)
-    if found:
-        return found
-    return tool
+    """Use only root-owned system executables, never a workspace venv or PATH."""
+    for directory in _TRUSTED_BINARY_DIRS:
+        candidate = directory / tool
+        if _trusted_executable(candidate):
+            return str(candidate)
+    reason = f"{tool} trusted system binary not found. {SCANNER_INSTALLATION_HELP}"
+    raise ScannerSetupError(reason)
 
 
 def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
@@ -131,25 +132,37 @@ def _invoke(cmd: list[str], cwd: Path, tool: str) -> dict:
         raise ScannerError(f"{tool} binary not found") from exc
     except subprocess.TimeoutExpired as exc:
         raise ScannerError(f"{tool} timed out") from exc
-    except OSError as exc:  # pragma: no cover - defensive
+    except OSError as exc:
         raise ScannerError(f"{tool} failed to launch") from exc
 
     if not (proc.stdout or "").strip():
-        # No JSON at all — a clean run still emits ``{"results": []}``; empty
+        # No JSON at all : a clean run still emits ``{"results": []}``; empty
         # stdout means the tool crashed before producing output.
         raise ScannerError(f"{tool} produced no output (exit {proc.returncode})")
 
     try:
-        return json.loads(proc.stdout)
+        payload = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError) as exc:
         raise ScannerError(f"{tool} emitted unparseable JSON") from exc
+
+    if proc.returncode not in _OK_EXIT_CODES:
+        raise ScannerError(f"{tool} failed")
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise ScannerError(f"{tool} emitted malformed results")
+    if payload.get("errors") or any(not isinstance(row, dict) for row in payload["results"]):
+        raise ScannerError(f"{tool} reported scan errors")
+    return payload
 
 
 def _run_semgrep(files: list[str], repo_root: Path) -> list[Finding]:
     if not files:
         return []
+    # The copy-only export contains only changed files at HEAD under neutral
+    # names, with no repository ignore or config files under their control names.
+    # Semgrep receives explicit file targets, never directories.
     payload = _invoke(
-        [_resolve_binary("semgrep"), "--config", "auto", "--json", *files],
+        [_resolve_binary("semgrep"), "--config", "auto", "--json",
+         "--disable-nosem", "--no-git-ignore", *files],
         repo_root,
         "semgrep",
     )
@@ -163,7 +176,7 @@ def _run_bandit(files: list[str], repo_root: Path) -> list[Finding]:
     if not files:
         return []
     payload = _invoke(
-        [_resolve_binary("bandit"), "-f", "json", "-r", *files],
+        [_resolve_binary("bandit"), "--ignore-nosec", "-f", "json", "-r", *files],
         repo_root,
         "bandit",
     )

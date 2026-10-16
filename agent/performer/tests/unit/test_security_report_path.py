@@ -20,7 +20,7 @@ from performer.protocol import PerformerMessage
 def _perf() -> Performance:
     stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
     stand.git_env = {}
-    score = Score(title="Test card", repo_url="https://github.com/acme/repo", branch="feat/test", issue_number=7, pr_url="https://github.com/acme/repo/pull/12")
+    score = Score(title="Test card", repo_url="https://github.com/acme/repo", branch="feat/test", workflow="security", issue_number=7, pr_url="https://github.com/acme/repo/pull/12")
     perf = Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="security")
     perf.pr_url = "https://github.com/acme/repo/pull/12"
     return perf
@@ -49,6 +49,9 @@ def _report(verdict, blocking=None, advisory=None, **over):
 
 async def _handle(output: str, cycle: int = 0):
     perf = _perf()
+    if "verdict" not in json.loads(output).get("security", {}):
+        perf.score.workflow = ""
+        perf.security_floor_report = {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}
     perf.security_cycle = cycle
     perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
     settings = Settings(AGENT_BACKEND="codex", AGENT_TIMEOUT=1800)

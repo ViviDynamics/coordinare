@@ -325,6 +325,7 @@ class Score(BaseModel):
     # prescribes a fix.
     qa_findings: list[dict] = Field(default_factory=list)
     repair_mandate: dict[str, Any] | None = None
+    security_floor: dict[str, Any] | None = None
     scanner_findings: list[dict[str, Any]] = Field(default_factory=list)
     scope_focus: str = ""
     scope_addon: str = ""
@@ -576,6 +577,7 @@ class Performance:
     review_comments: list[dict] = field(default_factory=list)  # 021: [{file, line, body}]
     review_suggestions: list[str] = field(default_factory=list)  # 021: non-blocking suggestions
     review_cycle: int = 0  # 021: number of review cycles exhausted
+    security_floor_report: dict[str, Any] | None = None
     security_findings: list[dict] = field(default_factory=list)  # 022: [{severity, category, ...}]
     security_cycle: int = 0  # 022: number of security fix cycles
     qa_failures: list[dict] = field(default_factory=list)  # 023: [{criterion, expected, actual, test}]

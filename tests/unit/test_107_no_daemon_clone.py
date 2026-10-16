@@ -2,9 +2,8 @@
 
 Coordinare is an orchestrator. A containerized performer clones for itself
 (the dispatch payload carries only repo_url and branch), so a daemon-side
-clone for it is redundant. Two things still need the tree on the daemon: the
-subprocess transport, which works in the daemon's clone, and the 083
-dispatch-time scanner floor for a security role on the prose path.
+clone for it is redundant. Only the development subprocess transport uses
+an orchestrator checkout; every security scan runs inside the performer.
 """
 from __future__ import annotations
 
@@ -91,13 +90,10 @@ def test_subprocess_performer_always_needs_the_daemon_clone(stage) -> None:
     assert _daemon_clone_needed(_state(security_workflow="security"), stage, SimpleNamespace()) is True
 
 
-def test_prose_path_security_role_keeps_the_clone_and_says_why() -> None:
-    """The 083 scanner floor runs in the daemon over its clone. It fails closed
-    without one, so the clone stays for this stage and a warning names the fix."""
+def test_prose_path_security_role_scans_in_performer_without_clone() -> None:
     with structlog.testing.capture_logs() as logs:
-        assert _daemon_clone_needed(_state(), "security", _http_service()) is True
-    (event,) = [e for e in logs if e["event"] == "security_floor.daemon_side_scan"]
-    assert event["card_id"] == "89" and "workflow: security" in event["remedy"]
+        assert _daemon_clone_needed(_state(), "security", _http_service()) is False
+    assert not [e for e in logs if e["event"] == "security_floor.daemon_side_scan"]
 
 
 def test_security_workflow_scans_in_the_performer_so_no_clone() -> None:
@@ -157,10 +153,10 @@ async def test_subprocess_dispatch_keeps_the_local_clone() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prose_security_dispatch_keeps_the_local_clone() -> None:
+async def test_prose_security_dispatch_skips_the_local_clone() -> None:
     manager = _Manager()
     await _setup(manager, _http_service(), stage="security")
-    assert manager.calls == [{"local_clone": True}]
+    assert manager.calls == [{"local_clone": False}]
 
 
 @pytest.mark.asyncio

@@ -292,12 +292,10 @@ class WorkspaceManager:
     async def prepare(self, card: dict[str, Any], *, local_clone: bool = True) -> WorkspaceInfo:
         """Resolve the card's branch and credential; clone only when the daemon must.
 
-        For the Kubernetes transport, and whenever the caller passes
-        ``local_clone=False`` (#107: the performer clones for itself and nothing
-        in the daemon needs the tree): returns ``WorkspaceInfo(path=None, ...)``
-        without performing any git operations — the performer container handles
-        its own git setup, but still receives a GitHub credential for its own
-        GitHub API calls.
+        Only the development subprocess transport may clone locally. All other
+        transports return ``WorkspaceInfo(path=None, ...)`` regardless of the
+        caller's ``local_clone`` hint. The performer handles its own git setup
+        and receives the branch, repository URL and GitHub credential.
 
         Raises:
             WorkspaceSetupError: if any git operation fails or no GitHub token
@@ -316,12 +314,9 @@ class WorkspaceManager:
             # retained PR's head must never be deleted or renamed by this policy.
             branch = await self._resolve_branch(branch, card)
 
-        # For Kubernetes transport, the performer container handles its own git
-        # setup (no local clone or branch creation here), but it still makes
-        # GitHub API calls (issue reads, PR creation, checks) and cannot run
-        # without a credential — resolve the same token the local-clone path
-        # would use; http_performer_service injects it into the pod secret env.
-        if self._agent_transport == "kubernetes" or not local_clone:
+        # Non-subprocess performers own their repository checkout. This is the
+        # final guard even when a legacy caller asks for a local clone.
+        if self._agent_transport != "subprocess" or not local_clone:
             token = await self._resolve_github_token()
             return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
 

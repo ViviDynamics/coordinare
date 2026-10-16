@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import pytest
+import structlog.testing
 
+from coordinare.graph.nodes.handle_system_error import handle_system_error
 from coordinare.graph.nodes.monitor_performer import monitor_performer
 from tests.unit.graph.nodes.test_monitor_performer import _make_state, _Performer
 
@@ -14,7 +16,14 @@ STAGES = ['assessing', 'architecting', 'implementing', 'reviewing', 'security', 
 @pytest.mark.parametrize('metadata', [{'finish_reason': 'length'}, {'stop_reason': 'max_tokens'}, {}])
 async def test_exhaustion_blocks_without_unchanged_retry(stage, metadata):
     reason = 'malformed JSON' if metadata else 'malformed JSON: finish_reason=length'
-    state = _make_state(service=_Performer({'status': 'error', 'reason': reason, **metadata}), stage=stage)
+    # The runtime floor completes before the backend runs. Supply its evidence
+    # so this test reaches the backend exhaustion route for the security role.
+    response = {'status': 'error', 'reason': reason, **metadata}
+    if stage == 'security':
+        response['report'] = {'security_floor': {
+            'version': 1, 'complete': True, 'tools': ['semgrep', 'bandit'], 'findings': [],
+        }}
+    state = _make_state(service=_Performer(response), stage=stage)
     result = await monitor_performer(state)
     assert result['phase'] == 'blocked'
     assert 'output token cap' in result['open_questions'][0]
@@ -34,8 +43,6 @@ async def test_non_assessor_parse_shapes_do_not_gain_retries(stage, reason):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [0, 1, 3])
 async def test_persisted_truncation_never_retries_unchanged(count):
-    from coordinare.graph.nodes.handle_system_error import handle_system_error
-
     state = {"phase": "system_error", "performer_stage": "reviewing",
              "system_error_reason": "BACKEND_FORMAT_ERROR: finish_reason=length",
              "system_error_count": count}
@@ -47,8 +54,6 @@ async def test_persisted_truncation_never_retries_unchanged(count):
 
 @pytest.mark.asyncio
 async def test_null_reason_retains_empty_body_classification():
-    import structlog.testing
-
     state = _make_state(service=_Performer({'status': 'error', 'reason': None}), stage='reviewing')
     with structlog.testing.capture_logs() as events:
         await monitor_performer(state)

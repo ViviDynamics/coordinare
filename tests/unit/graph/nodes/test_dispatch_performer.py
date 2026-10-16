@@ -1837,6 +1837,9 @@ class _GitHubWithDiff(_GitHub):
             raise self._raise_exc
         return self._diff_raw, list(self._diff_files)
 
+    async def check_mergeability(self, pr_node_id: str) -> dict[str, str]:
+        return {"head_ref_oid": "security-head"}
+
 
 _SEC_CARD = {
     "id": "ITEM_1",
@@ -1847,36 +1850,27 @@ _SEC_CARD = {
 
 
 @pytest.mark.asyncio
-async def test_security_role_without_workflow_runs_the_floor(monkeypatch) -> None:
-    """412 round 10: a security role NOT configured with the workflow keeps
-    the 083 dispatch-time scan — the example config promises that removing
-    the workflow line restores the prose path exactly, so the floor is back."""
+async def test_security_role_without_workflow_requests_performer_floor() -> None:
     security_svc = _Service()
     github = _GitHubWithDiff()
     state = _base_state(
         github_service=github,
         performer_services={"security": security_svc},
-        performer_stage="security",
-        lifecycle_sequence=["security"],
+        performer_stage="security", lifecycle_sequence=["security"],
         current_card=dict(_SEC_CARD),
     )
-    scanned: list[list[str]] = []
-
-    def _scan(files, root):
-        scanned.append(list(files))
-        return [{"severity": "low", "file": "x", "category": "style"}]
-
-    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _scan)
-
+    state["scanner_findings"] = [{"severity": "high", "category": "stale"}]
     result = await dispatch_performer(state)
-
-    assert scanned == [["src/app/vuln.py"]], "the floor fetched the diff and scanned it once"
-    assert result["scanner_findings"] == [{"severity": "low", "file": "x", "category": "style"}]
-    assert security_svc.dispatched[0]["scanner_findings"] == result["scanner_findings"]
+    assert result["scanner_findings"] == []
+    assert security_svc.dispatched[0]["security_floor"] == {
+        "version": 1, "files": ["src/app/vuln.py"], "diff_status": "ok",
+        "head_sha": "security-head",
+    }
+    assert github.get_pr_diff_calls == [_SEC_CARD["pr_url"]]
 
 
 @pytest.mark.asyncio
-async def test_security_role_with_workflow_skips_the_floor(monkeypatch) -> None:
+async def test_security_role_with_workflow_skips_the_floor() -> None:
     """412: when the security role runs the workflow, the workflow record is
     the single source — the floor is skipped and scanner_findings stays empty."""
     security_svc = _Service()
@@ -1889,10 +1883,6 @@ async def test_security_role_with_workflow_skips_the_floor(monkeypatch) -> None:
         current_card=dict(_SEC_CARD),
     )
 
-    def _fail_scan(files, root):
-        raise AssertionError("the floor must not run for a workflow-configured security role")
-
-    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _fail_scan)
     from coordinare.config import PerformerRoleConfig
 
     role_cfg = PerformerRoleConfig(workflow="security")
@@ -2455,63 +2445,27 @@ def test_diff_section_path_parses_a_mode_only_header_exactly():
 
 
 @pytest.mark.asyncio
-async def test_security_floor_runs_for_non_workflow_roles(monkeypatch, tmp_path):
-    """412 round 10: the 083 floor is restored for a security role NOT
-    configured with the workflow -- the example config promises that removing
-    the workflow line restores the prose path exactly, and the prose path's
-    static scan is the floor. A scanner failure is fail-closed."""
-    from coordinare.graph.nodes.dispatch_performer import _run_security_floor
-    from coordinare.services.security_scanner import ScannerError
-
-    class FakeGitHub:
-        async def get_pr_diff(self, url):
-            return "diff --git a/v.py b/v.py\n+++ b/v.py\n@@ -1,1 +1,2 @@\n", ["v.py"]
-
-    state = {"github_service": FakeGitHub(), "workspace_path": tmp_path}
-    card = {"id": "c1", "pr_url": "https://github.com/o/r/pull/1"}
-
-    findings = [{"severity": "high", "file": "v.py", "category": "injection"}]
-    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", lambda files, root: findings)
-    assert await _run_security_floor(state, card) == findings
-
-    def _boom(files, root):
-        raise ScannerError("semgrep missing")
-
-    monkeypatch.setattr("coordinare.graph.nodes.dispatch_performer.scan_diff", _boom)
-    held = await _run_security_floor(state, card)
-    assert held == [{
-        "severity": "critical",
-        "category": "scanner_unavailable",
-        "description": "security scanner unavailable: scanner failed",
-        "file": "",
-        "line": 0,
-        "routing": "halt",
-    }]
+async def test_security_floor_diff_fetch_failure_is_reported_to_performer():
+    service = _Service()
+    state = _base_state(
+        github_service=_GitHubWithDiff(raise_exc=RuntimeError("unavailable")),
+        performer_services={"security": service}, performer_stage="security",
+        lifecycle_sequence=["security"], current_card=dict(_SEC_CARD),
+    )
+    await dispatch_performer(state)
+    assert service.dispatched[0]["security_floor"]["diff_status"] == "failed"
 
 
 @pytest.mark.asyncio
-async def test_security_floor_missing_workspace_fails_closed():
-    """A None workspace_path is a scanner-unavailable condition, not a crash:
-    the gate returns the synthetic finding (fail closed) instead of letting
-    Path(None) raise a TypeError past the ScannerError handler."""
-    from coordinare.graph.nodes.dispatch_performer import _run_security_floor
-
-    class FakeGitHub:
-        async def get_pr_diff(self, url):
-            return "diff --git a/v.py b/v.py\n+++ b/v.py\n@@ -1,1 +1,2 @@\n", ["v.py"]
-
-    state = {"github_service": FakeGitHub(), "workspace_path": None}
-    card = {"id": "c1", "pr_url": "https://github.com/o/r/pull/1"}
-
-    held = await _run_security_floor(state, card)
-    assert held == [{
-        "severity": "critical",
-        "category": "scanner_unavailable",
-        "description": "security scanner unavailable: no workspace to scan",
-        "file": "",
-        "line": 0,
-        "routing": "halt",
-    }]
+async def test_security_floor_missing_workspace_still_requests_performer_scan():
+    service = _Service()
+    state = _base_state(
+        github_service=_GitHubWithDiff(), workspace_path=None,
+        performer_services={"security": service}, performer_stage="security",
+        lifecycle_sequence=["security"], current_card=dict(_SEC_CARD),
+    )
+    await dispatch_performer(state)
+    assert service.dispatched[0]["security_floor"]["files"] == ["src/app/vuln.py"]
 
 
 def test_sanitize_truncation_note_path_with_b_slash_stays_whole():
