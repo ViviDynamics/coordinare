@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Response, status
 
+from coordinare.daemon import get_daemon_started_at
+from coordinare.dashboard.availability import daemon_ready
 from coordinare.metrics import METRICS
 from coordinare.observability import HEALTH, HealthStatus
 from coordinare.resilience import CircuitBreaker, CircuitState
@@ -66,10 +68,9 @@ def create_health_app(
         # reconciliation pass running inside the SAME process) can correlate
         # `coordinare.daemon_started_at` Docker labels back to which daemon
         # process launched a given performer container.
-        from coordinare.daemon import get_daemon_started_at
-
         return {
             "status": health_status,
+            "daemon_ready": daemon_ready(daemon) and registry.snapshot().overall_status == HealthStatus.healthy,
             "phase": phase,
             "snapshot_at": snapshot_at,
             "circuit_breakers": cb_status,
@@ -98,11 +99,13 @@ def create_health_app(
             for probe in report.probes
         ]
 
-        if report.overall_status != HealthStatus.healthy:
+        is_ready = daemon_ready(daemon) and report.overall_status == HealthStatus.healthy
+        if not is_ready:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
         return {
-            "status": "ready" if report.overall_status == HealthStatus.healthy else "degraded",
+            "status": "ready" if is_ready else "degraded",
+            "daemon_ready": is_ready,
             "subsystems": subsystems,
             "response_time_ms": report.response_time_ms,
         }

@@ -32,6 +32,8 @@ spec:
         # Resource labels and names must not trigger a config restart.
         checksum/config: {{ (include (print $.Template.BasePath "/configmap.yaml") . | fromYaml).data | toYaml | sha256sum }}
     spec:
+      # Five seconds for endpoint removal, twenty for HTTP draining, five for cleanup.
+      terminationGracePeriodSeconds: 30
       serviceAccountName: {{ include "coordinare.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -105,6 +107,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+          lifecycle:
+            preStop:
+              exec:
+                # Keep serving while ingress and EndpointSlices observe pod termination.
+                command: ["/bin/sleep", "5"]
           livenessProbe:
             httpGet:
               path: /live
@@ -113,10 +120,14 @@ spec:
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /ready
-              port: health
-            initialDelaySeconds: 5
-            periodSeconds: 10
+              # Route the shell during daemon startup; daemon readiness stays at health /ready.
+              path: /dashboard/ready
+              port: dashboard
+            initialDelaySeconds: 0
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 2
+            successThreshold: 1
           volumeMounts:
             - name: config
               mountPath: /etc/coordinare

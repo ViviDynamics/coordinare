@@ -2561,6 +2561,7 @@ class CoordinareDaemon:
         idle_threshold_seconds: int = 1800,
         dashboard_store: DashboardStore | None = None,
         webhook_trigger: asyncio.Event | None = None,
+        install_signal_handlers: bool = True,
     ) -> None:
         # Rotates the BLOCKED-session poll window; see _blocked_sessions_to_poll.
         self._blocked_poll_cursor: int = 0
@@ -2571,10 +2572,12 @@ class CoordinareDaemon:
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._max_cycles = max_cycles
         self._sleep = sleep_func
+        self._install_signals = install_signal_handlers
         self._running = False
         self._stop_event = asyncio.Event()
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
+        self._state["startup_complete"] = False
         self._transcript_retention_task: asyncio.Task[None] | None = None
         self._run_log_retention_task: asyncio.Task[None] | None = None
         # 139: when each stall key was last logged, so a card that stays stuck
@@ -3936,6 +3939,8 @@ class CoordinareDaemon:
             logger.error("config_reload.failed", error=str(exc), exc_info=True)
 
     def _install_signal_handlers(self) -> None:
+        if not self._install_signals:
+            return
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -6261,6 +6266,7 @@ class CoordinareDaemon:
 
         # T018: Dispatch daemon_restart notification
         await self._notify_daemon_restart()
+        self._state["startup_complete"] = True
         return previous_phase, previous_lifecycle_sig
 
     async def _begin_cycle(self) -> float:

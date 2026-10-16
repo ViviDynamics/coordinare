@@ -13,6 +13,7 @@ from coordinare.dashboard.assets import (
         _ACTIVITY_STREAM_JS,
         _DASHBOARD_BRAND_ASSETS,
         _DASHBOARD_BRAND_ETAGS,
+        _DASHBOARD_JS_REVISIONS,
         _DASHBOARD_JS_SOURCES,
         _DASHBOARD_SHELL_CSS,
         _page_html,
@@ -30,7 +31,7 @@ def _register_activity_stream_script(app: FastAPI, ctx: DashboardContext) -> Non
         @app.get("/static/activity-streams.js")
         async def activity_stream_script() -> Response:
             return Response(_ACTIVITY_STREAM_JS, media_type="application/javascript",
-                            headers={"Cache-Control": "no-cache"})
+                            headers={"Cache-Control": "public, max-age=300"})
 
 
 def _register_dashboard_static_script(app: FastAPI, ctx: DashboardContext) -> None:
@@ -44,12 +45,12 @@ def _register_dashboard_static_script(app: FastAPI, ctx: DashboardContext) -> No
             changes the URL and no browser renders a stale script.
             """
             if filename == "shell.css":
-                return Response(_DASHBOARD_SHELL_CSS, media_type="text/css", headers={"Cache-Control": "no-cache"})
+                return Response(_DASHBOARD_SHELL_CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=300"})
             brand = _DASHBOARD_BRAND_ASSETS.get(filename)
             if brand is not None:
                 content, media_type = brand
                 etag = _DASHBOARD_BRAND_ETAGS[filename]
-                headers = {"Cache-Control": "public, no-cache", "ETag": etag}
+                headers = {"Cache-Control": "public, max-age=300", "ETag": etag}
                 validators = {
                     value.strip().removeprefix("W/")
                     for value in request.headers.get("if-none-match", "").split(",")
@@ -57,13 +58,16 @@ def _register_dashboard_static_script(app: FastAPI, ctx: DashboardContext) -> No
                 if etag in validators or "*" in validators:
                     return Response(status_code=304, headers=headers)
                 return Response(content, media_type=media_type, headers=headers)
-            source = _DASHBOARD_JS_SOURCES.get(filename.removesuffix(".js"))
+            name = filename.removesuffix(".js")
+            source = _DASHBOARD_JS_SOURCES.get(name)
             if source is None:
                 raise HTTPException(status_code=404)
+            versioned = request.query_params.get("v") == _DASHBOARD_JS_REVISIONS[name]
+            cache = "public, max-age=31536000, immutable" if versioned else "public, max-age=300"
             return Response(
                 source,
                 media_type="application/javascript; charset=utf-8",
-                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                headers={"Cache-Control": cache},
             )
 
 

@@ -166,6 +166,7 @@ DaemonPhase = Literal["idle", "dispatching", "monitoring_agent", "monitoring_per
 
 
 class CoordinareState(TypedDict, total=False):
+    startup_complete: bool  # Process-local readiness, never restored from snapshots.
     # 066 (FR-010): current_card is a *derived mirror* of
     # active_sessions[active_card_id]["current_card"].  The only sanctioned
     # mutation site is _rederive_current_card() below; all other writers MUST
