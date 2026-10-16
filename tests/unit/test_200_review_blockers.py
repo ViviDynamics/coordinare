@@ -19,6 +19,7 @@ from coordinare.doctor import CheckResult, DoctorReport, Status, check_endpoints
 from coordinare.first_launch import running_summary
 from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.services.github import PermanentGitHubError, TransientGitHubError
+from tests.unit.startup_helpers import run_preflight_without_listeners
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -74,7 +75,7 @@ async def test_200_network_warning_reaches_runtime(
     store = MagicMock(start=AsyncMock(), close=AsyncMock())
     runtime = AsyncMock()
     monkeypatch.setattr(cli, "EventStore", MagicMock(return_value=store))
-    monkeypatch.setattr(cli, "_run_with_events", runtime)
+    run_preflight_without_listeners(monkeypatch, runtime)
     await cli._run(launch_config)
     runtime.assert_awaited_once()
     assert "WARN" in capsys.readouterr().out
@@ -93,10 +94,11 @@ async def test_200_deterministic_github_failure_refuses_runtime(
     if status != httpx.codes.NOT_FOUND:
         client.get.return_value = httpx.Response(status)
     runtime = AsyncMock()
-    monkeypatch.setattr(cli, "_run_with_events", runtime)
-    with pytest.raises(SystemExit) as exc:
+    run_preflight_without_listeners(monkeypatch, runtime)
+    with pytest.raises(cli.RuntimeExecutionError) as exc:
         await cli._run(launch_config)
-    assert exc.value.code == 1
+    assert exc.value.phase == "startup"
+    assert exc.value.step == "preflight"
     runtime.assert_not_awaited()
     expected = "GitHub repository" if status == httpx.codes.NOT_FOUND else "GitHub token"
     assert "[FAIL] " + expected in capsys.readouterr().out
@@ -377,7 +379,7 @@ async def test_200_full_config_missing_blocked_reaches_runtime(
     store = MagicMock(start=AsyncMock(), close=AsyncMock())
     runtime = AsyncMock()
     monkeypatch.setattr(cli, "EventStore", MagicMock(return_value=store))
-    monkeypatch.setattr(cli, "_run_with_events", runtime)
+    run_preflight_without_listeners(monkeypatch, runtime)
     await cli._run(launch_config.model_copy(update={"preset": None}))
     runtime.assert_awaited_once()
     output = capsys.readouterr().out

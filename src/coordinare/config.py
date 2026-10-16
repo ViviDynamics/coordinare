@@ -1337,6 +1337,7 @@ class ProjectConfiguration(BaseSettings):
     poll_interval_seconds: int = Field(default=30, ge=0, le=3600)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     blocked_reminder_hours: int = 24
+    startup_deadline_seconds: float = Field(default=600.0, gt=0, le=3600)
     health_check_port: int = 8080
     # Deliberately 0.0.0.0 and NOT loopback, unlike dashboard_host below. The health
     # endpoints are liveness signals meant to be polled by an orchestrator or load

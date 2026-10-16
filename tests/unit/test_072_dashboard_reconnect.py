@@ -12,7 +12,7 @@ from coordinare.dashboard import _DASHBOARD_JS_SOURCES
 from tests.unit.dashboard_js_slices import app_js
 
 
-@pytest.mark.parametrize("case", ["native", "closed", "backoff", "handlers", "stale"])
+@pytest.mark.parametrize("case", ["native", "closed", "backoff", "handlers", "stale", "banner", "api", "mutation", "jitter", "unavailable", "markedStatus"])
 def test_dashboard_stream_recovery(tmp_path: Path, case: str) -> None:
     start = "var banner = document.getElementById('disconnected-banner');"
     end = "document.addEventListener('DOMContentLoaded', function() {"

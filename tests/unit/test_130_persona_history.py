@@ -190,6 +190,7 @@ def _config_file(tmp_path: Path) -> Path:
 def _client(tmp_path: Path, *, oidc: OidcFlow | None = None, token: str | None = None) -> TestClient:
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "config": SimpleNamespace(state_file_path=tmp_path / "state" / "coordinare.state.json"),
     }
     daemon.state_store.last_snapshot = None

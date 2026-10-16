@@ -25,7 +25,13 @@ from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services import run_viewer
 from coordinare.services.activity_log import EventLink
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 
 _WAIT_SSE = 3_000
 _WAIT_LIVE = 8_000
@@ -166,6 +172,7 @@ def run_server_url(store: DashboardStore, transcript_root: Path) -> Generator[st
         transcript_root, enabled=True, max_bytes_per_run=10**9, retention_days=0,
     )
     port = _free_port()
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
@@ -388,7 +395,10 @@ def test_a_failed_records_request_does_not_freeze_paging(page: Page, run_server_
 
     page.route("**/records?**", _fail_once)
     page.goto(run_server_url + _run_url(BIG_CARD, BIG_RUN))
-    expect(page.locator("#runs-notice")).to_contain_text("could not be loaded", timeout=_WAIT_RUN)
+    # 299: a read that fails at the network level is retried, so the dropped request recovers by
+    # itself instead of leaving a "could not be loaded" notice. Paging must still move afterwards.
+    expect(page.locator("#runs-notice")).to_contain_text("of 2000 records", timeout=_WAIT_RUN)
+    assert failed["done"], "the first records request was not intercepted"
     page.locator("#runs-type-filter").select_option("tool_result")
     expect(page.locator("#runs-notice")).to_contain_text("of 2000 records", timeout=_WAIT_LIVE)
     page.unroute("**/records?**")

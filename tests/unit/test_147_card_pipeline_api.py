@@ -74,6 +74,7 @@ def _daemon(root: Path | None, log: CardLifecycleLog | None) -> Any:
     daemon = MagicMock()
     symphonies = {ALPHA: SimpleNamespace(), BETA: SimpleNamespace()}
     daemon.state = {
+        "startup_complete": True,
         "phase": "idle",
         "error_count": 0,
         "symphony_configs": symphonies,

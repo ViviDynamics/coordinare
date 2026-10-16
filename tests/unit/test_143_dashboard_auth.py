@@ -18,7 +18,7 @@ BASE = "http://127.0.0.1:8090"
 
 def _app(token=TOKEN):
     daemon = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     daemon.state_store.last_snapshot = None
     return create_dashboard_app(
         DashboardStore(), daemon, MagicMock(), MagicMock(),

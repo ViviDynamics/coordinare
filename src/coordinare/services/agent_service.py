@@ -8,6 +8,8 @@ from coordinare.protocol import ProtocolMessage, ProtocolResponse
 from coordinare.transport.base import TransportError
 
 if TYPE_CHECKING:
+    import asyncio
+
     from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
@@ -16,12 +18,22 @@ logger = structlog.get_logger(__name__)
 class AgentService:
     def __init__(self, transport: Any) -> None:
         self._transport = transport
+        self._stop_event: asyncio.Event | None = None
+
+    def bind_stop_event(self, stop_event: asyncio.Event | None) -> None:
+        """Bind the daemon's shared shutdown signal before dispatching work."""
+        self._stop_event = stop_event
 
     async def dispatch_card(
         self,
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
+        from coordinare.services.http_performer_service import DispatchStoppingError
+
+        if self._stop_event is not None and self._stop_event.is_set():
+            logger.info("agent_service.dispatch_stopped")
+            raise DispatchStoppingError
         # Pass through ALL card_context fields to the performer.
         # Previous code selectively allowlisted fields, which silently dropped
         # role, relay_feedback, pr_url, pr_node_id, backend, model, github_api_url,

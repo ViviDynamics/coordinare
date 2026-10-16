@@ -27,7 +27,7 @@ def _app(config_path: Path, raw: dict[str, Any]):
     validated_raw = {**raw, "github_token": "ghp_fixturetoken"}
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(validated_raw))
     daemon = MagicMock()
-    daemon.state = {"coordinare_config": cfg, "config_version": 7}
+    daemon.state = {"startup_complete": True, "coordinare_config": cfg, "config_version": 7}
     daemon.running = True
     daemon._cycle_active = False
     daemon.state_store = None

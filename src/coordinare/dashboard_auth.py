@@ -130,6 +130,9 @@ class DashboardAuthentication:
             return
         request = Request(scope)
         path = request.url.path
+        if request.method in {"GET", "HEAD"} and path == "/dashboard/ready":
+            await self.app(scope, receive, send)
+            return
         if request.method == "POST" and path in self._signed_webhook_paths:
             # The only configured exemption is a route with its own HMAC verifier.
             await self.app(scope, receive, send)

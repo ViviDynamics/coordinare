@@ -23,18 +23,18 @@ StatsQueryParams = Annotated[StatsQuery, Query()]
 
 
 def register(app: FastAPI, ctx: DashboardContext) -> None:
-    collector = ctx.daemon.state.get("transcript_collector")
-    event_store = ctx.daemon.state.get("event_store")
-    service = RunStatistics(
-        collector.root
-        if isinstance(collector, TranscriptCollector) and collector.enabled
-        else None,
-        event_path=event_store.path if event_store is not None else None,
-    )
+    service: RunStatistics | None = None
 
     @app.get("/api/stats")
     async def query_stats(params: StatsQueryParams) -> JSONResponse:
+        nonlocal service
         state = ctx.daemon.state
+        collector = state.get("transcript_collector")
+        event_store = state.get("event_store")
+        root = collector.root if isinstance(collector, TranscriptCollector) and collector.enabled else None
+        event_path = event_store.path if event_store is not None else None
+        if service is None or service.root != root or service.event_path != event_path:
+            service = RunStatistics(root, event_path=event_path)
         visible = frozenset(state.get("symphony_configs") or {})
         log = state.get("card_lifecycle")
         snapshot = log.to_snapshot() if isinstance(log, CardLifecycleLog) else {}

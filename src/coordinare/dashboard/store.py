@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from coordinare import daemon as daemon_module
 from coordinare.cancel import resolve_active_card
+from coordinare.dashboard.availability import daemon_ready
 from coordinare.dashboard.card_pipeline import card_pipeline_block
 from coordinare.dashboard.helpers import (
     _json_default,
@@ -924,6 +925,7 @@ class DashboardStore:
             "active_sessions": active_session_summaries,
             "subsystems": subsystems,
             "overall_health": compute_overall_health(subsystems),
+            "daemon_ready": daemon_ready(daemon) and compute_overall_health(subsystems) == "healthy",
         }
 
     def _snapshot_extras(

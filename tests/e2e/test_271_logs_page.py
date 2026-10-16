@@ -15,7 +15,13 @@ from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services.event_store import EventStore
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 from tests.e2e.test_139_symphony_switcher import _snapshot, _two_symphonies
 
 WAIT_MS = 10_000
@@ -54,6 +60,7 @@ def logs_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Lo
     daemon.state["event_store"] = events
     daemon.state["symphony_configs"] = {ALPHA: object(), BETA: object()}
     monkeypatch.setattr(store, "build_snapshot", lambda *args: _snapshot(_two_symphonies()))
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))

@@ -398,7 +398,7 @@ def test_free_text_from_a_header_is_redacted(root: Path) -> None:
 
 def _client(root: Path | None, *, token: str | None = None) -> TestClient:
     daemon = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0, "symphony_configs": {SYMPHONY: object(), "beta-sym": object()},
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0, "symphony_configs": {SYMPHONY: object(), "beta-sym": object()},
                     "config": None}
     if root is not None:
         collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**9, retention_days=0)

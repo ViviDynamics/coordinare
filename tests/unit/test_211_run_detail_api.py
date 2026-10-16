@@ -65,7 +65,7 @@ def _write_run(root: Path, *, symphony: str, run: str) -> None:
 def _client(root: Path, *, enabled: bool = True, priced: bool = True) -> tuple[TestClient, TranscriptCollector]:
     daemon = MagicMock()
     collector = TranscriptCollector(root, enabled=enabled, max_bytes_per_run=10**9, retention_days=0)
-    daemon.state = {"phase": "idle", "error_count": 0, "transcript_collector": collector}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0, "transcript_collector": collector}
     if priced:
         daemon.state["config"] = SimpleNamespace(cost_tracking=_cost_tracking())
     daemon.state_store.last_snapshot = None

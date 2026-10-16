@@ -424,7 +424,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
 <link rel="stylesheet" href="/static/shell.css">
 </head>
 <body>
-<div id="disconnected-banner">&#9888; Disconnected: reconnecting...</div>
+<div id="disconnected-banner" role="status" aria-live="polite" style="display:block">Coordinare is starting</div>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <nav id="navbar" aria-label="Main navigation">
   <div class="nav-header">
@@ -474,7 +474,7 @@ td { padding: var(--space-3) var(--space-2); border-bottom: 1px solid var(--colo
   <span id="status-counts" class="status-counts"></span>
   <span id="spend-strip" class="status-muted"></span>
   <!-- 154 review: only the state label is a live region; the ticking countdown is not announced each second. -->
-  <span id="connection-status" class="status-freshness" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label" role="status" aria-live="polite">Connecting</span><span id="connection-detail"></span></span>
+  <span id="connection-status" class="status-freshness" title="Waiting for dashboard updates"><span id="nav-sse-dot" class="nav-status-dot disconnected" aria-hidden="true"></span><span id="connection-label" role="status" aria-live="polite">Connecting</span><span id="connection-detail"></span><span id="daemon-readiness"> · Daemon starting</span></span>
   <button id="health-dot" type="button" class="status-health" onclick="showSystemHealth()" aria-label="System health" title="System health"><span class="sh-dot" aria-hidden="true">&#9679;</span></button>
   <span class="status-actions">
     <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"

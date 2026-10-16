@@ -65,7 +65,7 @@ class _LogStream(httpx.AsyncByteStream):
 
 def _daemon(phase: str = "idle", **state_extra: Any) -> MagicMock:
     daemon = MagicMock()
-    daemon.state = {"phase": phase, "error_count": 0, **state_extra}
+    daemon.state = {"startup_complete": True, "phase": phase, "error_count": 0, **state_extra}
     daemon.state_store = None
     daemon._cycle_active = False
     daemon.running = True

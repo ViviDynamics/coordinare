@@ -299,6 +299,7 @@ async def test_lifecycle_events_are_durable_indexed_and_deduplicated(tmp_path: P
 def client(root: Path, *, auth: bool = False) -> TestClient:
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "symphony_configs": dict.fromkeys(VISIBLE),
         "config": None,
         "transcript_collector": TranscriptCollector(root, enabled=True, max_bytes_per_run=10**6),

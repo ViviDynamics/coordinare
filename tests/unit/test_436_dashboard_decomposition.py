@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 from pathlib import Path
 
 PACKAGE = "coordinare.dashboard"
@@ -131,8 +132,13 @@ class TestTemplatesAreAuthoritative:
         raw = template.read_text(encoding="utf-8")
         assert "<!--349-static-js-->" in raw
         head, tail = raw.split("<!--349-static-js-->")
-        assert module._DASHBOARD_HTML.startswith(head)
-        assert module._DASHBOARD_HTML.endswith(tail)
+        # Asset revisions are injected alongside the generated script block.
+        rendered = re.sub(
+            r'(/static/(?:shell\.css|activity-streams\.js))\?v=[a-f0-9]{12}',
+            r'\1', module._DASHBOARD_HTML,
+        )
+        assert rendered.startswith(head)
+        assert rendered.endswith(tail)
 
     def test_assistant_fragment_served_from_template_file(self) -> None:
         root = dashboard_root()

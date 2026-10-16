@@ -92,6 +92,8 @@ async def test_cancel_session_csrf_and_named_actor() -> None:
 @pytest.mark.asyncio
 async def test_cancel_endpoint_closes_and_persists_the_real_history(tmp_path) -> None:
     daemon = _make_daemon_for_env_cache()
+    daemon._running = True
+    daemon.state["startup_complete"] = True
     daemon.state["symphony_configs"] = _trigger_daemon().state["symphony_configs"]
     daemon.state["env_cache"]["alpha"] = EnvCacheState(symphony_name="alpha", sanitised_name="alpha",
                                                       cache_dir=tmp_path, bootstrap_in_flight=True)

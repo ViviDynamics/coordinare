@@ -133,7 +133,23 @@ def check_directories(config: ProjectConfiguration) -> list[CheckResult]:
     return results
 
 
+# 299: addresses this process already serves. The daemon checks its ports before binding them, then
+# starts the dashboard before its runtime preflight; that preflight must not report its own
+# listener as a conflict. doctor and init never register an address, so they always probe.
+_SERVING: set[tuple[str, int]] = set()
+
+
+def mark_serving(host: str, port: int) -> None:
+    _SERVING.add((host, port))
+
+
+def stop_serving(host: str, port: int) -> None:
+    _SERVING.discard((host, port))
+
+
 def check_port(config: ProjectConfiguration) -> CheckResult:
+    if (config.dashboard_host, config.dashboard_port) in _SERVING:
+        return CheckResult("dashboard port", Status.OK, f"The dashboard is serving on port {config.dashboard_port}.")
     try:
         check_port_available(config.dashboard_host, config.dashboard_port, label="dashboard")
     except (SystemExit, OSError):

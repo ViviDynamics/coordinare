@@ -20,7 +20,7 @@ def _make_daemon(*, cycle_active: bool = False, running: bool = True) -> MagicMo
     daemon._cycle_active = cycle_active
     daemon._webhook_trigger = asyncio.Event()
     daemon.running = running
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"phase": "idle", "error_count": 0, "startup_complete": True}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
     return daemon

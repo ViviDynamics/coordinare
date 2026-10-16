@@ -166,6 +166,7 @@ var SNAPSHOT_FIELD_SCOPE = {
   cycle_history: 'hidden',
   cycle_active: 'shared',
   daemon_running: 'shared',
+  daemon_ready: 'shared',
   blocked_by_dependencies: 'hidden',
   last_rebase_round: 'derived',
   role_utilization: 'shared',

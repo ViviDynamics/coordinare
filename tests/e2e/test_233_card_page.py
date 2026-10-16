@@ -28,7 +28,13 @@ from playwright.sync_api import Page, expect
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services.card_lifecycle import CardLifecycleLog
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 from tests.e2e.test_139_symphony_switcher import _connected
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _active_session, _full_snapshot
 
@@ -153,6 +159,7 @@ def store() -> DashboardStore:
 @pytest.fixture(scope="module")
 def card_url(store: DashboardStore, card_daemon: Any) -> Generator[str, None, None]:
     port = _free_port()
+    mark_daemon_started(card_daemon)
     app = create_dashboard_app(store, card_daemon, _mock_metrics(), _mock_health())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=lambda: asyncio.run(server.serve()), daemon=True)

@@ -24,7 +24,13 @@ from playwright.sync_api import Page, expect
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services.activity_log import EventLink
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 
 _WAIT_SSE = 3_000
 _WAIT_LIVE = 8_000
@@ -135,6 +141,7 @@ def ledger_server_url(store: DashboardStore, transcript_root: Path) -> Generator
         cost_tracking=cost_tracking, github_org="vividynamics", github_project_number=1,
     )
     port = _free_port()
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     thread = threading.Thread(target=lambda: asyncio.run(server.serve()), daemon=True)

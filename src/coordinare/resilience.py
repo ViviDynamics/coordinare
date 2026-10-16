@@ -242,6 +242,7 @@ class ResilientAgentService:
     ) -> dict[str, Any]:
         from coordinare.metrics import METRICS
         from coordinare.observability import get_current_symphony
+        from coordinare.services.http_performer_service import DispatchStoppingError
         from coordinare.transport.base import TransportTimeoutError
 
         retry = stamina.retry(
@@ -254,7 +255,7 @@ class ResilientAgentService:
             return await self._inner.dispatch_card(card_context, workspace_info=workspace_info)
 
         try:
-            async with self._circuit_breaker.guard():
+            async with self._circuit_breaker.guard(ignore=DispatchStoppingError):
                 result = await _retried()
             METRICS.service_calls_total.labels(
                 symphony=get_current_symphony(),
@@ -263,6 +264,8 @@ class ResilientAgentService:
                 outcome="success",
             ).inc()
             return result
+        except DispatchStoppingError:
+            raise
         except Exception:
             METRICS.service_calls_total.labels(
                 symphony=get_current_symphony(),
