@@ -12,16 +12,23 @@ configuration secrets or provider response bodies.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
+import os
 import secrets
+import stat
+import tempfile
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 import jwt
 import structlog
 from jwt import PyJWK
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from coordinare.localhost_guard import _is_wildcard_bind
 
@@ -37,6 +44,8 @@ PROVIDER_TIMEOUT_SECONDS = 10.0
 PENDING_CAPACITY = 1024
 _HTTP_OK = 200
 SESSION_CAPACITY = 4096
+SESSION_FILE_NAME = "dashboard_oidc_sessions.json"
+_SESSION_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 _URL_CONTROL_CHARACTERS = frozenset(map(chr, range(32))) | frozenset({"\x7f"})
 
 SESSION_COOKIE = "coordinare_session"
@@ -93,23 +102,107 @@ class OidcIdentity:
     provider: str = ""
 
 
+class _SessionTable(BaseModel):
+    """Versioned private snapshot with hashed cookie keys and finite expiries."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    version: Literal[1] = 1
+    sessions: dict[
+        Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+        tuple[OidcIdentity, FiniteFloat],
+    ]
+
+
 class OidcSessionStore:
-    """In-memory browser sessions. Restarting the daemon ends every session."""
+    """Bounded browser sessions, persisted when a private state path is supplied.
+
+    Cookie values are hashed before entering the table. Writes happen only on
+    changes, using a private temporary file and atomic replacement. One daemon
+    owns the file; this is not a shared store for concurrent replicas.
+    """
 
     def __init__(
         self, *, clock: Callable[[], float] = time.time,
         capacity: int = SESSION_CAPACITY,
+        path: Path | None = None,
     ) -> None:
+        if capacity < 1:
+            msg = "OIDC session capacity must be positive"
+            raise ValueError(msg)
         self._sessions: dict[str, tuple[OidcIdentity, float]] = {}
         self._clock = clock
         self._capacity = capacity
+        self._path = path
+        self._load()
+
+    def _prune(self) -> bool:
+        previous_size = len(self._sessions)
+        now = self._clock()
+        self._sessions = {
+            key: entry for key, entry in self._sessions.items() if entry[1] > now
+        }
+        while len(self._sessions) > self._capacity:
+            self._sessions.pop(next(iter(self._sessions)))
+        return len(self._sessions) != previous_size
+
+    def _load(self) -> None:
+        if self._path is None:
+            return
+        try:
+            table = _SessionTable.model_validate_json(self._path.read_bytes())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            _log.warning("dashboard_oidc.sessions_load_failed", error=type(exc).__name__)
+            return
+        self._sessions = table.sessions
+        if self._prune():
+            # A read-only volume must not stop startup, even during cleanup.
+            with contextlib.suppress(OSError):
+                self._persist()
+
+    def _persist(self) -> None:
+        if self._path is None:
+            return
+        temporary: Path | None = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._path.parent,
+                prefix=f".{self._path.name}.", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                os.fchmod(stream.fileno(), _SESSION_FILE_MODE)
+                # The ID token is a signed JWT used only as the logout hint. It is not written to
+                # disk; a session restored after a restart logs out locally, as discovery is reloaded
+                # only at the next login anyway.
+                persisted = {
+                    key: (replace(identity, id_token=""), expires_at)
+                    for key, (identity, expires_at) in self._sessions.items()
+                }
+                stream.write(_SessionTable(sessions=persisted).model_dump_json())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._path)
+        except OSError as exc:
+            _log.warning("dashboard_oidc.sessions_write_failed", error=type(exc).__name__)
+            raise
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink(missing_ok=True)
 
     def create(self, subject: str | OidcIdentity, *, lifetime_seconds: int) -> str:
+        self._prune()
         while len(self._sessions) >= self._capacity:
             self._sessions.pop(next(iter(self._sessions)))
         value = secrets.token_urlsafe(32)
         identity = OidcIdentity(subject) if isinstance(subject, str) else subject
-        self._sessions[value] = (identity, self._clock() + lifetime_seconds)
+        self._sessions[hashlib.sha256(value.encode()).hexdigest()] = (
+            identity, self._clock() + lifetime_seconds,
+        )
+        self._persist()
         return value
 
     def lookup(self, value: str) -> str | None:
@@ -117,17 +210,30 @@ class OidcSessionStore:
         return identity.subject if identity is not None else None
 
     def identity(self, value: str) -> OidcIdentity | None:
-        entry = self._sessions.get(value)
+        key = hashlib.sha256(value.encode()).hexdigest()
+        entry = self._sessions.get(key)
         if entry is None:
             return None
         identity, expires_at = entry
         if self._clock() >= expires_at:
-            self._sessions.pop(value, None)
+            self._sessions.pop(key, None)
+            # A read must not fail because cleanup could not be written (a full or read-only
+            # volume). The entry is gone from memory; the file catches up on the next write.
+            with contextlib.suppress(OSError):
+                self._persist()
             return None
         return identity
 
     def revoke(self, value: str) -> None:
-        self._sessions.pop(value, None)
+        key = hashlib.sha256(value.encode()).hexdigest()
+        previous = self._sessions.copy()
+        if self._sessions.pop(key, None) is not None:
+            try:
+                self._persist()
+            except OSError:
+                # Keep a failed logout retryable until the durable removal succeeds.
+                self._sessions = previous
+                raise
 
 
 @dataclass
@@ -142,9 +248,10 @@ class OidcFlow:
     def __init__(
         self, config: DashboardOidcConfig, *,
         client: httpx.AsyncClient | None = None,
+        session_path: Path | None = None,
     ) -> None:
         self.config = config
-        self.sessions = OidcSessionStore()
+        self.sessions = OidcSessionStore(path=session_path)
         self._client = client
         self._discovery: dict[str, str] | None = None
         self._discovery_lock = asyncio.Lock()
