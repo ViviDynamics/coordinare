@@ -263,7 +263,13 @@ def test_the_header_selector_rescopes_history_and_apply_keeps_that_scope(
     expect(page).to_have_url(f"{history_server_url}/history?symphony={BETA}")
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1)
     page.locator("#symphony-select").select_option(ALPHA)
-    expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(PAGE_SIZE, timeout=WAIT_PAGE)
+    # A page holds PAGE_SIZE rows; the conductor's checks among them carry no transcript link.
+    expect(page.locator("#history-page-section a[data-history-link]").first).to_have_attribute(
+        "data-history-link", re.compile(r"^/runs/alpha-sym/"), timeout=WAIT_PAGE,
+    )
+    links = _links(page)
+    assert len(links) > 1
+    assert all(link.startswith("/runs/alpha-sym/") for link in links), links
     expect(page.locator("#history-page-section")).not_to_contain_text("Beta card")
 
 
@@ -430,9 +436,10 @@ def test_old_history_scope_bookmarks_select_the_header_including_all(
     page.add_init_script(f"localStorage.setItem('coordinare.symphony', '{ALPHA}')")
     _history(page, history_server_url, store, query=f"?h.symphony={legacy_scope}&h.card=PVTI_B1")
     expect(page.locator("#symphony-select")).to_have_value(legacy_scope, timeout=WAIT_PAGE)
-    expect(page).to_have_url(
-        f"{history_server_url}/history?h.card=PVTI_B1&symphony={legacy_scope}", timeout=WAIT_PAGE,
-    )
+    # The order of the parameters is not part of the contract; the two values are.
+    expect(page).to_have_url(re.compile(r"[?&]h\.card=PVTI_B1(&|$)"), timeout=WAIT_PAGE)
+    expect(page).to_have_url(re.compile(rf"[?&]symphony={re.escape(legacy_scope)}(&|$)"), timeout=WAIT_PAGE)
+    expect(page).not_to_have_url(re.compile(r"h\.symphony"), timeout=WAIT_PAGE)
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_attribute(
         "data-history-link", "/runs/beta-sym/PVTI_B1/run-b1",
