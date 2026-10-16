@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import getpass
 import os
 import stat
@@ -28,6 +29,57 @@ from coordinare.services.config_write_service import atomic_write_yaml
 from coordinare.user_config import read_environment
 
 SECRET_MODE = 0o600
+FAILURE_SECRET = "ghp_private_token https://user:password@example.test/private?token=secret"
+
+
+@pytest.mark.parametrize("target,stage,error,cause", [
+    ("coordinare.init_answers.supplied_answers", "answers", ValueError(FAILURE_SECRET), "ValueError"),
+    ("coordinare.init_answers.supplied_answers", "answers", EOFError(FAILURE_SECRET), "EOFError"),
+    ("coordinare.init_probes.verify_board", "board", yaml.YAMLError(FAILURE_SECRET), "YAMLError"),
+    ("coordinare.init_probes.verify_token", "github", httpx.ConnectError(FAILURE_SECRET), "ConnectError"),
+    ("coordinare.init_probes.verify_token", "github", httpx.ConnectError(
+        FAILURE_SECRET, request=httpx.Request("GET", "https://user:password@example.test/private?token=secret"),
+    ), "ConnectError (host=example.test)"),
+    ("coordinare.init_probes.verify_repository", "github", httpx.HTTPStatusError(
+        FAILURE_SECRET, request=httpx.Request("GET", "https://user:password@example.test/private?token=secret"),
+        response=httpx.Response(403),
+    ), "HTTPStatusError (status=403, host=example.test)"),
+    ("coordinare.init_cli.write_setup", "write_config", PermissionError(errno.EACCES, FAILURE_SECRET, FAILURE_SECRET), "EACCES"),
+    ("coordinare.init_cli._validate_generated", "model_endpoint", ValueError(FAILURE_SECRET), "ValueError"),
+    ("coordinare.init_cli.configure_containers", "container_setup", OSError(errno.ENOSPC, FAILURE_SECRET), "ENOSPC"),
+    ("coordinare.init_probes.verify_harness", "harness", ValueError(FAILURE_SECRET), "ValueError"),
+    ("coordinare.docker_setup.smoke_container", "container_smoke", OSError(errno.ENOSPC, FAILURE_SECRET, FAILURE_SECRET), "ENOSPC"),
+    ("coordinare.init_cli.run_preflight", "preflight", OSError(FAILURE_SECRET), "OSError"),
+])
+def test_init_failure_reports_stage_and_safe_cause(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], target: str, stage: str, error: Exception, cause: str,
+) -> None:
+    monkeypatch.setattr(target, MagicMock(side_effect=error))
+    answers = answers_file(tmp_path, run_mode="local" if stage == "harness" else "docker")
+    assert invoke(monkeypatch, "--answers", str(answers)) == 1
+    output = capsys.readouterr()
+    line = output.err.splitlines()[0]
+    assert f"Setup failed at {stage}:" in line
+    assert cause in line
+    assert "Fix:" in output.err
+    for secret in ("ghp_private_token", "user:password", "/private?token=secret"):
+        assert secret not in output.out + output.err
+    if stage == "container_smoke":
+        assert "No space left on device" in line
+        assert "Docker filesystem" in output.err and "docker system df" in output.err
+
+
+def test_malformed_answers_report_yaml_cause_without_source_text(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = tmp_path / "answers.yaml"
+    answers.write_text("github_token: [ghp_private_token\n")
+    assert invoke(monkeypatch, "--answers", str(answers)) == 1
+    output = capsys.readouterr()
+    assert "Setup failed at answers: ParserError" in output.err
+    assert "ghp_private_token" not in output.out + output.err
 
 
 @pytest.fixture
@@ -668,12 +720,17 @@ def test_noninteractive_login_flag_calls_shared_installer(
 
 def test_service_install_failure_keeps_successful_setup(
     setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    install = MagicMock(side_effect=ServiceError("User session unavailable"))
+    install = MagicMock(side_effect=ServiceError(FAILURE_SECRET))
     monkeypatch.setattr("coordinare.init_cli.install_service", install)
     assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path)), "--start-at-login") == 1
     assert (setup_home / "config.yaml").exists()
     assert (setup_home / "coordinare.env").exists()
+    output = capsys.readouterr()
+    assert "Setup failed at service: SetupError (ServiceError)" in output.err
+    assert "Fix:" in output.err
+    assert "ghp_private_token" not in output.out + output.err
 
 
 def test_failed_preflight_never_installs_service(

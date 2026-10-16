@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import subprocess
 from pathlib import Path
@@ -26,6 +27,87 @@ TAGGED = REPOSITORY + ":" + RELEASE
 DIGEST = "sha256:" + "a" * 64
 PINNED = TAGGED + "@" + DIGEST
 FREE_BYTES = 100 * 1024**3
+
+
+@pytest.mark.parametrize("operation,stage,error,cause,fix", [
+    ("info", "docker_runtime", "network is unreachable", "network unreachable", "network"),
+    ("pull", "image_pull", "no space left on device", "ENOSPC", "docker system df"),
+    ("image", "image_inspect", "network is unreachable", "network unreachable", "network"),
+    ("run", "container_smoke", "no space left on device", "ENOSPC", "Docker filesystem"),
+    ("exec", "container_smoke", "permission denied while trying to connect to the Docker daemon socket", "Docker socket permission denied", "Docker access"),
+    ("run", "container_smoke", "pull access denied", "registry access denied", "docker login ghcr.io"),
+    ("run", "container_smoke", "manifest unknown", "manifest unknown", "--image-tag"),
+    ("run", "container_smoke", "network unreachable", "network unreachable", "network"),
+])
+def test_docker_failures_report_stage_known_cause_and_fix_without_stderr(
+    setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], operation: str, stage: str, error: str, cause: str, fix: str,
+) -> None:
+    monkeypatch.setattr(docker_setup, "START_TIMEOUT_SECONDS", 0.01)
+    docker.fail_operation = operation
+    docker.error = error + " ghp_private_token https://user:password@example.test"
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path, run_mode="docker"))) == 1
+    output = capsys.readouterr()
+    line = output.err.splitlines()[0]
+    assert f"Setup failed at {stage}:" in line and cause in line
+    assert "Fix:" in output.err and fix in output.err
+    assert "ghp_private_token" not in output.out + output.err
+    assert "user:password" not in output.out + output.err
+    assert not setup.exists()
+    if operation in {"run", "exec"}:
+        assert docker.calls[-1][1:3] == ["rm", "-f"]
+
+
+@pytest.mark.parametrize("error", [
+    OSError(errno.ENOSPC, "ghp_private_token https://user:password@example.test"),
+    ValueError("no space left on device ghp_private_token https://user:password@example.test"),
+    subprocess.CalledProcessError(1, ["docker", "run"], stderr="no space left on device ghp_private_token"),
+])
+def test_docker_smoke_exceptions_preserve_disk_cause(
+    setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], error: Exception,
+) -> None:
+    def runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        if command[1] == "run":
+            raise error
+        return docker(command, timeout)
+
+    monkeypatch.setattr(docker_setup, "run_docker", runner)
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path, run_mode="docker"))) == 1
+    output = capsys.readouterr()
+    assert "Setup failed at container_smoke:" in output.err
+    assert "ENOSPC" in output.err.splitlines()[0]
+    assert "Docker filesystem" in output.err and "docker system df" in output.err
+    assert "ghp_private_token" not in output.out + output.err
+    assert "user:password" not in output.out + output.err
+    assert not setup.exists()
+
+
+def test_disk_preflight_names_stage_and_fix(
+    setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(docker_setup.shutil, "disk_usage", lambda path: MagicMock(free=0))
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path, run_mode="docker"))) == 1
+    output = capsys.readouterr()
+    assert "Setup failed at docker_disk:" in output.err
+    assert "Insufficient disk space" in output.err
+    assert "Fix:" in output.err and "docker system df" in output.err
+    assert not setup.exists()
+
+
+@pytest.mark.parametrize("error", ["HTTP Error 403: Forbidden", "HTTP Error 401: Unauthorized"])
+def test_smoke_api_denial_is_not_reported_as_registry_denial(
+    setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], error: str,
+) -> None:
+    monkeypatch.setattr(docker_setup, "START_TIMEOUT_SECONDS", 0.01)
+    docker.fail_operation, docker.error = "exec", error
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path, run_mode="docker"))) == 1
+    output = capsys.readouterr()
+    assert "Setup failed at container_smoke:" in output.err
+    assert "smoke timed out" in output.err
+    assert "registry access denied" not in output.err and "docker login" not in output.err
 
 
 class FakeDocker:

@@ -7,6 +7,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from coordinare import init_probes
+from coordinare.init_diagnostics import init_stage
 from coordinare.init_files import fail, read_mapping
 from coordinare.presets import HARNESS_DEFAULTS
 
@@ -107,6 +108,7 @@ def _positive_integer(value: Any, name: str) -> int:
 
 
 def _choose_project(questions: Questions) -> None:
+    init_stage.set("board")
     if not questions.answers.get("project_number") and questions.interactive:
         owner = questions.answers["repository"].split("/")[0]
         boards = init_probes.list_projects(owner, questions.answers["github_token"])
@@ -121,6 +123,7 @@ def _choose_project(questions: Questions) -> None:
 
 
 def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
+    init_stage.set("model_endpoint")
     harness = questions.ask("harness", "Harness (installed CLIs preferred)")
     if harness not in HARNESS_DEFAULTS:
         fail("Choose a supported starter harness: codex, claude_code or opencode.")
@@ -139,6 +142,7 @@ def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
         if not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
             fail("Docker mode requires a model API key for a native provider. Set " + credential + " or supply api_key; host harness login files are not mounted.")
     else:
+        init_stage.set("harness")
         init_probes.verify_harness(questions.answers)
 
 
@@ -152,12 +156,16 @@ def collect_answers(args: argparse.Namespace, raw: dict[str, Any], secrets: dict
     questions.ask("github_token", "GitHub token (repo, project, read:org)", secret=True)
     if not questions.answers.get("github_token"):
         fail("github_token is required. Set GH_TOKEN or log in with gh auth login.")
+    init_stage.set("github")
     login = init_probes.verify_token(questions.answers)
+    init_stage.set("answers")
     repository = questions.ask("repository", "Repository owner/name")
     if not isinstance(repository, str) or len(repository.split("/")) != REPOSITORY_PARTS or not all(repository.split("/")):
         fail("repository must be owner/name. Supply --repository or run inside its git checkout.")
+    init_stage.set("github")
     init_probes.verify_repository(questions.answers)
     _choose_project(questions)
+    init_stage.set("answers")
     mode = questions.ask("run_mode", "Run mode: local processes or docker")
     if mode not in {"local", "docker"}:
         fail("run_mode must be local or docker.")
@@ -165,6 +173,7 @@ def collect_answers(args: argparse.Namespace, raw: dict[str, Any], secrets: dict
         sys.stdout.write("Images: base has core tools (allow 4 GiB); full adds Chromium and security/test tools (allow 10 GiB). Actual sizes vary by release and architecture.\n")
         questions.ask("image_variant", "Image variant: base or full")
     _choose_harness(questions, secrets)
+    init_stage.set("answers")
     sys.stdout.write("More concurrent cards increase model cost and the number of PRs needing review.\n")
     questions.ask("max_concurrent_cards", "Concurrent cards")
     questions.answers["max_concurrent_cards"] = _positive_integer(questions.answers["max_concurrent_cards"], "max_concurrent_cards")

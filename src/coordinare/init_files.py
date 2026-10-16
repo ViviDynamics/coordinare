@@ -26,9 +26,14 @@ REFERENCE = "https://github.com/ViviDynamics/coordinare/blob/main/config.example
 class SetupError(ValueError):
     """A deliberately credential-free error that can be shown to the operator."""
 
+    def __init__(self, message: str, *, cause: str | None = None, fix: str | None = None) -> None:
+        super().__init__(message if fix is None else message + "\nFix: " + fix)
+        self.cause = cause
+        self.fix = fix
 
-def fail(message: str) -> NoReturn:
-    raise SetupError(message)
+
+def fail(message: str, *, cause: str | None = None, fix: str | None = None) -> NoReturn:
+    raise SetupError(message, cause=cause, fix=fix)
 
 
 def read_mapping(path: Path) -> dict[str, Any]:
