@@ -1,0 +1,212 @@
+
+
+
+
+
+
+
+
+
+
+
+
+agent_transport: kubernetes
+conducting:
+  api_key_env: LITELLM_MASTER_KEY
+  backend: openai_api
+  base_url: http://litellm.litellm.svc.cluster.local:4000/v1
+  max_tokens: 4096
+  model: example/glm-5.3-flash
+dashboard_auth_token: null
+dashboard_host: 0.0.0.0
+dashboard_oidc:
+  client_id: conductor-dashboard
+  client_secret: ${COORDINARE_OIDC_CLIENT_SECRET}
+  discovery_url: https://auth.vividynamics.com/application/o/conductor-dashboard/.well-known/openid-configuration
+  redirect_url: https://coordinare.vividynamics.com/oidc/callback
+  session_hours: 12
+dashboard_port: 8090
+dispatcher_dedup:
+  stall_timeout_seconds: 0
+endpoints:
+- auth_env: LITELLM_MASTER_KEY
+  base_url: http://litellm.litellm.svc.cluster.local:4000/v1
+  kind: litellm
+  name: litellm
+env_cache_root: /var/lib/coordinare/env-caches
+github_app_id: 3288112
+github_auth: app
+github_installation_id: 121709627
+github_org: ViviDynamics
+github_private_key_path: /etc/coordinare/github-app/private-key.pem
+github_token: ""
+health_check_port: 8080
+human_reviewers:
+- Jason733i
+kubernetes_cache_claim: coordinare-devenv-cache
+kubernetes_image_pull_secrets: []
+kubernetes_namespace: coordinare-performers
+kubernetes_owner: helm-aa30c42f4bfe62db8e94761f170794b4e20f676d
+kubernetes_verifier_image: coordinare-performer:full
+max_feedback_cycles: 50
+model_endpoints:
+- endpoint: litellm
+  model: example/glm-5.3-flash
+  name: glm-flash
+- endpoint: litellm
+  model: claude-sonnet-5-5
+  name: sonnet-5-5
+modes:
+- name: single-glm-flash
+  strategy: single
+  tool: glm-flash
+- name: single-sonnet-5-5
+  strategy: single
+  tool: sonnet-5-5
+observability:
+  metrics_enabled: true
+  otlp:
+    backoff_seconds: 1
+    batch_size: 128
+    endpoint: ""
+    flush_seconds: 1
+    insecure: false
+    logs_endpoint: ""
+    protocol: http/json
+    queue_bytes: 4194304
+    queue_size: 1024
+    service_name: coordinare
+    timeout_seconds: 3
+orphan_pr:
+  completion_reconciliation: true
+  enabled: true
+  sweep: true
+performer_endpoints:
+- env:
+    AGENT_BACKEND: codex
+    BACKEND: codex
+    CODEX_PROVIDER_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+    CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY
+    CODEX_PROVIDER_NAME: vivi
+    CODEX_PROVIDER_WIRE_API: responses
+    LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+  id: garden-codex
+  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  mode: ephemeral
+  roles:
+  - architect
+  - implementer
+  - reviewer
+  - security
+  - closer
+  - tech_writer
+- env:
+    AGENT_BACKEND: claude_code
+    ANTHROPIC_MODEL: claude-sonnet-5-5
+    ANTHROPIC_SMALL_FAST_MODEL: example/glm-5.3-flash
+    BACKEND: claude_code
+    COORDINARE_PROXY_AUTH: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+    SELFHOSTED_HEALTH_TIMEOUT: "120"
+    SELFHOSTED_ROUTING_CONFIG: /devenv/assessor-routing/routing.yaml
+  id: garden-ephemeral
+  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  mode: ephemeral
+  roles:
+  - assessor
+  - qa
+  volumes:
+  - container_path: /devenv/assessor-routing
+    host_path: /dev/null
+    mode: ro
+- env:
+    AGENT_BACKEND: codex
+    BACKEND: codex
+    CODEX_PROVIDER_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+    CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY
+    CODEX_PROVIDER_NAME: vivi
+    CODEX_PROVIDER_WIRE_API: responses
+    COORDINARE_INFERENCE_API_KEY: ${LITELLM_MASTER_KEY}
+    COORDINARE_INFERENCE_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+    COORDINARE_INFERENCE_MODEL: example/glm-5.3-flash
+    COORDINARE_INFERENCE_PROVIDER: openai_compat
+    LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
+    LITELLM_PROXY_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
+    OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+  id: garden-bootstrap
+  image: ghcr.io/vividynamics/coordinare-performer-full:2026.10.137
+  mode: ephemeral
+  readiness_timeout_s: 300
+  roles:
+  - env_bootstrap
+performers:
+  architect:
+    backend: codex
+    effort: high
+    max_tokens: 32768
+    temperature: 0.2
+  assessor:
+    backend: claude_code
+    max_tokens: 12288
+    mode: single-glm-flash
+  closer:
+    backend: codex
+    max_tokens: 8192
+  default:
+    backend: codex
+    max_tokens: 16384
+    mode: single-glm-flash
+    temperature: 0.2
+  env_bootstrap:
+    backend: codex
+    max_tokens: 32768
+    mode: single-glm-flash
+    temperature: 0.2
+  implementer:
+    backend: codex
+    effort: low
+    max_tokens: 32768
+    temperature: 0.2
+  qa:
+    backend: claude_code
+    effort: medium
+    max_tokens: 32768
+    mode: single-sonnet-5-5
+  reviewer:
+    backend: codex
+    effort: high
+    max_tokens: 24576
+  security:
+    backend: codex
+    max_tokens: 24576
+  tech_writer:
+    max_tokens: 32768
+    mode: single-glm-flash
+state_file_path: /var/lib/coordinare/coordinare.state.json
+stuck_alerts:
+  per_phase_thresholds:
+    monitoring_agent: 3600
+    monitoring_performer: 3600
+  quiet_threshold_seconds: 300
+symphonies:
+- enabled: false
+  github_project_number: 14
+  name: dettmore-platform
+  overrides:
+    assignee_filter: ViviDynamics-AIR
+    project_name: dettmore-platform
+- enabled: true
+  github_project_number: 16
+  name: conductor-e2e
+  overrides:
+    assignee_filter: ViviDynamics-AIR
+    project_name: conductor-e2e-sample
+trusted_dashboard_hosts:
+- coordinare.default.svc.cluster.local
+- coordinare.default
+- coordinare
+- coordinare.vividynamics.com

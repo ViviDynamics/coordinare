@@ -1,7 +1,6 @@
 """Global config write helpers (436): guard, validate and persist a YAML write."""
 from __future__ import annotations
 
-import contextlib
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -11,7 +10,13 @@ from fastapi.responses import JSONResponse
 from coordinare.config import expand_config_text
 from coordinare.config_descriptors import GLOBAL_EDITABLE_FIELDS
 from coordinare.config_validation import validate_raw_config
-from coordinare.services.config_write_service import _validate_candidate
+from coordinare.services.config_write_service import (
+    ConcurrencyConflictError,
+    _validate_candidate,
+    atomic_write_yaml,
+    guard_concurrency,
+    safe_failure_reason,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,11 +57,6 @@ def _global_unguarded_refusal() -> JSONResponse:
 
 def _guard_global_hash(config_path: Any, expected_hash: Any) -> JSONResponse | None:
     """Concurrency-guard a global write, or return the structured refusal."""
-    from coordinare.services.config_write_service import (
-        ConcurrencyConflictError,
-        guard_concurrency,
-    )
-
     if not isinstance(expected_hash, str):
         return JSONResponse(
             {"error": "expected_hash must be a string"}, status_code=400,
@@ -73,8 +73,6 @@ def _guard_global_hash(config_path: Any, expected_hash: Any) -> JSONResponse | N
     except OSError as exc:
         # Same contract as _version_refusal; see the comment there.
         # Path kept out of the body; see the comment in _version_refusal.
-        from coordinare.services.config_write_service import safe_failure_reason
-
         _log.warning("config.global_write_refused_unreadable", error=str(exc))
         return JSONResponse(
             {
@@ -93,25 +91,12 @@ def candidate_text(loaded: dict[str, Any]) -> str:
 
 def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
     """Replace config_path with loaded content atomically, preserving mode."""
-    import os
-    import stat
-    import tempfile
-
-    dir_ = config_path.parent
-    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".yaml.tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(candidate_text(loaded))
-        original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-        os.chmod(tmp, original_mode)
-        os.replace(tmp, config_path)
-    except Exception:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp)
-        raise
+    atomic_write_yaml(config_path, loaded)
 
 
-def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
+def _validate_global_config(
+    loaded: dict[str, Any], *, original: dict[str, Any] | None = None,
+) -> JSONResponse | None:
     """Validate the whole candidate config before anything is written (219 re-review).
 
     The candidate is validated as the daemon will load it: the text that would be written,
@@ -130,8 +115,9 @@ def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
     if not result.passed:
         detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
         return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
-    start_errors = _validate_candidate(loaded)
+    start_errors = _validate_candidate(loaded, original=original)
     if start_errors:
         detail = "; ".join(err.message for err in start_errors)
-        return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
+        return JSONResponse({"error": f"Validation failed: {detail}"},
+                            status_code=403 if start_errors[0].code == "forbidden" else 422)
     return None

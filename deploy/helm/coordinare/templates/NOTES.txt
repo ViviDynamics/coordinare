@@ -99,3 +99,47 @@ bootstrap per symphony. Remove each deliberately:
 {{- if eq (include "coordinare.devenvMode" .) "create" }}
   kubectl -n {{ include "coordinare.performerNamespace" . }} delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}
 {{- end }}
+
+{{- if (dig "enabled" true (.Values.configPersistence | default dict)) }}
+
+Persistent config is ENABLED on the existing state PVC:
+  {{ .Values.state.mountPath | trimSuffix "/" }}/config/config.yaml
+UPGRADE: literal credentials that older values could render now fail the
+seed-config init container. Before upgrading, inspect your rendered config:
+  helm template {{ .Release.Name }} deploy/helm/coordinare -n {{ .Release.Namespace }} -f my-values.yaml --show-only templates/configmap.yaml > /tmp/coordinare-config-preview.yaml
+  grep -nEi 'token|secret|password|api[_-]?key|authorization|headers|://[^ /]+@' /tmp/coordinare-config-preview.yaml
+Review matches, including URLs; placeholders and nulls also match. Move literals
+to a Kubernetes Secret via existingSecret or secrets and use ${VAR} placeholders.
+For OTLP headers use headersSecret. If init fails, inspect seed-config logs, fix
+values and upgrade again. Back up and repair any literal credentials on the PVC
+using the README debug Pod recipe, or place config/reseed to adopt the cleaned
+seed and discard dashboard edits. configPersistence.enabled=false temporarily
+boots from the ConfigMap and retains the PVC config for repair.
+The chart seeds a missing file and overlays chart managed fields on every boot.
+Ports, paths, cache wiring, namespace, trusted hosts and observability follow Helm.
+Chart supplied performer image pins, including endpoint images by ID, follow Helm.
+Dashboard user settings survive restarts and upgrades. Chart fields are read only
+and labelled "managed by the Helm chart" on the Config page.
+The config checksum covers rendered seed data, including the chart overlay.
+The drift banner compares parsed sections, ignoring comments and chart fields.
+Use "Adopt chart values" to review a masked diff, select sections and confirm.
+It validates and atomically writes with If-Match and the normal auth and CSRF.
+Back up config/config.yaml, config/seed.yaml and any recovery backup with state.
+Empty or corrupt YAML is preserved as config.yaml.broken-<timestamp> and reseeded.
+System health shows the recovery. Parseable invalid config is never auto replaced.
+If startup fails, set configPersistence.enabled=false temporarily, or use the
+README debug Pod recipe to mount the state PVC and place config/reseed.
+To adopt the chart seed and DISCARD dashboard edits after backing up:
+  kubectl -n {{ .Release.Namespace }} exec {{ include "coordinare.fullname" . }}-0 -c coordinare -- touch {{ .Values.state.mountPath | trimSuffix "/" }}/config/reseed
+  kubectl -n {{ .Release.Namespace }} rollout restart statefulset/{{ include "coordinare.fullname" . }}
+Use placeholders or null for secrets; literal credentials cannot be seeded or saved.
+Existing garden installations import the current rendered ConfigMap on first boot.
+Keep the existing state claim and current values; no new PVC is needed.
+CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY is accepted as an environment name.
+Chart owned fields and Renovate image pins continue to follow Helm after migration.
+{{- else }}
+
+Persistent config is DISABLED. The daemon reads the read only ConfigMap.
+Dashboard edits cannot persist there. Any earlier PVC config is retained and
+will resume if configPersistence.enabled is turned on again.
+{{- end }}

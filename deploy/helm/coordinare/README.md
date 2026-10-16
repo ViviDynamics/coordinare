@@ -100,7 +100,7 @@ install.
 
 | Claim | Created by | Namespace | Access | Holds | Lost if it is missing or empty |
 |---|---|---|---|---|---|
-| `state-<release>-0` (controller state) | The StatefulSet's `volumeClaimTemplate`, always | Release namespace | `ReadWriteOnce`, one writer | The snapshot `coordinare.state.json` (sessions, cards, PR metadata, retry counters, decision history), `env-caches/` (the daemon's side of the environment cache), `transcripts/` and `run-logs/` | Sessions and card history. Every symphony re-bootstraps its environment. |
+| `state-<release>-0` (controller state) | The StatefulSet's `volumeClaimTemplate`, always | Release namespace | `ReadWriteOnce`, one writer | The snapshot `coordinare.state.json` (sessions, cards, PR metadata, retry counters, decision history), `config/` (live config and seed provenance), `env-caches/` (the daemon's side of the environment cache), `transcripts/` and `run-logs/` | Sessions and card history. Every symphony re-bootstraps its environment. |
 | `coordinare-devenv-cache` (performer environment cache) | The chart when `devenvCache.create` is unset or true, otherwise you | Performer namespace | `ReadWriteMany`: the bootstrap writes it, consumers mount it read-only | One subdirectory per symphony, named with the sanitised symphony name and mounted at `/devenv/<sanitised-name>`: rbenv and gems, node modules, debs | Nothing you have written. Every symphony re-bootstraps on its next dispatch. |
 
 **Persistence is not optional for the controller.** The state claim has no
@@ -117,6 +117,198 @@ symphony gets its environment until it binds. See the next section.
 cache. Each dispatch then repeats the full environment bootstrap for its symphony.
 That is slower, not broken. The chart prints a warning in `NOTES.txt` when it is
 off, so the choice is visible.
+
+### Persistent configuration and upgrades
+
+`configPersistence.enabled: true` is the default. The daemon reads and the
+Config editor writes `<state.mountPath>/config/config.yaml` (normally
+`/var/lib/coordinare/config/config.yaml`). This dedicated directory uses the
+existing state PVC because config and state have the same single writer and
+backup lifecycle. No new claim or volumeClaimTemplate change is required.
+
+On the first upgrade to this version, the `seed-config` init container imports
+that upgrade's rendered ConfigMap if no live file exists. This is also the
+migration for existing clusters: upgrade with the values currently in use to
+preserve the current configuration. The init container uses the daemon image,
+runs as the same nonroot user, and receives no credential environment. The state
+volume must be writable by UID/GID 10001, as for daemon state. A failed seed
+stops startup with an init container error. Check YAML, mount permissions and
+secret placeholders before retrying.
+
+**Upgrade check:** literal credentials that older values could render now fail
+the `seed-config` init container. Before upgrading, render your current values
+and inspect credential fields and URLs locally:
+
+```bash
+helm template coordinare deploy/helm/coordinare -n coordinare -f my-values.yaml --show-only templates/configmap.yaml > /tmp/coordinare-config-preview.yaml
+grep -nEi 'token|secret|password|api[_-]?key|authorization|headers|://[^ /]+@' /tmp/coordinare-config-preview.yaml
+```
+
+The grep is a review aid: placeholders, nulls and environment variable names
+also match. Move literal credentials into a Kubernetes Secret wired through
+`existingSecret` or `secrets`, and use `${VAR}` references in config. Any URL
+userinfo counts as a credential, including a bare username such as
+`https://user@host`. Use a placeholder for the URL password, such as
+`https://user:${PASSWORD}@host`, or for the whole URL. For OTLP headers, use
+`headersSecret` as described below. If an upgrade stalls, inspect `kubectl logs coordinare-0 -c
+seed-config`, fix the values and upgrade again. If the live PVC config contains
+literals, back it up and repair it with the debug Pod procedure below, or place
+`config/reseed` to adopt the cleaned seed and discard dashboard edits. A temporary
+`configPersistence.enabled: false` rollback retains the PVC file for repair.
+The init container checks the live file on every boot, even when the chart overlay
+changes nothing. A hand-edited literal secret stops the init container. Back up
+the file, then use a debug Pod on the state claim to replace the literal with a
+placeholder, or use the reset procedure below after cleaning the chart seed.
+You can temporarily boot with `configPersistence.enabled: false` while repairing
+the retained PVC file; reenable persistence after repair.
+
+After seeding, user settings in the PVC file are the source of truth. Dashboard
+edits survive Pod restarts, upgrades and uninstall. On **every boot**, the init
+container overlays the chart's runtime contract onto that file before the daemon
+loads it. Ports, state and cache paths, cache claim, namespace, trusted hosts,
+observability and Kubernetes wiring follow the chart. These fields are read only
+on the Config page and labelled "managed by the Helm chart". The authoritative
+list is `CHART_OWNED_KEYS` in
+[`config_ownership.py`](../../../src/coordinare/services/config_ownership.py).
+The boot log emits one `config.chart_overlay` event per field, without values.
+
+When supplied, `config.performer_image` also follows the chart. Garden currently
+pins images in `config.performer_endpoints[].image`; those pins follow the chart
+by endpoint ID, preserving the endpoint's other settings and list order. Renovate
+image updates therefore take effect after rollout. The verifier image also
+follows the chart. Keep `state.mountPath` stable and restore the config directory
+with the rest of the state claim.
+The GitHub App private-key path follows Helm only when present in the seed;
+otherwise the PVC value remains editable and survives boot.
+
+`checksum/config` hashes only the rendered config data, which contains both the
+seed and the chart overlay. Resource labels and other ConfigMap metadata do not
+cause config restarts. Config changes still roll the Pod, apply the runtime
+contract and make new user settings available for review.
+
+`config/seed.yaml` records the seed SHA256 and section fingerprints. Drift uses
+parsed, normalized section fingerprints excluding chart fields and endpoint image
+pins. Comments, formatting and chart overlays produce no false drift. Boot logs
+emit `config.seed_status`. The Config page shows changed section names and which
+live sections differ from the seed. Missing or corrupt provenance stays unknown.
+
+The drift banner's **Adopt chart values** action fetches a per section comparison
+with typed credentials and secret environment values masked. Select the sections
+to replace, then press **Confirm adoption**. This uses the same authentication,
+Origin checks, full config validation and atomic persistence as other config
+writes. `If-Match` guards the live file and a seed hash guards the reviewed chart
+version. A concurrent change requires a fresh preview. Only chosen sections are
+replaced; other user edits and unadopted drift survive. A successful write uses
+the existing reload or restart classification.
+
+If the live file is empty, whitespace only, undecodable, or invalid YAML, the init
+step moves it to `config.yaml.broken-<timestamp>`, logs
+`config.live_file_recovered` at error level, and restores the chart seed. The
+Config page and System health retain a recovery notice from `config/recovery.yaml`.
+Inspect the backup before restoring any lost edits. Delete `config/recovery.yaml`
+only after acknowledging the recovery. A parseable document with an invalid root,
+or a mapping that fails validation or start checks, is **never automatically
+replaced**.
+
+Back up **both** `config.yaml` and `seed.yaml`, alongside daemon state. For example:
+
+```bash
+kubectl -n coordinare cp -c coordinare coordinare-0:/var/lib/coordinare/config ./coordinare-config-backup
+```
+
+To explicitly adopt the current chart seed, first review the Config page summary
+and back up the live file. This action **discards all dashboard edits**:
+
+```bash
+kubectl -n coordinare exec coordinare-0 -c coordinare -- touch /var/lib/coordinare/config/reseed
+kubectl -n coordinare rollout restart statefulset/coordinare
+kubectl -n coordinare rollout status statefulset/coordinare
+```
+
+Substitute your namespace, StatefulSet and configured state mount path. The init
+step consumes the marker only after successful config and metadata writes. A
+failed reset retains it for retry. Restore the backup to recover earlier edits.
+Do not delete the live config as a reset mechanism: use the marker so adoption
+also refreshes seed provenance.
+
+If a parseable config prevents startup, temporarily set
+`configPersistence.enabled: false` to boot from the chart ConfigMap. Alternatively,
+stop the controller and run this short lived debug Pod on its state claim to
+place the reset marker. Substitute the namespace, StatefulSet and PVC names.
+Capture the current image first so the helper uses the same available image:
+
+```bash
+RECOVERY_IMAGE=$(kubectl -n coordinare get statefulset coordinare -o jsonpath='{.spec.template.spec.containers[0].image}')
+kubectl -n coordinare scale statefulset/coordinare --replicas=0
+kubectl -n coordinare wait --for=delete pod/coordinare-0 --timeout=120s
+cat <<EOF | kubectl -n coordinare apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: coordinare-config-recovery
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  containers:
+    - name: marker
+      image: ${RECOVERY_IMAGE}
+      command: ["/app/.venv/bin/python", "-c"]
+      args: ["from pathlib import Path; Path('/state/config/reseed').touch()"]
+      volumeMounts:
+        - name: state
+          mountPath: /state
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: state-coordinare-0
+EOF
+kubectl -n coordinare wait --for=jsonpath='{.status.phase}'=Succeeded pod/coordinare-config-recovery --timeout=120s
+kubectl -n coordinare delete pod coordinare-config-recovery
+kubectl -n coordinare scale statefulset/coordinare --replicas=1
+kubectl -n coordinare rollout status statefulset/coordinare
+```
+
+Back up the claim first. The marker resets the whole file on the next boot.
+Stopping the controller avoids a second writer and releases the state claim.
+If the PVC uses local storage, schedule the helper on the same eligible node.
+Reenable persistence after a ConfigMap fallback when ready to process the marker.
+
+For the old behavior, set `configPersistence.enabled: false`. The daemon reads
+the read only ConfigMap at `/etc/coordinare/config.yaml`, and runtime saves cannot
+persist there. The PVC copy is retained; reenabling resumes that copy, including
+its edits, and reports any seed drift. A rollback to an older chart similarly
+resumes ConfigMap behavior and leaves the PVC config in place. Use a daemon image
+containing `coordinare.services.config_seed` with this chart when persistence is
+on; pin the image version or digest with the chart release.
+
+Credentials stay in Kubernetes Secrets. Both seeds and persisted dashboard saves
+require `${VAR}` or `null` in typed secret fields and secret environment entries.
+A placeholder credential may have a leading `Bearer `, `Basic ` or `Token `
+scheme, case-insensitively, such as `Authorization: "Bearer ${OTEL_TOKEN}"`.
+Literal text inside the credential, such as `Bearer abc${TOKEN}`, is refused.
+Pointer keys ending in `_ENV_KEY`, `_ENV`, `_VAR` or `_NAME` may contain a bare
+uppercase environment variable identifier. The pointer value must name a variable
+with a secret keyword, such as `GH_TOKEN` or `LITELLM_MASTER_KEY`; an arbitrary
+uppercase identifier is refused. For example,
+`CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY` is allowed. This is a name, while a
+literal credential under `API_KEY` is still refused.
+Literal credentials are refused before writing; for migration, replace any
+literal chart credentials with placeholders before upgrading. Validation expands
+a temporary view only. Masked dashboard fields preserve the on disk placeholder,
+including symphony overrides loaded into memory with expanded credentials.
+Never copy a runtime config model or an expanded environment dump onto the PVC.
+
+The existing config reload trigger remains. Successful saves display applied live,
+restart required, or next job according to the existing editor classification.
+Process bindings such as dashboard host and port, health port and dashboard auth
+token require a restart; startup constructed services and listeners also need a
+Pod restart to take effect. Symphony and normal tuning edits use the existing
+cycle reload. A seed reset applies at the next Pod boot. This feature adds no
+file watcher or new hot reload mechanism.
 
 ### RWO and RWX, and why the cache needs RWX
 

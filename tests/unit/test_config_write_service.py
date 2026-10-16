@@ -377,11 +377,11 @@ def test_save_section_rechecks_conflict_just_before_write(
     base_hash = cws.compute_content_hash(temp_config_path)
     real_validate = cws._validate_candidate
 
-    def mutate_then_validate(candidate):
+    def mutate_then_validate(candidate, *, original=None):
         temp_config_path.write_text(
             temp_config_path.read_text() + "\n# concurrent out-of-band edit\n",
         )
-        return real_validate(candidate)
+        return real_validate(candidate, original=original)
 
     monkeypatch.setattr(cws, "_validate_candidate", mutate_then_validate)
 
@@ -407,11 +407,11 @@ def test_create_catalog_item_rechecks_conflict_just_before_write(
     base_hash = cws.compute_content_hash(temp_config_path)
     real_validate = cws._validate_candidate
 
-    def mutate_then_validate(candidate):
+    def mutate_then_validate(candidate, *, original=None):
         temp_config_path.write_text(
             temp_config_path.read_text() + "\n# concurrent out-of-band edit\n",
         )
-        return real_validate(candidate)
+        return real_validate(candidate, original=original)
 
     monkeypatch.setattr(cws, "_validate_candidate", mutate_then_validate)
 
