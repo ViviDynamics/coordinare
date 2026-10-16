@@ -22,10 +22,10 @@ ci_shard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ci_shard)
 
 
-def _shards(root: str, count: int) -> list[list[str]]:
+def _shards(root: str, count: int, *extra: str) -> list[list[str]]:
     return [
         subprocess.run(
-            [sys.executable, str(SCRIPT), "--shard", str(n), "--of", str(count), root],
+            [sys.executable, str(SCRIPT), "--shard", str(n), "--of", str(count), *extra, root],
             cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
         ).stdout.split()
         for n in range(1, count + 1)
@@ -43,13 +43,14 @@ def _workflow(rel: str) -> dict:
     return yaml.safe_load((PROJECT_ROOT / rel).read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize(("root", "count"), [("tests", 4), ("tests/e2e", 3)])
-def test_every_test_file_lands_in_exactly_one_shard(root: str, count: int) -> None:
-    shards = _shards(root, count)
-    flat = [path for shard in shards for path in shard]
+def test_every_test_file_lands_in_exactly_one_shard() -> None:
+    """The unit lane skips tests/e2e and the browser lane runs it; together they cover every file."""
+    unit = _shards("tests", 4, "--exclude", "tests/e2e")
+    browser = _shards("tests/e2e", 3)
+    flat = [path for shard in unit + browser for path in shard]
     assert len(flat) == len(set(flat)), "a file is in two shards and would run twice"
-    assert set(flat) == _git_test_files(root), "a tracked test file is in no shard"
-    assert all(shards), "an empty shard makes pytest exit 5"
+    assert set(flat) == _git_test_files("tests"), "a tracked test file is in no shard"
+    assert all(unit) and all(browser), "an empty shard makes pytest exit 5"
 
 
 def test_the_split_is_deterministic() -> None:
@@ -105,3 +106,22 @@ def test_the_browser_shards_cover_both_browsers() -> None:
     assert e2e["strategy"]["fail-fast"] is False
     assert "--of 3 tests/e2e" in yaml.safe_dump(e2e, width=4096)
     assert len(e2e["strategy"]["matrix"]["shard"]) == 3
+
+
+@pytest.mark.parametrize("rel", WORKFLOWS)
+def test_the_unit_shards_leave_tests_e2e_to_the_browser_lane(rel: str) -> None:
+    for name in ("test", "coverage-shard"):
+        assert "--of 4 tests --exclude tests/e2e" in yaml.safe_dump(_workflow(rel)["jobs"][name], width=4096), name
+
+
+def test_tests_e2e_holds_only_browser_tests() -> None:
+    """The unit lane skips tests/e2e on the strength of this.
+
+    With the default ``-m 'not e2e'`` nothing there may be collected; an unmarked test would
+    still run in the E2E lane, which ignores the marker, but would have been a unit test too.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", "tests/e2e"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == pytest.ExitCode.NO_TESTS_COLLECTED, result.stdout + result.stderr

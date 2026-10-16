@@ -108,6 +108,7 @@ jobs:
     name: Test (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     # 289: four parallel shards; scripts/ci_shard.py puts every test file in exactly one.
+    # tests/e2e holds only browser tests, which the E2E lane runs, so these shards skip it.
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +132,11 @@ jobs:
           uv pip install -e "agent/performer[dev]"
 
       - name: Run pytest
-        run: uv run --extra dev pytest --junitxml=junit-test-${{ matrix.shard }}.xml $(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests)
+        # The list is captured first: inside a command argument a failed
+        # $(...) would leave pytest with no paths, and it would run everything.
+        run: |
+          files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
+          uv run --extra dev pytest --junitxml=junit-test-${{ matrix.shard }}.xml $files
 
       - name: Verify OTLP wire protocols and licences
         if: ${{ matrix.shard == 1 }}
@@ -180,7 +185,11 @@ jobs:
         env:
           COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
         # The 90% floor applies to the combined data only, so a shard reports without failing on it.
-        run: uv run --extra dev pytest --cov=coordinare --cov-report= --cov-fail-under=0 $(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests)
+        # The list is captured first: inside a command argument a failed
+        # $(...) would leave pytest with no paths, and it would run everything.
+        run: |
+          files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
+          uv run --extra dev pytest --cov=coordinare --cov-report= --cov-fail-under=0 $files
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v4

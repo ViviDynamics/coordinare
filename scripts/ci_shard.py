@@ -11,7 +11,7 @@ file goes to the lightest shard first.
 
 Stdlib only:
 
-    python scripts/ci_shard.py --shard 1 --of 4 tests
+    python scripts/ci_shard.py --shard 1 --of 4 tests --exclude tests/e2e
     python scripts/ci_shard.py --shard 2 --of 3 tests/e2e
 """
 
@@ -30,13 +30,16 @@ _TEST_FILE = re.compile(r"^(test_.*|.*_test)\.py$")
 _TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+test", re.MULTILINE)
 
 
-def discover_test_files(roots: list[Path]) -> list[Path]:
-    """Every pytest-discoverable file under the roots, relative to the repo, sorted."""
+def discover_test_files(roots: list[Path], exclude: list[Path] | None = None) -> list[Path]:
+    """Every pytest-discoverable file under the roots and outside ``exclude``, relative to the repo, sorted."""
+    skipped = [(p if p.is_absolute() else REPO_ROOT / p).resolve() for p in exclude or []]
     found: set[Path] = set()
     for root in roots:
         base = root if root.is_absolute() else REPO_ROOT / root
         for path in base.rglob("*.py"):
             if "__pycache__" in path.parts or not _TEST_FILE.match(path.name):
+                continue
+            if any(path.resolve().is_relative_to(dropped) for dropped in skipped):
                 continue
             found.add(path.relative_to(REPO_ROOT))
     return sorted(found)
@@ -73,11 +76,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shard", type=int, required=True, help="1-based shard number")
     parser.add_argument("--of", type=int, required=True, help="total number of shards")
     parser.add_argument("--durations", type=Path, default=DEFAULT_DURATIONS)
+    parser.add_argument(
+        "--exclude", action="append", type=Path, default=[],
+        help="a directory another lane runs; its files join no shard here",
+    )
     parser.add_argument("roots", nargs="+", type=Path)
     args = parser.parse_args(argv)
     if args.of < 1 or not 1 <= args.shard <= args.of:
         parser.error(f"--shard must be between 1 and --of ({args.of})")
-    files = discover_test_files(args.roots)
+    files = discover_test_files(args.roots, args.exclude)
     if not files:
         parser.error("no test files found under " + ", ".join(map(str, args.roots)))
     bucket = assign(files, args.of, load_durations(args.durations))[args.shard - 1]
