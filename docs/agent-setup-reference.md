@@ -104,7 +104,7 @@ input disclosure. The prose command retains its existing detailed output.
 | `doctor.state_directory`, `doctor.performer_directory`, `doctor.transcript_directory`, `doctor.run_log_directory` | Writable storage |
 | `doctor.dashboard_port`, `doctor.dashboard_binding` | Port availability and loopback bind |
 | `doctor.performer_version`, `doctor.performer_image` | Matching daemon/image and local image availability |
-| `doctor.endpoint`, `doctor.model`, `doctor.native_model` | Reachability, Ollama model enumeration, native authentication |
+| `doctor.endpoint`, `doctor.model`, `doctor.native_model` | OpenAI-compatible /models or Ollama /api/tags verification and model enumeration, native authentication |
 | `doctor.github_credential`, `doctor.github_token`, `doctor.github_scopes`, `doctor.github_permissions`, `doctor.github_api`, `doctor.github_repository` | GitHub credential, permissions and repository probes |
 | `doctor.board_columns`, `doctor.github_board` | Board access and Status options |
 | `doctor.harness`, `doctor.container_harness`, `doctor.remote_harness` | Harness readiness by run mode |
@@ -114,7 +114,19 @@ input disclosure. The prose command retains its existing detailed output.
 
 Doctor reuses the launch preflight, with strict deterministic failures, live
 network checks and temporary Docker containers. Transient connection failures,
-timeouts, 429 and server errors become warnings after bounded retries. A native
-model can be skipped when it cannot be enumerated; a harness-login credential
+timeouts, 429 and server errors become warnings after bounded retries.
+`doctor.endpoint` probes `GET {base_url}/models` for OpenAI-compatible APIs.
+Ollama uses `GET {base_url}/api/tags` unless its base URL ends in `/v1`, in which
+case it uses `/models` too. A 2xx response is `ok`; any
+reachable non-2xx response is `warn`, with a fix naming the expected route and
+noting that `base_url` usually ends in `/v1`. Connection error statuses are
+unchanged. `doctor.model` enumerates OpenAI-compatible endpoints, including
+LiteLLM, vLLM and Ollama. It reports `ok` when the configured id is listed, `warn`
+when absent (with a short list of served ids and `ollama pull <model>` for Ollama), and `skip` only when enumeration
+is unavailable, such as non-2xx, an unreadable response or required authentication
+without a key. Native listings can also be unavailable; harness-login credentials
 cannot be proved until first use. Neither command proves model output quality,
 every write permission, or a successful daemon launch. No model inference runs.
+Configured credentials stay on the configured endpoint host; doctor does not
+follow redirects. Native OpenAI enumeration uses `https://api.openai.com/v1`
+only when no `base_url` is configured and an API key is available.

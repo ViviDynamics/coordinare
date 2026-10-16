@@ -262,14 +262,12 @@ def test_a_failing_check_must_name_a_fix() -> None:
     CheckResult(name="x", status=Status.SKIP, detail="not applicable")
 
 
-def test_unreachable_endpoint_is_reported_with_its_address() -> None:
+def test_unreachable_endpoint_is_reported_with_its_address(monkeypatch) -> None:
     """FR-009 — name the endpoint that did not answer, not just 'a failure'."""
     from coordinare.doctor import Status, check_endpoints
 
     cfg = _load_preset("config.example.ollama.yaml")
-    # The preset points at localhost:11434, which is almost certainly not
-    # listening in a test environment. Either outcome is informative; what must
-    # hold is that a failure names the address and a fix.
+    monkeypatch.setattr("coordinare.doctor._probe_endpoint", lambda _, **kwargs: (Status.WARN, "offline"))
     results = check_endpoints(cfg)
     assert results, "the Ollama preset defines an endpoint, so there must be a result"
     for result in results:
@@ -288,14 +286,15 @@ def test_model_not_found_lists_what_the_endpoint_does_serve(monkeypatch) -> None
     import coordinare.doctor as doctor
 
     monkeypatch.setattr(
-        doctor, "_list_ollama_models", lambda *a, **k: ["qwen2.5-coder:7b", "llama3.2:3b"],
+        doctor, "_list_models", lambda *a, **k: ["qwen2.5-coder:7b", "llama3.2:3b"],
     )
 
     cfg = _load_preset("config.example.ollama.yaml")
-    results = [r for r in doctor.check_models(cfg) if r.status is doctor.Status.FAIL]
-    assert results, "the preset's model is not in the stubbed list, so this must fail"
+    results = [r for r in doctor.check_models(cfg) if r.status is doctor.Status.WARN]
+    assert results, "the preset's model is not in the stubbed list, so this must warn"
 
     fix = results[0].fix or ""
+    assert "model_endpoints[].model" in fix, "the fix should name the setting to correct"
     assert "ollama pull" in fix, "the fix should name the command that resolves it"
     assert "qwen2.5-coder:7b" in fix, (
         "the fix must list what the endpoint does serve; that listing is usually the "
