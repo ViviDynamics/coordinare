@@ -40,8 +40,11 @@ against contract v1 refuses a newer driver **at start** instead of mid-session
 
 **C2.** Provider/model configuration MUST travel by flags (`--provider
 anthropic|openai`, `--model`, `--base-url`, `--temperature`, `--max-tokens`,
-`--effort`, `--system`), never by argv-embedded secrets. API keys MUST arrive
-in the environment (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`); argv is
+`--effort`, `--append-system`, `--system`), never by argv-embedded secrets.
+`--append-system` adds to nare's default scope rules; `--system` replaces them.
+`--system ''` sends no system prompt for an endpoint that refuses a system
+message. API keys MUST arrive in the environment (`ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`); argv is
 world-readable (`driver/src/driver/cli.py` — there is no `--api-key` flag by
 design). Coordinare's secret-injection path
 (`http_performer_service._build_job_payload`, keys on `card_context["backend"]`)
@@ -119,8 +122,9 @@ This section is the field registry for the adapter (work item 1 of #515):
    (`specs/contracts/dispatch-payload.md` — undeclared keys are dropped
    silently). The adapter MAY read `score.role`, `score.persona`,
    `score.branch`, `score.prior_clarifications` like other backends.
-4. **Prompt/persona.** `--system` receives the persona text; `--root` confines
-   driver's file tools to the workspace (`--root` is confinement, not a jail —
+4. **Prompt/persona.** `--append-system` receives the persona text so nare's
+   default scope rules stay in effect; `--root` confines driver's file tools
+   to the workspace (`--root` is confinement, not a jail;
    the sandbox boundary remains coordinare's container).
 5. **Proxy topology.** driver speaks `--provider openai` over Chat Completions,
    so it is **proxy-eligible** for dual-model orchestration (spec 080) via the
