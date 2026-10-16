@@ -23,6 +23,7 @@ from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.init_answers import existing_defaults
 from coordinare.init_files import minimal_template
 from coordinare.init_probes import detected_defaults, list_projects, require_checks
+from coordinare.service_manager import ServiceError
 from coordinare.services.config_write_service import atomic_write_yaml
 from coordinare.user_config import read_environment
 
@@ -112,7 +113,7 @@ def test_interactive_defaults_with_stubbed_input(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setenv("GH_TOKEN", "private-token")
     monkeypatch.setenv("OPENAI_API_KEY", "private-api-key")
-    responses = iter(["example/demo", "", "", "", "", "", "", "", ""])
+    responses = iter(["example/demo", "", "", "", "", "", "", "", "", ""])
     prompts: list[str] = []
 
     def answer(prompt: str) -> str:
@@ -134,7 +135,7 @@ def test_a_saved_credential_can_be_replaced_at_the_prompt(
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setenv("GH_TOKEN", "stale-token")
     monkeypatch.setenv("OPENAI_API_KEY", "private-api-key")
-    responses = iter(["example/demo", "", "", "", "", "", "", "", ""])
+    responses = iter(["example/demo", "", "", "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
     typed = {"GitHub": "fresh-token"}
     monkeypatch.setattr(
@@ -628,6 +629,59 @@ def test_generated_secrets_filename_is_gitignored() -> None:
     )
     assert result.returncode == 0
     assert result.stdout.strip() == "coordinare.env"
+
+
+@pytest.mark.parametrize("answer", ["yes", "no"])
+def test_init_offers_login_service_without_duplicate_foreground_start(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    install = MagicMock()
+    monkeypatch.setattr("coordinare.init_cli.install_service", install)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    prompts: list[str] = []
+
+    def respond(prompt: str) -> str:
+        prompts.append(prompt)
+        return answer if "start at login" in prompt.lower() else ""
+
+    monkeypatch.setattr("builtins.input", respond)
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path))) == 0
+    assert any("start at login" in prompt.lower() for prompt in prompts)
+    if answer == "yes":
+        install.assert_called_once_with(setup_home / "config.yaml")
+        assert not any("Start Coordinare now" in prompt for prompt in prompts)
+    else:
+        install.assert_not_called()
+
+
+def test_noninteractive_login_flag_calls_shared_installer(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install = MagicMock()
+    monkeypatch.setattr("coordinare.init_cli.install_service", install)
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path)), "--start-at-login") == 0
+    install.assert_called_once_with(setup_home / "config.yaml")
+
+
+def test_service_install_failure_keeps_successful_setup(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install = MagicMock(side_effect=ServiceError("User session unavailable"))
+    monkeypatch.setattr("coordinare.init_cli.install_service", install)
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path)), "--start-at-login") == 1
+    assert (setup_home / "config.yaml").exists()
+    assert (setup_home / "coordinare.env").exists()
+
+
+def test_failed_preflight_never_installs_service(
+    setup_home: Path, probes: AsyncMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install = MagicMock()
+    probes.return_value = DoctorReport([CheckResult("setup", Status.FAIL, "Not ready", "Repair setup")])
+    monkeypatch.setattr("coordinare.init_cli.install_service", install)
+    assert invoke(monkeypatch, "--answers", str(answers_file(tmp_path)), "--start-at-login") == 1
+    install.assert_not_called()
 
 
 @pytest.mark.parametrize("value", ["literal: colon", "[one, two]", "first\nsecond", "${UNSET_195_VALUE}"])

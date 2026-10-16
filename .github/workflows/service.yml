@@ -1,0 +1,56 @@
+name: Linux user service
+
+on:
+  pull_request:
+    paths:
+      - "src/coordinare/service_*.py"
+      - "src/coordinare/init_*.py"
+      - "src/coordinare/user_config.py"
+      - "src/coordinare/__main__.py"
+      - "bin/install"
+      - "bin/uninstall"
+      - "bin/stop"
+      - "scripts/service_smoke.py"
+      - ".github/workflows/service.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install Coordinare
+        run: uv sync --extra dev
+      - name: Check systemd user session
+        id: session
+        shell: bash
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          for attempt in {1..30}; do
+            state=$(systemctl --user is-system-running 2>/dev/null) || true
+            case "$state" in
+              running|degraded)
+                echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+                echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+                exit 0
+                ;;
+            esac
+            sleep 1
+          done
+          echo "::error::No reachable systemd user manager after 30 attempts."
+          exit 1
+      - name: Exercise install, status and uninstall with a real user manager
+        run: |
+          uv run python scripts/service_smoke.py
+          echo "Linux user service lifecycle passed with a real systemd user manager." >> "$GITHUB_STEP_SUMMARY"

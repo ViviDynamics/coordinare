@@ -32,9 +32,11 @@ transcripts live under `$XDG_DATA_HOME/coordinare`, defaulting to
 
 The shared preflight runs at the end and prints each failure with its fix. A
 failure exits with code 1 and retains the written files for repair. Successful
-setup prints the start command and dashboard URL and offers to start immediately.
-Pass `--start` to start without that final prompt. Service installation from
-issue 196 is optional future functionality and is not invoked by setup.
+setup prints the start command and dashboard URL and offers to start at login.
+Accepting calls the shared service installer and starts the background daemon.
+Declining offers a foreground start. Pass `--start` for foreground startup or
+`--start-at-login` for service installation without the final prompts. These
+flags are mutually exclusive. See [user services](service.md).
 
 ## Setup from an agent or CI
 

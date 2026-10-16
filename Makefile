@@ -112,10 +112,10 @@ performer-logs: ## tail live stderr from the active performer
 	bin/performer-logs
 
 ##@ Release
-install: ## install coordinare as a login LaunchAgent (auto-start)
+install: ## install the checkout as a user login service (macOS or Linux)
 	bin/install
 
-uninstall: ## remove the coordinare LaunchAgent and stop it
+uninstall: ## remove the user service and stop coordinare, retaining config and state
 	bin/uninstall
 
 

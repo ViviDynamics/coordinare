@@ -9,14 +9,18 @@
 #   bin/stop
 set -euo pipefail
 
-LABEL="com.vividynamics.coordinare"
-PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLIST="$HOME/Library/LaunchAgents/com.vividynamics.coordinare.plist"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [[ "$CONFIG_HOME" != /* ]]; then CONFIG_HOME="$HOME/.config"; fi
+UNIT="$CONFIG_HOME/systemd/user/coordinare.service"
 
-# If installed as a LaunchAgent, tell launchd to stop it (prevents respawn).
-# launchctl stop signals the process; we then do our own kill sweep below to
-# make sure ports are released even if the signal is slow.
-if [[ -f "$PLIST" ]]; then
-  launchctl stop "$LABEL" 2>/dev/null || true
+# Stop through the shared manager before the manual-process cleanup below.
+# On macOS this removes the loaded job so KeepAlive cannot respawn it.
+if [[ -f "$PLIST" || -f "$UNIT" ]]; then
+  if ! (cd "$ROOT_DIR" && PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}" uv run python -m coordinare service stop); then
+    echo "Warning: coordinare service stop failed; continuing manual-process cleanup." >&2
+  fi
 fi
 
 _any_killed=0
