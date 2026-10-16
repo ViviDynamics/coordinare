@@ -99,7 +99,7 @@ async function selectionChecks() {
     },
     insertAdjacentHTML: function(_position, html) {
       assert(html.indexOf('persona-stats-agent') < 0, 'the persona rail is the only agent selector');
-      assert(html.indexOf('aria-live="polite"') >= 0);
+      assert(html.indexOf('aria-live') < 0, 'a refresh must not re-announce the whole panel');
     },
     addEventListener: function(name, handler) { handlers[name] = handler; }
   };

@@ -53,11 +53,14 @@ var checks = {
   },
   refresh: function() {
     var mounted;
-    var section = {insertAdjacentHTML: function(position, html) { mounted = html; }};
-    context.document = {getElementById: function(id) { return id === 'personas-page-section' ? section : {}; }};
+    // 180: statistics mount into the read-only persona workspace, which the rail drives.
+    var root = {
+      getAttribute: function(name) { return name === 'data-persona-context' ? 'read' : null; },
+      insertAdjacentHTML: function(position, html) { mounted = html; },
+    };
+    context.document = {getElementById: function() { return {}; }};
     context.agentLabel = String;
-    context.personaStatsSelect = function() {};
-    context.personaStatsMount([{persona: {role: 'reviewer'}}]);
+    context.personaStatsMount(root);
     var attrs = mounted.match(/<div([^>]*id="persona-stats-content"[^>]*)>/)[1];
     assert(!/aria-live|role="(?:status|alert|log)"/.test(attrs), 'refresh must not announce the whole panel');
   }
