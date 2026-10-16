@@ -122,6 +122,7 @@ if TYPE_CHECKING:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the coordinare daemon")
+    parser.add_argument("--version", action="version", version=f"coordinare {_coordinare_version()}")
     # Daemon flags (top-level)
     parser.add_argument(
         "--config",

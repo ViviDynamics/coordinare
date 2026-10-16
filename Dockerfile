@@ -12,6 +12,9 @@ COPY src ./src
 # for the name on PyPI, so the local package is installed first and satisfies
 # the requirement by being present. Dockerfile.daemon avoids this by using uv.
 COPY packages ./packages
+# 193: the wheel force-includes the example configs (pyproject.toml), so they
+# must be in place before the install below.
+COPY config.example*.yaml ./
 
 RUN pip install --no-cache-dir ./packages/ci_detection ./packages/service_inference ./packages/routing_models .
 

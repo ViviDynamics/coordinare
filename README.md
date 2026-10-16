@@ -53,6 +53,8 @@ cd coordinare
 uv sync
 ```
 
+To install a published wheel without cloning, see [release packages](docs/releases.md).
+
 ### 2. Configure
 
 Copy the starter config and fill in your values:
