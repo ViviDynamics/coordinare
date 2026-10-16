@@ -274,10 +274,10 @@ def test_a_colleague_edit_during_global_validation_is_not_overwritten(
     etag = client.get("/api/config/global").headers["etag"]
     real_validate = dashboard_config_routes._validate_global_config
 
-    def colleague_saves_first(loaded: dict[str, Any]) -> Any:
+    def colleague_saves_first(loaded: dict[str, Any], **kwargs: Any) -> Any:
         # Runs after the guard and the read, before the write: a colleague's save lands here.
         config_path.write_text(config_path.read_text() + "\n# a colleague's edit\n")
-        return real_validate(loaded)
+        return real_validate(loaded, **kwargs)
 
     monkeypatch.setattr(dashboard_config_routes, "_validate_global_config", colleague_saves_first)
 

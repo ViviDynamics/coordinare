@@ -16,7 +16,7 @@ conducting:
   backend: openai_api
   base_url: http://litellm.litellm.svc.cluster.local:4000/v1
   max_tokens: 4096
-  model: spark/glm-5.3-flash
+  model: example/glm-5.3-flash
 dashboard_auth_token: null
 dashboard_host: 0.0.0.0
 dashboard_oidc:
@@ -51,7 +51,7 @@ kubernetes_verifier_image: coordinare-performer:full
 max_feedback_cycles: 50
 model_endpoints:
 - endpoint: litellm
-  model: spark/glm-5.3-flash
+  model: example/glm-5.3-flash
   name: glm-flash
 - endpoint: litellm
   model: claude-sonnet-5-5
@@ -105,7 +105,7 @@ performer_endpoints:
 - env:
     AGENT_BACKEND: claude_code
     ANTHROPIC_MODEL: claude-sonnet-5-5
-    ANTHROPIC_SMALL_FAST_MODEL: spark/glm-5.3-flash
+    ANTHROPIC_SMALL_FAST_MODEL: example/glm-5.3-flash
     BACKEND: claude_code
     COORDINARE_PROXY_AUTH: ${LITELLM_MASTER_KEY}
     LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
@@ -131,7 +131,7 @@ performer_endpoints:
     CODEX_PROVIDER_WIRE_API: responses
     COORDINARE_INFERENCE_API_KEY: ${LITELLM_MASTER_KEY}
     COORDINARE_INFERENCE_BASE_URL: http://litellm.litellm.svc.cluster.local:4000/v1
-    COORDINARE_INFERENCE_MODEL: spark/glm-5.3-flash
+    COORDINARE_INFERENCE_MODEL: example/glm-5.3-flash
     COORDINARE_INFERENCE_PROVIDER: openai_compat
     LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     LITELLM_PROXY_AUTH_TOKEN: ${LITELLM_MASTER_KEY}

@@ -37,6 +37,7 @@ DEFERRED_REST_PREFIXES = (
     "/api/cards",  # 147: a card's pipeline timeline (stages, runs, lifecycle, cost), for the card detail.
     "/api/history",  # 150: the History page's paginated run listing (human dashboard, read-only).
     "/api/symphonies/{name}/bootstrap-runs",  # Bootstrap run detail for the human dashboard.
+    "/api/config/chart",  # 284: Helm chart drift review and adoption, confirmed section by section by a person.
     "/health",
     "/live",
     "/ready",
