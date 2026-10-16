@@ -38,7 +38,7 @@ When a role finds issues (reviewer requests changes, security finds vulnerabilit
 
 ## Quick Start
 
-For guided per-user setup after installing Coordinare and a harness, run
+For guided per-user setup after installing Coordinare, run
 `coordinare init`. It writes a minimal config and private env file, checks the
 setup and prints the start command. See [guided setup](docs/init.md) for flags,
 answers files and unattended setup. The checkout-based steps below remain valid.
@@ -88,7 +88,8 @@ uv sync --project agent/performer
 ```
 
 `config.example.yaml` is the full reference. To use Docker performers instead,
-set `preset: containers` and build the images with `make docker`.
+run `coordinare init --run-mode docker` to pull and pin the matching release image.
+See [Docker mode setup](docs/docker-mode-setup.md) for runtime requirements and upgrades.
 See [first launch and the sample card](docs/first-launch.md).
 
 ### 3. Set up environment

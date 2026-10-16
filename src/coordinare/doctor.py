@@ -245,9 +245,30 @@ def check_dashboard_binding(config: ProjectConfiguration) -> list[CheckResult]:
     ]
 
 
+def check_performer_versions(config: ProjectConfiguration) -> list[CheckResult]:
+    installed = _coordinare_version()
+    results = []
+    for endpoint in getattr(config, "performer_endpoints", []):
+        if endpoint.mode != "ephemeral":
+            continue
+        image = endpoint.image or config.performer_image
+        tagged = image.split("@", 1)[0]
+        tag = tagged.rsplit("/", 1)[-1].partition(":")[2]
+        matches = tag == installed
+        results.append(CheckResult(
+            "performer version " + endpoint.id,
+            Status.OK if matches else Status.WARN,
+            "Performer image tag matches the daemon version." if matches else
+            f"Performer image tag differs from daemon version {installed} or is missing.",
+            None if matches else "After upgrading Coordinare, rerun coordinare init --force --run-mode docker to pull and pin its release image; use --image-tag VERSION only for an intentional override.",
+        ))
+    return results
+
+
 def run_checks(config: ProjectConfiguration) -> DoctorReport:
     """Run every preflight check and collect the results."""
     report = DoctorReport()
+    report.results.extend(check_performer_versions(config))
     report.results.extend(check_endpoints(config))
     report.results.extend(check_models(config))
     report.results.extend(check_dashboard_binding(config))

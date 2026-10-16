@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 ANSWER_NAMES = (
     "github_token", "repository", "project_number", "harness", "model", "endpoint",
-    "api_key", "max_concurrent_cards", "human_reviewers", "run_mode",
+    "api_key", "max_concurrent_cards", "human_reviewers", "run_mode", "image_variant", "image_tag",
 )
 REPOSITORY_PARTS = 2
 
@@ -57,6 +57,7 @@ def existing_defaults(raw: dict[str, Any], secrets: dict[str, str]) -> dict[str,
         "human_reviewers": raw.get("human_reviewers"),
         "run_mode": "docker" if raw.get("preset") == "containers" else "local",
         "endpoint": "",
+        "image_variant": "base" if "-base:" in str(raw.get("performer_image", "")) else "full",
     })
     for entry in raw.get("model_endpoints", []):
         if entry.get("name") == "starter":
@@ -129,11 +130,16 @@ def _choose_harness(questions: Questions, secrets: dict[str, str]) -> None:
     questions.ask("endpoint", "Endpoint URL (none uses the native provider)")
     key = os.environ.get(credential) or secrets.get(credential, "")
     questions.answers.setdefault("api_key", key)
-    label = f"{credential} (none uses the harness login)"
+    label = (f"{credential} (required for native providers in Docker)"
+             if questions.answers.get("run_mode") == "docker" else f"{credential} (none uses the harness login)")
     questions.ask("api_key", label, secret=True)
     if harness == "opencode" and not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
         fail("api_key is required for the opencode native provider. Set OPENAI_API_KEY or --api-key.")
-    init_probes.verify_harness(questions.answers)
+    if questions.answers.get("run_mode") == "docker":
+        if not questions.answers.get("api_key") and not questions.answers.get("endpoint"):
+            fail("Docker mode requires a model API key for a native provider. Set " + credential + " or supply api_key; host harness login files are not mounted.")
+    else:
+        init_probes.verify_harness(questions.answers)
 
 
 def collect_answers(args: argparse.Namespace, raw: dict[str, Any], secrets: dict[str, str]) -> dict[str, Any]:
@@ -155,6 +161,9 @@ def collect_answers(args: argparse.Namespace, raw: dict[str, Any], secrets: dict
     mode = questions.ask("run_mode", "Run mode: local processes or docker")
     if mode not in {"local", "docker"}:
         fail("run_mode must be local or docker.")
+    if mode == "docker":
+        sys.stdout.write("Images: base has core tools (allow 4 GiB); full adds Chromium and security/test tools (allow 10 GiB). Actual sizes vary by release and architecture.\n")
+        questions.ask("image_variant", "Image variant: base or full")
     _choose_harness(questions, secrets)
     sys.stdout.write("More concurrent cards increase model cost and the number of PRs needing review.\n")
     questions.ask("max_concurrent_cards", "Concurrent cards")

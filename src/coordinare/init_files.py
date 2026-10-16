@@ -9,7 +9,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from coordinare.presets import HARNESS_DEFAULTS
+from coordinare.presets import HARNESS_DEFAULTS, expand_preset
 from coordinare.user_config import (
     ENV_FILENAME,
     GENERATED_HEADER,
@@ -61,8 +61,33 @@ def build_config(answers: dict[str, Any], existing: dict[str, Any]) -> dict[str,
     raw.setdefault("state_file_path", str(data / "state.json"))
     raw.setdefault("run_logs", {"dir": str(data / "run-logs")})
     raw.setdefault("transcripts", {"dir": str(data / "transcripts")})
+    if answers["run_mode"] == "local" and existing.get("preset") == "containers":
+        if raw.get("agent_executable") == "":
+            raw.pop("agent_executable")
+        raw["performer_endpoints"] = [entry for entry in raw.get("performer_endpoints", []) if entry["id"] != "starter"]
+        raw.pop("performer_image", None)
     configure_model(raw, answers)
     return raw
+
+
+def configure_containers(raw: dict[str, Any], image: str) -> None:
+    raw["performer_image"] = image
+    raw["agent_executable"] = ""
+    if not raw.get("performer_endpoints"):
+        raw.pop("performer_endpoints", None)
+    expanded = expand_preset(raw)
+    raw["env_cache_root"] = expanded["env_cache_root"]
+    raw["env_passthrough"] = list(dict.fromkeys([*expanded["env_passthrough"], HARNESS_DEFAULTS[raw["harness"]][1]]))
+    endpoints = expanded["performer_endpoints"]
+    for endpoint in endpoints:
+        if endpoint["id"] == "starter":
+            endpoint["image"] = image
+            endpoint.setdefault("env", {})["BACKEND"] = raw["harness"]
+    raw["performer_endpoints"] = endpoints
+    directories = [Path(raw["env_cache_root"])]
+    directories.extend(Path(mount["host_path"]) for endpoint in endpoints for mount in endpoint.get("volumes", []))
+    for directory in directories:
+        directory.expanduser().mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
 
 
 def configure_model(raw: dict[str, Any], answers: dict[str, Any]) -> None:

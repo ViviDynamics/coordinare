@@ -1,6 +1,6 @@
 # Guided setup
 
-Install Coordinare, its performer package and one supported harness CLI, then run:
+Install Coordinare, then run:
 
 ```sh
 coordinare init
@@ -13,14 +13,20 @@ selected harness without making a model call. Installed harnesses are preferred
 as defaults. Every prompt shows its default. Secrets use hidden input; an
 existing credential is reused without displaying it.
 
+Local mode requires the performer package and a supported harness CLI on the host.
+Docker mode installs the harness inside each performer container.
 The starter uses `solo` for local processes or `containers` for Docker performers.
 The presets supply model defaults and enable the implementer only. Concurrency
 defaults to one and the authenticated GitHub user is the default human reviewer.
 Codex and Claude Code can use an existing harness login when no API key is
 supplied. OpenCode's native provider requires `OPENAI_API_KEY`. Use `--model`
 and `--endpoint` to choose a different model or OpenAI-compatible endpoint.
-Docker image provisioning belongs to the separate setup in issue 197; build
-the performer image first with `make docker` when working from a checkout.
+Docker mode checks the runtime, pulls the installed version's published image,
+and writes container mounts and runtime secret delivery. Native providers require a model API
+key since host harness login files are not mounted. Self-hosted endpoints can omit it. Use `--image-variant base` or
+`full` (default), and `--image-tag VERSION` for a development install with no
+published image. See [Docker mode setup](docker-mode-setup.md) for verification,
+registry access, networking and upgrades.
 
 Setup writes `config.yaml` and `coordinare.env` under
 `$XDG_CONFIG_HOME/coordinare`, defaulting to `~/.config/coordinare`. Secrets and
@@ -64,7 +70,8 @@ human_reviewers: [your-github-login]
 run_mode: local
 ```
 
-Optional answer keys are `github_token`, `api_key`, `model` and `endpoint`.
+Optional answer keys are `github_token`, `api_key`, `model`, `endpoint`,
+`image_variant` and `image_tag`.
 Keep an answers file containing credentials private. Environment credentials
 avoid putting secrets on the command line or in shell history. Equivalent env
 answers include `COORDINARE_INIT_REPOSITORY`, `COORDINARE_INIT_PROJECT_NUMBER`,

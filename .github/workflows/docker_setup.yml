@@ -1,0 +1,37 @@
+name: Docker Setup Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/coordinare/init*.py'
+      - 'src/coordinare/docker_setup.py'
+      - 'src/coordinare/presets.py'
+      - 'scripts/smoke_docker_setup.py'
+      - '.github/workflows/docker_setup.yml'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Published performer release tag
+        required: true
+        default: '2026.10.84'
+
+permissions:
+  contents: read
+
+jobs:
+  docker-setup:
+    name: Published Docker Setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - name: Install the daemon from the checkout
+        run: uv sync --extra dev
+      - name: Non-interactive init and published performer health check
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag || '2026.10.84' }}
+        run: uv run python scripts/smoke_docker_setup.py "$IMAGE_TAG"
