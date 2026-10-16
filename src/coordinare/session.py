@@ -540,6 +540,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         lifecycle_completed_at=None,
         processed_review_ids=set(),
         surfaced_stale_reviews={},
+        approval_carryover_cache={},
         persona_scope=None,
         bounce_counter={},
         no_progress_relays={},
