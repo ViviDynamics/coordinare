@@ -155,7 +155,9 @@ function personaSelector(personas, context) {
     var id = context + '-persona-' + role;
     return '<button type="button" class="persona-tab" role="tab" data-persona-tab="' + esc(role) + '"'
       + ' id="' + esc(id + '-tab') + '" aria-controls="' + esc(id) + '" aria-selected="false" tabindex="-1">'
-      + agentLabel(role) + personaStageNote(role) + '<span data-persona-dirty hidden> · Unsaved</span></button>';
+      + agentLabel(role) + personaStageNote(role)
+      // The read-only page cannot have unsaved text, so only the editor carries the marker.
+      + (context === 'read' ? '' : '<span data-persona-dirty hidden> · Unsaved</span>') + '</button>';
   }).join('') + '</div>';
 }
 
@@ -204,7 +206,8 @@ function personaRefresh(root) {
     var panel = document.getElementById(tab.getAttribute('aria-controls'));
     var field = panel && panel.querySelector('[data-md-source]');
     var dirty = field && personaSourceValue(field) !== JSON.parse(field.getAttribute('data-orig'));
-    tab.querySelector('[data-persona-dirty]').hidden = !dirty;
+    var marker = tab.querySelector('[data-persona-dirty]');
+    if (marker) marker.hidden = !dirty;
   });
 }
 
