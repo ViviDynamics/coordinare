@@ -49,7 +49,7 @@ from coordinare.config_validation import (
 )
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
-from coordinare.dashboard_oidc import OidcFlow
+from coordinare.dashboard_oidc import SESSION_FILE_NAME, OidcFlow
 from coordinare.doctor import Status, check_kubernetes_egress_enforcement
 from coordinare.first_launch import expanded_config_view, resolved_config_view, running_summary
 from coordinare.graph.builder import CoordinareGraphBuilder
@@ -1359,8 +1359,11 @@ async def _bootstrap_services(
     return service_state
 
 
-def _build_dashboard_oidc_flow(config: DashboardOidcConfig) -> OidcFlow:
-    return OidcFlow(config)
+def _build_dashboard_oidc_flow(
+    config: DashboardOidcConfig, *, state_file_path: Path,
+) -> OidcFlow:
+    session_path = state_file_path.expanduser().resolve().parent / SESSION_FILE_NAME
+    return OidcFlow(config, session_path=session_path)
 
 
 async def _run(
@@ -1594,7 +1597,7 @@ async def _run_with_events(
         ),
         auth_token=config.dashboard_auth_token,
         oidc=(
-            _build_dashboard_oidc_flow(config.dashboard_oidc)
+            _build_dashboard_oidc_flow(config.dashboard_oidc, state_file_path=config.state_file_path)
             if config.dashboard_oidc is not None else None
         ),
     )
