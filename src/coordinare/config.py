@@ -1872,6 +1872,9 @@ class ProjectConfiguration(BaseSettings):
     @classmethod
     def from_yaml(cls, path: Path | str) -> ProjectConfiguration:
         import os
+
+        from coordinare.start_checks import validate_expanded_secrets
+
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
@@ -1881,6 +1884,7 @@ class ProjectConfiguration(BaseSettings):
                 message = f"Failed to read config file {config_path}: {exc}"
                 raise OSError(message) from exc
             loaded = yaml.safe_load(expand_config_text(config_path.read_text()))
+            validate_expanded_secrets(loaded)
             if isinstance(loaded, dict):
                 raw = loaded
         # 062 — assessment_backend was replaced by the structured ``conducting`` block.

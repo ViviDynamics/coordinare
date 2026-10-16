@@ -26,6 +26,7 @@ def _ephemeral_config(**overrides: object) -> PerformerEndpointConfig:
         "mode": "ephemeral",
         "roles": ["performer"],
         "image": "performer:base",
+        "auth_token": "lifecycle-test-token",
     }
     base.update(overrides)
     return PerformerEndpointConfig.model_validate(base)

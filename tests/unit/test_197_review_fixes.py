@@ -48,12 +48,12 @@ def test_197_workflow_resolves_release_at_job_time(tmp_path: Path, tag: str, cod
     steps = workflow['jobs']['docker-setup']['steps']
     step = next(s for s in steps if s.get('id') == 'release')
     assert step['env']['GH_TOKEN'] == '${{ github.token }}'
-    assert '/releases?' in step['run'] and 'published_at' in step['run']
+    assert step['run'] == 'bash scripts/resolve_smoke_release.sh'
     gh = tmp_path / 'gh'
     gh.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_RELEASE"\n')
     gh.chmod(0o700)
     output = tmp_path / 'output'
-    result = subprocess.run(['bash', '-e', '-c', step['run']], capture_output=True, text=True, env={
+    result = subprocess.run(['bash', str(ROOT / 'scripts/resolve_smoke_release.sh')], capture_output=True, text=True, env={
         **os.environ, 'PATH': str(tmp_path) + ':' + os.environ['PATH'], 'TEST_RELEASE': tag,
         'GITHUB_REPOSITORY': 'ViviDynamics/coordinare', 'GITHUB_OUTPUT': str(output),
     }, check=False)
@@ -100,7 +100,7 @@ def test_197_smoke_real_entrypoint_and_cleanup_on_failures(monkeypatch, failure:
             raise subprocess.TimeoutExpired(command, timeout)
         return subprocess.CompletedProcess(command, 0, 'container-id', '')
     endpoint = PerformerEndpointConfig(id='starter', mode='ephemeral', roles=['implementer'], image=PINNED, env={'BACKEND': 'codex'})
-    monkeypatch.setattr(docker_setup.time, 'monotonic', MagicMock(side_effect=[0, 0, 301]))
+    monkeypatch.setattr(docker_setup.time, 'monotonic', MagicMock(side_effect=[0, 0, 0, 301, 301]))
     with pytest.raises(SetupError, match=r'timed out|cleanup'):
         docker_setup.smoke_container(endpoint, runner=runner)
     run = commands[0]
@@ -192,7 +192,7 @@ def test_197_auth_wired_from_private_file_to_container_and_daemon(setup, docker,
 
 @pytest.mark.parametrize('bind,host', [('127.0.0.1', '127.0.0.1'), ('0.0.0.0', 'host.docker.internal')])
 def test_197_publish_address_is_configurable(monkeypatch, bind: str, host: str) -> None:
-    endpoint = PerformerEndpointConfig(id='starter', mode='ephemeral', image=PINNED, roles=['implementer'], bind_host=bind, connect_host=host)
+    endpoint = PerformerEndpointConfig(id='starter', mode='ephemeral', image=PINNED, roles=['implementer'], bind_host=bind, connect_host=host, auth_token='test-token')
     boundary = AsyncMock(side_effect=[(0, 'container', ''), (0, bind + ':12345', '')])
     monkeypatch.setattr(performer_lifecycle, '_run_docker', boundary)
     started = asyncio.run(performer_lifecycle.start_ephemeral(endpoint))

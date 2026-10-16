@@ -9,6 +9,7 @@ at registration.
 from __future__ import annotations
 
 import asyncio
+import re
 import shlex
 import time
 from dataclasses import dataclass
@@ -159,6 +160,10 @@ async def start_ephemeral(
     """
     if config.image is None:
         raise ContainerStartError(f"performer {config.id} has no image configured")
+    token = config.auth_token.get_secret_value() if config.auth_token is not None else ""
+    if not token.strip() or re.search(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", token):
+        message = f"performer {config.id} auth_token must be set to an expanded, non-empty secret"
+        raise ContainerStartError(message)
 
     args: list[str] = ["run", "-d", "--rm", "--label", f"coordinare.performer.id={config.id}"]
 
@@ -192,8 +197,7 @@ async def start_ephemeral(
 
     args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
     private_env: dict[str, str] = {}
-    if config.auth_token is not None:
-        private_env["PERFORMER_AUTH_TOKEN"] = config.auth_token.get_secret_value()
+    private_env["PERFORMER_AUTH_TOKEN"] = token
 
     ss = config.secret_sources
     if not ss.init_payload:

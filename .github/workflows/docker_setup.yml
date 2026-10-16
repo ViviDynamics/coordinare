@@ -14,6 +14,9 @@ on:
       - 'agent/performer/Dockerfile.base'
       - 'agent/performer/entrypoint.sh'
       - 'scripts/smoke_docker_setup.py'
+      - 'scripts/resolve_smoke_release.sh'
+      - 'scripts/docker_setup_fakes.py'
+      - 'tests/utils/fake_model_server.py'
       - '.github/workflows/docker_setup.yml'
   workflow_dispatch:
 
@@ -39,16 +42,7 @@ jobs:
         if: matrix.variant == 'full'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! tag=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '[.[][] | select(.draft == false and .prerelease == false)] | sort_by(.published_at) | last | .tag_name'); then
-            echo '::error::Could not resolve a published release for the Docker smoke job.' >&2
-            exit 1
-          fi
-          if [[ ! "$tag" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo '::error::No valid published release tag resolved for the Docker smoke job.' >&2
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        run: bash scripts/resolve_smoke_release.sh
       - name: Install the daemon from the checkout
         run: uv sync --extra dev
       - name: Build the checkout base entrypoint

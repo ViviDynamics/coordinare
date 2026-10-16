@@ -151,6 +151,9 @@ def test_inspect_failure_does_not_report_success(docker: FakeDocker, tmp_path: P
 
 @pytest.fixture
 def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker) -> Path:
+    for key in ("COORDINARE_GITHUB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
@@ -219,7 +222,7 @@ def test_containers_need_runtime_api_key(setup: Path, docker: FakeDocker, tmp_pa
 @pytest.mark.parametrize("image,status", [(PINNED, Status.OK), (REPOSITORY + ":old@" + DIGEST, Status.WARN), (REPOSITORY + ":latest", Status.WARN)])
 def test_doctor_reports_image_version_mismatch(monkeypatch: pytest.MonkeyPatch, image: str, status: Status) -> None:
     monkeypatch.setattr("coordinare.doctor._coordinare_version", lambda: RELEASE)
-    config = ProjectConfiguration(preset="containers", harness="codex", github_org="example", github_repo="demo", human_reviewers=["operator"], performer_image=image)
+    config = ProjectConfiguration(preset="containers", harness="codex", github_org="example", github_token="test-token", github_repo="demo", human_reviewers=["operator"], performer_image=image)
     results = check_performer_versions(config)
     assert results and results[0].status is status
     if status is Status.WARN:
@@ -227,7 +230,7 @@ def test_doctor_reports_image_version_mismatch(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_solo_preset_has_no_version_warning() -> None:
-    assert check_performer_versions(ProjectConfiguration(github_org="example", human_reviewers=["operator"])) == []
+    assert check_performer_versions(ProjectConfiguration(github_org="example", github_token="test-token", human_reviewers=["operator"])) == []
 
 
 def test_preset_keeps_local_image_without_init() -> None:
@@ -254,9 +257,13 @@ def test_ci_workflow_uses_published_image_without_registry_login() -> None:
 
 
 def test_ci_provision_runs_real_init_with_an_injected_docker_boundary(docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from coordinare.user_config import read_environment
+
     monkeypatch.chdir(tmp_path)
     assert smoke_docker_setup.provision(RELEASE, tmp_path, docker) == PINNED
     assert any(command[1] == "pull" for command in docker.calls)
+    for key, value in read_environment(tmp_path / "config/coordinare.env").items():
+        monkeypatch.setenv(key, value)
     assert validate_config(tmp_path / "config/config.yaml").passed
 
 

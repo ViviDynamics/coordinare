@@ -57,7 +57,7 @@ def image_tag(explicit: str | None) -> str:
     return tag
 
 
-def _invoke(runner: DockerRunner, arguments: list[str], timeout: float = PROBE_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
+def _invoke(runner: DockerRunner, arguments: list[str], timeout: float = PROBE_TIMEOUT_SECONDS, *, retry_timeout: bool = False) -> subprocess.CompletedProcess[str]:
     try:
         return runner(["docker", *arguments], timeout)
     except FileNotFoundError:
@@ -65,6 +65,8 @@ def _invoke(runner: DockerRunner, arguments: list[str], timeout: float = PROBE_T
     except PermissionError:
         fail("Cannot execute Docker: check executable permissions on docker and its parent directories, then rerun init.")
     except subprocess.TimeoutExpired:
+        if retry_timeout:
+            raise
         fail("Docker " + arguments[0] + " timed out. Check Docker, network access and disk space, then rerun init.")
     except OSError:
         fail("Cannot execute Docker. Check installation, executable permissions and your Docker context, then rerun init.")
@@ -168,7 +170,7 @@ assert os.environ['BACKEND'] in status['capabilities']['backends'], 'Harness is 
 if token and not status.get('auth_enabled'):
     raise RuntimeError('Performer authentication is disabled')
 if os.environ.get('COORDINARE_SMOKE_GITHUB_TOKEN'):
-    get('https://api.github.com/user', {'Authorization': 'Bearer ' + os.environ['COORDINARE_SMOKE_GITHUB_TOKEN']})
+    get(os.environ.get('COORDINARE_SMOKE_GITHUB_URL', 'https://api.github.com/user'), {'Authorization': 'Bearer ' + os.environ['COORDINARE_SMOKE_GITHUB_TOKEN']})
 if os.environ.get('COORDINARE_SMOKE_MODEL_URL'):
     key = os.environ.get('COORDINARE_SMOKE_MODEL_TOKEN', '')
     model_headers = {'Authorization': 'Bearer ' + key} if key else {}
@@ -183,7 +185,10 @@ def smoke_environment(config: ProjectConfiguration) -> dict[str, str]:
     token = config.github_token
     if token is None:
         fail("A GitHub token is required for the container connectivity probe.")
-    values = {"COORDINARE_SMOKE_GITHUB_TOKEN": token.get_secret_value()}
+    values = {
+        "COORDINARE_SMOKE_GITHUB_TOKEN": token.get_secret_value(),
+        "COORDINARE_SMOKE_GITHUB_URL": config.github_api_url.rstrip("/") + "/user",
+    }
     for endpoint in config.endpoints:
         if endpoint.name != "starter":
             continue
@@ -227,12 +232,15 @@ def smoke_container(
             result = _invoke(command_runner, arguments)
         if result.returncode or not result.stdout.strip():
             fail("Performer smoke container did not start. Check Docker and the selected image; rerun init or use --skip-smoke.")
-        while time.monotonic() < deadline:
-            probe = _invoke(command_runner, ["exec", name, "python", "-c", SMOKE_PROBE], min(PROBE_TIMEOUT_SECONDS, max(0.1, deadline - time.monotonic())))
-            if probe.returncode == 0:
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                probe = _invoke(command_runner, ["exec", name, "python", "-c", SMOKE_PROBE], min(PROBE_TIMEOUT_SECONDS, remaining), retry_timeout=True)
+            except subprocess.TimeoutExpired:
+                probe = None
+            if probe is not None and probe.returncode == 0:
                 sys.stdout.write("Performer smoke passed: /healthz and /status answered, harness ready.\n")
                 return
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(min(POLL_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
         fail("Performer smoke timed out waiting for harness readiness and container GitHub/model access. Check network, credentials and harness installation; rerun init or use --skip-smoke.")
     finally:
         # Clean up by name even when `docker run` timed out before returning its id.
