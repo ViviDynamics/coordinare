@@ -579,12 +579,14 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
         that keeps happening.
         """
         from coordinare.dashboard import _DASHBOARD_HTML
+        from coordinare.dashboard.assets import _versioned_html
 
         client = self._client(temp_config_path, enabled=False)
-        served = client.get("/").text
+        response = client.get("/")
+        expected = _versioned_html(_DASHBOARD_HTML).encode("utf-8")
 
-        assert served == _DASHBOARD_HTML
-        assert "assistant-log" not in served
+        assert response.content == expected
+        assert "assistant-log" not in response.text
 
     def test_the_panel_is_present_when_enabled(self, temp_config_path) -> None:
         client = self._client(temp_config_path, enabled=True, backend=ScriptedBackend())

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from coordinare.doctor_status import Status
+from coordinare.metrics import _coordinare_version
 from coordinare.network_probe import error_status, probe_http, response_status
 
 __all__ = [
@@ -70,7 +71,7 @@ class DoctorReport:
 
     def render(self) -> str:
         icons = {Status.OK: "PASS", Status.FAIL: "FAIL", Status.WARN: "WARN", Status.SKIP: "SKIP"}
-        lines = ["", "coordinare preflight", "=" * 60]
+        lines = ["", f"coordinare preflight ({_coordinare_version()})", "=" * 60]
         for r in self.results:
             lines.append(f"  [{icons[r.status]}] {r.name}")
             lines.append(f"         {r.detail}")
