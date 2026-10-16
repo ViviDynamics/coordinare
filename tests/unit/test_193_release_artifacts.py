@@ -278,8 +278,34 @@ def test_staged_packages_have_tag_versions_pinned_siblings_and_legal_files(tmp_p
     assert "version" in source["project"]["dynamic"]
     assert not source["tool"]["hatch"].get("metadata", {}).get("allow-direct-references", False)
     staged = tomllib.loads((projects[0] / "pyproject.toml").read_text())
+    for filename in staged["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]:
+        assert (projects[0] / filename).is_file(), f"Missing staged force-include source: {filename}"
+        assert (projects[0] / filename).read_bytes() == (ROOT / filename).read_bytes()
     assert staged["tool"]["hatch"]["metadata"]["allow-direct-references"] is True
     assert VERSION not in (ROOT / "src/coordinare/_version.py").read_text()
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_staging_requires_arbitrary_root_force_include_files(tmp_path: Path, present: bool) -> None:
+    source = tmp_path / "source"
+    (source / "src/coordinare").mkdir(parents=True)
+    for filename in ("LICENSE", "NOTICE"):
+        (source / filename).write_text(filename)
+    (source / "pyproject.toml").write_text(
+        '[project]\nname = "coordinare"\ndynamic = ["version"]\n'
+        '[tool.hatch.build.targets.wheel.force-include]\n'
+        '"release-resource.txt" = "coordinare/data/release-resource.txt"\n',
+    )
+    if present:
+        (source / "release-resource.txt").write_text("release resource")
+    tools = release_tools()
+    with patch.dict(tools.PROJECTS, {"coordinare": "."}, clear=True):
+        if present:
+            projects = tools.prepare_projects(source, tmp_path / "stage", VERSION, "ViviDynamics/coordinare")
+            assert (projects[0] / "release-resource.txt").read_text() == "release resource"
+        else:
+            with pytest.raises(FileNotFoundError, match=r"release-resource\.txt"):
+                tools.prepare_projects(source, tmp_path / "stage", VERSION, "ViviDynamics/coordinare")
 
 
 def test_every_example_config_is_included_in_wheels() -> None:
