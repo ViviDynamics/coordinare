@@ -58,7 +58,7 @@ def _write(root: Path, records: list[dict[str, object]], header: dict[str, objec
 
 def _client(root: Path) -> TestClient:
     daemon = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0,
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0,
                     "transcript_collector": TranscriptCollector(root, enabled=True,
                                                                 max_bytes_per_run=10**9, retention_days=0)}
     daemon.state_store.last_snapshot = None

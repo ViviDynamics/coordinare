@@ -243,7 +243,7 @@ class TestDryRunEndpoint:
 
         store = DashboardStore()
         daemon = MagicMock()
-        daemon.state = {"phase": "idle", "error_count": 0}
+        daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
         if config is not None:
             daemon.state["config"] = config
         daemon.state_store = MagicMock()

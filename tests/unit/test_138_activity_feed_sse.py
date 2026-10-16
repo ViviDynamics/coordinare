@@ -137,6 +137,7 @@ def test_state_update_shape_additive_only() -> None:
     # 134 replaced the flat cost_per_million_tokens with token_usage: today and
     # the rolling week, priced from the usage ledger, or "not tracked".
     assert added == {
+        "daemon_ready",
         "activity_run_id",
         "activity_quiet_threshold_seconds",
         "token_usage",

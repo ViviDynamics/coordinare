@@ -25,6 +25,7 @@ from coordinare.resilience import (
     ResilientAgentService,
     RetryConfig,
 )
+from coordinare.services.http_performer_service import DispatchStoppingError
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.workspace import WorkspaceInfo
 
@@ -64,6 +65,32 @@ def _make_retry(*, attempts: int = 2) -> RetryConfig:
         wait_max=0.0,
         wait_jitter=0.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stopping_is_not_retried_or_counted_as_failure() -> None:
+    from coordinare.metrics import METRICS
+    from coordinare.observability import get_current_symphony
+
+    inner = _InnerAgent()
+    inner.dispatch_card.side_effect = DispatchStoppingError()
+    cb = _make_cb(failure_threshold=1)
+    svc = ResilientAgentService(inner, _make_retry(attempts=3), cb)
+    failure_metric = METRICS.service_calls_total.labels(
+        symphony=get_current_symphony(), service="agent", action="dispatch_card", outcome="failure",
+    )
+    before_failures = failure_metric._value.get()
+    stamina.set_active(True)
+    try:
+        with pytest.raises(DispatchStoppingError):
+            await svc.dispatch_card({"id": "c1"})
+    finally:
+        stamina.set_active(False)
+
+    inner.dispatch_card.assert_awaited_once_with({"id": "c1"}, workspace_info=None)
+    assert cb.state == CircuitState.CLOSED
+    assert not cb._failure_times
+    assert failure_metric._value.get() == before_failures
 
 
 # ---------------------------------------------------------------------------

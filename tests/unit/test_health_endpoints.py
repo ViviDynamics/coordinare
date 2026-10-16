@@ -14,7 +14,7 @@ def _make_daemon(running: bool = True) -> MagicMock:
     daemon = MagicMock()
     daemon.running = running
     daemon.state_store = None
-    daemon.state = {}
+    daemon.state = {"startup_complete": True}
     return daemon
 
 

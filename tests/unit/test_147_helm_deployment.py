@@ -390,7 +390,7 @@ class TestProbesAndMetrics:
         """FR-012 — /live and /ready exist and are read-only."""
         container = _container(_render())
         assert container["livenessProbe"]["httpGet"]["path"] == "/live"
-        assert container["readinessProbe"]["httpGet"]["path"] == "/ready"
+        assert container["readinessProbe"]["httpGet"]["path"] == "/dashboard/ready"
 
     def test_metrics_is_not_exposed_by_default(self) -> None:
         """FR-013 — /metrics discloses card counts, model identifiers and error rates."""

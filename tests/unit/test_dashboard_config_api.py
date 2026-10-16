@@ -65,6 +65,7 @@ def _make_client(config_path: Path, raw: dict[str, Any]) -> TestClient:
     coordinare_cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(validated_raw))
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "coordinare_config": coordinare_cfg,
         "config_version": 7,
     }

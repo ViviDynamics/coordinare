@@ -182,6 +182,7 @@ def _daemon_for(state: dict[str, Any]) -> MagicMock:
     """A daemon whose state the dashboard reads, holding one blocked live session."""
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "phase": "blocked",
         "current_card": {"id": "PVTI_203", "title": "Redact", "issue_number": 203},
         "slot_manager": None,

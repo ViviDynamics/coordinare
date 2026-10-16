@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import FastAPI, Request
 
+from coordinare.dashboard.availability import install_availability
 from coordinare.dashboard.routers.oidc import register_account_route, register_oidc_routes
 from coordinare.dashboard_auth import DashboardAuthentication
 from coordinare.localhost_guard import (
@@ -65,6 +66,7 @@ def create_dashboard_app(
     operator's bind address, port, and any trusted proxy hostname are honoured.
     """
     app = FastAPI(title="coordinare-dashboard")
+    install_availability(app, daemon)
     if auth_token is not None or oidc is not None:
         app.add_middleware(
             DashboardAuthentication, token=auth_token, oidc=oidc,
@@ -86,7 +88,7 @@ def create_dashboard_app(
         app,
         permitted_origins
         or build_permitted(dashboard_host="127.0.0.1", dashboard_port=8090),
-        exempt_paths=guard_exempt_paths,
+        exempt_paths=(guard_exempt_paths or frozenset()) | frozenset({"/dashboard/ready"}),
     )
 
     @app.middleware("http")

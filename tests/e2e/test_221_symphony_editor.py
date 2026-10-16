@@ -27,6 +27,7 @@ from playwright.sync_api import Dialog, Page, Route, expect
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+from tests.e2e.conftest import mark_daemon_started
 from tests.e2e.test_143_settings import _snapshot as _config_snapshot
 from tests.e2e.test_143_settings import _stub_config
 from tests.e2e.test_dashboard_browser import _full_snapshot
@@ -297,7 +298,7 @@ def _serve(tmp_path: Path, overrides: dict[str, Any]) -> Generator[dict[str, Any
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
     daemon._cycle_active = False
-    daemon.running = True
+    mark_daemon_started(daemon)
     store = DashboardStore()
     app = create_dashboard_app(store, daemon, MagicMock(), MagicMock(), config_path=config_path)
     port = _free_port()

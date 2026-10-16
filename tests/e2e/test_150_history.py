@@ -28,7 +28,13 @@ from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 from tests.e2e.test_139_symphony_switcher import _connected, _snapshot, _two_symphonies
 from tests.e2e.test_dashboard_browser import _WAIT_NAV
 
@@ -139,6 +145,7 @@ def history_server_url(store: DashboardStore, transcript_root: Path) -> Generato
     daemon.state["transcript_collector"] = collector
     daemon.state["symphony_configs"] = {ALPHA: object(), BETA: object()}
     port = _free_port()
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     server_loops: queue.SimpleQueue[asyncio.AbstractEventLoop] = queue.SimpleQueue()

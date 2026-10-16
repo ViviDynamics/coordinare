@@ -498,15 +498,23 @@ class TestTheDaemonActuallyReachesReady:
     and the spec said so rather than implying otherwise. Issue #224 closed it.
     """
 
-    def test_the_controller_becomes_ready(self, healthy_release) -> None:
+    def test_the_dashboard_becomes_ready(self, healthy_release) -> None:
         assert _wait_ready(healthy_release["release"]), (
-            "the controller never became Ready. Its readiness probe is /ready, which "
-            "only serves once startup has resolved the project — so this failing "
-            "means startup did not complete, not that the probe is wrong."
+            "the controller never became Ready. GET /dashboard/ready on port 8090 "
+            "means the dashboard can answer while daemon initialization continues."
         )
+        result = _run(
+            "kubectl", "-n", NAMESPACE, "exec",
+            f"{healthy_release['release']}-coordinare-0", "--",
+            "/app/.venv/bin/python", "-c",
+            "import urllib.request;"
+            "print(urllib.request.urlopen('http://127.0.0.1:8090/dashboard/ready', timeout=5).status)",
+            check=False,
+        )
+        assert "200" in result.stdout, f"Ready pod's dashboard did not answer: {result.stdout} {result.stderr}"
 
     def test_the_readiness_endpoint_answers(self, healthy_release) -> None:
-        """Ready is the orchestrator's opinion; this asks coordinare directly."""
+        """Check daemon readiness separately from dashboard pod readiness."""
         release = healthy_release["release"]
         result = _run(
             "kubectl",

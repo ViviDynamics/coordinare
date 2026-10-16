@@ -397,7 +397,7 @@ class TestApplyingGoesThroughTheGuardedWritePath:
             **coerce_multi_symphony_raw({**raw, "github_token": "ghp_fixturetoken"}),
         )
         daemon = MagicMock()
-        daemon.state = {"coordinare_config": cfg, "config_version": 7}
+        daemon.state = {"startup_complete": True, "coordinare_config": cfg, "config_version": 7}
         daemon.running = True
         app = create_dashboard_app(
             DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
@@ -492,6 +492,7 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
 
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "coordinare_config": cfg,
             "config_version": 7,
             "conducting_backend": backend,

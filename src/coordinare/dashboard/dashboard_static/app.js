@@ -1313,7 +1313,10 @@ function afSetLive(live) {
   if (note) note.style.display = live ? 'none' : '';
   if (!live) updateConnectionStatus('Updates quiet');
   var bnr = document.getElementById('disconnected-banner');
-  if (bnr && !live) bnr.style.display = 'block';
+  if (bnr && !live) {
+    bnr.textContent = 'Reconnecting, Coordinare is restarting';
+    bnr.style.display = 'block';
+  }
 }
 
 function afNoteMessage() {
@@ -1395,7 +1398,66 @@ function afTick() {
 var banner = document.getElementById('disconnected-banner');
 var es;
 var _sseRetryTimer = null;
-var _sseRetryDelay = 1000;
+var RETRY_INITIAL_MS = 1000;
+var RETRY_MAX_MS = 30000;
+var _sseRetryDelay = RETRY_INITIAL_MS;
+function retryDelay(delay) {
+  return Math.round(delay * (0.5 + Math.random() * 0.5));
+}
+function showRestarting() {
+  if (banner) {
+    banner.textContent = 'Reconnecting, Coordinare is restarting' +
+      (currentScopedState() ? '' : '. Coordinare is starting');
+    banner.style.display = 'block';
+  }
+  updateConnectionStatus('Reconnecting');
+  var readiness = document.getElementById('daemon-readiness');
+  if (readiness) readiness.textContent = ' · Daemon readiness unknown';
+  var fpBtn = document.getElementById('force-poll-btn');
+  if (fpBtn) fpBtn.disabled = true;
+}
+// Retry reads only. Replaying a mutation could execute an operator action twice.
+if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+  var dashboardNativeFetch = window.fetch.bind(window);
+  window.fetch = function(url, options) {
+    if (typeof url !== 'string' || url.indexOf('/api/') !== 0) return dashboardNativeFetch(url, options);
+    var method = ((options && options.method) || 'GET').toUpperCase();
+    var read = method === 'GET' || method === 'HEAD';
+    var delay = RETRY_INITIAL_MS;
+    function retry() {
+      return new Promise(function(resolve) {
+        setTimeout(resolve, retryDelay(delay));
+        delay = Math.min(delay * 2, RETRY_MAX_MS);
+      }).then(attempt);
+    }
+    function attempt() {
+      return dashboardNativeFetch(url, options).then(function(response) {
+        if (response.status === 503) {
+          function restart(status) {
+            if (status === 'starting' || status === 'stopping') {
+              showRestarting();
+              if (read) return retry();
+            }
+            return response;
+          }
+          if (response.headers && response.headers.get('Retry-After') !== null) return restart('starting');
+          if (response.clone) {
+            return response.clone().json().then(function(body) {
+              return restart(body && body.status);
+            }, function() { return response; });
+          }
+        }
+        return response;
+      }, function(error) {
+        if (error.name === 'AbortError') throw error;
+        showRestarting();
+        if (read) return retry();
+        throw error;
+      });
+    }
+    return attempt();
+  };
+}
 function connectEventStream() {
   var source = new EventSource('/events');
   es = source;
@@ -1417,6 +1479,10 @@ function connectEventStream() {
     _lastStateAt = Date.now();
     try {
       _lastState = JSON.parse(e.data);
+      _sseRetryDelay = RETRY_INITIAL_MS;
+      if (banner) banner.style.display = 'none';
+      var readiness = document.getElementById('daemon-readiness');
+      if (readiness) readiness.textContent = currentScopedState().daemon_ready === false ? ' · Daemon degraded' : ' · Daemon ready';
       // state_update precedes backfill on every stream connection.
       afSyncRun(_lastState.activity_run_id);
       // 139: the header control first, then every view narrowed to the symphony chosen there.
@@ -1442,19 +1508,16 @@ function connectEventStream() {
   });
   source.onerror = function() {
     if (es !== source) return;
-    banner.style.display = 'block';
-    updateConnectionStatus('Reconnecting');
-    var fpBtn = document.getElementById('force-poll-btn');
-    if (fpBtn) fpBtn.disabled = true;
-    // Native EventSource retries CONNECTING, but HTTP failures can close it permanently.
-    if (source.readyState === EventSource.CLOSED && _sseRetryTimer === null) {
+    showRestarting();
+    // Own all retry timing, including network failures in CONNECTING state.
+    source.close();
+    if (_sseRetryTimer === null) {
       _sseRetryTimer = setTimeout(function() {
         _sseRetryTimer = null;
-        if (es !== source || source.readyState !== EventSource.CLOSED) return;
-        source.close();
+        if (es !== source) return;
         connectEventStream();
-      }, _sseRetryDelay);
-      _sseRetryDelay = Math.min(_sseRetryDelay * 2, 30000);
+      }, retryDelay(_sseRetryDelay));
+      _sseRetryDelay = Math.min(_sseRetryDelay * 2, RETRY_MAX_MS);
     }
   };
   source.onopen = function() {
@@ -1464,8 +1527,6 @@ function connectEventStream() {
       clearTimeout(_sseRetryTimer);
       _sseRetryTimer = null;
     }
-    _sseRetryDelay = 1000;
-    banner.style.display = 'none';
     updateConnectionStatus('Waiting for updates');
   };
 }

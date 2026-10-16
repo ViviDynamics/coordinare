@@ -59,6 +59,7 @@ from coordinare.services.bootstrap_history import (
     begin_attempt,
     history_of,
     mark_verifying,
+    persist_attempt,
     record_activity,
     report_completion,
 )
@@ -91,7 +92,7 @@ from coordinare.services.env_cache import (
     daemon_sees_performer_cache,
 )
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
-from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILE_PATHS,
@@ -187,6 +188,8 @@ def get_daemon_started_at() -> str:
 EligibilityReason = Literal[
     "eligible", "blocked_column", "backlog_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity", "review_capacity",
 ]
+
+SHUTDOWN_SNAPSHOT_SECONDS = 5.0
 
 #: 171: a documenter side run waits for a free pipeline slot. A skip record, not an
 #: eligibility verdict: the card is eligible, it is just parked behind the budget.
@@ -2561,6 +2564,7 @@ class CoordinareDaemon:
         idle_threshold_seconds: int = 1800,
         dashboard_store: DashboardStore | None = None,
         webhook_trigger: asyncio.Event | None = None,
+        install_signal_handlers: bool = True,
     ) -> None:
         # Rotates the BLOCKED-session poll window; see _blocked_sessions_to_poll.
         self._blocked_poll_cursor: int = 0
@@ -2571,10 +2575,15 @@ class CoordinareDaemon:
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._max_cycles = max_cycles
         self._sleep = sleep_func
+        self._install_signals = install_signal_handlers
         self._running = False
         self._stop_event = asyncio.Event()
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
+        self._state["startup_complete"] = False
+        self._state["stop_event"] = self._stop_event
+        self._last_saved_lifecycle_sig: Any = None
+        self._shutdown_snapshot_ready = False
         self._transcript_retention_task: asyncio.Task[None] | None = None
         self._run_log_retention_task: asyncio.Task[None] | None = None
         # 139: when each stall key was last logged, so a card that stays stuck
@@ -3245,6 +3254,9 @@ class CoordinareDaemon:
                 )
 
     def stop(self) -> None:
+        if not self._stop_event.is_set():
+            logger.info("daemon.dispatch_stopped")
+        self._state["stopping"] = True
         if self._cycle_active:
             self._stop_during_cycle = True
         self._running = False
@@ -3936,6 +3948,8 @@ class CoordinareDaemon:
             logger.error("config_reload.failed", error=str(exc), exc_info=True)
 
     def _install_signal_handlers(self) -> None:
+        if not self._install_signals:
+            return
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
@@ -4898,6 +4912,9 @@ class CoordinareDaemon:
         setattr(ec, f"{role}_in_flight", True)
         try:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except DispatchStoppingError:
+            setattr(ec, f"{role}_in_flight", False)
+            return
         except Exception as exc:
             setattr(ec, f"{role}_in_flight", False)
             register_failure(ec, role, f"dispatch failed: {exc}", max_attempts=3)
@@ -5037,6 +5054,9 @@ class CoordinareDaemon:
         ec.wiki_in_flight = True
         try:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except DispatchStoppingError:
+            ec.wiki_in_flight = False
+            return
         except Exception as exc:
             ec.wiki_in_flight = False
             logger.warning("wiki_init.dispatch_failed", symphony=symphony_name, error=str(exc))
@@ -5241,7 +5261,28 @@ class CoordinareDaemon:
         """Dispatch the bootstrap payload; start the completion poller on
         success, else surface the rich dispatch status/reason and mark
         bootstrap complete-with-error."""
-        result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+        try:
+            result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+        except DispatchStoppingError:
+            # The optimistic marker and open history entry precede dispatch.
+            # No job started, so leave the retry budget and prior result intact.
+            cache = (self._state.get("env_cache") or {}).get(symphony_name)
+            if cache is not None:
+                cache.bootstrap_in_flight = False
+            history = history_of(self._state)
+            open_run = history.open_attempt(symphony_name) if history is not None else None
+            if history is not None and open_run is not None:
+                record = history.finish(
+                    symphony_name,
+                    AttemptEnd(
+                        ended_at=datetime.now(UTC), succeeded=False,
+                        reason="dispatch deferred because the daemon is stopping",
+                        commit=open_run.commit, attempt=open_run.attempt,
+                        cancelled_by="daemon shutdown",
+                    ),
+                )
+                persist_attempt(self._state, symphony_name, record)
+            return
         job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
         bootstrap_container_id = (result or {}).get("container_id")
         # 266: the job and pod the running attempt was dispatched to, for the bootstrap view.
@@ -6261,6 +6302,7 @@ class CoordinareDaemon:
 
         # T018: Dispatch daemon_restart notification
         await self._notify_daemon_restart()
+        self._state["startup_complete"] = True
         return previous_phase, previous_lifecycle_sig
 
     async def _begin_cycle(self) -> float:
@@ -6362,26 +6404,46 @@ class CoordinareDaemon:
         if isinstance(calls, ConductorCallLog):
             # Best effort: a failed drain is logged and shutdown goes on.
             try:
-                await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
+                async with asyncio.timeout(SHUTDOWN_DRAIN_SECONDS):
+                    await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
             except Exception as exc:
                 logger.warning("daemon.conductor_drain_failed", error=str(exc))
         if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
             try:
-                await self._state_store.save(self._build_snapshot())
+                async with asyncio.timeout(SHUTDOWN_SNAPSHOT_SECONDS):
+                    await self._state_store.save(self._build_snapshot())
             except Exception as exc:  # pragma: no cover — best-effort flush
                 logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
 
-    async def start(self) -> None:
+    async def shutdown(self) -> None:
+        """Flush after the runtime finishes or is cancelled by its owner.
+
+        A failed initializer must not overwrite the previous boot's snapshot.
+        Conductor writes still get their independent drain deadline.
+        """
+        previous = (
+            self._last_saved_lifecycle_sig if self._shutdown_snapshot_ready
+            else self._lifecycle_signature()
+        )
+        await self._shutdown_flush(previous)
+
+    async def _start_runtime(self) -> tuple[Any, Any]:
+        """Initialize the loop and remember which lifecycle state reached disk."""
         self._main_task = asyncio.current_task()
         self._running = True
         self._install_signal_handlers()
-        last_heartbeat = monotonic()
-        cycle_count = 0
-
         previous_phase, previous_lifecycle_sig = await self._run_startup_sequence()
+        self._last_saved_lifecycle_sig = previous_lifecycle_sig
+        self._shutdown_snapshot_ready = True
         # 129: retention sweeps run beside the cycle loop, never inside it.
         self._transcript_retention_task = self._start_transcript_retention()
         self._run_log_retention_task = self._start_run_log_retention()
+        return previous_phase, previous_lifecycle_sig
+
+    async def start(self, *, flush_on_stop: bool = True) -> None:
+        last_heartbeat = monotonic()
+        cycle_count = 0
+        previous_phase, previous_lifecycle_sig = await self._start_runtime()
 
         if self._poll_interval_seconds == 0:
             logger.info("polling_disabled")
@@ -6421,6 +6483,7 @@ class CoordinareDaemon:
                 previous_lifecycle_sig = await self._save_snapshot_if_changed(
                     previous_lifecycle_sig,
                 )
+                self._last_saved_lifecycle_sig = previous_lifecycle_sig
 
                 # T019: Prolonged idle detection
                 last_activity_at = await self._check_prolonged_idle(
@@ -6450,7 +6513,8 @@ class CoordinareDaemon:
                 # Happy-path cycle end — clear cycle_id before inter-cycle sleep
                 clear_cycle_id()
 
-        await self._shutdown_flush(previous_lifecycle_sig)
+        if flush_on_stop:
+            await self.shutdown()
 
         self._emit(
             **build_runtime_event(

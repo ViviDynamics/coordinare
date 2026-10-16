@@ -70,6 +70,11 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 _DASHBOARD_HTML_RAW = (_TEMPLATE_DIR / "dashboard.html").read_text(encoding="utf-8")
 _ACTIVITY_STREAM_JS = (_TEMPLATE_DIR / "activity_streams.js").read_text(encoding="utf-8")
+_DASHBOARD_EXTRA_REVISIONS = {
+    name: hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    for name, source in {"shell.css": _DASHBOARD_SHELL_CSS, "activity-streams.js": _ACTIVITY_STREAM_JS}.items()
+}
+
 _ASSISTANT_FRAGMENT = (_TEMPLATE_DIR / "assistant_fragment.html").read_text(encoding="utf-8")
 
 _DASHBOARD_HTML = _DASHBOARD_HTML_RAW.replace(
@@ -79,6 +84,11 @@ _DASHBOARD_HTML = _DASHBOARD_HTML_RAW.replace(
         for name in _DASHBOARD_JS_ORDER
     ),
 )
+for _asset_name, _revision in _DASHBOARD_EXTRA_REVISIONS.items():
+    _DASHBOARD_HTML = _DASHBOARD_HTML.replace(
+        f'/static/{_asset_name}"', f'/static/{_asset_name}?v={_revision}"',
+    )
+
 
 
 def _page_html(enabled: bool) -> str:

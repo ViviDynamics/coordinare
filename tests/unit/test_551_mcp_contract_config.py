@@ -47,7 +47,7 @@ def app_client(temp_config_path: Path) -> DashboardClient:
     validated_raw = {**raw, "github_token": "ghp_fixturetoken"}
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(validated_raw))
     daemon = MagicMock()
-    daemon.state = {"coordinare_config": cfg, "config_version": 7}
+    daemon.state = {"startup_complete": True, "coordinare_config": cfg, "config_version": 7}
     daemon.running = True
     app = create_dashboard_app(
         DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=temp_config_path,

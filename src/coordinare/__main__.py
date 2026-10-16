@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import io
 import os
 import platform
 import signal
@@ -11,7 +12,7 @@ import tempfile
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 # langchain-core imports pydantic.v1 internals that are not supported on
@@ -23,6 +24,7 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+import stamina
 import structlog
 import uvicorn
 import yaml
@@ -48,14 +50,26 @@ from coordinare.config_validation import (
     validate_config,
 )
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
-from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
+from coordinare.dashboard import (
+    DashboardStore,
+    check_port_available,
+    create_dashboard_app,
+    register_webhook_route,
+)
 from coordinare.dashboard_oidc import SESSION_FILE_NAME, OidcFlow
 from coordinare.doctor import Status, check_kubernetes_egress_enforcement
 from coordinare.first_launch import expanded_config_view, resolved_config_view, running_summary
 from coordinare.graph.builder import CoordinareGraphBuilder
+from coordinare.graph.state import SymphonyRuntimeState
 from coordinare.health import create_health_app
+from coordinare.http_server import HTTP_DRAIN_SECONDS, ManagedServer, wait_for_listener
 from coordinare.init_cli import add_init_parser, run_init
-from coordinare.launch_preflight import initialize_github_at_start, run_preflight
+from coordinare.launch_preflight import (
+    initialize_github_at_start,
+    mark_serving,
+    run_preflight,
+    stop_serving,
+)
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.localhost_guard import build_permitted, warn_if_dashboard_exposed
@@ -70,6 +84,7 @@ from coordinare.services.bootstrap_runs import load_bootstrap_history
 from coordinare.services.card_lifecycle import CardLifecycleLog, live_card_ids
 from coordinare.services.conductor_calls import ConductorCallLog
 from coordinare.services.config_seed import log_seed_status
+from coordinare.services.env_cache import EnvCacheService
 from coordinare.services.event_capture import install_event_store, symphony_for_card
 from coordinare.services.event_store import EventStore
 from coordinare.services.github import GitHubService
@@ -716,6 +731,7 @@ def _build_http_performer_services(
     *,
     transcripts: TranscriptCollector | None = None,
     run_logs: RunLogCollector | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
@@ -779,6 +795,8 @@ def _build_http_performer_services(
             transcripts=transcripts,
             run_logs=run_logs,
         )
+        if stop_event is not None:
+            service.bind_stop_event(stop_event)
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
             if stage is None:
@@ -1140,6 +1158,7 @@ async def _bootstrap_services(
     circuit_breakers: dict[str, CircuitBreaker],
     config_path: Path | None = None,
     activity_log: ActivityLog | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> CoordinareState:
     r = config.resilience
 
@@ -1192,6 +1211,7 @@ async def _bootstrap_services(
             sys.exit(1)
 
     agent_service = AgentService(transport)
+    agent_service.bind_stop_event(stop_event)
     resilient_agent = ResilientAgentService(
         inner=agent_service,
         retry_config=_retry_config_from(r.agent_retry),
@@ -1251,6 +1271,7 @@ async def _bootstrap_services(
         config,
         transcripts=transcript_collector,
         run_logs=run_log_collector,
+        stop_event=stop_event,
     )
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
@@ -1395,20 +1416,161 @@ async def _run(
     install_event_store(event_store)
     try:
         await event_store.start()
-        # Capture startup checks as well as runtime events, and flush even when
-        # preflight refuses the launch or raises before runtime bootstrap.
-        report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
-        print(report.render())
-        for result in report.results:
-            if result.status is Status.WARN:
-                logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
-        if not report.ok:
-            logger.error("startup.preflight_failed", failed_checks=[result.name for result in report.failed])
-            raise SystemExit(1)
         await _run_with_events(config, config_path, coordinare_config, config_mode, event_store)
     finally:
         install_event_store(None)
-        await event_store.close()
+        close_task = asyncio.create_task(event_store.close(), name="event_store_close")
+        await _finish_tasks({close_task}, within=EVENT_STORE_SHUTDOWN_SECONDS)
+
+
+async def _initialize_symphonies(
+    config: ProjectConfiguration,
+    coordinare_config: CoordinareConfiguration,
+    daemon: CoordinareDaemon,
+    circuit_breakers: dict[str, CircuitBreaker],
+) -> None:
+    await load_bootstrap_history(daemon.state, [s.name for s in coordinare_config.symphonies])
+    daemon.state["symphony_configs"] = {s.name: s for s in coordinare_config.symphonies}
+    daemon.state["symphony_states"] = {
+        s.name: SymphonyRuntimeState(name=s.name) for s in coordinare_config.symphonies
+    }
+    daemon.state["coordinare_config"] = coordinare_config
+    daemon.state["orchestra_config"] = coordinare_config.orchestra
+
+    # Create per-symphony GitHubService instances so each symphony queries the
+    # correct project board. The global service has project_number=0 in
+    # multi-symphony mode and is NOT initialized (no project_id); these per-symphony
+    # services carry the real project_id resolved from each symphony's project number.
+    if daemon.state.get("config_mode") == "multi_symphony":
+        _sym_github_services: dict[str, Any] = {}
+        for _sym in coordinare_config.symphonies:
+            _eff = _sym.effective_config(config)
+            _sym_svc = GitHubService(
+                auth=build_auth(_eff),
+                org=_eff.github_org,
+                project_number=_eff.github_project_number,
+                endpoint=_eff.github_graphql_url,
+                circuit_breaker=circuit_breakers["github"],
+                retry_kwargs=_retry_config_from(
+                    _eff.resilience.github_retry,
+                ).to_stamina_kwargs(),
+            )
+            _sym_svc._project_name = _eff.project_name
+            bind_symphony(_sym.name)
+            try:
+                await initialize_github_at_start(_sym_svc)
+            finally:
+                clear_symphony()
+            _sym_github_services[_sym.name] = _sym_svc
+        daemon.state["symphony_github_services"] = _sym_github_services
+
+        # Create per-symphony WorkspaceManager instances so each symphony
+        # clones the correct repo (project_name may differ per symphony).
+        _sym_workspace_managers: dict[str, Any] = {}
+        for _sym in coordinare_config.symphonies:
+            _eff = _sym.effective_config(config)
+            _sym_wm = WorkspaceManager(
+                _eff,
+                auth=build_auth(_eff),
+                github_service=_sym_github_services[_sym.name],
+            )
+            _sym_workspace_managers[_sym.name] = _sym_wm
+        daemon.state["symphony_workspace_managers"] = _sym_workspace_managers
+
+    # T012/T013: Instantiate and seed the env-cache service for all symphonies
+    # that have env_bootstrap_performer_id configured.
+    _env_cache_service = EnvCacheService(coordinare_config)
+    await _env_cache_service.initialise(
+        daemon.state["env_cache"],
+        daemon.state.get("symphony_github_services", {}),
+    )
+    daemon.state["env_cache_service"] = _env_cache_service
+
+
+async def _initialize_daemon(
+    config: ProjectConfiguration,
+    config_path: Path | None,
+    coordinare_config: CoordinareConfiguration | None,
+    daemon: CoordinareDaemon,
+    circuit_breakers: dict[str, CircuitBreaker],
+) -> None:
+    unexpanded = load_unexpanded_config(config_path)
+    report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
+    print(report.render())
+    for result in report.results:
+        if result.status is Status.WARN:
+            logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
+    if not report.ok:
+        logger.error("startup.preflight_failed", failed_checks=[result.name for result in report.failed])
+        raise RuntimeExecutionError(
+            phase="startup", step="preflight", cause=RuntimeError("Startup preflight failed"),
+        )
+    daemon.state.update(
+        await _bootstrap_services(
+            config,
+            circuit_breakers,
+            config_path=config_path,
+            activity_log=daemon.state["activity_log"],
+            stop_event=daemon.state["stop_event"],
+        ),
+    )
+    # 147: a card with a live session is never trimmed from the lifecycle log.
+    lifecycle = daemon.state.get("card_lifecycle")
+    if isinstance(lifecycle, CardLifecycleLog):
+        lifecycle.set_live_provider(lambda symphony: live_card_ids(daemon.state, symphony))
+
+    if coordinare_config is not None:
+        await _initialize_symphonies(config, coordinare_config, daemon, circuit_breakers)
+
+    board_services = daemon.state.get("symphony_github_services") or {
+        config.project_name or "default": daemon.state["github_service"],
+    }
+    board_columns = {
+        name: list(service.field_cache.get("status_option_ids", {}))
+        for name, service in board_services.items()
+    }
+    print(running_summary(config, coordinare_config, board_columns=board_columns))
+    METRICS.daemon_up.set(1)
+    logger.info("startup_mode_selected", run_mode=os.getenv("COORDINARE_RUN_MODE", "shell"))
+    await daemon.start(flush_on_stop=False)
+
+
+HTTP_SHUTDOWN_SECONDS = HTTP_DRAIN_SECONDS + 2
+RUNTIME_SHUTDOWN_SECONDS = 3
+RUNTIME_CANCEL_SECONDS = 1
+EVENT_STORE_SHUTDOWN_SECONDS = 2
+
+
+async def _finish_tasks(tasks: set[asyncio.Task[None]], *, within: float) -> None:
+    """Bound cleanup even when a task suppresses cancellation."""
+    if not tasks:
+        return
+    done, pending = await asyncio.wait(tasks, timeout=within)
+    for task in done:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("shutdown.task_failed", task=task.get_name(), error_type=type(error).__name__)
+    for task in pending:
+        task.cancel()
+        task.add_done_callback(_consume_shutdown_result)
+        logger.error("shutdown.task_timeout", task=task.get_name(), timeout_seconds=within)
+
+
+def _consume_shutdown_result(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _watch_startup(daemon: CoordinareDaemon, deadline: float) -> None:
+    while not daemon.state.get("startup_complete", False):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            logger.error("startup.deadline_exceeded")
+            raise RuntimeExecutionError(
+                phase="startup", step="deadline", cause=TimeoutError("Startup deadline exceeded"),
+            )
+        await asyncio.sleep(min(0.1, remaining))
 
 
 async def _run_with_events(
@@ -1423,7 +1585,6 @@ async def _run_with_events(
 
     # Build circuit breakers and register stamina retry counter hook
     circuit_breakers = _build_circuit_breakers(config)
-    import stamina
 
     def _on_retry(details: stamina.instrumentation.RetryDetails) -> None:
         METRICS.service_retries_total.labels(service=details.name, action="retry").inc()
@@ -1476,104 +1637,28 @@ async def _run_with_events(
         state_store=state_store,
         idle_threshold_seconds=config.notifications.prolonged_idle_threshold_seconds,
         dashboard_store=dashboard_store,
+        install_signal_handlers=False,
     )
 
+    daemon.state["startup_deadline_at"] = monotonic() + config.startup_deadline_seconds
+    daemon.state["activity_log"] = dashboard_store.activity_log
+    daemon.state["config_mode"] = config_mode
+    daemon.state["config"] = config
+    if coordinare_config is not None:
+        daemon.state["coordinare_config"] = coordinare_config
     daemon.state["event_store"] = event_store
     install_event_store(event_store, lambda card_id: symphony_for_card(daemon.state, card_id))
 
-    daemon.state.update(
-        await _bootstrap_services(
-            config,
-            circuit_breakers,
-            config_path=config_path,
-            activity_log=dashboard_store.activity_log,
-        ),
-    )
-    # 147: a card with a live session is never trimmed from the lifecycle log.
-    lifecycle = daemon.state.get("card_lifecycle")
-    if isinstance(lifecycle, CardLifecycleLog):
-        lifecycle.set_live_provider(lambda symphony: live_card_ids(daemon.state, symphony))
-
-    # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
-    # without requiring a POST /api/config/reload after startup.
-    if coordinare_config is not None:
-        await load_bootstrap_history(daemon.state, [s.name for s in coordinare_config.symphonies])
-        from coordinare.graph.state import SymphonyRuntimeState
-
-        daemon.state["symphony_configs"] = {s.name: s for s in coordinare_config.symphonies}
-        daemon.state["symphony_states"] = {
-            s.name: SymphonyRuntimeState(name=s.name) for s in coordinare_config.symphonies
-        }
-        daemon.state["coordinare_config"] = coordinare_config
-        daemon.state["orchestra_config"] = coordinare_config.orchestra
-        daemon.state["config_mode"] = config_mode
-
-        # Create per-symphony GitHubService instances so each symphony queries the
-        # correct project board. The global service has project_number=0 in
-        # multi-symphony mode and is NOT initialized (no project_id); these per-symphony
-        # services carry the real project_id resolved from each symphony's project number.
-        if config_mode == "multi_symphony":
-            _sym_github_services: dict[str, Any] = {}
-            for _sym in coordinare_config.symphonies:
-                _eff = _sym.effective_config(config)
-                _sym_svc = GitHubService(
-                    auth=build_auth(_eff),
-                    org=_eff.github_org,
-                    project_number=_eff.github_project_number,
-                    endpoint=_eff.github_graphql_url,
-                    circuit_breaker=circuit_breakers["github"],
-                    retry_kwargs=_retry_config_from(
-                        _eff.resilience.github_retry,
-                    ).to_stamina_kwargs(),
-                )
-                _sym_svc._project_name = _eff.project_name
-                bind_symphony(_sym.name)
-                try:
-                    await initialize_github_at_start(_sym_svc)
-                finally:
-                    clear_symphony()
-                _sym_github_services[_sym.name] = _sym_svc
-            daemon.state["symphony_github_services"] = _sym_github_services
-
-            # Create per-symphony WorkspaceManager instances so each symphony
-            # clones the correct repo (project_name may differ per symphony).
-            _sym_workspace_managers: dict[str, Any] = {}
-            for _sym in coordinare_config.symphonies:
-                _eff = _sym.effective_config(config)
-                _sym_wm = WorkspaceManager(
-                    _eff,
-                    auth=build_auth(_eff),
-                    github_service=_sym_github_services[_sym.name],
-                )
-                _sym_workspace_managers[_sym.name] = _sym_wm
-            daemon.state["symphony_workspace_managers"] = _sym_workspace_managers
-
-        # T012/T013: Instantiate and seed the env-cache service for all symphonies
-        # that have env_bootstrap_performer_id configured.
-        from coordinare.services.env_cache import EnvCacheService
-
-        _env_cache_service = EnvCacheService(coordinare_config)
-        await _env_cache_service.initialise(
-            daemon.state["env_cache"],
-            daemon.state.get("symphony_github_services", {}),
-        )
-        daemon.state["env_cache_service"] = _env_cache_service
-
     app = _create_health_app(daemon, circuit_breakers=circuit_breakers, metrics_enabled=config.observability.metrics_enabled)
-    server = uvicorn.Server(
+    server = ManagedServer(
         uvicorn.Config(
             app,
             host=config.health_check_host,
             port=config.health_check_port,
             log_level="warning",
-            # Disable uvicorn's own signal handlers — we install a unified
-            # handler below so Ctrl+C cancels the daemon task immediately.
+            timeout_graceful_shutdown=HTTP_DRAIN_SECONDS,
         ),
     )
-    # uvicorn's Server class has install_signal_handlers at runtime, but its
-    # published stubs omit it — the attribute-assignment ignore is deliberate.
-    server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
-
     # Spec 144 (#198): the localhost guard, configured from the live config so the
     # operator's bind address, port, and any trusted proxy hostname are honoured.
     # The webhook route is exempted because GitHub calls it from the internet and
@@ -1607,8 +1692,6 @@ async def _run_with_events(
     )
 
     if config.webhooks.enabled and config.webhooks.secret:
-        from coordinare.dashboard import register_webhook_route
-
         register_webhook_route(
             dashboard_app,
             path=config.webhooks.path,
@@ -1617,55 +1700,51 @@ async def _run_with_events(
         )
 
     # Spec 144 (#198), FR-020/FR-021. Only fires for a non-loopback bind with no
-    # authentication at all — a token or a configured OIDC flow is the boundary.
+    # authentication at all - a token or a configured OIDC flow is the boundary.
     if config.dashboard_auth_token is None and config.dashboard_oidc is None:
         warn_if_dashboard_exposed(config.dashboard_host, config.dashboard_port, log=logger)
 
-    dashboard_server = uvicorn.Server(
+    dashboard_server = ManagedServer(
         uvicorn.Config(
             dashboard_app,
             host=config.dashboard_host,
             port=config.dashboard_port,
             log_level="warning",
-            timeout_graceful_shutdown=3,  # max wait after SSE streams are signalled
+            timeout_graceful_shutdown=HTTP_DRAIN_SECONDS,
         ),
     )
-    dashboard_server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
-    board_services = daemon.state.get("symphony_github_services") or {
-        config.project_name or "default": daemon.state["github_service"],
-    }
-    board_columns = {
-        name: list(service.field_cache.get("status_option_ids", {}))
-        for name, service in board_services.items()
-    }
-    print(running_summary(config, coordinare_config, board_columns=board_columns))
-    daemon_task = asyncio.create_task(daemon.start())
-    server_task = asyncio.create_task(server.serve())
-    dashboard_task = asyncio.create_task(dashboard_server.serve())
-    logger.info(
-        "dashboard_started",
-        host=config.dashboard_host,
-        port=config.dashboard_port,
+    server_task = asyncio.create_task(server.serve(), name="health_http")
+    dashboard_task = asyncio.create_task(dashboard_server.serve(), name="dashboard_http")
+    # 299: the runtime preflight runs after this listener binds; it must not report it as a conflict.
+    mark_serving(config.dashboard_host, config.dashboard_port)
+    runtime_task: asyncio.Task[None] | None = None
+    startup_task = asyncio.create_task(
+        _watch_startup(daemon, daemon.state["startup_deadline_at"]), name="startup_deadline",
     )
+    loop = asyncio.get_running_loop()
+    shutdown_requested: asyncio.Future[None] = loop.create_future()
 
-    # Unified signal handler: stop the daemon (which cancels its task) and
-    # signal both HTTP servers to exit.  Installed after tasks are created so
-    # it is never overwritten by uvicorn's own handler installation.
+    # Stop dispatch immediately while accepted dashboard requests finish.
+    # Runtime services stay alive until the HTTP drain completes in finally.
     def _on_signal() -> None:
-        daemon.stop()
+        if not shutdown_requested.done():
+            shutdown_requested.set_result(None)
+        if not daemon.state.get("stopping", False):
+            daemon.state["stopping"] = True
+            daemon.stop()
+            if (runtime_task is not None and not runtime_task.done()
+                    and not daemon.state.get("startup_complete", False)):
+                runtime_task.cancel()
         server.should_exit = True
-        dashboard_store.shutdown()  # wake SSE streams so they exit before uvicorn times out
+        dashboard_store.shutdown()
         dashboard_server.should_exit = True
 
-    loop = asyncio.get_running_loop()
     for _sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(_sig, _on_signal)
 
     def _dump_tasks() -> None:
-        import io
-
         out = io.StringIO()
         out.write(f"=== asyncio.all_tasks() dump @ {datetime.now(UTC).isoformat()} ===\n")
         tasks = list(asyncio.all_tasks(loop))
@@ -1677,7 +1756,7 @@ async def _run_with_events(
             out.write(f"  coro={t.get_coro()!r}\n")
             stack = t.get_stack()
             if not stack:
-                out.write("  (no stack — task may be done or not yet started)\n")
+                out.write("  (no stack - task may be done or not yet started)\n")
             else:
                 for f in stack:
                     out.write(
@@ -1694,16 +1773,53 @@ async def _run_with_events(
         loop.add_signal_handler(signal.SIGUSR1, _dump_tasks)
 
     try:
-        METRICS.daemon_up.set(1)
-        logger.info("startup_mode_selected", run_mode=run_mode)
-        await daemon_task
+        async with asyncio.timeout(config.startup_deadline_seconds):
+            await wait_for_listener(dashboard_server, dashboard_task)
+            await wait_for_listener(server, server_task)
+        if dashboard_server.should_exit or server.should_exit:
+            return
+        logger.info("dashboard_started", host=config.dashboard_host, port=config.dashboard_port)
+        runtime_task = asyncio.create_task(
+            _initialize_daemon(config, config_path, coordinare_config, daemon, circuit_breakers),
+            name="daemon_runtime",
+        )
+        # Begin the cleanup budgets at the signal, even if every service is
+        # still draining and the runtime has suppressed its first cancellation.
+        watched = {runtime_task, dashboard_task, server_task, startup_task, shutdown_requested}
+        while True:
+            done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.cancelled() and daemon.state.get("stopping", False):
+                    continue
+                await task
+            if done != {startup_task}:
+                break
+            watched.remove(startup_task)
     finally:
         METRICS.daemon_up.set(0)
+        if not daemon.state.get("stopping", False):
+            daemon.state["stopping"] = True
+            daemon.stop()
         server.should_exit = True
         dashboard_store.shutdown()
         dashboard_server.should_exit = True
-        await server_task
-        await dashboard_task
+        startup_task.cancel()
+        shutdown_requested.cancel()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+        await _finish_tasks({server_task, dashboard_task}, within=HTTP_SHUTDOWN_SECONDS)
+        stop_serving(config.dashboard_host, config.dashboard_port)
+        if runtime_task is not None:
+            if not runtime_task.done() and not daemon.state.get("startup_complete", False):
+                runtime_task.cancel()
+            await _finish_tasks({runtime_task}, within=RUNTIME_SHUTDOWN_SECONDS)
+            # Give cooperative cancellation a separate bounded turn to settle
+            # before reading final state. Flushes belong to this owner task,
+            # so cancelling the runtime cannot cancel the final snapshot.
+            if not runtime_task.done():
+                await _finish_tasks({runtime_task}, within=RUNTIME_CANCEL_SECONDS)
+        await daemon.shutdown()
+        await _finish_tasks({startup_task}, within=1)
 
 
 def _load_project_config_for_doctor(result: ConfigValidationResult) -> ProjectConfiguration:
@@ -2039,6 +2155,10 @@ def main() -> None:
     HEALTH.update("config", _HealthStatus.healthy)
 
     try:
+        # asyncio.run also tears down residual tasks, async generators and the
+        # default executor. Cancellation-resistant tasks or stuck worker threads
+        # can outlive our bounded application cleanup; kubelet's SIGKILL at the
+        # pod's terminationGracePeriodSeconds is the final backstop.
         asyncio.run(
             _run(
                 config,

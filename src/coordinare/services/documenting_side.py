@@ -30,6 +30,7 @@ from coordinare.graph.nodes.dispatch_performer import (
 )
 from coordinare.lib.redaction import redact_state_value
 from coordinare.services.documentation_findings import clean_findings, content_hash
+from coordinare.services.http_performer_service import DispatchStoppingError
 
 logger = structlog.get_logger(__name__)
 
@@ -270,6 +271,8 @@ async def run_cycle(
         card_context, workspace_info = resolved
         try:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except DispatchStoppingError:
+            continue
         except Exception as exc:
             record_dispatched(session, blueprint_hash=bp_hash, session_id="")
             record_result(session, status="failed", head_sha=None, reason=f"dispatch failed: {exc}"[:300])

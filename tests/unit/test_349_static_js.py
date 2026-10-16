@@ -75,7 +75,7 @@ def _make_app() -> TestClient:
 @pytest.mark.parametrize("name", list(_DASHBOARD_JS_FILES))
 def test_static_js_route_serves_source(name: str) -> None:
     client = _make_app()
-    response = client.get(f"/static/{name}.js")
+    response = client.get(f"/static/{name}.js?v={_DASHBOARD_JS_REVISIONS[name]}")
     assert response.status_code == 200
     assert response.text == _DASHBOARD_JS_SOURCES[name]
     assert "immutable" in response.headers.get("cache-control", "")

@@ -40,6 +40,7 @@ SHELL_MARKER = 'id="card-page"'
 def _client() -> TestClient:
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "phase": "idle",
         "error_count": 0,
         "symphony_configs": {ALPHA: SimpleNamespace()},
@@ -134,7 +135,7 @@ def test_the_page_stays_under_its_size_budget() -> None:
 
 def test_the_run_routes_and_the_card_page_share_no_route_shadowing() -> None:
     daemon: Any = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     app = create_dashboard_app(
         DashboardStore(), daemon, MagicMock(), MagicMock(),
         permitted_origins=build_permitted(dashboard_host="127.0.0.1", dashboard_port=8090),

@@ -92,7 +92,7 @@ def _usage_records() -> list[dict[str, Any]]:
 def _client(root: Path | None, *, token: str | None = None,
             observed: list[dict[str, Any]] | None = None) -> TestClient:
     daemon = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     if root is not None:
         collector = TranscriptCollector(root, enabled=True, max_bytes_per_run=10**9, retention_days=0)
         daemon.state["transcript_collector"] = collector

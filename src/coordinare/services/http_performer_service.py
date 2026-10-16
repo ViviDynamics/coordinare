@@ -77,6 +77,13 @@ _STAT_PROVENANCE_CAPABILITY_VERSION = 2
 logger = structlog.get_logger(__name__)
 
 
+class DispatchStoppingError(Exception):
+    """Dispatch was deferred for shutdown; no work started and retry is safe."""
+
+    def __init__(self) -> None:
+        super().__init__("daemon is stopping; dispatch deferred until next boot")
+
+
 _TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 
 # 129: records requested per transcript delivery. Ordinary status polls take
@@ -301,6 +308,7 @@ class HTTPPerformerService:
         run_logs: RunLogCollector | None = None,
     ) -> None:
         self._config = config
+        self._stop_event: asyncio.Event | None = None
         self._injected_client = client
         # 129: where the per-run transcript records go. None (the default) keeps
         # the wire and the disk exactly as before.
@@ -350,6 +358,10 @@ class HTTPPerformerService:
         # they are not garbage collected; they run on worker threads and are never awaited
         # by a teardown.
         self._log_finishers: set[asyncio.Future[Any]] = set()
+
+    def bind_stop_event(self, stop_event: asyncio.Event | None) -> None:
+        """Share the owning daemon's process-local shutdown signal."""
+        self._stop_event = stop_event
 
     @property
     def mode(self) -> str:
@@ -514,6 +526,11 @@ class HTTPPerformerService:
         run_inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         async with self._dispatch_lock:
+            # Check under the lock: SIGTERM may arrive while a caller waits for
+            # another dispatch. All container-start paths share this boundary.
+            if self._stop_event is not None and self._stop_event.is_set():
+                logger.info("http_performer.dispatch_stopped", performer_id=self._config.id)
+                raise DispatchStoppingError
             return await self._dispatch_card_locked(
                 card_context, workspace_info, extra_volumes, run_inputs,
             )

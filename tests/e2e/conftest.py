@@ -26,13 +26,19 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def mark_daemon_started(daemon: Any) -> None:
+    """Model completed startup for dashboard fixtures that bypass Daemon.start()."""
+    daemon.running = True
+    daemon.state["startup_complete"] = True
+
+
 def _mock_daemon(phase: str = "idle") -> Any:
     daemon = MagicMock()
     daemon.state = {"phase": phase, "error_count": 0}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
     daemon._cycle_active = False
-    daemon.running = True
+    mark_daemon_started(daemon)
     daemon._webhook_trigger = asyncio.Event()
     return daemon
 
@@ -69,51 +75,76 @@ def store() -> DashboardStore:
     return DashboardStore()
 
 
+SERVER_START_SECONDS = 5.0
+SERVER_JOIN_SECONDS = 5.0
+SERVER_POLL_SECONDS = 0.05
+LOOP_CAPTURE_SECONDS = 10.0
+
+
 @pytest.fixture(scope="module")
-def live_server_url(store: DashboardStore) -> Generator[str, None, None]:
-    """Start a real uvicorn server in a background thread and yield its base URL.
+def live_server_lifecycle() -> dict[str, Any]:
+    """Control the live server on its original port for rollout tests."""
+    return {}
 
-    Uses a module scope so the server starts once per test module, keeping
-    browser test runtime low while still providing a real HTTP/SSE endpoint.
-    """
+
+@pytest.fixture(scope="module")
+def live_server_url(
+    store: DashboardStore, live_server_lifecycle: dict[str, Any],
+) -> Generator[str, None, None]:
+    """Start the dashboard, retaining the same port when a test restarts it."""
     port = _free_port()
-    app = create_dashboard_app(store, _mock_daemon(), _mock_metrics(), _mock_health())
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
-    server = uvicorn.Server(config)
+    original_broadcast = store.broadcaster.broadcast
+    active: dict[str, Any] = {}
 
-    # Capture the server's event loop so we can schedule broadcasts onto it
-    # from the pytest (non-async) thread.  asyncio.Queue is not thread-safe;
-    # calling put_nowait() from a foreign thread can corrupt waiters.
-    _loop_q: _queue.SimpleQueue[asyncio.AbstractEventLoop] = _queue.SimpleQueue()
+    def start(*, starting: bool = False) -> None:
+        daemon = _mock_daemon()
+        if starting:
+            daemon.state["startup_complete"] = False
+            daemon.running = False
+        app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=port, log_level="error",
+            timeout_graceful_shutdown=SERVER_JOIN_SECONDS,
+        )
+        server = uvicorn.Server(config)
+        loop_queue: _queue.SimpleQueue[asyncio.AbstractEventLoop] = _queue.SimpleQueue()
 
-    async def _run_and_capture() -> None:
-        _loop_q.put(asyncio.get_running_loop())
-        await server.serve()
+        async def run() -> None:
+            loop_queue.put(asyncio.get_running_loop())
+            await server.serve()
 
-    thread = threading.Thread(target=lambda: asyncio.run(_run_and_capture()), daemon=True)
-    thread.start()
+        thread = threading.Thread(target=lambda: asyncio.run(run()), daemon=True)
+        active.update(server=server, thread=thread, daemon=daemon)
+        thread.start()
+        deadline = time.monotonic() + SERVER_START_SECONDS
+        while time.monotonic() < deadline:
+            if server.started:
+                break
+            time.sleep(SERVER_POLL_SECONDS)
+        else:
+            server.should_exit = True
+            thread.join(timeout=SERVER_JOIN_SECONDS)
+            pytest.fail("Live server did not start within the startup budget")
+        server_loop = loop_queue.get(timeout=LOOP_CAPTURE_SECONDS)
+        active["loop"] = server_loop
+        # Schedule Queue operations on the owning event loop, including after restart.
+        store.broadcaster.broadcast = lambda payload: server_loop.call_soon_threadsafe(original_broadcast, payload)
 
-    # Poll until the server is accepting connections (max 5 s)
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect(("127.0.0.1", port))
-            break
-        except OSError:
-            time.sleep(0.05)
-    else:
-        server.should_exit = True
-        thread.join(timeout=2)
-        pytest.fail("Live server did not start within 5 seconds")
+    def stop() -> None:
+        if not active or not active["thread"].is_alive():
+            return
+        active["loop"].call_soon_threadsafe(store.shutdown)
+        active["server"].should_exit = True
+        active["thread"].join(timeout=SERVER_JOIN_SECONDS)
+        assert not active["thread"].is_alive(), "Live server did not drain"
 
-    # Wrap store.broadcaster.broadcast to be thread-safe: schedule onto the
-    # server's event loop rather than calling put_nowait() directly.
-    server_loop = _loop_q.get(timeout=10.0)
-    _orig_broadcast = store.broadcaster.broadcast
-    store.broadcaster.broadcast = lambda p: server_loop.call_soon_threadsafe(_orig_broadcast, p)  # type: ignore[method-assign]
+    def ready() -> None:
+        active["loop"].call_soon_threadsafe(mark_daemon_started, active["daemon"])
 
-    yield f"http://127.0.0.1:{port}"
-
-    server.should_exit = True
-    thread.join(timeout=5)
+    live_server_lifecycle.update(start=start, stop=stop, ready=ready)
+    start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        stop()
+        store.broadcaster.broadcast = original_broadcast

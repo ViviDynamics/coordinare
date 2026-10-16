@@ -32,7 +32,7 @@ def _client(config_path: Path) -> TestClient:
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
     daemon = MagicMock()
-    daemon.state = {"coordinare_config": cfg, "config_version": 7}
+    daemon.state = {"startup_complete": True, "coordinare_config": cfg, "config_version": 7}
     daemon.running = True
     app = create_dashboard_app(
         DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
