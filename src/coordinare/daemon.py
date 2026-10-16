@@ -59,6 +59,7 @@ from coordinare.services.bootstrap_history import (
     begin_attempt,
     history_of,
     mark_verifying,
+    persist_attempt,
     record_activity,
     report_completion,
 )
@@ -91,7 +92,7 @@ from coordinare.services.env_cache import (
     daemon_sees_performer_cache,
 )
 from coordinare.services.env_provenance import DEFAULT_LIMITS, ProvenanceTransientError
-from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.kubernetes_provenance import parse_summary
 from coordinare.services.kubernetes_verifier import (
     PROJECT_FILE_PATHS,
@@ -4911,6 +4912,9 @@ class CoordinareDaemon:
         setattr(ec, f"{role}_in_flight", True)
         try:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except DispatchStoppingError:
+            setattr(ec, f"{role}_in_flight", False)
+            return
         except Exception as exc:
             setattr(ec, f"{role}_in_flight", False)
             register_failure(ec, role, f"dispatch failed: {exc}", max_attempts=3)
@@ -5050,6 +5054,9 @@ class CoordinareDaemon:
         ec.wiki_in_flight = True
         try:
             result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except DispatchStoppingError:
+            ec.wiki_in_flight = False
+            return
         except Exception as exc:
             ec.wiki_in_flight = False
             logger.warning("wiki_init.dispatch_failed", symphony=symphony_name, error=str(exc))
@@ -5254,7 +5261,28 @@ class CoordinareDaemon:
         """Dispatch the bootstrap payload; start the completion poller on
         success, else surface the rich dispatch status/reason and mark
         bootstrap complete-with-error."""
-        result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+        try:
+            result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
+        except DispatchStoppingError:
+            # The optimistic marker and open history entry precede dispatch.
+            # No job started, so leave the retry budget and prior result intact.
+            cache = (self._state.get("env_cache") or {}).get(symphony_name)
+            if cache is not None:
+                cache.bootstrap_in_flight = False
+            history = history_of(self._state)
+            open_run = history.open_attempt(symphony_name) if history is not None else None
+            if history is not None and open_run is not None:
+                record = history.finish(
+                    symphony_name,
+                    AttemptEnd(
+                        ended_at=datetime.now(UTC), succeeded=False,
+                        reason="dispatch deferred because the daemon is stopping",
+                        commit=open_run.commit, attempt=open_run.attempt,
+                        cancelled_by="daemon shutdown",
+                    ),
+                )
+                persist_attempt(self._state, symphony_name, record)
+            return
         job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
         bootstrap_container_id = (result or {}).get("container_id")
         # 266: the job and pod the running attempt was dispatched to, for the bootstrap view.

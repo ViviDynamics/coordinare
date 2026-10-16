@@ -37,7 +37,7 @@ from coordinare.services.env_cache import (
 )
 from coordinare.services.export_metrics import EXPORT_METRICS
 from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
-from coordinare.services.http_performer_service import HTTPPerformerService
+from coordinare.services.http_performer_service import DispatchStoppingError, HTTPPerformerService
 from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.observer import observer_enabled
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
@@ -2661,6 +2661,9 @@ async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_
             _release_slot_on_error()
             return state
         result = await service.dispatch_card(card_context, **_dispatch_kwargs)
+    except DispatchStoppingError:
+        _release_slot_on_error()
+        return state
     except PerformerAuthError as exc:
         return await _dispatch_auth_error(state, exc, ctx, _release_slot_on_error)
     except TransportError as exc:
@@ -2668,8 +2671,10 @@ async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_
     except PermanentGitHubError as exc:
         return await _dispatch_permanent_error(state, exc, ctx, _release_slot_on_error)
     if result.get("status") == "error":
-        return await _dispatch_result_error(state, result, ctx, _release_slot_on_error)
-    return await _finalise_success(state, result, ctx)
+        state = await _dispatch_result_error(state, result, ctx, _release_slot_on_error)
+    else:
+        state = await _finalise_success(state, result, ctx)
+    return state
 
 
 async def _dispatch_auth_error(state: CoordinareState, exc: Exception, ctx: dict[str, Any], _release_slot_on_error: Callable[[], None]) -> CoordinareState:

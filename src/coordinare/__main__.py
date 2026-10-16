@@ -726,6 +726,7 @@ def _build_http_performer_services(
     *,
     transcripts: TranscriptCollector | None = None,
     run_logs: RunLogCollector | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
@@ -789,6 +790,8 @@ def _build_http_performer_services(
             transcripts=transcripts,
             run_logs=run_logs,
         )
+        if stop_event is not None:
+            service.bind_stop_event(stop_event)
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
             if stage is None:
@@ -1150,6 +1153,7 @@ async def _bootstrap_services(
     circuit_breakers: dict[str, CircuitBreaker],
     config_path: Path | None = None,
     activity_log: ActivityLog | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> CoordinareState:
     r = config.resilience
 
@@ -1261,6 +1265,7 @@ async def _bootstrap_services(
         config,
         transcripts=transcript_collector,
         run_logs=run_log_collector,
+        stop_event=stop_event,
     )
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
@@ -1500,6 +1505,7 @@ async def _initialize_daemon(
             circuit_breakers,
             config_path=config_path,
             activity_log=daemon.state["activity_log"],
+            stop_event=daemon.state["stop_event"],
         ),
     )
     # 147: a card with a live session is never trimmed from the lifecycle log.
