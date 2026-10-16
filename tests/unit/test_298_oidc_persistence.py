@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +27,8 @@ IDENTITY = OidcIdentity(
     subject="operator", name="Operator", email="operator@example.test",
     username="operator", provider="issuer.example", id_token="provider-logout-hint",
 )
+# What a restart restores: everything but the in-memory logout hint.
+RESTORED = replace(IDENTITY, id_token="")
 
 
 @pytest.fixture
@@ -39,7 +42,9 @@ def test_restart_round_trip_preserves_identity_and_original_expiry(session_path:
     cookie = store.create(IDENTITY, lifetime_seconds=LIFETIME_SECONDS)
     now[0] += LIFETIME_SECONDS / SMALL_CAPACITY
     restarted = OidcSessionStore(path=session_path, clock=lambda: now[0])
-    assert restarted.identity(cookie) == IDENTITY
+    # The logout hint (a signed ID token) stays in memory only; everything else survives.
+    assert restarted.identity(cookie) == replace(IDENTITY, id_token="")
+    assert store.identity(cookie) == IDENTITY
     assert restarted.lookup(cookie) == IDENTITY.subject
     now[0] = START_TIME + LIFETIME_SECONDS
     assert restarted.lookup(cookie) is None
@@ -52,7 +57,7 @@ def test_logout_persists_without_removing_other_sessions(session_path: Path) -> 
     OidcSessionStore(path=session_path).revoke(revoked)
     restarted = OidcSessionStore(path=session_path)
     assert restarted.lookup(revoked) is None
-    assert restarted.identity(retained) == IDENTITY
+    assert restarted.identity(retained) == RESTORED
     assert hashlib.sha256(revoked.encode()).hexdigest() not in session_path.read_text()
 
 
@@ -177,7 +182,7 @@ def test_successful_lookups_and_unknown_logout_do_not_write(session_path: Path) 
     store = OidcSessionStore(path=session_path)
     cookie = store.create(IDENTITY, lifetime_seconds=LIFETIME_SECONDS)
     with patch("coordinare.dashboard_oidc.os.replace") as replace:
-        assert OidcSessionStore(path=session_path).identity(cookie) == IDENTITY
+        assert OidcSessionStore(path=session_path).identity(cookie) == RESTORED
         assert store.lookup(cookie) == IDENTITY.subject
         store.revoke("unknown")
     replace.assert_not_called()
@@ -246,7 +251,7 @@ def test_daemon_builds_persistent_flow_beside_expanded_state_file(
         first = _build_dashboard_oidc_flow(_oidc_config(), state_file_path=state_file)
         cookie, _ = first.start_session(IDENTITY)
         second = _build_dashboard_oidc_flow(_oidc_config(), state_file_path=state_file)
-    assert second.sessions.identity(cookie) == IDENTITY
+    assert second.sessions.identity(cookie) == RESTORED
     assert (tmp_path / "state" / "dashboard_oidc_sessions.json").exists()
 
 
@@ -275,4 +280,21 @@ def test_login_restart_and_logout_via_dashboard(session_path: Path) -> None:
 def test_flow_accepts_session_path(session_path: Path) -> None:
     first = OidcFlow(_oidc_config(), session_path=session_path)
     cookie, _ = first.start_session(IDENTITY)
-    assert OidcFlow(_oidc_config(), session_path=session_path).sessions.identity(cookie) == IDENTITY
+    assert OidcFlow(_oidc_config(), session_path=session_path).sessions.identity(cookie) == RESTORED
+
+
+def test_the_id_token_is_never_written_to_disk(session_path: Path) -> None:
+    store = OidcSessionStore(path=session_path, clock=lambda: START_TIME)
+    store.create(IDENTITY, lifetime_seconds=LIFETIME_SECONDS)
+    assert IDENTITY.id_token not in session_path.read_text()
+
+
+def test_an_expired_cookie_is_refused_even_when_cleanup_cannot_be_written(session_path: Path) -> None:
+    """A full or read-only volume must not turn a stale cookie into a server error."""
+    now = [START_TIME]
+    store = OidcSessionStore(path=session_path, clock=lambda: now[0])
+    cookie = store.create(IDENTITY, lifetime_seconds=LIFETIME_SECONDS)
+    now[0] += LIFETIME_SECONDS
+    with patch.object(OidcSessionStore, "_persist", side_effect=OSError("no space")):
+        assert store.identity(cookie) is None
+    assert store.identity(cookie) is None

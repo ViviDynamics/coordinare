@@ -19,7 +19,7 @@ import secrets
 import stat
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -174,7 +174,14 @@ class OidcSessionStore:
             ) as stream:
                 temporary = Path(stream.name)
                 os.fchmod(stream.fileno(), _SESSION_FILE_MODE)
-                stream.write(_SessionTable(sessions=self._sessions).model_dump_json())
+                # The ID token is a signed JWT used only as the logout hint. It is not written to
+                # disk; a session restored after a restart logs out locally, as discovery is reloaded
+                # only at the next login anyway.
+                persisted = {
+                    key: (replace(identity, id_token=""), expires_at)
+                    for key, (identity, expires_at) in self._sessions.items()
+                }
+                stream.write(_SessionTable(sessions=persisted).model_dump_json())
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self._path)
@@ -210,7 +217,10 @@ class OidcSessionStore:
         identity, expires_at = entry
         if self._clock() >= expires_at:
             self._sessions.pop(key, None)
-            self._persist()
+            # A read must not fail because cleanup could not be written (a full or read-only
+            # volume). The entry is gone from memory; the file catches up on the next write.
+            with contextlib.suppress(OSError):
+                self._persist()
             return None
         return identity
 
