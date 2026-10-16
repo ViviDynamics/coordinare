@@ -32,11 +32,11 @@ SEED_ENV = "COORDINARE_CONFIG_SEED"
 
 
 def chart_owned_keys(seed: dict[str, Any]) -> set[str]:
-    """The performer pin belongs to the chart only when explicitly supplied."""
+    """Image pins and the private-key path are owned only when supplied."""
     return {
         key
         for key in CHART_OWNED_KEYS
-        if (key != "performer_image" or key in seed)
+        if (key not in {"performer_image", "github_private_key_path"} or key in seed)
         and (key != ENDPOINT_IMAGE_KEY or endpoint_image_pins(seed))
     }
 
@@ -81,8 +81,10 @@ def configured_chart_keys() -> set[str]:
     return chart_owned_keys(raw) if isinstance(raw, dict) else set(CHART_OWNED_KEYS)
 
 
-def chart_owned_problem(candidate: dict[str, Any]) -> str | None:
-    """Refuse edits through every config write path, including automation."""
+def chart_owned_problem(
+    candidate: dict[str, Any], original: dict[str, Any] | None = None,
+) -> str | None:
+    """Refuse owned edits; unchanged live values may await the next boot overlay."""
     seed = os.environ.get(SEED_ENV)
     if not seed:
         return None
@@ -96,8 +98,15 @@ def chart_owned_problem(candidate: dict[str, Any]) -> str | None:
         key
         for key in chart_owned_keys(raw)
         if key != ENDPOINT_IMAGE_KEY and candidate.get(key) != raw.get(key)
+        and (original is None or candidate.get(key) != original.get(key))
     )
     chart_pins = endpoint_image_pins(raw)
+    original_endpoints = (original or {}).get("performer_endpoints")
+    original_images = {
+        item["id"]: item.get("image")
+        for item in (original_endpoints if isinstance(original_endpoints, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
     endpoints = candidate.get("performer_endpoints")
     if isinstance(endpoints, list):
         changed.extend(
@@ -106,5 +115,9 @@ def chart_owned_problem(candidate: dict[str, Any]) -> str | None:
             if isinstance(item, dict)
             and item.get("id") in chart_pins
             and item.get("image") != chart_pins[item["id"]]
+            and (
+                original is None or item["id"] not in original_images
+                or item.get("image") != original_images[item["id"]]
+            )
         )
     return f"{', '.join(changed)}: {CHART_MANAGED_LABEL}." if changed else None

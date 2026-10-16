@@ -172,7 +172,7 @@ def _symphony_write_refusal(proposed: dict[str, Any], config_path: Path | None) 
     if not isinstance(loaded, dict):
         return None
     candidate = {**loaded, "symphonies": symphony_documents(proposed, loaded)}
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if not errors:
         return None
     detail = "; ".join(err.message for err in errors)

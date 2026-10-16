@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from http import HTTPStatus
 from pathlib import Path
@@ -64,7 +65,9 @@ def register(app: fastapi.FastAPI, ctx: DashboardContext) -> None:
                 status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
         try:
-            result: dict[str, Any] = adopt_chart_sections(*_paths(ctx), body, expected_hash)
+            result: dict[str, Any] = await asyncio.to_thread(
+                adopt_chart_sections, *_paths(ctx), body, expected_hash,
+            )
         except AdoptionRefusalError as exc:
             return JSONResponse({"error": str(exc)}, status_code=exc.status)
         except (OSError, UnicodeError, ValueError, yaml.YAMLError):

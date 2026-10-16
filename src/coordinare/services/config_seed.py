@@ -28,8 +28,15 @@ _HASH_HEX_LENGTH = 64
 _log = structlog.get_logger(__name__)
 
 
+class _EmptyConfigError(ValueError):
+    """An empty document can be recovered without discarding parsed settings."""
+
+
 def _read_document(path: Path) -> tuple[dict[str, Any], str]:
     content = path.read_bytes()
+    if not content.strip():
+        message = "Config is empty"
+        raise _EmptyConfigError(message)
     loaded = yaml.safe_load(content)
     if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
         message = "Config must be a YAML mapping with string keys"
@@ -76,10 +83,10 @@ def _overlay(raw: dict[str, Any], live_raw: dict[str, Any]) -> dict[str, Any]:
 def _recover_broken(live: Path) -> None:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     backup = live.with_name(f"{live.name}.broken-{stamp}")
-    live.rename(backup)
     atomic_write_yaml(
         live.parent / _RECOVERY, {"backup": backup.name, "at": datetime.now(UTC).isoformat()},
     )
+    live.rename(backup)
     _log.error(
         "config.live_file_recovered",
         backup=backup.name,
@@ -90,7 +97,7 @@ def _recover_broken(live: Path) -> None:
 def seed_config(seed: Path, live: Path) -> None:
     """Seed missing or broken YAML; overlay chart fields on every Pod boot.
 
-    Parseable mappings never get auto-replaced for failing validation or start
+    Parseable documents never get auto-replaced for failing validation or start
     checks. Failed explicit resets retain their marker. No env expansion occurs.
     """
     raw, seed_hash = _read_document(seed)
@@ -98,7 +105,7 @@ def seed_config(seed: Path, live: Path) -> None:
     if live.exists() and not marker.exists():
         try:
             live_raw, _ = _read_document(live)
-        except (UnicodeError, ValueError, yaml.YAMLError):
+        except (UnicodeError, _EmptyConfigError, yaml.YAMLError):
             problem = persistent_secret_problem(raw)
             if problem:
                 raise ValueError(problem) from None
@@ -106,6 +113,9 @@ def seed_config(seed: Path, live: Path) -> None:
         else:
             candidate = _overlay(raw, live_raw)
             if candidate != live_raw:
+                problem = persistent_secret_problem(candidate)
+                if problem:
+                    raise ValueError(problem)
                 atomic_write_yaml(live, candidate)
             return
     problem = persistent_secret_problem(raw)
@@ -183,7 +193,7 @@ def seed_status(seed: Path, live: Path) -> dict[str, Any]:
     }
     try:
         baseline, _ = _read_document(live.parent / _METADATA)
-        current_raw, current_hash = _read_document(seed)
+        current_raw, _ = _read_document(seed)
         live_raw, _ = _read_document(live)
         current = _sections(current_raw)
         status["live_diff_sections"] = _changed(_sections(live_raw, current_raw), current)
@@ -194,8 +204,6 @@ def seed_status(seed: Path, live: Path) -> dict[str, Any]:
             for key, value in baseline["sections"].items()
             if key not in chart_owned_keys(current_raw)
         }
-        if baseline["seed_hash"] == current_hash and recorded != current:
-            return status
         status["changed_sections"] = _changed(recorded, current)
         status["chart_changed"] = bool(status["changed_sections"])
         status["message"] = (
@@ -246,10 +254,12 @@ def main() -> None:
     args = parser.parse_args()
     try:
         seed_config(args.seed, args.live)
-    except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+    except (OSError, UnicodeError, yaml.YAMLError):
         parser.exit(
             1, "Config seed failed. Check mount permissions, YAML and secret placeholders.\n",
         )
+    except ValueError as exc:
+        parser.exit(1, f"Config seed failed: {exc}\n")
 
 
 if __name__ == "__main__":

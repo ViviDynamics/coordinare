@@ -5,10 +5,10 @@ from __future__ import annotations
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
-from coordinare.config import ProjectConfiguration
 from coordinare.config_descriptors import SECRET_MASK
 from coordinare.env_placeholders import is_secret_env_key
 from coordinare.services.config_ownership import chart_owned_keys
+from coordinare.services.config_secret_policy import credential_url_password, persistent_fields
 from coordinare.services.config_seed import (
     _changed,
     _read_document,
@@ -23,7 +23,7 @@ from coordinare.services.config_write_service import (
     compute_content_hash,
     guard_concurrency,
 )
-from coordinare.start_checks import _DICT_VALUE, _LIST_ITEM, checked_fields
+from coordinare.start_checks import _DICT_VALUE, _LIST_ITEM
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -39,6 +39,8 @@ def _mask_at(value: Any, path: tuple[str, ...], rule: str, key: str = "") -> Any
     """Mask model declared credentials without importing dashboard routers."""
     if not path:
         secret = rule == "secret" or is_secret_env_key(key)
+        if secret and isinstance(value, dict):
+            return {name: _mask_at(item, (), rule, str(name)) for name, item in value.items()}
         return SECRET_MASK if secret and value not in (None, "") else value
     head, tail = path[0], path[1:]
     if head == _LIST_ITEM and isinstance(value, list):
@@ -50,9 +52,19 @@ def _mask_at(value: Any, path: tuple[str, ...], rule: str, key: str = "") -> Any
     return value
 
 
+def _mask_url_credentials(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _mask_url_credentials(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_url_credentials(item) for item in value]
+    if isinstance(value, str) and credential_url_password(value) is not None:
+        return SECRET_MASK
+    return value
+
+
 def _masked(raw: dict[str, Any]) -> dict[str, Any]:
     masked = dict(raw)
-    for path, rule in checked_fields(ProjectConfiguration):
+    for path, rule in persistent_fields():
         if rule in {"secret", "env"}:
             masked = _mask_at(masked, path, rule)
     symphonies = masked.get("symphonies")
@@ -63,7 +75,7 @@ def _masked(raw: dict[str, Any]) -> dict[str, Any]:
             else symphony
             for symphony in symphonies
         ]
-    return masked
+    return dict(_mask_url_credentials(masked))
 
 
 def chart_preview(seed: Path, live: Path) -> dict[str, Any]:
@@ -122,7 +134,7 @@ def adopt_chart_sections(
             candidate[key] = chart[key]
         else:
             candidate.pop(key, None)
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=current)
     if errors:
         message = "; ".join(error.message for error in errors)
         raise AdoptionRefusalError(message, HTTPStatus.UNPROCESSABLE_ENTITY)

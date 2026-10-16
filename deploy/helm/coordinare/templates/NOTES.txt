@@ -104,6 +104,17 @@ bootstrap per symphony. Remove each deliberately:
 
 Persistent config is ENABLED on the existing state PVC:
   {{ .Values.state.mountPath | trimSuffix "/" }}/config/config.yaml
+UPGRADE: literal credentials that older values could render now fail the
+seed-config init container. Before upgrading, inspect your rendered config:
+  helm template {{ .Release.Name }} deploy/helm/coordinare -n {{ .Release.Namespace }} -f my-values.yaml --show-only templates/configmap.yaml > /tmp/coordinare-config-preview.yaml
+  grep -nEi 'token|secret|password|api[_-]?key|authorization|headers|://[^ /]+@' /tmp/coordinare-config-preview.yaml
+Review matches, including URLs; placeholders and nulls also match. Move literals
+to a Kubernetes Secret via existingSecret or secrets and use ${VAR} placeholders.
+For OTLP headers use headersSecret. If init fails, inspect seed-config logs, fix
+values and upgrade again. Back up and repair any literal credentials on the PVC
+using the README debug Pod recipe, or place config/reseed to adopt the cleaned
+seed and discard dashboard edits. configPersistence.enabled=false temporarily
+boots from the ConfigMap and retains the PVC config for repair.
 The chart seeds a missing file and overlays chart managed fields on every boot.
 Ports, paths, cache wiring, namespace, trusted hosts and observability follow Helm.
 Chart supplied performer image pins, including endpoint images by ID, follow Helm.

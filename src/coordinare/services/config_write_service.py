@@ -288,8 +288,10 @@ def _field_error_from_pydantic(err: dict[str, Any]) -> FieldError:
     return FieldError(key=key, code="validation", message=err.get("msg", "invalid value"))
 
 
-def _raw_candidate_errors(candidate: dict[str, Any]) -> list[FieldError]:
-    ownership_problem = chart_owned_problem(candidate)
+def _raw_candidate_errors(
+    candidate: dict[str, Any], original: dict[str, Any] | None = None,
+) -> list[FieldError]:
+    ownership_problem = chart_owned_problem(candidate, original)
     if ownership_problem:
         return [FieldError(key=None, code="forbidden", message=ownership_problem)]
     if os.environ.get("COORDINARE_CONFIG_SEED"):
@@ -303,7 +305,9 @@ def _raw_candidate_errors(candidate: dict[str, Any]) -> list[FieldError]:
     return []
 
 
-def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
+def _validate_candidate(
+    candidate: dict[str, Any], *, original: dict[str, Any] | None = None,
+) -> list[FieldError]:
     """Validate a full candidate config dict, returning ``[]`` on success.
 
     Builds a throwaway :class:`CoordinareConfiguration` — this enforces both
@@ -317,7 +321,7 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     # 252: the placeholder rules read the candidate as written, before expansion, so a value a set
     # variable supplies is never mistaken for a placeholder, and an empty variable is named as such.
     # The refusal is keyed by its field path, so the page can show it beside the right input.
-    raw_errors = _raw_candidate_errors(candidate)
+    raw_errors = _raw_candidate_errors(candidate, original)
     if raw_errors:
         return raw_errors
     # Validate what the daemon will load: the text this write produces, with ${VAR} expanded as
@@ -551,7 +555,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
             message="No changes to apply.",
         )
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
     warnings = candidate_warnings(candidate)
@@ -737,7 +741,7 @@ def create_catalog_item(
     items.append(item)
     candidate = {**loaded, catalog: items}
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 
@@ -811,7 +815,7 @@ def update_catalog_item(
         )
 
     candidate = {**loaded, catalog: new_items}
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 
@@ -912,7 +916,7 @@ def delete_catalog_item(
     ]
     candidate = {**loaded, catalog: items}
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 

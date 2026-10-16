@@ -376,13 +376,14 @@ def _register_update_global_config(app: FastAPI, ctx: DashboardContext) -> None:
             if not isinstance(loaded, dict):
                 return JSONResponse({"error": "Config file is not a YAML mapping"}, status_code=500)
 
+            original = dict(loaded)
             for k, v in body.items():
                 if v is None:
                     loaded.pop(k, None)
                 else:
                     loaded[k] = v
 
-            validation_failure = _validate_global_config(loaded)
+            validation_failure = _validate_global_config(loaded, original=original)
             if validation_failure is not None:
                 return validation_failure
 

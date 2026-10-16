@@ -94,7 +94,9 @@ def _atomic_write_yaml(config_path: Path, loaded: dict[str, Any]) -> None:
     atomic_write_yaml(config_path, loaded)
 
 
-def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
+def _validate_global_config(
+    loaded: dict[str, Any], *, original: dict[str, Any] | None = None,
+) -> JSONResponse | None:
     """Validate the whole candidate config before anything is written (219 re-review).
 
     The candidate is validated as the daemon will load it: the text that would be written,
@@ -113,7 +115,7 @@ def _validate_global_config(loaded: dict[str, Any]) -> JSONResponse | None:
     if not result.passed:
         detail = "; ".join(f"{err.field_path}: {err.fix_hint}" for err in result.errors)
         return JSONResponse({"error": f"Validation failed: {detail}"}, status_code=422)
-    start_errors = _validate_candidate(loaded)
+    start_errors = _validate_candidate(loaded, original=original)
     if start_errors:
         detail = "; ".join(err.message for err in start_errors)
         return JSONResponse({"error": f"Validation failed: {detail}"},

@@ -318,7 +318,7 @@ def test_seed_hash_describes_the_bytes_copied_during_configmap_update(tmp_path: 
     assert config_seed.seed_status(seed, live)['chart_changed'] is True
 
 
-@pytest.mark.parametrize('fingerprint', ['broken', '', '0' * 64])
+@pytest.mark.parametrize('fingerprint', ['broken', ''])
 def test_corrupt_section_fingerprints_report_unknown_provenance(tmp_path: Path, fingerprint: str) -> None:
     seed, live = _paths(tmp_path)
     config_seed.seed_config(seed, live)
@@ -329,3 +329,15 @@ def test_corrupt_section_fingerprints_report_unknown_provenance(tmp_path: Path, 
     status = config_seed.seed_status(seed, live)
     assert status['chart_changed'] is None
     assert 'unknown' in status['message']
+
+
+def test_valid_section_fingerprints_are_compared_even_when_seed_hash_matches(tmp_path: Path) -> None:
+    seed, live = _paths(tmp_path)
+    config_seed.seed_config(seed, live)
+    metadata_path = live.parent / 'seed.yaml'
+    metadata = yaml.safe_load(metadata_path.read_text())
+    metadata['sections']['github_org'] = '0' * 64
+    metadata_path.write_text(yaml.safe_dump(metadata))
+    status = config_seed.seed_status(seed, live)
+    assert status['chart_changed'] is True
+    assert status['changed_sections'] == ['github_org']

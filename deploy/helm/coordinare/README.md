@@ -135,6 +135,25 @@ volume must be writable by UID/GID 10001, as for daemon state. A failed seed
 stops startup with an init container error. Check YAML, mount permissions and
 secret placeholders before retrying.
 
+**Upgrade check:** literal credentials that older values could render now fail
+the `seed-config` init container. Before upgrading, render your current values
+and inspect credential fields and URLs locally:
+
+```bash
+helm template coordinare deploy/helm/coordinare -n coordinare -f my-values.yaml --show-only templates/configmap.yaml > /tmp/coordinare-config-preview.yaml
+grep -nEi 'token|secret|password|api[_-]?key|authorization|headers|://[^ /]+@' /tmp/coordinare-config-preview.yaml
+```
+
+The grep is a review aid: placeholders, nulls and environment variable names
+also match. Move literal credentials into a Kubernetes Secret wired through
+`existingSecret` or `secrets`, and use `${VAR}` references in config. URL
+passwords must be placeholders too. For OTLP headers, use `headersSecret` as
+described below. If an upgrade stalls, inspect `kubectl logs coordinare-0 -c
+seed-config`, fix the values and upgrade again. If the live PVC config contains
+literals, back it up and repair it with the debug Pod procedure below, or place
+`config/reseed` to adopt the cleaned seed and discard dashboard edits. A temporary
+`configPersistence.enabled: false` rollback retains the PVC file for repair.
+
 After seeding, user settings in the PVC file are the source of truth. Dashboard
 edits survive Pod restarts, upgrades and uninstall. On **every boot**, the init
 container overlays the chart's runtime contract onto that file before the daemon
@@ -151,6 +170,8 @@ by endpoint ID, preserving the endpoint's other settings and list order. Renovat
 image updates therefore take effect after rollout. The verifier image also
 follows the chart. Keep `state.mountPath` stable and restore the config directory
 with the rest of the state claim.
+The GitHub App private-key path follows Helm only when present in the seed;
+otherwise the PVC value remains editable and survives boot.
 
 `checksum/config` hashes only the rendered config data, which contains both the
 seed and the chart overlay. Resource labels and other ConfigMap metadata do not
@@ -172,13 +193,14 @@ version. A concurrent change requires a fresh preview. Only chosen sections are
 replaced; other user edits and unadopted drift survive. A successful write uses
 the existing reload or restart classification.
 
-If the live file is empty, invalid YAML, or has an invalid document root, the init
+If the live file is empty, whitespace only, undecodable, or invalid YAML, the init
 step moves it to `config.yaml.broken-<timestamp>`, logs
 `config.live_file_recovered` at error level, and restores the chart seed. The
 Config page and System health retain a recovery notice from `config/recovery.yaml`.
 Inspect the backup before restoring any lost edits. Delete `config/recovery.yaml`
-only after acknowledging the recovery. A parseable mapping that fails validation
-or start checks is **never automatically replaced**.
+only after acknowledging the recovery. A parseable document with an invalid root,
+or a mapping that fails validation or start checks, is **never automatically
+replaced**.
 
 Back up **both** `config.yaml` and `seed.yaml`, alongside daemon state. For example:
 
