@@ -1121,8 +1121,23 @@ async def _inflight_gates(state: CoordinareState, card_id: str, performer_stage:
     return None
 
 
+def _dispatch_stopping(state: CoordinareState) -> bool:
+    # The event is shared even when LangGraph or session fanout copied state
+    # before stop() set the top-level boolean. stop() logs this once per daemon.
+    stop_event = state.get("stop_event")
+    return bool(state.get("stopping") or (stop_event is not None and stop_event.is_set()))
+
+
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
-    """Public entry point for the dispatch graph node.
+    """Refuse shutdown work before applying overrides or acquiring slots."""
+    if _dispatch_stopping(state):
+        # Preserve dispatching, card, stage and feedback for boot reconciliation.
+        return state
+    return await _dispatch_performer_guarded(state)
+
+
+async def _dispatch_performer_guarded(state: CoordinareState) -> CoordinareState:
+    """Apply operator overrides and enforce per-card dispatch admission.
 
     076 (FR-001, FR-006, T034): acquire the per-``(card_id, performer_stage)``
     mutex and check the in-flight guard BEFORE delegating to the underlying
@@ -2640,6 +2655,11 @@ async def _execute_dispatch(state: CoordinareState, ctx: dict[str, Any], _extra_
             # 130: the daemon-side inputs of the run header. Not on the wire: the service
             # uses them for the transcript header only, so the payload is unchanged.
             _dispatch_kwargs["run_inputs"] = await _dispatch_run_inputs(state, ctx)
+        # Recheck after preparation awaits, immediately before a service
+        # can start a container. A refusal must not consume feedback or a slot.
+        if _dispatch_stopping(state):
+            _release_slot_on_error()
+            return state
         result = await service.dispatch_card(card_context, **_dispatch_kwargs)
     except PerformerAuthError as exc:
         return await _dispatch_auth_error(state, exc, ctx, _release_slot_on_error)

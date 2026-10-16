@@ -275,3 +275,165 @@ async def test_event_store_shutdown_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(app_main, "EVENT_STORE_SHUTDOWN_SECONDS", 0.01, raising=False)
     await asyncio.wait_for(app_main._run(config), 0.1)
     await asyncio.wait_for(cancelled.wait(), WAIT_SECONDS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal_at", ["before_dispatch", "health", "board_move"])
+async def test_sigterm_mid_cycle_refuses_dispatch_from_copied_state(monkeypatch, signal_at) -> None:
+    from coordinare import daemon as daemon_module
+    from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+    from tests.unit.graph.nodes.test_dispatch_performer import _base_state, _Service
+
+    daemon = daemon_module.CoordinareDaemon(None)
+    service = _Service()
+    slots = MagicMock()
+    slots.acquire.return_value = service
+    daemon.state.update(_base_state(
+        phase="dispatching", performer_stage="implementing",
+        performer_services={"implementing": service}, slot_manager=slots,
+        relay_feedback=[{"kind": "test", "text": "retry after restart"}],
+    ))
+    callbacks = {}
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: callbacks.update({sig: callback}))
+    daemon._install_signal_handlers()
+    copied_state = dict(daemon.state)
+    log = MagicMock()
+    monkeypatch.setattr(daemon_module.logger, "info", log)
+
+    def terminate():
+        callbacks[signal.SIGTERM]()
+        callbacks[signal.SIGTERM]()
+
+    if signal_at == "before_dispatch":
+        terminate()
+    elif signal_at == "health":
+        async def health():
+            terminate()
+            return {"status": "idle"}
+        monkeypatch.setattr(service, "check_health", health)
+    else:
+        async def move(*args):
+            terminate()
+        monkeypatch.setattr(copied_state["github_service"], "move_card", move)
+
+    result = await dispatch_performer(copied_state)
+    assert service.dispatched == []
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert result["current_card"]["id"] == "ITEM_1"
+    assert not result.get("agent_dispatch")
+    assert result["relay_feedback"] == [{"kind": "test", "text": "retry after restart"}]
+    if signal_at == "before_dispatch":
+        slots.acquire.assert_not_called()
+    else:
+        slots.release.assert_called_once_with("implementing", "ITEM_1")
+    assert daemon.state["stopping"] is True
+    assert [call.args[0] for call in log.call_args_list].count("daemon.dispatch_stopped") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stuck_conductor", [False, True])
+@pytest.mark.parametrize("stuck_http", [False, True])
+async def test_sigterm_long_cycle_saves_final_snapshot_outside_runtime(monkeypatch, tmp_path, stuck_conductor, stuck_http) -> None:
+    from coordinare import daemon as daemon_module
+    from coordinare.daemon import CoordinareDaemon
+    from coordinare.services.conductor_calls import ConductorCallLog
+    from coordinare.state_store import StateStore
+
+    config = ProjectConfiguration(github_org="example", human_reviewers=["operator"], github_token=TOKEN)
+    store = StateStore(tmp_path / "state.json", MagicMock())
+    daemon = CoordinareDaemon(None, state_store=store, install_signal_handlers=False)
+    entered = asyncio.Event()
+    first_cancel = asyncio.Event()
+    cycle_finished = asyncio.Event()
+    callbacks = {}
+    save_tasks = []
+    drain_tasks = []
+    original_save = store.save
+
+    async def drain(**kwargs):
+        drain_tasks.append(asyncio.current_task().get_name())
+        assert cycle_finished.is_set()
+        if stuck_conductor:
+            await asyncio.Event().wait()
+
+    calls = ConductorCallLog(MagicMock())
+    monkeypatch.setattr(calls, "drain", drain)
+    daemon.state["conductor_calls"] = calls
+    monkeypatch.setattr(daemon_module, "SHUTDOWN_DRAIN_SECONDS", 0.01)
+
+    async def save(snapshot):
+        save_tasks.append(asyncio.current_task().get_name())
+        assert cycle_finished.is_set()
+        await asyncio.sleep(0.02)
+        await original_save(snapshot)
+
+    async def startup():
+        daemon.state["startup_complete"] = True
+        return "idle", daemon._lifecycle_signature()
+
+    async def long_cycle(*args):
+        daemon.state["phase"] = "dispatching"
+        daemon.state["performer_stage"] = "implementing"
+        entered.set()
+        try:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancel.set()
+                await asyncio.Event().wait()
+        finally:
+            cycle_finished.set()
+
+    class FakeServer:
+        def __init__(self, config):
+            self.started = False
+            self.should_exit = False
+
+        async def serve(self):
+            self.started = True
+            if stuck_http:
+                await asyncio.Event().wait()
+            while not self.should_exit:
+                await asyncio.sleep(0.001)
+
+    monkeypatch.setattr(app_main, "CoordinareDaemon", MagicMock(return_value=daemon))
+    monkeypatch.setattr(app_main, "StateStore", MagicMock(return_value=store))
+    monkeypatch.setattr(app_main, "check_port_available", MagicMock())
+    monkeypatch.setattr(app_main, "ManagedServer", FakeServer)
+    monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
+    monkeypatch.setattr(app_main, "run_preflight", AsyncMock(return_value=MagicMock(ok=True, results=[])))
+    monkeypatch.setattr(app_main, "_bootstrap_services", AsyncMock(return_value={
+        "github_service": MagicMock(field_cache={}),
+    }))
+    monkeypatch.setattr(app_main, "RUNTIME_SHUTDOWN_SECONDS", 0.01)
+    monkeypatch.setattr(app_main, "HTTP_SHUTDOWN_SECONDS", 0.01)
+    monkeypatch.setattr(daemon, "_run_startup_sequence", startup)
+    monkeypatch.setattr(daemon, "_start_transcript_retention", lambda: None)
+    monkeypatch.setattr(daemon, "_start_run_log_retention", lambda: None)
+    monkeypatch.setattr(daemon, "_run_orchestration", long_cycle)
+    monkeypatch.setattr(store, "save", save)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: callbacks.update({sig: callback}))
+    monkeypatch.setattr(loop, "remove_signal_handler", lambda sig: True)
+    runtime = asyncio.create_task(app_main._run_with_events(config, None, None, "legacy", MagicMock()))
+    try:
+        await asyncio.wait_for(entered.wait(), WAIT_SECONDS)
+        callbacks[signal.SIGTERM]()
+        await asyncio.wait_for(first_cancel.wait(), WAIT_SECONDS)
+        await asyncio.wait_for(runtime, WAIT_SECONDS)
+        snapshot = await store.load()
+        assert snapshot is not None, "SIGTERM dropped the final snapshot"
+        assert snapshot.phase == "dispatching"
+        assert snapshot.performer_stage == "implementing"
+        assert save_tasks and "daemon_runtime" not in save_tasks
+        assert drain_tasks and "daemon_runtime" not in drain_tasks
+        assert daemon._main_task.done()
+    finally:
+        if daemon._main_task is not None and not daemon._main_task.done():
+            daemon._main_task.cancel()
+            await asyncio.gather(daemon._main_task, return_exceptions=True)
+        if not runtime.done():
+            runtime.cancel()
+        await asyncio.gather(runtime, return_exceptions=True)

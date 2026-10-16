@@ -1520,11 +1520,12 @@ async def _initialize_daemon(
     print(running_summary(config, coordinare_config, board_columns=board_columns))
     METRICS.daemon_up.set(1)
     logger.info("startup_mode_selected", run_mode=os.getenv("COORDINARE_RUN_MODE", "shell"))
-    await daemon.start()
+    await daemon.start(flush_on_stop=False)
 
 
 HTTP_SHUTDOWN_SECONDS = HTTP_DRAIN_SECONDS + 2
-RUNTIME_SHUTDOWN_SECONDS = 12
+RUNTIME_SHUTDOWN_SECONDS = 3
+RUNTIME_CANCEL_SECONDS = 1
 EVENT_STORE_SHUTDOWN_SECONDS = 2
 
 
@@ -1707,10 +1708,14 @@ async def _run_with_events(
     startup_task = asyncio.create_task(
         _watch_startup(daemon, daemon.state["startup_deadline_at"]), name="startup_deadline",
     )
+    loop = asyncio.get_running_loop()
+    shutdown_requested: asyncio.Future[None] = loop.create_future()
 
     # Stop dispatch immediately while accepted dashboard requests finish.
     # Runtime services stay alive until the HTTP drain completes in finally.
     def _on_signal() -> None:
+        if not shutdown_requested.done():
+            shutdown_requested.set_result(None)
         if not daemon.state.get("stopping", False):
             daemon.state["stopping"] = True
             daemon.stop()
@@ -1721,7 +1726,6 @@ async def _run_with_events(
         dashboard_store.shutdown()
         dashboard_server.should_exit = True
 
-    loop = asyncio.get_running_loop()
     for _sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(_sig, _on_signal)
@@ -1765,7 +1769,9 @@ async def _run_with_events(
             _initialize_daemon(config, config_path, coordinare_config, daemon, circuit_breakers),
             name="daemon_runtime",
         )
-        watched = {runtime_task, dashboard_task, server_task, startup_task}
+        # Begin the cleanup budgets at the signal, even if every service is
+        # still draining and the runtime has suppressed its first cancellation.
+        watched = {runtime_task, dashboard_task, server_task, startup_task, shutdown_requested}
         while True:
             done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -1784,6 +1790,7 @@ async def _run_with_events(
         dashboard_store.shutdown()
         dashboard_server.should_exit = True
         startup_task.cancel()
+        shutdown_requested.cancel()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)
         await _finish_tasks({server_task, dashboard_task}, within=HTTP_SHUTDOWN_SECONDS)
@@ -1791,6 +1798,12 @@ async def _run_with_events(
             if not runtime_task.done() and not daemon.state.get("startup_complete", False):
                 runtime_task.cancel()
             await _finish_tasks({runtime_task}, within=RUNTIME_SHUTDOWN_SECONDS)
+            # Give cooperative cancellation a separate bounded turn to settle
+            # before reading final state. Flushes belong to this owner task,
+            # so cancelling the runtime cannot cancel the final snapshot.
+            if not runtime_task.done():
+                await _finish_tasks({runtime_task}, within=RUNTIME_CANCEL_SECONDS)
+        await daemon.shutdown()
         await _finish_tasks({startup_task}, within=1)
 
 
@@ -2127,6 +2140,10 @@ def main() -> None:
     HEALTH.update("config", _HealthStatus.healthy)
 
     try:
+        # asyncio.run also tears down residual tasks, async generators and the
+        # default executor. Cancellation-resistant tasks or stuck worker threads
+        # can outlive our bounded application cleanup; kubelet's SIGKILL at the
+        # pod's terminationGracePeriodSeconds is the final backstop.
         asyncio.run(
             _run(
                 config,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import Event  # noqa: TC003 - needed at runtime for LangGraph get_type_hints()
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from datetime import UTC, datetime
@@ -169,6 +170,7 @@ class CoordinareState(TypedDict, total=False):
     startup_complete: bool  # Process-local readiness, never restored from snapshots.
     startup_deadline_at: float  # Monotonic process deadline, never persisted.
     stopping: bool  # SIGTERM drain; no new work may start.
+    stop_event: Event  # Shared with graph/session copies; process-local, never persisted.
     # 066 (FR-010): current_card is a *derived mirror* of
     # active_sessions[active_card_id]["current_card"].  The only sanctioned
     # mutation site is _rederive_current_card() below; all other writers MUST

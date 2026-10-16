@@ -1,6 +1,8 @@
 # Startup must finish within this many seconds or the daemon exits non-zero.
 startupDeadlineSeconds: 600
-# 5s endpoint removal + 22s HTTP shutdown + 12s runtime cleanup + 1s watchdog + 2s event store + 3s margin.
+# 5s endpoint removal + 22s HTTP shutdown + 3s runtime + 1s cancellation
+# + 5s conductor flush + 5s snapshot + 1s watchdog + 2s event store + 1s margin.
+# Kubelet SIGKILL bounds asyncio.run teardown if residual tasks or executor threads hang.
 terminationGracePeriodSeconds: 45
 
 # Values for the coordinare chart.

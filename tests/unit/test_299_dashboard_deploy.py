@@ -30,6 +30,7 @@ def _daemon() -> MagicMock:
     daemon.running = False
     daemon.state = {"startup_complete": False}
     daemon.state_store = None
+    daemon.shutdown = AsyncMock()
     return daemon
 
 
@@ -96,7 +97,19 @@ def test_chart_routes_early_and_drains_with_bounded_grace() -> None:
     assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sleep", str(DRAIN_SECONDS)]
     pod = _one(objects, "StatefulSet")["spec"]["template"]["spec"]
     assert pod["terminationGracePeriodSeconds"] == GRACE_SECONDS
-    assert GRACE_SECONDS > DRAIN_SECONDS + 22 + 12 + 1 + 2
+    from coordinare.__main__ import (
+        EVENT_STORE_SHUTDOWN_SECONDS,
+        HTTP_SHUTDOWN_SECONDS,
+        RUNTIME_CANCEL_SECONDS,
+        RUNTIME_SHUTDOWN_SECONDS,
+    )
+    from coordinare.daemon import SHUTDOWN_DRAIN_SECONDS, SHUTDOWN_SNAPSHOT_SECONDS
+
+    assert GRACE_SECONDS > (
+        DRAIN_SECONDS + HTTP_SHUTDOWN_SECONDS + RUNTIME_SHUTDOWN_SECONDS
+        + RUNTIME_CANCEL_SECONDS + SHUTDOWN_DRAIN_SECONDS + SHUTDOWN_SNAPSHOT_SECONDS
+        + 1 + EVENT_STORE_SHUTDOWN_SECONDS
+    )
     customized = _render(terminationGracePeriodSeconds=60, startupDeadlineSeconds=700)
     assert _one(customized, "StatefulSet")["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 60
     import yaml

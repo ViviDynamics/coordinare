@@ -2580,6 +2580,9 @@ class CoordinareDaemon:
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
         self._state["startup_complete"] = False
+        self._state["stop_event"] = self._stop_event
+        self._last_saved_lifecycle_sig: Any = None
+        self._shutdown_snapshot_ready = False
         self._transcript_retention_task: asyncio.Task[None] | None = None
         self._run_log_retention_task: asyncio.Task[None] | None = None
         # 139: when each stall key was last logged, so a card that stays stuck
@@ -3250,6 +3253,9 @@ class CoordinareDaemon:
                 )
 
     def stop(self) -> None:
+        if not self._stop_event.is_set():
+            logger.info("daemon.dispatch_stopped")
+        self._state["stopping"] = True
         if self._cycle_active:
             self._stop_during_cycle = True
         self._running = False
@@ -6381,17 +6387,35 @@ class CoordinareDaemon:
             except Exception as exc:  # pragma: no cover — best-effort flush
                 logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
 
-    async def start(self) -> None:
+    async def shutdown(self) -> None:
+        """Flush after the runtime finishes or is cancelled by its owner.
+
+        A failed initializer must not overwrite the previous boot's snapshot.
+        Conductor writes still get their independent drain deadline.
+        """
+        previous = (
+            self._last_saved_lifecycle_sig if self._shutdown_snapshot_ready
+            else self._lifecycle_signature()
+        )
+        await self._shutdown_flush(previous)
+
+    async def _start_runtime(self) -> tuple[Any, Any]:
+        """Initialize the loop and remember which lifecycle state reached disk."""
         self._main_task = asyncio.current_task()
         self._running = True
         self._install_signal_handlers()
-        last_heartbeat = monotonic()
-        cycle_count = 0
-
         previous_phase, previous_lifecycle_sig = await self._run_startup_sequence()
+        self._last_saved_lifecycle_sig = previous_lifecycle_sig
+        self._shutdown_snapshot_ready = True
         # 129: retention sweeps run beside the cycle loop, never inside it.
         self._transcript_retention_task = self._start_transcript_retention()
         self._run_log_retention_task = self._start_run_log_retention()
+        return previous_phase, previous_lifecycle_sig
+
+    async def start(self, *, flush_on_stop: bool = True) -> None:
+        last_heartbeat = monotonic()
+        cycle_count = 0
+        previous_phase, previous_lifecycle_sig = await self._start_runtime()
 
         if self._poll_interval_seconds == 0:
             logger.info("polling_disabled")
@@ -6431,6 +6455,7 @@ class CoordinareDaemon:
                 previous_lifecycle_sig = await self._save_snapshot_if_changed(
                     previous_lifecycle_sig,
                 )
+                self._last_saved_lifecycle_sig = previous_lifecycle_sig
 
                 # T019: Prolonged idle detection
                 last_activity_at = await self._check_prolonged_idle(
@@ -6460,7 +6485,8 @@ class CoordinareDaemon:
                 # Happy-path cycle end — clear cycle_id before inter-cycle sleep
                 clear_cycle_id()
 
-        await self._shutdown_flush(previous_lifecycle_sig)
+        if flush_on_stop:
+            await self.shutdown()
 
         self._emit(
             **build_runtime_event(
