@@ -42,10 +42,16 @@ jobs:
         run: uv run --extra dev mypy -p coordinare
 
   test:
-    timeout-minutes: 26
-    name: Test
+    timeout-minutes: 20
+    name: Test (${{ matrix.shard }}/4)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    # 289: four parallel shards; scripts/ci_shard.py puts every test file in exactly one.
+    # tests/e2e holds only browser tests, which the E2E lane runs, so these shards skip it.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,13 +71,27 @@ jobs:
           uv pip install -e "agent/performer[dev]"
 
       - name: Run pytest
-        run: uv run pytest
+        # The list is captured first: inside a command argument a failed
+        # $(...) would leave pytest with no paths, and it would run everything.
+        run: |
+          files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
+          uv run pytest --junitxml=junit-test-${{ matrix.shard }}.xml $files
 
       - name: Verify OTLP wire protocols and licences
+        if: ${{ matrix.shard == 1 }}
         run: |
           uv sync --extra otlp --extra dev --inexact
           uv run --no-sync python -c "import grpc; import google.protobuf; import opentelemetry.proto.collector.logs.v1.logs_service_pb2"
           uv run --no-sync pytest tests/unit/test_271_otlp_wire.py tests/unit/test_142_license_and_legal_posture.py -v
+
+      - name: Upload test timings
+        # 289: scripts/ci_durations.py turns these into tests/ci-durations.json to rebalance shards.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-${{ matrix.shard }}
+          path: junit-test-${{ matrix.shard }}.xml
+          retention-days: 14
 
   chart:
     timeout-minutes: 10
@@ -242,11 +262,16 @@ jobs:
             exit 1
           fi
 
-  coverage:
-    timeout-minutes: 36
-    name: Coverage
+  coverage-shard:
+    timeout-minutes: 25
+    name: Coverage (${{ matrix.shard }}/4)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    # 289: each shard records partial data; the Coverage job combines it and applies the floor.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -265,14 +290,82 @@ jobs:
           uv pip install -e ".[dev]"
           uv pip install -e "agent/performer[dev]"
 
-      - name: Run coverage
-        run: uv run pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
+      - name: Run coverage shard
+        env:
+          COVERAGE_FILE: .coverage.shard${{ matrix.shard }}
+        # The 90% floor applies to the combined data only, so a shard reports without failing on it.
+        # The list is captured first: inside a command argument a failed
+        # $(...) would leave pytest with no paths, and it would run everything.
+        run: |
+          files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 4 tests --exclude tests/e2e)
+          uv run pytest --cov=coordinare --cov-report= --cov-fail-under=0 $files
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-${{ matrix.shard }}
+          path: .coverage.shard${{ matrix.shard }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    timeout-minutes: 10
+    name: Coverage
+    needs: coverage-shard
+    # always(): a failed shard must fail this job. A skipped job here would read as
+    # "not failed" to the jobs that gate on it.
+    if: ${{ always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every shard succeeded
+        if: ${{ needs.coverage-shard.result != 'success' }}
+        run: |
+          echo "::error::coverage shards ended with '${{ needs.coverage-shard.result }}'"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install the locked coverage version
+        run: |
+          uv venv
+          version=$(uv export --frozen --no-hashes --extra dev | sed -n 's/^coverage==\([^ ;]*\).*/\1/p' | head -1)
+          test -n "$version" || { echo "::error::coverage is not pinned in uv.lock"; exit 1; }
+          uv pip install "coverage==$version"
+
+      - name: Download coverage data
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-data-*
+          path: coverage-data
+          merge-multiple: true
+
+      - name: Combine and apply the 90% floor
+        # fail_under = 90 and the omit list come from [tool.coverage] in pyproject.toml.
+        run: |
+          .venv/bin/coverage combine coverage-data/
+          .venv/bin/coverage report --fail-under=90
 
   e2e:
-    timeout-minutes: 40
-    name: E2E Browser Tests
+    timeout-minutes: 25
+    name: E2E (${{ matrix.browser }} ${{ matrix.shard }}/3)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
+    # 289: each browser runs in three file shards, six jobs in parallel.
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+        shard: [1, 2, 3]
     # Browser OS libraries live in the official image, so this lane does not
     # require passwordless sudo on the GitHub-hosted runner that receives it.
     # Keep the image version aligned with the Playwright package in uv.lock.
@@ -292,7 +385,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install Playwright browsers
-        run: uv run --extra dev playwright install chromium firefox
+        run: uv run --extra dev playwright install ${{ matrix.browser }}
 
       - name: Install coordinare and performer packages
         # The routing write path validates against performer.proxy.routing. Without the performer
@@ -307,7 +400,20 @@ jobs:
         # to run as container root with that foreign-owned home directory.
         env:
           HOME: /root
-        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --override-ini="timeout_method=thread" --browser chromium --browser firefox -v
+        # The list is captured first: inside a command argument a failed
+        # $(...) would leave pytest with no paths, and it would run everything.
+        run: |
+          files=$(python scripts/ci_shard.py --shard ${{ matrix.shard }} --of 3 tests/e2e)
+          uv run --extra dev pytest --override-ini="addopts=" --override-ini="timeout_method=thread" --browser ${{ matrix.browser }} -v --junitxml=junit-e2e-${{ matrix.browser }}-${{ matrix.shard }}.xml $files
+
+      - name: Upload test timings
+        # 289: scripts/ci_durations.py turns these into tests/ci-durations.json to rebalance shards.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-e2e-${{ matrix.browser }}-${{ matrix.shard }}
+          path: junit-e2e-${{ matrix.browser }}-${{ matrix.shard }}.xml
+          retention-days: 14
 
   performer:
     timeout-minutes: 10
