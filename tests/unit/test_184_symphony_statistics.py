@@ -212,7 +212,10 @@ async def test_reliability_survives_restart_in_existing_event_store(tmp_path: Pa
 def test_api_health_is_scoped_and_redacted() -> None:
     secret = "ghp_" + "a" * 36
     daemon = MagicMock()
+    # 299: the dashboard answers 503 until the daemon has started.
+    daemon.running = True
     daemon.state = {
+        "startup_complete": True,
         "symphony_configs": dict.fromkeys(VISIBLE),
         "symphony_states": {"alpha": SimpleNamespace(
             board_snapshot={"TODO": ["card"]}, last_error=secret, active_sessions={},
