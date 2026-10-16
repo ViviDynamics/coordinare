@@ -4,7 +4,7 @@ import json
 import stat
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import jsonschema
@@ -13,6 +13,7 @@ import structlog
 import yaml
 
 from coordinare import __main__ as cli
+from coordinare import launch_preflight
 from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.init_answers import ANSWER_NAMES
 
@@ -69,6 +70,44 @@ def test_validate_json_success_and_missing_file(config: Path, monkeypatch: pytes
     code, report = invoke(monkeypatch, capsys, *command, "--json", "--config", str(config / SECRET))
     assert code == 1
     assert report["checks"][0]["fix"]
+
+
+@pytest.mark.parametrize("command", [("doctor",), ("config", "validate")])
+@pytest.mark.parametrize("scenario", ["passing", "missing_file", "failing_check"])
+def test_cli_reports_match_published_schema(config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], command: tuple[str, ...], scenario: str) -> None:
+    # Exercise CLI parsing, config loading, real preflight and JSON serialization.
+    # Only external GitHub, harness, provider and socket probes are replaced.
+    monkeypatch.setattr(launch_preflight, "check_github", AsyncMock(return_value=[]))
+    monkeypatch.setattr(launch_preflight, "check_harnesses", AsyncMock(return_value=[]))
+    monkeypatch.setattr(launch_preflight, "check_native_models", Mock(return_value=[]))
+    port_probe = Mock()
+    monkeypatch.setattr(launch_preflight, "check_port_available", port_probe)
+    raw = yaml.safe_load(config.read_text())
+    raw["state_file_path"] = str(config.parent / "state" / "coordinare.state.json")
+    if scenario == "failing_check":
+        if command == ("doctor",):
+            port_probe.side_effect = OSError("Port unavailable")
+        else:
+            raw["github_project_number"] = 0
+    config.write_text(yaml.safe_dump(raw))
+    path = config.parent / "missing.yaml" if scenario == "missing_file" else config
+
+    # invoke validates the actual stdout document against setup-report.schema.json.
+    code, report = invoke(monkeypatch, capsys, *command, "--config", str(path), "--json")
+    assert code == (0 if scenario == "passing" else 1)
+    assert report["command"] == ("doctor" if command == ("doctor",) else "validate")
+    if scenario == "missing_file":
+        finding = next(check for check in report["checks"] if check["field"] == "config_file")
+        assert finding["id"] == "config.missing"
+        assert "coordinare init" in finding["fix"]
+        assert "--config <path>" in finding["fix"]
+        port_probe.assert_not_called()
+    elif command == ("doctor",):
+        finding = next(check for check in report["checks"] if check["id"] == "doctor.dashboard_port")
+        assert finding["status"] == ("ok" if scenario == "passing" else "fail")
+        port_probe.assert_called_once()
+    elif scenario == "failing_check":
+        assert any(check["field"] == "github_project_number" and check["status"] == "fail" for check in report["checks"])
 
 
 @pytest.mark.parametrize("command", ["validate", "doctor"])

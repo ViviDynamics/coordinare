@@ -67,7 +67,8 @@ Schema: [setup-report.schema.json](schemas/setup-report.schema.json).
 
 `schema_version` is the protocol version. `command` is `doctor` or `validate`.
 `checks` is nonempty. Each check has `id`, `instance` (positive integer), `status`,
-`message`, `fix` (text or null), and `field` (known top-level config field or null).
+`message`, `fix` (text or null), and `field` (known top-level config field,
+`config_file` for a file problem, or null).
 Status is `ok`, `fail`, `warn`, or `skip`. Every failure has a nonempty fix.
 `ok` is true exactly when no check has status `fail`. Exit codes are 0 for true,
 1 for false. Warnings and skips do not block doctor. Invalid command syntax

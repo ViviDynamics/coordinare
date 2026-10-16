@@ -1937,8 +1937,6 @@ def _setup_json_checks(args: argparse.Namespace, *, doctor: bool) -> list[dict[s
     if not doctor or not result.passed:
         return checks
     config = _load_project_config_for_doctor(result)
-    if config is None:
-        raise ValueError
     root = None
     if result.config_file_path is not None:
         raw = _load_raw_yaml(result.config_file_path)

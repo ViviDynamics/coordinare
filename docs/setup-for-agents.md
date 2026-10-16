@@ -39,7 +39,8 @@ or tunnel. Do not change host security policy to make a check pass.
 
 Use a normal user account. Ensure `curl`, `sha256sum` or `shasum`, and a running
 Docker runtime are installed using the host's supported installation method.
-Docker installation and OS privileges require the human's authorization. Check
+Docker installation and OS privileges require the human's authorization. Obtain
+authorization to install uv if missing before running the installer. Check that
 `docker info` exits 0 before proceeding. Python and uv need not be installed;
 the release installer supplies an isolated Python 3.12 environment and bundled
 performer. No repository checkout is needed.
@@ -59,7 +60,8 @@ rm -rf "$install_tmp"
 Run each command only after the previous one succeeds. All must exit 0. Review
 the downloaded script before running it if required by your environment. For a
 pinned install, download `releases/download/TAG/install.sh` instead and pass
-`--version TAG`. `--yes` consents to installing uv if absent. `--no-init` is
+`--version TAG`. `--yes` also consents to installing uv if absent; the agent
+needs the human's authorization for that installation. `--no-init` is
 accepted, but init is always a separate explicit step. The installer checks
 release wheel checksums and does not start the daemon or edit shell profiles.
 See [installer options](releases.md) for environment equivalents and removal.
@@ -68,6 +70,8 @@ See [installer options](releases.md) for environment equivalents and removal.
 
 Create a private working directory outside all repositories. Copy the
 [filled answers example](examples/init-answers.yaml) there and edit its facts.
+Replace `your-github-login` with the human reviewer's GitHub login, and use the
+repository, board and other facts supplied by the human.
 For Claude Code select `harness: claude_code` and `model: claude-sonnet-4-6`.
 The example selects Docker, Codex and its default native model. For a self-hosted
 model set `endpoint` to its approved OpenAI-compatible base URL and `model` to
@@ -154,12 +158,3 @@ Tell the human the installed version, config path, check ids/statuses, unresolve
 warnings and running state. Never include credentials or raw service logs. Offer
 the [first card procedure](first-launch.md#try-one-card) as a separate authorized
 test; it makes GitHub writes and consumes model budget.
-
-## Release verification record
-
-Before release, an operator must follow only this guide on a clean supported
-machine with the listed facts. Record OS/architecture, release version, selected
-harness/mode, sanitized validation and doctor JSON, exit codes and service status
-in the PR. Do not record credentials or raw logs. Mocked tests are not this manual
-check. Record any environment limitation and complete the release check on a
-machine that permits installation, network access and listener binding.

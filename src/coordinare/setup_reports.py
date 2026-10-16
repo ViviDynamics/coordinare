@@ -4,6 +4,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from coordinare.config import ProjectConfiguration
+from coordinare.config_validation import ErrorType
 from coordinare.doctor import Status
 
 if TYPE_CHECKING:
@@ -86,7 +87,11 @@ def validation_checks(result: ConfigValidationResult, *, strict: bool) -> list[d
         check(
             "config." + error.error_type.value, Status.FAIL,
             "A configuration setting is missing, unknown or invalid.",
-            "Correct the named field if present. " + CONFIG_REFERENCE,
+            (
+                "Run coordinare init to create a config, or pass --config <path> to an existing file."
+                if error.field_path == "config_file" and error.error_type is ErrorType.missing
+                else "Correct the named field if present. " + CONFIG_REFERENCE
+            ),
             field=safe_field(error.field_path),
         ) for error in result.errors
     )
