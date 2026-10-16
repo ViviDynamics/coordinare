@@ -90,6 +90,7 @@ class ConfigSetting(BaseModel):
     # the dashboard token on a non-loopback bind with no OIDC flow. Each is derived from the rule the
     # daemon's own validator applies, never hand-listed. A required field is not offered a Clear.
     required: bool = False
+    nullable: bool = False
     is_env_placeholder: bool = False
     invalid: bool = False
     section: str = ""
@@ -422,6 +423,7 @@ def setting_from_field(
         restart_required=ann.restart_required,
         secret=is_secret,
         required=field_info.is_required(),
+        nullable=type(None) in typing.get_args(field_info.annotation),
         is_env_placeholder=is_env,
         invalid=invalid,
         section=section,

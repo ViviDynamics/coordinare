@@ -14,6 +14,7 @@ from structlog.testing import capture_logs
 
 from coordinare.__main__ import _run
 from coordinare.config import CoordinareConfiguration, ProjectConfiguration
+from coordinare.doctor import DoctorReport
 from coordinare.services.event_store import _safe_row
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.otlp_export import MAX_DATA_BYTES, OtlpExporter, log_payload
@@ -145,7 +146,7 @@ async def test_bad_environment_telemetry_disables_export_without_stopping_daemon
     async def serve(*args: Any) -> None:
         observed.append(args[-1].health())
 
-    with patch('coordinare.__main__.load_unexpanded_config', return_value=None), patch('coordinare.__main__.validate_start_time'), patch('coordinare.__main__._run_with_events', side_effect=serve), patch('coordinare.services.otlp_wire._logs_proto', None), capture_logs() as logs:
+    with patch('coordinare.__main__.load_unexpanded_config', return_value=None), patch('coordinare.__main__.validate_start_time'), patch('coordinare.__main__.run_preflight', return_value=DoctorReport()), patch('coordinare.__main__._run_with_events', side_effect=serve), patch('coordinare.services.otlp_wire._logs_proto', None), capture_logs() as logs:
         await _run(config)
     assert observed[0]['export_error']
     assert CANARY not in json.dumps(observed)

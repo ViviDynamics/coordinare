@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from coordinare.__main__ import _run
+from coordinare.doctor import DoctorReport
 from coordinare.services.event_store import EventStore
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.otlp_export import OtlpExporter, log_payload
@@ -390,6 +391,7 @@ async def test_daemon_wires_environment_and_closes_exporter_on_startup_error(tmp
     with (
         patch('coordinare.__main__.load_unexpanded_config', return_value=None),
         patch('coordinare.__main__.validate_start_time'),
+        patch('coordinare.__main__.run_preflight', return_value=DoctorReport()),
         patch('coordinare.__main__._run_with_events', side_effect=fail),
         patch('coordinare.__main__.OtlpExporter', side_effect=create) as factory,
         pytest.raises(RuntimeError, match='startup failed'),

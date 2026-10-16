@@ -196,6 +196,7 @@ function cfgInput(s) {
   var base = 'data-field="' + esc(field) + '" data-type="' + esc(s.type) + '"'
     + ' data-orig="' + esc(JSON.stringify(orig)) + '"'
     + ' data-label="' + esc(s.label || field) + '" data-secret="' + (s.secret ? 'true' : 'false') + '"';
+  if (s.nullable) base += ' data-nullable="true"';
   var refSpec = _CFG_REFS[field];
   if (refSpec) {
     return cfgRefSelect(s, refSpec, base);
@@ -207,6 +208,9 @@ function cfgInput(s) {
     var opts = s.enum.map(function(o) {
       return '<option' + (String(s.current_value) === String(o) ? ' selected' : '') + '>' + esc(o) + '</option>';
     }).join('');
+    if (s.nullable) {
+      opts = '<option value=""' + (orig === null ? ' selected' : '') + '>None</option>' + opts;
+    }
     return '<select ' + base + ' style="' + CFG_INPUT + '">' + opts + '</select>';
   }
   var scalar = (s.current_value === null || s.current_value === undefined) ? '' : String(s.current_value);
@@ -241,6 +245,7 @@ function cfgCoerce(el) {
   var t = el.getAttribute('data-type');
   if (t === 'bool') return el.checked;
   var v = el.value;
+  if (t === 'enum' && el.getAttribute('data-nullable') === 'true' && v === '') return null;
   // A nullable reference left at "— none —" serializes as null (field omitted),
   // matching the prior free-text-empty-means-unset behavior.
   if (el.getAttribute('data-ref') && v === '') return null;

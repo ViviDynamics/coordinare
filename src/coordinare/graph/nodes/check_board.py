@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from coordinare.first_launch import board_idle_explanation
 from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
@@ -735,6 +736,9 @@ async def _attempt_blocked_card_recovery(
                 )
         except Exception as exc:  # fail-safe: a card's recovery never breaks the cycle
             logger.warning("blocked_recovery.failsafe_skip", card_id=cid, error=str(exc))
+
+
+_idle_messages: dict[str, str] = {}
 
 
 async def check_board(state: CoordinareState) -> CoordinareState:
@@ -2159,6 +2163,13 @@ def _record_todo_waits(
             in_use=_count_slot_consuming_sessions(state),
             limit=max_cards,
         )
+        message = board_idle_explanation(
+            board.get("snapshot"), state.get("todo_waits") or {}, state.get("active_sessions") or {},
+        )
+        symphony = str(state.get("current_symphony") or "default")
+        if message and _idle_messages.get(symphony) != message:
+            logger.info("daemon.idle", symphony=symphony, message=message)
+        _idle_messages[symphony] = message
     except Exception:
         clear_waits(state)
         warn_once_per_cycle(state, "refresh")

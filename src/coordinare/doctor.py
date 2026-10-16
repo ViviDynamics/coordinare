@@ -17,10 +17,17 @@ perfect and point at a host that is not listening.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import httpx
+
+from coordinare.doctor_status import Status
+from coordinare.network_probe import error_status, probe_http, response_status
+
+__all__ = [
+    "PROBE_TIMEOUT_SECONDS", "CheckResult", "DoctorReport", "Status", "check_dashboard_binding",
+    "check_endpoints", "check_kubernetes_egress_enforcement", "check_models", "run_checks",
+]
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from coordinare.config import ProjectConfiguration
@@ -29,13 +36,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: purpose: this is a setup gate, and an operator waiting 30 seconds per endpoint
 #: to be told something is wrong will stop running it.
 PROBE_TIMEOUT_SECONDS = 5.0
-
-
-class Status(StrEnum):
-    OK = "ok"
-    FAIL = "fail"
-    WARN = "warn"
-    SKIP = "skip"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,35 +78,35 @@ class DoctorReport:
                 lines.append(f"         fix: {r.fix}")
         lines.append("=" * 60)
         if self.ok:
-            lines.append("All checks passed. Coordinare should be able to start.")
+            lines.append(
+                "No blocking failures. Review the warnings above; Coordinare can start."
+                if any(result.status is Status.WARN for result in self.results)
+                else "All checks passed. Coordinare should be able to start.",
+            )
             lines.append("")
-            lines.append("Note this proves your endpoints answer and your token has the")
-            lines.append("permissions checked here. It cannot prove a model produces good")
-            lines.append("output, only that it exists and responds.")
+            lines.append("These checks cover reachability, configuration and permissions.")
+            lines.append("Warnings identify what could not be verified. These checks cannot prove")
+            lines.append("model output quality; that is only known after the model runs.")
         else:
             lines.append(f"{len(self.failed)} check(s) failed. Each names its fix above.")
         lines.append("")
         return "\n".join(lines)
 
 
-def _probe_endpoint(base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[bool, str]:
+def _probe_endpoint(base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> tuple[Status, str]:
     try:
-        response = httpx.get(base_url, timeout=timeout, follow_redirects=True)
-    except httpx.ConnectError as exc:
-        return False, f"cannot connect: {exc}"
-    except httpx.TimeoutException:
-        return False, f"no response within {timeout:g}s"
-    except httpx.HTTPError as exc:  # pragma: no cover - defensive
-        return False, f"request failed: {exc}"
-    # Any HTTP answer means something is listening, which is the question asked.
-    # A 404 from a base URL is normal and not a problem.
-    return True, f"responded with HTTP {response.status_code}"
+        response = probe_http(lambda: httpx.get(base_url, timeout=timeout, follow_redirects=True))
+    except httpx.HTTPError as exc:
+        return error_status(exc), "could not reach the endpoint after bounded retries"
+    # A base URL need not have a route; a 404 still proves it is listening.
+    status = Status.OK if response.status_code == httpx.codes.NOT_FOUND else response_status(response)
+    return status, f"responded with HTTP {response.status_code}"
 
 
 def _list_ollama_models(base_url: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> list[str]:
     """Model names an Ollama endpoint serves, or an empty list if unavailable."""
     try:
-        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
+        response = probe_http(lambda: httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout))
         response.raise_for_status()
         return [m["name"] for m in response.json().get("models", []) if "name" in m]
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
@@ -131,15 +131,15 @@ def check_endpoints(config: ProjectConfiguration) -> list[CheckResult]:
             )
             continue
 
-        reachable, detail = _probe_endpoint(base_url)
+        status, detail = _probe_endpoint(base_url)
         results.append(
             CheckResult(
                 name=f"endpoint '{endpoint.name}'",
-                status=Status.OK if reachable else Status.FAIL,
-                detail=f"{base_url} — {detail}",
+                status=status,
+                detail=f"{base_url}: {detail}",
                 fix=(
                     None
-                    if reachable
+                    if status is Status.OK
                     else (
                         f"start the service at {base_url}, or correct base_url for endpoint "
                         f"'{endpoint.name}'. If coordinare runs in Docker and the endpoint is on "
