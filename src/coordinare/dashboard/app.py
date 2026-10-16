@@ -10,6 +10,7 @@ import structlog
 from fastapi import FastAPI, Request
 
 from coordinare.dashboard.routers.oidc import register_account_route, register_oidc_routes
+from coordinare.dashboard_auth import DashboardAuthentication
 from coordinare.localhost_guard import (
     PermittedOrigins,
     build_permitted,
@@ -65,7 +66,6 @@ def create_dashboard_app(
     """
     app = FastAPI(title="coordinare-dashboard")
     if auth_token is not None or oidc is not None:
-        from coordinare.dashboard_auth import DashboardAuthentication
         app.add_middleware(
             DashboardAuthentication, token=auth_token, oidc=oidc,
             signed_webhook_paths=signed_webhook_paths,
@@ -131,6 +131,7 @@ def _register_routers(app: FastAPI, ctx: DashboardContext) -> None:
         routers.controls,
         routers.symphonies,
         routers.config,
+        routers.config_chart,
         routers.personas,
         routers.assistant,
         routers.run_logs,

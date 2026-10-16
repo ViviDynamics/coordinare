@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401
-import contextlib
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +20,8 @@ from coordinare.dashboard.secret_overrides import (
     _restore_masked_secrets,
     _secret_override_fields,
 )
-from coordinare.services.config_write_service import _validate_candidate
+from coordinare.services.config_documents import symphony_documents
+from coordinare.services.config_write_service import _validate_candidate, atomic_write_yaml
 from coordinare.services.env_bootstrap_control import reset_env_bootstrap_breaker
 
 if TYPE_CHECKING:
@@ -33,41 +33,15 @@ _log = structlog.get_logger(__name__)
 
 def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | None) -> None:
     """Atomically write the current symphony list to config.yaml (FR-020)."""
-    import os
-    import stat
-    import tempfile
-
-    import yaml
-
     if config_path is None or not config_path.is_file():
         msg = "Config file not available; symphony changes are in-memory only"
         raise ValueError(msg)
-
-    sym_list = [s.model_dump(exclude_none=True) for s in sym_configs.values()]
-
     loaded = yaml.safe_load(config_path.read_text())
     if not isinstance(loaded, dict):
         msg = "Config file does not contain a YAML mapping"
         raise ValueError(msg)
-    loaded["symphonies"] = sym_list
-
-    original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp",
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                loaded, f, default_flow_style=False, allow_unicode=True, sort_keys=False,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, original_mode)
-        os.replace(tmp_path, str(config_path))
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    loaded["symphonies"] = symphony_documents(sym_configs, loaded)
+    atomic_write_yaml(config_path, loaded)
 
 def _register_get_symphonies(app: FastAPI, ctx: DashboardContext) -> None:
         daemon = ctx.daemon
@@ -197,8 +171,8 @@ def _symphony_write_refusal(proposed: dict[str, Any], config_path: Path | None) 
     loaded = yaml.safe_load(config_path.read_text())
     if not isinstance(loaded, dict):
         return None
-    candidate = {**loaded, "symphonies": [s.model_dump(exclude_none=True) for s in proposed.values()]}
-    errors = _validate_candidate(candidate)
+    candidate = {**loaded, "symphonies": symphony_documents(proposed, loaded)}
+    errors = _validate_candidate(candidate, original=loaded)
     if not errors:
         return None
     detail = "; ".join(err.message for err in errors)

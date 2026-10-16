@@ -28,14 +28,23 @@ import tempfile
 from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from coordinare.config import expand_config_text
+from coordinare import config_descriptors as cd
+from coordinare.config import CoordinareConfiguration, expand_config_text
+from coordinare.config_descriptors import (
+    SECRET_MASK,
+    annotation_for,
+    is_env_placeholder,
+    scalar_field_names,
+)
 from coordinare.config_validation import (
     coerce_multi_symphony_raw,
     is_multi_symphony_config,
     wrap_legacy_config,
 )
+from coordinare.services.config_ownership import chart_owned_problem
+from coordinare.services.config_secret_policy import persistent_secret_problem
 from coordinare.start_checks import (
     StartCheckError,
     raw_placeholder_problems,
@@ -46,8 +55,6 @@ from coordinare.start_checks import (
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
-
-    from coordinare.config import CoordinareConfiguration
 
 Store = Literal["config_yaml", "routing_yaml"]
 Applied = Literal["hot_reloaded", "staged_restart", "staged_next_job"]
@@ -258,7 +265,6 @@ def classify_section_applied(section: str, changed_keys: Iterable[str]) -> Appli
     otherwise it is ``hot_reloaded``. Sourced from the annotation table so the
     classification stays in lockstep with the descriptor layer.
     """
-    from coordinare.config_descriptors import annotation_for
 
     for key in changed_keys:
         if annotation_for(f"{section}.{key}").restart_required:
@@ -282,7 +288,26 @@ def _field_error_from_pydantic(err: dict[str, Any]) -> FieldError:
     return FieldError(key=key, code="validation", message=err.get("msg", "invalid value"))
 
 
-def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
+def _raw_candidate_errors(
+    candidate: dict[str, Any], original: dict[str, Any] | None = None,
+) -> list[FieldError]:
+    ownership_problem = chart_owned_problem(candidate, original)
+    if ownership_problem:
+        return [FieldError(key=None, code="forbidden", message=ownership_problem)]
+    if os.environ.get("COORDINARE_CONFIG_SEED"):
+        problem = persistent_secret_problem(candidate)
+        if problem:
+            return [FieldError(key=None, code="validation", message=problem)]
+    problems = raw_placeholder_problems(candidate)
+    if problems:
+        field, message = problems[0]
+        return [FieldError(key=field, code="validation", message=message)]
+    return []
+
+
+def _validate_candidate(
+    candidate: dict[str, Any], *, original: dict[str, Any] | None = None,
+) -> list[FieldError]:
     """Validate a full candidate config dict, returning ``[]`` on success.
 
     Builds a throwaway :class:`CoordinareConfiguration` — this enforces both
@@ -293,18 +318,12 @@ def _validate_candidate(candidate: dict[str, Any]) -> list[FieldError]:
     pass only (never written back); an absent one is substituted only when the daemon's
     environment would supply it, so a cleared token is refused as the daemon would refuse it.
     """
-    from pydantic import ValidationError
-
-    from coordinare.config import CoordinareConfiguration
-    from coordinare.config_descriptors import is_env_placeholder
-
     # 252: the placeholder rules read the candidate as written, before expansion, so a value a set
     # variable supplies is never mistaken for a placeholder, and an empty variable is named as such.
     # The refusal is keyed by its field path, so the page can show it beside the right input.
-    problems = raw_placeholder_problems(candidate)
-    if problems:
-        field, message = problems[0]
-        return [FieldError(key=field, code="validation", message=message)]
+    raw_errors = _raw_candidate_errors(candidate, original)
+    if raw_errors:
+        return raw_errors
     # Validate what the daemon will load: the text this write produces, with ${VAR} expanded as
     # ProjectConfiguration.from_yaml expands it (219 final check). Covers every write path.
     daemon_view = yaml.safe_load(
@@ -351,8 +370,6 @@ def _load_config_for_refs(candidate: dict[str, Any]) -> CoordinareConfiguration:
     Used to compute referential-integrity referrers for delete-protection. Mirrors
     the placeholder-token substitution of :func:`_validate_candidate`.
     """
-    from coordinare.config import CoordinareConfiguration
-    from coordinare.config_descriptors import is_env_placeholder
 
     attempt = dict(candidate)
     token = attempt.get("github_token")
@@ -379,7 +396,6 @@ def _referrers(config: CoordinareConfiguration, catalog: str, item_id: str) -> l
     Reuses the descriptor layer's reference DAG so delete-protection here stays
     consistent with the ``referenced_by`` / ``deletable`` flags the UI renders.
     """
-    from coordinare import config_descriptors as cd
 
     for section in cd._build_catalog_sections(config):
         if section.id == catalog:
@@ -451,11 +467,6 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
     submitted value is still the mask is a no-op — the mask is never written back,
     preserving the on-disk ``${VAR}`` / real secret (research D3).
     """
-    from coordinare.config_descriptors import (
-        SECRET_MASK,
-        annotation_for,
-        scalar_field_names,
-    )
 
     if request.store != "config_yaml":
         return SaveResult(
@@ -544,7 +555,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
             message="No changes to apply.",
         )
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
     warnings = candidate_warnings(candidate)
@@ -730,7 +741,7 @@ def create_catalog_item(
     items.append(item)
     candidate = {**loaded, catalog: items}
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 
@@ -804,7 +815,7 @@ def update_catalog_item(
         )
 
     candidate = {**loaded, catalog: new_items}
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 
@@ -905,7 +916,7 @@ def delete_catalog_item(
     ]
     candidate = {**loaded, catalog: items}
 
-    errors = _validate_candidate(candidate)
+    errors = _validate_candidate(candidate, original=loaded)
     if errors:
         return SaveResult(ok=False, errors=errors)
 

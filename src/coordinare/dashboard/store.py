@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coordinare import daemon as daemon_module
 from coordinare.cancel import resolve_active_card
 from coordinare.dashboard.card_pipeline import card_pipeline_block
 from coordinare.dashboard.helpers import (
@@ -29,6 +30,7 @@ from coordinare.lib.redaction import clip_session_error
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.block_cause import block_cause
 from coordinare.services.bootstrap_status import symphony_view
+from coordinare.services.config_seed import recovery_health_row
 from coordinare.services.merge_review_gate import merge_review_view
 from coordinare.services.observer import OBSERVER_RECENT_VERDICTS
 from coordinare.services.run_log import RunLogCollector
@@ -134,10 +136,9 @@ def _daemon_started_at_iso() -> str | None:
     daemon records its own start (``get_daemon_started_at``) in a K8s-label-safe
     spelling (``YYYYMMDDTHHMMSSZ``); convert that.
     """
-    from coordinare.daemon import get_daemon_started_at
 
     try:
-        started = datetime.strptime(get_daemon_started_at(), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        started = datetime.strptime(daemon_module.get_daemon_started_at(), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except (TypeError, ValueError):
         return None
     return started.isoformat()
@@ -564,6 +565,11 @@ class DashboardStore:
             env_ready=sum(1 for state in env_states.values() if getattr(state, "last_bootstrap_succeeded", None) is True),
         )
         result = build_system_health(SYSTEM_HEALTH, inputs)
+        recovery = recovery_health_row(daemon.state.get("config_path"))
+        if recovery is not None:
+            result["rows"].append(recovery)
+            if result["overall"] != "down":
+                result["overall"] = "degraded"
         event_store = daemon.state.get("event_store")
         if event_store is not None:
             result["event_store"] = event_store.health()
