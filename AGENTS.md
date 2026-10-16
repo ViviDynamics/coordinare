@@ -1,7 +1,7 @@
 # coordinare Development Guidelines
 
-For installing and running Coordinare, follow [setup for coding agents](docs/setup-for-agents.md).
-This file covers repository development. The setup guide is the installation procedure.
+To install Coordinare as a user, follow [setup for coding agents](docs/setup-for-agents.md).
+This file covers developing the repository and running it from a checkout.
 
 ## Stack
 
@@ -89,28 +89,29 @@ Each contributor sets `COORDINARE_ASSIGNEE` to their own GitHub login in their l
 
 ## Running a deployment
 
-For installing and running Coordinare, follow [setup for coding agents](docs/setup-for-agents.md).
-That guide is the installation procedure. For repository development, see the
-[README Development section](README.md#development) and the development rules above.
+To install Coordinare as a user, without a checkout, follow
+[setup for coding agents](docs/setup-for-agents.md). The rest of this section is for running
+from a repository checkout.
 
-When working in a development checkout, consult these references before editing
-`config.yaml` or diagnosing a daemon failure:
+Read before starting the daemon, editing `config.yaml`, or diagnosing a failure. Most
+problems found while skipping this step are setup, not code.
 
-- `docs/onboarding/`: overview, architecture, performer lifecycle, harnesses and shims,
+- `README.md` — the Quick Start and its numbered steps
+- `docs/onboarding/` — overview, architecture, performer lifecycle, harnesses and shims,
   configuration, env cache
-- `docs/quickstart-selfhosted.md` and `docs/operators/litellm-proxy.md`: the
+- `docs/quickstart-selfhosted.md` and `docs/operators/litellm-proxy.md` — the
   self-hosted / OpenAI-compatible path and the validated model matrix
-- `config.example.yaml`, or the `config.example.<backend>.yaml` matching the backend
+- `config.example.yaml`, or the `config.example.<backend>.yaml` that matches the deployment
 
-Use the matching example config as the authoritative checkout format and run
-`python -m coordinare config validate` before starting the development daemon.
-Follow the Commands section above for checkout environment loading and launch commands.
+Follow the README's steps in order. Copy an example config rather than writing one from
+memory (the examples are the authoritative format), create `.env` from `.env.example`, and
+run `python -m coordinare config validate` before starting the daemon.
 
 On Windows, prefer `docker-compose up` to running the daemon natively. The git and
 container plumbing assumes POSIX; the compose container sidesteps CRLF line endings in
 container scripts and the rest of it. Coordinare's own subprocess env allowlist does now
 carry the Windows variables git needs (`coordinare/lib/subprocess_env.py`), so a native
-run resolves hostnames; that fixed one specific failure, not the class.
+run resolves hostnames — that fixed one specific failure, not the class.
 
 ## Model selection (080 — dual-model orchestration)
 
