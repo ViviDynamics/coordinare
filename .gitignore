@@ -228,6 +228,7 @@ Thumbs.db
 
 # Project env variants
 .env*
+coordinare.env
 !.env.example
 config.yaml
 config.*.yaml

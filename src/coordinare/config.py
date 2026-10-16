@@ -29,12 +29,13 @@ from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
     detect_duplicate_endpoints,
 )
-from coordinare.presets import expand_preset
+from coordinare.presets import PRESET_NAMES, expand_preset
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
 from coordinare.services.retune import EFFORT_RANK, RETUNE_KNOBS
 from coordinare.services.run_transcript import _within
+from coordinare.user_config import expand_environment_values, load_config_environment
 
 logger = structlog.get_logger(__name__)
 
@@ -1221,11 +1222,19 @@ class RunLogsConfig(BaseModel):
 
 
 def expand_config_text(text: str) -> str:
-    """The text the daemon parses for a config file: ``${VAR}`` expanded (219 final check).
+    """Return environment-expanded YAML shared by loading and validation.
 
-    Every reader of config.yaml goes through this (the loader, the preflight, the dashboard
-    saves), so a save is validated on exactly the bytes the daemon will load.
+    Recognized presets expand ``${VAR}`` in parsed scalar values, then serialize
+    the result so credentials cannot become YAML syntax. Other configs expand
+    the source text before parsing for compatibility. The loader, preflight and
+    dashboard saves validate the same expanded values, not the original bytes.
     """
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return os.path.expandvars(text)
+    if isinstance(raw, dict) and raw.get("preset") in PRESET_NAMES:
+        return yaml.safe_dump(expand_environment_values(raw))
     return os.path.expandvars(text)
 
 
@@ -1866,6 +1875,11 @@ class ProjectConfiguration(BaseSettings):
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
+            try:
+                load_config_environment(config_path)
+            except ValueError as exc:
+                message = f"Failed to read config file {config_path}: {exc}"
+                raise OSError(message) from exc
             loaded = yaml.safe_load(expand_config_text(config_path.read_text()))
             if isinstance(loaded, dict):
                 raw = loaded

@@ -1,6 +1,6 @@
-"""Config validation layer: pre-validation pass, deprecation registry, validate_config() (008)."""
 from __future__ import annotations
 
+# Config validation: pre-validation pass, deprecation registry, validate_config() (008).
 import difflib
 import os
 from dataclasses import dataclass, field
@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from coordinare.config import expand_config_text
 from coordinare.dashboard_oidc import validate_dashboard_oidc
+from coordinare.user_config import load_config_environment
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -158,8 +159,9 @@ def _load_raw_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
     try:
+        load_config_environment(path)
         loaded = yaml.safe_load(expand_config_text(path.read_text()))
-    except (yaml.YAMLError, OSError) as exc:
+    except (yaml.YAMLError, OSError, ValueError) as exc:
         raise OSError(f"Failed to read config file {path}: {exc}") from exc
     if not isinstance(loaded, dict):
         raise OSError(
