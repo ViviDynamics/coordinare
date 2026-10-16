@@ -165,15 +165,15 @@ def _stub_config(page: Page, snapshot: dict[str, Any], saves: list[dict[str, Any
 def _open_settings(page: Page, live_server_url: str, path: str = "/config") -> None:
     page.goto(f"{live_server_url}{path}")
     expect(page.locator("#config-page")).to_be_visible(timeout=_WAIT)
-    expect(page.locator("#config-page-section [role=tab]").first).to_be_visible(timeout=_WAIT)
+    expect(page.locator("#config-page-section > .cfg-tabs [role=tab]").first).to_be_visible(timeout=_WAIT)
 
 
 def _tab(page: Page, title: str) -> None:
-    page.locator("#config-page-section [role=tab]", has_text=title).first.click()
+    page.locator("#config-page-section > .cfg-tabs [role=tab]", has_text=title).first.click()
 
 
 def _active_panel(page: Page) -> Locator:
-    return page.locator("#config-page-section [role=tabpanel]:not([hidden])")
+    return page.locator("#config-page-section > [id^=cfg-panel-][role=tabpanel]:not([hidden]):visible")
 
 
 # --- one place per setting, one description per tab -----------------------------
@@ -211,7 +211,7 @@ def test_each_setting_is_edited_in_one_place(page: Page, live_server_url: str) -
 def test_each_tab_has_a_name_and_a_one_line_description(page: Page, live_server_url: str) -> None:
     _stub_config(page, _snapshot(), [])
     _open_settings(page, live_server_url)
-    tabs = page.locator("#config-page-section [role=tab]")
+    tabs = page.locator("#config-page-section > .cfg-tabs [role=tab]")
     expect(tabs).to_have_count(7)
     for key, title in _TITLES.items():
         _tab(page, title)
@@ -244,7 +244,7 @@ def test_the_global_config_address_redirects_to_the_general_tab(page: Page, live
     page.goto(f"{live_server_url}/admin/config?from=bookmark")
     expect(page).to_have_url(f"{live_server_url}/config?from=bookmark#global", timeout=_WAIT)
     expect(page.locator("#config-page")).to_be_visible(timeout=_WAIT)
-    expect(page.locator("#config-page-section [role=tab][aria-selected=true]")).to_have_text("General")
+    expect(page.locator("#config-page-section > .cfg-tabs [role=tab][aria-selected=true]")).to_have_text("General")
 
 
 @pytest.mark.e2e
@@ -260,7 +260,7 @@ def test_an_in_app_link_to_the_old_address_lands_on_general(page: Page, live_ser
 def test_a_deep_link_opens_the_right_tab_and_item(page: Page, live_server_url: str) -> None:
     _stub_config(page, _snapshot(), [])
     _open_settings(page, live_server_url, "/config#personas/implementer")
-    expect(page.locator("#config-page-section [role=tab][aria-selected=true]")).to_have_text("Agents", timeout=_WAIT)
+    expect(page.locator("#config-page-section > .cfg-tabs [role=tab][aria-selected=true]")).to_have_text("Agents", timeout=_WAIT)
     expect(page.locator('[data-scope="item:personas/implementer"] textarea')).to_be_focused(timeout=_WAIT)
 
 

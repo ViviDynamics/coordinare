@@ -1,23 +1,44 @@
 """Persona service for per-role behavioral instructions (018-performer-personas)."""
 from __future__ import annotations
 
-import contextlib
 import os
 import stat
-import tempfile
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from threading import Lock
+from typing import Any, cast
 
 import structlog
 import yaml
 
-from coordinare.config import PERSONA_MAX_LENGTH
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from coordinare.config import PersonasConfig
+from coordinare.config import (
+    PERSONA_MAX_LENGTH,
+    PersonaConfig,
+    PersonasConfig,
+    ProjectConfiguration,
+)
+from coordinare.services import config_write_service
 
 _logger = structlog.get_logger(__name__)
+_PERSONA_WRITE_LOCK = Lock()
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+READ_ONLY_CONFIG_MESSAGE = (
+    "Config is mounted read-only; persona edits need a writable config (see the Helm chart notes)"
+)
+
+
+class ReadOnlyConfigError(PermissionError):
+    """Persona edits require a writable config file and parent directory."""
+
+
+def _guard_writable_config(config_path: Path) -> None:
+    for target in (config_path, config_path.parent):
+        if (
+            not target.stat().st_mode & _WRITE_BITS
+            or not os.access(target, os.W_OK)
+            or os.statvfs(target).f_flag & os.ST_RDONLY
+        ):
+            raise ReadOnlyConfigError(READ_ONLY_CONFIG_MESSAGE)
+
 
 # Shared CI-ownership directive.  After every push, the coordinare's PR-checks
 # gate (spec 064) re-queries GitHub's required-check rollup and BOUNCES the
@@ -790,7 +811,6 @@ def get_effective_instructions(role: str, personas: PersonasConfig) -> str:
     if role not in VALID_ROLES:
         msg = f"Unknown role: {role!r}"
         raise ValueError(msg)
-    from coordinare.config import PersonaConfig
     persona: PersonaConfig = getattr(personas, role)
     raw = persona.instructions or ""
     if raw.strip():
@@ -798,7 +818,9 @@ def get_effective_instructions(role: str, personas: PersonasConfig) -> str:
     return DEFAULT_INSTRUCTIONS[role]
 
 
-def save_persona(role: str, instructions: str, config_path: Path) -> None:
+def save_persona(
+    role: str, instructions: str, config_path: Path, *, base_hash: str | None = None,
+) -> None:
     """Write updated persona instructions to the YAML config file.
 
     Reads the existing config, sets personas.<role>.instructions, and writes
@@ -808,24 +830,19 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
     config file, non-mapping YAML root, non-mapping ``personas`` section,
     or non-mapping role section.  Raises OSError on file I/O failures.
 
-    Note: ``yaml.safe_load`` / ``yaml.safe_dump`` round-trips strip all YAML
-    comments from the file.  This is a known limitation — any hand-written
-    comments in ``config.yaml`` will be lost on the first ``save_persona``
-    call.  Users who rely on comments should keep a separate backup or manage
-    the file manually.
+    YAML comments are not retained by the shared writer. Instruction strings
+    are preserved exactly.
 
-    Concurrency: the read-modify-write is atomic at the filesystem level
-    (``os.replace``), but two overlapping calls can still lose each other's
-    edits.  This is acceptable for the single-process daemon; add an OS-level
-    lock (``fcntl.flock``) if multi-worker deployments become a requirement.
+    Dashboard callers pass the client's version. The read, version check and
+    atomic write share one lock so competing persona saves cannot both pass.
+    Direct callers may omit the version to edit the current file under that lock.
     """
     if role not in VALID_ROLES:
         msg = f"Unknown role: {role!r}"
         raise ValueError(msg)
 
-    # Validate length on the effective (stripped) content, but persist the
-    # original string so intentional leading/trailing whitespace is preserved.
-    if len(instructions.strip()) > PERSONA_MAX_LENGTH:
+    # Match the load-time length limit without changing the original source.
+    if len(instructions) > PERSONA_MAX_LENGTH:
         msg = f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"
         raise ValueError(msg)
 
@@ -837,49 +854,36 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
         msg = "Config file does not exist"
         raise ValueError(msg)
 
-    loaded = yaml.safe_load(config_path.read_text())
-    if not isinstance(loaded, dict):
-        msg = "Config file does not contain a YAML mapping"
-        raise ValueError(msg)
+    with _PERSONA_WRITE_LOCK:
+        if base_hash is None:
+            base_hash = config_write_service.compute_content_hash(config_path)
+        loaded = yaml.safe_load(config_path.read_text())
+        if not isinstance(loaded, dict):
+            msg = "Config file does not contain a YAML mapping"
+            raise ValueError(msg)
 
-    raw: dict[str, Any] = loaded
+        raw: dict[str, Any] = loaded
 
-    personas_section = raw.setdefault("personas", {})
-    if not isinstance(personas_section, dict):
-        msg = "Config file 'personas' section is not a mapping"
-        raise ValueError(msg)
+        personas_section = raw.setdefault("personas", {})
+        if not isinstance(personas_section, dict):
+            msg = "Config file 'personas' section is not a mapping"
+            raise ValueError(msg)
 
-    role_section = personas_section.setdefault(role, {})
-    if not isinstance(role_section, dict):
-        msg = f"Config file 'personas.{role}' section is not a mapping"
-        raise ValueError(msg)
+        role_section = personas_section.setdefault(role, {})
+        if not isinstance(role_section, dict):
+            msg = f"Config file 'personas.{role}' section is not a mapping"
+            raise ValueError(msg)
 
-    role_section["instructions"] = instructions
+        role_section["instructions"] = instructions
 
-    # Atomic write: write to a temp file in the same directory then rename so a
-    # crash or disk-full error cannot leave a partially-written config file.
-    # Preserve the original file mode so the replace does not change permissions.
-    original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
-
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp",
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            yaml.safe_dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp_path, original_mode)
-        os.replace(tmp_path, str(config_path))
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+        _guard_writable_config(config_path)
+        config_write_service.guard_concurrency(config_path, base_hash)
+        config_write_service.atomic_write_yaml(config_path, raw)
 
 
-def reset_persona(role: str, config_path: Path) -> None:
+def reset_persona(role: str, config_path: Path, *, base_hash: str | None = None) -> None:
     """Clear persona instructions for a role, restoring built-in defaults."""
-    save_persona(role, "", config_path)
+    save_persona(role, "", config_path, base_hash=base_hash)
 
 
 def load_personas_hot(config_path: Any, fallback_config: Any) -> PersonasConfig:
@@ -891,16 +895,10 @@ def load_personas_hot(config_path: Any, fallback_config: Any) -> PersonasConfig:
     (if available) or a default ``PersonasConfig()``, and logs a warning with
     full exception details so operators can diagnose misconfigured YAML.
     """
-    from pathlib import Path
-
-    from coordinare.config import PersonasConfig
-
     if config_path is not None:
         p = config_path if isinstance(config_path, Path) else Path(config_path)
         if p.is_file():
             try:
-                from coordinare.config import ProjectConfiguration
-
                 return ProjectConfiguration.from_yaml(p).personas
             except Exception as exc:
                 _logger.warning(
@@ -912,5 +910,5 @@ def load_personas_hot(config_path: Any, fallback_config: Any) -> PersonasConfig:
                 )
 
     if fallback_config is not None and hasattr(fallback_config, "personas"):
-        return fallback_config.personas  # type: ignore[no-any-return]
+        return cast("PersonasConfig", fallback_config.personas)
     return PersonasConfig()
