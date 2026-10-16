@@ -395,7 +395,10 @@ def test_a_failed_records_request_does_not_freeze_paging(page: Page, run_server_
 
     page.route("**/records?**", _fail_once)
     page.goto(run_server_url + _run_url(BIG_CARD, BIG_RUN))
-    expect(page.locator("#runs-notice")).to_contain_text("could not be loaded", timeout=_WAIT_RUN)
+    # 299: a read that fails at the network level is retried, so the dropped request recovers by
+    # itself instead of leaving a "could not be loaded" notice. Paging must still move afterwards.
+    expect(page.locator("#runs-notice")).to_contain_text("of 2000 records", timeout=_WAIT_RUN)
+    assert failed["done"], "the first records request was not intercepted"
     page.locator("#runs-type-filter").select_option("tool_result")
     expect(page.locator("#runs-notice")).to_contain_text("of 2000 records", timeout=_WAIT_LIVE)
     page.unroute("**/records?**")
