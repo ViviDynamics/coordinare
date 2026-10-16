@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from coordinare.services.stats_poll_db import CREATE_BOARD_CHECKS
+from coordinare.services.event_store_settings import DEFAULT_RETENTION_DAYS
+from coordinare.services.stats_poll_db import (
+    CREATE_BOARD_CHECK_POLICY,
+    CREATE_BOARD_CHECK_PRUNING,
+    CREATE_BOARD_CHECKS,
+    UPSERT_BOARD_CHECK_PRUNING,
+    UPSERT_BOARD_CHECK_RETENTION_PRUNING,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -163,6 +170,17 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
         db.execute("BEGIN IMMEDIATE")
         db.execute(CREATE_TABLE)
         db.execute(CREATE_BOARD_CHECKS)
+        # Additive metadata only: version 5 daemons can still open this store.
+        db.execute(CREATE_BOARD_CHECK_POLICY)
+        db.execute(CREATE_BOARD_CHECK_PRUNING)
+        pruning_columns = {row[1] for row in db.execute("PRAGMA table_info(stats_board_check_pruning)")}
+        for column in ("retention_last_hour", "retention_previous_hour"):
+            if column not in pruning_columns:
+                db.execute(f"ALTER TABLE stats_board_check_pruning ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        db.execute(
+            "INSERT OR IGNORE INTO stats_board_check_policy VALUES (1,?)",
+            (DEFAULT_RETENTION_DAYS,),
+        )
         for name, columns in BASELINE_INDEXES:
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
         _prepare_performer_migration(db)
@@ -216,6 +234,9 @@ def prune_batch(
     """One bounded deletion and incremental page reclamation on the writer thread."""
     cutoff = (datetime.now(UTC) - timedelta(days=config.retention_days)).isoformat()
     with db:
+        policy = db.execute("SELECT retention_days FROM stats_board_check_policy WHERE id=1").fetchone()
+        if policy is not None and policy[0] != config.retention_days:
+            db.execute("UPDATE stats_board_check_policy SET retention_days=? WHERE id=1", (config.retention_days,))
         ids = db.execute(
             "SELECT id FROM events WHERE ts < ? ORDER BY ts, id LIMIT ?", (cutoff, batch_size),
         ).fetchall()
@@ -223,15 +244,24 @@ def prune_batch(
             ids = db.execute(
                 "SELECT id FROM events ORDER BY ts, id LIMIT ?", (batch_size,),
             ).fetchall()
-        db.executemany("DELETE FROM events WHERE id=?", ids)
+        if ids:
+            db.executemany("DELETE FROM events WHERE id=?", ids)
         hours = db.execute(
             "SELECT symphony,hour FROM stats_board_checks WHERE hour < ? ORDER BY hour LIMIT ?",
             (cutoff[:13] + ":00:00+00:00", batch_size),
         ).fetchall()
-        if not hours and not ids and path.stat().st_size > config.max_bytes:
+        if hours:
+            db.executemany(UPSERT_BOARD_CHECK_RETENTION_PRUNING, hours)
+        elif not ids and path.stat().st_size > config.max_bytes:
             hours = db.execute(
                 "SELECT symphony,hour FROM stats_board_checks ORDER BY hour LIMIT ?", (batch_size,),
             ).fetchall()
-        db.executemany("DELETE FROM stats_board_checks WHERE symphony=? AND hour=?", hours)
+            # Keep two distinct hours so a deleted incomplete current hour
+            # cannot hide loss in the completed hours read by reliability.
+            # The markers commit with the deletion and survive an empty store.
+            if hours:
+                db.executemany(UPSERT_BOARD_CHECK_PRUNING, hours)
+        if hours:
+            db.executemany("DELETE FROM stats_board_checks WHERE symphony=? AND hour=?", hours)
     db.execute(f"PRAGMA incremental_vacuum({VACUUM_PAGES})").fetchall()
     return len(ids) + len(hours)

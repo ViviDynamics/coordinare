@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.event_store_query import (
@@ -25,6 +25,30 @@ MAX_BOARD_CHECK_ROWS = 1_000_000
 
 def unavailable_board_checks(reason: str) -> dict[str, Any]:
     return {"checks": None, "success_rate": None, "recent_errors": [], "reason": reason}
+
+
+def _history_reasons(
+    db: sqlite3.Connection, name: str, start_hour: str, end_hour: str,
+) -> list[str]:
+    reasons = []
+    policy = db.execute("SELECT retention_days FROM stats_board_check_policy WHERE id=1").fetchone()
+    retention_days = policy[0] if policy is not None else None
+    if retention_days is None:
+        reasons.append("event_store.retention_days policy is unknown (not recorded yet)")
+    pruned = db.execute(
+        """SELECT last_hour,previous_hour,retention_last_hour,retention_previous_hour
+        FROM stats_board_check_pruning WHERE symphony=?""", (name,),
+    ).fetchone() or ("", "", "", "")
+    if any(start_hour <= hour < end_hour for hour in pruned[2:] if hour):
+        reasons.append("event_store.retention_days retention removed hourly board check totals inside the requested window")
+    elif retention_days is not None and start_hour and (
+        datetime.fromisoformat(end_hour) - datetime.fromisoformat(start_hour)
+        > timedelta(days=retention_days)
+    ):
+        reasons.append(f"event_store.retention_days ({retention_days} days) is shorter than the requested window")
+    if any(start_hour <= hour < end_hour for hour in pruned[:2] if hour):
+        reasons.append("event_store.max_bytes size cap removed hourly board check totals inside the requested window")
+    return reasons
 
 
 def read_board_checks(
@@ -68,9 +92,13 @@ def read_board_checks(
                 ).fetchall()
                 if len(rows) > MAX_BOARD_CHECK_ROWS:
                     raise EventQueryTooBroad
+                reasons = _history_reasons(db, name, start_hour, end_hour)
             except sqlite3.Error as exc:
                 limited.add(name)
-                result[name] = unavailable_board_checks("board_check_read_unavailable: " + type(exc).__name__)
+                reason = "board_check_read_unavailable: " + type(exc).__name__
+                if isinstance(exc, sqlite3.OperationalError) and str(exc).startswith(("no such table:", "no such column:")):
+                    reason = "board_check_history_not_recorded_yet"
+                result[name] = unavailable_board_checks(reason)
                 continue
             checks = sum(row[0] for row in rows)
             failures = sum(row[1] for row in rows)
@@ -81,4 +109,6 @@ def read_board_checks(
                     {"at": at, "reason": reason} for _, _, at, reason in rows if at is not None
                 ][:RECENT_LIMIT],
             }
+            if reasons:
+                result[name].update(partial=True, partial_reasons=reasons)
     return result, limited
