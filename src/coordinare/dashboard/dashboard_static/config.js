@@ -227,8 +227,8 @@ function cfgInput(s) {
   }
   var ph = s.secret ? ' placeholder="leave masked to keep current"' : '';
   if (s.secret) {
-    // 143 second review: a secret is a password field. 225: Clear is offered only for an optional
-    // secret, because the server refuses to clear a required one. Show reveals only what was typed.
+    // 143 second review: a secret is a password field. 225: a required secret is never offered a
+    // Clear. Show reveals only what was typed.
     var clear = s.required ? ''
       : '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc(field) + '">Clear</button>';
     return '<div style="display:flex;gap:6px;align-items:center">'
@@ -532,6 +532,7 @@ function cfgSetControl(el, value) {
 function cfgReapplyPending() {
   var pending = _cfgPending;
   if (!pending) return;
+  if (pending.scope.indexOf('symphony:') === 0 && !cfgFindEntry(pending)) return;
   _cfgPending = null;
   // A reapply finds the edit's entry by identity and occurrence: the list may have moved under the reader.
   var item = {scope: pending.scope, ordinal: pending.ordinal, changes: pending.changes, clears: pending.clears};
@@ -653,20 +654,11 @@ function cfgOnSettingsPage() {
   return !!el && el.style.display !== 'none';
 }
 
-// 143 review: unsaved work includes a New form that has been typed into, not only saved entries.
-// 221: the symphony page's form is an editor too. Only the editor on the page being shown counts.
-function cfgOnSymphonyPage() {
-  var el = document.getElementById('symphonies-page');
-  return !!el && el.style.display !== 'none';
-}
-
-// 221: the editors on screen, whose unsaved edits a move would lose.
+// Config owns both the global editors and the symphony form.
 function cfgEditorRoots() {
   var roots = [];
   var settings = document.getElementById('config-page-section');
   if (settings && cfgOnSettingsPage()) roots.push(settings);
-  var form = document.getElementById('sym-config-form');
-  if (form && cfgOnSymphonyPage()) roots.push(form);
   return roots;
 }
 
@@ -675,7 +667,7 @@ function cfgEditorRoots() {
 function cfgHasUnsaved() {
   return cfgEditorRoots().some(function(root) {
     return cfgEntries(root, true).some(cfgChanged);
-  });
+  }) || (cfgOnSettingsPage() && cfgSymphonyHasDrafts());
 }
 
 // 143: may the reader leave for nextPath? Only the unsaved-changes prompt can say no.
@@ -714,7 +706,7 @@ function cfgUsedByHtml(list) {
 // 143: why a setting cannot be edited here, in plain words.
 function cfgReadOnlyNote(s, catalog) {
   if (s.help === 'managed by the Helm chart') return s.help;
-  if (catalog === 'symphonies') return "Edit this on the symphony's own page.";
+  if (catalog === 'symphonies') return 'Choose this symphony in the Symphonies tab to edit it.';
   if (s.invalid) return 'The config file holds a value that fails validation, so it is read-only here. Fix it in the file.';
   if (s.is_env_placeholder) return 'This value comes from an environment variable, so it is read-only here.';
   return 'Read-only here.';
@@ -830,11 +822,20 @@ function cfgHandleSave(status, body, container, statusEl, store, newHash) {
 // 221: a symphony's answer. The review, the lock, the conflict and the reapply are the Settings ones;
 // what differs is the version a success keeps (the symphony's own ETag) and where a delete leads.
 function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
+  if (container.isConnected === false) return false;
   cfgClearErrors(container);
   if (status === 200) {
     if (newHash) _symCfgHash = newHash;
+    if (body && body.overrides !== undefined) _symBase = {overrides: body.overrides || {}, personas: body.personas || {}};
     _cfgPending = null;
     cfgRebaseline(container);
+    cfgRememberSymphony();
+    if (container.querySelector) {
+      var root = container.querySelector('[data-persona-context]');
+      if (root) personaRefresh(root);
+      var dirty = container.querySelector('[data-sym-dirty]');
+      if (dirty) dirty.hidden = true;
+    }
     if (body && body.deleted) {
       navigate(null, '/symphonies');
       return true;
@@ -1279,8 +1280,7 @@ function cfgItemBlock(item, catalog, editable) {
       + '<button type="button" class="cfg-btn cfg-btn-danger" data-cfg-action="delete-item" data-cfg-catalog="' + esc(catalog) + '" data-cfg-id="' + esc(item.id) + '"' + delAttr + '>Delete</button>'
       + '<span data-status style="font-size:11px;margin-left:6px"></span></div>';
   } else if (catalog === 'symphonies') {
-    // 143: a symphony's settings are edited on its page. This is the link to it.
-    var href = '/symphonies/' + encodeURIComponent(item.id);
+    var href = '/config#symphonies/' + encodeURIComponent(item.id);
     footer = '<div style="margin-top:8px"><a href="' + esc(href) + '" data-cfg-action="navigate" data-cfg-href="' + esc(href)
       + '">Edit settings</a></div>';
   } else {
@@ -1377,6 +1377,7 @@ function cfgSectionBlock(sec) {
       + 'border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--color-accent-orange,#d29922)">'
       + esc(sec.invalid_banner) + '</div>'
     : '';
+  if (sec.id === 'symphonies') return cfgSymphoniesSection(sec, banner);
   if (sec.id === 'routing') return cfgRoutingSection(sec, banner);
   if (sec.id === 'personas') return cfgPersonasSection(sec, banner);
   var body, footer = '';
@@ -1437,8 +1438,7 @@ function cfgSelectTab(secId) {
   document.querySelectorAll('#config-page-section > [role="tabpanel"]').forEach(function(p) {
     p.hidden = (p.id !== cfgPanelId(secId));
   });
-  var personas = document.querySelector('#config-page-section [data-persona-context]');
-  if (personas) personaSyncPanels(personas);
+  document.querySelectorAll('#config-page-section [data-persona-context]').forEach(personaSyncPanels);
   // The hash may carry an item after the tab ("#personas/implementer"), so compare the tab only.
   var current = (location.hash || '').replace(/^#/, '').split('/')[0];
   if (current !== secId) {
@@ -1484,7 +1484,11 @@ function cfgRunAction(el, event) {
   var id = el.getAttribute('data-cfg-id') || '';
   var catalog = el.getAttribute('data-cfg-catalog') || '';
   var index = Number(el.getAttribute('data-cfg-index'));
-  if (action === 'select-tab') cfgSelectTab(id);
+  if (action === 'save-symphony') symSave(el);
+  else if (action === 'delete-symphony') symDelete(el);
+  else if (action === 'add-spec-file') symAddSpecFile(el);
+  else if (action === 'remove-spec-file') symRemoveSpecFile(el);
+  else if (action === 'select-tab') cfgSelectTab(id);
   else if (action === 'toggle-add') cfgToggleAdd(id);
   else if (action === 'save-section') cfgSaveSection(el, id);
   else if (action === 'save-item') cfgSaveItem(el, catalog, id);
@@ -1525,6 +1529,7 @@ function cfgSyncTab() {
   if (parts[0] && document.getElementById(cfgTabId(parts[0]))) cfgSelectTab(parts[0]);
   var personas = document.querySelector('#config-page-section [data-persona-context]');
   if (personas && parts[0] === 'personas') personaSelect(personas, personaHashRole('config'), false);
+  cfgSyncSymphony();
   if (parts.length > 1) cfgFocusItem(parts.join('/'));
 }
 
@@ -1635,6 +1640,9 @@ function cfgSnapshotPersonaEdits() {
 
 async function loadConfigPage() {
   var drafts = _cfgShown ? cfgSnapshotPersonaEdits() : [];
+  if (_cfgShown) cfgRememberSymphony();
+  else _cfgSymphonyDrafts = {};
+  _cfgSymphonyName = null;
   var el = document.getElementById('config-page-section');
   el.innerHTML = '<span class="empty-state">Loading...</span>';
   var res, data;
@@ -1694,5 +1702,93 @@ async function loadConfigPage() {
   cfgBaselineCreate();
   if (_cfgRoutingAvail) loadRoutingEntries();
   else cfgReapplyPending();
+  cfgSyncSymphony();
   if (parts.length > 1 && active === parts[0]) cfgFocusItem(parts.join('/'));
+}
+
+// 181: one symphony editor lives in Config. Drafts survive tab and symphony changes.
+var _cfgSymphonyDrafts = {};
+var _cfgSymphonyName = null;
+var _cfgSymphonyRequest = null;
+
+function cfgSymphoniesSection(sec, banner) {
+  return '<section aria-label="Symphonies"><h3>Symphonies</h3>' + banner
+    + '<div class="muted">Choose a symphony to edit its settings and persona overrides.</div><div class="cfg-symphony-links">'
+    + (sec.items || []).map(function(item) {
+      var href = '/config#symphonies/' + encodeURIComponent(item.id);
+      return '<a href="' + esc(href) + '" data-cfg-action="navigate" data-cfg-href="' + esc(href) + '">' + esc(item.id) + '</a>';
+    }).join(' ') + '</div><div data-cfg-symphony-host></div></section>';
+}
+
+function cfgRememberSymphony() {
+  var form = document.querySelector('#config-page-section #sym-config-form');
+  if (!form) return;
+  var name = form.getAttribute('data-symphony');
+  var changed = cfgEntries(form).filter(cfgChanged);
+  _cfgSymphonyDrafts[name] = changed.length ? cfgPendingFor(form, changed) : null;
+}
+
+function cfgLoadSymphony(name, force) {
+  var host = document.querySelector('[data-cfg-symphony-host]');
+  if (!host || !name) return;
+  if (!force && _cfgSymphonyName === name && host.querySelector('#sym-config-form')) {
+    var root = host.querySelector('[data-persona-context]');
+    personaSelect(root, personaHashRole('symphony'), false);
+    return;
+  }
+  cfgRememberSymphony();
+  _cfgSymphonyName = name;
+  var request = {};
+  _cfgSymphonyRequest = request;
+  host.innerHTML = '<p>Loading symphony settings...</p>';
+  var response, data, catalogVersion;
+  return fetch('/api/symphonies/' + encodeURIComponent(name)).then(function(result) {
+    response = result;
+    return response.json();
+  }).then(function(result) {
+    data = result;
+    if (!response.ok) throw new Error(data.error || 'Symphony not found');
+    return fetch('/api/personas');
+  }).then(function(personas) {
+    if (!personas.ok) throw new Error('Failed to load global personas');
+    catalogVersion = personas.headers.get('ETag');
+    return personas.json();
+  }).then(function(catalog) {
+    if (!host.isConnected || _cfgSymphonyRequest !== request) return;
+    // Both responses must describe the same config. A newer catalog cannot advance
+    // the symphony's editing baseline without also reloading its settings.
+    if (!response.headers.get('ETag') || response.headers.get('ETag') !== catalogVersion) {
+      throw new Error('Configuration changed while loading. Reload to edit this symphony.');
+    }
+    _symCfgHash = response.headers.get('ETag');
+    _symBase = {overrides: data.overrides || {}, personas: data.personas || {}};
+    host.innerHTML = symFormHtml(name, data, catalog);
+    var form = host.querySelector('#sym-config-form');
+    symPersonaMount(form, catalog);
+    cfgRebaseline(form);
+    cfgSyncOffTargets(form);
+    cfgRestoreEdits([_cfgSymphonyDrafts[name]].filter(function(draft) { return !!draft; }));
+    cfgReapplyPending();
+    symPersonaRefresh(form, catalog);
+    _cfgSymReload = function() {
+      if (host.isConnected && cfgOnSettingsPage() && _cfgSymphonyName === name) cfgLoadSymphony(name, true);
+    };
+  }).catch(function(error) {
+    if (host.isConnected && _cfgSymphonyRequest === request) {
+      host.innerHTML = '<p role="alert">' + esc(error.message || 'Failed to load symphony settings') + '</p>';
+    }
+  });
+}
+
+function cfgSyncSymphony() {
+  var parts = (location.hash || '').replace(/^#/, '').split('/');
+  if (parts[0] !== 'symphonies' || !parts[1]) return;
+  try { cfgLoadSymphony(decodeURIComponent(parts[1]), false); }
+  catch(e) { /* A malformed link cannot select a symphony. */ }
+}
+
+function cfgSymphonyHasDrafts() {
+  return Object.keys(_cfgSymphonyDrafts).some(function(name) {
+    return !!_cfgSymphonyDrafts[name] && (name !== _cfgSymphonyName || !document.querySelector('#config-page-section #sym-config-form'));
+  });
 }

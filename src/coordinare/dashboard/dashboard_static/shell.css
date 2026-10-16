@@ -330,7 +330,7 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 
 /* 180: shared selector and Markdown source editor. All colors follow the active theme. */
 .persona-workspace { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
-.persona-workspace > [data-persona-panel] { min-width: 0; }
+.persona-workspace > [data-persona-panel], .persona-panels { min-width: 0; }
 [data-persona-panel][hidden], [data-persona-dirty][hidden] { display: none; }
 .persona-rail { display: flex; flex-direction: column; gap: 6px; align-self: start; }
 .persona-tab { padding: 10px; text-align: left; color: var(--color-text-primary); background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 4px; cursor: pointer; }
@@ -399,3 +399,10 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
   .persona-trends { grid-template-columns: minmax(0, 1fr); }
   .persona-stats-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* 181: shared symphony persona presentation. */
+[data-persona-state] { display: block; font-size: 12px; margin-top: 6px; }
+[data-sym-summary], [data-sym-summary-view] { overflow-wrap: anywhere; }
+.persona-diff { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-primary); background: var(--color-bg-base); padding: 12px; border: 1px solid var(--color-border); border-radius: 4px; }
+.cfg-symphony-links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+[data-sym-dirty] { color: var(--color-accent-orange); font-size: 12px; }

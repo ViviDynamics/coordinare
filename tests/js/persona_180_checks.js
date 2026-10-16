@@ -30,6 +30,7 @@ function control(value) {
     removeAttribute: function(k) { delete attributes[k]; },
     hasAttribute: function(k) { return Object.prototype.hasOwnProperty.call(attributes, k); },
     closest: function() { return null; },
+    dispatchEvent: function(event) { if (keyHandlers.input) keyHandlers.input(event); },
   };
   personaSetSource(result, value);
   return result;
@@ -78,6 +79,7 @@ var root = {
 var document = {
   getElementById: function(id) { return panels[Number(id.slice(-1))]; },
   querySelectorAll: function(selector) {
+    if (selector === '#config-page-section [data-persona-context]') return [root];
     return selector === '#config-page-section > [role="tabpanel"]' ? [parentPanel] : [];
   },
   querySelector: function(selector) {

@@ -1099,7 +1099,9 @@ notifications:
 #
 # Per-symphony overrides merge with global config for that symphony only.
 # Any global field (poll_interval_seconds, max_concurrent_cards, performers, etc.)
-# can be overridden here. Per-symphony personas merge with (not replace) global personas.
+# can be overridden here. A non-blank personas.<role>.instructions replaces the
+# global instructions for that role in this symphony. Other roles and fields are
+# inherited; a blank value inherits the global instructions. Scope tiering stays global.
 symphonies:
   - name: backend
     github_project_number: 43

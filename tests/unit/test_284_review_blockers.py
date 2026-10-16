@@ -13,6 +13,7 @@ from coordinare.config_descriptors import SECRET_MASK
 from coordinare.services import config_seed
 from coordinare.services.config_secret_policy import persistent_secret_problem
 from coordinare.services.config_write_service import _validate_candidate, atomic_write_yaml
+from coordinare.services.system_health import SYSTEM_HEALTH
 from tests.unit.test_147_helm_deployment import _one, _render
 from tests.unit.test_221_symphony_editor import _client
 from tests.unit.test_284_persistent_config import SEED, _dashboard, _paths
@@ -283,6 +284,9 @@ def test_chart_fields_are_readonly_and_cannot_be_saved(
 def test_recovery_is_visible_in_system_health(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The recorder is process-wide; an earlier test in the same worker can leave a subsystem
+    # down, which would make the overall status "down" for reasons unrelated to recovery.
+    SYSTEM_HEALTH.reset()
     seed, live, client, daemon = _dashboard(tmp_path, monkeypatch)
     live.write_text("broken: [")
     config_seed.seed_config(seed, live)

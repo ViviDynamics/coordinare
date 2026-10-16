@@ -274,6 +274,15 @@ class ScopeBehavior(BaseModel):
     full: ScopeTierBehavior | None = None
 
 
+class UnknownPersonaRoleError(ValueError):
+    """An invalid persona key, with a public message that excludes the key."""
+
+    def __init__(self, role: str) -> None:
+        valid_roles = f"Valid roles: {', '.join(sorted(PersonasConfig.model_fields))}."
+        self.public_message = f"Unknown persona role. {valid_roles}"
+        super().__init__(f"Unknown persona role: {role!r}. {valid_roles}")
+
+
 class PersonaConfig(BaseModel):
     """Per-role behavioral instructions for the AI agent."""
 
@@ -2543,6 +2552,9 @@ class SymphonyConfig(BaseModel):
                 msg = f"Unknown override keys: {sorted(unknown)}"
                 raise ValueError(msg)
             base_dict.update(self.overrides)
+        if self.personas:
+            global_personas = PersonasConfig.model_validate(base_dict.get("personas") or {})
+            base_dict["personas"] = self.effective_personas(global_personas).model_dump(exclude_unset=True)
         # Per-symphony fields always take precedence over global defaults.
         # project_name: use symphony name unless the global config already has one
         # (preserves backward compatibility with legacy single-project configs).
@@ -2550,6 +2562,19 @@ class SymphonyConfig(BaseModel):
         if not base_dict.get("project_name"):
             base_dict["project_name"] = self.name
         return ProjectConfiguration(**base_dict)
+
+    def effective_personas(self, global_personas: PersonasConfig) -> PersonasConfig:
+        """Replace nonempty instruction text per role, inheriting all other persona fields."""
+        merged = global_personas.model_dump(exclude_unset=True)
+        for role, raw_persona in (self.personas or {}).items():
+            if role not in PersonasConfig.model_fields:
+                raise UnknownPersonaRoleError(role)
+            persona = PersonaConfig.model_validate(raw_persona)
+            replacement = persona.model_dump(exclude_unset=True)
+            if not persona.instructions.strip():
+                replacement.pop("instructions", None)
+            merged[role] = {**merged.get(role, {}), **replacement}
+        return PersonasConfig.model_validate(merged)
 
 
 class OrchestraConfig(BaseModel):
