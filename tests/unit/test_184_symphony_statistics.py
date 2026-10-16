@@ -295,7 +295,10 @@ def test_stats_health_omits_unused_runtime_payloads() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_path: Path) -> None:
+async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coordinare.services import stats_reliability
     from coordinare.services.event_store_db import create_schema
     from coordinare.services.stats_poll_db import record_board_checks
     from coordinare.services.stats_reliability import read_board_checks
@@ -315,6 +318,11 @@ async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_pa
         ))
         assert db.execute("SELECT count(*) FROM stats_board_checks").fetchone()[0] == 16 * 720
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    # The exact row/plan contract must not depend on a CI worker being scheduled
+    # within each production 250 ms deadline. Control only the reader's clock;
+    # the real five-second fleet budget below still measures all query work.
+    # Deadline interruption and per-symphony isolation are exercised separately.
+    monkeypatch.setattr(stats_reliability, "time", SimpleNamespace(monotonic=lambda: 0.0))
     rows_read = dict.fromkeys(scope, 0)
 
     class CountedConnection(sqlite3.Connection):
@@ -342,8 +350,12 @@ async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_pa
         result, limited = read_board_checks(path, scope, start.isoformat(), NOW.isoformat())
     elapsed = time.monotonic() - began
     assert elapsed < 5, elapsed
-    assert rows_read == dict.fromkeys(scope, 720)
-    assert not limited
+    differences = [
+        f"{name}: expected=720 actual={count} delta={count - 720:+d} reason={result[name].get('reason')!r}"
+        for name, count in sorted(rows_read.items()) if count != 720
+    ]
+    assert not differences, "Board-check row differences:\n" + "\n".join(differences) + f"\nlimited={sorted(limited)!r}"
+    assert not limited, limited
     for name in scope:
         assert result[name]["checks"] == 86400
         assert result[name]["success_rate"] == 29 / 30
@@ -365,6 +377,55 @@ async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_pa
         assert set(windowed["reliability"]) == {"symphony-00"}
         assert windowed["reliability"]["symphony-00"]["checks"] == days * 2880
         assert windowed["reliability"]["symphony-00"]["success_rate"] == 29 / 30
+
+
+def test_reliability_deadline_interrupts_rows_and_resets_for_next_symphony(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coordinare.services import stats_reliability
+    from coordinare.services.event_store_db import create_schema
+    from coordinare.services.stats_poll_db import record_board_checks
+
+    path = tmp_path / "events.db"
+    start = NOW - timedelta(days=30)
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=False)
+        record_board_checks(db, (
+            {"ts": (start + timedelta(hours=hour)).isoformat(), "symphony": name,
+             "message": "", "data": '{"success":true}'}
+            for name in sorted(VISIBLE) for hour in range(720)
+        ))
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(stats_reliability, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    rows_read = dict.fromkeys(VISIBLE, 0)
+
+    class PausedConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: tuple = ()) -> sqlite3.Cursor:
+            cursor = super().execute(sql, parameters)
+            if "FROM stats_board_checks" in sql:
+                name = parameters[0]
+
+                def count_row(_cursor: sqlite3.Cursor, row: tuple) -> tuple:
+                    rows_read[name] += 1
+                    if name == "alpha" and rows_read[name] == 1:
+                        # A worker descheduled mid-fetch can exhaust its budget
+                        # without any change in wall clock, data or query plan.
+                        clock.now += stats_reliability.QUERY_TIMEOUT_SECONDS + 1
+                    return row
+
+                cursor.row_factory = count_row
+            return cursor
+
+    connect = sqlite3.connect
+    with patch.object(sqlite3, "connect", side_effect=(
+        lambda *args, **kwargs: connect(*args, **kwargs, factory=PausedConnection)
+    )):
+        result, limited = stats_reliability.read_board_checks(path, VISIBLE, start.isoformat(), NOW.isoformat())
+    assert 0 < rows_read["alpha"] < 720, rows_read
+    assert limited == {"alpha"}
+    assert result["alpha"] == stats_reliability.unavailable_board_checks("board_check_read_unavailable: OperationalError")
+    assert rows_read["beta"] == 720, rows_read
+    assert result["beta"] == {"checks": 720, "success_rate": 1, "recent_errors": []}
 
 
 @pytest.mark.asyncio
