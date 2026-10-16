@@ -43,7 +43,7 @@ def test_enabled_closer_transport_failure_aborts_startup(
 def test_closer_failure_from_global_transport_aborts_startup() -> None:
     config = _config(closer=PerformerRoleConfig())
     config.agent_transport = "kubernetes"
-    with pytest.raises(ValueError, match="closer"):
+    with capture_logs(), pytest.raises(ValueError, match="closer"):
         _build_performer_services(config, _build_circuit_breakers(config))
 
 
@@ -101,7 +101,8 @@ def test_noncritical_role_retains_partial_concurrency(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.parametrize("mode", ["ephemeral", "persistent"])
-def test_kubernetes_http_only_closer_reaches_composed_service(mode: str) -> None:
+@pytest.mark.parametrize("endpoint_role", ["closer", "closing_review"])
+def test_kubernetes_http_only_closer_reaches_composed_service(mode: str, endpoint_role: str) -> None:
     from coordinare.__main__ import _build_http_performer_services, _compose_performer_pools
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
     from coordinare.services.http_performer_service import HTTPPerformerService
@@ -109,7 +110,7 @@ def test_kubernetes_http_only_closer_reaches_composed_service(mode: str) -> None
     config = _config(closer=PerformerRoleConfig())
     config.agent_transport = "kubernetes"
     config.performer_endpoints = [PerformerEndpointConfig(
-        id="closer-http", mode=mode, roles=["closer"],
+        id="closer-http", mode=mode, roles=[endpoint_role],
         image="test-performer:latest", endpoint="http://127.0.0.1:9001",
     )]
     services = _build_performer_services(config, _build_circuit_breakers(config))
@@ -131,5 +132,5 @@ def test_explicit_broken_closer_transport_is_fatal_even_with_http_coverage() -> 
     config.performer_endpoints = [PerformerEndpointConfig(
         id="closer-http", mode="ephemeral", roles=["closer"], image="test-performer:latest",
     )]
-    with pytest.raises(ValueError, match="closer"):
+    with capture_logs(), pytest.raises(ValueError, match="closer"):
         _build_performer_services(config, _build_circuit_breakers(config))

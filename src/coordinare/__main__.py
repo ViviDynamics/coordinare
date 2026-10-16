@@ -681,7 +681,8 @@ def _build_performer_services(
             # Kubernetes selects the HTTP container runtime too. With HTTP
             # coverage it does not by itself request a wire-protocol transport.
             kubernetes_http_only = config.agent_transport == "kubernetes" and any(
-                ep.mode != "subprocess" and role in ep.roles for ep in config.performer_endpoints
+                ep.mode != "subprocess" and (role in ep.roles or stage in ep.roles)
+                for ep in config.performer_endpoints
             )
             has_explicit_transport = bool(
                 role_config.transport
