@@ -56,7 +56,11 @@ def _open(page: Page, url: str, store: DashboardStore, *, conflict: bool = False
 
 def _save(page: Page) -> None:
     page.locator("#sym-save-btn").click()
-    page.locator('#sym-config-form [data-review]').get_by_role("button", name="Save these changes").click()
+    with page.expect_response(lambda response: response.request.method == "PUT"
+                              and response.url.endswith("/api/symphonies/demo")) as saved:
+        page.locator('#sym-config-form [data-review]').get_by_role("button", name="Save these changes").click()
+    assert saved.value.status == 200
+    assert saved.value.finished() is None
     expect(page.locator("#sym-save-msg")).to_have_text("Saved")
 
 

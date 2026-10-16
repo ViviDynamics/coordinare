@@ -841,9 +841,12 @@ function cfgHandleSymphonySave(status, body, container, statusEl, newHash) {
       return true;
     }
     cfgFlash(statusEl, 'Saved', 'green');
-    // The form is drawn again from the server after a moment, as Settings is, so a cleared secret's row and the
-    // base the next save starts from match what was stored. A reader who has typed since is left alone.
-    setTimeout(function() { if (!cfgHasUnsaved()) cfgReloadSymphony(); }, 1000);
+    // Give the latest save its full feedback window. An older save's refresh must
+    // not replace its Saved message, or reload an editor that replaced this form.
+    clearTimeout(container._cfgReloadTimer);
+    container._cfgReloadTimer = setTimeout(function() {
+      if (container.isConnected !== false && !cfgHasUnsaved()) cfgReloadSymphony();
+    }, 1000);
     return true;
   }
   if (status === 428 || (status === 409 && body && body.conflict)) {
