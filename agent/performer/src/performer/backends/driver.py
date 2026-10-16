@@ -221,11 +221,11 @@ class DriverBackend:
             cmd += ["--max-tokens", str(max_tokens)]
         if effort:
             cmd += ["--effort", str(effort)]
-        # §3.4: --system receives the persona text; --root confines driver's
-        # file tools to the workspace (confinement, not a jail).
+        # §3.4: --append-system adds the persona while preserving the default
+        # scope rules; --root confines file tools to the workspace (not a jail).
         if score is not None:
             if score.persona_instructions:
-                cmd += ["--system", score.persona_instructions]
+                cmd += ["--append-system", score.persona_instructions]
             cmd += ["--root", self._cwd]
         return cmd
 
@@ -502,8 +502,8 @@ class DriverBackend:
 def _build_task_prompt(score: Score, *, stand_path: pathlib.Path | None = None) -> str:
     """Task prompt for driver.
 
-    Unlike pi, driver has a real --system slot, so the persona contract rides
-    ``--system`` (§3.4) and the prompt body carries only the task itself.
+    The persona rides ``--append-system`` (§3.4), preserving the default scope
+    rules. The prompt body carries only the task itself.
     """
     parts: list[str] = [f"# Task: {score.title}", ""]
     if score.description:
