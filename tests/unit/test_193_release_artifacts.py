@@ -106,7 +106,7 @@ def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
     assert transfer["with"]["if-no-files-found"] == "error"
     assert transfer["with"]["overwrite"] is True
     upload_job = workflow()["jobs"]["publish-artifacts"]
-    assert set(upload_job["needs"]) == {"create-tag", "release-artifacts"}
+    assert set(upload_job["needs"]) == {"create-tag", "release-artifacts", "installer-smoke"}
     assert upload_job["permissions"] == {
         "contents": "write", "id-token": "write", "attestations": "write",
     }
