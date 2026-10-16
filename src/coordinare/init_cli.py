@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING
 import httpx
 import yaml
 
+from coordinare import docker_setup
 from coordinare.config import ProjectConfiguration, expand_config_text
 from coordinare.config_validation import validate_raw_config
 from coordinare.init_answers import ANSWER_NAMES, collect_answers
 from coordinare.init_files import (
     SetupError,
     build_config,
+    configure_containers,
     fail,
     read_mapping,
     secret_values,
@@ -46,6 +48,7 @@ def add_init_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     startup = parser.add_mutually_exclusive_group()
     startup.add_argument("--start", action="store_true", help="Start the daemon after successful preflight")
     startup.add_argument("--start-at-login", action="store_true", help="Install and start the user service after successful preflight")
+    parser.add_argument("--skip-smoke", action="store_true", help="Skip the throwaway Docker harness and connectivity probe on slow machines")
     for name in ANSWER_NAMES:
         parser.add_argument("--" + name.replace("_", "-"), help="Setup answer; also COORDINARE_INIT_" + name.upper())
 
@@ -81,17 +84,31 @@ def _setup(args: argparse.Namespace) -> int:
         fail("Setup cancelled; existing files were kept.")
     secrets = secret_values(answers, previous)
     generated = build_config(answers, raw)
+    if answers["run_mode"] == "docker":
+        image = docker_setup.prepare_image(answers["image_variant"], answers.get("image_tag"), directory)
+        configure_containers(generated, image, secrets)
     config = _validate_generated(generated, secrets)
+    if answers["run_mode"] == "docker":
+        if args.skip_smoke:
+            sys.stdout.write("Docker smoke skipped; harness readiness and container connectivity are unverified.\n")
+        else:
+            for endpoint in config.performer_endpoints:
+                if endpoint.mode == "ephemeral":
+                    docker_setup.smoke_container(endpoint, connectivity=docker_setup.smoke_environment(config))
+        sys.stdout.write("After upgrading, re-pin with coordinare init --force --run-mode docker (or add --image-tag VERSION for a development install).\n")
     args.config = write_setup(directory, generated, secrets, force=args.force or (interactive and existing))
     sys.stdout.write(f"Saved configuration: {args.config}\nSecrets: {env_path} (0600)\n")
-    report = asyncio.run(run_preflight(config, raw=generated, explicit=True))
+    report = asyncio.run(run_preflight(config, raw=generated, explicit=True, probe_containers=answers["run_mode"] != "docker"))
     sys.stdout.write(report.render())
     sys.stdout.write("Start: coordinare --config " + shlex.quote(str(args.config)) + "\n")
     sys.stdout.write(f"Dashboard: http://{config.dashboard_host}:{config.dashboard_port}\n")
-    if answers["run_mode"] == "docker":
-        sys.stdout.write("Docker uses the containers preset. Image provisioning is handled by the optional Docker setup from issue 197.\n")
     if not report.ok:
         return 1
+    return _offer_start(args, interactive=interactive)
+
+
+def _offer_start(args: argparse.Namespace, *, interactive: bool) -> int:
+    """After a clean preflight: start at login as a user service, or start in the foreground."""
     if interactive and not args.start and not args.start_at_login:
         args.start_at_login = input("Start at login [no]: ").strip().lower() in {"y", "yes"}
     if args.start_at_login:

@@ -44,6 +44,8 @@ def setup_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def probes(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    monkeypatch.setattr("coordinare.docker_setup.smoke_container", lambda *a, **k: None)
+    monkeypatch.setattr("coordinare.docker_setup.prepare_image", lambda *a, **k: "ghcr.io/vividynamics/coordinare-performer-full:2026.10.84")
     monkeypatch.setattr("coordinare.init_probes.read_command", AsyncMock(return_value=""))
     monkeypatch.setattr("coordinare.init_probes.shutil.which", lambda name: "/bin/" + name)
     monkeypatch.setattr("coordinare.init_probes.check_token_and_repo", lambda *a, **k: [])

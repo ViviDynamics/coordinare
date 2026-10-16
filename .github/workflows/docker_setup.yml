@@ -1,0 +1,59 @@
+name: Docker Setup Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/coordinare/init*.py'
+      - 'src/coordinare/docker_setup.py'
+      - 'src/coordinare/presets.py'
+      - 'src/coordinare/doctor.py'
+      - 'src/coordinare/launch_preflight.py'
+      - 'src/coordinare/services/performer_lifecycle.py'
+      - 'src/coordinare/models/performer_endpoint.py'
+      - 'src/coordinare/lib/container_env.py'
+      - 'agent/performer/Dockerfile.base'
+      - 'agent/performer/entrypoint.sh'
+      - 'scripts/smoke_docker_setup.py'
+      - 'scripts/resolve_smoke_release.sh'
+      - 'scripts/docker_setup_fakes.py'
+      - 'tests/utils/fake_model_server.py'
+      - '.github/workflows/docker_setup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-setup:
+    name: Docker Setup (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        variant: [base, full]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - name: Resolve the newest published release
+        id: release
+        if: matrix.variant == 'full'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/resolve_smoke_release.sh
+      - name: Install the daemon from the checkout
+        run: uv sync --extra dev
+      - name: Build the checkout base entrypoint
+        if: matrix.variant == 'base'
+        run: docker build -t coordinare-setup:base -f agent/performer/Dockerfile.base .
+      - name: Check the checkout base entrypoint and harness readiness
+        if: matrix.variant == 'base'
+        run: uv run python scripts/smoke_docker_setup.py --local-image coordinare-setup:base
+      - name: Non-interactive init and published performer readiness check
+        if: matrix.variant == 'full'
+        env:
+          IMAGE_TAG: ${{ steps.release.outputs.tag }}
+          IMAGE_VARIANT: ${{ matrix.variant }}
+        run: uv run python scripts/smoke_docker_setup.py "$IMAGE_TAG" "$IMAGE_VARIANT"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import secrets as random_secrets
 import shlex
 import tempfile
 from importlib.resources import files
@@ -9,7 +11,7 @@ from typing import Any, NoReturn
 
 import yaml
 
-from coordinare.presets import HARNESS_DEFAULTS
+from coordinare.presets import HARNESS_DEFAULTS, expand_preset
 from coordinare.user_config import (
     ENV_FILENAME,
     GENERATED_HEADER,
@@ -61,8 +63,50 @@ def build_config(answers: dict[str, Any], existing: dict[str, Any]) -> dict[str,
     raw.setdefault("state_file_path", str(data / "state.json"))
     raw.setdefault("run_logs", {"dir": str(data / "run-logs")})
     raw.setdefault("transcripts", {"dir": str(data / "transcripts")})
+    if answers["run_mode"] == "local" and existing.get("preset") == "containers":
+        if raw.get("agent_executable") == "":
+            raw.pop("agent_executable")
+        raw["performer_endpoints"] = [entry for entry in raw.get("performer_endpoints", []) if entry["id"] != "starter"]
+        raw.pop("performer_image", None)
     configure_model(raw, answers)
     return raw
+
+
+def configure_containers(raw: dict[str, Any], image: str, secrets: dict[str, str]) -> None:
+    raw["performer_image"] = image
+    raw["agent_executable"] = ""
+    if not raw.get("performer_endpoints"):
+        raw.pop("performer_endpoints", None)
+    expanded = expand_preset(raw)
+    data = user_data_directory()
+    raw.setdefault("env_cache_root", str(data / "env-caches"))
+    raw["env_passthrough"] = list(dict.fromkeys([*expanded["env_passthrough"], HARNESS_DEFAULTS[raw["harness"]][1]]))
+    endpoints = expanded["performer_endpoints"]
+    for index, endpoint in enumerate(endpoints):
+        if endpoint["id"] == "starter":
+            endpoint["image"] = image
+            endpoint.setdefault("env", {})["BACKEND"] = raw["harness"]
+            endpoint["env"].setdefault("TMPDIR", "/workspace")
+            endpoint.setdefault("secret_sources", {"init_payload": True, "env": False, "creds_file": False})
+            endpoint.setdefault("extra_hosts", ["host.docker.internal:host-gateway"])
+            endpoint.setdefault("volumes", [
+                {"host_path": str(data / "workspaces"), "container_path": "/workspace", "mode": "rw"},
+                {"host_path": str(data / "artifacts"), "container_path": "/artifacts", "mode": "rw"},
+            ])
+        if endpoint.get("mode") == "ephemeral":
+            endpoint.setdefault("bind_host", "127.0.0.1")
+            endpoint.setdefault("connect_host", "127.0.0.1")
+            reference = endpoint.get("auth_token") or ""
+            match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", reference)
+            key = match[1] if match else f"COORDINARE_PERFORMER_{index}_{random_secrets.token_hex(4).upper()}_AUTH_TOKEN"
+            if not secrets.get(key):
+                secrets[key] = random_secrets.token_urlsafe(32)
+            endpoint["auth_token"] = "${" + key + "}"
+    raw["performer_endpoints"] = endpoints
+    directories = [Path(raw["env_cache_root"])]
+    directories.extend(Path(mount["host_path"]) for endpoint in endpoints for mount in endpoint.get("volumes", []))
+    for directory in directories:
+        directory.expanduser().mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
 
 
 def configure_model(raw: dict[str, Any], answers: dict[str, Any]) -> None:

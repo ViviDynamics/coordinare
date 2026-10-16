@@ -1,0 +1,161 @@
+{
+  "codex": {
+    "project_name": "demo",
+    "max_concurrent_cards": 1,
+    "performers": {
+      "default": {
+        "backend": "codex",
+        "mode": "starter"
+      },
+      "implementer": {
+        "backend": "codex"
+      }
+    },
+    "endpoints": [
+      {
+        "name": "starter",
+        "kind": "openai",
+        "auth_env": "OPENAI_API_KEY"
+      }
+    ],
+    "model_endpoints": [
+      {
+        "name": "starter",
+        "endpoint": "starter",
+        "model": "gpt-5.4"
+      }
+    ],
+    "modes": [
+      {
+        "name": "starter",
+        "strategy": "single",
+        "tool": "starter"
+      }
+    ],
+    "env_passthrough": [
+      "OPENAI_API_KEY"
+    ],
+    "performer_endpoints": [
+      {
+        "id": "starter",
+        "mode": "ephemeral",
+        "roles": [
+          "implementer"
+        ],
+        "image": "coordinare-performer:full",
+        "env": {
+          "BACKEND": "codex"
+        }
+      }
+    ],
+    "preset": "containers",
+    "harness": "codex",
+    "github_repo": "demo"
+  },
+  "claude_code": {
+    "project_name": "demo",
+    "max_concurrent_cards": 1,
+    "performers": {
+      "default": {
+        "backend": "claude_code",
+        "mode": "starter"
+      },
+      "implementer": {
+        "backend": "claude_code"
+      }
+    },
+    "endpoints": [
+      {
+        "name": "starter",
+        "kind": "anthropic",
+        "auth_env": "ANTHROPIC_API_KEY"
+      }
+    ],
+    "model_endpoints": [
+      {
+        "name": "starter",
+        "endpoint": "starter",
+        "model": "claude-sonnet-4-6"
+      }
+    ],
+    "modes": [
+      {
+        "name": "starter",
+        "strategy": "single",
+        "tool": "starter"
+      }
+    ],
+    "env_passthrough": [
+      "ANTHROPIC_API_KEY"
+    ],
+    "performer_endpoints": [
+      {
+        "id": "starter",
+        "mode": "ephemeral",
+        "roles": [
+          "implementer"
+        ],
+        "image": "coordinare-performer:full",
+        "env": {
+          "BACKEND": "claude_code"
+        }
+      }
+    ],
+    "preset": "containers",
+    "harness": "claude_code",
+    "github_repo": "demo"
+  },
+  "opencode": {
+    "project_name": "demo",
+    "max_concurrent_cards": 1,
+    "performers": {
+      "default": {
+        "backend": "opencode",
+        "mode": "starter"
+      },
+      "implementer": {
+        "backend": "opencode"
+      }
+    },
+    "endpoints": [
+      {
+        "name": "starter",
+        "kind": "openai",
+        "auth_env": "OPENAI_API_KEY"
+      }
+    ],
+    "model_endpoints": [
+      {
+        "name": "starter",
+        "endpoint": "starter",
+        "model": "gpt-5.4"
+      }
+    ],
+    "modes": [
+      {
+        "name": "starter",
+        "strategy": "single",
+        "tool": "starter"
+      }
+    ],
+    "env_passthrough": [
+      "OPENAI_API_KEY"
+    ],
+    "performer_endpoints": [
+      {
+        "id": "starter",
+        "mode": "ephemeral",
+        "roles": [
+          "implementer"
+        ],
+        "image": "coordinare-performer:full",
+        "env": {
+          "BACKEND": "opencode"
+        }
+      }
+    ],
+    "preset": "containers",
+    "harness": "opencode",
+    "github_repo": "demo"
+  }
+}

@@ -501,6 +501,18 @@ def validate_raw_config(
     POST /api/config/validate route (551 T019): both validate the same way
     without writing or reloading anything.
     """
+    from coordinare.start_checks import StartCheckError, validate_expanded_secrets
+
+    try:
+        validate_expanded_secrets(raw)
+    except StartCheckError as exc:
+        return ConfigValidationResult(
+            errors=[ConfigFieldError(
+                field_path=exc.field, error_type=ErrorType.invalid_value,
+                fix_hint=str(exc), source="file",
+            )],
+            config_file_path=config_file_path, passed=False,
+        )
     # Step 3: Pre-validation pass (deprecated + unknown fields)
     pre_errors, pre_warnings = pre_validate_raw(raw)
 

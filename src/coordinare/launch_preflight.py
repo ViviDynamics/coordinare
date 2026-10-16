@@ -410,7 +410,7 @@ def _local_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
 
 def _container_harnesses(config: ProjectConfiguration) -> list[CheckResult]:
     docker = shutil.which("docker")
-    fix = "Install and start Docker, then build the performer image with make docker or set performer_endpoints[].image to an available image."
+    fix = "Install and start Docker, then run coordinare init --run-mode docker --force to pull the matching performer image, or set performer_endpoints[].image to an available image."
     if docker is None:
         return [
             CheckResult("container runtime", Status.FAIL, "Docker is not installed on PATH.", fix),
@@ -582,6 +582,7 @@ async def run_preflight(
     raw: dict[str, Any] | None = None,
     *,
     explicit: bool = False,
+    probe_containers: bool = True,
 ) -> DoctorReport:
     """Shared startup and doctor gate, also callable by init before writing a config."""
     report = DoctorReport()
@@ -620,9 +621,9 @@ async def run_preflight(
         results.extend(await check_github(effective, explicit=explicit))
         results.extend(await check_harnesses(
             effective,
-            probe_containers=explicit or (
+            probe_containers=probe_containers and (explicit or (
                 effective.preset is not None and not config.state_file_path.expanduser().exists()
-            ),
+            )),
         ))
         results.extend(await asyncio.to_thread(check_native_models, probes))
         report.results.extend(_compatible_results(results, strict=strict))
