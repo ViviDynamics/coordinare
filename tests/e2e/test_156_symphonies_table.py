@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page, Route, expect
 
 from coordinare.dashboard import DashboardStore
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _full_snapshot
@@ -125,10 +125,23 @@ def _symphonies() -> list[dict[str, Any]]:
 
 
 def _open(page: Page, url: str, store: DashboardStore) -> None:
+    # Headline figures now come from the statistics API, with the same fixture identity.
+    entries = _symphonies()
+
+    def stats(route: Route) -> None:
+        route.fulfill(json={
+            "group_by": "symphony", "window": "7d", "start": "2026-10-07T12:00:00Z",
+            "end": "2026-10-14T12:00:00Z", "partial": False,
+            "groups": [{"key": entry["name"], **entry["spend_week"]} for entry in entries],
+            "symphony_health": {entry["name"]: entry for entry in entries},
+            "card_flow": {entry["name"]: {"cards_completed": 0} for entry in entries},
+        })
+
+    page.route("**/api/stats?*", stats)
     page.goto(url)
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
-        _full_snapshot(phase="idle", phase_label="Idle", symphonies=_symphonies()),
+        _full_snapshot(phase="idle", phase_label="Idle", symphonies=entries),
     )
     expect(page.locator(_TABLE)).to_contain_text("alpha-sym", timeout=_WAIT_LIVE)
 

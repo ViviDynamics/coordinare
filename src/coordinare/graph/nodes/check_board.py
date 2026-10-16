@@ -58,6 +58,7 @@ from coordinare.services.orphan_pr import run_per_cycle_sweep
 from coordinare.services.pipeline_budget import has_live_work
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.review_staleness import classify_review_staleness
+from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.todo_waits import (
     clear_waits,
     open_slots,
@@ -820,7 +821,7 @@ async def _poll_board_once(
             # Keep running without crashing; a later cycle will retry.
             return None
         try:
-            board = await board_provider.poll_board()
+            board = await poll_board_observed(state, board_provider)
             clear_deferred_github_operation(state, "poll_board")
         except Exception as exc:
             if is_transient_github_outage_error(exc):

@@ -12,6 +12,7 @@ from coordinare.services.event_store_query import EventQueryTooBroad
 from coordinare.services.persona_history import persona_history_root
 from coordinare.services.run_statistics import RunStatistics
 from coordinare.services.run_transcript import TranscriptCollector
+from coordinare.services.stats_observability import live_health
 from coordinare.services.stats_params import StatsQuery
 from coordinare.services.token_usage import price_table_from_config
 
@@ -45,6 +46,11 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
         }
         service.table = price_table_from_config(getattr(state.get("config"), "cost_tracking", None))
         service.persona_root = persona_history_root(state.get("config"))
+        entries = ctx.store._build_symphonies_data(ctx.daemon)
+        for entry in entries:
+            cfg = (state.get("symphony_configs") or {})[entry["name"]]
+            effective = ctx.store._symphony_effective(cfg, state.get("config"))
+            entry["max_concurrent_cards"] = getattr(effective, "max_concurrent_cards", None)
         try:
             body = await service.query(params, visible=visible, lifecycle=snapshot, boards=boards)
         except LookupError as exc:
@@ -55,7 +61,8 @@ def register(app: FastAPI, ctx: DashboardContext) -> None:
             return JSONResponse(
                 {"error": "statistics history unavailable"}, status_code=503, headers=NO_STORE,
             )
+        scope = frozenset({params.symphony}) if params.symphony is not None else visible
         if params.agent:
-            scope = frozenset({params.symphony}) if params.symphony else visible
             body["runtime"] = service.persona_runtime(state, params.agent, scope)
+        body["symphony_health"] = live_health({entry["name"]: entry for entry in entries}, scope)
         return JSONResponse(redact_mapping(redact_state_value(body)), headers=NO_STORE)

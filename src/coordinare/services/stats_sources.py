@@ -19,6 +19,7 @@ from coordinare.services.event_store_query import (
 from coordinare.services.run_history import retained_runs
 from coordinare.services.run_transcript import transcript_path
 from coordinare.services.run_viewer import RunLookupError, RunRef, RunRefusedError, open_run
+from coordinare.services.stats_poll import BOARD_CHECK_KIND
 from coordinare.services.stats_usage import UsageCoverage, read_stats_usage
 from coordinare.services.token_usage import TokenLedger
 
@@ -34,7 +35,7 @@ MAX_EVENT_ROWS = 10000
 MAX_LINE_BYTES = 1024 * 1024
 SOURCE_TIMEOUT_SECONDS = 1.0
 LIFECYCLE_KIND = "card_lifecycle"
-EVENT_KINDS = (LIFECYCLE_KIND, "blocked", "system_error", "cancelled")
+EVENT_KINDS = (LIFECYCLE_KIND, "blocked", "system_error", "cancelled", BOARD_CHECK_KIND)
 
 
 @dataclass

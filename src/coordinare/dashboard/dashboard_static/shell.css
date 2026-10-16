@@ -406,3 +406,21 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 .persona-diff { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-text-primary); background: var(--color-bg-base); padding: 12px; border: 1px solid var(--color-border); border-radius: 4px; }
 .cfg-symphony-links { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
 [data-sym-dirty] { color: var(--color-accent-orange); font-size: 12px; }
+/* 184: symphony statistics share the shell theme tokens. Tables scroll within their card. */
+.sym-stats-toolbar { margin: 12px 0; }
+.sym-stats-section { margin: 14px 0; min-width: 0; }
+.sym-stats-section h3 { margin: 0 0 12px; }
+.sym-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 12px 0; }
+.sym-stat { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.sym-stat strong { display: block; color: var(--color-text-primary); margin-top: 4px; font-size: 17px; }
+.sym-stats-table { max-width: 100%; overflow-x: auto; }
+.sym-stats-table table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.sym-stats-table th, .sym-stats-table td { text-align: left; padding: 8px; overflow-wrap: anywhere; }
+.sym-stats-table th { color: var(--color-text-muted); }
+.sym-stats-table a { color: var(--color-accent-blue); }
+.sym-stats-coverage { border: 1px solid var(--color-border); padding: 10px; border-radius: 6px; }
+@media (max-width: 480px) {
+  .sym-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #sym-stats-content h2 { font-size: 18px; overflow-wrap: anywhere; }
+  .sym-stats-section { padding: 12px; }
+}

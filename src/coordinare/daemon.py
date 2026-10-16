@@ -131,6 +131,7 @@ from coordinare.services.reconciliation import (
 )
 from coordinare.services.run_log import RunLogCollector, prune_run_logs
 from coordinare.services.run_transcript import TranscriptCollector, prune_expired
+from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.symphony_failures import record_cycle_failure, record_cycle_success
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
@@ -1664,7 +1665,7 @@ async def _preflight_poll_board(
         if provider is None:
             logger.info("multi_session.pre_poll_no_board")
             return
-        board = await provider.poll_board()
+        board = await poll_board_observed(state, provider)
         state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
         clear_deferred_github_operation(state, "poll_board")
         state["last_poll_at"] = datetime.now(UTC)

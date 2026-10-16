@@ -404,11 +404,26 @@ function renderSymphoniesPage(s) {
   var path = location.pathname;
   var detail = path.startsWith('/symphonies/') ? decodeURIComponent(path.slice('/symphonies/'.length)) : null;
   if (detail) {
-    // On SSE updates, avoid re-fetching if the page is already rendered:
-    // update only the volatile status table cells from the SSE state payload.
-    var sym = syms.find(function(x) { return x.name === detail; });
-    var tbl = el.querySelector('table[data-detail]');
-    if (tbl && sym && _symShown === detail) {
+    var sym = syms.find(function(x) { return x.name === detail; }) || {};
+    var revision = symphonyStatsRevision(sym);
+    if (!symphonyStatsScopeAllows(detail)) {
+      _symShown = null;
+      loadSymphonyStatsDetail(detail, el, false, revision);
+      return;
+    }
+    // Statistics refresh independently above the live status and read-only settings.
+    var mounted = el.getAttribute('data-symphony-detail') !== detail || !el.querySelector('[data-symphony-stats]');
+    if (mounted) {
+      el.setAttribute('data-symphony-detail', detail);
+      el.innerHTML = '<div data-symphony-stats></div><div data-symphony-detail-content></div>';
+      _symShown = null;
+    }
+    var statsEl = el.querySelector('[data-symphony-stats]');
+    loadSymphonyStatsDetail(detail, statsEl, mounted, revision);
+    var detailEl = el.querySelector('[data-symphony-detail-content]');
+    // SSE updates only the volatile status cells; it does not refetch settings or personas.
+    var tbl = detailEl.querySelector('table[data-detail]');
+    if (tbl && _symShown === detail) {
       var rows = tbl.querySelectorAll('tbody tr');
       function _setTd(row, val) { if (row) { var td = row.querySelector('td'); if (td) td.textContent = val; } }
       _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : 'None');
@@ -416,11 +431,12 @@ function renderSymphoniesPage(s) {
       _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : 'None');
       var lastPollCell = rows[4] ? rows[4].querySelector('td') : null;
       if (lastPollCell) lastPollCell.innerHTML = sym.last_poll_at ? timeHtml(sym.last_poll_at) : 'None';
-      var personas = el.querySelector('[data-persona-context]');
+      _setTd(rows[5], sym.state && sym.state.last_error ? sym.state.last_error : 'None');
+      var personas = detailEl.querySelector('[data-persona-context]');
       if (personas) personaSelect(personas, personaHashRole('symphony-read'), false);
-      return;
+    } else {
+      loadSymphonyDetail(detail, detailEl);
     }
-    loadSymphonyDetail(detail, el);
     return;
   }
   // List view
@@ -453,7 +469,8 @@ function renderSymphoniesPage(s) {
     + '<th style="text-align:left" title="Whether the symphony\'s performer environment is cached.">Env</th>'
     + '<th style="text-align:left" title="Cards a performer is working on now.">Cards active</th>'
     + '<th style="text-align:left" title="Cards waiting for a performer slot.">Cards queued</th>'
-    + '<th style="text-align:left" title="Cost this week (UTC) from the transcript ledger.">Spend this week</th>'
+    + '<th style="text-align:left" title="Run start cohort cost in the rolling 7d window from the statistics API.">Spend this week</th>'
+    + '<th title="Recorded card merges in the rolling 7d window from the statistics API.">Completed this week</th>'
     + '<th style="text-align:left" title="Checks of the board this symphony has run.">Checks run</th>'
     + '<th style="text-align:left" title="Checks that failed in a row. A successful check resets this to 0.">Failed checks in a row</th>'
     + '<th style="text-align:left" title="When coordinare last checked this symphony.">Last checked</th>'
@@ -461,6 +478,8 @@ function renderSymphoniesPage(s) {
     + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\'sym-add-form\').style.display=\'block\'">+ Add Symphony</button></div>'
     + addFormHtml;
+  var listRevision = syms.filter(function(sym) { return !symphonyRowHidden(sym.name, choice); }).map(symphonyStatsRevision).join('|');
+  loadSymphonyListStats(el, choice, listRevision);
   document.getElementById('sym-list-msg').textContent = bootstrapListMessage();
   el.querySelectorAll('.sym-row-bootstrap, .sym-row-bootstrap-cancel').forEach(function(b) {
     b.addEventListener('click', function() {
@@ -482,13 +501,18 @@ function renderSymphoniesPage(s) {
 }
 
 async function loadSymphonyDetail(name, el) {
+  if (el.getAttribute('data-detail-loading') === name) return;
+  el.setAttribute('data-detail-loading', name);
   el.innerHTML = '<span class="empty-state">Loading...</span>';
   var backLink = '<a href="/symphonies" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue);font-size:13px">&#8592; All symphonies</a>';
   var res, data;
   try {
     res = await fetch('/api/symphonies/' + encodeURIComponent(name));
     data = await res.json();
+    el.removeAttribute('data-detail-loading');
+    if (!el.isConnected) return;
   } catch(e) {
+    el.removeAttribute('data-detail-loading');
     el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">Failed to load symphony</div>';
     return;
   }
@@ -577,8 +601,7 @@ async function loadSymphonyDetail(name, el) {
       + ' <span id="sym-wiki-init-msg" class="action-msg"></span>'
       + '</div>';
   }
-  el.innerHTML = backLink
-    + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
+  el.innerHTML = '<h3 style="margin:12px 0 4px">Live status</h3>'
     + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
     + ecSection
     + symSummaryHtml(name, data);

@@ -130,11 +130,11 @@ check('a count the snapshot does not carry says Not known, and a zero says zero'
 });
 
 // --- the row ----------------------------------------------------------------------------- //
-check('a row opens the symphony page, escapes its name and carries its own spend', () => {
+check('a row opens the symphony page, escapes its name and loads API spend', () => {
   const html = symphonyTableRowHtml(sym({name: 'a<b', cards_active: 1, cards_queued: 2}), '');
   assert.ok(html.indexOf('data-href="/symphonies/a%3Cb"') !== -1, html);
   assert.ok(html.indexOf('a&lt;b') !== -1 && html.indexOf('<b>') === -1, html);
-  assert.ok(html.indexOf('$0.13') !== -1, html);
+  assert.ok(html.indexOf('data-stats-measure="spend"') !== -1, html);
   noDashes(html);
 });
 check('the row shows its status with the reason, and the env words with their reason', () => {
@@ -156,7 +156,7 @@ check('a symphony that is not the chosen one shows no spend or card counts', () 
 });
 check('the chosen symphony keeps its own figures', () => {
   const html = symphonyTableRowHtml(sym({name: 'beta', cards_active: 3, cards_queued: 4}), 'beta');
-  assert.ok(html.indexOf('$0.13') !== -1 && html.indexOf('Hidden') === -1, html);
+  assert.ok(html.indexOf('data-stats-measure="active"') !== -1 && html.indexOf('Hidden') === -1, html);
 });
 check('a row with no project, repository or spend says so in words', () => {
   const html = symphonyTableRowHtml(sym({github_project_number: null, repo: '', github_org: '', spend_week: null}), '');

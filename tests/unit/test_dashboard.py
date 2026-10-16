@@ -2315,10 +2315,16 @@ def _daemon_with_symphony(wiki_in_flight: bool = False, has_cache: bool = True) 
     return daemon
 
 
-def test_wiki_init_button_present_on_symphony_detail() -> None:
-    """The 'Init wiki' button ships in the dashboard HTML next to the env-bootstrap one."""
-    assert "sym-wiki-init-btn" in page_source()
-    assert "/wiki-init" in page_source()
+def test_symphony_detail_is_read_only() -> None:
+    """181/184: settings stay read-only alongside statistics and the bootstrap actions."""
+    source = page_source()
+    assert "loadSymphonyStatsDetail(detail, statsEl, mounted, revision)" in source
+    assert source.count('id="sym-env-bootstrap-btn"') == 1
+    assert source.count('id="sym-wiki-init-btn"') == 1
+    assert "/wiki-init" in source
+    assert "symSummaryHtml(name, data)" in source
+    assert "loadSymphonyPersonas(name, data, el)" in source
+    assert "Edit settings</a>" in source
 
 
 def test_wiki_init_endpoint_accepts_and_records_request() -> None:
