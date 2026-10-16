@@ -678,11 +678,17 @@ def _build_performer_services(
         from coordinare.config import PerformerRoleConfig
 
         if isinstance(role_config, PerformerRoleConfig):
+            # Kubernetes selects the HTTP container runtime too. With HTTP
+            # coverage it does not by itself request a wire-protocol transport.
+            kubernetes_http_only = config.agent_transport == "kubernetes" and any(
+                ep.mode != "subprocess" and (role in ep.roles or stage in ep.roles)
+                for ep in config.performer_endpoints
+            )
             has_explicit_transport = bool(
                 role_config.transport
                 or role_config.executable
                 or config.agent_executable
-                or config.agent_transport != "subprocess",
+                or (config.agent_transport != "subprocess" and not kubernetes_http_only),
             )
             if not has_explicit_transport:
                 logger.debug(
@@ -710,6 +716,22 @@ def _build_performer_services(
             try:
                 transport = _build_transport_for_role(role_config, config)
             except (NotImplementedError, ValueError) as exc:
+                # The closer completes the card lifecycle. Never boot with its
+                # configured transport silently missing (issue #334).
+                if role == "closer":
+                    msg = (
+                        f"Cannot start daemon: required performer role {role!r} "
+                        f"transport could not be built: {exc}"
+                    )
+                    logger.exception(
+                        "performer_transport_build_failed.required_role",
+                        role=role,
+                        stage=stage,
+                        transport=getattr(role_config, "transport", None) or config.agent_transport,
+                        error=str(exc),
+                        msg=msg,
+                    )
+                    raise ValueError(msg) from exc
                 if i == 0:
                     logger.warning(
                         "performer_transport_build_failed.role_skipped",
