@@ -43,11 +43,14 @@ async def test_smoke_github_serves_startup_queries_and_rejects_unknown_queries()
 
 
 def test_preflight_probe_reports_connection_timeout_and_http_answers(monkeypatch) -> None:
-    get = Mock(side_effect=[httpx.ConnectError("offline"), httpx.ReadTimeout("slow"), httpx.Response(404)])
+    get = Mock(side_effect=httpx.ConnectError("offline"))
     monkeypatch.setattr(doctor.httpx, "get", get)
-    assert doctor._probe_endpoint("http://model")[0] is False
-    assert doctor._probe_endpoint("http://model", timeout=2) == (False, "no response within 2s")
-    assert doctor._probe_endpoint("http://model") == (True, "responded with HTTP 404")
+    assert doctor._probe_endpoint("http://model")[0] is doctor.Status.WARN
+    get.side_effect = httpx.ReadTimeout("slow")
+    assert doctor._probe_endpoint("http://model")[0] is doctor.Status.WARN
+    get.side_effect = None
+    get.return_value = httpx.Response(httpx.codes.NOT_FOUND)
+    assert doctor._probe_endpoint("http://model") == (doctor.Status.OK, "responded with HTTP 404")
 
 
 @pytest.mark.parametrize("response", [httpx.Response(500), httpx.Response(200, text="invalid")])
@@ -65,14 +68,15 @@ def test_preflight_reports_model_mismatch_and_native_provider_skip(monkeypatch) 
                          SimpleNamespace(name="think", model="native-model", endpoint="native")],
         dashboard_host="127.0.0.1",
     )
-    monkeypatch.setattr(doctor, "_probe_endpoint", lambda _: (False, "offline"))
+    monkeypatch.setattr(doctor, "_probe_endpoint", lambda _: (doctor.Status.WARN, "offline"))
     monkeypatch.setattr(doctor, "_list_ollama_models", lambda _: [f"model-{n}" for n in range(10)])
     report = doctor.run_checks(config)
-    assert not report.ok and len(report.failed) == 2
+    assert not report.ok and len(report.failed) == 1
     rendered = report.render()
     assert "ollama pull missing" in rendered and "(+2 more)" in rendered
     assert "[SKIP] endpoint 'native'" in rendered
-    assert "2 check(s) failed" in rendered
+    assert "1 check(s) failed" in rendered
+    assert "[WARN] endpoint 'local'" in rendered
     monkeypatch.setattr(doctor, "_list_ollama_models", lambda _: [])
     assert doctor.check_models(config)[0].status is doctor.Status.WARN
 

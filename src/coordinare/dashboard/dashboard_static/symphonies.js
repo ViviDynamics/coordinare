@@ -172,6 +172,7 @@ var SNAPSHOT_FIELD_SCOPE = {
   assignee_filter: 'shared',
   include_unassigned: 'shared',
   ownership_hint: 'derived',
+  idle_reason: 'derived',
   board_summary: 'scoped',
   last_poll_at: 'derived',
   backend_ui_url: 'hidden',
@@ -297,6 +298,7 @@ function symphonyScope(s, choice) {
   scoped.poll_interval_seconds = symphonyNumber(mine.poll_interval_seconds);
   scoped.last_poll_at = mine.last_poll_at || null;
   scoped.ownership_hint = typeof mine.ownership_hint === 'string' ? mine.ownership_hint : '';
+  scoped.idle_reason = typeof mine.idle_reason === 'string' ? mine.idle_reason : '';
   scoped.session_skip_reasons = state.session_skip_reasons || {};
 
   // The symphony list, counts and spend, narrowed to the choice.

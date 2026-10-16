@@ -1,0 +1,15 @@
+# Start here. Full reference: config.example.yaml
+# Export COORDINARE_GITHUB_TOKEN and OPENAI_API_KEY before launching.
+# Install Codex and the performer; see README Quick Start.
+preset: solo
+harness: codex
+github_org: your-org
+github_repo: your-repo
+github_project_number: 1
+human_reviewers: [your-github-handle]
+# Only implementer runs; human reviewers approve the resulting PR.
+# Use preset: containers for ephemeral Docker performers.
+# Inspect all expanded defaults with: coordinare config
+# Check your setup with: coordinare doctor
+# Run: coordinare
+# First card: docs/first-launch.md

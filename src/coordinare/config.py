@@ -29,6 +29,7 @@ from coordinare.models.performer_endpoint import (
     PerformerEndpointConfig,
     detect_duplicate_endpoints,
 )
+from coordinare.presets import expand_preset
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.observer import OBSERVER_TRIGGERS
 from coordinare.services.otlp_settings import ObservabilityConfig
@@ -1237,6 +1238,15 @@ class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
     model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True, hide_input_in_errors=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_first_launch_preset(cls, data: Any) -> Any:
+        return expand_preset(data) if isinstance(data, dict) else data
+
+    preset: Literal["solo", "containers"] | None = None
+    harness: str | None = None
+    github_repo: str = ""
 
     @model_validator(mode="before")
     @classmethod

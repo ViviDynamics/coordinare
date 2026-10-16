@@ -286,6 +286,8 @@ class TestTheRealPollBoardWiresTheRemembering:
     async def test_polling_populates_the_map(self, monkeypatch) -> None:
         service = GitHubService.__new__(GitHubService)
         service.project_id = "PVT_test"
+        # Polling retries deferred initialization unless both caches are ready.
+        service.field_cache = {"status_field_id": "status"}
 
         page = {
             "node": {

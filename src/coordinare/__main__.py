@@ -25,6 +25,7 @@ warnings.filterwarnings(
 
 import structlog
 import uvicorn
+import yaml
 
 from coordinare import configure_logging
 from coordinare.attempt_log import AttemptLog, resolve_writable_log_dir
@@ -49,8 +50,11 @@ from coordinare.config_validation import (
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
 from coordinare.dashboard_oidc import OidcFlow
+from coordinare.doctor import Status, check_kubernetes_egress_enforcement
+from coordinare.first_launch import expanded_config_view, resolved_config_view, running_summary
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
+from coordinare.launch_preflight import initialize_github_at_start, run_preflight
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.localhost_guard import build_permitted, warn_if_dashboard_exposed
@@ -147,7 +151,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--config",
         type=Path,
-        default=None,
+        default=argparse.SUPPRESS,
         dest="config",
         help="Explicit path to config file",
     )
@@ -160,6 +164,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Preflight: check endpoints answer, models exist, and the dashboard bind is sane",
+    )
+    doctor_parser.add_argument(
+        "--config", type=Path, default=argparse.SUPPRESS,
+        help="Explicit path to config file",
+    )
+    config_parser.add_argument(
+        "--config", type=Path, default=argparse.SUPPRESS,
+        help="Explicit path to config file",
     )
     doctor_parser.add_argument(
         "--check",
@@ -1136,7 +1148,7 @@ async def _bootstrap_services(
     )
     github._project_name = config.project_name
     if config.github_project_number:
-        await github.initialize()
+        await initialize_github_at_start(github)
 
     # Decided on the transport NAME, not caught as an exception. An earlier
     # version wrapped this in a broad `except ValueError`, which also swallowed the
@@ -1355,8 +1367,7 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
-    # The start-time checks run again on the config as written (252), so a caller other than main
-    # cannot start the daemon past a refusal main would have made.
+    # Refuse unsafe configuration before opening stores or starting services.
     unexpanded = load_unexpanded_config(config_path)
     validate_start_time(config, coordinare_config, unexpanded if config_path is not None else None)
     exporter = None
@@ -1375,6 +1386,16 @@ async def _run(
     install_event_store(event_store)
     try:
         await event_store.start()
+        # Capture startup checks as well as runtime events, and flush even when
+        # preflight refuses the launch or raises before runtime bootstrap.
+        report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
+        print(report.render())
+        for result in report.results:
+            if result.status is Status.WARN:
+                logger.warning("startup.preflight_warning", check=result.name, detail=result.detail, fix=result.fix)
+        if not report.ok:
+            logger.error("startup.preflight_failed", failed_checks=[result.name for result in report.failed])
+            raise SystemExit(1)
         await _run_with_events(config, config_path, coordinare_config, config_mode, event_store)
     finally:
         install_event_store(None)
@@ -1499,7 +1520,7 @@ async def _run_with_events(
                 _sym_svc._project_name = _eff.project_name
                 bind_symphony(_sym.name)
                 try:
-                    await _sym_svc.initialize()
+                    await initialize_github_at_start(_sym_svc)
                 finally:
                     clear_symphony()
                 _sym_github_services[_sym.name] = _sym_svc
@@ -1602,6 +1623,14 @@ async def _run_with_events(
     )
     dashboard_server.install_signal_handlers = lambda: None  # type: ignore[attr-defined]
 
+    board_services = daemon.state.get("symphony_github_services") or {
+        config.project_name or "default": daemon.state["github_service"],
+    }
+    board_columns = {
+        name: list(service.field_cache.get("status_option_ids", {}))
+        for name, service in board_services.items()
+    }
+    print(running_summary(config, coordinare_config, board_columns=board_columns))
     daemon_task = asyncio.create_task(daemon.start())
     server_task = asyncio.create_task(server.serve())
     dashboard_task = asyncio.create_task(dashboard_server.serve())
@@ -1695,13 +1724,11 @@ def _load_project_config_for_doctor(result: ConfigValidationResult) -> ProjectCo
 
 def _cmd_doctor(args: argparse.Namespace) -> None:
     """Run preflight checks and exit non-zero if any failed (spec 145, FR-012)."""
-    import sys
-
-    from coordinare.doctor import check_kubernetes_egress_enforcement, run_checks
-
     result = validate_config(getattr(args, "config", None))
     if not result.passed:
         print("Config did not validate, so preflight cannot run.")
+        for error in result.errors:
+            print(f"{error.field_path}: {error.fix_hint}")
         print("Fix the configuration first:  python -m coordinare config validate")
         sys.exit(1)
 
@@ -1712,7 +1739,13 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
         print("Config validated but could not be loaded for preflight.")
         sys.exit(1)
 
-    report = run_checks(config)
+    root = None
+    if result.config_file_path is not None:
+        raw = _load_raw_yaml(result.config_file_path)
+        if is_multi_symphony_config(raw):
+            root = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
+    unexpanded = load_unexpanded_config(result.config_file_path) if result.config_file_path is not None else None
+    report = asyncio.run(run_preflight(config, root, unexpanded, explicit=True))
 
     # Opt-in extras. Kept out of the default run because this one creates Pods,
     # and a preflight that quietly schedules workloads is a surprise.
@@ -1721,6 +1754,25 @@ def _cmd_doctor(args: argparse.Namespace) -> None:
 
     print(report.render())
     sys.exit(0 if report.ok else 1)
+
+
+def _cmd_config_show(args: argparse.Namespace) -> None:
+    result = validate_config(getattr(args, "config", None))
+    if not result.passed:
+        for error in result.errors:
+            print(f"{error.field_path}: {error.fix_hint}", file=sys.stderr)
+        raise SystemExit(1)
+    config = _load_project_config_for_doctor(result)
+    expanded = resolved_config_view(config)
+    if result.config_file_path is not None:
+        raw = _load_raw_yaml(result.config_file_path)
+        if is_multi_symphony_config(raw):
+            root = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
+            expanded["symphonies"] = [
+                {"name": s.name, "enabled": s.enabled, "effective_config": resolved_config_view(s.effective_config(config))}
+                for s in root.symphonies
+            ]
+    print(yaml.safe_dump(expanded_config_view(expanded), sort_keys=False))
 
 
 def _warn_unset_placeholders(unexpanded: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1772,6 +1824,10 @@ def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+
+    if args.command == "config" and args.config_action is None:
+        _cmd_config_show(args)
+        return
 
     # Dispatch config subcommand before any daemon startup
     if (
