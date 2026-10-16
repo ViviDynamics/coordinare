@@ -405,6 +405,57 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  installer-smoke:
+    if: needs.create-tag.outputs.published != 'true'
+    timeout-minutes: 15
+    name: Installer Smoke (${{ matrix.os }})
+    needs:
+      - create-tag
+      - release-artifacts
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install from release assets and verify both commands
+        env:
+          RELEASE_VERSION: ${{ needs.create-tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$PWD/dist"
+          installer_home="$(mktemp -d)"
+          export HOME="$installer_home"
+          export COORDINARE_RELEASE_ROOT="file://$installer_home/releases"
+          mkdir -p "$HOME/releases/download" "$HOME/releases/latest"
+          ln -s "$assets" "$HOME/releases/download/$RELEASE_VERSION"
+          ln -s "$assets" "$HOME/releases/latest/download"
+          curl -fsSL "file://$assets/install.sh" | sh -s -- --yes --no-init
+          normalized=$(printf '%s\n' "$RELEASE_VERSION" | awk -F. '{for (i=1; i<=NF; i++) printf "%s%d", (i==1 ? "" : "."), $i; print ""}')
+          test "$("$HOME/.local/bin/coordinare" --version)" = "coordinare $normalized"
+          test -x "$HOME/.local/bin/performer"
+          mkdir "$HOME/.coordinare"
+          printf 'keep\n' > "$HOME/.coordinare/config.yaml"
+          sh "$assets/install.sh" --yes --no-init --version "$RELEASE_VERSION"
+          test "$("$HOME/.local/bin/coordinare" --version)" = "coordinare $normalized"
+          test "$(cat "$HOME/.coordinare/config.yaml")" = keep
+          PATH="$HOME/.local/bin:$PATH" "$HOME/.local/share/uv/tools/coordinare/bin/python" -c 'import performer.main; from coordinare.presets import _performer_executable; import os; assert _performer_executable() == os.path.expanduser("~/.local/bin/performer")'
+          sh "$assets/install.sh" --uninstall
+          test -f "$HOME/.coordinare/config.yaml"
+          test ! -e "$HOME/.local/bin/coordinare"
+
   publish-artifacts:
     if: needs.create-tag.outputs.published != 'true'
     timeout-minutes: 10
@@ -412,6 +463,7 @@ jobs:
     needs:
       - create-tag
       - release-artifacts
+      - installer-smoke
     runs-on: ubuntu-latest
     permissions:
       contents: write

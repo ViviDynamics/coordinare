@@ -58,7 +58,16 @@ cd coordinare
 uv sync
 ```
 
-To install a published wheel without cloning, see [release packages](docs/releases.md).
+For an isolated release installation without cloning, run:
+
+```sh
+curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh
+```
+
+Then run `coordinare init` (the setup command tracked in #195). The installer
+prints the PATH instruction if needed and leaves configuration to that command.
+See [release installation](docs/releases.md) for pinned versions, unattended use,
+uninstalling, and the download, inspect, run alternative.
 
 ### 2. Configure
 

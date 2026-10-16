@@ -2,8 +2,91 @@
 
 Each GitHub release contains the daemon and optional performer wheels, the shared
 package wheels they require, source distributions, and
-`SHA256SUMS`. An `install.sh` asset is included when that script exists in the
-tagged source tree.
+`SHA256SUMS` and `install.sh`.
+
+## Install without a checkout
+
+Linux and macOS on x86_64 and arm64 are supported. On Windows, run this command
+inside WSL. Python does not need to be preinstalled; uv supplies Python 3.12.
+
+```sh
+curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh
+```
+
+For people who prefer to inspect scripts, download first, inspect, then run:
+
+```sh
+curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+The installer checks every required release wheel against `SHA256SUMS` before
+installing anything, including uv. A malformed manifest, missing wheel, duplicate
+entry or checksum mismatch aborts. These checks detect corruption; authenticity
+relies on HTTPS and the release publisher. GitHub attestations are also available
+for independent provenance verification.
+
+If uv is missing, the installer asks through `/dev/tty` before running the
+[official Astral installer](https://docs.astral.sh/uv/getting-started/installation/).
+Without a terminal, it fails with instructions unless consent is provided with
+`--yes` or `COORDINARE_YES=1`. The script never reads prompts from the piped script
+input. It does not edit shell profiles.
+
+Pin a release or consent to installing uv in an unattended job:
+
+```sh
+sh install.sh --version 2026.10.84 --yes --no-init
+curl -fsSL https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh | sh -s -- --yes --version 2026.10.84 --no-init
+```
+
+Use `COORDINARE_VERSION` instead of `--version`; the flag takes precedence.
+`COORDINARE_YES`, `COORDINARE_NO_INIT`, `COORDINARE_UNINSTALL`, and
+`COORDINARE_PURGE` match their flags and accept `1`/`0`, `true`/`false`, or
+`yes`/`no`. `--no-init` is accepted for unattended callers. Initialization is
+always an explicit next step in this version, including in a terminal:
+
+```sh
+coordinare init
+```
+
+That setup command is being delivered in #195. This installer does not create
+configuration or launch the daemon. The solo preset needs the performer command
+alongside coordinare, so both are installed in the same isolated uv tool environment.
+You will still need an authenticated harness CLI, GitHub board and credentials;
+the [first launch guide](first-launch.md) describes these requirements.
+
+Installed commands live in `~/.local/bin`. If necessary, the installer prints:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add that line to your shell profile as well as the current shell. The environment
+lives in `~/.local/share/uv/tools/coordinare`, with managed Python under
+`~/.local/share/uv/python` and download cache under `~/.cache/uv`. The installer
+uses these home locations even if global uv storage overrides are set. No sudo
+or system Python changes are needed. Re-running resolves latest again, or installs
+the pinned version, and replaces the tool in place while keeping configuration
+and state. It does not guarantee third party dependency versions remain identical.
+
+```sh
+sh install.sh --uninstall
+sh install.sh --uninstall --purge
+```
+
+Uninstall removes the tool and its bundled performer. Without `--purge`, all
+configuration and state remain. Explicit purge removes `~/.coordinare`, including
+its config, caches and any state stored there. Custom config paths and project
+state such as `./coordinare.state.json` remain operator managed. uv, its managed
+Python installations and shared download caches remain installed.
+
+`COORDINARE_RELEASE_ROOT` can point at a trusted HTTPS mirror or a local `file://`
+release tree. Its layout is `latest/download/` and `download/<tag>/`, each with
+the release manifest and five wheels. This is also the offline fixture seam used
+by tests; external dependencies and missing uv still require network access.
+
+## Release packaging
 
 Install the daemon from a wheel URL on the GitHub release with `uv tool install
 <wheel URL>`. Its shared dependencies use direct URLs to wheels from the same
