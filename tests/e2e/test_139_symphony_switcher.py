@@ -1,6 +1,3 @@
-"""#139: the symphony switcher filters the whole dashboard, and the header and the
-Cards panel never disagree. Checked in a real browser.
-"""
 from __future__ import annotations
 
 import re
@@ -11,6 +8,9 @@ from playwright.sync_api import Page, expect
 
 from coordinare.dashboard import DashboardStore
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_session, _full_snapshot
+
+# Issue 139: the symphony switcher filters the whole dashboard, and the header and the
+# Cards panel never disagree. Checked in a real browser.
 
 _ZERO = {
     "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "total": 0},
@@ -74,7 +74,7 @@ def _connected(page: Page, url: str) -> None:
     """Load a page and wait for its stream to be live, so a broadcast is not sent before anyone listens."""
     # Firefox can keep load waiting on the dashboard's long lived SSE request.
     # The Live indicator below is the readiness condition we need.
-    page.goto(url, wait_until="domcontentloaded", timeout=_WAIT_SSE)
+    page.goto(url, wait_until="domcontentloaded")
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
 
 
@@ -131,7 +131,7 @@ def test_the_choice_survives_a_reload_and_navigation(page: Page, live_server_url
     page.locator("#symphony-select").select_option("beta-sym")
     expect(page.locator("#swimlane-section")).not_to_contain_text("Alpha card")
 
-    page.reload(wait_until="domcontentloaded", timeout=_WAIT_SSE)
+    page.reload(wait_until="domcontentloaded")
     expect(page.locator("#connection-label")).to_have_text("Live", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(_snapshot(_two_symphonies()))
     expect(page.locator("#symphony-select")).to_have_value("beta-sym", timeout=_WAIT_LIVE)

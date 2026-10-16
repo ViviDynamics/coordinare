@@ -1,4 +1,3 @@
-"""Fixtures for E2E browser tests: live uvicorn server backed by a real DashboardStore."""
 from __future__ import annotations
 
 import asyncio
@@ -7,13 +6,19 @@ import socket
 import threading
 import time
 from collections.abc import Generator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
 import uvicorn
 
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext
+
+# Fixtures for E2E browser tests: live uvicorn server backed by a real DashboardStore.
+NAVIGATION_TIMEOUT_MS = 15_000
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,6 +72,13 @@ def _mock_health() -> Any:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def context(context: BrowserContext) -> BrowserContext:
+    """Give every page in the shared context the same navigation budget."""
+    context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
+    return context
 
 
 @pytest.fixture(scope="module")
