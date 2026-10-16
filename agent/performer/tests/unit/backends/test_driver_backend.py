@@ -54,7 +54,7 @@ def _capture_exec(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 @pytest.mark.asyncio
 async def test_start_assembles_the_c1_command(tmp_path, monkeypatch) -> None:
     """C1/C2/C3: --yes --contract 1 --jsonl, session under a writable state
-    dir, persona via --system, workspace confinement via --root, prompt last."""
+    dir, persona via --append-system, workspace confinement via --root, prompt last."""
     recorded = _capture_exec(monkeypatch)
     backend = DriverBackend()
     await backend.start(_stand(tmp_path), _score(), model="glm-5.3-flash", temperature=0.2, max_tokens=900)
@@ -63,7 +63,8 @@ async def test_start_assembles_the_c1_command(tmp_path, monkeypatch) -> None:
     assert "--jsonl" in cmd
     session_idx = cmd.index("--session")
     assert cmd[session_idx + 1].startswith(tempfile.gettempdir())
-    assert cmd[cmd.index("--system") + 1] == "Be precise."
+    assert cmd[cmd.index("--append-system") + 1] == "Be precise."
+    assert "--system" not in cmd
     assert cmd[cmd.index("--root") + 1] == str(tmp_path)
     assert cmd[cmd.index("--model") + 1] == "glm-5.3-flash"
     assert cmd[cmd.index("--temperature") + 1] == "0.2"
