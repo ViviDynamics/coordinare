@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import yaml
@@ -47,3 +49,18 @@ def test_release_lane_builds_arm64_and_exercises_release_selection() -> None:
     assert "docker push" not in commands
     assert job["permissions"] == {"contents": "read"}
     assert "release-smoke" not in _jobs()["build-success"]["needs"]
+
+
+def test_every_base_image_copy_input_triggers_the_release_lane() -> None:
+    changes = _jobs()["release-changes"]
+    paths = next(step for step in changes["steps"] if step.get("id") == "paths")
+    filters = yaml.safe_load(paths["with"]["filters"])["release"]
+    dockerfile = (ROOT / "agent/performer/Dockerfile.base").read_text()
+    for line in dockerfile.splitlines():
+        if not line.startswith("COPY "):
+            continue
+        for source in shlex.split(line)[1:-1]:
+            # A directory COPY must also watch changes to files below it.
+            probe = source + "build_input.py" if source.endswith("/") else source
+            assert any(fnmatchcase(probe, pattern) for pattern in filters), source
+    assert {".dockerignore", "agent/performer/Dockerfile.base.dockerignore"} <= set(filters)
