@@ -1621,6 +1621,7 @@ function cfgConfirmChart() {
     status.textContent = error.message;
     box.querySelectorAll('button, input').forEach(function(input) { input.disabled = false; });
   });
+}
 
 // Keep other persona drafts when a save, reset or conflict reloads the shared Config page.
 function cfgSnapshotPersonaEdits() {
