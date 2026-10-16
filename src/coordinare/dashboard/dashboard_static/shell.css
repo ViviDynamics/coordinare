@@ -216,6 +216,7 @@ html[data-navigation-collapsed="true"] .nav-badge { position: absolute; top: 2px
 /* 150: the History page's run table, filters, checks and pager. */
 .history-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-bottom: 12px; font-size: 12px; }
 .history-filters label { display: flex; flex-direction: column; gap: 2px; color: var(--color-text-muted); }
+.history-filters .action-btn, .history-pager .action-btn { margin-top: 0; }
 .history-table-wrap { overflow-x: auto; }
 .history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .history-table th, .history-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--color-border); vertical-align: top; }
