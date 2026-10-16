@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -148,7 +149,7 @@ class ServiceManager:
                 "Check that a systemd user session is available (systemctl --user status)."
                 if self.system == "Linux" else "Run from your macOS graphical login session."
             )
-            message = f"Service command {argv[0]} {argv[1]} failed. {guidance}"
+            message = f"Service command {shlex.join(argv)} failed. {guidance}"
             raise ServiceError(message)
         return result
 
@@ -167,7 +168,8 @@ class ServiceManager:
         if any(path.is_symlink() for path in (self.unit_path, self.wrapper_path, self.metadata_path)):
             message = "Service registration files cannot be symbolic links. Remove the links and rerun install."
             raise ServiceError(message)
-        for path in (definition.config, definition.env):
+        required = (definition.config,) if definition.env_optional else (definition.config, definition.env)
+        for path in required:
             if not path.is_file():
                 message = "Service config or env file is missing. Run coordinare init first."
                 raise ServiceError(message)
@@ -217,16 +219,16 @@ class ServiceManager:
             self.start()
 
     def uninstall(self) -> None:
-        if not self.unit_path.exists():
-            return
-        if self.system == "Linux":
-            self._systemctl("disable", "--now", UNIT)
-        else:
-            self.stop()
-        self.unit_path.unlink()
+        installed = self.unit_path.exists()
+        if installed:
+            if self.system == "Linux":
+                self._systemctl("disable", "--now", UNIT)
+            else:
+                self.stop()
+            self.unit_path.unlink()
         self.wrapper_path.unlink(missing_ok=True)
         self.metadata_path.unlink(missing_ok=True)
-        if self.system == "Linux":
+        if installed and self.system == "Linux":
             self._systemctl("daemon-reload")
 
     def _definition(self) -> ServiceDefinition:
@@ -258,13 +260,15 @@ class ServiceManager:
                 working_directory=config.parent, version=_coordinare_version(),
             )
             running, since, state = False, "n/a", "not running (not installed)"
+            version_label = "current"
         else:
             definition = self._definition()
             running, since = self._running_since()
             state = "running" if running else "not running"
+            version_label = "installed"
         return (
             f"Coordinare: {state}\nSince: {since if running else 'n/a'}\n"
-            f"Version (installed): {definition.version}\nConfig: {definition.config}\n"
+            f"Version ({version_label}): {definition.version}\nConfig: {definition.config}\n"
             f"Dashboard: {dashboard_url(definition)}\n"
         )
 

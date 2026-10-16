@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import plistlib
 import shlex
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from coordinare import __main__ as cli
 from coordinare import service_cli, service_dev
@@ -298,9 +300,9 @@ def test_uninstalled_actions_explain_how_to_install(home: Path, action: str) -> 
 
 
 def test_systemd_quoting_handles_double_quotes_and_backslashes(definition: ServiceDefinition) -> None:
-    special = replace(definition, command=('/path with "quotes"/bin\\coordinare$',))
+    special = replace(definition, command=('/tmp/bin$x %n "quotes"/bin\\coordinare', '$HOME/%u'))
     content = render_unit(special)
-    assert 'ExecStart="/path with \\"quotes\\"/bin\\\\coordinare$"' in content
+    assert 'ExecStart="/tmp/bin$$x %%n \\"quotes\\"/bin\\\\coordinare" "$$HOME/%%u"' in content
     with pytest.raises(ValueError, match="single-line"):
         render_unit(replace(definition, env=Path("/tmp/env\ninjected")))
 
@@ -417,3 +419,178 @@ def test_plist_serialization_escapes_xml_paths(definition: ServiceDefinition, tm
     content = render_plist(definition, wrapper, tmp_path / "log")
     assert b"&lt;with &amp; xml&gt;" in content
     assert plistlib.loads(content)["ProgramArguments"] == ["/bin/sh", str(wrapper)]
+
+
+@pytest.fixture
+def stop_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Stub process discovery so the real script cannot stop host processes."""
+    root = tmp_path / "checkout"
+    (root / "bin").mkdir(parents=True)
+    script = root / "bin/stop"
+    script.write_bytes((Path(__file__).parents[2] / "bin/stop").read_bytes())
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    trace = tmp_path / "trace"
+    for name, body in {
+        "uv": 'echo "service $*" >> "$TRACE"\nexit 7',
+        "lsof": 'echo "port $*" >> "$TRACE"\nexit 1',
+        "pkill": 'echo "sweep $*" >> "$TRACE"\nexit 1',
+    }.items():
+        stub = commands / name
+        stub.write_text("#!/bin/bash\n" + body + "\n")
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(commands) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TRACE", str(trace))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return script, trace
+
+
+def test_stop_failure_warns_and_still_sweeps(stop_script: tuple[Path, Path], tmp_path: Path) -> None:
+    unit = tmp_path / ".config/systemd/user/coordinare.service"
+    unit.parent.mkdir(parents=True)
+    unit.touch()
+    script, trace = stop_script
+    result = subprocess.run(["bash", str(script)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+    assert "sweep -9 -f python -m coordinare" in trace.read_text()
+    assert "warning" in result.stderr.lower()
+    assert "service stop" in result.stderr
+
+
+def test_stop_ignores_relative_xdg_config_home(
+    stop_script: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative-config")
+    unit = tmp_path / ".config/systemd/user/coordinare.service"
+    unit.parent.mkdir(parents=True)
+    unit.touch()
+    script, trace = stop_script
+    manager = ServiceManager(system="Linux", runner=FakeRunner())
+    assert manager.unit_path == unit
+    subprocess.run(["bash", str(script)], check=False, capture_output=True, text=True)
+    assert "service run python -m coordinare service stop" in trace.read_text()
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_checkout_install_without_env_is_optional_and_explained(
+    home: Path, definition: ServiceDefinition, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], system: str,
+) -> None:
+    definition.env.unlink()
+    manager = ServiceManager(system=system, runner=FakeRunner())
+    monkeypatch.setattr(service_dev, "ServiceManager", lambda: manager)
+    monkeypatch.setattr(sys, "argv", ["service_dev", "--config", str(definition.config), "--env", str(definition.env)])
+    service_dev.main()
+    output = capsys.readouterr()
+    assert "optional" in output.err.lower()
+    assert str(definition.env) in output.err
+    assert "coordinare init" not in output.err
+    assert manager.unit_path.exists()
+    saved = manager._definition()
+    if system == "Linux":
+        assert "EnvironmentFile=-" in render_unit(saved)
+    else:
+        receiver = home / "receive.py"
+        received = home / "received"
+        receiver.write_text("from pathlib import Path\nPath(" + repr(str(received)) + ").touch()\n")
+        manager.wrapper_path.write_text(render_wrapper(replace(saved, command=(sys.executable, str(receiver)))))
+        result = subprocess.run(["sh", str(manager.wrapper_path)], capture_output=True, text=True, check=False)
+        assert result.returncode == 0
+        assert received.exists()
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_installed_service_still_requires_env(home: Path, definition: ServiceDefinition, system: str) -> None:
+    definition.env.unlink()
+    manager = ServiceManager(system=system, runner=FakeRunner())
+    with pytest.raises(ServiceError, match="coordinare init"):
+        manager.install(definition)
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_uninstall_removes_orphans_without_unit(home: Path, definition: ServiceDefinition, system: str) -> None:
+    runner = FakeRunner()
+    manager = ServiceManager(system=system, runner=runner)
+    manager.install(definition)
+    manager.wrapper_path.write_text("orphan wrapper")
+    manager.log_path.write_text("retain logs")
+    manager.unit_path.unlink()
+    runner.calls.clear()
+    manager.uninstall()
+    assert not manager.wrapper_path.exists()
+    assert not manager.metadata_path.exists()
+    assert manager.log_path.read_text() == "retain logs"
+    assert definition.config.exists() and definition.env.exists()
+    assert not runner.calls
+
+
+def test_uninstalled_status_labels_current_version(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("coordinare.service_manager._coordinare_version", lambda: "2026.10.123")
+    status = ServiceManager(system="Linux", runner=FakeRunner()).status()
+    assert "Version (current): 2026.10.123" in status
+    assert "Version (installed):" not in status
+
+
+def test_failed_stop_names_full_command(home: Path, definition: ServiceDefinition) -> None:
+    runner = FakeRunner()
+    manager = ServiceManager(system="Linux", runner=runner)
+    manager.install(definition)
+    runner.returncode = 1
+    runner.output = SECRET
+    with pytest.raises(ServiceError, match=r"systemctl --user stop coordinare\.service") as error:
+        manager.stop()
+    assert SECRET not in str(error.value)
+
+
+@pytest.mark.parametrize("session", ["running", "starting", "unreachable", "degraded"])
+def test_linux_ci_requires_reachable_user_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session: str,
+) -> None:
+    root = Path(__file__).parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/service.yml").read_text())
+    steps = workflow["jobs"]["lifecycle"]["steps"]
+    setup = next(step for step in steps if step.get("id") == "session")
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    trace = tmp_path / "trace"
+    for name, body in {
+        "sudo": 'echo "$*" >> "$TRACE"',
+        "sleep": "exit 0",
+        "systemctl": (
+            'echo "$*" >> "$TRACE"\n'
+            'case "$SESSION" in\n'
+            'running) echo running;;\n'
+            'degraded) echo degraded; exit 1;;\n'
+            'starting) if [[ -f "$READY" ]]; then echo running; else touch "$READY"; echo starting; exit 1; fi;;\n'
+            '*) exit 1;;\nesac'
+        ),
+    }.items():
+        stub = commands / name
+        stub.write_text("#!/bin/bash\n" + body + "\n")
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(commands) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("USER", "service-runner")
+    monkeypatch.setenv("TRACE", str(trace))
+    monkeypatch.setenv("SESSION", session)
+    monkeypatch.setenv("READY", str(tmp_path / "ready"))
+    github_env = tmp_path / "github-env"
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary"))
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", setup["run"]], capture_output=True, text=True, check=False)
+    if session == "unreachable":
+        assert result.returncode != 0
+        assert "::error::" in result.stdout + result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "loginctl enable-linger service-runner" in trace.read_text()
+        assert "--user is-system-running" in trace.read_text()
+        assert f"XDG_RUNTIME_DIR=/run/user/{os.getuid()}" in github_env.read_text()
+        assert f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{os.getuid()}/bus" in github_env.read_text()
+        if session == "starting":
+            assert trace.read_text().count("--user is-system-running") >= 2
+    lifecycle = next(step for step in steps if "scripts/service_smoke.py" in step.get("run", ""))
+    assert "if" not in lifecycle
+    gates = yaml.safe_load((root / ".github/workflows/pr-ci.yml").read_text())
+    assert "lifecycle" not in gates["jobs"]["build-success"]["needs"]

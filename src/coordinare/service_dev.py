@@ -20,8 +20,11 @@ def main() -> None:
         config=args.config.expanduser().resolve(), env=args.env.expanduser().resolve(),
         command=(sys.executable, "-m", "coordinare", *extra), working_directory=root,
         version=_coordinare_version(), pythonpath=str(root / "src"),
+        env_optional=True,
     )
     try:
+        if not definition.env.is_file():
+            sys.stderr.write(f"Optional checkout env file {definition.env} is missing; continuing with the service environment.\n")
         manager = ServiceManager()
         manager.install(definition)
     except ServiceError as exc:

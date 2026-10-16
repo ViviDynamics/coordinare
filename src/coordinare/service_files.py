@@ -24,12 +24,14 @@ class ServiceDefinition:
     working_directory: Path
     version: str
     pythonpath: str = ""
+    env_optional: bool = False
 
     def metadata(self) -> dict[str, Any]:
         return {
             "config": str(self.config), "env": str(self.env),
             "command": list(self.command), "working_directory": str(self.working_directory),
             "version": self.version, "pythonpath": self.pythonpath,
+            "env_optional": self.env_optional,
         }
 
     @classmethod
@@ -38,6 +40,7 @@ class ServiceDefinition:
             config=Path(data["config"]), env=Path(data["env"]),
             command=tuple(data["command"]), working_directory=Path(data["working_directory"]),
             version=data["version"], pythonpath=data.get("pythonpath", ""),
+            env_optional=data.get("env_optional", False),
         )
 
 
@@ -70,9 +73,10 @@ def _unit_path(path: Path) -> str:
 
 
 def render_unit(definition: ServiceDefinition) -> str:
-    command = " ".join(_unit_quote(arg, command=index > 0) for index, arg in enumerate((
+    command = " ".join(_unit_quote(arg, command=True) for arg in (
         *definition.command, "--config", str(definition.config),
-    )))
+    ))
+    env_prefix = "-" if definition.env_optional else ""
     environment = "Environment=" + _unit_quote("PATH=" + service_path(definition)) + "\n"
     if definition.pythonpath:
         environment += "Environment=" + _unit_quote("PYTHONPATH=" + definition.pythonpath) + "\n"
@@ -80,7 +84,7 @@ def render_unit(definition: ServiceDefinition) -> str:
         "[Unit]\nDescription=Coordinare board orchestrator\n\n"
         "[Service]\nType=exec\n"
         f"WorkingDirectory={_unit_path(definition.working_directory)}\n"
-        f"EnvironmentFile={_unit_path(definition.env)}\n"
+        f"EnvironmentFile={env_prefix}{_unit_path(definition.env)}\n"
         + environment
         + f"ExecStart={command}\nRestart=on-failure\nRestartSec={RESTART_SECONDS}\n\n"
         "[Install]\nWantedBy=default.target\n"
@@ -90,7 +94,11 @@ def render_unit(definition: ServiceDefinition) -> str:
 def render_wrapper(definition: ServiceDefinition) -> str:
     command = shlex.join((*definition.command, "--config", str(definition.config)))
     # The env file written by init contains shell-quoted, literal assignments.
-    return f"#!/bin/sh\nset -eu\nset -a\n. {shlex.quote(str(definition.env))}\nset +a\nexec {command}\n"
+    env = shlex.quote(str(definition.env))
+    source = f". {env}\n"
+    if definition.env_optional:
+        source = f"if [ -f {env} ]; then\n  . {env}\nfi\n"
+    return f"#!/bin/sh\nset -eu\nset -a\n{source}set +a\nexec {command}\n"
 
 
 def render_plist(definition: ServiceDefinition, wrapper: Path, log: Path) -> bytes:

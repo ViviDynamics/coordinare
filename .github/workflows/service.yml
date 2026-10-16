@@ -33,19 +33,24 @@ jobs:
         id: session
         shell: bash
         run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
-          if systemctl --user show-environment >/dev/null 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
-            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Service lifecycle not exercised: this runner has no reachable systemd user session. A login session with a running user manager is required."
-            echo "Service lifecycle not exercised: no reachable systemd user session on the runner. Unit tests still cover generated service files and injected command execution." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for attempt in {1..30}; do
+            state=$(systemctl --user is-system-running 2>/dev/null) || true
+            case "$state" in
+              running|degraded)
+                echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+                echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+                exit 0
+                ;;
+            esac
+            sleep 1
+          done
+          echo "::error::No reachable systemd user manager after 30 attempts."
+          exit 1
       - name: Exercise install, status and uninstall with a real user manager
-        if: steps.session.outputs.available == 'true'
         run: |
           uv run python scripts/service_smoke.py
           echo "Linux user service lifecycle passed with a real systemd user manager." >> "$GITHUB_STEP_SUMMARY"
