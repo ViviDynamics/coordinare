@@ -54,6 +54,7 @@ from coordinare.doctor import Status, check_kubernetes_egress_enforcement
 from coordinare.first_launch import expanded_config_view, resolved_config_view, running_summary
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
+from coordinare.init_cli import add_init_parser, run_init
 from coordinare.launch_preflight import initialize_github_at_start, run_preflight
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
@@ -144,6 +145,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     # Subcommands: `coordinare config validate [--config PATH] [--strict]`
     subparsers = parser.add_subparsers(dest="command")
+    add_init_parser(subparsers)
     config_parser = subparsers.add_parser("config", help="Config management subcommands")
     config_subparsers = config_parser.add_subparsers(dest="config_action")
     validate_parser = config_subparsers.add_parser(
@@ -1829,6 +1831,12 @@ def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+
+    if args.command == "init":
+        code = run_init(args)
+        if code or not args.start:
+            sys.exit(code)
+        args.command = None
 
     if args.command == "config" and args.config_action is None:
         _cmd_config_show(args)

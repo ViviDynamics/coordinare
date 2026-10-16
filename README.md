@@ -38,6 +38,11 @@ When a role finds issues (reviewer requests changes, security finds vulnerabilit
 
 ## Quick Start
 
+For guided per-user setup after installing Coordinare and a harness, run
+`coordinare init`. It writes a minimal config and private env file, checks the
+setup and prints the start command. See [guided setup](docs/init.md) for flags,
+answers files and unattended setup. The checkout-based steps below remain valid.
+
 ### Prerequisites
 
 - Python 3.12+
@@ -166,7 +171,8 @@ Coordinare searches for config in this order (first match wins):
 1. `--config <path>` CLI flag
 2. `COORDINARE_CONFIG_PATH` environment variable
 3. `./config.yaml` in the current directory
-4. `~/.coordinare/config.yaml` in your home directory
+4. `$XDG_CONFIG_HOME/coordinare/config.yaml`, defaulting to `~/.config/coordinare/config.yaml`
+5. `~/.coordinare/config.yaml` in your home directory (legacy fallback)
 
 Any scalar field can be overridden via environment variable: `COORDINARE_<FIELD_NAME>` (uppercase).
 
