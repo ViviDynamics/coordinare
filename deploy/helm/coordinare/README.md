@@ -146,13 +146,21 @@ grep -nEi 'token|secret|password|api[_-]?key|authorization|headers|://[^ /]+@' /
 
 The grep is a review aid: placeholders, nulls and environment variable names
 also match. Move literal credentials into a Kubernetes Secret wired through
-`existingSecret` or `secrets`, and use `${VAR}` references in config. URL
-passwords must be placeholders too. For OTLP headers, use `headersSecret` as
-described below. If an upgrade stalls, inspect `kubectl logs coordinare-0 -c
+`existingSecret` or `secrets`, and use `${VAR}` references in config. Any URL
+userinfo counts as a credential, including a bare username such as
+`https://user@host`. Use a placeholder for the URL password, such as
+`https://user:${PASSWORD}@host`, or for the whole URL. For OTLP headers, use
+`headersSecret` as described below. If an upgrade stalls, inspect `kubectl logs coordinare-0 -c
 seed-config`, fix the values and upgrade again. If the live PVC config contains
 literals, back it up and repair it with the debug Pod procedure below, or place
 `config/reseed` to adopt the cleaned seed and discard dashboard edits. A temporary
 `configPersistence.enabled: false` rollback retains the PVC file for repair.
+The init container checks the live file on every boot, even when the chart overlay
+changes nothing. A hand-edited literal secret stops the init container. Back up
+the file, then use a debug Pod on the state claim to replace the literal with a
+placeholder, or use the reset procedure below after cleaning the chart seed.
+You can temporarily boot with `configPersistence.enabled: false` while repairing
+the retained PVC file; reenable persistence after repair.
 
 After seeding, user settings in the PVC file are the source of truth. Dashboard
 edits survive Pod restarts, upgrades and uninstall. On **every boot**, the init
@@ -279,10 +287,15 @@ on; pin the image version or digest with the chart release.
 
 Credentials stay in Kubernetes Secrets. Both seeds and persisted dashboard saves
 require `${VAR}` or `null` in typed secret fields and secret environment entries.
+A placeholder credential may have a leading `Bearer `, `Basic ` or `Token `
+scheme, case-insensitively, such as `Authorization: "Bearer ${OTEL_TOKEN}"`.
+Literal text inside the credential, such as `Bearer abc${TOKEN}`, is refused.
 Pointer keys ending in `_ENV_KEY`, `_ENV`, `_VAR` or `_NAME` may contain a bare
-uppercase environment variable identifier, for example
-`CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY`. This is a name, while a literal
-credential under `API_KEY` is still refused.
+uppercase environment variable identifier. The pointer value must name a variable
+with a secret keyword, such as `GH_TOKEN` or `LITELLM_MASTER_KEY`; an arbitrary
+uppercase identifier is refused. For example,
+`CODEX_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY` is allowed. This is a name, while a
+literal credential under `API_KEY` is still refused.
 Literal credentials are refused before writing; for migration, replace any
 literal chart credentials with placeholders before upgrading. Validation expands
 a temporary view only. Masked dashboard fields preserve the on disk placeholder,

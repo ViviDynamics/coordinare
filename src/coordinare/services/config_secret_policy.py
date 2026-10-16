@@ -15,6 +15,12 @@ _ENV_IDENTIFIER = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _POINTER_SUFFIXES = ("_ENV_KEY", "_ENV", "_VAR", "_NAME")
 
 _PLACEHOLDER = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
+_AUTH_SCHEME = re.compile(r"^(?:Bearer|Basic|Token) ", re.IGNORECASE)
+
+
+def _placeholder_only(value: str) -> bool:
+    credential = _AUTH_SCHEME.sub("", value, count=1)
+    return bool(_PLACEHOLDER.search(credential)) and not _PLACEHOLDER.sub("", credential)
 
 
 def persistent_fields() -> Iterator[tuple[tuple[str, ...], str]]:
@@ -44,7 +50,7 @@ def _literal_url_credentials(value: Any) -> bool:
         return any(_literal_url_credentials(item) for item in value)
     if isinstance(value, str):
         password = credential_url_password(value)
-        return password is not None and _PLACEHOLDER.fullmatch(password) is None
+        return password is not None and not _placeholder_only(password)
     return False
 
 
@@ -53,7 +59,7 @@ def _literal_credential(value: Any) -> bool:
         return any(_literal_credential(item) for item in value.values())
     return not (
         value is None or value == ""
-        or (isinstance(value, str) and _PLACEHOLDER.fullmatch(value))
+        or (isinstance(value, str) and _placeholder_only(value))
     )
 
 

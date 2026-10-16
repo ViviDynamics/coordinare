@@ -111,6 +111,9 @@ def seed_config(seed: Path, live: Path) -> None:
                 raise ValueError(problem) from None
             _recover_broken(live)
         else:
+            problem = persistent_secret_problem(live_raw)
+            if problem:
+                raise ValueError(problem)
             candidate = _overlay(raw, live_raw)
             if candidate != live_raw:
                 problem = persistent_secret_problem(candidate)

@@ -51,6 +51,79 @@ def test_uppercase_literals_are_not_secret_pointer_names(key: str, value: str) -
     assert persistent_secret_problem({"performer_endpoints": [{"env": {key: value}}]})
 
 
+@pytest.mark.parametrize("value", [
+    "Bearer ${OTEL_TOKEN}", "Basic ${B64}", "Token ${TOKEN}", "${A}",
+    "bEaReR ${A}${B}", "basic ${B64}", "token ${TOKEN}",
+])
+@pytest.mark.parametrize("location", ["header", "secret", "env", "url"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_placeholder_only_credentials_allow_auth_schemes(
+    tmp_path: Path, value: str, location: str, nested: bool,
+) -> None:
+    seed, live = _paths(tmp_path)
+    if location == "header":
+        document = {"observability": {"otlp": {"headers": {"Authorization": value}}}}
+    elif location == "secret":
+        document = {"webhooks": {"secret": value}}
+    elif location == "env":
+        document = {"performer_endpoints": [{"env": {"API_KEY": value}}]}
+    else:
+        document = {"proxy_url": f"https://user:{value}@host"}
+    raw = {"symphonies": [{"overrides": document}]} if nested else document
+    seed.write_text(yaml.safe_dump(raw))
+    config_seed.seed_config(seed, live)
+    assert yaml.safe_load(live.read_text()) == raw
+    config_seed.seed_config(seed, live)
+    assert yaml.safe_load(live.read_text()) == raw
+
+
+@pytest.mark.parametrize("value", [
+    "Bearer literal", "pre${PW}", "Bearer abc${X}", "Basic abc${X}",
+    "Token abc${X}", "Bearer ", "Bearer ${X}suffix", "Bearer Bearer ${X}",
+    "${X}Bearer ",
+])
+@pytest.mark.parametrize("location", ["header", "secret", "env", "url"])
+def test_mixed_literal_credentials_are_refused(value: str, location: str) -> None:
+    if location == "header":
+        raw = {"observability": {"otlp": {"headers": {"Authorization": value}}}}
+    elif location == "secret":
+        raw = {"webhooks": {"secret": value}}
+    elif location == "env":
+        raw = {"performer_endpoints": [{"env": {"API_KEY": value}}]}
+    else:
+        raw = {"proxy_url": f"https://user:{value}@host"}
+    problem = persistent_secret_problem(raw)
+    assert problem is not None
+    assert value not in problem
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_boot_checks_live_literal_headers_without_overlay_changes(
+    tmp_path: Path, nested: bool,
+) -> None:
+    seed, live = _paths(tmp_path)
+    config_seed.seed_config(seed, live)
+    metadata = (live.parent / "seed.yaml").read_bytes()
+    raw = yaml.safe_load(live.read_text())
+    document = {"observability": {"otlp": {"headers": {"Authorization": "Bearer literal"}}}}
+    if nested:
+        raw["symphonies"] = [{"overrides": document}]
+    else:
+        # Observability is chart-owned, so match the seed to make the overlay a no-op.
+        raw.update(document)
+        seed.write_text(yaml.safe_dump(raw))
+    live.write_text(yaml.safe_dump(raw))
+    before = live.read_bytes()
+    assert config_seed._overlay(yaml.safe_load(seed.read_text()), raw) == raw
+    with pytest.raises(ValueError, match="placeholder") as error:
+        config_seed.seed_config(seed, live)
+    assert "literal" not in str(error.value)
+    assert live.read_bytes() == before
+    assert (live.parent / "seed.yaml").read_bytes() == metadata
+    assert not list(live.parent.glob("config.yaml.broken-*"))
+    assert not (live.parent / "recovery.yaml").exists()
+
+
 def test_boot_overlays_chart_fields_and_preserves_user_fields(tmp_path: Path) -> None:
     seed, live = _paths(tmp_path)
     raw = {
