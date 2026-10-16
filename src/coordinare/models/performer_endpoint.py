@@ -87,6 +87,8 @@ class PerformerEndpointConfig(BaseModel):
     image: str | None = None
     endpoint: HttpUrl | None = None
     port: int | None = None
+    bind_host: Literal["127.0.0.1", "0.0.0.0"] = "127.0.0.1"  # noqa: S104, RUF100 - explicit opt-in for containerized daemons; S104 is ratcheted separately
+    connect_host: str = Field(default="127.0.0.1", pattern=r"^[A-Za-z0-9_.-]+$")
     auth_token: SecretStr | None = None
     # 077: ephemeral performer containers npm-install their backend CLI (opencode,
     # openclaw, pi) at cold start, which can push the job-runner's HTTP readiness
@@ -152,6 +154,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("endpoint")
             if self.auth_token is not None:
                 set_fields.append("auth_token")
+            if self.bind_host != "127.0.0.1" or self.connect_host != "127.0.0.1":
+                set_fields.append("bind_host/connect_host")
             if self.port is not None:
                 set_fields.append("port")
             if self.volumes:

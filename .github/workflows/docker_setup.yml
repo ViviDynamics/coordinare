@@ -6,32 +6,60 @@ on:
       - 'src/coordinare/init*.py'
       - 'src/coordinare/docker_setup.py'
       - 'src/coordinare/presets.py'
+      - 'src/coordinare/doctor.py'
+      - 'src/coordinare/launch_preflight.py'
+      - 'src/coordinare/services/performer_lifecycle.py'
+      - 'src/coordinare/models/performer_endpoint.py'
+      - 'src/coordinare/lib/container_env.py'
+      - 'agent/performer/Dockerfile.base'
+      - 'agent/performer/entrypoint.sh'
       - 'scripts/smoke_docker_setup.py'
       - '.github/workflows/docker_setup.yml'
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: Published performer release tag
-        required: true
-        default: '2026.10.84'
 
 permissions:
   contents: read
 
 jobs:
   docker-setup:
-    name: Published Docker Setup
+    name: Docker Setup (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      matrix:
+        variant: [base, full]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v4
+      - name: Resolve the newest published release
+        id: release
+        if: matrix.variant == 'full'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! tag=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '[.[][] | select(.draft == false and .prerelease == false)] | sort_by(.published_at) | last | .tag_name'); then
+            echo '::error::Could not resolve a published release for the Docker smoke job.' >&2
+            exit 1
+          fi
+          if [[ ! "$tag" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo '::error::No valid published release tag resolved for the Docker smoke job.' >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Install the daemon from the checkout
         run: uv sync --extra dev
-      - name: Non-interactive init and published performer health check
+      - name: Build the checkout base entrypoint
+        if: matrix.variant == 'base'
+        run: docker build -t coordinare-setup:base -f agent/performer/Dockerfile.base .
+      - name: Check the checkout base entrypoint and harness readiness
+        if: matrix.variant == 'base'
+        run: uv run python scripts/smoke_docker_setup.py --local-image coordinare-setup:base
+      - name: Non-interactive init and published performer readiness check
+        if: matrix.variant == 'full'
         env:
-          IMAGE_TAG: ${{ inputs.image_tag || '2026.10.84' }}
-        run: uv run python scripts/smoke_docker_setup.py "$IMAGE_TAG"
+          IMAGE_TAG: ${{ steps.release.outputs.tag }}
+          IMAGE_VARIANT: ${{ matrix.variant }}
+        run: uv run python scripts/smoke_docker_setup.py "$IMAGE_TAG" "$IMAGE_VARIANT"

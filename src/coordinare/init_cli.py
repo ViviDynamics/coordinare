@@ -48,6 +48,7 @@ def add_init_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     startup = parser.add_mutually_exclusive_group()
     startup.add_argument("--start", action="store_true", help="Start the daemon after successful preflight")
     startup.add_argument("--start-at-login", action="store_true", help="Install and start the user service after successful preflight")
+    parser.add_argument("--skip-smoke", action="store_true", help="Skip the throwaway Docker harness and connectivity probe on slow machines")
     for name in ANSWER_NAMES:
         parser.add_argument("--" + name.replace("_", "-"), help="Setup answer; also COORDINARE_INIT_" + name.upper())
 
@@ -85,8 +86,16 @@ def _setup(args: argparse.Namespace) -> int:
     generated = build_config(answers, raw)
     if answers["run_mode"] == "docker":
         image = docker_setup.prepare_image(answers["image_variant"], answers.get("image_tag"), directory)
-        configure_containers(generated, image)
+        configure_containers(generated, image, secrets)
     config = _validate_generated(generated, secrets)
+    if answers["run_mode"] == "docker":
+        if args.skip_smoke:
+            sys.stdout.write("Docker smoke skipped; harness readiness and container connectivity are unverified.\n")
+        else:
+            for endpoint in config.performer_endpoints:
+                if endpoint.mode == "ephemeral":
+                    docker_setup.smoke_container(endpoint, connectivity=docker_setup.smoke_environment(config))
+        sys.stdout.write("After upgrading, re-pin with coordinare init --force --run-mode docker (or add --image-tag VERSION for a development install).\n")
     args.config = write_setup(directory, generated, secrets, force=args.force or (interactive and existing))
     sys.stdout.write(f"Saved configuration: {args.config}\nSecrets: {env_path} (0600)\n")
     report = asyncio.run(run_preflight(config, raw=generated, explicit=True, probe_containers=answers["run_mode"] != "docker"))

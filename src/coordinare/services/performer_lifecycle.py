@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from coordinare.env_placeholders import drop_unset_placeholders
+from coordinare.env_placeholders import drop_unset_placeholders, is_secret_env_key
+from coordinare.lib.container_env import docker_environment
 from coordinare.transport.http_transport import (
     PerformerHTTPClient,
     PerformerUnreachableError,
@@ -142,7 +143,7 @@ async def start_ephemeral(
     """Run a fresh container for *config* and return its id + endpoint URL.
 
     The container is started detached on a host port (either operator-pinned
-    via ``config.port`` or chosen by docker via ``-p 0:8088``); the resolved
+    via ``config.port`` or chosen by docker via ``-p 127.0.0.1:0:8088``); the resolved
     host port is read back via ``docker port``. Auth, volumes, and env wiring
     for secrets are applied here when present.
 
@@ -189,13 +190,10 @@ async def start_ephemeral(
             hosts=list(config.egress_allowlist),
         )
 
-    if config.port is not None:
-        args += ["-p", f"{config.port}:8088"]
-    else:
-        args += ["-p", "0:8088"]
-
+    args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
+    private_env: dict[str, str] = {}
     if config.auth_token is not None:
-        args += ["-e", f"PERFORMER_AUTH_TOKEN={config.auth_token.get_secret_value()}"]
+        private_env["PERFORMER_AUTH_TOKEN"] = config.auth_token.get_secret_value()
 
     ss = config.secret_sources
     if not ss.init_payload:
@@ -229,7 +227,10 @@ async def start_ephemeral(
             env_key=key,
         )
     for key, val in env_kept.items():
-        args += ["-e", f"{key}={val}"]
+        if is_secret_env_key(key):
+            private_env.setdefault(key, val)
+        else:
+            args += ["-e", f"{key}={val}"]
 
     if backend and not env_carries_set_value(config.env, "BACKEND"):
         args += ["-e", f"BACKEND={normalize_backend_name(backend)}"]
@@ -239,9 +240,11 @@ async def start_ephemeral(
             backend=backend,
         )
 
-    args += [config.image]
-
-    rc, stdout, stderr = await _run_docker(*args)
+    with docker_environment(private_env) as env_path:
+        if env_path is not None:
+            args += ["--env-file", str(env_path)]
+        args += [config.image]
+        rc, stdout, stderr = await _run_docker(*args)
     if rc != 0 or not stdout:
         raise ContainerStartError(
             f"docker run failed for {config.id} (rc={rc}): {stderr or stdout}",
@@ -270,7 +273,7 @@ async def start_ephemeral(
         await _safe_stop(container_id)
         raise ContainerStartError(f"could not resolve host port for {container_id}")
 
-    endpoint = f"http://127.0.0.1:{host_port}"
+    endpoint = f"http://{config.connect_host}:{host_port}"
     logger.info(
         "performer_endpoint.transition",
         performer_id=config.id,

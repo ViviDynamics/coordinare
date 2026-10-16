@@ -12,9 +12,14 @@ Extend init's containers preset to provision published performer images without 
    cache root, bridge networking with a host gateway, and runtime secret delivery settings.
 5. Require an API key for native providers in Docker mode because host harness login files
    are not mounted. Self-hosted endpoints without authentication remain supported.
-6. Inspect instead of a costly harness install during init. Explain that host connectivity
-   checks cannot prove container connectivity. Doctor warns on image version mismatch.
-7. CI exercises non-interactive setup against a published image and starts a performer.
+6. Run a bounded, named and labelled throwaway container through the real entrypoint.
+   Verify harness readiness and container GitHub/model connectivity, then always remove it.
+   Offer --skip-smoke. Doctor warns on image version mismatch; init explains re-pinning.
+7. CI resolves the newest published release at job time and exercises non-interactive
+   setup with the full image. Also smoke the checkout base entrypoint and harness.
+8. Preserve containers preset expansion for existing configs. Init writes new settings
+   explicitly, including per-endpoint token references and a localhost publish address.
+   Pass tokens through private temporary env files; support containerized daemon addresses.
 
 Optional daemon compose deployment is outside this change. No credentials enter images,
 compose or config.yaml. Existing private environment-file handling remains authoritative.

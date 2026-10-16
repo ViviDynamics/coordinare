@@ -16,7 +16,7 @@ from coordinare.config import ProjectConfiguration
 from coordinare.config_validation import validate_config
 from coordinare.doctor import CheckResult, DoctorReport, Status, check_performer_versions
 from coordinare.init_files import SetupError
-from coordinare.presets import expand_preset
+from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services import performer_lifecycle
 from tests.unit.test_195_init import answers_file, invoke
 
@@ -230,25 +230,19 @@ def test_solo_preset_has_no_version_warning() -> None:
     assert check_performer_versions(ProjectConfiguration(github_org="example", human_reviewers=["operator"])) == []
 
 
-def test_preset_uses_a_release_image_without_a_local_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("coordinare.presets._coordinare_version", lambda: RELEASE)
+def test_preset_keeps_local_image_without_init() -> None:
+    from coordinare.presets import expand_preset
+
     raw = expand_preset({"preset": "containers", "harness": "codex", "github_repo": "demo"})
-    assert raw["performer_endpoints"][0]["image"] == TAGGED
+    assert raw["performer_endpoints"][0]["image"] == "coordinare-performer:full"
 
 
 def test_ci_smoke_provisions_before_starting_and_cleans_up(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker) -> None:
-    commands: list[list[str]] = []
-    monkeypatch.setattr("scripts.smoke_docker_setup.provision", lambda tag, directory, runner: PINNED)
-
-    def runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        output = "container-id" if command[1] == "run" else "ok"
-        return subprocess.CompletedProcess(command, 0, output, "")
-
-    smoke_docker_setup.smoke(RELEASE, tmp_path, runner=runner)
-    assert commands[0][1] == "run" and PINNED in commands[0]
-    assert any(command[1] == "exec" for command in commands)
-    assert commands[-1] == ["docker", "rm", "-f", "container-id"]
+    smoke_docker_setup.smoke(RELEASE, tmp_path, runner=docker)
+    operations = [command[1] for command in docker.calls]
+    assert operations.index("pull") < operations.index("run") < operations.index("exec") < operations.index("rm")
+    command = next(command for command in docker.calls if command[1] == "run")
+    assert command[-1] == PINNED and "--entrypoint" not in command
 
 
 def test_ci_workflow_uses_published_image_without_registry_login() -> None:
@@ -256,7 +250,7 @@ def test_ci_workflow_uses_published_image_without_registry_login() -> None:
     text = (root / ".github/workflows/docker_setup.yml").read_text()
     assert "scripts/smoke_docker_setup.py" in text
     assert "docker/login-action" not in text
-    assert "docker build" not in text
+    assert "--local-image coordinare-setup:base" in text
 
 
 def test_ci_provision_runs_real_init_with_an_injected_docker_boundary(docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,12 +312,14 @@ def test_bad_image_metadata_is_rejected(docker: FakeDocker, tmp_path: Path, meta
 
 
 def test_smoke_failure_still_removes_started_container(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(smoke_docker_setup, "provision", lambda *a: PINNED)
-    monkeypatch.setattr(smoke_docker_setup.time, "monotonic", MagicMock(side_effect=[0, smoke_docker_setup.START_TIMEOUT_SECONDS + 1]))
+    monkeypatch.setattr(docker_setup.time, "monotonic", MagicMock(side_effect=[0, docker_setup.START_TIMEOUT_SECONDS + 1]))
     runner = MagicMock(return_value=subprocess.CompletedProcess([], 0, "container-id", ""))
-    with pytest.raises(RuntimeError, match="timed out"):
-        smoke_docker_setup.smoke(RELEASE, tmp_path, runner=runner)
-    assert runner.call_args.args[0] == ["docker", "rm", "-f", "container-id"]
+    endpoint = PerformerEndpointConfig(id="starter", mode="ephemeral", roles=["implementer"], image=PINNED, env={"BACKEND": "codex"})
+    with pytest.raises(SetupError, match="timed out"):
+        docker_setup.smoke_container(endpoint, runner=runner)
+    command = runner.call_args_list[0].args[0]
+    name = command[command.index("--name") + 1]
+    assert runner.call_args.args[0] == ["docker", "rm", "-f", name]
 
 
 def test_switching_back_to_local_removes_generated_container_transport(setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -157,7 +157,7 @@ async def test_start_ephemeral_with_pinned_port(monkeypatch) -> None:
 
     run_args = args_seen[0]
     p_idx = list(run_args).index("-p")
-    assert run_args[p_idx + 1] == "9090:8088"
+    assert run_args[p_idx + 1] == "127.0.0.1:9090:8088"
     assert started.endpoint == "http://127.0.0.1:9090"
 
 
@@ -178,9 +178,8 @@ async def test_start_ephemeral_with_auth_token_env(monkeypatch) -> None:
     await start_ephemeral(_ephemeral_config(auth_token="tok123"))
 
     run_args = list(args_seen[0])
-    assert "-e" in run_args
-    env_val_idx = run_args.index("-e") + 1
-    assert run_args[env_val_idx] == "PERFORMER_AUTH_TOKEN=tok123"
+    assert "--env-file" in run_args
+    assert all("tok123" not in arg for arg in run_args)
 
 
 @pytest.mark.asyncio

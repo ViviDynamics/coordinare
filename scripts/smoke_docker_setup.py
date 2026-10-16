@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import tempfile
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -13,14 +13,10 @@ from coordinare import __main__ as cli
 from coordinare import docker_setup
 from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.init_cli import run_init
-
-START_TIMEOUT_SECONDS = 60.0
-POLL_INTERVAL_SECONDS = 1.0
-PROBE_TIMEOUT_SECONDS = 10.0
-HEALTH_PROBE = "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/healthz', timeout=3).read().decode())"
+from coordinare.models.performer_endpoint import PerformerEndpointConfig
 
 
-def provision(tag: str, directory: Path, runner: docker_setup.DockerRunner) -> str:
+def provision(tag: str, directory: Path, runner: docker_setup.DockerRunner, variant: str = "full") -> str:
     """Use real init and Docker; replace only external account/model probes."""
     answers = directory / "answers.yaml"
     answers.write_text(yaml.safe_dump({
@@ -29,12 +25,13 @@ def provision(tag: str, directory: Path, runner: docker_setup.DockerRunner) -> s
     }))
     args = cli._build_arg_parser().parse_args([
         "init", "--non-interactive", "--answers", str(answers), "--config-dir", str(directory / "config"),
-        "--image-tag", tag,
+        "--image-tag", tag, "--image-variant", variant,
     ])
     report = DoctorReport([CheckResult("CI account probes", Status.OK, "GitHub and model credentials are stubbed; Docker provisioning is real.")])
     with (
         patch.dict(os.environ, {"XDG_DATA_HOME": str(directory / "data")}),
         patch("coordinare.docker_setup.run_docker", runner),
+        patch("coordinare.docker_setup.smoke_environment", return_value={}),
         patch("coordinare.init_probes.detected_defaults", return_value={"harness": "codex"}),
         patch("coordinare.init_probes.verify_token", return_value="smoke"),
         patch("coordinare.init_probes.verify_repository"),
@@ -47,28 +44,18 @@ def provision(tag: str, directory: Path, runner: docker_setup.DockerRunner) -> s
     return str(raw["performer_endpoints"][0]["image"])
 
 
-def smoke(tag: str, directory: Path, *, runner: docker_setup.DockerRunner = docker_setup.run_docker) -> None:
-    image = provision(tag, directory, runner)
-    result = runner([
-        "docker", "run", "-d", "--rm", "--entrypoint", "python", image,
-        "-m", "performer", "--serve", "--port", "8088",
-    ], PROBE_TIMEOUT_SECONDS)
-    if result.returncode or not result.stdout.strip():
-        raise RuntimeError("Performer container did not start")
-    container = result.stdout.strip()
-    try:
-        deadline = time.monotonic() + START_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            probe = runner(["docker", "exec", container, "python", "-c", HEALTH_PROBE], PROBE_TIMEOUT_SECONDS)
-            if probe.returncode == 0:
-                sys.stdout.write("Published performer started and answered /healthz without a local image build.\n")
-                return
-            time.sleep(POLL_INTERVAL_SECONDS)
-        raise RuntimeError("Performer health check timed out")
-    finally:
-        runner(["docker", "rm", "-f", container], PROBE_TIMEOUT_SECONDS)
+def smoke(tag: str, directory: Path, *, runner: docker_setup.DockerRunner = docker_setup.run_docker, variant: str = "full") -> None:
+    # Init owns the shared smoke probe, so CI exercises the complete product path.
+    provision(tag, directory, runner, variant)
 
 
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="coordinare-docker-smoke-") as temporary:
-        smoke(sys.argv[1], Path(temporary))
+    if sys.argv[1] == "--local-image":
+        # Published base images predate this PR; exercise the checkout's entrypoint.
+        docker_setup.smoke_container(PerformerEndpointConfig(
+            id="smoke", mode="ephemeral", roles=["implementer"], image=sys.argv[2],
+            env={"BACKEND": "codex"}, auth_token=secrets.token_urlsafe(32),
+        ))
+    else:
+        with tempfile.TemporaryDirectory(prefix="coordinare-docker-smoke-") as temporary:
+            smoke(sys.argv[1], Path(temporary), variant=sys.argv[2] if len(sys.argv) > 2 else "full")

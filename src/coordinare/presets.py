@@ -5,9 +5,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from coordinare.metrics import _coordinare_version
-from coordinare.user_config import user_data_directory
-
 PRESET_NAMES = ("solo", "containers")
 # Model choices match the full reference examples. Operators can replace the catalogs.
 HARNESS_DEFAULTS = {
@@ -78,23 +75,13 @@ def expand_preset(raw: dict[str, Any]) -> dict[str, Any]:
     if name == "solo":
         defaults["agent_executable"] = _performer_executable()
     else:
-        data = user_data_directory()
-        defaults["agent_executable"] = ""
-        defaults["performer_image"] = "ghcr.io/vividynamics/coordinare-performer-full:" + _coordinare_version()
-        defaults["env_cache_root"] = str(data / "env-caches")
         defaults["performer_endpoints"] = [
             {
                 "id": "starter",
                 "mode": "ephemeral",
                 "roles": ["implementer"],
-                "image": raw.get("performer_image", defaults["performer_image"]),
-                "secret_sources": {"init_payload": True, "env": False, "creds_file": False},
-                "extra_hosts": ["host.docker.internal:host-gateway"],
-                "volumes": [
-                    {"host_path": str(data / "workspaces"), "container_path": "/workspace", "mode": "rw"},
-                    {"host_path": str(data / "artifacts"), "container_path": "/artifacts", "mode": "rw"},
-                ],
-                "env": {"BACKEND": harness, "TMPDIR": "/workspace"},
+                "image": raw.get("performer_image", "coordinare-performer:full"),
+                "env": {"BACKEND": harness},
             },
         ]
     _validate_catalog_overrides(raw)

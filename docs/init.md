@@ -22,7 +22,9 @@ Codex and Claude Code can use an existing harness login when no API key is
 supplied. OpenCode's native provider requires `OPENAI_API_KEY`. Use `--model`
 and `--endpoint` to choose a different model or OpenAI-compatible endpoint.
 Docker mode checks the runtime, pulls the installed version's published image,
-and writes container mounts and runtime secret delivery. Native providers require a model API
+writes explicit container mounts and runtime secret delivery, and runs a bounded
+throwaway container to check harness readiness and GitHub/model reachability. Use
+`--skip-smoke` to omit that probe on slow machines. Native providers require a model API
 key since host harness login files are not mounted. Self-hosted endpoints can omit it. Use `--image-variant base` or
 `full` (default), and `--image-tag VERSION` for a development install with no
 published image. See [Docker mode setup](docker-mode-setup.md) for verification,
@@ -37,7 +39,8 @@ transcripts live under `$XDG_DATA_HOME/coordinare`, defaulting to
 `~/.local/share/coordinare`. Existing checkout configs retain priority.
 
 The shared preflight runs at the end and prints each failure with its fix. A
-failure exits with code 1 and retains the written files for repair. Successful
+failure exits with code 1 and retains the written files for repair. Docker provisioning
+and smoke failures occur before files are written, preserving any previous setup. Successful
 setup prints the start command and dashboard URL and offers to start at login.
 Accepting calls the shared service installer and starts the background daemon.
 Declining offers a foreground start. Pass `--start` for foreground startup or
