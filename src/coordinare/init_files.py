@@ -87,6 +87,9 @@ def configure_containers(raw: dict[str, Any], image: str, secrets: dict[str, str
             endpoint["image"] = image
             endpoint.setdefault("env", {})["BACKEND"] = raw["harness"]
             endpoint["env"].setdefault("TMPDIR", "/workspace")
+            # npm enables Node's compile cache under TMPDIR. Keep that cache
+            # container-local, rather than leaving root-owned files on the host.
+            endpoint["env"].setdefault("NODE_COMPILE_CACHE", "/var/cache/node-compile-cache")
             endpoint.setdefault("secret_sources", {"init_payload": True, "env": False, "creds_file": False})
             endpoint.setdefault("extra_hosts", ["host.docker.internal:host-gateway"])
             endpoint.setdefault("volumes", [

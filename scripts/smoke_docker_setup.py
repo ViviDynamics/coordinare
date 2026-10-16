@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -64,7 +66,7 @@ def smoke(tag: str, directory: Path, *, runner: docker_setup.DockerRunner = dock
     provision(tag, directory, runner, variant)
 
 
-async def smoke_with_fakes(arguments: list[str], directory: Path) -> None:
+async def smoke_with_fakes(arguments: list[str], directory: Path) -> str:
     async with connectivity_fakes(directory) as fakes:
         if arguments[0] == "--local-image":
             # Published base images predate this PR; exercise the checkout's entrypoint.
@@ -74,15 +76,74 @@ async def smoke_with_fakes(arguments: list[str], directory: Path) -> None:
                 extra_hosts=["host.docker.internal:host-gateway"],
             )
             await asyncio.to_thread(docker_setup.smoke_container, endpoint, connectivity=fakes.probe_environment)
+            image = arguments[1]
         else:
-            await asyncio.to_thread(
+            image = await asyncio.to_thread(
                 provision, arguments[0], directory, docker_setup.run_docker,
                 arguments[1] if len(arguments) > 1 else "full",
                 github_url=fakes.github_url, model_url=fakes.model_url,
             )
         fakes.assert_probed()
+        return image
+
+
+# Remove only the bind mount's contents, not the mount point itself. rmtree
+# does not follow directory symlinks, and top-level symlinks are unlinked.
+CLEANUP_PROBE = """
+import shutil
+from pathlib import Path
+
+for path in Path('/smoke-cleanup').iterdir():
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+"""
+
+
+def cleanup_directory(directory: Path, image: str, *, runner: docker_setup.DockerRunner | None = None) -> None:
+    """Recover old images' root-owned files without replacing the smoke outcome."""
+    try:
+        shutil.rmtree(directory)
+        return
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        # The performer was already stopped by smoke_container's finally block.
+        # Bypass its installer and use only the already selected local image.
+        command = [
+            "docker", "run", "--rm", "--pull=never", "--network=none", "--user", "0:0",
+            "--entrypoint", "python", "-v", f"{directory}:/smoke-cleanup:rw",
+            image, "-c", CLEANUP_PROBE,
+        ]
+        try:
+            result = (runner or docker_setup.run_docker)(command, 30.0)
+            if result.returncode:
+                sys.stderr.write(f"WARNING: container cleanup failed for {directory}: {result.stderr.strip()}\n")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            sys.stderr.write(f"WARNING: container cleanup failed for {directory}: {exc}\n")
+    except OSError as exc:
+        sys.stderr.write(f"WARNING: smoke cleanup left files at {directory}: {exc}\n")
+        return
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        sys.stderr.write(f"WARNING: smoke cleanup left files at {directory}: {exc}\n")
+
+
+def main(arguments: list[str]) -> None:
+    variant = arguments[1] if len(arguments) > 1 else "full"
+    image = arguments[1] if arguments[0] == "--local-image" else f"{docker_setup.IMAGE_REPOSITORY}-{variant}:{arguments[0]}"
+    # Explicit lifecycle avoids TemporaryDirectory's finalizer retrying an
+    # unprivileged deletion after our recovery attempt has reported leftovers.
+    directory = Path(tempfile.mkdtemp(prefix="coordinare-docker-smoke-"))
+    try:
+        image = asyncio.run(smoke_with_fakes(arguments, directory))
+    finally:
+        cleanup_directory(directory, image)
 
 
 if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="coordinare-docker-smoke-") as temporary:
-        asyncio.run(smoke_with_fakes(sys.argv[1:], Path(temporary)))
+    main(sys.argv[1:])
