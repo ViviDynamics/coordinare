@@ -86,6 +86,24 @@ symphonies:
       # gate configs, per-role overrides, etc.
 ```
 
+### Required closer transport at startup
+
+An enabled `performers.closer` is lifecycle-critical. If its configured wire-protocol
+transport cannot be built, startup fails with an error-level
+`performer_transport_build_failed.required_role` event identifying the role, stage,
+effective transport, and underlying error. The original exception is preserved as
+the cause. Other roles retain the existing warning and skip or reduced-concurrency policy.
+
+Correct the closer transport or executable before restarting. SSH has no transport
+implementation; Kubernetes performers use HTTP endpoints rather than a wire-protocol
+transport. For HTTP-only closer deployments, leave wire-protocol transport settings
+unset and configure an endpoint covering `closer`. A configured broken transport is
+fatal even if an HTTP endpoint could cover the role later. This policy does not
+require an absent closer, enable a closer disabled with `max_concurrency: 0`, or
+change the existing HTTP-only path when no wire-protocol transport is configured.
+Only the closer is required by this transport build failure policy; there is no new
+required-role configuration setting.
+
 ### Resolution flow (role → model)
 
 ```
