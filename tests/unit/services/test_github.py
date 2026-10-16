@@ -239,7 +239,7 @@ async def test_squash_merge_returns_merge_result() -> None:
     service.project_id = "P1"
     service.field_cache = {"status_field_id": "F1", "status_option_ids": {}}
 
-    result = await service.squash_merge("PR_1")
+    result = await service.squash_merge("PR_1", expected_head_oid="approved-head")
 
     assert result["merged"] is True
     assert result["merge_commit"]["oid"] == "abc1234"

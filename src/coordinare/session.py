@@ -313,6 +313,10 @@ class CardSession(TypedDict, total=False):
     review_wait_reason: str | None
     review_wait_head: str | None
     review_wait_expired: bool
+    approval_carryover_cache: dict[str, tuple[float, bool]]
+    approval_carryover_unverified_head: str | None
+    approval_docs_notified_head: str | None
+    review_wait_detail: str | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -454,6 +458,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "review_wait_reason",
     "review_wait_head",
     "review_wait_expired",
+    "approval_carryover_cache",
+    "approval_carryover_unverified_head",
+    "approval_docs_notified_head",
+    "review_wait_detail",
 )
 
 # 425: fields that round-trip when present but may be absent from a session
@@ -474,6 +482,10 @@ _SESSION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "review_wait_reason",
     "review_wait_head",
     "review_wait_expired",
+    "approval_carryover_cache",
+    "approval_carryover_unverified_head",
+    "approval_docs_notified_head",
+    "review_wait_detail",
 )
 
 
@@ -528,6 +540,10 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         lifecycle_completed_at=None,
         processed_review_ids=set(),
         surfaced_stale_reviews={},
+        approval_carryover_cache={},
+        approval_carryover_unverified_head=None,
+        review_wait_detail=None,
+        approval_docs_notified_head=None,
         persona_scope=None,
         bounce_counter={},
         no_progress_relays={},

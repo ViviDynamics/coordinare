@@ -355,6 +355,10 @@ def _record_stage_verdict(
     if stage not in VERDICT_STAGES or marker not in EXPECTED_STAGE_MARKER.get(stage, frozenset()):
         return
     head_raw = status.get("head_after") or status.get("head_sha")
+    if not head_raw and stage == "documenting":
+        report = status.get("report")
+        docs = report.get("docs") if isinstance(report, dict) else None
+        head_raw = docs.get("commit_sha") if isinstance(docs, dict) else None
     head = head_raw.strip() if isinstance(head_raw, str) else ""
     if not head:
         logger.debug(
@@ -369,6 +373,9 @@ def _record_stage_verdict(
         "verdict": marker,
         "recorded_at": datetime.now(UTC).isoformat(),
     }
+    before = status.get("head_before")
+    if isinstance(before, str) and before.strip():
+        verdicts[stage]["head_before"] = before.strip()
     state["stage_verdicts"] = verdicts
     logger.info(
         "monitor_performer.stage_verdict_recorded",

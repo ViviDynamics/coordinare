@@ -61,7 +61,7 @@ class GitHubServiceProtocol(Protocol):
     async def request_reviews(self, pr_id: str, reviewer_logins: list[str]) -> dict[str, Any]: ...
     async def request_reviewers(self, owner: str, repo: str, pr_number: int, reviewers: list[str]) -> None: ...
     async def check_mergeability(self, pr_id: str) -> dict[str, Any]: ...
-    async def squash_merge(self, pr_id: str) -> dict[str, Any]: ...
+    async def squash_merge(self, pr_id: str, *, expected_head_oid: str | None = None) -> dict[str, Any]: ...
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]: ...
     async def close_issue(self, issue_id: str) -> dict[str, Any]: ...
     async def get_pr_files(self, owner: str, repo: str, pr_number: int) -> dict[str, Any]: ...
@@ -159,6 +159,7 @@ class SymphonyRuntimeState:
     # it was last read. In-memory: a restart reads it again at its first cycle.
     merge_review: dict[str, str] | None = None
     merge_review_checked_at: float | None = None
+    merge_review_rules: dict[str, bool] = dc_field(default_factory=dict)
 
 
 DaemonPhase = Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
@@ -337,6 +338,11 @@ class CoordinareState(TypedDict, total=False):
     review_wait_reason: str | None
     # 101: the symphony-level review condition for the running symphony (external_review_required,
     # clear, unreadable), set by the daemon before each cycle. None until the first read.
+    merge_review_rules: dict[str, bool]
+    approval_carryover_cache: dict[str, tuple[float, bool]]
+    approval_carryover_unverified_head: str | None
+    approval_docs_notified_head: str | None
+    review_wait_detail: str | None
     merge_review_condition: str | None
     review_wait_head: str | None
     review_wait_expired: bool
@@ -546,12 +552,17 @@ def initial_state() -> CoordinareState:
         "error_count": 0,
         "github_field_cache": {},
         "surfaced_stale_reviews": {},
+        "approval_carryover_cache": {},
+        "approval_carryover_unverified_head": None,
+        "review_wait_detail": None,
+        "approval_docs_notified_head": None,
         "open_questions": [],
         # 494: fingerprints of questions consumed by the loop-broken
         # detector's re-queue (see handle_blocked / CardSession).
         "consumed_loop_questions": [],
         "system_error_count": 0,
         "merge_review_condition": None,
+        "merge_review_rules": {},
         "system_error_notified": False,
         "card_clarifications": [],
         "performer_events": [],

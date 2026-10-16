@@ -110,9 +110,11 @@ def record_dispatched(session: dict[str, Any], *, blueprint_hash: str, session_i
     logger.info("documenting_side.dispatched", card_id=session.get("card_id"), blueprint_hash=blueprint_hash, session_id=session_id)
 
 
-def record_result(session: dict[str, Any], *, status: str, head_sha: str | None, reason: str | None, paths: list[str] | None = None, writer_active: bool = False) -> None:
+def record_result(session: dict[str, Any], *, status: str, head_sha: str | None, reason: str | None, paths: list[str] | None = None, writer_active: bool = False, head_before: str | None = None) -> None:
     side = dict(session.get("documenting_side") or {})
     side.update({"status": status, "head_sha": head_sha, "result_reason": redact_state_value(reason), "paths": (paths or [])[:20], "writer_active": writer_active})
+    if isinstance(head_before, str) and head_before.strip():
+        side["head_before"] = head_before.strip()
     session["documenting_side"] = side
     logger.info("documenting_side.%s" % ("completed" if status == "done" else "failed"),
                 card_id=session.get("card_id"), blueprint_hash=side.get("blueprint_hash"), head_sha=head_sha, reason=reason)
@@ -181,7 +183,7 @@ async def poll_to_completion(
             docs = docs if isinstance(docs, dict) else {}
             paths = docs.get("files_written") or (status or {}).get("files_modified") or []
             paths = paths if isinstance(paths, list) else []
-            record_result(session, status="done", head_sha=(status or {}).get("head_sha") or docs.get("commit_sha"), reason=None, paths=[p for p in paths if isinstance(p, str) and p.startswith("docs/")])
+            record_result(session, status="done", head_sha=(status or {}).get("head_sha") or docs.get("commit_sha"), reason=None, head_before=status.get("head_before"), paths=[p for p in paths if isinstance(p, str) and p.startswith("docs/")])
             return "done"
         if outcome == "failed":
             record_result(session, status="failed", head_sha=None, reason=str((status or {}).get("reason") or (status or {}).get("status"))[:300])

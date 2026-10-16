@@ -521,7 +521,7 @@ async def test_check_mergeability_non_dict_node_returns_missing_pr() -> None:
 @pytest.mark.asyncio
 async def test_squash_merge_non_dict_returns_not_merged() -> None:
     svc = _initialized_svc({"mergePullRequest": {"pullRequest": "bad"}})
-    result = await svc.squash_merge("PR_1")
+    result = await svc.squash_merge("PR_1", expected_head_oid="approved-head")
     assert result == {"merged": False}
 
 
