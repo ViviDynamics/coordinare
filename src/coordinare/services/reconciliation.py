@@ -488,7 +488,7 @@ def detect_wedged_state(
 
 # Issue #85: phases that legitimately keep no performer container.  A
 # session parked in one of them is not a zombie and must never be swept.
-# Mirrors NON_SLOT_PHASES (check_board.py) plus the watchdog-owned
+# Mirrors NON_SLOT_PHASES (pipeline_budget.py) plus the watchdog-owned
 # recovery / system_error states and the orchestration retry parks:
 # ``merging`` (merge_pr.py leaves it for the next cycle after a
 # transient GitHub failure) and ``relay_feedback`` (monitor_pr.py).

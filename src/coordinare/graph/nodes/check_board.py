@@ -55,9 +55,10 @@ from coordinare.services.dependency import (
 )
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.orphan_pr import run_per_cycle_sweep
-from coordinare.services.pipeline_budget import has_live_work
+from coordinare.services.pipeline_budget import count_slot_consuming_sessions
 from coordinare.services.pr_lifecycle import retained_pr_is_open
 from coordinare.services.review_staleness import classify_review_staleness
+from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.todo_waits import (
     clear_waits,
     open_slots,
@@ -176,61 +177,6 @@ async def _derive_resume_stage(github: GitHubServiceProtocol, card: dict[str, An
 # Phases where coordinare is passively waiting for an external actor (human reviewer,
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
-
-# One slot rule (#179, #186): a card holds a slot while it has work of ours to do or
-# under way. The pipeline budget (services/pipeline_budget.py) applies the same
-# rule at dispatch: a card waiting on a human review releases its reservation, and
-# a card waiting on checks or on the daemon keeps it.
-#
-# Phases that do not occupy a concurrency slot.  Blocked cards are waiting on a
-# human answer and have no live performer running, so they shouldn't prevent
-# the coordinare from picking up additional TODO work up to ``max_concurrent_cards``.
-# Kept separate from PASSIVE_PHASES because the daemon clears ``current_card``
-# whenever the fallback cycle settles into PASSIVE_PHASES — that's correct for
-# ``monitoring_pr`` but would disrupt blocked-card answer detection.
-NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked", "idle", "done", "env_blocked"})
-
-
-def _session_consumes_slot(session: dict[str, Any], board_status: str | None = None) -> bool:
-    """Quiescent history releases admission; owned writers keep their slot.
-
-    #186: the live-work test is the budget's (``has_live_work``). What remains
-    here is pickup-only: it also reads the board column, which the budget does not
-    have. A session with no live work is then judged by its board column and its
-    phase, the way the budget judges a candidate.
-    """
-    if has_live_work(session):
-        return True
-    phase = session.get("phase")
-    card = session.get("current_card") or {}
-    status = board_status if board_status is not None else card.get("status")
-    if session.get("board_paused") or status in {"BACKLOG", "BLOCKED", "DONE", "CLOSED", "CANCELED"}:
-        return False
-    return board_status == "IN_PROGRESS" or phase not in NON_SLOT_PHASES
-
-
-def _count_slot_consuming_sessions(state: CoordinareState) -> int:
-    """Count active sessions occupying a concurrency slot."""
-    sessions: dict[str, Any] = state.get("active_sessions") or {}
-    snapshot = state.get("board_snapshot") or {}
-    live_statuses = {
-        card_id: column
-        for column, card_ids in snapshot.items()
-        if isinstance(card_ids, list)
-        for card_id in card_ids
-    }
-
-    def consumes_slot(card_id: str, session: dict[str, Any]) -> bool:
-        card = session.get("current_card") or {}
-        candidates = (card_id, str(card.get("id") or ""), str(card.get("content_id") or ""))
-        status = next((live_statuses[candidate] for candidate in candidates if candidate in live_statuses), None)
-        return _session_consumes_slot(session, status)
-
-    return sum(
-        1 for card_id, sess in sessions.items()
-        if consumes_slot(card_id, sess)
-    )
-
 
 # 069: phases the per-session invocation must keep running on the next cycle.
 # When check_board is invoked for an existing IN_PROGRESS card whose session
@@ -820,7 +766,7 @@ async def _poll_board_once(
             # Keep running without crashing; a later cycle will retry.
             return None
         try:
-            board = await board_provider.poll_board()
+            board = await poll_board_observed(state, board_provider)
             clear_deferred_github_operation(state, "poll_board")
         except Exception as exc:
             if is_transient_github_outage_error(exc):
@@ -1229,7 +1175,7 @@ async def _handle_in_review_cards(
         # monitoring_pr session and free slots are filled from TODO.
         if (
             state.get("phase") in ("dispatching", "blocked")
-            and _count_slot_consuming_sessions(state) >= max_cards
+            and count_slot_consuming_sessions(state) >= max_cards
         ):
             return state
 
@@ -1406,7 +1352,7 @@ async def _handle_in_progress_cards(
         if (
             current_phase in ("dispatching", "monitoring_performer", "blocked")
             and state.get("current_card") is not None
-            and _count_slot_consuming_sessions(state) >= max_cards
+            and count_slot_consuming_sessions(state) >= max_cards
         ):
             return state
         # Otherwise: either no active card, or open slots remain — fall through
@@ -1443,7 +1389,7 @@ async def _handle_in_progress_cards(
             # "primary" that falls through to TODO pickup — deterministic
             # across the fanout, so only one session traverses GitHub
             # side-effect paths per cycle.
-            if _count_slot_consuming_sessions(state) >= max_cards:
+            if count_slot_consuming_sessions(state) >= max_cards:
                 return state
             if current_id != min(in_progress):
                 return state
@@ -1625,7 +1571,7 @@ async def _handle_blocked_cards(
             # 069 follow-up: always route a still-blocked card to
             # handle_blocked. The previous "phase=idle when reminder not due"
             # branch wedged the session — state_to_session mirrored that "idle"
-            # back onto session.phase, which _count_slot_consuming_sessions
+            # back onto session.phase, which count_slot_consuming_sessions
             # treats as slot-consuming. Result: blocked card occupied a slot
             # indefinitely with no work and TODO pickup never fired.
             # handle_blocked has its own reminder-window dedup, so routing
@@ -2066,7 +2012,7 @@ async def _pickup_todo_cards(
     await _reset_and_rehydrate(state, board, eligible_todo, max_cards, active_sessions)
     # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
     # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
-    active_count = _count_slot_consuming_sessions(state)
+    active_count = count_slot_consuming_sessions(state)
     slots_available = open_slots(active_count, max_cards)
     lifecycle_seq = [
         str(s) for s in (state.get("lifecycle_sequence") or ["implementing"])
@@ -2160,7 +2106,7 @@ def _record_todo_waits(
             active_card_ids=set((state.get("active_sessions") or {}).keys()),
             ownership=ownership,
             assignees=assignees,
-            in_use=_count_slot_consuming_sessions(state),
+            in_use=count_slot_consuming_sessions(state),
             limit=max_cards,
         )
         message = board_idle_explanation(

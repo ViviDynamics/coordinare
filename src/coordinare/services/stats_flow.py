@@ -11,6 +11,7 @@ from coordinare.services.stats_sources import LIFECYCLE_KIND
 P90 = 0.9
 MEDIAN = 0.5
 ROUND_DIGITS = 3
+RECENT_LIMIT = 10
 
 
 def instant(value: object) -> datetime | None:
@@ -173,5 +174,24 @@ def card_flow(
             if isinstance(board, dict)
             else None
         )
+        completed = [
+            {"card": card, "merged_at": event["at"]}
+            for (owner, card), events in records.items() if owner == symphony
+            for event in events
+            if event.get("kind") == "merged"
+            and (at := instant(event.get("at"))) is not None
+            and at <= end and (start is None or at >= start)
+        ]
+        daily: dict[str, int] = defaultdict(int)
+        for item in completed:
+            at = instant(item["merged_at"])
+            if at is not None:
+                daily[at.date().isoformat()] += 1
+        block["daily_completed"] = [
+            {"day": day, "cards_completed": count} for day, count in sorted(daily.items())
+        ]
+        block["recent_completed"] = sorted(
+            completed, key=lambda item: instant(item["merged_at"]) or end, reverse=True,
+        )[:RECENT_LIMIT]
         result[symphony] = block
     return result

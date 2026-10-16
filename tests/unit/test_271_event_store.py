@@ -216,6 +216,24 @@ async def test_queries_all_filters_and_cursor_ties(tmp_path: Path, fts: bool) ->
 
 
 @pytest.mark.asyncio
+async def test_fresh_store_finishes_empty_index_builds_before_readers(tmp_path: Path) -> None:
+    from coordinare.services.event_store_db import FILTER_INDEXES
+
+    store = EventStore(tmp_path / "events.db")
+    await store.start()
+    try:
+        await store._call(store._initialize)
+        await drain(store)
+        with sqlite3.connect(store.path) as db:
+            indexes = {row[1] for row in db.execute("PRAGMA index_list(events)")}
+        assert {f"events_{name}" for name, _ in FILTER_INDEXES} <= indexes
+        assert not store._filter_migration_active
+        assert (await store.query_events())["events"] == []
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_query_limit_cursor_validation_and_unusual_text(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "events.db")
     await store.start()

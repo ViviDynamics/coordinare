@@ -43,3 +43,13 @@ function statsBars(items, label) {
     return '<div title="' + esc(label + ': ' + item.label + ' ' + item.value) + '"><span>' + esc(item.label) + '</span><svg viewBox="0 0 100 8" aria-hidden="true"><rect width="' + esc(String(item.value / max * 100)) + '" height="8" fill="currentColor"/></svg><span>' + esc(String(item.value)) + '</span></div>';
   }).join('') + '</div>';
 }
+
+// Compatibility adapter for daily statistics series; rendering stays shared.
+function statsChartHtml(points, description) {
+  if (!(points || []).some(function(point) { return typeof point.value === 'number' && isFinite(point.value); })) {
+    return '<p class="muted" title="' + esc(description) + '">Not recorded</p>';
+  }
+  return statsChart((points || []).map(function(point, index) {
+    return {x: typeof point.x === 'number' ? point.x : index, label: point.label, value: point.value};
+  }), description, function(value) { return value == null ? 'Not recorded' : String(value); });
+}

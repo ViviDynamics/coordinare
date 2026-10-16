@@ -178,3 +178,33 @@ function bootstrapLiveActivity(entries) {
   if (!feed || !_bootstrapDetail || _bootstrapDetail.run_id !== address.run) return;
   feed.innerHTML = merged.map(function(event) { return bootstrapEventRow(event, _bootstrapDetail); }).join('');
 }
+
+function wireSymphonyDetailActions(name, el) {
+  var bootstrap = el.querySelector('#sym-env-bootstrap-btn');
+  if (bootstrap) bootstrap.onclick = function() {
+    return bootstrapAction(name, false, bootstrap, el.querySelector('#sym-env-bootstrap-msg'));
+  };
+  var wiki = el.querySelector('#sym-wiki-init-btn');
+  if (wiki) wiki.onclick = function() {
+    return symphonyWikiInitAction(name, wiki, el.querySelector('#sym-wiki-init-msg'));
+  };
+}
+
+async function symphonyWikiInitAction(name, button, message) {
+  button.disabled = true;
+  message.textContent = 'Dispatching...';
+  try {
+    var response = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init',
+      {method: 'POST', credentials: 'same-origin'});
+    if (response.status === BOOTSTRAP_HTTP_UNAUTHORIZED) message.textContent = 'Sign in to perform this action.';
+    else if (response.status === BOOTSTRAP_HTTP_FORBIDDEN) message.textContent = 'You do not have permission to perform this action.';
+    else {
+      var body = await response.json();
+      message.textContent = response.ok ? 'Accepted: building the wiki, a seed PR will open on completion' :
+        body.error || body.detail || 'Error ' + response.status;
+    }
+  } catch (error) {
+    message.textContent = 'Network error';
+  }
+  button.disabled = false;
+}

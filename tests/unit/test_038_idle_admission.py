@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from coordinare.graph.nodes.check_board import _count_slot_consuming_sessions, _pickup_todo_cards
+from coordinare.graph.nodes.check_board import _pickup_todo_cards
+from coordinare.services.pipeline_budget import count_slot_consuming_sessions
 
 
 @pytest.mark.asyncio
@@ -40,7 +41,7 @@ async def test_paused_completed_and_blocked_history_releases_fresh_todo_capacity
 def test_passive_history_releases_capacity_but_owned_live_side_writer_retains_it(phase: str, side: dict) -> None:
     state = {"active_sessions": {"held": {"phase": phase, "documenting_side": side}}}
     live = bool(side.get("session_id")) and (side.get("status") == "running" or side.get("writer_active"))
-    assert _count_slot_consuming_sessions(state) == int(live)
+    assert count_slot_consuming_sessions(state) == int(live)
 
 
 @pytest.mark.asyncio
@@ -87,14 +88,14 @@ async def test_explicit_paused_todo_history_only_holds_capacity_for_a_live_side_
 def test_stale_queued_terminal_or_held_card_does_not_keep_admission_capacity(status: str) -> None:
     session = {"phase": "dispatching", "current_card": {"id": "old", "status": status},
                "agent_dispatch": {"session_id": "historical-worker"}}
-    assert _count_slot_consuming_sessions({"active_sessions": {"old": session}}) == 0
+    assert count_slot_consuming_sessions({"active_sessions": {"old": session}}) == 0
 
 
 @pytest.mark.parametrize("phase", ["monitoring_performer", "monitoring_agent"])
 def test_owned_foreground_worker_keeps_capacity_during_board_pause_or_completion(phase: str) -> None:
     session = {"phase": phase, "board_paused": True, "current_card": {"id": "old", "status": "DONE"},
                "agent_dispatch": {"session_id": "still-running-worker"}}
-    assert _count_slot_consuming_sessions({"active_sessions": {"old": session}}) == 1
+    assert count_slot_consuming_sessions({"active_sessions": {"old": session}}) == 1
 
 
 @pytest.mark.asyncio

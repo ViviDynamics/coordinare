@@ -129,6 +129,12 @@ function stageLabel(stage) {
   return esc(vocabularyKindLabel('stage_labels', stage));
 }
 
+// Board column names shared by the Dashboard and symphony statistics.
+function boardColumnLabel(column) {
+  var labels = {TODO: 'To Do', BLOCKED: 'Blocked', IN_PROGRESS: 'In Progress', IN_REVIEW: 'In Review', DONE: 'Done', BACKLOG: 'Backlog'};
+  return Object.prototype.hasOwnProperty.call(labels, column) ? labels[column] : String(column || '');
+}
+
 function agentLabel(role) {
   return esc(vocabularyKindLabel('agent_labels', role));
 }
