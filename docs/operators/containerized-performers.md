@@ -122,6 +122,22 @@ not in routing YAML. The chart passes this endpoint setting through under
 See [the LiteLLM guide](litellm-proxy.md#assessor-on-a-reasoning-model-behind-litellm-223)
 for routing contents, validation and garden deployment commands.
 
+### Workspace storage
+
+Init uses a Docker named volume at `/workspace` for clones, TMPDIR and local
+workspace caches. The `volume_name` is `coordinare-workspaces-<config directory
+hash>`; separate config directories get separate volumes. Inspect a configured
+volume with `docker run --rm -v <vol>:/w alpine ls /w`. Each endpoint mount
+accepts exactly one of `volume_name` or `host_path`; `mode` defaults to `ro`,
+while generated workspace mounts use `rw`.
+
+Artifacts, optional diagnostic logs/captures and `/devenv/<symphony>` caches keep
+host binds. The daemon must read and verify the environment cache on the host;
+bootstrap toolchains and optional diagnostic writers can still leave root-owned
+files there. Transcripts and run logs use API/runtime streams and daemon-owned
+files. See [Docker setup](../docker-mode-setup.md) for migration and one-time old
+workspace cleanup (`sudo rm -rf <data>/coordinare/workspaces`).
+
 ### Where logs and telemetry go
 
 `performer_log_dir` is mounted read-write into every ephemeral container, so the

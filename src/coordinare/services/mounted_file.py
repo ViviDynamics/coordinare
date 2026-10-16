@@ -91,7 +91,7 @@ def performer_mount_hosts(config: ProjectConfiguration) -> list[Path]:
         hosts.append(Path(log_dir).expanduser())
     for endpoint in config.performer_endpoints:
         # Expanded the way the config validator expands it, so both agree on ``~`` volumes.
-        hosts.extend(Path(volume.host_path).expanduser() for volume in endpoint.volumes)
+        hosts.extend(Path(volume.host_path).expanduser() for volume in endpoint.volumes if volume.host_path is not None)
     hosts.append(Path(config.env_cache_root).expanduser())
     return hosts
 

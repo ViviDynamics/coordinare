@@ -73,11 +73,17 @@ and state. It does not guarantee third party dependency versions remain identica
 ```sh
 sh install.sh --uninstall
 sh install.sh --uninstall --purge
+sh install.sh --uninstall --yes --config-dir /path/to/setup
 ```
 
 First remove any login registration with `coordinare service uninstall`, or stop
 the foreground process with Ctrl+C. Installer uninstall removes the tool and its
-bundled performer. Without `--purge`, all configuration and state remain. Explicit purge removes `~/.coordinare`, including
+bundled performer. It also offers to remove the managed workspace volume for the
+default init config directory (`--config-dir` selects another). `--yes` or
+`COORDINARE_YES=1` consents to deleting its workspace data without a terminal;
+otherwise unattended removal preserves the volume. Docker/removal failures warn
+and do not prevent tool removal. Custom named volumes remain operator-managed.
+Without `--purge`, all configuration and state remain. Explicit purge removes `~/.coordinare`, including
 its config, caches and any state stored there. It does not purge init's XDG
 config or data directories. Custom config paths and project
 state such as `./coordinare.state.json` remain operator managed. uv, its managed

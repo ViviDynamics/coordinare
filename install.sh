@@ -30,6 +30,7 @@ main() (
     boolean "${COORDINARE_NO_INIT:-0}" >/dev/null
     uninstall=$(boolean "${COORDINARE_UNINSTALL:-0}")
     purge=$(boolean "${COORDINARE_PURGE:-0}")
+    config_directory=
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --version)
@@ -39,10 +40,13 @@ main() (
             --no-init) shift ;; # Init is an explicit next step, including on a terminal.
             --uninstall) uninstall=1; shift ;;
             --purge) purge=1; shift ;;
+            --config-dir)
+                [ "$#" -ge 2 ] || fail '--config-dir needs a directory.'
+                config_directory=$2; shift 2 ;;
             --help|-h)
                 printf '%s\n' \
                     'Usage: sh install.sh [--version TAG] [--yes] [--no-init]' \
-                    '       sh install.sh --uninstall [--purge]' \
+                    '       sh install.sh --uninstall [--purge] [--yes] [--config-dir DIR]' \
                     'Environment: COORDINARE_VERSION, COORDINARE_YES, COORDINARE_NO_INIT,' \
                     '             COORDINARE_UNINSTALL, COORDINARE_PURGE.' \
                     'Installation verifies release wheels, installs with uv, and prints: coordinare init.'
@@ -51,6 +55,7 @@ main() (
         esac
     done
     [ "$purge" = 0 ] || [ "$uninstall" = 1 ] || fail '--purge requires --uninstall.'
+    [ -z "$config_directory" ] || [ "$uninstall" = 1 ] || fail '--config-dir requires --uninstall.'
     if [ -n "$version" ]; then
         normalized=$(normalize_version "$version") || fail 'Invalid version. Use a numeric release tag such as 2026.10.84.'
     fi
@@ -83,7 +88,56 @@ main() (
         uv_command=$HOME/.local/bin/uv
     fi
 
+    remove_workspace_volume() {
+        if [ -z "$config_directory" ]; then
+            case "${XDG_CONFIG_HOME:-}" in
+                /*) config_directory=$XDG_CONFIG_HOME/coordinare ;;
+                *) config_directory=$HOME/.config/coordinare ;;
+            esac
+        fi
+        # Match user_config.workspace_volume_name: physical absolute path,
+        # UTF-8 bytes with no newline, first 12 SHA256 hex digits.
+        [ -d "$config_directory" ] || return 0
+        config_directory=$(CDPATH='' cd -- "$config_directory" && pwd -P) || return 0
+        if ! command -v docker >/dev/null 2>&1; then
+            printf 'WARNING: Docker is unavailable; workspace volume cleanup skipped.\n' >&2
+            return 0
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+            workspace_digest=$(printf '%s' "$config_directory" | sha256sum)
+        elif command -v shasum >/dev/null 2>&1; then
+            workspace_digest=$(printf '%s' "$config_directory" | shasum -a 256)
+        else
+            printf 'WARNING: SHA256 tool missing; workspace volume cleanup skipped.\n' >&2
+            return 0
+        fi
+        workspace_digest=$(printf '%s\n' "$workspace_digest" | awk '{print substr($1, 1, 12)}')
+        workspace_volume=coordinare-workspaces-$workspace_digest
+        if ! docker volume inspect "$workspace_volume" >/dev/null 2>&1; then
+            printf 'Workspace volume %s is absent or Docker could not inspect it; no volume removed.\n' "$workspace_volume" >&2
+            return 0
+        fi
+        remove_volume=$yes
+        if [ "$remove_volume" != 1 ] && [ -t 0 ]; then
+            printf 'Remove Docker volume %s and all its workspaces [no]: ' "$workspace_volume" >&2
+            read -r volume_answer || volume_answer=
+            case "$volume_answer" in
+                y|Y|yes|YES) remove_volume=1 ;;
+            esac
+        fi
+        if [ "$remove_volume" = 1 ]; then
+            if docker volume rm "$workspace_volume"; then
+                printf 'Removed workspace volume %s.\n' "$workspace_volume"
+            else
+                printf 'WARNING: Could not remove workspace volume %s (it may be in use). Stop its containers and retry: docker volume rm %s\n' "$workspace_volume" "$workspace_volume" >&2
+            fi
+        else
+            printf 'Preserved workspace volume %s. Rerun --uninstall --yes to remove it (include --config-dir for custom installs).\n' "$workspace_volume" >&2
+        fi
+    }
+
     if [ "$uninstall" = 1 ]; then
+        remove_workspace_volume
         if [ -d "$UV_TOOL_DIR/coordinare" ]; then
             [ -n "$uv_command" ] || fail 'uv is missing. Install uv from https://astral.sh/uv/install.sh, then rerun --uninstall.'
             "$uv_command" tool uninstall coordinare || fail 'uv could not uninstall coordinare.'

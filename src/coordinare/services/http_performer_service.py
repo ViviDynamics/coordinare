@@ -1013,7 +1013,7 @@ class HTTPPerformerService:
         """
         if self._transcripts is None or not self._transcripts.enabled:
             return payload
-        mounts = [Path(volume.host_path) for volume in extra_volumes or []]
+        mounts = [Path(volume.host_path) for volume in extra_volumes or [] if volume.host_path is not None]
         conflicts = (
             transcript_root_conflicts(self._transcripts.root, RootGuard(performer_mounts=tuple(mounts)))
             if mounts

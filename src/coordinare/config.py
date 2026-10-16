@@ -1607,6 +1607,8 @@ class ProjectConfiguration(BaseSettings):
             mounts.append(("performer_log_dir", self.performer_log_dir))
         for endpoint in self.performer_endpoints:
             for index, volume in enumerate(endpoint.volumes):
+                if volume.host_path is None:
+                    continue
                 label = f"performer_endpoints[{endpoint.id}].volumes[{index}].host_path"
                 mounts.append((label, volume.host_path))
         return mounts
