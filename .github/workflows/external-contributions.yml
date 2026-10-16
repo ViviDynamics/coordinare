@@ -59,9 +59,9 @@ jobs:
         # SHA-pinned rather than tag-pinned, unlike the other workflows here.
         # This is the one job that holds a write token AND is triggered by an
         # outside party, so a repointed tag would be a live path to abusing that
-        # token. f28e40c is actions/github-script v7.1.0 (resolved 2026-08-27).
+        # token. ed59741 is actions/github-script v8 (resolved 2026-10-16).
         # When bumping, resolve the new tag to its commit and update both.
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             const pr = context.payload.pull_request;
