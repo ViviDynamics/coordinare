@@ -130,6 +130,7 @@ class EventStore:
         self._usage_drops: set[tuple[str, str, str]] = set()
         self._pruned = 0
         self._migration_active = False
+        self._board_check_migration_active: bool | None = None
         self._filter_migration_active = True
         self._accepting = True
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -251,6 +252,12 @@ class EventStore:
         db = sqlite3.connect(self.path)
         try:
             create_schema(db, enable_fts=self._enable_fts)
+            # Build empty indexes before readers can arrive. Deferring these
+            # builds races the first reads with exclusive schema locks.
+            if db.execute("SELECT 1 FROM events LIMIT 1").fetchone() is None:
+                while migrate_filter_index(db):
+                    pass
+                self._filter_migration_active = False
         except Exception:
             db.close()
             raise
@@ -290,7 +297,8 @@ class EventStore:
         insert_sql = "".join(("INSERT OR IGNORE INTO events (", columns, ") VALUES (", placeholders, ")"))
         accepted_sql = "".join(("SELECT ", columns, " FROM events WHERE id > ? ORDER BY id"))
         with self._db:
-            record_board_checks(self._db, polls)
+            if polls:
+                record_board_checks(self._db, polls)
             before = self._db.execute("SELECT coalesce(max(id),0) FROM events").fetchone()[0]
             inserted = self._db.executemany(
                 insert_sql,
@@ -423,8 +431,17 @@ class EventStore:
         if self._db is None:
             return 0
         migrated, self._migration_active = migrate_performer_batch(self._db, self._prune_batch_size)
-        rolled_up = migrate_board_checks_batch(self._db, self._prune_batch_size)
-        self._migration_active = self._migration_active or bool(rolled_up)
+        if self._board_check_migration_active is None:
+            # New polls go straight to hourly counters, so absence is final
+            # for this writer's lifetime. Use the kind index and stop at one.
+            self._board_check_migration_active = self._db.execute(
+                "SELECT 1 FROM events WHERE kind=? LIMIT 1", (BOARD_CHECK_KIND,),
+            ).fetchone() is not None
+        rolled_up = 0
+        if self._board_check_migration_active:
+            rolled_up = migrate_board_checks_batch(self._db, self._prune_batch_size)
+            self._board_check_migration_active = bool(rolled_up)
+        self._migration_active = self._migration_active or self._board_check_migration_active
         removed = prune_batch(self._db, self.path, self.config, self._prune_batch_size)
         self._pruned += removed
         EXPORT_METRICS.pruned.inc(removed)

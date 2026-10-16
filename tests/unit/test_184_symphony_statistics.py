@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -293,7 +294,6 @@ def test_stats_health_omits_unused_runtime_payloads() -> None:
 @pytest.mark.asyncio
 async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_path: Path) -> None:
     from coordinare.services.event_store_db import create_schema
-    from coordinare.services.event_store_query import QUERY_TIMEOUT_SECONDS
     from coordinare.services.stats_poll_db import record_board_checks
     from coordinare.services.stats_reliability import read_board_checks
 
@@ -312,10 +312,34 @@ async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_pa
         ))
         assert db.execute("SELECT count(*) FROM stats_board_checks").fetchone()[0] == 16 * 720
         assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    rows_read = dict.fromkeys(scope, 0)
+
+    class CountedConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: tuple = ()) -> sqlite3.Cursor:
+            cursor = super().execute(sql, parameters)
+            if "FROM stats_board_checks" in sql:
+                plan = super().execute("EXPLAIN QUERY PLAN " + sql, parameters).fetchall()
+                details = " ".join(row[-1] for row in plan)
+                assert "SEARCH stats_board_checks USING PRIMARY KEY" in details
+                assert "symphony=? AND hour>? AND hour<?" in details
+                assert "TEMP B-TREE" not in details
+
+                def count_row(_cursor: sqlite3.Cursor, row: tuple) -> tuple:
+                    rows_read[parameters[0]] += 1
+                    return row
+
+                cursor.row_factory = count_row
+            return cursor
+
+    connect = sqlite3.connect
     began = time.monotonic()
-    result, limited = read_board_checks(path, scope, start.isoformat(), NOW.isoformat())
+    with patch("coordinare.services.stats_reliability.sqlite3.connect", side_effect=(
+        lambda *args, **kwargs: connect(*args, **kwargs, factory=CountedConnection)
+    )):
+        result, limited = read_board_checks(path, scope, start.isoformat(), NOW.isoformat())
     elapsed = time.monotonic() - began
-    assert elapsed < QUERY_TIMEOUT_SECONDS, elapsed
+    assert elapsed < 5, elapsed
+    assert rows_read == dict.fromkeys(scope, 720)
     assert not limited
     for name in scope:
         assert result[name]["checks"] == 86400
@@ -430,6 +454,82 @@ def test_legacy_poll_rollup_is_bounded_restart_safe_and_reports_pending(tmp_path
     assert result["alpha"]["recent_errors"] == [
         {"at": (NOW - timedelta(minutes=65)).isoformat(), "reason": "last error"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_store_remembers_no_legacy_polls_and_skips_migration(tmp_path: Path) -> None:
+    from coordinare.services.stats_poll_db import migrate_board_checks_batch
+
+    store = EventStore(tmp_path / "events.db", enable_fts=False)
+    await store.start()
+    try:
+        await store._call(store._initialize)
+        await store.flush()
+        statements: list[str] = []
+
+        def trace() -> None:
+            assert store._db is not None
+            store._db.set_trace_callback(statements.append)
+
+        await store._call(trace)
+        with patch("coordinare.services.event_store.migrate_board_checks_batch", wraps=migrate_board_checks_batch) as migrate:
+            for _ in range(3):
+                assert await store.prune() == 0
+            migrate.assert_not_called()
+        probes = [sql for sql in statements if "SELECT" in sql and "stats.board_check" in sql]
+        assert len(probes) == 1
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("fts", [False, True])
+def test_readers_remain_available_between_short_poll_migration_batches(tmp_path: Path, fts: bool) -> None:
+    from coordinare.services.event_store_db import create_schema
+    from coordinare.services.event_store_query import EventFilters, read_events
+    from coordinare.services.stats_poll_db import migrate_board_checks_batch
+
+    path = tmp_path / "events.db"
+    total = 40
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=fts)
+        db.executemany(
+            "INSERT INTO events(ts,symphony,kind,message,data) VALUES (?,?,?,?,?)",
+            [(NOW.isoformat(), "alpha", "stats.board_check", "quota", '{"success":false}')
+             for _ in range(total)],
+        )
+        db.execute("INSERT INTO events(ts,message) VALUES (?, 'retained')", (NOW.isoformat(),))
+        db.commit()
+        remaining = total
+        reads = 0
+        decode = json.loads
+
+        def read_while_preparing(raw: str) -> object:
+            if raw == '{"success":false}':
+                assert not db.in_transaction
+                assert read_events(path, EventFilters(kind="progress"), None, 100)["events"] == []
+            return decode(raw)
+
+        def read_at_yield(_seconds: float) -> None:
+            nonlocal reads
+            assert not db.in_transaction
+            assert len(read_events(path, EventFilters(kind="progress"), None, 100)["events"]) == 0
+            assert len(read_events(path, EventFilters(text="retained"), None, 100)["events"]) == 1
+            reads += 1
+
+        with (
+            patch("time.sleep", side_effect=read_at_yield),
+            patch("coordinare.services.stats_poll_db.json.loads", side_effect=read_while_preparing),
+        ):
+            while remaining:
+                previous_reads = reads
+                moved = migrate_board_checks_batch(db, 256)
+                assert 0 < moved <= 16
+                remaining -= moved
+                assert reads == previous_reads + 1
+                assert db.execute("SELECT sum(polls) FROM stats_board_checks").fetchone()[0] == total - remaining
+                assert db.execute("SELECT count(*) FROM events WHERE kind='stats.board_check'").fetchone()[0] == remaining
+        assert reads >= 3
+        assert migrate_board_checks_batch(db, 256) == 0
 
 
 @pytest.mark.asyncio

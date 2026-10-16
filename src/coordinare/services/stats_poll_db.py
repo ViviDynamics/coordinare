@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -8,6 +9,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
 BOARD_CHECK_KIND = "stats.board_check"
+MIGRATION_BATCH_SIZE = 16
+MIGRATION_WRITE_SECONDS = 0.01
+MIGRATION_YIELD_SECONDS = 0.001
 CREATE_BOARD_CHECKS = """CREATE TABLE IF NOT EXISTS stats_board_checks (
     symphony TEXT NOT NULL,
     hour TEXT NOT NULL,
@@ -27,31 +31,46 @@ UPSERT_BOARD_CHECK = """INSERT INTO stats_board_checks
             THEN excluded.last_reason ELSE last_reason END"""
 
 
+def _board_check_values(rows: Iterable[Mapping[str, Any]]) -> Iterable[tuple[str, str, int, str | None, str]]:
+    for row in rows:
+        failed = json.loads(row["data"]).get("success") is False
+        yield (row["symphony"], row["ts"][:13] + ":00:00+00:00", int(failed),
+               row["ts"] if failed else None, row["message"] if failed else "")
+
+
 def record_board_checks(db: sqlite3.Connection, rows: Iterable[Mapping[str, Any]]) -> None:
     """Upsert redacted, UTC-normalized polls on the event store's writer thread.
 
     Only the hourly counters and last failure survive; no consumer needs the raw
     per-poll events. The caller owns the transaction, including rollback/retry.
     """
-    def values() -> Iterable[tuple[str, str, int, str | None, str]]:
-        for row in rows:
-            failed = json.loads(row["data"]).get("success") is False
-            yield (row["symphony"], row["ts"][:13] + ":00:00+00:00", int(failed),
-                   row["ts"] if failed else None, row["message"] if failed else "")
-
-    db.executemany(UPSERT_BOARD_CHECK, values())
+    db.executemany(UPSERT_BOARD_CHECK, _board_check_values(rows))
 
 
 def migrate_board_checks_batch(db: sqlite3.Connection, batch_size: int) -> int:
-    """Move one bounded batch of legacy polls atomically, outside startup."""
+    """Commit a short slice, then yield with no transaction held.
+
+    Parse legacy JSON before opening the write transaction. Each poll's upsert
+    and deletion stay atomic, even when the time budget ends a slice early.
+    """
+    rows = db.execute(
+        "SELECT id,ts,symphony,message,data FROM events WHERE kind=? ORDER BY ts,id LIMIT ?",
+        (BOARD_CHECK_KIND, min(batch_size, MIGRATION_BATCH_SIZE)),
+    ).fetchall()
+    if not rows:
+        return 0
+    values = list(_board_check_values(
+        {"ts": ts, "symphony": name, "message": message, "data": data}
+        for _, ts, name, message, data in rows
+    ))
+    moved = 0
+    deadline = time.monotonic() + MIGRATION_WRITE_SECONDS
     with db:
-        rows = db.execute(
-            "SELECT id,ts,symphony,message,data FROM events WHERE kind=? ORDER BY ts,id LIMIT ?",
-            (BOARD_CHECK_KIND, batch_size),
-        ).fetchall()
-        record_board_checks(db, (
-            {"ts": ts, "symphony": name, "message": message, "data": data}
-            for _, ts, name, message, data in rows
-        ))
-        db.executemany("DELETE FROM events WHERE id=?", ((row[0],) for row in rows))
-    return len(rows)
+        for row, value in zip(rows, values, strict=True):
+            db.execute(UPSERT_BOARD_CHECK, value)
+            db.execute("DELETE FROM events WHERE id=?", (row[0],))
+            moved += 1
+            if time.monotonic() >= deadline:
+                break
+    time.sleep(MIGRATION_YIELD_SECONDS)
+    return moved
