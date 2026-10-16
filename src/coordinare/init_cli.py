@@ -104,6 +104,11 @@ def _setup(args: argparse.Namespace) -> int:
     sys.stdout.write(f"Dashboard: http://{config.dashboard_host}:{config.dashboard_port}\n")
     if not report.ok:
         return 1
+    return _offer_start(args, interactive=interactive)
+
+
+def _offer_start(args: argparse.Namespace, *, interactive: bool) -> int:
+    """After a clean preflight: start at login as a user service, or start in the foreground."""
     if interactive and not args.start and not args.start_at_login:
         args.start_at_login = input("Start at login [no]: ").strip().lower() in {"y", "yes"}
     if args.start_at_login:
