@@ -34,6 +34,19 @@
 #     fast at load. See the junie example at the bottom of this file.
 
 selfhosted_routing:
+  # 223: match the gateway's exact namespaced model (replace this example name).
+  # Reuse the gateway bearer that the catalog endpoint's auth_env injects into
+  # the Claude Code job. This route bypasses LiteLLM's /v1/messages adapter.
+  - backend: claude_code
+    model: gateway/glm-5.3-flash
+    target:
+      base_url: http://litellm:4000/v1  # replace with your gateway's address
+      wire_format: openai
+      strategy: translate
+      upstream_auth_env: ANTHROPIC_AUTH_TOKEN
+      normalizers: [strip_control_chars, strip_reasoning]
+      health_probe: completion
+
   # 262: GLM loses content on LiteLLM's Anthropic adaptation. Translate locally
   # onto Chat Completions; the completion probe judges AFTER normalizers.
   # Pass COORDINARE_PROXY_AUTH in the claude-ephemeral endpoint's env (the secret

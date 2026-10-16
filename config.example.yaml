@@ -600,10 +600,33 @@ performers:
 #       normalizers: [strip_reasoning]
 #       reroute_upstream: null
 #
+# Issue 223: opt claude_code into the performer's Anthropic-to-OpenAI translator.
+# Put this entry in the separate routing file above. It bypasses LiteLLM's
+# /v1/messages adapter, which can lose content mixed with reasoning. No new key
+# is required: SELFHOSTED_ROUTING_CONFIG defaults to empty, so routing stays off.
+# Replace the model with the EXACT dispatched name, including any prefix.
+# selfhosted_routing:
+#   - backend: claude_code
+#     model: gateway/glm-5.3-flash
+#     target:
+#       base_url: http://litellm:4000/v1
+#       wire_format: openai
+#       strategy: translate
+#       upstream_auth_env: ANTHROPIC_AUTH_TOKEN  # resolved endpoint gateway bearer
+#       normalizers: [strip_control_chars, strip_reasoning]
+#       health_probe: completion
+# The target preserves the dispatched model. Set upstream_model only if the
+# gateway advertises a different name. Translation drops reasoning and keeps
+# content, including content sharing the final reasoning delta.
+# For Kubernetes, the routing file must exist INSIDE each performer image or be
+# supplied by your pod provisioning. Endpoint host_path volumes do not mount
+# arbitrary ConfigMap files in Kubernetes. See docs/operators/litellm-proxy.md.
+#
 # Validation rules enforced at load (fail fast, not at runtime):
 #   - strategy: reroute   ⇒ normalizers MUST be empty/absent.
 #   - strategy: normalize ⇒ normalizers non-empty; every key MUST exist in the
 #                           performer's NORMALIZER_REGISTRY.
+#   - strategy: translate ⇒ wire_format MUST be openai; normalizers optional.
 #   - missing base_url, or wire_format not in {openai, anthropic} → load error.
 #   - reroute_upstream, when set, is the auto-reroute fallback the startup health
 #     probe uses when the primary target is unhealthy (else it fails closed —

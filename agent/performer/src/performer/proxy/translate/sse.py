@@ -82,6 +82,9 @@ class TranslatingSSEFilter(StatefulSSEFilter):
         choice = (payload.get("choices") or [{}])[0]
         delta = choice.get("delta") or {}
 
+        # 223: reasoning and content can share a delta (vLLM's final reasoning
+        # token often carries the JSON prefix). Ignore reasoning independently;
+        # never branch away from content or open a text block for reasoning alone.
         text = delta.get("content")
         if text:
             if self._open_block_kind != "text":

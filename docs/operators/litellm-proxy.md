@@ -224,6 +224,9 @@ Set the routing entry's `model` to the exact model string the assessor
 dispatches, including any namespace prefix your gateway adds to the model name.
 `upstream_model` is the name the LiteLLM gateway advertises for the model:
 
+`routing.example.yaml` includes a `gateway/glm-5.3-flash` entry illustrating a
+namespaced model. Replace its model name and gateway address before using it.
+
 ```yaml
 selfhosted_routing:
   - backend: claude_code
@@ -233,14 +236,51 @@ selfhosted_routing:
       wire_format: openai
       strategy: translate
       upstream_model: <gateway-model-name>  # name the gateway advertises
-      upstream_auth_env: COORDINARE_PROXY_AUTH
+      upstream_auth_env: ANTHROPIC_AUTH_TOKEN # gateway bearer from catalog endpoint
       normalizers: [strip_control_chars, strip_reasoning]
       health_probe: completion
 ```
 
-The `claude-ephemeral` endpoint must list `assessor` in its `roles` and carry
-the same `SELFHOSTED_ROUTING_CONFIG`, `COORDINARE_PROXY_AUTH` and routing-file
-mount shown above. Keep `disable_thinking` off for this model. Re-check the
-upstream LiteLLM release notes before removing this route: the adapter bug was
+The activation key is the existing `SELFHOSTED_ROUTING_CONFIG` performer env
+setting, which defaults to empty. No additional switch is needed. A matching
+translate target replaces the ordinary spec-080 proxy path and suppresses the
+older `ClaudeCodeShim`, so there is only one local shim. A missing entry keeps
+the current path. Text blocks open only on non-empty content; reasoning-only
+deltas do not create an empty leading block. Use a single-model mode without a
+reasoning policy for this route. Keep `disable_thinking` off for this model.
+
+For the garden `coordinare` ConfigMap's `config.yaml`:
+
+1. Keep the assessor on `backend: claude_code` with its existing GLM mode.
+   The mode's catalog endpoint must supply the LiteLLM base URL and
+   `auth_env` naming the daemon's gateway credential. Coordinare injects this
+   into the job as `ANTHROPIC_AUTH_TOKEN`; the route above reuses it for both
+   the startup probe and actual traffic. Do not put a credential in routing YAML.
+2. Add `SELFHOSTED_ROUTING_CONFIG: /etc/coordinare/routing.yaml` under the
+   selected `performer_endpoints` entry's `env`. Ensure its `roles` includes
+   `assessor`. This setting on the daemon alone does not reach the performer.
+3. Supply that routing file inside every new performer pod. The current
+   Kubernetes runtime mounts only the devenv cache from endpoint `volumes`;
+   the Docker `host_path` example above does not mount a routing ConfigMap in
+   Kubernetes. A supported option is a derived performer image containing
+   `COPY routing.yaml /etc/coordinare/routing.yaml`; set the endpoint's `image`
+   to its immutable tag. An existing cluster mechanism that injects a ConfigMap
+   volume into performer pods can supply the same path instead. Mounting it
+   only in the daemon pod is insufficient.
+4. Set the routing key and, if needed, `upstream_model` to the actual dispatched
+   and gateway model names, replacing the illustrative namespace in the example.
+   Validate the daemon config and the routing file before
+   restarting the daemon and dispatching a fresh assessor. Existing performer
+   jobs do not reload routing. Confirm `selfhosted_layer.translate_launched`
+   and that upstream requests use `/v1/chat/completions`.
+
+The daemon's `config validate` does not validate a separately mounted routing
+file. Inside the performer image, validate that file with:
+
+```sh
+python -c 'from performer.proxy.routing import RoutingTable; RoutingTable.from_yaml_file("/etc/coordinare/routing.yaml")'
+```
+
+Re-check the upstream LiteLLM release notes before removing this route: the adapter bug was
 still open upstream as of 2026-10-15 (see issues 32357 and 27492 and PR 32364
 on BerriAI/litellm).
