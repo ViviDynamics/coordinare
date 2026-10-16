@@ -225,28 +225,25 @@ async def test_197_ci_lanes_run_probe_and_require_both_fakes(tmp_path, monkeypat
 async def test_197_ci_real_probe_reaches_local_fakes(tmp_path, monkeypatch):
     # The CI harness must run the actual urllib probe against authenticated HTTP fakes.
     fake_servers = smoke_docker_setup.connectivity_fakes
-    try:
-        async with fake_servers(tmp_path, bind_host="127.0.0.1", gateway_host="127.0.0.1") as fakes:
-            monkeypatch.setenv("BACKEND", "codex")
-            monkeypatch.setenv("PERFORMER_AUTH_TOKEN", "performer-token")
-            for key, value in fakes.probe_environment.items():
-                monkeypatch.setenv(key, value)
-            # Only performer health/status are in-process; external probes use real sockets.
-            import io
-            import urllib.request
-            original = urllib.request.urlopen
-            def urlopen(request, **kwargs):
-                if request.full_url.endswith("/healthz"):
-                    return io.BytesIO(b"{}")
-                if request.full_url == "http://127.0.0.1:8088/status":
-                    return io.BytesIO(b'{"availability":"idle","auth_enabled":true,"capabilities":{"backends":["codex"]}}')
-                return original(request, **kwargs)
-            monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-            await asyncio.to_thread(exec, docker_setup.SMOKE_PROBE, {})
-            fakes.assert_probed()
-            for url in (fakes.github_url + "/user", fakes.model_url + "/models"):
-                with pytest.raises(urllib.error.HTTPError) as caught:
-                    await asyncio.to_thread(original, url, timeout=3)
-                assert caught.value.code == 401
-    except PermissionError:
-        pytest.skip("Sandbox forbids localhost listeners; this probe runs on GitHub Actions")
+    async with fake_servers(tmp_path, bind_host="127.0.0.1", gateway_host="127.0.0.1") as fakes:
+        monkeypatch.setenv("BACKEND", "codex")
+        monkeypatch.setenv("PERFORMER_AUTH_TOKEN", "performer-token")
+        for key, value in fakes.probe_environment.items():
+            monkeypatch.setenv(key, value)
+        # Only performer health/status are in-process; external probes use real sockets.
+        import io
+        import urllib.request
+        original = urllib.request.urlopen
+        def urlopen(request, **kwargs):
+            if request.full_url.endswith("/healthz"):
+                return io.BytesIO(b"{}")
+            if request.full_url == "http://127.0.0.1:8088/status":
+                return io.BytesIO(b'{"availability":"idle","auth_enabled":true,"capabilities":{"backends":["codex"]}}')
+            return original(request, **kwargs)
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        await asyncio.to_thread(exec, docker_setup.SMOKE_PROBE, {})
+        fakes.assert_probed()
+        for url in (fakes.github_url + "/user", fakes.model_url + "/models"):
+            with pytest.raises(urllib.error.HTTPError) as caught:
+                await asyncio.to_thread(original, url, timeout=3)
+            assert caught.value.code == 401
