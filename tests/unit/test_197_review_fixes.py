@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -25,6 +24,7 @@ from tests.unit.test_195_init import answers_file, invoke
 from tests.unit.test_197_docker_setup import PINNED, RELEASE
 from tests.unit.test_197_docker_setup import docker as docker_fixture
 from tests.unit.test_197_docker_setup import setup as setup_fixture
+from tests.utils.smoke_release import release_script_env
 
 docker = docker_fixture
 setup = setup_fixture
@@ -49,14 +49,9 @@ def test_197_workflow_resolves_release_at_job_time(tmp_path: Path, tag: str, cod
     step = next(s for s in steps if s.get('id') == 'release')
     assert step['env']['GH_TOKEN'] == '${{ github.token }}'
     assert step['run'] == 'bash scripts/resolve_smoke_release.sh'
-    gh = tmp_path / 'gh'
-    gh.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_RELEASE"\n')
-    gh.chmod(0o700)
     output = tmp_path / 'output'
-    result = subprocess.run(['bash', str(ROOT / 'scripts/resolve_smoke_release.sh')], capture_output=True, text=True, env={
-        **os.environ, 'PATH': str(tmp_path) + ':' + os.environ['PATH'], 'TEST_RELEASE': tag,
-        'GITHUB_REPOSITORY': 'ViviDynamics/coordinare', 'GITHUB_OUTPUT': str(output),
-    }, check=False)
+    result = subprocess.run(['bash', str(ROOT / 'scripts/resolve_smoke_release.sh')], capture_output=True, text=True,
+                            env=release_script_env(tmp_path, tag), check=False)
     assert result.returncode == code
     if code:
         assert 'published release' in result.stderr.lower()
