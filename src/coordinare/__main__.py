@@ -63,6 +63,7 @@ from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
+from coordinare.service_cli import add_service_parser, run_service
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.bootstrap_runs import load_bootstrap_history
@@ -146,6 +147,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Subcommands: `coordinare config validate [--config PATH] [--strict]`
     subparsers = parser.add_subparsers(dest="command")
     add_init_parser(subparsers)
+    add_service_parser(subparsers)
     config_parser = subparsers.add_parser("config", help="Config management subcommands")
     config_subparsers = config_parser.add_subparsers(dest="config_action")
     validate_parser = config_subparsers.add_parser(
@@ -1831,6 +1833,9 @@ def _check_placeholders_as_written(path: Path | None) -> dict[str, Any]:
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+
+    if args.command == "service":
+        sys.exit(run_service(args))
 
     if args.command == "init":
         code = run_init(args)

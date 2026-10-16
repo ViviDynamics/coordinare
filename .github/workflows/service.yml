@@ -1,0 +1,51 @@
+name: Linux user service
+
+on:
+  pull_request:
+    paths:
+      - "src/coordinare/service_*.py"
+      - "src/coordinare/init_*.py"
+      - "src/coordinare/user_config.py"
+      - "src/coordinare/__main__.py"
+      - "bin/install"
+      - "bin/uninstall"
+      - "bin/stop"
+      - "scripts/service_smoke.py"
+      - ".github/workflows/service.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+      - name: Install Coordinare
+        run: uv sync --extra dev
+      - name: Check systemd user session
+        id: session
+        shell: bash
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          if systemctl --user show-environment >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+            echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Service lifecycle not exercised: this runner has no reachable systemd user session. A login session with a running user manager is required."
+            echo "Service lifecycle not exercised: no reachable systemd user session on the runner. Unit tests still cover generated service files and injected command execution." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Exercise install, status and uninstall with a real user manager
+        if: steps.session.outputs.available == 'true'
+        run: |
+          uv run python scripts/service_smoke.py
+          echo "Linux user service lifecycle passed with a real systemd user manager." >> "$GITHUB_STEP_SUMMARY"
