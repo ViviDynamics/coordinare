@@ -1007,6 +1007,7 @@ class TestRunLoop:
         perf.state = "working"  # type: ignore[assignment]
         perf.started_at = datetime.now(UTC)
 
+        refreshed_payload = {"github_token": "new-token"}
         with (
             patch("performer.main.handle_dispatch", new=AsyncMock(return_value=(
                 PerformerResponse(status="accepted", session_id="sid"),
@@ -1020,10 +1021,10 @@ class TestRunLoop:
             await _run_loop_with([
                 _make_line(action="dispatch", title="T", repo_url="https://github.com/org/repo",
                            branch="feat/x", github_token="old-token"),
-                _make_line(action="status", session_id="sid", payload={"github_token": "new-token"}),
+                _make_line(action="status", session_id="sid", payload=refreshed_payload),
             ])
 
-        assert perf.score.github_token == "new-token"
+        assert perf.score.github_token == refreshed_payload["github_token"]
 
         expected_header = "Authorization: Basic " + base64.b64encode(
             b"x-access-token:new-token"
@@ -2031,6 +2032,7 @@ class TestSecurityPerformer:
         score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
         perf = Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="security")
         perf.pr_url = pr_url
+        perf.security_floor_report = {"version": 1, "complete": True, "tools": ["semgrep", "bandit"], "findings": []}
         return perf
 
     @pytest.mark.asyncio

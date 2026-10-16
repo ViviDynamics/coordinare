@@ -19,7 +19,6 @@ _SNAPSHOT: tuple[str, ...] = (
     "coordinare.services.config_write_service",
     "coordinare.services.rebase",
     "coordinare.services.reconciliation",
-    "coordinare.services.security_scanner",
     "coordinare.session",
 )
 

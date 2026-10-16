@@ -13,9 +13,8 @@ from pathlib import Path
 
 import pytest
 import structlog
-
-from coordinare.services import security_scanner
-from coordinare.services.security_scanner import ScannerError, scan_diff
+from performer import security_scanner
+from performer.security_scanner import ScannerError, scan_diff
 
 FIXTURES = Path(__file__).parent / "fixtures" / "security_scanner"
 
@@ -86,50 +85,31 @@ def _patch_tools(monkeypatch, *, semgrep, bandit):
         return spec
 
     monkeypatch.setattr(security_scanner.subprocess, "run", fake_run)
+    monkeypatch.setattr(security_scanner, "_resolve_binary", lambda tool: f"/usr/bin/{tool}")
 
 
 # --- binary resolution -----------------------------------------------------
 
 
-def test_resolve_binary_prefers_venv(monkeypatch, tmp_path):
-    """semgrep/bandit resolve from the venv bin dir (next to sys.executable)
-    even when the daemon was launched without the venv on PATH.
-
-    Regression: the daemon ran as ``.venv/bin/coordinare`` without activating
-    the venv, so a bare ``["semgrep", ...]`` call raised FileNotFoundError,
-    tripped the fail-closed floor, and wedged the card in ``blocked``.
-    """
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    fake_semgrep = bindir / "semgrep"
-    fake_semgrep.write_text("#!/bin/sh\n")
-    fake_semgrep.chmod(0o755)
-    fake_python = bindir / "python"
-
-    monkeypatch.setattr(security_scanner.sys, "executable", str(fake_python))
-    # PATH lookup would NOT find it — proving venv resolution is what wins.
-    monkeypatch.setattr(security_scanner.shutil, "which", lambda _tool: None)
-
-    assert security_scanner._resolve_binary("semgrep") == str(fake_semgrep)
+def test_resolve_binary_uses_image_installation(monkeypatch):
+    monkeypatch.setattr(security_scanner, "_trusted_executable", lambda path: path == Path("/usr/local/bin/semgrep"))
+    assert security_scanner._resolve_binary("semgrep") == "/usr/local/bin/semgrep"
 
 
-def test_resolve_binary_falls_back_to_path(monkeypatch, tmp_path):
-    """When the binary is not beside sys.executable, fall back to a PATH lookup."""
-    fake_python = tmp_path / "python"  # no sibling "bandit" exists
-    monkeypatch.setattr(security_scanner.sys, "executable", str(fake_python))
-    monkeypatch.setattr(security_scanner.shutil, "which", lambda tool: f"/usr/bin/{tool}")
-
+def test_resolve_binary_uses_system_installation(monkeypatch):
+    monkeypatch.setattr(security_scanner, "_trusted_executable", lambda path: path == Path("/usr/bin/bandit"))
     assert security_scanner._resolve_binary("bandit") == "/usr/bin/bandit"
 
 
-def test_resolve_binary_bare_name_last_resort(monkeypatch, tmp_path):
-    """If neither the venv nor PATH has it, return the bare name (subprocess
-    then raises FileNotFoundError -> ScannerError, preserving fail-closed)."""
-    fake_python = tmp_path / "python"
-    monkeypatch.setattr(security_scanner.sys, "executable", str(fake_python))
-    monkeypatch.setattr(security_scanner.shutil, "which", lambda _tool: None)
-
-    assert security_scanner._resolve_binary("semgrep") == "semgrep"
+def test_resolve_binary_missing_image_tool_fails_closed(monkeypatch):
+    monkeypatch.setattr(security_scanner, "_trusted_executable", lambda path: False)
+    with pytest.raises(ScannerError) as exc_info:
+        security_scanner._resolve_binary("semgrep")
+    assert str(exc_info.value) == (
+        "semgrep trusted system binary not found. "
+        "Install semgrep and bandit system-wide as root-owned executables "
+        "in /usr/local/bin or /usr/bin, or use the container transport."
+    )
 
 
 # --- tests -----------------------------------------------------------------
