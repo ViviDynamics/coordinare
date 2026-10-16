@@ -47,7 +47,7 @@ _DASHBOARD_SHELL_CSS = (_DASHBOARD_JS_DIR / "shell.css").read_text(encoding="utf
 # them at route time, so it loads after the timeline it renders into.
 _DASHBOARD_JS_FILES = (
     "helpers", "usage", "personas", "config", "performers", "actions", "workflow", "account", "waiting", "attention",
-    "runs", "history", "timeline", "symphonies", "systemhealth", "layout", "cardpage", "logs", "bootstrap", "app",
+    "runs", "history", "timeline", "symphonies", "systemhealth", "layout", "cardpage", "logs", "bootstrap", "stats_charts", "personas_stats", "app",
 )
 
 # 136: the glossary is generated from coordinare.vocabulary, not read from

@@ -84,6 +84,9 @@ check(
   historyQueryString({ symphony: "", card: "a&stage=x", stage: "", outcome: "", since: "", until: "" }, ""),
   "?card=a%26stage%3Dx&limit=50"
 );
+check("the persona filter is sent with the header scope",
+  historyQueryString({ symphony: "alpha", agent: "review&er" }, ""),
+  "?symphony=alpha&agent=review%26er&limit=50");
 check("the default filters take the header's choice", historyDefaultFilters("alpha").symphony, "alpha");
 check("the default filters with no choice are empty", historyDefaultFilters("").symphony, "");
 
@@ -197,6 +200,10 @@ check("the filters are read from the URL", [fromUrl.card, fromUrl.outcome], ["PV
 check("a missing symphony filter takes the header's choice", fromUrl.symphony, "alpha");
 check("History filters cannot override the header scope",
   historyFiltersFromSearch("?h.symphony=beta-sym", "alpha").symphony, "alpha");
+const personaFilters = historyFiltersFromSearch("?symphony=alpha&h.agent=reviewer&h.symphony=beta-sym", "alpha");
+check("persona links keep the header scope and agent", [personaFilters.symphony, personaFilters.agent], ["alpha", "reviewer"]);
+check("persona filters round trip through the address bar", historySearchFor("?symphony=alpha", personaFilters),
+  "?symphony=alpha&h.agent=reviewer");
 const rewritten = historySearchFor("?symphony=alpha&h.card=old&h.stage=qa", historyDefaultFilters("alpha"));
 has("the header's symphony survives a filter change", rewritten, "symphony=alpha");
 lacks("an old filter value is replaced, not kept", rewritten, "h.card=old");
@@ -236,10 +243,12 @@ has("the translated link keeps its card filter on a scope change", fetchedUrls[0
 lacks("a scope change starts at the first page", fetchedUrls[0], "cursor=");
 
 // Submit has no symphony control to read. Even an injected field cannot override the header.
-globalThis.FormData = class { get(key) { return { card: " PVTI_NEW ", outcome: "failed", symphony: "alpha" }[key]; } };
+globalThis.FormData = class { get(key) { return { card: " PVTI_NEW ", outcome: "failed", agent: " reviewer ", symphony: "alpha" }[key]; } };
 handlers.submit({ target: { hasAttribute: name => name === "data-history-form" }, preventDefault() {} });
 check("submit uses the header scope", _historyPage.filters.symphony, "beta-sym");
 check("submit still reads and trims filters", _historyPage.filters.card, "PVTI_NEW");
+check("submit reads and trims the persona", _historyPage.filters.agent, "reviewer");
+has("submit queries the selected persona", fetchedUrls[fetchedUrls.length - 1], "agent=reviewer");
 has("submit queries the header symphony", fetchedUrls[fetchedUrls.length - 1], "symphony=beta-sym");
 lacks("submit writes no legacy scope", location.search, "h.symphony");
 historyAction("reset");

@@ -44,6 +44,7 @@ class HistoryParams(BaseModel):
     symphony: str | None = None
     card: str | None = None
     stage: str | None = None
+    agent: str | None = Field(None, max_length=1024)
     outcome: Literal["completed", "failed", "unknown"] | None = None
     # ISO days (UTC). Read as text so a bad day is a 400 with a reason, not a validation dump.
     since: str | None = None
@@ -83,6 +84,7 @@ def _query_of(params: HistoryParams, visible: frozenset[str]) -> HistoryQuery:
         symphony=params.symphony or None,
         card=params.card or None,
         stage=params.stage or None,
+        agent=params.agent or None,
         outcome=params.outcome,
         since=_day(params.since),
         until=_day(params.until),
