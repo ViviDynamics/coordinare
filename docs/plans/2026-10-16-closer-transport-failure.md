@@ -15,4 +15,7 @@ Out: Live garden configuration, cluster state, new transport implementations, an
 ## Tasks
 - [x] 1. Add failing regression tests for the real SSH and Kubernetes transport failures on an enabled closer. Assert fatal error, original cause, and error-level diagnostic context. Run with pytest and observe the current silent return.
 - [x] 2. Add the minimal closer-specific fatal branch before the existing skip handler. Verify enabled subprocess closer, disabled closer, absent closer, HTTP-only closer, other-role skips, and partial concurrency remain compatible. Run the new file plus bootstrap and main coverage suites.
-- [ ] 3. Document the required-role policy and remediation. Run house-rule checks, full tests, preflight, and quality guard. Shipping stages are recorded in the issue checkpoint through PR creation, required CI, Copilot and adversarial review, and squash merge.
+- [x] 3. Document the required-role policy and remediation.
+
+## Shipping validation
+Run house-rule checks, full tests, preflight, and quality guard before pushing. Shipping stages are recorded in the issue checkpoint through PR creation, required CI, Copilot and adversarial review, and squash merge.
