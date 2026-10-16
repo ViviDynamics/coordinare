@@ -37,6 +37,14 @@ CONTROLS = [
 ]
 
 
+def _started_daemon(graph):
+    """Represent a daemon whose startup finished without running the poll loop."""
+    daemon = CoordinareDaemon(graph)
+    daemon._running = True
+    daemon.state["startup_complete"] = True
+    return daemon
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("path", "action"), CONTROLS)
 @pytest.mark.parametrize("repeat", [False, True])
@@ -52,7 +60,7 @@ async def test_flat_fallback_preserves_new_request_across_graph_copy(path, actio
             await release.wait()
             return updated
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     daemon.state.update(
         phase="monitoring_performer", performer_stage="implementing",
         current_card={"id": "legacy"},
@@ -90,7 +98,7 @@ async def test_flat_fallback_preserves_new_request_across_graph_copy(path, actio
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("path", "action"), CONTROLS)
 async def test_flat_fallback_does_not_replay_command_consumed_inside_graph(path, action):
-    daemon = CoordinareDaemon(None)
+    daemon = _started_daemon(None)
     daemon.state.update(
         phase="monitoring_performer", performer_stage="implementing",
         current_card={"id": "legacy"},
@@ -124,7 +132,7 @@ async def test_flat_fallback_does_not_transfer_late_control_to_a_new_card(path, 
             updated.update(current_card=next_card, pending_override=None, phase="idle")
             return updated
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     daemon.state.update(phase="monitoring_performer", current_card={"id": "legacy"},
                         lifecycle_sequence=["assessing", "implementing"])
     task = asyncio.create_task(daemon._invoke_multi_session())
@@ -152,7 +160,7 @@ async def test_flat_fallback_does_not_replay_late_control_consumed_inside_graph(
             _apply_pending_override(updated)
             return updated
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     daemon.state.update(phase="monitoring_performer", performer_stage="implementing",
                         current_card={"id": "legacy"},
                         lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"])
@@ -185,7 +193,7 @@ async def test_legacy_transient_owner_accepts_control_during_native_finalization
             await release.wait()
             return updated
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     daemon.state.update(phase="monitoring_performer", performer_stage="implementing",
                         current_card={"id": "legacy", "status": "IN_PROGRESS"},
                         lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"])
@@ -477,7 +485,7 @@ async def test_single_graph_writeback_preserves_new_control(path: str, action: s
             state.update(phase="monitoring_performer", agent_dispatch={"session_id": "synthetic-worker"})
             return state
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     daemon.state.update(lifecycle_sequence=["assessing", "implementing", "reviewing", "qa", "closing_review"],
                         config=SimpleNamespace(max_concurrent_cards=1), github_service=None)
     if not startup:
@@ -514,7 +522,7 @@ async def test_restore_routing_cannot_accept_a_retired_aggregate_target(path: st
                 _retire_active_session(state, trigger="synthetic_terminal_completion")
             return state
 
-    daemon = CoordinareDaemon(Graph())
+    daemon = _started_daemon(Graph())
     retired = live_session("retired")
     owner = SymphonyRuntimeState(name="owner", active_sessions={"retired": retired})
     peer = SymphonyRuntimeState(name="peer", active_sessions={})
@@ -577,7 +585,7 @@ async def test_reconciled_compiled_graph_consumes_exact_control_once(path: str, 
         "classify_scope": passthrough, "dispatch_card": dispatch_performer,
         "notify": notify, "handle_blocked": passthrough,
     }).build()
-    daemon = CoordinareDaemon(graph)
+    daemon = _started_daemon(graph)
     live = live_session()
     live.update(performer_stage="implementing", system_error_reason="Synthetic prior technical failure")
     service = SimpleNamespace(_config=SimpleNamespace(mode="ephemeral"), has_live_session=lambda _sid: False)
@@ -641,7 +649,7 @@ def test_pending_control_refuses_replacement_without_losing_first(ownership, fir
 @pytest.mark.parametrize(("path", "action"), CONTROLS)
 async def test_single_graph_copy_preserves_sibling_control(path, action):
     entered, finish = asyncio.Event(), asyncio.Event()
-    daemon = CoordinareDaemon(None)
+    daemon = _started_daemon(None)
     sessions = {"card-a": live_session(), "card-b": live_session("card-b")}
     daemon.state.update(active_card_id="card-a", active_sessions=sessions,
                         lifecycle_sequence=["assessing", "implementing", "reviewing", "qa"],

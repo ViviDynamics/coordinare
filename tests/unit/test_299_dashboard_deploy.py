@@ -20,7 +20,7 @@ from tests.unit.test_497_oidc_login import _oidc_config
 from tests.unit.test_dashboard import _make_mock_daemon, _make_mock_metrics
 
 RETRY_SECONDS = 2
-GRACE_SECONDS = 30
+GRACE_SECONDS = 45
 DRAIN_SECONDS = 5
 
 
@@ -50,8 +50,8 @@ async def test_starting_shell_assets_auth_and_state_gate() -> None:
             assert response.headers["cache-control"] == "no-store"
         asset = await client.get("/static/app.js")
         assert asset.status_code == 200
-        assert "max-age" in asset.headers["cache-control"]
-        for method, path in (("GET", "/api/state"), ("GET", "/events"), ("POST", "/api/force-poll")):
+        assert asset.headers["cache-control"] == "public, no-cache"
+        for method, path in (("GET", "/api/state"), ("GET", "/events"), ("POST", "/api/force-poll"), ("PUT", "/api/config/global")):
             response = await client.request(method, path)
             assert response.status_code == 503
             assert response.headers["retry-after"] == str(RETRY_SECONDS)
@@ -96,6 +96,12 @@ def test_chart_routes_early_and_drains_with_bounded_grace() -> None:
     assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sleep", str(DRAIN_SECONDS)]
     pod = _one(objects, "StatefulSet")["spec"]["template"]["spec"]
     assert pod["terminationGracePeriodSeconds"] == GRACE_SECONDS
+    assert GRACE_SECONDS > DRAIN_SECONDS + 22 + 12 + 1 + 2
+    customized = _render(terminationGracePeriodSeconds=60, startupDeadlineSeconds=700)
+    assert _one(customized, "StatefulSet")["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 60
+    import yaml
+    cfg = yaml.safe_load(_one(customized, "ConfigMap")["data"]["config.yaml"])
+    assert cfg["startup_deadline_seconds"] == 700
 
 
 @pytest.mark.asyncio
@@ -165,7 +171,7 @@ async def test_only_matching_script_hashes_get_immutable_cache() -> None:
         for path in ("/static/app.js", "/static/app.js?v=old", "/static/shell.css", "/static/activity-streams.js"):
             response = await client.get(path)
             assert response.status_code == 200
-            assert response.headers["cache-control"] == "public, max-age=300"
+            assert response.headers["cache-control"] == "public, no-cache"
 
 
 def test_snapshot_readiness_tracks_startup_and_required_health() -> None:
@@ -180,3 +186,38 @@ def test_snapshot_readiness_tracks_startup_and_required_health() -> None:
     assert store.build_snapshot(daemon, _make_mock_metrics(), health)["daemon_ready"] is True
     health.update("github", HealthStatus.degraded)
     assert store.build_snapshot(daemon, _make_mock_metrics(), health)["daemon_ready"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,running,expected", [
+    ({}, True, "starting"),
+    ({"startup_complete": True, "stopping": True}, False, "stopping"),
+    ({"startup_complete": True}, False, "unavailable"),
+])
+async def test_gate_defaults_closed_and_reports_reason(state, running, expected) -> None:
+    daemon = _daemon()
+    daemon.state = state
+    daemon.running = running
+    app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8090") as client:
+        response = await client.get("/api/state")
+    assert response.status_code == 503
+    assert response.json()["status"] == expected
+    assert expected in response.json()["message"].lower()
+    assert ("retry-after" in response.headers) == (expected != "unavailable")
+
+
+@pytest.mark.asyncio
+async def test_shell_and_activity_urls_match_served_content_hashes() -> None:
+    import hashlib
+    import re
+
+    app = create_dashboard_app(DashboardStore(), _daemon(), MagicMock(), MagicMock())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8090") as client:
+        page = (await client.get("/")).text
+        for name in ("shell.css", "activity-streams.js"):
+            match = re.search(r'/static/' + re.escape(name) + r'\?v=([a-f0-9]+)', page)
+            assert match, name
+            response = await client.get(match.group(0))
+            assert hashlib.sha256(response.content).hexdigest().startswith(match.group(1))
+            assert response.headers["cache-control"] == "public, max-age=31536000, immutable"

@@ -77,7 +77,7 @@ def _make_mock_daemon(
     error_count: int = 0,
 ) -> MagicMock:
     daemon = MagicMock()
-    daemon.state = {"phase": phase, "error_count": error_count}
+    daemon.state = {"phase": phase, "error_count": error_count, "startup_complete": True}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = snapshot
     daemon._cycle_active = False
@@ -820,6 +820,7 @@ def _make_mock_daemon_with_events(
 ) -> MagicMock:
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "phase": phase,
         "error_count": 0,
         "performer_events": performer_events or [],
@@ -1021,6 +1022,7 @@ def test_build_snapshot_performer_logs_when_agent_active() -> None:
     agent_service.get_agent_logs.return_value = ["line one", "line two"]
     daemon = _make_mock_daemon()
     daemon.state = {
+        "startup_complete": True,
         "phase": "monitoring_agent",
         "error_count": 0,
         "agent_service": agent_service,
@@ -1034,7 +1036,7 @@ def test_build_snapshot_performer_logs_when_agent_active() -> None:
 def test_build_snapshot_performer_logs_empty_when_no_agent() -> None:
     store = DashboardStore()
     daemon = _make_mock_daemon()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     metrics = _make_mock_metrics()
     health = _make_mock_health()
     snap = store.build_snapshot(daemon, metrics, health)
@@ -1078,7 +1080,7 @@ def test_events_endpoint_returns_text_event_stream() -> None:
 
 def test_performer_logs_endpoint_no_agent_service() -> None:
     daemon = _make_mock_daemon()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     client = _make_app(daemon=daemon)
     resp = client.get("/api/performer-logs")
     assert resp.status_code == 200
@@ -1094,6 +1096,7 @@ def test_performer_logs_endpoint_streams_initial_logs() -> None:
     agent_service.get_agent_logs.side_effect = [["alpha", "beta"], RuntimeError("stop")]
     daemon = _make_mock_daemon()
     daemon.state = {
+        "startup_complete": True,
         "phase": "monitoring_agent",
         "error_count": 0,
         "agent_service": agent_service,

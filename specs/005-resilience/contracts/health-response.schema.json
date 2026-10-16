@@ -11,6 +11,10 @@
       "enum": ["ok", "degraded", "unhealthy"],
       "description": "ok = all core circuits closed; degraded = at least one core circuit (github/agent/anthropic) open; unhealthy = daemon stopped"
     },
+    "daemon_ready": {
+      "type": "boolean",
+      "description": "Startup completed, daemon running and required subsystems healthy"
+    },
     "phase": {
       "type": "string",
       "description": "Current coordinare workflow phase (from spec 003 WorkflowSnapshot)"

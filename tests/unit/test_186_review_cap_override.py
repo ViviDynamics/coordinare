@@ -25,6 +25,7 @@ def _client(config_path: Path) -> TestClient:
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "coordinare_config": cfg,
         "config_version": 7,
         "symphony_configs": {s.name: s for s in cfg.symphonies},

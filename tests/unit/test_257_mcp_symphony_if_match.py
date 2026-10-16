@@ -46,6 +46,7 @@ def _build(config_path: Path) -> tuple[Any, MagicMock]:
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "coordinare_config": cfg,
         "config_version": _STARTING_VERSION,
         "symphony_configs": {s.name: s for s in cfg.symphonies},

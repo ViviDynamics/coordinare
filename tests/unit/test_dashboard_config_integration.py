@@ -42,7 +42,7 @@ def _make_client(config_path: Path, raw: dict[str, Any]) -> tuple[TestClient, Ma
     validated_raw = {**raw, "github_token": "ghp_fixturetoken"}
     coordinare_cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(validated_raw))
     daemon = MagicMock()
-    daemon.state = {"coordinare_config": coordinare_cfg, "config_version": 7}
+    daemon.state = {"startup_complete": True, "coordinare_config": coordinare_cfg, "config_version": 7}
     daemon.running = True
     # A real-ish reload trigger so we can assert it fired / inject a failure.
     daemon._config_reload_trigger = MagicMock()

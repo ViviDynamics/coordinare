@@ -96,6 +96,7 @@ def _make_mock_daemon_with_symphonies(
         for s in cfg.symphonies
     }
     daemon.state = {
+        "startup_complete": True,
         "symphony_configs": sym_configs,
         "symphony_states": sym_states,
         "config": cfg.global_config,
@@ -470,6 +471,7 @@ class TestGetSymphoniesApiEndpoint:
     def test_empty_symphonies_state(self) -> None:
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "symphony_configs": {},
             "symphony_states": {},
             "config": _base_project_config(),
@@ -490,6 +492,7 @@ class TestGetSymphoniesApiEndpoint:
             name="sym-0", cycle_count=1, last_poll_at=ts,
         )
         daemon.state = {
+            "startup_complete": True,
             "symphony_configs": {"sym-0": cfg.symphonies[0]},
             "symphony_states": {"sym-0": sym_state},
             "config": cfg.global_config,
@@ -532,6 +535,7 @@ class TestGetSymphonyDetailApiEndpoint:
         cfg = _make_coordinare_config(1)
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "symphony_configs": {"sym-0": cfg.symphonies[0]},
             "symphony_states": {},  # no runtime state
             "config": cfg.global_config,
@@ -564,6 +568,7 @@ class TestValidateSymphonyApiEndpoint:
         cfg = _make_coordinare_config(1)
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "symphony_configs": {"sym-0": cfg.symphonies[0]},
             "symphony_states": {},
             "config": cfg.global_config,
@@ -716,7 +721,7 @@ class TestGetEffectiveConfigApiEndpoint:
 
     def test_returns_500_when_no_config(self) -> None:
         daemon = MagicMock()
-        daemon.state = {"config": None, "coordinare_config": None}
+        daemon.state = {"startup_complete": True, "config": None, "coordinare_config": None}
         client = _make_dashboard_client(daemon)
         resp = client.get("/api/config/effective")
         assert resp.status_code == 500
@@ -724,6 +729,7 @@ class TestGetEffectiveConfigApiEndpoint:
     def test_returns_legacy_mode_without_coordinare_config(self) -> None:
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "config": _base_project_config(),
             "coordinare_config": None,  # no multi-symphony wrapper
         }
@@ -749,8 +755,10 @@ class TestPostConfigReloadApiEndpoint:
         assert daemon._config_reload_trigger.is_set()
 
     def test_returns_501_when_no_trigger_attribute(self) -> None:
-        daemon = MagicMock(spec=[])  # no attributes at all
+        daemon = MagicMock(spec=[])  # no config reload trigger
+        daemon.running = True
         daemon.state = {
+            "startup_complete": True,
             "symphony_configs": {},
             "symphony_states": {},
             "config": _base_project_config(),

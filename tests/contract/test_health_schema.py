@@ -258,6 +258,8 @@ def test_ready_endpoint_returns_200_when_running() -> None:
     registry.update("github", HealthStatus.healthy)
 
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    daemon._running = True
+    daemon.state["startup_complete"] = True
     client = TestClient(create_health_app(daemon, health_registry=registry))
     response = client.get("/ready")
 

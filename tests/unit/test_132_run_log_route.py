@@ -33,7 +33,7 @@ def _collector(root: Path, *, enabled: bool = True) -> object:
 
 def _app(collector: object | None, token: str | None = None) -> object:
     daemon = MagicMock()
-    daemon.state = {"phase": "idle", "error_count": 0}
+    daemon.state = {"startup_complete": True, "phase": "idle", "error_count": 0}
     if collector is not None:
         daemon.state["run_log_collector"] = collector
     return create_dashboard_app(
@@ -162,7 +162,7 @@ def test_the_card_offers_the_full_log_only_once_it_is_committed(tmp_path: Path) 
 
     root = tmp_path / "run-logs"
     daemon = MagicMock()
-    daemon.state = {"run_log_collector": _collector(root)}
+    daemon.state = {"startup_complete": True, "run_log_collector": _collector(root)}
 
     collector = daemon.state["run_log_collector"]
     assert DashboardStore._full_log_available(daemon, RUN) is False  # the run is still going

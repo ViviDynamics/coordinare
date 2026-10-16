@@ -27,6 +27,7 @@ DEFERRED_REST_PREFIXES = (
     "/api/account",  # Human browser identity, not an agent operator capability.
     "/static",
     "/events",
+    "/dashboard/ready",  # Kubernetes probe, not an operator capability.
     "/webhook",
     "/api/assistant",
     "/api/vocabulary",  # 136: display labels for the human dashboard, static data.

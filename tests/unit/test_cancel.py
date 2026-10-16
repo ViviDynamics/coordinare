@@ -130,6 +130,7 @@ def test_cancel_endpoint_returns_200(tmp_path) -> None:
     store = DashboardStore()
     daemon = MagicMock()
     daemon.state = initial_state()
+    daemon.state["startup_complete"] = True
     daemon.state["phase"] = "monitoring_performer"
     daemon.state["current_card"] = {"id": "ITEM_1", "title": "Card"}
     daemon.state["notification_service"] = MagicMock(dispatch=AsyncMock())
@@ -276,6 +277,7 @@ def test_cancel_endpoint_idle_returns_no_active_card(tmp_path) -> None:
     store = DashboardStore()
     daemon = MagicMock()
     daemon.state = initial_state()
+    daemon.state["startup_complete"] = True
     daemon._cycle_active = False
     daemon._webhook_trigger = asyncio.Event()
     daemon.state_store = MagicMock()

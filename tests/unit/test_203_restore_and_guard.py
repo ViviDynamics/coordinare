@@ -182,6 +182,7 @@ def test_a_pre_203_snapshot_serves_and_restores_no_raw_text(tmp_path: Path) -> N
 
     daemon = MagicMock()
     daemon.state = fake._state
+    daemon.state["startup_complete"] = True
     daemon.state_store = store
     daemon._cycle_active = False
     daemon.running = True

@@ -188,6 +188,8 @@ EligibilityReason = Literal[
     "eligible", "blocked_column", "backlog_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity", "review_capacity",
 ]
 
+SHUTDOWN_SNAPSHOT_SECONDS = 5.0
+
 #: 171: a documenter side run waits for a free pipeline slot. A skip record, not an
 #: eligibility verdict: the card is eligible, it is just parked behind the budget.
 SIDE_RUN_WAITING = "side_run_waiting"
@@ -6368,12 +6370,14 @@ class CoordinareDaemon:
         if isinstance(calls, ConductorCallLog):
             # Best effort: a failed drain is logged and shutdown goes on.
             try:
-                await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
+                async with asyncio.timeout(SHUTDOWN_DRAIN_SECONDS):
+                    await calls.drain(within=SHUTDOWN_DRAIN_SECONDS)
             except Exception as exc:
                 logger.warning("daemon.conductor_drain_failed", error=str(exc))
         if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
             try:
-                await self._state_store.save(self._build_snapshot())
+                async with asyncio.timeout(SHUTDOWN_SNAPSHOT_SECONDS):
+                    await self._state_store.save(self._build_snapshot())
             except Exception as exc:  # pragma: no cover — best-effort flush
                 logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
 

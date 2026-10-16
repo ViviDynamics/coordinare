@@ -64,7 +64,7 @@ const cases = {
     assert.equal(context.retryDelay(1000), 1000);
   },
   async api() {
-    responses.push({status: 503}, {status: 200});
+    responses.push({status: 503, headers: {get: () => "2"}}, {status: 200});
     const result = context.fetch('/api/state');
     await Promise.resolve();
     assert.match(elements['disconnected-banner'].textContent, /Coordinare is starting/);
@@ -80,6 +80,22 @@ const cases = {
     assert.equal(elements['disconnected-banner'].style.display, 'block');
     runTimer();
     assert.equal((await recovered).status, 200);
+  },
+  async unavailable() {
+    const failure = {status: 503, headers: {get: () => null}, clone: () => ({json: async () => ({error: 'sqlite failed'})})};
+    responses.push(failure);
+    assert.equal(await context.fetch('/api/stats'), failure);
+    assert.equal(requests.length, 1);
+    assert.equal(timers.size, 0);
+  },
+  async markedStatus() {
+    for (const status of ['starting', 'stopping']) {
+      responses.push({status: 503, headers: {get: () => null}, clone: () => ({json: async () => ({status})})}, {status: 200});
+      const pending = context.fetch('/api/state');
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      runTimer();
+      assert.equal((await pending).status, 200);
+    }
   },
   async mutation() {
     responses.push({status: 503});

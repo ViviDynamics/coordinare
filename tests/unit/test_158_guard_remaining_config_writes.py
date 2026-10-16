@@ -192,6 +192,7 @@ def _client(config_path: Path) -> TestClient:
     cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
     daemon = MagicMock()
     daemon.state = {
+        "startup_complete": True,
         "coordinare_config": cfg,
         "config_version": 7,
         # The symphony routes read this, not coordinare_config.symphonies — without it
@@ -384,7 +385,7 @@ class TestNothingElseChanged:
         refuse a write that could never happen — and there would be no version to
         give, since the version *is* the file."""
         daemon = MagicMock()
-        daemon.state = {"coordinare_config": None, "config_version": 0}
+        daemon.state = {"startup_complete": True, "coordinare_config": None, "config_version": 0}
         daemon._cycle_active = False
         app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock())
         client = TestClient(app, base_url="http://127.0.0.1:8090")
@@ -753,6 +754,7 @@ class TestTheTwoKindsOf409AreDistinguishable:
         cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
         daemon = MagicMock()
         daemon.state = {
+            "startup_complete": True,
             "coordinare_config": cfg,
             "config_version": 7,
             "symphony_configs": {s.name: s for s in cfg.symphonies},

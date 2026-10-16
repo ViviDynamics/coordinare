@@ -34,6 +34,7 @@ from coordinare.presets import expand_preset
 from coordinare.protocol import ProtocolResponse
 from coordinare.transport.subprocess_transport import SubprocessTransport
 from coordinare.workspace import WorkspaceInfo
+from tests.unit.startup_helpers import run_preflight_without_listeners
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -328,10 +329,11 @@ async def test_preflight_failure_prevents_runtime_bootstrap(
     preflight = AsyncMock(return_value=report)
     bootstrap = AsyncMock()
     monkeypatch.setattr(cli, "run_preflight", preflight)
-    monkeypatch.setattr(cli, "_run_with_events", bootstrap)
-    with pytest.raises(SystemExit) as exc:
+    run_preflight_without_listeners(monkeypatch, bootstrap)
+    with pytest.raises(cli.RuntimeExecutionError) as exc:
         await cli._run(ProjectConfiguration(**minimal))
-    assert exc.value.code == 1
+    assert exc.value.phase == "startup"
+    assert exc.value.step == "preflight"
     bootstrap.assert_not_called()
     assert "change dashboard_port" in capsys.readouterr().out
 

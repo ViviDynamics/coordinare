@@ -14,7 +14,7 @@ SERVICE_UNAVAILABLE = 503
 
 
 def daemon_ready(daemon: Any) -> bool:
-    return bool(daemon.running) and daemon.state.get("startup_complete", True) is True
+    return bool(daemon.running) and daemon.state.get("startup_complete", False) is True
 
 
 def install_availability(app: FastAPI, daemon: Any) -> None:
@@ -28,10 +28,16 @@ def install_availability(app: FastAPI, daemon: Any) -> None:
         path = request.url.path
         needs_state = path == "/events" or path.startswith("/api/")
         if needs_state and path != "/api/account" and not daemon_ready(daemon):
+            state = daemon.state
+            status = ("stopping" if state.get("stopping", False) else
+                      "unavailable" if state.get("startup_complete", False) else "starting")
+            headers = {"Cache-Control": "no-store"}
+            if status in {"starting", "stopping"}:
+                headers["Retry-After"] = str(STARTUP_RETRY_SECONDS)
             return JSONResponse(
-                {"status": "starting", "message": "Coordinare is starting", "daemon_ready": False},
+                {"status": status, "message": f"Coordinare is {status}", "daemon_ready": False},
                 status_code=SERVICE_UNAVAILABLE,
-                headers={"Retry-After": str(STARTUP_RETRY_SECONDS), "Cache-Control": "no-store"},
+                headers=headers,
             )
         response = await call_next(request)
         if response.headers.get("content-type", "").startswith("text/html"):

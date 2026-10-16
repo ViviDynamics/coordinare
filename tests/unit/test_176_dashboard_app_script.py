@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 
 from coordinare.dashboard import _DASHBOARD_HTML, _DASHBOARD_JS_FILES, _DASHBOARD_JS_REVISIONS
+from coordinare.dashboard.assets import _DASHBOARD_EXTRA_REVISIONS
 
 _INLINE_SCRIPT = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.DOTALL)
 _BOOTSTRAPS = ["data-appearance-bootstrap", "data-navigation-bootstrap"]
@@ -31,5 +32,5 @@ def test_application_script_is_the_last_static_tag_where_the_inline_block_was() 
     assert _DASHBOARD_HTML.count(app_tag) == 1
     after_app = _DASHBOARD_HTML.split(app_tag, 1)[1]
     assert after_app.lstrip().startswith("</body>"), "app.js must be the last script before </body>"
-    activity = _DASHBOARD_HTML.index('<script src="/static/activity-streams.js"></script>')
+    activity = _DASHBOARD_HTML.index(f'<script src="/static/activity-streams.js?v={_DASHBOARD_EXTRA_REVISIONS["activity-streams.js"]}"></script>')
     assert activity < _DASHBOARD_HTML.index(app_tag)

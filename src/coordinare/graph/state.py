@@ -167,6 +167,8 @@ DaemonPhase = Literal["idle", "dispatching", "monitoring_agent", "monitoring_per
 
 class CoordinareState(TypedDict, total=False):
     startup_complete: bool  # Process-local readiness, never restored from snapshots.
+    startup_deadline_at: float  # Monotonic process deadline, never persisted.
+    stopping: bool  # SIGTERM drain; no new work may start.
     # 066 (FR-010): current_card is a *derived mirror* of
     # active_sessions[active_card_id]["current_card"].  The only sanctioned
     # mutation site is _rederive_current_card() below; all other writers MUST

@@ -1,3 +1,8 @@
+# Startup must finish within this many seconds or the daemon exits non-zero.
+startupDeadlineSeconds: 600
+# 5s endpoint removal + 22s HTTP shutdown + 12s runtime cleanup + 1s watchdog + 2s event store + 3s margin.
+terminationGracePeriodSeconds: 45
+
 # Values for the coordinare chart.
 #
 # Nothing in this file is a secret. Credentials reach the daemon through a

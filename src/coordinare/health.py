@@ -79,8 +79,13 @@ def create_health_app(
         }
 
     @app.get("/live")
-    async def live() -> dict[str, str]:
-        """Liveness probe — always 200 while process is running."""
+    async def live(response: Response) -> dict[str, str]:
+        """Fail liveness if bootstrap has exceeded its process deadline."""
+        deadline = daemon.state.get("startup_deadline_at")
+        if (not daemon.state.get("startup_complete", False)
+                and isinstance(deadline, (int, float)) and monotonic() >= deadline):
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {"status": "startup_timeout"}
         return {"status": "alive"}
 
     @app.get("/ready")

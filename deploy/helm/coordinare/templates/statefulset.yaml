@@ -32,8 +32,10 @@ spec:
         # Resource labels and names must not trigger a config restart.
         checksum/config: {{ (include (print $.Template.BasePath "/configmap.yaml") . | fromYaml).data | toYaml | sha256sum }}
     spec:
-      # Five seconds for endpoint removal, twenty for HTTP draining, five for cleanup.
-      terminationGracePeriodSeconds: 30
+      # Budget: 5s preStop + 22s HTTP (20s drain + 2s overhead) + 12s runtime
+      # (5s conductor flush + 5s snapshot + 2s overhead) + 1s watchdog
+      # + 2s event store = 42s; 45s leaves 3s.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "coordinare.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

@@ -1433,8 +1433,19 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     function attempt() {
       return dashboardNativeFetch(url, options).then(function(response) {
         if (response.status === 503) {
-          showRestarting();
-          if (read) return retry();
+          function restart(status) {
+            if (status === 'starting' || status === 'stopping') {
+              showRestarting();
+              if (read) return retry();
+            }
+            return response;
+          }
+          if (response.headers && response.headers.get('Retry-After') !== null) return restart('starting');
+          if (response.clone) {
+            return response.clone().json().then(function(body) {
+              return restart(body && body.status);
+            }, function() { return response; });
+          }
         }
         return response;
       }, function(error) {

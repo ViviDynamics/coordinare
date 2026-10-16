@@ -33,6 +33,7 @@ data:
     {{- $_ := set $cfg "dashboard_auth_token" "${COORDINARE_DASHBOARD_AUTH_TOKEN}" }}
     {{- end }}
     {{- $_ := set $cfg "dashboard_port" (int .Values.dashboard.port) }}
+    {{- $_ := set $cfg "startup_deadline_seconds" .Values.startupDeadlineSeconds }}
     {{- $_ := set $cfg "health_check_port" (int .Values.health.port) }}
     {{- $_ := set $cfg "trusted_dashboard_hosts" (include "coordinare.trustedHosts" . | fromYamlArray) }}
 

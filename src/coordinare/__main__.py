@@ -12,7 +12,7 @@ import tempfile
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 # langchain-core imports pydantic.v1 internals that are not supported on
@@ -1408,7 +1408,8 @@ async def _run(
         await _run_with_events(config, config_path, coordinare_config, config_mode, event_store)
     finally:
         install_event_store(None)
-        await event_store.close()
+        close_task = asyncio.create_task(event_store.close(), name="event_store_close")
+        await _finish_tasks({close_task}, within=EVENT_STORE_SHUTDOWN_SECONDS)
 
 
 async def _initialize_symphonies(
@@ -1522,6 +1523,43 @@ async def _initialize_daemon(
     await daemon.start()
 
 
+HTTP_SHUTDOWN_SECONDS = HTTP_DRAIN_SECONDS + 2
+RUNTIME_SHUTDOWN_SECONDS = 12
+EVENT_STORE_SHUTDOWN_SECONDS = 2
+
+
+async def _finish_tasks(tasks: set[asyncio.Task[None]], *, within: float) -> None:
+    """Bound cleanup even when a task suppresses cancellation."""
+    if not tasks:
+        return
+    done, pending = await asyncio.wait(tasks, timeout=within)
+    for task in done:
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("shutdown.task_failed", task=task.get_name(), error_type=type(error).__name__)
+    for task in pending:
+        task.cancel()
+        task.add_done_callback(_consume_shutdown_result)
+        logger.error("shutdown.task_timeout", task=task.get_name(), timeout_seconds=within)
+
+
+def _consume_shutdown_result(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _watch_startup(daemon: CoordinareDaemon, deadline: float) -> None:
+    while not daemon.state.get("startup_complete", False):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            logger.error("startup.deadline_exceeded")
+            raise RuntimeExecutionError(
+                phase="startup", step="deadline", cause=TimeoutError("Startup deadline exceeded"),
+            )
+        await asyncio.sleep(min(0.1, remaining))
+
+
 async def _run_with_events(
     config: ProjectConfiguration,
     config_path: Path | None,
@@ -1589,6 +1627,7 @@ async def _run_with_events(
         install_signal_handlers=False,
     )
 
+    daemon.state["startup_deadline_at"] = monotonic() + config.startup_deadline_seconds
     daemon.state["activity_log"] = dashboard_store.activity_log
     daemon.state["config_mode"] = config_mode
     daemon.state["config"] = config
@@ -1665,10 +1704,19 @@ async def _run_with_events(
     server_task = asyncio.create_task(server.serve(), name="health_http")
     dashboard_task = asyncio.create_task(dashboard_server.serve(), name="dashboard_http")
     runtime_task: asyncio.Task[None] | None = None
+    startup_task = asyncio.create_task(
+        _watch_startup(daemon, daemon.state["startup_deadline_at"]), name="startup_deadline",
+    )
 
-    # Stop accepting connections, then let accepted dashboard requests finish.
+    # Stop dispatch immediately while accepted dashboard requests finish.
     # Runtime services stay alive until the HTTP drain completes in finally.
     def _on_signal() -> None:
+        if not daemon.state.get("stopping", False):
+            daemon.state["stopping"] = True
+            daemon.stop()
+            if (runtime_task is not None and not runtime_task.done()
+                    and not daemon.state.get("startup_complete", False)):
+                runtime_task.cancel()
         server.should_exit = True
         dashboard_store.shutdown()
         dashboard_server.should_exit = True
@@ -1707,8 +1755,9 @@ async def _run_with_events(
         loop.add_signal_handler(signal.SIGUSR1, _dump_tasks)
 
     try:
-        await wait_for_listener(dashboard_server, dashboard_task)
-        await wait_for_listener(server, server_task)
+        async with asyncio.timeout(config.startup_deadline_seconds):
+            await wait_for_listener(dashboard_server, dashboard_task)
+            await wait_for_listener(server, server_task)
         if dashboard_server.should_exit or server.should_exit:
             return
         logger.info("dashboard_started", host=config.dashboard_host, port=config.dashboard_port)
@@ -1716,27 +1765,33 @@ async def _run_with_events(
             _initialize_daemon(config, config_path, coordinare_config, daemon, circuit_breakers),
             name="daemon_runtime",
         )
-        done, _ = await asyncio.wait(
-            {runtime_task, dashboard_task, server_task}, return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in done:
-            await task
+        watched = {runtime_task, dashboard_task, server_task, startup_task}
+        while True:
+            done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.cancelled() and daemon.state.get("stopping", False):
+                    continue
+                await task
+            if done != {startup_task}:
+                break
+            watched.remove(startup_task)
     finally:
         METRICS.daemon_up.set(0)
+        if not daemon.state.get("stopping", False):
+            daemon.state["stopping"] = True
+            daemon.stop()
         server.should_exit = True
         dashboard_store.shutdown()
         dashboard_server.should_exit = True
-        try:
-            await asyncio.gather(server_task, dashboard_task)
-        finally:
-            daemon.stop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.remove_signal_handler(sig)
-            if runtime_task is not None:
-                if not runtime_task.done():
-                    runtime_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await runtime_task
+        startup_task.cancel()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+        await _finish_tasks({server_task, dashboard_task}, within=HTTP_SHUTDOWN_SECONDS)
+        if runtime_task is not None:
+            if not runtime_task.done() and not daemon.state.get("startup_complete", False):
+                runtime_task.cancel()
+            await _finish_tasks({runtime_task}, within=RUNTIME_SHUTDOWN_SECONDS)
+        await _finish_tasks({startup_task}, within=1)
 
 
 def _load_project_config_for_doctor(result: ConfigValidationResult) -> ProjectConfiguration:

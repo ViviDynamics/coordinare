@@ -19,6 +19,7 @@ from coordinare.doctor import CheckResult, DoctorReport, Status
 from coordinare.services.config_write_service import compute_content_hash
 from coordinare.services.event_capture import event_store_processor, install_event_store
 from tests.unit.dashboard_js_slices import shipped_function
+from tests.unit.startup_helpers import run_preflight_without_listeners
 from tests.unit.test_dashboard_config_api import _make_client
 
 
@@ -117,7 +118,7 @@ async def test_200_preflight_failure_is_captured_and_flushed(
     config = ProjectConfiguration(github_org="example", github_token="test-token",
                                   human_reviewers=["operator"], state_file_path=tmp_path / "state.json")
     runtime = AsyncMock()
-    monkeypatch.setattr(cli, "_run_with_events", runtime)
+    run_preflight_without_listeners(monkeypatch, runtime)
 
     async def preflight(*args: Any) -> DoctorReport:
         structlog.get_logger().error("test.preflight_failed")
@@ -126,7 +127,7 @@ async def test_200_preflight_failure_is_captured_and_flushed(
         return DoctorReport([CheckResult("port", Status.FAIL, "busy", "change dashboard_port")])
 
     monkeypatch.setattr(cli, "run_preflight", preflight)
-    with pytest.raises(RuntimeError if raises else SystemExit):
+    with pytest.raises(RuntimeError if raises else cli.RuntimeExecutionError):
         await cli._run(config)
     runtime.assert_not_called()
     with sqlite3.connect(tmp_path / "events.db") as db:
