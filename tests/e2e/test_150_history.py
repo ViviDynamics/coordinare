@@ -244,13 +244,27 @@ def test_an_unknown_cost_says_not_recorded_and_why(page: Page, history_server_ur
 
 
 @pytest.mark.e2e
-def test_the_symphony_filter_keeps_one_symphony(page: Page, history_server_url: str, store: DashboardStore) -> None:
+def test_the_header_selector_rescopes_history_and_apply_keeps_that_scope(
+    page: Page, history_server_url: str, store: DashboardStore,
+) -> None:
     _history(page, history_server_url, store)
-    _apply(page, symphony=BETA)
+    expect(page.locator("#history-page-section select[name='symphony']")).to_have_count(0)
+    page.locator("#symphony-select").select_option(BETA)
     expect(page.locator("#history-page-section a[data-history-link]").first).to_have_attribute(
         "data-history-link", "/runs/beta-sym/PVTI_B1/run-b1", timeout=WAIT_PAGE,
     )
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1)
+    _apply(page, card="PVTI_B1")
+    expect(page).to_have_url(re.compile(r"symphony=beta-sym&h\.card=PVTI_B1"), timeout=WAIT_PAGE)
+    expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
+    expect(page.locator("#symphony-select")).to_have_value(BETA)
+    page.locator("#history-page-section [data-history-action='reset']").click()
+    expect(page.locator("#history-page-section [name='card']")).to_have_value("", timeout=WAIT_PAGE)
+    expect(page).to_have_url(f"{history_server_url}/history?symphony={BETA}")
+    expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1)
+    page.locator("#symphony-select").select_option(ALPHA)
+    expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(PAGE_SIZE, timeout=WAIT_PAGE)
+    expect(page.locator("#history-page-section")).not_to_contain_text("Beta card")
 
 
 @pytest.mark.e2e
@@ -299,6 +313,27 @@ def test_clear_puts_the_filters_back(page: Page, history_server_url: str, store:
     page.locator("#history-page-section [data-history-action='reset']").click()
     expect(page.locator("#history-page-section a[data-history-link]").first).to_be_visible(timeout=WAIT_PAGE)
     expect(page.locator("#history-page-section [name='outcome']")).to_have_value("")
+
+
+@pytest.mark.e2e
+def test_history_buttons_use_the_dashboard_style_and_align_with_inputs(
+    page: Page, history_server_url: str, store: DashboardStore,
+) -> None:
+    _history(page, history_server_url, store)
+    buttons = page.locator("#history-page-section button")
+    expect(buttons).to_have_count(5)
+    expect(page.locator("#history-page-section button.action-btn")).to_have_count(5)
+    # Compare the rendered bottoms in the flex row, including when the row wraps.
+    assert page.locator("#history-page-section .history-filters").evaluate("""form => {
+        const inputs = Array.from(form.querySelectorAll('input, select')).map(el => el.getBoundingClientRect());
+        return Array.from(form.querySelectorAll('button')).every(button => {
+            const rect = button.getBoundingClientRect();
+            const sameRow = inputs.filter(input => input.top < rect.bottom && input.bottom > rect.top);
+            return getComputedStyle(button).marginTop === '0px'
+                && sameRow.every(input => Math.abs(input.bottom - rect.bottom) <= 1);
+        });
+    }""")
+    expect(page.locator("#history-page-section .action-btn[data-history-action='newer']")).to_be_disabled()
 
 
 # --- pagination ------------------------------------------------------------------ #
@@ -381,9 +416,27 @@ def test_the_server_refuses_a_symphony_the_daemon_does_not_run(page: Page, histo
 @pytest.mark.e2e
 def test_the_header_scope_limits_the_history_to_its_symphony(page: Page, history_server_url: str, store: DashboardStore) -> None:
     _history(page, history_server_url, store, query=f"?symphony={BETA}")
-    expect(page.locator("#history-page-section select[name='symphony']")).to_have_value(BETA, timeout=WAIT_PAGE)
+    expect(page.locator("#symphony-select")).to_have_value(BETA, timeout=WAIT_PAGE)
+    expect(page.locator("#history-page-section select[name='symphony']")).to_have_count(0)
     expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
     expect(page.locator("#history-page-section")).not_to_contain_text("Alpha card")
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("legacy_scope", [BETA, ""])
+def test_old_history_scope_bookmarks_select_the_header_including_all(
+    page: Page, history_server_url: str, store: DashboardStore, legacy_scope: str,
+) -> None:
+    page.add_init_script(f"localStorage.setItem('coordinare.symphony', '{ALPHA}')")
+    _history(page, history_server_url, store, query=f"?h.symphony={legacy_scope}&h.card=PVTI_B1")
+    expect(page.locator("#symphony-select")).to_have_value(legacy_scope, timeout=WAIT_PAGE)
+    expect(page).to_have_url(
+        f"{history_server_url}/history?h.card=PVTI_B1&symphony={legacy_scope}", timeout=WAIT_PAGE,
+    )
+    expect(page.locator("#history-page-section a[data-history-link]")).to_have_count(1, timeout=WAIT_PAGE)
+    expect(page.locator("#history-page-section a[data-history-link]")).to_have_attribute(
+        "data-history-link", "/runs/beta-sym/PVTI_B1/run-b1",
+    )
 
 
 # --- review round: the filters live in the URL, and a run written while paging is announced --- #

@@ -4,11 +4,11 @@
 // The pure helpers come first and are checked under node (tests/js/history_checks.js). Every
 // value from the server goes through esc(), and a link is an internal path or an https URL.
 //
-// The filters live in the address bar (h.symphony, h.card, ...), so a reload and Back and
+// The header scope and filters live in the address bar (symphony, h.card, ...), so a reload and Back and
 // Forward restore them. The page's cursor stack lives in history.state, keyed by its filters.
 
 var HISTORY_PAGE_LIMIT = 50;
-var HISTORY_FILTER_KEYS = ['symphony', 'card', 'stage', 'outcome', 'since', 'until'];
+var HISTORY_FILTER_KEYS = ['card', 'stage', 'outcome', 'since', 'until'];
 var HISTORY_OUTCOME_LABELS = { completed: 'Completed', failed: 'Failed', unknown: 'Not recorded' };
 var HISTORY_NOT_RECORDED = 'not recorded';
 var HISTORY_PARAM_PREFIX = 'h.';
@@ -18,8 +18,7 @@ function historyDefaultFilters(choice) {
   return { symphony: choice || '', card: '', stage: '', outcome: '', since: '', until: '' };
 }
 
-// The filters a History address names. A filter that is absent takes its default, so the
-// header's choice still applies to a bare /history. An explicit h.symphony= means All.
+// The filters a History address names. The symphony always comes from the header's choice.
 function historyFiltersFromSearch(search, choice) {
   var filters = historyDefaultFilters(choice);
   String(search || '').replace(/^\?/, '').split('&').forEach(function(part) {
@@ -40,18 +39,15 @@ function historyFiltersFromSearch(search, choice) {
 }
 
 // The address for a set of filters: every parameter that is not a History filter is kept, so the
-// header's ?symphony= choice survives. A filter is written when it has a value. The symphony is
-// also written when it differs from the header's scope, so an explicit All under a scoped header
-// is kept, while a plain /history stays plain.
-function historySearchFor(search, filters, scopeSymphony) {
+// header's ?symphony= choice survives. A filter is written when it has a value.
+function historySearchFor(search, filters) {
   var keep = [];
   String(search || '').replace(/^\?/, '').split('&').forEach(function(part) {
     if (part && part.split('=')[0].indexOf(HISTORY_PARAM_PREFIX) !== 0) keep.push(part);
   });
   HISTORY_FILTER_KEYS.forEach(function(key) {
     var value = filters[key] || '';
-    var written = key === 'symphony' ? value !== (scopeSymphony || '') : !!value;
-    if (written) keep.push(HISTORY_PARAM_PREFIX + key + '=' + encodeURIComponent(value));
+    if (value) keep.push(HISTORY_PARAM_PREFIX + key + '=' + encodeURIComponent(value));
   });
   return keep.length ? '?' + keep.join('&') : '';
 }
@@ -69,7 +65,7 @@ function historyStackFor(saved, sig) {
 // The query string for one page. Empty filters are left out; the limit is always sent.
 function historyQueryString(filters, cursor) {
   var parts = [];
-  HISTORY_FILTER_KEYS.forEach(function(key) {
+  ['symphony'].concat(HISTORY_FILTER_KEYS).forEach(function(key) {
     var value = filters && filters[key];
     if (value) parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
   });
@@ -149,12 +145,12 @@ function historyRunRowHtml(row) {
     : historyNotRecorded(row.duration_reason);
   var path = runPathFor(row.symphony, row.card, row.run);
   // 233: the card links to its card page (the pipeline timeline, #147). A row with no symphony
-  // address to name (the conductor's own checks) keeps the History filtered to the card.
+  // address to name (the conductor's own checks) opens History with the card filter and header scope.
   var cardPath = cardPageAddressOk(row.symphony, row.card)
     ? cardPathFor(row.symphony, row.card)
-    : '/history' + historySearchFor('', {
-      symphony: row.symphony, card: row.card, stage: '', outcome: '', since: '', until: '',
-    }, '');
+    : '/history' + historySearchFor('?symphony=' + encodeURIComponent(row.attributed_symphony || row.symphony || ''), {
+      card: row.card, stage: '', outcome: '', since: '', until: '',
+    });
   return '<tr>' +
     '<td>' + timeHtml(row.started_at) + '</td>' +
     '<td>' + esc(row.attributed_symphony || row.symphony || '') + '</td>' +
@@ -198,11 +194,7 @@ function historyChecksHtml(checks) {
 }
 
 // The filter form. Its values come from the current filters, so a reload keeps what was asked.
-function historyFormHtml(filters, names) {
-  var symphonies = ['<option value="">All symphonies</option>'].concat((names || []).map(function(name) {
-    var selected = filters.symphony === name ? ' selected' : '';
-    return '<option value="' + esc(name) + '"' + selected + '>' + esc(name) + '</option>';
-  }));
+function historyFormHtml(filters) {
   var outcomes = [['', 'Any outcome']].concat(Object.keys(HISTORY_OUTCOME_LABELS).map(function(key) {
     return [key, HISTORY_OUTCOME_LABELS[key]];
   })).map(function(pair) {
@@ -210,23 +202,22 @@ function historyFormHtml(filters, names) {
     return '<option value="' + esc(pair[0]) + '"' + selected + '>' + esc(pair[1]) + '</option>';
   });
   return '<form class="history-filters" data-history-form>' +
-    '<label>Symphony <select name="symphony">' + symphonies.join('') + '</select></label>' +
     '<label>Card <input type="text" name="card" value="' + esc(filters.card) + '"></label>' +
     '<label>Stage <input type="text" name="stage" value="' + esc(filters.stage) + '"></label>' +
     '<label>Outcome <select name="outcome">' + outcomes.join('') + '</select></label>' +
     '<label>From <input type="date" name="since" value="' + esc(filters.since) + '"></label>' +
     '<label>To <input type="date" name="until" value="' + esc(filters.until) + '"></label>' +
-    '<button type="submit">Apply</button> ' +
-    '<button type="button" data-history-action="reset">Clear</button></form>';
+    '<button type="submit" class="action-btn">Apply</button> ' +
+    '<button type="button" class="action-btn" data-history-action="reset">Clear</button></form>';
 }
 
 // The pager: Newer goes back a page this visit has seen, Older asks for the next cursor. Both wait
 // while a request is in flight, so a second click cannot move the stack under the first.
 function historyPagerHtml(hasNewer, hasOlder, pending) {
   return '<div class="history-pager">' +
-    '<button type="button" data-history-action="newer"' + (hasNewer && !pending ? '' : ' disabled') + '>Newer</button> ' +
-    '<button type="button" data-history-action="older"' + (hasOlder && !pending ? '' : ' disabled') + '>Older</button> ' +
-    '<button type="button" data-history-action="refresh">Refresh</button></div>';
+    '<button type="button" class="action-btn" data-history-action="newer"' + (hasNewer && !pending ? '' : ' disabled') + '>Newer</button> ' +
+    '<button type="button" class="action-btn" data-history-action="older"' + (hasOlder && !pending ? '' : ' disabled') + '>Older</button> ' +
+    '<button type="button" class="action-btn" data-history-action="refresh">Refresh</button></div>';
 }
 
 // Runs written after the first page loaded. The pages keep to the first page's list, so these
@@ -248,11 +239,11 @@ function historyPartialHtml(body) {
 }
 
 // The page for one listing: the filters, the notices, the table, the checks and the pager.
-function historyPageHtml(body, filters, names, hasNewer) {
+function historyPageHtml(body, filters, hasNewer) {
   var rows = Array.isArray(body.rows) ? body.rows : [];
   var runs = rows.filter(function(row) { return !historyIsCheck(row); });
   var checks = rows.filter(historyIsCheck);
-  return historyFormHtml(filters, names) + historyNewerHtml(body) + historyPartialHtml(body) +
+  return historyFormHtml(filters) + historyNewerHtml(body) + historyPartialHtml(body) +
     historyTableHtml(runs) + historyChecksHtml(checks) + historyPagerHtml(hasNewer, !!body.next_cursor, false);
 }
 
@@ -286,8 +277,7 @@ function historySave() {
     cursors: _historyPage.cursors.slice(),
     index: _historyPage.index,
   };
-  var scopeSymphony = _historyPage.scope === SYMPHONY_ALL ? '' : _historyPage.scope;
-  var search = historySearchFor(location.search, _historyPage.filters, scopeSymphony);
+  var search = historySearchFor(location.search, _historyPage.filters);
   history.replaceState(state, '', location.pathname + search + location.hash);
 }
 
@@ -300,7 +290,7 @@ function renderHistoryPage(s) {
   var scopeSymphony = choice === SYMPHONY_ALL ? '' : choice;
   var first = _historyPage.scope === null;
   var changed = !first && _historyPage.scope !== choice;
-  var filters = changed ? historyDefaultFilters(scopeSymphony) : historyFiltersFromSearch(location.search, scopeSymphony);
+  var filters = historyFiltersFromSearch(location.search, scopeSymphony);
   var sig = historyQueryString(filters, '');
   var saved = history.state && history.state.historyPage;
   var stack = historyStackFor(changed ? null : saved, sig);
@@ -324,7 +314,7 @@ function historyWire(section) {
     if (!event.target || !event.target.hasAttribute('data-history-form')) return;
     event.preventDefault();
     var data = new FormData(event.target);
-    var filters = historyDefaultFilters('');
+    var filters = historyDefaultFilters(_historyPage.scope === SYMPHONY_ALL ? '' : _historyPage.scope);
     HISTORY_FILTER_KEYS.forEach(function(key) { filters[key] = String(data.get(key) || '').trim(); });
     _historyPage.filters = filters;
     _historyPage.cursors = [''];
@@ -419,11 +409,5 @@ function historyShow(section, result) {
     return;
   }
   _historyPage.body = body;
-  section.innerHTML = historyPageHtml(body, _historyPage.filters, historySymphonyNames(), _historyPage.index > 0);
-}
-
-// The symphony choices the filter offers: the names the header's scope shows.
-function historySymphonyNames() {
-  var scoped = typeof currentScopedState === 'function' ? currentScopedState() : null;
-  return typeof symphonyNames === 'function' ? symphonyNames(scoped) : [];
+  section.innerHTML = historyPageHtml(body, _historyPage.filters, _historyPage.index > 0);
 }

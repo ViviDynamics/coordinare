@@ -30,6 +30,7 @@ def _history_slice() -> str:
         # 233: the card cell's link comes from the card page's address helpers.
         shipped_var("runs", "RUN_NAME_PATTERN"),
         _DASHBOARD_JS_SOURCES["cardpage"],
+        _DASHBOARD_JS_SOURCES["symphonies"],
         _DASHBOARD_JS_SOURCES["history"],
     ])
 

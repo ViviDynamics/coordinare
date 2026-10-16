@@ -51,7 +51,7 @@ function symphonyParamFromSearch(search) {
   for (var i = 0; i < pairs.length; i++) {
     var pair = pairs[i].split('=');
     if (pair[0] !== SYMPHONY_PARAM || pair.length < 2) continue;
-    try { return decodeURIComponent(pair[1]); } catch (e) { return ''; }
+    try { return decodeURIComponent(pair.slice(1).join('=').replace(/\+/g, ' ')); } catch (e) { return ''; }
   }
   return '';
 }
@@ -814,9 +814,24 @@ function writeStoredSymphony(choice) {
   try { window.localStorage.setItem(SYMPHONY_STORAGE_KEY, choice); } catch (e) { return; }
 }
 
+// Old History bookmarks carried their own scope. Move it to the header before resolving any
+// scoped view, keeping the router state and hash. Deleting the old key makes this a one-time move.
+function migrateHistorySymphony() {
+  if (typeof location === 'undefined' || location.pathname !== '/history') return;
+  var params = new URLSearchParams(location.search);
+  if (!params.has('h.symphony')) return;
+  params.set(SYMPHONY_PARAM, params.get('h.symphony'));
+  params.delete('h.symphony');
+  history.replaceState(history.state, '', location.pathname + '?' + params.toString() + location.hash);
+}
+
 // The choice in force for a snapshot: a valid deep link, else the stored choice, else All.
+// An explicit empty symphony parameter chooses All even when this browser stored another choice.
 function currentSymphonyChoice(s) {
-  var fromUrl = symphonyParamFromSearch(typeof location !== 'undefined' ? location.search : '');
+  migrateHistorySymphony();
+  var search = typeof location !== 'undefined' ? location.search : '';
+  if (new URLSearchParams(search).get(SYMPHONY_PARAM) === '') return SYMPHONY_ALL;
+  var fromUrl = symphonyParamFromSearch(search);
   return resolveSymphonyChoice(fromUrl, readStoredSymphony(), symphonyNames(s));
 }
 
@@ -839,7 +854,8 @@ function renderSymphonySwitcher() {
   var s = typeof _lastState !== 'undefined' ? _lastState : null;
   var choice = currentSymphonyChoice(s);
   var fromUrl = symphonyParamFromSearch(location.search);
-  if (fromUrl && fromUrl === choice && readStoredSymphony() !== choice) writeStoredSymphony(choice);
+  if (new URLSearchParams(location.search).has(SYMPHONY_PARAM) && fromUrl === choice &&
+      readStoredSymphony() !== choice) writeStoredSymphony(choice);
   var html = s ? symphonySwitcherHtml(s, choice) : '';
   el.style.display = html ? '' : 'none';
   if (html === _symphonySwitcherHtml) return;

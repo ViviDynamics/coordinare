@@ -25,7 +25,7 @@ class Source {
   open() { this.readyState = 1; this.onopen(); }
 }
 const context = {
-  EventSource: Source, console, location: {pathname: '/'},
+  EventSource: Source, URLSearchParams, console, location: {pathname: '/'},
   document: {getElementById: id => elements[id]},
   setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, {callback, delay}); return id; },
   clearTimeout(id) { timers.delete(id); },
