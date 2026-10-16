@@ -76,5 +76,8 @@ COPY agent/performer/src/ ./src/
 RUN sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml && \
     pip install --no-cache-dir .
 
-# Entrypoint: serve HTTP API on port 8088
-ENTRYPOINT ["python", "-m", "performer", "--serve", "--port", "8088"]
+# Install the selected backend at startup for both published variants.
+COPY agent/performer/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENV PATH="/root/.local/bin:${PATH}"
+ENTRYPOINT ["/entrypoint.sh"]

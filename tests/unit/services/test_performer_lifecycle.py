@@ -61,6 +61,53 @@ async def test_start_ephemeral_runs_docker_and_resolves_port(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("token", [None, ""])
+@pytest.mark.parametrize("port", [None, 9090])
+async def test_197_no_token_launch_matches_origin_main_except_localhost_bind(
+    monkeypatch, token, port,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        calls.append(args)
+        if args[0] == "run":
+            return 0, "legacy-container", ""
+        return 0, "127.0.0.1:49160", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    started = await start_ephemeral(_ephemeral_config(auth_token=token, port=port))
+
+    assert calls == [
+        ("run", "-d", "--rm", "--label", "coordinare.performer.id=perf-1",
+         "-p", f"127.0.0.1:{port or 0}:8088", "performer:base"),
+        ("port", "legacy-container", "8088/tcp"),
+    ]
+    assert started == StartedContainer("legacy-container", "http://127.0.0.1:49160")
+
+
+@pytest.mark.asyncio
+async def test_197_no_token_warns_once_per_endpoint_with_token_setup_hint(monkeypatch) -> None:
+    from structlog.testing import capture_logs
+
+    monkeypatch.setattr(lifecycle, "_warned_unauthenticated_endpoints", set(), raising=False)
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        return (0, "legacy-container", "") if args[0] == "run" else (0, "127.0.0.1:49160", "")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    with capture_logs() as logs:
+        for endpoint_id in ("legacy-one", "legacy-one", "legacy-two", "legacy-two"):
+            await start_ephemeral(_ephemeral_config(id=endpoint_id))
+
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert [entry["performer_id"] for entry in warnings] == ["legacy-one", "legacy-two"]
+    for entry in warnings:
+        assert "auth disabled" in entry["message"].lower()
+        assert "coordinare init --force" in entry["message"]
+        assert "auth_token" in entry["message"]
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_never_uses_host_networking(monkeypatch) -> None:
     # 151 review: host networking is deliberately unsupported. Sharing the host
     # netns would let the entrypoint's egress iptables rules flush and DROP the
@@ -157,7 +204,7 @@ async def test_start_ephemeral_with_pinned_port(monkeypatch) -> None:
 
     run_args = args_seen[0]
     p_idx = list(run_args).index("-p")
-    assert run_args[p_idx + 1] == "9090:8088"
+    assert run_args[p_idx + 1] == "127.0.0.1:9090:8088"
     assert started.endpoint == "http://127.0.0.1:9090"
 
 
@@ -178,9 +225,8 @@ async def test_start_ephemeral_with_auth_token_env(monkeypatch) -> None:
     await start_ephemeral(_ephemeral_config(auth_token="tok123"))
 
     run_args = list(args_seen[0])
-    assert "-e" in run_args
-    env_val_idx = run_args.index("-e") + 1
-    assert run_args[env_val_idx] == "PERFORMER_AUTH_TOKEN=tok123"
+    assert "--env-file" in run_args
+    assert all("tok123" not in arg for arg in run_args)
 
 
 @pytest.mark.asyncio

@@ -271,6 +271,27 @@ def placeholder_problems(
     return [(f.field, f.message) for f in placeholder_findings(model, value, prefix) if f.refuses]
 
 
+def validate_expanded_secrets(raw: object) -> None:
+    """Refuse unexpanded performer auth tokens without changing other config-load behavior."""
+    views = [(raw, "")]
+    if isinstance(raw, dict):
+        views.append((raw.get("global_config"), "global_config"))
+        for index, symphony in enumerate(raw.get("symphonies") or []):
+            if isinstance(symphony, dict):
+                views.append((symphony.get("overrides"), f"symphonies[{index}].overrides"))
+    for value, prefix in views:
+        path = ("performer_endpoints", _LIST_ITEM, "auth_token")
+        for display, leaf, _ in _values_at(value, path, prefix):
+            text = leaf.get_secret_value() if isinstance(leaf, SecretStr) else leaf
+            if isinstance(text, str) and (match := _ENV_REFERENCE.search(text)):
+                name = match.group(1)
+                message = (
+                    f"{display} still holds an unexpanded ${{{name}}} placeholder. "
+                    f"Set environment variable {name} to a secret value before loading the config."
+                )
+                raise StartCheckError(message, display)
+
+
 def placeholder_warnings(
     model: type[BaseModel], value: object, prefix: str = "",
 ) -> list[tuple[str, str]]:
