@@ -12,7 +12,9 @@ from fastapi import (  # noqa: TC002 — FastAPI resolves handler signatures at 
     Request,
 )
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError as PydanticValidationError
 
+from coordinare.config import UnknownPersonaRoleError
 from coordinare.dashboard.guards import _version_headers, _version_refusal
 from coordinare.dashboard.routers.personas import _session_actor
 from coordinare.dashboard.secret_overrides import (
@@ -30,6 +32,18 @@ if TYPE_CHECKING:
     from coordinare.dashboard.context import DashboardContext
 
 _log = structlog.get_logger(__name__)
+
+
+def _log_validation_failure(event: str, name: str, exc: Exception) -> None:
+    """Log error metadata without exception text, source input, or traceback."""
+    locations = []
+    if isinstance(exc, PydanticValidationError):
+        locations = [
+            ".".join(str(part) for part in error["loc"])
+            for error in exc.errors(include_input=False, include_context=False)
+        ]
+    _log.warning(event, name=name, error_type=type(exc).__name__, field_locations=locations)
+
 
 def _persist_symphony_configs(sym_configs: dict[str, Any], config_path: Path | None) -> None:
     """Atomically write the current symphony list to config.yaml (FR-020)."""
@@ -186,12 +200,13 @@ def _effective_config_refusal(new_cfg: Any, daemon: Any, name: str) -> JSONRespo
         try:
             new_cfg.effective_config(coordinare_cfg.global_config)
         except Exception as exc:
-            _log.warning("symphony_effective_config_failed", name=name, exc_info=True)
-            from pydantic import ValidationError as PydanticValidationError
+            _log_validation_failure("symphony_effective_config_failed", name, exc)
             if isinstance(exc, PydanticValidationError):
                 msg = "; ".join(
                     f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
                 )
+            elif isinstance(exc, UnknownPersonaRoleError):
+                msg = exc.public_message
             else:
                 msg = str(exc)
             return JSONResponse({"error": msg}, status_code=400)
@@ -224,8 +239,8 @@ def _construct_new_symphony(
             personas=body.get("personas") or None,
             env_spec_files=body.get("env_spec_files") or ["README.md"],
         )
-    except Exception:
-        _log.warning("symphony_create_validation_failed", name=name, exc_info=True)
+    except Exception as exc:
+        _log_validation_failure("symphony_create_validation_failed", name, exc)
         return None, JSONResponse({"error": "Invalid symphony configuration"}, status_code=400)
 
     refusal = _effective_config_refusal(new_cfg, daemon, name)
@@ -305,12 +320,12 @@ def _register_create_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 _persist_symphony_configs(symphony_configs, config_path)
             except ValueError:
                 _log.debug("symphony_create_persist_skipped_no_config_file", name=name)
-            except Exception:
+            except Exception as exc:
                 # Roll back in-memory state so the API contract stays atomic.
                 del symphony_configs[name]
                 daemon.state["symphony_configs"] = symphony_configs
                 daemon.state["config_version"] = saved_version
-                _log.warning("symphony_persist_failed", name=name, exc_info=True)
+                _log_validation_failure("symphony_persist_failed", name, exc)
                 return JSONResponse({"error": "Failed to persist symphony configuration"}, status_code=500)
 
             if hasattr(daemon, "_config_reload_trigger"):
@@ -369,8 +384,6 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 proposed_overrides = body.get("overrides", proposed_overrides)
                 proposed_personas = body.get("personas", proposed_personas)
 
-            from pydantic import ValidationError as PydanticValidationError
-
             try:
                 candidate = SymphonyConfig(
                     name=name,
@@ -390,16 +403,16 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 })
             except PydanticValidationError as exc:
                 return JSONResponse(
-                    {"valid": False, "errors": exc.errors()},
+                    {"valid": False, "errors": exc.errors(include_context=False, include_input=False)},
                     status_code=400,
                 )
             except ValueError as exc:
                 return JSONResponse(
-                    {"valid": False, "errors": [{"msg": str(exc)}]},
+                    {"valid": False, "errors": [{"msg": exc.public_message if isinstance(exc, UnknownPersonaRoleError) else str(exc)}]},
                     status_code=400,
                 )
-            except Exception:
-                _log.warning("symphony_validate_unexpected_error", name=name, exc_info=True)
+            except Exception as exc:
+                _log_validation_failure("symphony_validate_unexpected_error", name, exc)
                 return JSONResponse({"error": "Internal validation error"}, status_code=500)
 
 
@@ -452,8 +465,8 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     personas=body.get("personas", getattr(cfg, "personas", None)),
                     env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
                 )
-            except Exception:
-                _log.warning("symphony_config_validation_failed", name=name, exc_info=True)
+            except Exception as exc:
+                _log_validation_failure("symphony_config_validation_failed", name, exc)
                 return JSONResponse({"error": "Invalid symphony configuration"}, status_code=400)
 
             refusal = _effective_config_refusal(updated, daemon, name)
@@ -479,7 +492,7 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
             except ValueError:
                 # config_path is None or file doesn't exist — in-memory-only mode, not an error.
                 _log.debug("symphony_update_persist_skipped_no_config_file", name=name)
-            except Exception:
+            except Exception as exc:
                 # Actual I/O error — roll back so the in-memory state stays consistent.
                 if previous_cfg is not None:
                     symphony_configs[name] = previous_cfg
@@ -487,7 +500,7 @@ def _register_update_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                     del symphony_configs[name]
                 daemon.state["symphony_configs"] = symphony_configs
                 daemon.state["config_version"] = saved_version
-                _log.warning("symphony_persist_failed", name=name, exc_info=True)
+                _log_validation_failure("symphony_persist_failed", name, exc)
                 return JSONResponse({"error": "Failed to persist symphony configuration"}, status_code=500)
 
             if hasattr(daemon, "_config_reload_trigger"):
@@ -579,12 +592,12 @@ def _register_delete_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 _persist_symphony_configs(symphony_configs, config_path)
             except ValueError:
                 _log.debug("symphony_persist_skipped_no_config_file", name=name)
-            except Exception:
+            except Exception as exc:
                 # Roll back in-memory state so the config and disk stay in sync.
                 daemon.state["symphony_configs"] = saved_configs
                 daemon.state["symphony_states"] = saved_states
                 daemon.state["config_version"] = saved_version
-                _log.warning("symphony_persist_failed", name=name, exc_info=True)
+                _log_validation_failure("symphony_persist_failed", name, exc)
                 return JSONResponse({"error": "Failed to persist config; delete rolled back"}, status_code=500)
 
             if hasattr(daemon, "_config_reload_trigger"):

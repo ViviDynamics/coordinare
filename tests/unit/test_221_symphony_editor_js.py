@@ -35,12 +35,16 @@ def test_the_symphony_form_functions_pass_their_checks_under_node(tmp_path: Path
     assert node is not None, "node is required for the dashboard JS gates"
     config = (_STATIC / "config.js").read_text(encoding="utf-8")
     app = (_STATIC / "app.js").read_text(encoding="utf-8")
+    helpers = (_STATIC / "helpers.js").read_text(encoding="utf-8")
     shipped = [
         "var _cfgSymReload = null;",
+        "var _CFG_REFS = {}; var CFG_INPUT = '';",
+        _function(helpers, "esc"),
         *(_function(config, name) for name in (
             "cfgDiffText", "cfgDiffRows", "cfgSecretChanged", "cfgSymphonyRefusal",
-            "cfgHandleSymphonySave", "cfgReloadSymphony",
+            "cfgHandleSymphonySave", "cfgReloadSymphony", "cfgInput",
         )),
+        _function(app, "symSecretRow"),
         _function(app, "symCopy"),
         _function(app, "symRequestBody"),
     ]

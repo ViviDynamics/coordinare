@@ -625,8 +625,8 @@ def _build_symphonies_section(config: CoordinareConfiguration) -> ConfigSection:
         id="symphonies",
         title="Symphonies",
         description=(
-            "Each symphony's settings. Edit them on the symphony's page, "
-            "which is linked from each entry here."
+            "Edit each symphony's settings and persona overrides here. "
+            "The Symphonies page shows status and a read only summary."
         ),
         kind="collection",
         items=items,

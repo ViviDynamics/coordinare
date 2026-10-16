@@ -316,7 +316,7 @@ if (cfgConflictMessage(500, {}) !== 'Error 500') throw new Error('fallback');
 
 def test_a_read_only_setting_says_why(tmp_path: Path) -> None:
     _run_node(tmp_path, """
-if (cfgReadOnlyNote({}, 'symphonies') !== "Edit this on the symphony's own page.") throw new Error('symphony');
+if (cfgReadOnlyNote({}, 'symphonies') !== "Choose this symphony in the Symphonies tab to edit it.") throw new Error('symphony');
 if (cfgReadOnlyNote({invalid: true}, 'global').indexOf('fails validation') === -1) throw new Error('invalid');
 if (cfgReadOnlyNote({is_env_placeholder: true}, 'global').indexOf('environment variable') === -1) throw new Error('env');
 """)

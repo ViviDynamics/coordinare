@@ -147,6 +147,8 @@ def _resolve_persona_slice_and_behavior(
         if isinstance(raw_slice, dict):
             slice_dict = raw_slice
 
+    # Scope tiering stays global. Symphony persona instructions affect prompt
+    # text, while skip routing and tier budgets keep using the global policy.
     config = state.get("config")
     personas_cfg = getattr(config, "personas", None) if config is not None else None
     persona_cfg = getattr(personas_cfg, role, None) if personas_cfg is not None else None
@@ -1954,6 +1956,9 @@ def _feedback_for_dispatch(state: CoordinareState, performer_stage: str) -> list
 def _base_card_context(state: CoordinareState, card: dict[str, Any] | None, card_id: str, performer_stage: str) -> tuple[dict[str, Any], str | None]:
     """Builds card context with persona instructions and prior-QA ride."""
     personas = load_personas_hot(state.get("config_path"), state.get("config"))
+    symphony = (state.get("symphony_configs") or {}).get(str(state.get("current_symphony") or ""))
+    if symphony is not None:
+        personas = symphony.effective_personas(personas)
     card_context: dict[str, Any] = dict(card or {})
 
     role = _persona_role_for_stage(performer_stage)

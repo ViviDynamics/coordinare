@@ -587,6 +587,17 @@ async def run_preflight(
     report = DoctorReport()
     try:
         validate_start_time(config, coordinare_config, raw)
+        configs = [config]
+        if coordinare_config is not None:
+            configs = []
+            for symphony in coordinare_config.symphonies:
+                if not symphony.enabled:
+                    continue
+                try:
+                    configs.append(symphony.effective_config(config))
+                except ValueError as exc:
+                    msg = f"Symphony {symphony.name!r}: {exc}"
+                    raise ValueError(msg) from exc
     except ValueError as exc:
         report.results.append(
             CheckResult(
@@ -602,9 +613,6 @@ async def run_preflight(
         strict=explicit or config.preset is not None,
     ))
     report.results.append(check_port(config))
-    configs = [config]
-    if coordinare_config is not None:
-        configs = [s.effective_config(config) for s in coordinare_config.symphonies if s.enabled]
     for effective in configs:
         probes = effective if explicit else _active_model_config(effective)
         strict = explicit or effective.preset is not None

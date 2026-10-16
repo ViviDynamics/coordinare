@@ -145,7 +145,7 @@ function personaEdit(text, start, end, action) {
 
 function personaHashRole(context) {
   var parts = (location.hash || '').replace(/^#/, '').split('/');
-  try { return decodeURIComponent(context === 'config' ? parts[1] || '' : parts[0]); }
+  try { return decodeURIComponent(context === 'symphony' ? parts[3] || '' : context === 'config' ? parts[1] || '' : parts[0]); }
   catch(e) { return ''; }
 }
 
@@ -156,8 +156,9 @@ function personaSelector(personas, context) {
     return '<button type="button" class="persona-tab" role="tab" data-persona-tab="' + esc(role) + '"'
       + ' id="' + esc(id + '-tab') + '" aria-controls="' + esc(id) + '" aria-selected="false" tabindex="-1">'
       + agentLabel(role) + personaStageNote(role)
+      + (p.override_state ? '<span data-persona-state>' + esc(p.override_state) + '</span>' : '')
       // The read-only page cannot have unsaved text, so only the editor carries the marker.
-      + (context === 'read' ? '' : '<span data-persona-dirty hidden> · Unsaved</span>') + '</button>';
+      + (context === 'read' || context === 'symphony-read' ? '' : '<span data-persona-dirty hidden> · Unsaved</span>') + '</button>';
   }).join('') + '</div>';
 }
 
@@ -190,6 +191,11 @@ function personaSelect(root, role, updateUrl) {
   if (typeof root.onPersonaSelect === 'function') root.onPersonaSelect(role);
   if (role && updateUrl && personaHashRole(root.getAttribute('data-persona-context')) !== role) {
     var context = root.getAttribute('data-persona-context');
+    if (context === 'symphony' || context === 'symphony-read') {
+      var name = encodeURIComponent(root.getAttribute('data-symphony'));
+      pushRoute(pathWithSymphony((context === 'symphony' ? '/config#symphonies/' + name + '/' : '/symphonies/' + name + '#') + encodeURIComponent(role)));
+      return;
+    }
     var hash = context === 'config' ? '#personas/' : '#';
     pushRoute(pathWithSymphony((context === 'config' ? '/config' : '/personas') + hash + encodeURIComponent(role)));
   }
@@ -218,6 +224,7 @@ function personaApplyTool(field, action) {
   field.focus();
   field.setSelectionRange(edit.start, edit.end);
   personaRefresh(field.closest('[data-persona-context]'));
+  field.dispatchEvent(new Event('input', {bubbles: true}));
 }
 
 // Mount on an owned root. #181 can supply its own save action and field metadata around this editor.
@@ -283,4 +290,119 @@ function personaMount(root, save) {
       personaApplyTool(field, event.shiftKey ? 'outdent' : 'indent');
     } else field.removeAttribute('data-md-escape');
   });
+}
+
+// 181: symphony views share the same selector, renderer and source editor as global personas.
+function symPersonaText(overrides, role) {
+  var persona = (overrides || {})[role];
+  return persona && typeof persona.instructions === 'string' ? persona.instructions : '';
+}
+
+function symPersonaSummary(catalog, overrides) {
+  var roles = catalog.filter(function(p) { return !!symPersonaText(overrides, p.role).trim(); })
+    .map(function(p) { return p.role; });
+  return roles.length + ' of ' + catalog.length + ' personas overridden' + (roles.length ? ': ' + roles.join(', ') : '');
+}
+
+// A line comparison with common prefix and suffix retained. Linear space even for long instructions.
+function symPersonaDiff(globalText, localText) {
+  var before = String(globalText).split('\n');
+  var after = String(localText).split('\n');
+  var start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start += 1;
+  var end = 0;
+  while (end < before.length - start && end < after.length - start
+    && before[before.length - end - 1] === after[after.length - end - 1]) end += 1;
+  return before.slice(0, start).map(function(line) { return '  ' + esc(line); })
+    .concat(before.slice(start, before.length - end).map(function(line) { return '- ' + esc(line); }))
+    .concat(after.slice(start, after.length - end).map(function(line) { return '+ ' + esc(line); }))
+    .concat(end ? before.slice(before.length - end).map(function(line) { return '  ' + esc(line); }) : []).join('\n');
+}
+
+function symPersonasHtml(name, overrides, catalog, editable) {
+  var context = editable ? 'symphony' : 'symphony-read';
+  var personas = catalog.map(function(p) {
+    return {role: p.role, override_state: symPersonaText(overrides, p.role).trim() ? 'Overridden' : 'Inherits'};
+  });
+  var panels = catalog.map(function(p) {
+    var text = symPersonaText(overrides, p.role);
+    var overridden = !!text.trim();
+    var globalLink = '/config#personas/' + encodeURIComponent(p.role);
+    var inherited = '<div data-sym-inherited' + (editable && overridden ? ' hidden' : '') + '>'
+      + '<p class="muted">Inherits the global instructions.</p>'
+      + '<div class="persona-markdown persona-read" tabindex="0">' + personaMarkdown(p.instructions) + '</div>'
+      + (editable ? '<a href="' + esc(globalLink) + '" data-sym-global>Edit global persona</a>'
+        + '<p><button type="button" class="cfg-btn" data-sym-customize>Customize for this symphony</button></p>'
+        + '<div data-sym-start-options hidden><button type="button" class="cfg-btn" data-sym-start="copy">Copy global text</button> '
+        + '<button type="button" class="cfg-btn" data-sym-start="blank">Start blank</button></div>' : '') + '</div>';
+    var compare = '<details data-sym-compare' + (!overridden ? ' hidden' : '') + '><summary>Compare with global</summary>'
+      + '<p class="muted">Removed lines begin with a minus; added lines begin with a plus.</p>'
+      + '<pre class="persona-diff" tabindex="0">' + symPersonaDiff(p.instructions, text) + '</pre></details>';
+    var local = editable
+      ? '<div data-sym-local' + (!overridden ? ' hidden' : '') + '>'
+        + personaEditor(text, p.role + ' symphony instructions')
+        + '<p><button type="button" class="cfg-btn" data-sym-revert>Revert to global default</button></p></div>'
+      : (overridden ? '<div class="persona-markdown persona-read" tabindex="0">' + personaMarkdown(text) + '</div>' : '');
+    return personaPanel(p.role, context, '<h4>' + agentLabel(p.role) + '</h4>'
+      + (editable || !overridden ? inherited : '') + local + compare);
+  }).join('');
+  return '<p data-sym-summary role="status">' + esc(symPersonaSummary(catalog, overrides)) + '</p>'
+    + '<p class="muted">A symphony override replaces the global instructions for that persona.</p>'
+    + '<div class="persona-workspace" data-persona-context="' + esc(context) + '" data-symphony="' + esc(name) + '">'
+    + personaSelector(personas, context) + '<div class="persona-panels">' + panels + '</div></div>';
+}
+
+function symPersonaRefresh(form, catalog) {
+  var overrides = {};
+  form.querySelectorAll('[data-persona-panel]').forEach(function(panel) {
+    var role = panel.getAttribute('data-persona-panel');
+    var field = panel.querySelector('[data-md-source]');
+    var text = personaSourceValue(field);
+    overrides[role] = {instructions: text};
+    if (text.trim()) { panel.querySelector('[data-sym-local]').hidden = false; panel.querySelector('[data-sym-inherited]').hidden = true; }
+    var globalPersona = catalog.filter(function(p) { return p.role === role; })[0];
+    var compare = panel.querySelector('[data-sym-compare]');
+    compare.hidden = !text.trim();
+    compare.querySelector('pre').innerHTML = symPersonaDiff(globalPersona.instructions, text);
+    form.querySelectorAll('[data-persona-tab]').forEach(function(tab) {
+      if (tab.getAttribute('data-persona-tab') === role) {
+        tab.querySelector('[data-persona-state]').textContent = text.trim() ? 'Overridden' : 'Inherits';
+      }
+    });
+  });
+  form.querySelector('[data-sym-summary]').textContent = symPersonaSummary(catalog, overrides);
+  form.querySelector('[data-sym-dirty]').hidden = !cfgEntries(form).some(cfgChanged);
+  personaRefresh(form.querySelector('[data-persona-context]'));
+}
+
+function symPersonaMount(form, catalog) {
+  var root = form.querySelector('[data-persona-context]');
+  root.querySelectorAll('[data-persona-panel]').forEach(function(panel) {
+    var field = panel.querySelector('[data-md-source]');
+    field.setAttribute('data-field', 'personas.' + panel.getAttribute('data-persona-panel'));
+    field.setAttribute('data-label', 'Persona ' + panel.getAttribute('data-persona-panel'));
+  });
+  personaMount(root, function() { symSave(form.querySelector('#sym-save-btn')); });
+  form.addEventListener('input', function() { symPersonaRefresh(form, catalog); });
+  form.addEventListener('change', function() { symPersonaRefresh(form, catalog); });
+  form.addEventListener('click', function(event) {
+    var button = event.target.closest('[data-sym-customize], [data-sym-start], [data-sym-revert], [data-sym-global]');
+    if (button) {
+      var panel = button.closest('[data-persona-panel]');
+      var role = panel.getAttribute('data-persona-panel');
+      var field = panel.querySelector('[data-md-source]');
+      if (button.hasAttribute('data-sym-global')) { navigate(event, button.getAttribute('href')); return; }
+      if (button.hasAttribute('data-sym-customize')) { panel.querySelector('[data-sym-start-options]').hidden = false; return; }
+      if (button.hasAttribute('data-sym-revert') && !window.confirm('Revert to global default? The symphony text will be removed when you save.')) return;
+      var globalPersona = catalog.filter(function(p) { return p.role === role; })[0];
+      personaSetSource(field, button.getAttribute('data-sym-start') === 'copy' ? globalPersona.instructions : '');
+      var reverting = button.hasAttribute('data-sym-revert');
+      panel.querySelector('[data-sym-inherited]').hidden = !reverting;
+      panel.querySelector('[data-sym-local]').hidden = reverting;
+      panel.querySelector('[data-sym-start-options]').hidden = true;
+      if (!reverting) field.focus();
+    }
+    symPersonaRefresh(form, catalog);
+  });
+  symPersonaRefresh(form, catalog);
 }
