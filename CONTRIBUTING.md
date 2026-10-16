@@ -76,67 +76,7 @@ third parties as a hosted or managed service. If that is what you want to do,
 
 ## Developing Coordinare
 
-This checkout workflow is for maintainers changing the source. To run a release,
-use the [Quick Start](README.md#quick-start). Public pull requests remain closed
-under the policy above.
-
-Install Python 3.12 or newer, uv, git and Node 22 LTS. Clone and install both
-packages into the checkout environment:
-
-```sh
-git clone https://github.com/ViviDynamics/coordinare.git
-cd coordinare
-uv sync --extra dev
-uv pip install -e 'agent/performer[dev]'
-make help
-```
-
-Install one supported harness CLI on PATH. For a checkout deployment, copy the
-starter and environment template, then edit their GitHub, reviewer and credential
-values. The starter enables only implementer and defaults to Codex. Other starter
-harness names are `claude_code` and `opencode`. The copied starter uses a model API
-key; guided init can also generate a setup using a local Codex or Claude login.
-Use `config.example.yaml` as the complete configuration reference.
-
-```sh
-cp config.minimal.yaml config.yaml
-cp .env.example .env
-```
-
-Before running the daemon, read [developer onboarding](docs/onboarding/README.md).
-Source `.env` before direct validation or daemon commands so `${VAR}` references
-resolve correctly. The Makefile run targets load it for you:
-
-```sh
-set -a && source .env && set +a
-.venv/bin/python -m coordinare --config config.yaml config validate
-.venv/bin/python -m coordinare --config config.yaml doctor
-make run
-```
-
-Open <http://127.0.0.1:8090>. `bin/run-coordinare` uses the checkout's config and
-loads its `.env`; `bin/run-performer` uses the performer project environment.
-For a checkout login service, use `make install` and `make uninstall`.
-For Kubernetes or Helm deployment, follow the
-[chart README](deploy/helm/coordinare/README.md).
-
-The top-level Makefile is the canonical command entry point:
-
-```sh
-make test
-make test-all
-make test-js
-make lint
-make typecheck
-make ci
-```
-
-Run `make test-all` before pushing. `make ci` delegates to `bin/build --all` and
-includes browser tests and Docker builds. `bin/build` installs both packages'
-dev dependencies, then runs lint, type checking, the ruff ratchet, tests and
-coverage. `bin/build --e2e` adds browser tests; `bin/build --docker` adds Docker
-builds. These require their corresponding runtimes.
-
-Source layout: `src/coordinare` contains the daemon, graph, services and dashboard;
-`agent/performer` contains the wire protocol, harness adapters and workspaces.
-`tests` contains daemon tests, and `specs` contains feature specifications.
+Maintainer checkout setup, test commands and project layout are in
+[docs/development.md](docs/development.md). To run a release, use the
+[Quick Start](README.md#quick-start). Public pull requests remain closed under
+the policy above.

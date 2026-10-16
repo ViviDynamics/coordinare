@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GUIDES = (
     "README.md",
     "CONTRIBUTING.md",
+    "docs/development.md",
     "docs/operators/containerized-performers.md",
     "docs/operators/service-inference-rails-quickstart.md",
     "docs/quickstart.md",
@@ -31,6 +32,37 @@ GUIDES = (
     "docs/setup-troubleshooting.md",
 )
 INSTALL_URL = "https://github.com/ViviDynamics/coordinare/releases/latest/download/install.sh"
+REQUIRED_HEADINGS = {
+    "README.md": (
+        "## Quick Start",
+        "### 1. Prepare",
+        "### 2. Install",
+        "### 3. Set up and start",
+        "### Branch protection",
+        "## Developing Coordinare",
+    ),
+    "docs/quickstart.md": (
+        "## Prepare",
+        "## Install",
+        "## Configure and start",
+        "## Dispatch a card",
+        "## Notifications are optional",
+        "## Checkout workflow for maintainers",
+        "## Next steps",
+    ),
+    "docs/development.md": (
+        "# Developing Coordinare",
+        "## Checkout setup",
+        "## Run tests",
+        "## Project structure",
+        "## Key commands",
+    ),
+    "docs/setup-troubleshooting.md": (
+        "## Installer",
+        "## Guided setup",
+        "## Check and start again",
+    ),
+}
 
 
 def shell_commands(document: str) -> list[list[str]]:
@@ -41,6 +73,14 @@ def shell_commands(document: str) -> list[list[str]]:
             if words:
                 commands.append(words)
     return commands
+
+
+@pytest.mark.parametrize("guide, required", REQUIRED_HEADINGS.items())
+def test_required_guide_sections_are_present(guide: str, required: tuple[str, ...]) -> None:
+    """Deleting a setup, safety or developer section must fail even without commands."""
+    headings = set(re.findall(r"^#{1,6} .+$", (ROOT / guide).read_text(), re.MULTILINE))
+    missing = set(required) - headings
+    assert not missing, f"{guide} is missing required sections: {sorted(missing)}"
 
 
 @pytest.mark.parametrize("guide", GUIDES)

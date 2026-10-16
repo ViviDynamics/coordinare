@@ -26,9 +26,9 @@ Cards progress through configurable roles (unconfigured roles are skipped):
 
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
-| Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest |: |
-| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote |: |
-| Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions |: |
+| Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest | none |
+| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote | none |
+| Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions | none |
 | Architect | `architecting` | Analyses codebase, commits a technical plan to the branch | `plan_committed` |
 | Implementer | `implementing` | Writes code, opens a PR | `pr_opened` |
 | Reviewer | `reviewing` | Reviews the PR, approves or requests changes | `approved` |
@@ -55,7 +55,9 @@ Have these ready:
 - A GitHub token with access to the repository and Project. Classic PATs need
   `repo`, `project` and `read:org`; authorize organization SSO if required.
   See [token permissions](docs/security/threat-model.md#github-token-permissions)
-  for fine-grained permissions and branch protection requirements.
+  for fine-grained permissions. Complete the [branch protection setup](#branch-protection)
+  before dispatch: the Coordinare identity must be allowed to push to the protected
+  branch for squash merge to succeed.
 - One harness: Codex (`codex`), Claude Code (`claude`) or OpenCode (`opencode`).
   For local mode, install git and the CLI on PATH and authenticate the CLI. Codex and Claude
   Code can reuse a harness login; OpenCode's native provider requires
@@ -127,6 +129,11 @@ or the dashboard URL printed by setup. Put an issue on the board in To Do or
 Ready to dispatch it. Try the [small first card](docs/first-launch.md#try-one-card)
 and review its PR as the configured human reviewer.
 
+The health endpoint is <http://localhost:8080/health>. The dashboard activity
+feed helps distinguish "working" from "wedged" by showing progress and stall
+warnings. [Notifications are optional](docs/quickstart.md#notifications-are-optional);
+without channels, watch the feed and daemon log for `card_stuck` warnings.
+
 To recheck setup, stop the foreground process with Ctrl+C, or stop the user
 service first. Doctor checks port availability and can report the running
 daemon's port as occupied:
@@ -141,7 +148,7 @@ See the [full quickstart](docs/quickstart.md), [self-hosted models](docs/quickst
 [uninstalling](docs/uninstalling.md) and [file locations](docs/files-and-paths.md).
 For Kubernetes and Helm, use the [chart README](deploy/helm/coordinare/README.md).
 For source changes and checkout setup, see
-[Developing Coordinare](CONTRIBUTING.md#developing-coordinare).
+[Developing Coordinare](docs/development.md).
 
 ## Configuration
 
@@ -260,7 +267,7 @@ See `config.example.yaml` for the full, commented notification routing reference
 ## Developing Coordinare
 
 Maintainer checkout setup, test commands and project layout are in
-[CONTRIBUTING.md](CONTRIBUTING.md#developing-coordinare).
+[docs/development.md](docs/development.md).
 
 ## Architecture
 
@@ -269,7 +276,8 @@ Coordinare uses [LangGraph](https://github.com/langchain-ai/langgraph) to orches
 The coordinare and performer communicate via a transport layer (subprocess, SSH, or Kubernetes) and share no in-memory state. Each performer session is ephemeral: the performer clones the repo, does its work, and exits.
 
 The `solo` preset runs the performer as a local subprocess on the daemon's host.
-It needs no container runtime and provides no container isolation. For Docker
+The subprocess transport is for development and single-host use. It needs no
+container runtime and provides no container isolation. For Docker
 performers, use [Docker mode](docs/docker-mode-setup.md). For Kubernetes, follow
 the [chart README](deploy/helm/coordinare/README.md).
 

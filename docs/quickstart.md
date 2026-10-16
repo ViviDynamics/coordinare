@@ -3,7 +3,8 @@
 Coordinare runs agents with repository write credentials. Read the
 [threat model](security/threat-model.md) before using it on a repository you care
 about. Public issue and comment text reaches model prompts. The dashboard has
-no authentication; keep it on loopback. Review generated changes yourself.
+no authentication; keep it on loopback. Only humans approve pull requests.
+Read the diff before approving generated changes.
 
 ## Prepare
 
@@ -18,6 +19,9 @@ organization SSO authorization where required. See
 [token permissions](security/threat-model.md#github-token-permissions) for
 fine-grained permissions. Preflight checks read access and classic scopes;
 GitHub enforces write permissions and branch protection when writes happen.
+Complete the [branch protection setup](../README.md#branch-protection) before
+dispatch: the Coordinare identity must be allowed to push to the protected
+branch for squash merge to succeed.
 
 Choose one starter harness: `codex`, `claude_code` or `opencode`. Local mode needs
 git and the corresponding `codex`, `claude` or `opencode` CLI installed on PATH. Codex and
@@ -71,6 +75,11 @@ one concurrent card. Your authenticated GitHub login is the default reviewer.
 No Slack or email setup is required. Add roles and notifications later using the
 [full configuration reference](../config.example.yaml).
 
+The model presets listed below configure a minimum of two roles: `implementer`
+writes code and opens the PR, and `reviewer` reviews it before human approval.
+The init presets start with implementer alone; add reviewer when you want an
+automated review stage. Unconfigured roles are skipped, not failed.
+
 Setup writes configuration and a private `coordinare.env`, runs preflight, then
 prints a start command and dashboard URL. After successful preflight, accept
 `Start at login` to start a background user service. If you decline, accept
@@ -106,7 +115,43 @@ behavior and [troubleshooting](setup-troubleshooting.md) for setup failures.
 Add an issue to the board in To Do or Ready. Use a clear title and acceptance
 criteria, or copy the [first card](first-launch.md#try-one-card). Watch the
 activity feed, inspect the PR and review it as a configured human reviewer.
-Unconfigured roles are skipped. Required checks and approval gates still apply.
+The feed shows progress and stall warnings so you can distinguish "working"
+from "wedged". Check daemon health at <http://localhost:8080/health>.
+Required checks and approval gates still apply.
+
+## Notifications are optional
+
+No Slack or email channel is required. A half-configured channel is skipped
+with a startup warning; `coordinare config validate` still reports it as an
+error. This tolerance applies only to notifications: invalid GitHub, board or
+model endpoint configuration makes the daemon refuse to start.
+
+Without channels, stall warnings reach the daemon log and dashboard activity
+feed. Watch those surfaces: a card that stops making progress emits a
+`card_stuck` warning even when no notification channel is configured.
+
+## Checkout workflow for maintainers
+
+For source changes, [Developing Coordinare](development.md) covers `git clone`,
+`uv sync` and `bin/run-coordinare`. Release users can use the installer above.
+In a configured checkout with `.env` loaded, validation uses a global `--config`
+flag before the subcommand:
+
+```sh
+.venv/bin/python -m coordinare --config config.yaml config validate
+.venv/bin/python -m coordinare --config config.yaml doctor
+```
+
+For a checkout using your own models, choose one of these presets and follow
+the [checkout setup](development.md#checkout-setup):
+
+- [config.example.ollama.yaml](../config.example.ollama.yaml)
+- [config.example.openai-compatible.yaml](../config.example.openai-compatible.yaml)
+- [config.example.anthropic.yaml](../config.example.anthropic.yaml)
+
+Checkout operators can use `bin/performer-logs` to stream performer stderr and
+`bin/check-agent` to check performer health. See the
+[key commands](development.md#key-commands).
 
 ## Next steps
 
@@ -115,4 +160,4 @@ Unconfigured roles are skipped. Required checks and approval gates still apply.
 - [Unattended installation and answers files](unattended-install.md)
 - [Upgrade](upgrading.md), [uninstall](uninstalling.md), [file locations](files-and-paths.md)
 - [Kubernetes and Helm](../deploy/helm/coordinare/README.md)
-- [Developing Coordinare from a checkout](../CONTRIBUTING.md#developing-coordinare)
+- [Developing Coordinare from a checkout](development.md)
