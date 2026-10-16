@@ -28,7 +28,7 @@ jobs:
       release: ${{ steps.paths.outputs.release }}
     steps:
       - name: Detect release-relevant paths
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         id: paths
         with:
           filters: |
@@ -64,19 +64,19 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Match main-branch-build's native arm64 build, without publishing images.
       - name: Build release base image (arm64)
         run: docker build --platform linux/arm64 -t coordinare-performer:pr-arm64 -f agent/performer/Dockerfile.base .
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
 
       - name: Resolve the newest release with published images
         env:
