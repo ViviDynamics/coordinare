@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services import event_store_query
 from coordinare.services.activity_log import ActivityLog
 from coordinare.services.bootstrap_history import (
     RUN_SNAPSHOT_KIND,
@@ -38,6 +39,20 @@ from coordinare.services.event_capture import install_event_store
 from coordinare.services.event_store import EventStore
 from coordinare.services.event_store_query import EventFilters
 from tests.unit.test_060_env_cache import _make_daemon_for_env_cache
+
+
+@pytest.fixture(autouse=True)
+def _patient_event_store_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests check what is recorded, not how fast it reads back.
+
+    Dashboard reads give up after 250 ms (50 ms waiting on the writer's lock) so a page never
+    stalls. A loaded CI runner can exceed that, and the read then fails as "history
+    unavailable", which flaked these tests in unrelated PRs. The budget itself has its own
+    tests (test_182_run_statistics.py, test_182_review_fixes.py).
+    """
+    monkeypatch.setattr(event_store_query, "QUERY_TIMEOUT_SECONDS", 10.0)
+    monkeypatch.setattr(event_store_query, "READ_BUSY_TIMEOUT_MS", 10_000)
+
 
 NOW = datetime(2026, 10, 15, tzinfo=UTC)
 HISTORY_BOUND = 3
