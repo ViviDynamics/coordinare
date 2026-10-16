@@ -24,6 +24,7 @@ from coordinare.dashboard import (
     _DASHBOARD_HTML,
     _DASHBOARD_JS_SOURCES,
 )
+from coordinare.dashboard.assets import _versioned_html
 from coordinare.mcp.tools._registry import DEFERRED_PAGE_PATHS
 from tests.unit.dashboard_js_slices import shipped_function
 from tests.unit.test_dashboard_config_api import _make_client
@@ -185,7 +186,8 @@ def test_the_settings_page_itself_is_served_at_its_address(temp_config_path: Pat
     client = _make_client(temp_config_path, yaml.safe_load(temp_config_path.read_text()))
     response = client.get("/config")
     assert response.status_code == 200
-    assert response.text == _DASHBOARD_HTML
+    expected = _versioned_html(_DASHBOARD_HTML).encode("utf-8")
+    assert response.content == expected
 
 
 def test_the_mcp_registry_still_lists_both_addresses() -> None:
