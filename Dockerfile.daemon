@@ -50,6 +50,9 @@ COPY src ./src
 # found at file:///app/packages/service_inference" — from the moment that
 # package was added, which is why bin/start --container was broken too.
 COPY packages ./packages
+# 193: the wheel force-includes the example configs (pyproject.toml), so the
+# install fails with "Forced include not found" unless they are here first.
+COPY config.example*.yaml ./
 
 # Resolve deps into a project-local .venv so runtime uses the lock.
 RUN uv sync --frozen --no-dev \
