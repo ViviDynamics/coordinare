@@ -13,6 +13,7 @@ from coordinare.config import DashboardOidcConfig
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.dashboard_oidc import SESSION_COOKIE, OidcFlow, OidcIdentity
 from coordinare.models.env_cache import EnvCacheState
+from coordinare.services import event_store_query
 from coordinare.services.bootstrap_history import BootstrapHistory
 from coordinare.services.bootstrap_runs import BootstrapRuntime, load_bootstrap_history
 from coordinare.services.env_cache import EnvCacheService
@@ -21,6 +22,20 @@ from tests.unit.test_060_env_cache import _make_daemon_for_env_cache
 from tests.unit.test_266_bootstrap_runs import RUN_COUNT, _start
 from tests.unit.test_270_bootstrap_control import BASE, TOKEN, _trigger_daemon
 from tests.unit.test_dashboard import _make_mock_health, _make_mock_metrics
+
+
+@pytest.fixture(autouse=True)
+def _patient_event_store_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests check what is recorded, not how fast it reads back.
+
+    Dashboard reads give up after 250 ms (50 ms waiting on the writer's lock) so a page never
+    stalls. A loaded CI runner can exceed that, and the read then fails as "history
+    unavailable", which flaked these tests in unrelated PRs. The budget itself has its own
+    tests (test_182_run_statistics.py, test_182_review_fixes.py).
+    """
+    monkeypatch.setattr(event_store_query, "QUERY_TIMEOUT_SECONDS", 10.0)
+    monkeypatch.setattr(event_store_query, "READ_BUSY_TIMEOUT_MS", 10_000)
+
 
 CANCEL_PATH = "/api/symphonies/alpha/env-bootstrap/cancel"
 
