@@ -50,10 +50,10 @@ always an explicit next step in this version, including in a terminal:
 coordinare init
 ```
 
-That setup command is being delivered in #195. This installer does not create
-configuration or launch the daemon. The solo preset needs the performer command
-alongside coordinare, so both are installed in the same isolated uv tool environment.
-You will still need an authenticated harness CLI, GitHub board and credentials;
+The installer does not create configuration or launch the daemon. Init is
+shipped and offers foreground startup or a user login service after preflight.
+The solo preset needs the performer command alongside coordinare, so both are installed in the same isolated uv tool environment.
+Local mode needs an authenticated harness CLI, GitHub board and credentials;
 the [first launch guide](first-launch.md) describes these requirements.
 
 Installed commands live in `~/.local/bin`. If necessary, the installer prints:
@@ -75,9 +75,11 @@ sh install.sh --uninstall
 sh install.sh --uninstall --purge
 ```
 
-Uninstall removes the tool and its bundled performer. Without `--purge`, all
-configuration and state remain. Explicit purge removes `~/.coordinare`, including
-its config, caches and any state stored there. Custom config paths and project
+First remove any login registration with `coordinare service uninstall`, or stop
+the foreground process with Ctrl+C. Installer uninstall removes the tool and its
+bundled performer. Without `--purge`, all configuration and state remain. Explicit purge removes `~/.coordinare`, including
+its config, caches and any state stored there. It does not purge init's XDG
+config or data directories. Custom config paths and project
 state such as `./coordinare.state.json` remain operator managed. uv, its managed
 Python installations and shared download caches remain installed.
 
@@ -85,6 +87,9 @@ Python installations and shared download caches remain installed.
 release tree. Its layout is `latest/download/` and `download/<tag>/`, each with
 the release manifest and five wheels. This is also the offline fixture seam used
 by tests; external dependencies and missing uv still require network access.
+
+See [upgrading](upgrading.md), [uninstalling](uninstalling.md),
+[unattended setup](unattended-install.md) and [file locations](files-and-paths.md).
 
 ## Release packaging
 

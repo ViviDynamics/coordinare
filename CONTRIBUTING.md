@@ -73,3 +73,10 @@ Coordinare is source-available under the [Elastic License 2.0](LICENSE). You may
 run, modify, and self-host it, including commercially. You may not offer it to
 third parties as a hosted or managed service. If that is what you want to do,
 [talk to us](https://vividynamics.com/contact) about commercial terms.
+
+## Developing Coordinare
+
+Maintainer checkout setup, test commands and project layout are in
+[docs/development.md](docs/development.md). To run a release, use the
+[Quick Start](README.md#quick-start). Public pull requests remain closed under
+the policy above.

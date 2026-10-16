@@ -1,17 +1,11 @@
 # First launch
 
-Start from `config.minimal.yaml`, a 15 line starter. Keep `config.example.yaml`
-as the full reference. Copy the starter to `config.yaml` and edit the GitHub owner,
-repository name, project number and human reviewer logins. Pick one harness:
-`codex`, `claude_code` or `opencode`.
-
-Install the harness CLI and authenticate it. The starter uses provider API keys:
-export `COORDINARE_GITHUB_TOKEN` and `OPENAI_API_KEY` for Codex or OpenCode, or
-`ANTHROPIC_API_KEY` for Claude Code. Subscription-only harness login is a separate
-advanced configuration; it does not satisfy a preset's API-key model endpoint.
-Use `uv sync --project agent/performer` in a checkout to install the performer.
-For packaged installs, install the matching performer package and put its
-`performer` executable on PATH.
+Use the [Quick Start](quickstart.md) to install a release and run `coordinare init`.
+Init writes configuration and private credentials, checks the setup and offers a
+login service or foreground start. The installer already bundles the performer.
+Local Codex and Claude Code can use an existing harness login when no API key is
+supplied; OpenCode's native provider needs `OPENAI_API_KEY`. Docker native
+providers need an API key because host harness logins are not mounted.
 
 Create a GitHub Project Status field with To Do (or Ready), In Progress, In Review,
 Blocked and Done. With a classic PAT, grant `repo`, `project` and `read:org` scopes
@@ -20,12 +14,14 @@ repository Contents, Issues and Pull requests read/write and organization Projec
 read/write. Preflight proves read access and classic scopes; write authorization
 and branch protection remain GitHub's responsibility at the time of a write.
 
+To inspect the generated setup, stop any running daemon to free the dashboard
+port, then run from a directory without an old `config.yaml`:
+
 ```sh
-set -a && source .env && set +a
-python -m coordinare config validate
-python -m coordinare config
-python -m coordinare doctor
-python -m coordinare
+coordinare config validate
+coordinare config
+coordinare doctor
+coordinare
 ```
 
 Doctor and daemon startup share their checks. Deterministic failures block a
@@ -45,13 +41,15 @@ configured checks, including unused model catalogs and repository access, and
 returns nonzero for deterministic failures. Setting `github_repo` alone in a full
 config does not enable the repository probe at startup.
 
-Temporary container harness probes run only for a preset's first launch, when
+Outside init, temporary container harness probes run only for a preset's first launch, when
 the state file does not yet exist, or when doctor is run explicitly. Container
 CLI installation can take up to the endpoint's `readiness_timeout_s` (300 seconds
 per attempt by default). A working installed Codex version is reused without an
 npm install. Metadata probes do not generate model output or spend inference
 tokens. Container probes start temporary containers without credentials or
-repository mounts and remove them afterward.
+repository mounts and remove them afterward. Init's Docker setup uses a separate
+smoke check with credentials to verify GitHub and model reachability, before
+writing setup files; see [Docker setup](docker-mode-setup.md).
 
 `preset: solo` runs the performer locally, uses one card slot and enables only
 implementer. The performer protocol executable defaults to the installed
@@ -59,7 +57,11 @@ implementer. The performer protocol executable defaults to the installed
 backend and model through the existing dispatch protocol.
 
 `preset: containers` uses the same lifecycle with ephemeral Docker performers.
-Run `make docker` first or set `performer_image` to an available matching image.
+Use `coordinare init --run-mode docker` to pull and pin the installed release's
+image and configure mounts and secret delivery. See [Docker setup](docker-mode-setup.md).
+An existing manually configured containers preset retains its local fallback
+image unless you set `performer_image`; building custom images is a checkout
+workflow described in [CONTRIBUTING](../CONTRIBUTING.md#developing-coordinare).
 Explicit fields override presets. Nested mappings merge; lists replace defaults.
 When replacing a catalog without keeping its `starter` entry, override
 `endpoints`, `model_endpoints` and `modes` together, and set
@@ -87,6 +89,3 @@ Review it as one of `human_reviewers`. Existing approval and required-check gate
 still govern merging. The dashboard's **Try a first card** disclosure offers the
 same example when the board is empty, without creating an issue automatically.
 Blocked cards retain their idle explanation without the first card prompt.
-
-The next setup command in #195 can reuse `coordinare.presets.expand_preset`,
-`coordinare.launch_preflight.run_preflight` and `coordinare.first_launch.sample_issue`.
