@@ -1,0 +1,11 @@
+# Coordinare
+
+> Autonomous software development orchestration for GitHub Projects.
+
+## Install and configure
+
+- [Setup for coding agents](https://github.com/ViviDynamics/coordinare/blob/main/docs/setup-for-agents.md): Ordered installation, required human facts, private credentials and verification.
+- [Configuration reference](https://github.com/ViviDynamics/coordinare/blob/main/config.example.yaml): Authoritative config fields and examples.
+- [Machine setup interface](https://github.com/ViviDynamics/coordinare/blob/main/docs/agent-setup-reference.md): JSON reports, stable check ids and init answers.
+- [Answers schema](https://github.com/ViviDynamics/coordinare/blob/main/docs/schemas/init-answers.schema.json): Schema for init --answers mappings.
+- [Answers example](https://github.com/ViviDynamics/coordinare/blob/main/docs/examples/init-answers.yaml): Filled nonsecret Docker setup example.

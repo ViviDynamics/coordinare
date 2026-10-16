@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Coordinare setup report version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "ok",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "command": {
+      "enum": [
+        "doctor",
+        "validate"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "instance",
+          "status",
+          "message",
+          "fix",
+          "field"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(config|doctor)\\.[a-z_]+$"
+          },
+          "instance": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "fail",
+              "warn",
+              "skip"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fix": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "fail"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "fix": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -122,3 +122,13 @@ Legacy tags such as `2026.09.01.3` remain valid download paths. Package metadata
 wheel filenames, and runtime versions normalize numeric components to
 `2026.9.1.3`, as required by Python version normalization. New tags retain their
 existing version spelling.
+
+## Release verification record
+
+Before release, an operator must follow only the
+[agent setup guide](setup-for-agents.md) on a clean supported
+machine with the listed facts. Record OS/architecture, release version, selected
+harness/mode, sanitized validation and doctor JSON, exit codes and service status
+in the PR. Do not record credentials or raw logs. Mocked tests are not this manual
+check. Record any environment limitation and complete the release check on a
+machine that permits installation, network access and listener binding.
