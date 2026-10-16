@@ -125,6 +125,7 @@ class HistoryFilter:
     symphony: str | None = None
     card: str | None = None
     stage: str | None = None
+    agent: str | None = None
     outcome: str | None = None
     since: date | None = None
     until: date | None = None
@@ -210,6 +211,7 @@ def filter_fingerprint(filters: HistoryFilter) -> str:
         "symphony": filters.symphony,
         "card": filters.card,
         "stage": filters.stage,
+        "agent": filters.agent,
         "outcome": filters.outcome,
         "since": filters.since.isoformat() if filters.since is not None else None,
         "until": filters.until.isoformat() if filters.until is not None else None,
@@ -455,6 +457,8 @@ def _symphony_scope_ok(summary: dict[str, Any], query: HistoryQuery) -> str | No
 
 
 def _passes_header_filters(summary: dict[str, Any], started: datetime, filters: HistoryFilter) -> bool:
+    if filters.agent is not None and (summary.get("persona") or {}).get("name") != filters.agent:
+        return False
     if filters.stage is not None and summary.get("stage") != filters.stage:
         return False
     day = started.astimezone(UTC).date()
@@ -498,6 +502,9 @@ def _row_for(candidate: _Candidate, query: HistoryQuery) -> dict[str, Any] | Non
         "decision": (summary.get("conductor") or {}).get("decision"),
         "agent": summary.get("agent"),
         "persona": (summary.get("persona") or {}).get("name"),
+        "persona_version": (summary.get("persona") or {}).get("version"),
+        "persona_sha256": (summary.get("persona") or {}).get("version_sha256"),
+        "persona_changed_at": (summary.get("persona") or {}).get("changed_at"),
         "model": summary.get("model"),
         "card_title": redact_state_value(card.get("title")),
         "duration_seconds": duration,

@@ -1093,7 +1093,9 @@ function loadPersonasPage(force) {
     section.innerHTML = html ? '<div class="persona-workspace" data-persona-context="read">'
       + personaSelector(rows.map(function(row) { return row.persona; }), 'read') + html + '</div>'
       : '<span class="empty-state">No personas configured</span>';
-    personaMount(section.querySelector('[data-persona-context]'));
+    var workspace = section.querySelector('[data-persona-context]');
+    personaStatsMount(workspace);
+    personaMount(workspace);
   }).catch(function() { section.innerHTML = '<span class="empty-state">Failed to load personas</span>'; });
 }
 
@@ -1459,6 +1461,7 @@ function connectEventStream() {
       // 049: re-render current page with new state
       var path = location.pathname;
       if (isPerformersPath(path)) renderPerformersPage(scoped);
+      else if (path === '/personas') personaStatsRefresh(false);
       else if (path === '/history') renderHistoryPage(scoped);
       else if (path === '/logs') renderLogsPage(currentScopedState());
       else if (isBootstrapRunPath(path)) bootstrapPageRefresh();

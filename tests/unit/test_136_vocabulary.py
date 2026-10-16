@@ -141,7 +141,7 @@ def test_human_phase_no_longer_title_cases() -> None:
 def test_glossary_script_is_generated_and_loads_first() -> None:
     assert _DASHBOARD_JS_ORDER[0] == "vocabulary"
     assert _DASHBOARD_JS_SOURCES["vocabulary"] == vocabulary.javascript()
-    tags = re.findall(r'<script src="/static/([a-z]+)\.js\?v=([0-9a-f]+)"></script>', _DASHBOARD_HTML)
+    tags = re.findall(r'<script src="/static/([a-z_]+)\.js\?v=([0-9a-f]+)"></script>', _DASHBOARD_HTML)
     assert [name for name, _ in tags] == list(_DASHBOARD_JS_ORDER)
     assert dict(tags)["vocabulary"] == _DASHBOARD_JS_REVISIONS["vocabulary"]
 

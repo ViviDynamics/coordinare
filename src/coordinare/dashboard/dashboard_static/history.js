@@ -8,14 +8,14 @@
 // Forward restore them. The page's cursor stack lives in history.state, keyed by its filters.
 
 var HISTORY_PAGE_LIMIT = 50;
-var HISTORY_FILTER_KEYS = ['card', 'stage', 'outcome', 'since', 'until'];
+var HISTORY_FILTER_KEYS = ['card', 'stage', 'agent', 'outcome', 'since', 'until'];
 var HISTORY_OUTCOME_LABELS = { completed: 'Completed', failed: 'Failed', unknown: 'Not recorded' };
 var HISTORY_NOT_RECORDED = 'not recorded';
 var HISTORY_PARAM_PREFIX = 'h.';
 
 // The filters a fresh visit starts with: the header's symphony choice, and nothing else.
 function historyDefaultFilters(choice) {
-  return { symphony: choice || '', card: '', stage: '', outcome: '', since: '', until: '' };
+  return { symphony: choice || '', card: '', stage: '', agent: '', outcome: '', since: '', until: '' };
 }
 
 // The filters a History address names. The symphony always comes from the header's choice.
@@ -204,6 +204,7 @@ function historyFormHtml(filters) {
   return '<form class="history-filters" data-history-form>' +
     '<label>Card <input type="text" name="card" value="' + esc(filters.card) + '"></label>' +
     '<label>Stage <input type="text" name="stage" value="' + esc(filters.stage) + '"></label>' +
+    '<label>Agent <input type="text" name="agent" value="' + esc(filters.agent || '') + '"></label>' +
     '<label>Outcome <select name="outcome">' + outcomes.join('') + '</select></label>' +
     '<label>From <input type="date" name="since" value="' + esc(filters.since) + '"></label>' +
     '<label>To <input type="date" name="until" value="' + esc(filters.until) + '"></label>' +
