@@ -72,7 +72,7 @@ def test_summary_inheritance_and_link_to_shared_config_editor(page: Page, live_s
     expect(summary.locator("form, textarea, input, #sym-save-btn, #sym-delete-btn")).to_have_count(0)
     expect(summary.locator('[data-persona-panel]:visible')).to_contain_text("Global instructions")
     summary.locator('[data-persona-tab="qa"]').click()
-    summary.get_by_text("Compare with global", exact=True).click()
+    summary.locator('[data-persona-panel]:visible').get_by_text("Compare with global", exact=True).click()
     expect(summary.locator('[data-persona-panel]:visible pre')).to_contain_text("- # Global QA")
     expect(summary.locator('[data-persona-panel]:visible pre')).to_contain_text("+ # Local QA")
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
