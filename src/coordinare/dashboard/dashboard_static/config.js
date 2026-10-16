@@ -244,7 +244,7 @@ function cfgInput(s) {
 function cfgCoerce(el) {
   var t = el.getAttribute('data-type');
   if (t === 'bool') return el.checked;
-  var v = el.hasAttribute('data-md-source') ? personaSourceValue(el) : el.value;
+  var v = el.getAttribute('data-md-source') !== null ? personaSourceValue(el) : el.value;
   if (t === 'enum' && el.getAttribute('data-nullable') === 'true' && v === '') return null;
   // A nullable reference left at "— none —" serializes as null (field omitted),
   // matching the prior free-text-empty-means-unset behavior.
