@@ -227,8 +227,8 @@ function cfgInput(s) {
   }
   var ph = s.secret ? ' placeholder="leave masked to keep current"' : '';
   if (s.secret) {
-    // 143 second review: a secret is a password field. 225: Clear is offered only for an optional
-    // secret, because the server refuses to clear a required one. Show reveals only what was typed.
+    // 143 second review: a secret is a password field. 225: a required secret is never offered a
+    // Clear. Show reveals only what was typed.
     var clear = s.required ? ''
       : '<button type="button" class="cfg-btn" data-cfg-action="clear-secret" data-clear-for="' + esc(field) + '">Clear</button>';
     return '<div style="display:flex;gap:6px;align-items:center">'

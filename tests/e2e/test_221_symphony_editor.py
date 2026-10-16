@@ -402,7 +402,8 @@ def test_a_clearable_secret_override_is_reviewed_as_cleared_and_removed(page: Pa
 def test_a_required_secret_override_is_not_offered_a_clear(page: Page, real_server: dict[str, Any]) -> None:
     _open_real(page, real_server)
     expect(page.locator('[data-field="overrides.github_token"]')).to_have_attribute("type", "password")
-    expect(page.locator('[data-cfg-action="clear-secret"]')).to_have_count(0)
+    # Config keeps the global settings in hidden tabs beside this editor; only what is shown counts.
+    expect(page.locator('[data-cfg-action="clear-secret"]:visible')).to_have_count(0)
 
 
 @pytest.mark.e2e

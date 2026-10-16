@@ -5,6 +5,20 @@ var failures = [];
 function check(label, ok, detail) { if (!ok) failures.push(label + (detail ? ': ' + detail : '')); }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 
+// Config keeps global controls in hidden tabs beside the symphony editor. A required secret
+// never contributes a Clear action; an optional one keeps it.
+var requiredSecret = cfgInput({key: 'global.github_token', type: 'secret', secret: true,
+  required: true, current_value: CFG_SECRET_MASK});
+check('the required global secret has no Clear', requiredSecret.indexOf('clear-secret') === -1);
+var optionalSecret = cfgInput({key: 'global.dashboard_auth_token', type: 'secret', secret: true,
+  required: false, current_value: CFG_SECRET_MASK});
+check('a stored optional global secret still offers Clear', optionalSecret.indexOf('clear-secret') >= 0);
+var requiredOverride = symSecretRow({key: 'github_token', clearable: false});
+check('a required symphony secret has no Clear', requiredOverride.indexOf('clear-secret') === -1);
+check('a required symphony secret remains a password', requiredOverride.indexOf('type="password"') >= 0);
+var optionalOverride = symSecretRow({key: 'dashboard_auth_token', clearable: true});
+check('a stored optional symphony secret still offers Clear', optionalOverride.indexOf('clear-secret') >= 0);
+
 // --- the save body is the reviewed snapshot, built over the symphony the server holds -----------
 var base = {
   overrides: {max_concurrent_cards: 2, poll_interval_seconds: 60, project_name: 'kept', github_token: CFG_SECRET_MASK},
