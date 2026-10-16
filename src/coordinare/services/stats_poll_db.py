@@ -15,7 +15,9 @@ CREATE_BOARD_CHECK_POLICY = """CREATE TABLE IF NOT EXISTS stats_board_check_poli
 CREATE_BOARD_CHECK_PRUNING = """CREATE TABLE IF NOT EXISTS stats_board_check_pruning (
     symphony TEXT PRIMARY KEY,
     last_hour TEXT NOT NULL,
-    previous_hour TEXT NOT NULL DEFAULT ''
+    previous_hour TEXT NOT NULL DEFAULT '',
+    retention_last_hour TEXT NOT NULL DEFAULT '',
+    retention_previous_hour TEXT NOT NULL DEFAULT ''
 ) WITHOUT ROWID"""
 UPSERT_BOARD_CHECK_PRUNING = """INSERT INTO stats_board_check_pruning
     (symphony,last_hour) VALUES (?,?)
@@ -24,6 +26,13 @@ UPSERT_BOARD_CHECK_PRUNING = """INSERT INTO stats_board_check_pruning
             WHEN excluded.last_hour>last_hour THEN last_hour
             WHEN excluded.last_hour<last_hour THEN excluded.last_hour ELSE '' END),
         last_hour=max(last_hour,excluded.last_hour)"""
+UPSERT_BOARD_CHECK_RETENTION_PRUNING = """INSERT INTO stats_board_check_pruning
+    (symphony,last_hour,retention_last_hour) VALUES (?,'',?)
+    ON CONFLICT(symphony) DO UPDATE SET
+        retention_previous_hour=max(retention_previous_hour, CASE
+            WHEN excluded.retention_last_hour>retention_last_hour THEN retention_last_hour
+            WHEN excluded.retention_last_hour<retention_last_hour THEN excluded.retention_last_hour ELSE '' END),
+        retention_last_hour=max(retention_last_hour,excluded.retention_last_hour)"""
 MIGRATION_BATCH_SIZE = 16
 MIGRATION_WRITE_SECONDS = 0.01
 MIGRATION_YIELD_SECONDS = 0.001
