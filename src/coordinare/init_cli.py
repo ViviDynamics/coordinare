@@ -14,8 +14,8 @@ from coordinare import docker_setup
 from coordinare.config import ProjectConfiguration, expand_config_text
 from coordinare.config_validation import validate_raw_config
 from coordinare.init_answers import ANSWER_NAMES, collect_answers
+from coordinare.init_diagnostics import init_stage, render_failure, safe_cause
 from coordinare.init_files import (
-    SetupError,
     build_config,
     configure_containers,
     fail,
@@ -83,12 +83,16 @@ def _setup(args: argparse.Namespace) -> int:
     if interactive and existing and input("Replace existing setup files and keep backups [no]: ").strip().lower() not in {"y", "yes"}:
         fail("Setup cancelled; existing files were kept.")
     secrets = secret_values(answers, previous)
+    init_stage.set("model_endpoint")
     generated = build_config(answers, raw)
     if answers["run_mode"] == "docker":
         image = docker_setup.prepare_image(answers["image_variant"], answers.get("image_tag"), directory)
+        init_stage.set("container_setup")
         configure_containers(generated, image, secrets)
+    init_stage.set("model_endpoint")
     config = _validate_generated(generated, secrets)
     if answers["run_mode"] == "docker":
+        init_stage.set("container_smoke")
         if args.skip_smoke:
             sys.stdout.write("Docker smoke skipped; harness readiness and container connectivity are unverified.\n")
         else:
@@ -96,14 +100,17 @@ def _setup(args: argparse.Namespace) -> int:
                 if endpoint.mode == "ephemeral":
                     docker_setup.smoke_container(endpoint, connectivity=docker_setup.smoke_environment(config))
         sys.stdout.write("After upgrading, re-pin with coordinare init --force --run-mode docker (or add --image-tag VERSION for a development install).\n")
+    init_stage.set("write_config")
     args.config = write_setup(directory, generated, secrets, force=args.force or (interactive and existing))
     sys.stdout.write(f"Saved configuration: {args.config}\nSecrets: {env_path} (0600)\n")
+    init_stage.set("preflight")
     report = asyncio.run(run_preflight(config, raw=generated, explicit=True, probe_containers=answers["run_mode"] != "docker"))
     sys.stdout.write(report.render())
     sys.stdout.write("Start: coordinare --config " + shlex.quote(str(args.config)) + "\n")
     sys.stdout.write(f"Dashboard: http://{config.dashboard_host}:{config.dashboard_port}\n")
     if not report.ok:
         return 1
+    init_stage.set("service")
     return _offer_start(args, interactive=interactive)
 
 
@@ -114,8 +121,8 @@ def _offer_start(args: argparse.Namespace, *, interactive: bool) -> int:
     if args.start_at_login:
         try:
             install_service(args.config)
-        except (ServiceError, OSError, ValueError):
-            fail("Setup saved, but service installation failed. Check your login session and run coordinare service install --config " + shlex.quote(str(args.config)))
+        except (ServiceError, OSError, ValueError) as exc:
+            fail("Setup saved, but service installation failed. Check your login session and run coordinare service install --config " + shlex.quote(str(args.config)), cause=safe_cause(exc))
         sys.stdout.write("User service installed and started. Manage it with coordinare service.\n")
         return 0
     if interactive and not args.start:
@@ -124,6 +131,7 @@ def _offer_start(args: argparse.Namespace, *, interactive: bool) -> int:
 
 
 def run_init(args: argparse.Namespace) -> int:
+    stage_token = init_stage.set("answers")
     environment = os.environ.copy()
     for name in ("github_token", "api_key"):
         if getattr(args, name) is not None:
@@ -132,15 +140,13 @@ def run_init(args: argparse.Namespace) -> int:
             sys.stderr.write(f"Warning: {flag} can expose credentials in shell history and process listings. Use {variable} or a private --answers file instead.\n")
     try:
         return _setup(args)
-    except SetupError as exc:
-        sys.stderr.write(str(exc) + "\n")
-        return 1
-    except (ValueError, OSError, yaml.YAMLError, httpx.HTTPError, EOFError):
+    except (ValueError, OSError, yaml.YAMLError, httpx.HTTPError, EOFError) as exc:
         # Exceptions from YAML, HTTP and filesystem libraries can contain credentials.
-        # Controlled SetupErrors above are safe to show.
-        sys.stderr.write("Setup failed. Check answers, file permissions and GitHub connectivity; no credential values are displayed.\n")
+        # Only controlled SetupError messages and structured metadata are safe to show.
+        sys.stderr.write(render_failure(exc))
         return 1
     finally:
+        init_stage.reset(stage_token)
         if not args.start:
             os.environ.clear()
             os.environ.update(environment)

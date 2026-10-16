@@ -106,10 +106,13 @@ values take precedence over saved env values. Default state and logs live under
 `${XDG_DATA_HOME:-$HOME/.local/share}/coordinare`.
 
 On a rerun, existing files require `--force`; it keeps `.bak` backups and preserves
-unrelated settings. Repair the reported cause first, then repeat with the same
-answers and `--force`. Docker provisioning failures occur before setup files are
-written; final preflight failures retain files for repair. Do not start a service
-until the next step passes.
+unrelated settings. Init failures name the stage and a safe cause, followed by a
+`Fix:` line. Library exception messages and Docker stderr are withheld to protect
+credentials. Repair the reported cause first, then repeat with the same answers
+and `--force`. For `container_smoke` with `ENOSPC`, free space on the Docker
+filesystem; inspect usage with `docker system df`. Docker provisioning failures
+occur before setup files are written; final preflight failures retain files for
+repair. Do not start a service until the next step passes.
 
 ## 4. Verify with machine-readable checks
 

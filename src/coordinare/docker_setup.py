@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import re
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from coordinare.init_diagnostics import DOCKER_DISK_FIX, init_stage, safe_cause
 from coordinare.init_files import SetupError, fail
 from coordinare.lib.container_env import docker_environment
 from coordinare.metrics import _coordinare_version
@@ -57,19 +59,45 @@ def image_tag(explicit: str | None) -> str:
     return tag
 
 
+def _known_docker_failure(stderr: str | bytes | None, exc: OSError | None = None) -> None:
+    """Recognize causes, but emit only fixed text, never captured Docker output."""
+    error = (stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr or "").lower()
+    if (exc is not None and exc.errno == errno.ENOSPC) or "no space left" in error:
+        fail("Docker ran out of disk space.", cause="ENOSPC: " + os.strerror(errno.ENOSPC), fix=DOCKER_DISK_FIX)
+    if ("permission denied" in error and any(part in error for part in ("socket", "connect", "daemon"))) or "access is denied" in error:
+        fail("Docker socket permission denied.", cause="Docker socket permission denied", fix="Grant your user Docker access or select a usable Docker context, then rerun init.")
+    if any(part in error for part in ("manifest unknown", "manifest_unknown", "no matching manifest")):
+        fail("No published image for this tag or platform.", cause="manifest unknown", fix="Choose a published release with --image-tag VERSION and check Docker's architecture.")
+    if any(part in error for part in ("pull access denied", "denied: requested access", "requested access to the resource is denied", "unauthorized: authentication required")):
+        fail("Registry access denied.", cause="registry access denied", fix="Run docker login ghcr.io with a token granting read:packages and package access, then rerun init. Public packages require no login.")
+    if (exc is not None and exc.errno == errno.ENETUNREACH) or any(part in error for part in ("network unreachable", "network is unreachable")):
+        fail("Docker network unreachable.", cause="network unreachable", fix="Restore the Docker daemon's network access and check Docker proxy settings, then rerun init.")
+
+
 def _invoke(runner: DockerRunner, arguments: list[str], timeout: float = PROBE_TIMEOUT_SECONDS, *, retry_timeout: bool = False) -> subprocess.CompletedProcess[str]:
     try:
-        return runner(["docker", *arguments], timeout)
-    except FileNotFoundError:
-        fail("Docker is missing. Install Docker Desktop or Docker Engine and ensure docker is on PATH, then rerun init.")
-    except PermissionError:
-        fail("Cannot execute Docker: check executable permissions on docker and its parent directories, then rerun init.")
-    except subprocess.TimeoutExpired:
+        result = runner(["docker", *arguments], timeout)
+    except subprocess.CalledProcessError as exc:
+        _known_docker_failure(exc.stderr)
+        fail("Docker command failed.", cause=safe_cause(exc), fix="Check Docker service status, registry access, network settings and disk space, then rerun init.")
+    except subprocess.TimeoutExpired as exc:
+        _known_docker_failure(exc.stderr)
         if retry_timeout:
             raise
-        fail("Docker " + arguments[0] + " timed out. Check Docker, network access and disk space, then rerun init.")
-    except OSError:
-        fail("Cannot execute Docker. Check installation, executable permissions and your Docker context, then rerun init.")
+        fail("Docker " + arguments[0] + " timed out. Check Docker, network access and disk space, then rerun init.", cause=safe_cause(exc))
+    except OSError as exc:
+        _known_docker_failure(str(exc), exc)
+        if isinstance(exc, FileNotFoundError):
+            fail("Docker is missing. Install Docker Desktop or Docker Engine and ensure docker is on PATH, then rerun init.", cause=safe_cause(exc))
+        if isinstance(exc, PermissionError):
+            fail("Cannot execute Docker: check executable permissions on docker and its parent directories, then rerun init.", cause=safe_cause(exc))
+        fail("Cannot execute Docker. Check installation, executable permissions and your Docker context, then rerun init.", cause=safe_cause(exc))
+    except ValueError as exc:
+        _known_docker_failure(str(exc))
+        raise
+    if result.returncode:
+        _known_docker_failure(result.stderr)
+    return result
 
 
 def _check_runtime(runner: DockerRunner, directory: Path, variant: str) -> None:
@@ -83,6 +111,7 @@ def _check_runtime(runner: DockerRunner, directory: Path, variant: str) -> None:
     except ValueError:
         fail("Cannot read Docker info. Check docker info and update Docker before rerunning init.")
     root = info.get("DockerRootDir") if isinstance(info, dict) else None
+    init_stage.set("docker_disk")
     disk_path = Path(root) if isinstance(root, str) and Path(root).is_dir() else directory
     while not disk_path.exists():
         disk_path = disk_path.parent
@@ -99,16 +128,12 @@ def _pull(runner: DockerRunner, image: str) -> None:
     if not result.returncode:
         return
     error = result.stderr.lower()
-    if any(word in error for word in ("manifest unknown", "manifest_unknown", "no matching manifest")):
-        fail("No published image for this tag or platform. Choose a published release with --image-tag VERSION and check Docker's architecture.")
     if any(word in error for word in ("tls", "x509", "certificate")):
         fail("Docker pull failed TLS certificate verification. Check registry certificates and your TLS proxy configuration, then rerun init.")
     if "proxy" in error:
         fail("Docker pull failed through the proxy. Check Docker's proxy settings and network access, then rerun init.")
     if any(word in error for word in ("denied", "unauthorized", "forbidden")):
         fail("Registry access denied. Run docker login ghcr.io with a token granting read:packages and package access, then rerun init. Public packages require no login.")
-    if "no space left" in error:
-        fail("Docker pull ran out of disk space. Increase Docker's disk allocation or remove unused images after reviewing docker system df, then rerun init.")
     fail("Docker pull failed. Check network access to ghcr.io, proxy settings and disk space, then rerun init. No local build is needed.")
 
 
@@ -138,14 +163,18 @@ def _inspect(runner: DockerRunner, image: str, repository: str) -> str:
 
 def prepare_image(variant: str, tag: str | None, directory: Path, *, runner: DockerRunner | None = None) -> str:
     """Preflight, pull and inspect without ever falling back to a moving tag."""
+    init_stage.set("image_pull")
     if variant not in DISK_BUDGET_GIB:
         fail("image_variant must be base or full. Use --image-variant full for browser and security tooling.")
     selected = image_tag(tag)
     repository = IMAGE_REPOSITORY + "-" + variant
     image = repository + ":" + selected
     command_runner = runner or run_docker
+    init_stage.set("docker_runtime")
     _check_runtime(command_runner, directory, variant)
+    init_stage.set("image_pull")
     _pull(command_runner, image)
+    init_stage.set("image_inspect")
     return _inspect(command_runner, image, repository)
 
 
@@ -213,6 +242,7 @@ def smoke_container(
     runner: DockerRunner | None = None,
 ) -> None:
     """Exercise the real entrypoint and harness, with bounded probes and cleanup."""
+    init_stage.set("container_smoke")
     command_runner = runner or run_docker
     name = "coordinare-setup-" + uuid.uuid4().hex
     arguments = ["run", "-d", "--rm", "--name", name, "--label", "coordinare.setup_smoke=true"]

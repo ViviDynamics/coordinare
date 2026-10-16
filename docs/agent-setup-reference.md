@@ -39,6 +39,16 @@ Other flags are `--answers PATH`, `--config-dir PATH`, `--non-interactive`,
 equivalents. Without a terminal init already avoids prompts. `--answers` alone
 does not suppress prompts in a terminal. Init emits prose, not JSON.
 
+Init exits 0 on success, 1 on setup or preflight failure, and 2 for invalid CLI
+arguments. Setup exceptions produce `Setup failed at STAGE: CAUSE.` and a `Fix:`
+line. Stages identify answers, GitHub, board, harness, Docker runtime/disk, image
+pull/inspect, container setup/smoke, model endpoint, config write, preflight or service
+setup. Causes use exception classes, OS errno names/system descriptions, HTTP
+status codes/hosts or recognized Docker failures. Raw exception messages,
+filenames, full URLs and Docker stderr are withheld. Follow the fix before retrying; `ENOSPC`
+during Docker provisioning means free space on the Docker filesystem and inspect
+usage with `docker system df`.
+
 For local mode install and authenticate the chosen harness CLI on PATH (`codex`,
 `claude`, or `opencode`); the release installer already bundles `performer`.
 Codex/Claude Code can reuse a local harness login without an API key. OpenCode's
