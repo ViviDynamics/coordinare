@@ -120,6 +120,16 @@ agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs vi
 #   host_path      — absolute path on the coordinare host machine
 #   container_path — absolute path inside the container (typically /root/... for root user)
 #   mode           — "ro" (read-only, default) | "rw" (read-write)
+# Kubernetes routing (557), per endpoint, omitted/null by default:
+#   kubernetes_routing_configmap:
+#     name: coordinare-performer-routing  # existing ConfigMap in kubernetes_namespace
+#     key: routing.yaml                   # optional; default routing.yaml
+#   Name: DNS-1123 subdomain, max 253 chars. Key: letters/digits/./_/-,
+#   1-253 chars, not "." or starting with "..". Projects this key read-only under
+#   /etc/coordinare/routing and sets SELFHOSTED_ROUTING_CONFIG to
+#   /etc/coordinare/routing/routing.yaml (overrides the endpoint env value).
+#   No daemon ConfigMap RBAC needed. Docker ignores this setting; keep its
+#   host_path + env setup. Subprocess endpoints reject this container setting.
 #
 # API keys / secrets:
 #   coordinare forwards secrets into each container job based on the backend:
@@ -541,8 +551,8 @@ performers:
 # Two pieces wire it up:
 #
 #   1. A routing-table YAML file (schema below), authored separately and made
-#      available inside the performer container (baked into the image or mounted
-#      via this endpoint's `volumes:`).
+#      available inside the performer container (Kubernetes ConfigMap below,
+#      Docker endpoint `volumes:`, or baked into the image).
 #   2. The env var SELFHOSTED_ROUTING_CONFIG, pointing at that file's in-container
 #      path. Empty / unset (the default) = no entries = layer disabled everywhere.
 #      A non-empty path that is missing or malformed FAILS FAST at job start rather
@@ -551,8 +561,8 @@ performers:
 # Forward the env var into the performer the same way as any other (see the
 # env-bootstrap performer above): list it under the endpoint's `env:` dict so
 # ${VAR} expansion injects it — it is NOT inherited from the coordinare environment
-# automatically. Example performer endpoint that mounts a baked routing table and
-# enables the layer:
+# automatically. Kubernetes `kubernetes_routing_configmap` sets it for you.
+# Docker example mounting a host routing table and enabling the layer:
 #
 # performer_endpoints:
 #   - id: selfhosted-robust
@@ -618,9 +628,19 @@ performers:
 # The target preserves the dispatched model. Set upstream_model only if the
 # gateway advertises a different name. Translation drops reasoning and keeps
 # content, including content sharing the final reasoning delta.
-# For Kubernetes, the routing file must exist INSIDE each performer image or be
-# supplied by your pod provisioning. Endpoint host_path volumes do not mount
-# arbitrary ConfigMap files in Kubernetes. See docs/operators/litellm-proxy.md.
+# Kubernetes alternative (existing ConfigMap, no derived image or env entry):
+# performer_endpoints:
+#   - id: claude-ephemeral
+#     mode: ephemeral
+#     roles: [assessor]
+#     image: coordinare-performer:full
+#     kubernetes_routing_configmap:
+#       name: coordinare-performer-routing
+#       key: routing.yaml
+# Default: no mount and env unchanged. ConfigMap must be in kubernetes_namespace;
+# missing ConfigMap/key prevents pod startup. New jobs load routing at startup.
+# Docker host_path volumes do not provide this Kubernetes mount.
+# See docs/operators/litellm-proxy.md for creation and garden deploy steps.
 #
 # Validation rules enforced at load (fail fast, not at runtime):
 #   - strategy: reroute   ⇒ normalizers MUST be empty/absent.

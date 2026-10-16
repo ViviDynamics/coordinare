@@ -80,6 +80,18 @@ def _rendered_config(objects: list[dict]) -> dict:
     return yaml.safe_load(cm["data"]["config.yaml"])
 
 
+def test_endpoint_routing_configmap_passes_through_without_extra_rbac() -> None:
+    endpoint = {
+        "id": "claude", "mode": "ephemeral", "roles": ["assessor"],
+        "image": "performer:full",
+        "kubernetes_routing_configmap": {"name": "garden-routing", "key": "routing.yaml"},
+    }
+    objects = _render(**{"config.performer_endpoints": [endpoint]})
+    assert _rendered_config(objects)["performer_endpoints"] == [endpoint]
+    resources = {resource for rule in _one(objects, "Role")["rules"] for resource in rule["resources"]}
+    assert resources == {"pods", "pods/log"}
+
+
 # ---------------------------------------------------------------------------
 # FR-001, FR-002 — one replica, and it is a correctness constraint
 # ---------------------------------------------------------------------------

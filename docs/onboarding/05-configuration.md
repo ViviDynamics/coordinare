@@ -101,7 +101,22 @@ role  →  performers.<role>.backend          (which harness)
 
 Independent of the role resolution above: it keys on `(backend, model)` and decides whether a
 **shim** is launched and how the response is repaired. Mounted into performers at
-`/etc/coordinare/routing.yaml` (`SELFHOSTED_ROUTING_CONFIG`).
+the path named by `SELFHOSTED_ROUTING_CONFIG`.
+For Kubernetes, set this on the selected ephemeral performer endpoint:
+
+```yaml
+kubernetes_routing_configmap:
+  name: coordinare-performer-routing
+  key: routing.yaml  # optional; default routing.yaml
+```
+
+Create that ConfigMap in the performer namespace (`kubernetes_namespace`).
+The runtime projects the key read-only at `/etc/coordinare/routing/routing.yaml`
+and sets `SELFHOSTED_ROUTING_CONFIG` to that path, overriding endpoint env.
+Omitted/null leaves mounts and env unchanged. Docker keeps the host-path + env
+setup. No daemon ConfigMap RBAC is needed. See the
+[endpoint reference](../operators/containerized-performers.md#kubernetes-routing-configmap-557)
+for name/key validation and lifecycle details.
 
 ```yaml
 selfhosted_routing:
