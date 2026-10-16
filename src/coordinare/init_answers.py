@@ -75,8 +75,9 @@ class Questions:
 
     def ask(self, name: str, label: str, *, secret: bool = False) -> Any:
         default = self.answers.get(name)
-        if name not in self.supplied and self.interactive and not (secret and default):
-            display = "saved credential" if secret and default else default
+        if name not in self.supplied and self.interactive:
+            # A saved secret is never shown; pressing Enter keeps it, and typing replaces it.
+            display = "saved credential, Enter keeps it" if secret and default else default
             if isinstance(display, list):
                 display = ",".join(display)
             prompt = f"{label} [{display or 'none'}]: "

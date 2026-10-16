@@ -120,9 +120,31 @@ def test_interactive_defaults_with_stubbed_input(
         return next(responses)
 
     monkeypatch.setattr("builtins.input", answer)
+    # Credentials found in the environment are offered as saved values: Enter keeps them.
+    monkeypatch.setattr("coordinare.init_answers.getpass.getpass", lambda prompt: "")
     assert invoke(monkeypatch) == 0
     assert prompts and all("[" in prompt and "]" in prompt for prompt in prompts)
     assert (setup_home / "config.yaml").is_file()
+    assert (setup_home / "coordinare.env").read_text().count("private-token") == 1
+
+
+def test_a_saved_credential_can_be_replaced_at_the_prompt(
+    setup_home: Path, probes: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setenv("GH_TOKEN", "stale-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "private-api-key")
+    responses = iter(["example/demo", "", "", "", "", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(responses))
+    typed = {"GitHub": "fresh-token"}
+    monkeypatch.setattr(
+        "coordinare.init_answers.getpass.getpass",
+        lambda prompt: next((value for label, value in typed.items() if label.lower() in prompt.lower()), ""),
+    )
+    assert invoke(monkeypatch) == 0
+    env = (setup_home / "coordinare.env").read_text()
+    assert "fresh-token" in env
+    assert "stale-token" not in env
 
 
 def test_existing_files_require_force_and_are_preserved_with_backup(
@@ -518,7 +540,14 @@ def test_interactive_rerun_offers_saved_defaults_and_requires_confirmation(
         return confirmation if "replace" in prompt.lower() else ""
 
     monkeypatch.setattr("builtins.input", accept_default)
-    monkeypatch.setattr("coordinare.init_answers.getpass.getpass", MagicMock(side_effect=AssertionError("saved secret prompted")))
+    secret_prompts: list[str] = []
+
+    def keep_saved(prompt: str) -> str:
+        # Enter keeps a saved credential; the prompt never shows it.
+        secret_prompts.append(prompt)
+        return ""
+
+    monkeypatch.setattr("coordinare.init_answers.getpass.getpass", keep_saved)
     probes.reset_mock()
     result = invoke(monkeypatch, *(["--force"] if force else []))
     assert result == (0 if confirmation == "yes" else 1)
@@ -542,8 +571,10 @@ def test_interactive_rerun_offers_saved_defaults_and_requires_confirmation(
         assert not (setup_home / "coordinare.env.bak").exists()
         probes.assert_not_awaited()
     output = capsys.readouterr()
-    assert "private-token" not in output.out + output.err + "".join(prompts)
-    assert "private-api-key" not in output.out + output.err + "".join(prompts)
+    shown = output.out + output.err + "".join(prompts) + "".join(secret_prompts)
+    assert "private-token" not in shown
+    assert "private-api-key" not in shown
+    assert all("saved credential, Enter keeps it" in prompt for prompt in secret_prompts)
 
 
 @pytest.mark.parametrize("flag,variable", [
