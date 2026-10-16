@@ -59,16 +59,16 @@ def test_doctor_and_dashboard_report_installed_version() -> None:
 
 def test_release_is_draft_until_its_assets_succeed() -> None:
     jobs = workflow()["jobs"]
-    create = jobs["create-tag"]["steps"][-1]["with"]["script"]
+    create = jobs["create-release"]["steps"][-1]["with"]["script"]
     assert "draft: true" in create
     assert "make_latest: 'false'" in create
     # Draft releases do not create a ref. Image and package checkouts need a real tag.
-    assert "github.rest.git.createRef" in create
-    assert "refs/tags/" in create
-    assert "published" in jobs["create-tag"]["outputs"]
-    assert jobs["create-tag"]["outputs"]["release_id"] == "${{ steps.release.outputs.release_id }}"
+    assert "github.rest.git.createRef" in str(jobs["create-tag"])
+    assert "refs/tags/" in str(jobs["create-tag"])
+    assert "published" in jobs["create-release"]["outputs"]
+    assert jobs["create-release"]["outputs"]["release_id"] == "${{ steps.release.outputs.release_id }}"
     publish = jobs["publish-release"]
-    assert set(publish["needs"]) == {"create-tag", "publish-artifacts"}
+    assert set(publish["needs"]) == {"create-release", "publish-artifacts"}
     assert "published != 'true'" in publish["if"]
     assert jobs["tag-latest"]["needs"] == [
         "create-tag", "manifest-base", "manifest-full", "build-daemon",
@@ -77,7 +77,7 @@ def test_release_is_draft_until_its_assets_succeed() -> None:
     assert "draft: false" in script
     assert "make_latest: 'true'" in script
     assert "always()" not in str(publish)
-    assert publish["steps"][-1]["env"]["RELEASE_ID"] == "${{ needs.create-tag.outputs.release_id }}"
+    assert publish["steps"][-1]["env"]["RELEASE_ID"] == "${{ needs.create-release.outputs.release_id }}"
 
 
 def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
@@ -106,7 +106,7 @@ def test_release_build_uses_tag_and_attaches_checksums_and_provenance() -> None:
     assert transfer["with"]["if-no-files-found"] == "error"
     assert transfer["with"]["overwrite"] is True
     upload_job = workflow()["jobs"]["publish-artifacts"]
-    assert set(upload_job["needs"]) == {"create-tag", "release-artifacts", "installer-smoke"}
+    assert set(upload_job["needs"]) == {"create-tag", "create-release", "release-artifacts", "installer-smoke"}
     assert upload_job["permissions"] == {
         "contents": "write", "id-token": "write", "attestations": "write",
     }
@@ -209,7 +209,7 @@ def test_draft_rerun_deletes_only_matching_assets_before_upload(tmp_path: Path, 
     prepare_release_dist(tmp_path)
     steps = workflow()["jobs"]["publish-artifacts"]["steps"]
     cleanup = next(s for s in steps if s.get("id") == "cleanup")
-    assert cleanup["env"]["RELEASE_ID"] == "${{ needs.create-tag.outputs.release_id }}"
+    assert cleanup["env"]["RELEASE_ID"] == "${{ needs.create-release.outputs.release_id }}"
     script = cleanup["with"]["script"]
     harness = """
 const assert = require('node:assert/strict');
@@ -360,6 +360,8 @@ def run_release_scripts(*jobs: str, published: bool = False, exists: bool = True
         script = workflow()["jobs"][job]["steps"][-1]["with"]["script"]
         script = script.replace("${{ needs.derive-version.outputs.version }}", VERSION)
         script = script.replace("${{ needs.derive-version.outputs.sha }}", "head")
+        script = script.replace("${{ needs.create-tag.outputs.version }}", VERSION)
+        script = script.replace("${{ needs.create-tag.outputs.sha }}", "head")
         scripts.append(f"await (async () => {{ {script} }})();")
     harness = """
 const outputs = {};
@@ -418,22 +420,28 @@ console.log = () => {};
 
 @pytest.mark.parametrize("published", [True, False])
 def test_existing_release_is_detected_without_recreating_it(published: bool) -> None:
-    result = run_release_scripts("create-tag", published=published)
+    result = run_release_scripts("create-release", published=published)
     assert result["outputs"]["published"] == str(published).lower()
     assert str(result["outputs"]["release_id"]) == str(RELEASE_ID)
     assert result["counts"]["created"] == 0
     assert result["counts"]["listed"] == 1
 
 
+def test_tag_rerun_does_not_create_or_look_up_release_objects() -> None:
+    result = run_release_scripts("create-tag", "create-tag", exists=False)
+    assert result["counts"] == {"created": 0, "updated": 0, "listed": 0}
+    assert result["outputs"] == {}
+
+
 def test_failed_draft_rerun_reuses_release_and_promotes_it() -> None:
-    result = run_release_scripts("create-tag", "create-tag", "publish-release")
+    result = run_release_scripts("create-release", "create-release", "publish-release")
     assert result["counts"]["created"] == 0
     assert result["counts"]["updated"] == 1
     assert result["release"]["draft"] is False
 
 
 def test_new_release_id_flows_through_rerun_without_duplicates() -> None:
-    result = run_release_scripts("create-tag", "create-tag", "publish-release", exists=False)
+    result = run_release_scripts("create-release", "create-release", "publish-release", exists=False)
     assert result["counts"]["created"] == 1
     assert result["counts"]["updated"] == 1
     assert result["release"]["draft"] is False

@@ -260,22 +260,19 @@ jobs:
     outputs:
       version: ${{ needs.derive-version.outputs.version }}
       sha: ${{ needs.derive-version.outputs.sha }}
-      published: ${{ steps.release.outputs.published }}
-      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Create GitHub release and tag
-        id: release
+      - name: Create or verify the validated git tag
         uses: actions/github-script@v8
         with:
           script: |
             const version = '${{ needs.derive-version.outputs.version }}';
             const sha = '${{ needs.derive-version.outputs.sha }}';
 
-            // Draft releases do not create a git ref. Create it explicitly so
-            // every downstream checkout resolves the validated commit.
+            // Create the tag before image builds, without publishing a release.
+            // Every downstream checkout must resolve the validated commit.
             try {
               const ref = await github.rest.git.getRef({
                 ...context.repo, ref: `tags/${version}`,
@@ -292,6 +289,31 @@ jobs:
                 ...context.repo, ref: `refs/tags/${version}`, sha,
               });
             }
+
+  # 332: the tag must exist before image checkouts, but even the draft
+  # release is created only after all installable images have been published.
+  create-release:
+    timeout-minutes: 10
+    name: Create Image-Backed Draft Release
+    needs:
+      - create-tag
+      - manifest-base
+      - manifest-full
+      - build-daemon
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      published: ${{ steps.release.outputs.published }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - name: Create or reuse the draft release
+        id: release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const version = '${{ needs.create-tag.outputs.version }}';
+            const sha = '${{ needs.create-tag.outputs.sha }}';
 
             const releases = await github.paginate(github.rest.repos.listReleases, context.repo);
             const existing = releases.find(release => release.tag_name === version);
@@ -319,10 +341,12 @@ jobs:
             console.log(`Created draft release ${version}`);
 
   release-artifacts:
-    if: needs.create-tag.outputs.published != 'true'
+    if: needs.create-release.outputs.published != 'true'
     timeout-minutes: 20
     name: Build and Smoke Test Release Artifacts
-    needs: create-tag
+    needs:
+      - create-tag
+      - create-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -406,11 +430,12 @@ jobs:
           overwrite: true
 
   installer-smoke:
-    if: needs.create-tag.outputs.published != 'true'
+    if: needs.create-release.outputs.published != 'true'
     timeout-minutes: 15
     name: Installer Smoke (${{ matrix.os }})
     needs:
       - create-tag
+      - create-release
       - release-artifacts
     runs-on: ${{ matrix.os }}
     permissions:
@@ -457,11 +482,12 @@ jobs:
           test ! -e "$HOME/.local/bin/coordinare"
 
   publish-artifacts:
-    if: needs.create-tag.outputs.published != 'true'
+    if: needs.create-release.outputs.published != 'true'
     timeout-minutes: 10
     name: Attest and Upload Release Artifacts
     needs:
       - create-tag
+      - create-release
       - release-artifacts
       - installer-smoke
     runs-on: ubuntu-latest
@@ -512,7 +538,7 @@ jobs:
         id: cleanup
         uses: actions/github-script@v8
         env:
-          RELEASE_ID: ${{ needs.create-tag.outputs.release_id }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
           script: |
             const fs = require('node:fs');
@@ -908,11 +934,11 @@ jobs:
           echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION} (amd64)"
 
   publish-release:
-    if: needs.create-tag.outputs.published != 'true'
+    if: needs.create-release.outputs.published != 'true'
     timeout-minutes: 10
     name: Publish Complete Release as Latest
     needs:
-      - create-tag
+      - create-release
       - publish-artifacts
     runs-on: ubuntu-latest
     permissions:
@@ -921,7 +947,7 @@ jobs:
       - name: Publish the fully uploaded release
         uses: actions/github-script@v8
         env:
-          RELEASE_ID: ${{ needs.create-tag.outputs.release_id }}
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
           script: |
             await github.rest.repos.updateRelease({
