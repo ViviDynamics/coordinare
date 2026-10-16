@@ -717,7 +717,7 @@ def _build_performer_services(
                         f"Cannot start daemon: required performer role {role!r} "
                         f"transport could not be built: {exc}"
                     )
-                    logger.error(
+                    logger.exception(
                         "performer_transport_build_failed.required_role",
                         role=role,
                         stage=stage,
