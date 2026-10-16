@@ -26,7 +26,6 @@ def _ephemeral_config(**overrides: object) -> PerformerEndpointConfig:
         "mode": "ephemeral",
         "roles": ["performer"],
         "image": "performer:base",
-        "auth_token": "lifecycle-test-token",
     }
     base.update(overrides)
     return PerformerEndpointConfig.model_validate(base)
@@ -59,6 +58,53 @@ async def test_start_ephemeral_runs_docker_and_resolves_port(monkeypatch) -> Non
     assert calls[0][0] == "run"
     assert "performer:base" in calls[0]
     assert calls[0][-1] == "performer:base"  # image is the last arg; no CMD overrides
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", [None, ""])
+@pytest.mark.parametrize("port", [None, 9090])
+async def test_197_no_token_launch_matches_origin_main_except_localhost_bind(
+    monkeypatch, token, port,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        calls.append(args)
+        if args[0] == "run":
+            return 0, "legacy-container", ""
+        return 0, "127.0.0.1:49160", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    started = await start_ephemeral(_ephemeral_config(auth_token=token, port=port))
+
+    assert calls == [
+        ("run", "-d", "--rm", "--label", "coordinare.performer.id=perf-1",
+         "-p", f"127.0.0.1:{port or 0}:8088", "performer:base"),
+        ("port", "legacy-container", "8088/tcp"),
+    ]
+    assert started == StartedContainer("legacy-container", "http://127.0.0.1:49160")
+
+
+@pytest.mark.asyncio
+async def test_197_no_token_warns_once_per_endpoint_with_token_setup_hint(monkeypatch) -> None:
+    from structlog.testing import capture_logs
+
+    monkeypatch.setattr(lifecycle, "_warned_unauthenticated_endpoints", set(), raising=False)
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        return (0, "legacy-container", "") if args[0] == "run" else (0, "127.0.0.1:49160", "")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    with capture_logs() as logs:
+        for endpoint_id in ("legacy-one", "legacy-one", "legacy-two", "legacy-two"):
+            await start_ephemeral(_ephemeral_config(id=endpoint_id))
+
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert [entry["performer_id"] for entry in warnings] == ["legacy-one", "legacy-two"]
+    for entry in warnings:
+        assert "auth disabled" in entry["message"].lower()
+        assert "coordinare init --force" in entry["message"]
+        assert "auth_token" in entry["message"]
 
 
 @pytest.mark.asyncio

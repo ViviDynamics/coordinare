@@ -272,7 +272,7 @@ def placeholder_problems(
 
 
 def validate_expanded_secrets(raw: object) -> None:
-    """Refuse braced references remaining in secret fields after YAML expansion."""
+    """Refuse unexpanded performer auth tokens without changing other config-load behavior."""
     views = [(raw, "")]
     if isinstance(raw, dict):
         views.append((raw.get("global_config"), "global_config"))
@@ -280,16 +280,16 @@ def validate_expanded_secrets(raw: object) -> None:
             if isinstance(symphony, dict):
                 views.append((symphony.get("overrides"), f"symphonies[{index}].overrides"))
     for value, prefix in views:
-        for path in secret_paths(ProjectConfiguration):
-            for display, leaf, _ in _values_at(value, path, prefix):
-                text = leaf.get_secret_value() if isinstance(leaf, SecretStr) else leaf
-                if isinstance(text, str) and (match := _ENV_REFERENCE.search(text)):
-                    name = match.group(1)
-                    message = (
-                        f"{display} still holds an unexpanded ${{{name}}} placeholder. "
-                        f"Set environment variable {name} to a secret value before loading the config."
-                    )
-                    raise StartCheckError(message, display)
+        path = ("performer_endpoints", _LIST_ITEM, "auth_token")
+        for display, leaf, _ in _values_at(value, path, prefix):
+            text = leaf.get_secret_value() if isinstance(leaf, SecretStr) else leaf
+            if isinstance(text, str) and (match := _ENV_REFERENCE.search(text)):
+                name = match.group(1)
+                message = (
+                    f"{display} still holds an unexpanded ${{{name}}} placeholder. "
+                    f"Set environment variable {name} to a secret value before loading the config."
+                )
+                raise StartCheckError(message, display)
 
 
 def placeholder_warnings(

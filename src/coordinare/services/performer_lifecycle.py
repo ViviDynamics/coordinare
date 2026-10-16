@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     )
 
 logger = structlog.get_logger(__name__)
+_warned_unauthenticated_endpoints: set[str] = set()
 
 
 class LifecycleError(RuntimeError):
@@ -161,9 +162,24 @@ async def start_ephemeral(
     if config.image is None:
         raise ContainerStartError(f"performer {config.id} has no image configured")
     token = config.auth_token.get_secret_value() if config.auth_token is not None else ""
-    if not token.strip() or re.search(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", token):
-        message = f"performer {config.id} auth_token must be set to an expanded, non-empty secret"
+    if match := re.search(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", token):
+        name = match.group(1)
+        message = (
+            f"performer {config.id} auth_token still holds an unexpanded ${{{name}}} placeholder. "
+            f"Set environment variable {name} to a secret value before launching."
+        )
         raise ContainerStartError(message)
+    if not token and config.id not in _warned_unauthenticated_endpoints:
+        _warned_unauthenticated_endpoints.add(config.id)
+        logger.warning(
+            "performer_lifecycle.auth_disabled",
+            performer_id=config.id,
+            bind_host=config.bind_host,
+            message=(
+                "Performer auth disabled because auth_token is absent or empty. "
+                "Run coordinare init --force or set auth_token to enable authentication."
+            ),
+        )
 
     args: list[str] = ["run", "-d", "--rm", "--label", f"coordinare.performer.id={config.id}"]
 
@@ -197,7 +213,8 @@ async def start_ephemeral(
 
     args += ["-p", f"{config.bind_host}:{config.port or 0}:8088"]
     private_env: dict[str, str] = {}
-    private_env["PERFORMER_AUTH_TOKEN"] = token
+    if token:
+        private_env["PERFORMER_AUTH_TOKEN"] = token
 
     ss = config.secret_sources
     if not ss.init_payload:

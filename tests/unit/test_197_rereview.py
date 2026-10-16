@@ -18,6 +18,7 @@ from coordinare.config_validation import validate_config, validate_raw_config
 from coordinare.init_files import SetupError
 from coordinare.models.performer_endpoint import PerformerEndpointConfig
 from coordinare.services import performer_lifecycle
+from coordinare.start_checks import validate_expanded_secrets
 from tests.unit.test_252_secret_placeholders import _WALKED, _doc_for
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,8 +51,16 @@ exit "$TEST_GH_CODE"
         assert not output.exists()
 
 
-@pytest.mark.parametrize("path", _WALKED, ids=[".".join(p) for p in _WALKED])
-def test_197_yaml_loader_rejects_every_unexpanded_secret(tmp_path, monkeypatch, path):
+_PERFORMER_AUTH_PATH = ("performer_endpoints", "[]", "auth_token")
+_PERFORMER_AUTH_PATHS = [
+    _PERFORMER_AUTH_PATH,
+    ("global_config", *_PERFORMER_AUTH_PATH),
+    ("symphonies", "[]", "overrides", *_PERFORMER_AUTH_PATH),
+]
+
+
+@pytest.mark.parametrize("path", _PERFORMER_AUTH_PATHS, ids=[".".join(p) for p in _PERFORMER_AUTH_PATHS])
+def test_197_yaml_loader_rejects_unexpanded_performer_auth(tmp_path, monkeypatch, path):
     monkeypatch.delenv(UNSET, raising=False)
     monkeypatch.delenv("COORDINARE_GITHUB_TOKEN", raising=False)
     raw = {"github_org": "example", "human_reviewers": ["smoke"],
@@ -66,8 +75,8 @@ def test_197_yaml_loader_rejects_every_unexpanded_secret(tmp_path, monkeypatch, 
     assert not validate_config(config).passed
 
 
-@pytest.mark.parametrize("path", _WALKED, ids=[".".join(p) for p in _WALKED])
-def test_197_in_memory_validation_refuses_unexpanded_secrets(monkeypatch, path):
+@pytest.mark.parametrize("path", _PERFORMER_AUTH_PATHS, ids=[".".join(p) for p in _PERFORMER_AUTH_PATHS])
+def test_197_in_memory_validation_refuses_unexpanded_performer_auth(monkeypatch, path):
     monkeypatch.delenv(UNSET, raising=False)
     result = validate_raw_config({
         "github_org": "example", "github_token": "test-token", "github_project_number": 1,
@@ -77,14 +86,39 @@ def test_197_in_memory_validation_refuses_unexpanded_secrets(monkeypatch, path):
     assert any(UNSET in error.fix_hint for error in result.errors)
 
 
-@pytest.mark.parametrize("token", [None, "", "   ", "${COORDINARE_197_MISSING_SECRET}"])
-def test_197_ephemeral_refuses_missing_or_unexpanded_auth_before_docker(monkeypatch, token):
+@pytest.mark.parametrize("path", [path for path in _WALKED if path != _PERFORMER_AUTH_PATH])
+def test_197_config_load_check_leaves_other_secret_fields_unchanged(monkeypatch, path):
+    monkeypatch.delenv(UNSET, raising=False)
+    for prefix in [(), ("global_config",), ("symphonies", "[]", "overrides")]:
+        validate_expanded_secrets(_doc_for((*prefix, *path), "${" + UNSET + "}"))
+
+
+def test_197_unset_optional_dashboard_auth_placeholder_loads_as_origin_main(tmp_path, monkeypatch):
+    monkeypatch.delenv(UNSET, raising=False)
+    monkeypatch.delenv("COORDINARE_DASHBOARD_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    placeholder = "${" + UNSET + "}"
+    raw = {"github_org": "example", "github_token": "test-token", "github_project_number": 1,
+           "project_name": "legacy", "human_reviewers": ["smoke"], "dashboard_auth_token": placeholder}
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(raw))
+
+    loaded = ProjectConfiguration.from_yaml(config)
+    assert loaded.dashboard_auth_token.get_secret_value() == placeholder
+    result = validate_config(config)
+    assert result.passed, result.errors
+    result = validate_raw_config(raw)
+    assert result.passed, result.errors
+
+
+@pytest.mark.parametrize("token", ["${COORDINARE_197_MISSING_SECRET}", "prefix-${COORDINARE_197_MISSING_SECRET}"])
+def test_197_ephemeral_refuses_unexpanded_auth_before_docker(monkeypatch, token):
     monkeypatch.delenv(UNSET, raising=False)
     runner = AsyncMock()
     monkeypatch.setattr(performer_lifecycle, "_run_docker", runner)
     endpoint = PerformerEndpointConfig(id="smoke", mode="ephemeral", roles=["implementer"],
                                        image="smoke:full", auth_token=token)
-    with pytest.raises(performer_lifecycle.ContainerStartError, match="auth_token"):
+    with pytest.raises(performer_lifecycle.ContainerStartError, match="auth_token.*" + UNSET):
         asyncio.run(performer_lifecycle.start_ephemeral(endpoint))
     runner.assert_not_called()
 
