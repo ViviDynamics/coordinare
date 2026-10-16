@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +28,8 @@ TAGGED = REPOSITORY + ":" + RELEASE
 DIGEST = "sha256:" + "a" * 64
 PINNED = TAGGED + "@" + DIGEST
 FREE_BYTES = 100 * 1024**3
+CLEANUP_IMAGE = "ghcr.io/vividynamics/coordinare-performer-full:2026.10.145"
+CLEANUP_PINNED = CLEANUP_IMAGE + "@sha256:" + "a" * 64
 
 
 class FakeDocker:
@@ -279,9 +283,38 @@ def test_generated_config_reaches_ephemeral_dispatch_without_building(setup: Pat
     assert "PERFORMER_SECRET_SOURCE_ENV=0" in command
     assert "PERFORMER_SECRET_SOURCE_CREDS_FILE=0" in command
     assert "TMPDIR=/workspace" in command
+    assert "NODE_COMPILE_CACHE=/var/cache/node-compile-cache" in command
     assert "host.docker.internal:host-gateway" in command
     assert not any("private-" in argument for argument in command)
     assert all(call.args[0] != "build" for call in boundary.call_args_list)
+
+
+def test_init_smoke_keeps_node_compile_cache_off_workspace_mount(docker: FakeDocker, tmp_path: Path) -> None:
+    environments: list[str] = []
+
+    def runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        if command[1] == "run":
+            environments.append(Path(command[command.index("--env-file") + 1]).read_text())
+        return docker(command, timeout)
+
+    smoke_docker_setup.provision(RELEASE, tmp_path, runner)
+    assert len(environments) == 1
+    assert "TMPDIR=/workspace\n" in environments[0]
+    assert "NODE_COMPILE_CACHE=/var/cache/node-compile-cache\n" in environments[0]
+
+
+@pytest.mark.parametrize("previous,expected", [(None, "/var/cache/node-compile-cache"), ("/opt/cache/node", "/opt/cache/node")])
+def test_force_init_updates_node_cache_default_and_preserves_overrides(setup: Path, docker: FakeDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: str | None, expected: str) -> None:
+    answers = answers_file(tmp_path, run_mode="docker")
+    assert invoke(monkeypatch, "--answers", str(answers)) == 0
+    raw = yaml.safe_load(setup.read_text())
+    env = raw["performer_endpoints"][0]["env"]
+    env.pop("NODE_COMPILE_CACHE")
+    if previous is not None:
+        env["NODE_COMPILE_CACHE"] = previous
+    setup.write_text(yaml.safe_dump(raw))
+    assert invoke(monkeypatch, "--answers", str(answers), "--force") == 0
+    assert yaml.safe_load(setup.read_text())["performer_endpoints"][0]["env"]["NODE_COMPILE_CACHE"] == expected
 
 
 @pytest.mark.asyncio
@@ -382,3 +415,105 @@ def test_keyless_selfhosted_endpoint_is_usable_in_docker_mode(setup: Path, docke
     config = ProjectConfiguration.from_yaml(setup)
     assert config.endpoints[0].auth_env is None
     assert config.performer_endpoints[0].image == PINNED
+
+
+def test_cleanup_removes_tree_without_docker_when_host_can_delete(tmp_path: Path) -> None:
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    (directory / "config.yaml").write_text("test")
+    runner = MagicMock(side_effect=AssertionError("Docker is unnecessary"))
+    smoke_docker_setup.cleanup_directory(directory, CLEANUP_IMAGE, runner=runner)
+    assert not directory.exists()
+
+
+def test_cleanup_recovers_container_owned_files_without_following_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    directory = tmp_path / "smoke with spaces"
+    cache = directory / "data/coordinare/workspaces/node-compile-cache/v22"
+    cache.mkdir(parents=True)
+    (cache / "76499fec").write_text("cache")
+    outside = tmp_path / "keep"
+    outside.mkdir()
+    (outside / "important").write_text("keep")
+    (directory / "link").symlink_to(outside, target_is_directory=True)
+    rmtree = shutil.rmtree
+
+    def host_cleanup(path: Path) -> None:
+        if cache.exists():
+            raise PermissionError(13, "denied", str(cache))
+        rmtree(path)
+
+    monkeypatch.setattr(smoke_docker_setup.shutil, "rmtree", host_cleanup)
+
+    def runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        assert command[:3] == ["docker", "run", "--rm"]
+        assert command[command.index("--user") + 1] == "0:0"
+        assert "--pull=never" in command and "--network=none" in command
+        assert command[command.index("--entrypoint") + 1] == "python"
+        assert command[command.index("-v") + 1] == f"{directory}:/smoke-cleanup:rw"
+        assert command[command.index("-c") - 1] == CLEANUP_PINNED
+        assert 0 < timeout <= 30
+        # Execute the actual recovery program locally, substituting the bind mount.
+        result = subprocess.run(
+            [sys.executable, "-c", command[-1].replace("/smoke-cleanup", str(directory))],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not list(directory.iterdir())
+        return result
+
+    smoke_docker_setup.cleanup_directory(directory, CLEANUP_PINNED, runner=runner)
+    assert not directory.exists()
+    assert (outside / "important").read_text() == "keep"
+
+
+@pytest.mark.parametrize("failure", [
+    subprocess.CompletedProcess([], 1, "", "permission denied"),
+    FileNotFoundError("docker"),
+    subprocess.TimeoutExpired("docker", 30),
+])
+def test_cleanup_reports_leftovers_when_recovery_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure: object) -> None:
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    cache = directory / "node-compile-cache"
+    cache.mkdir()
+    monkeypatch.setattr(smoke_docker_setup.shutil, "rmtree", MagicMock(side_effect=PermissionError(13, "denied", str(cache))))
+    runner = MagicMock(side_effect=failure) if isinstance(failure, Exception) else MagicMock(return_value=failure)
+    smoke_docker_setup.cleanup_directory(directory, CLEANUP_IMAGE, runner=runner)
+    output = capsys.readouterr().err
+    assert "WARNING" in output and str(directory) in output and "node-compile-cache" in output
+    assert cache.exists()
+
+
+@pytest.mark.parametrize("arguments,image", [
+    (["--local-image", "coordinare-setup:base"], "coordinare-setup:base"),
+    (["2026.10.145", "base"], "ghcr.io/vividynamics/coordinare-performer-base:2026.10.145"),
+    (["2026.10.145", "full"], CLEANUP_IMAGE),
+])
+@pytest.mark.parametrize("fails", [False, True])
+def test_main_cleanup_preserves_smoke_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], arguments: list[str], image: str, fails: bool) -> None:
+    directory = tmp_path / "smoke"
+    directory.mkdir()
+    monkeypatch.setattr(smoke_docker_setup.tempfile, "mkdtemp", lambda **kwargs: str(directory))
+    monkeypatch.setattr(smoke_docker_setup.shutil, "rmtree", MagicMock(side_effect=PermissionError(13, "denied", str(directory))))
+    commands = []
+
+    def runner(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "cleanup failed")
+
+    async def smoke_with_fakes(args: list[str], path: Path) -> str:
+        assert args == arguments and path == directory
+        if fails:
+            raise RuntimeError("smoke failed")
+        return CLEANUP_PINNED
+
+    monkeypatch.setattr(smoke_docker_setup, "smoke_with_fakes", smoke_with_fakes)
+    monkeypatch.setattr(smoke_docker_setup.docker_setup, "run_docker", runner)
+    if fails:
+        with pytest.raises(RuntimeError, match="smoke failed"):
+            smoke_docker_setup.main(arguments)
+    else:
+        smoke_docker_setup.main(arguments)
+    assert len(commands) == 1
+    assert commands[0][commands[0].index("-c") - 1] == (image if fails else CLEANUP_PINNED)
+    assert str(directory) in capsys.readouterr().err
