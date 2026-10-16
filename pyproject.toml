@@ -80,9 +80,10 @@ packages = ["src/coordinare"]
 path = "src/coordinare/_version.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["/src/coordinare", "/pyproject.toml", "/README.md", "/LICENSE", "/NOTICE", "/config.example*.yaml"]
+include = ["/src/coordinare", "/pyproject.toml", "/README.md", "/LICENSE", "/NOTICE", "/config.example*.yaml", "/config.minimal.yaml"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"config.minimal.yaml" = "coordinare/data/config.minimal.yaml"
 "config.example.yaml" = "coordinare/data/config.example.yaml"
 "config.example.anthropic.yaml" = "coordinare/data/config.example.anthropic.yaml"
 "config.example.claude_code.yaml" = "coordinare/data/config.example.claude_code.yaml"

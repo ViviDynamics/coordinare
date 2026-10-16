@@ -1,8 +1,10 @@
-"""Config file discovery: 4-path search order for coordinare config files (008)."""
 from __future__ import annotations
 
+# Config discovery with checkout precedence and an XDG user fallback.
 import os
 from pathlib import Path
+
+from coordinare.user_config import user_config_directory
 
 __all__ = [
     "ConfigDiscoveryError",
@@ -15,14 +17,15 @@ class ConfigDiscoveryError(Exception):
 
 
 def discover_config_path(explicit: Path | None) -> Path | None:
-    """Return the resolved config file path using the 4-path priority order.
+    """Return the resolved config file path using the priority order.
 
     Priority:
-    1. explicit  (from --config flag) — must exist and be a file
-    2. COORDINARE_CONFIG_PATH env var  — must exist and be a file
-    3. ./config.yaml                  — current working directory
-    4. ~/.coordinare/config.yaml       — user home directory
-    5. None                           — no file found; env-vars-only startup
+    1. explicit (from --config flag), must exist and be a file
+    2. COORDINARE_CONFIG_PATH env var, must exist and be a file
+    3. ./config.yaml in the current working directory
+    4. $XDG_CONFIG_HOME/coordinare/config.yaml (default ~/.config/coordinare)
+    5. ~/.coordinare/config.yaml, the legacy user location
+    6. None, no file found; env-vars-only startup
 
     Raises ConfigDiscoveryError if an explicitly specified path (explicit arg
     or COORDINARE_CONFIG_PATH env var) does not exist or is a directory.
@@ -55,7 +58,11 @@ def discover_config_path(explicit: Path | None) -> Path | None:
     if cwd_path.is_file():
         return cwd_path.resolve()
 
-    # 4. User home directory
+    user_path = user_config_directory() / "config.yaml"
+    if user_path.is_file():
+        return user_path.resolve()
+
+    # Legacy user home directory
     home_path = Path.home() / ".coordinare" / "config.yaml"
     if home_path.is_file():
         return home_path.resolve()
