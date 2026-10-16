@@ -22,6 +22,8 @@ from coordinare.init_files import (
     write_setup,
 )
 from coordinare.launch_preflight import run_preflight
+from coordinare.service_cli import install_service
+from coordinare.service_manager import ServiceError
 from coordinare.services.config_secret_policy import persistent_secret_problem
 from coordinare.user_config import (
     ENV_FILENAME,
@@ -41,7 +43,9 @@ def add_init_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     parser.add_argument("--config-dir", type=Path, help="Output directory (default: XDG_CONFIG_HOME/coordinare)")
     parser.add_argument("--non-interactive", action="store_true", help="Never prompt; also automatic without a terminal")
     parser.add_argument("--force", action="store_true", help="Replace existing files and keep private backups")
-    parser.add_argument("--start", action="store_true", help="Start the daemon after successful preflight")
+    startup = parser.add_mutually_exclusive_group()
+    startup.add_argument("--start", action="store_true", help="Start the daemon after successful preflight")
+    startup.add_argument("--start-at-login", action="store_true", help="Install and start the user service after successful preflight")
     for name in ANSWER_NAMES:
         parser.add_argument("--" + name.replace("_", "-"), help="Setup answer; also COORDINARE_INIT_" + name.upper())
 
@@ -86,10 +90,20 @@ def _setup(args: argparse.Namespace) -> int:
     sys.stdout.write(f"Dashboard: http://{config.dashboard_host}:{config.dashboard_port}\n")
     if answers["run_mode"] == "docker":
         sys.stdout.write("Docker uses the containers preset. Image provisioning is handled by the optional Docker setup from issue 197.\n")
-    sys.stdout.write("Optional future service installation: coordinare service (issue 196; not available yet).\n")
-    if report.ok and not args.start and not args.non_interactive and sys.stdin.isatty():
+    if not report.ok:
+        return 1
+    if interactive and not args.start and not args.start_at_login:
+        args.start_at_login = input("Start at login [no]: ").strip().lower() in {"y", "yes"}
+    if args.start_at_login:
+        try:
+            install_service(args.config)
+        except (ServiceError, OSError, ValueError):
+            fail("Setup saved, but service installation failed. Check your login session and run coordinare service install --config " + shlex.quote(str(args.config)))
+        sys.stdout.write("User service installed and started. Manage it with coordinare service.\n")
+        return 0
+    if interactive and not args.start:
         args.start = input("Start Coordinare now [no]: ").strip().lower() in {"y", "yes"}
-    return 0 if report.ok else 1
+    return 0
 
 
 def run_init(args: argparse.Namespace) -> int:
