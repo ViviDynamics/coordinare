@@ -22,6 +22,7 @@ from playwright.sync_api import Page, Route, expect
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+from tests.e2e.conftest import mark_daemon_started
 from tests.e2e.test_143_settings import _WAIT, _open_settings, _tab
 from tests.unit.conftest import REPRESENTATIVE_CONFIG, REPRESENTATIVE_ROUTING
 
@@ -62,7 +63,7 @@ def real_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
     daemon._cycle_active = False
-    daemon.running = True
+    mark_daemon_started(daemon)
     app = create_dashboard_app(DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path)
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))

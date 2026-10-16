@@ -29,7 +29,13 @@ from coordinare.services.conductor_calls import (
     conductor_call,
 )
 from coordinare.services.run_transcript import TranscriptCollector
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 from tests.e2e.test_dashboard_browser import _WAIT_LIVE, _WAIT_SSE, _active_session, _full_snapshot
 
 _WAIT_RUN = 10_000
@@ -94,6 +100,7 @@ def conductor_live(conductor_calls_root: Path) -> Generator[Live, None, None]:
         conductor_calls_root, enabled=True, max_bytes_per_run=10**9, retention_days=0,
     )
     port = _free_port()
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     loop_box: list[asyncio.AbstractEventLoop] = []

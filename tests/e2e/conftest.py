@@ -26,13 +26,19 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def mark_daemon_started(daemon: Any) -> None:
+    """Model completed startup for dashboard fixtures that bypass Daemon.start()."""
+    daemon.running = True
+    daemon.state["startup_complete"] = True
+
+
 def _mock_daemon(phase: str = "idle") -> Any:
     daemon = MagicMock()
     daemon.state = {"phase": phase, "error_count": 0}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
     daemon._cycle_active = False
-    daemon.running = True
+    mark_daemon_started(daemon)
     daemon._webhook_trigger = asyncio.Event()
     return daemon
 
@@ -92,8 +98,9 @@ def live_server_url(
 
     def start(*, starting: bool = False) -> None:
         daemon = _mock_daemon()
-        daemon.state["startup_complete"] = not starting
-        daemon.running = not starting
+        if starting:
+            daemon.state["startup_complete"] = False
+            daemon.running = False
         app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
         config = uvicorn.Config(
             app, host="127.0.0.1", port=port, log_level="error",
@@ -132,10 +139,7 @@ def live_server_url(
         assert not active["thread"].is_alive(), "Live server did not drain"
 
     def ready() -> None:
-        def mark_ready() -> None:
-            active["daemon"].state["startup_complete"] = True
-            active["daemon"].running = True
-        active["loop"].call_soon_threadsafe(mark_ready)
+        active["loop"].call_soon_threadsafe(mark_daemon_started, active["daemon"])
 
     live_server_lifecycle.update(start=start, stop=stop, ready=ready)
     start()

@@ -25,7 +25,13 @@ from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.services import run_viewer
 from coordinare.services.activity_log import EventLink
 from coordinare.services.run_transcript import TranscriptCollector, transcript_path
-from tests.e2e.conftest import _free_port, _mock_daemon, _mock_health, _mock_metrics
+from tests.e2e.conftest import (
+    _free_port,
+    _mock_daemon,
+    _mock_health,
+    _mock_metrics,
+    mark_daemon_started,
+)
 
 _WAIT_SSE = 3_000
 _WAIT_LIVE = 8_000
@@ -166,6 +172,7 @@ def run_server_url(store: DashboardStore, transcript_root: Path) -> Generator[st
         transcript_root, enabled=True, max_bytes_per_run=10**9, retention_days=0,
     )
     port = _free_port()
+    mark_daemon_started(daemon)
     app = create_dashboard_app(store, daemon, _mock_metrics(), _mock_health())
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
     server = uvicorn.Server(config)
