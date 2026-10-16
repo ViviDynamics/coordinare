@@ -3,6 +3,7 @@ var PERSONA_STATS_REFRESH_MS = 30000;
 var PERSONA_STATS_WINDOWS = ['24h', '7d', '30d'];
 var PERSONA_OUTCOMES = {success: 'Success', failure: 'Changes requested', blocked: 'Blocked', system_error: 'System error', cancelled: 'Cancelled', completed_without_verdict: 'Completed without verdict', unknown: 'Not recorded'};
 var _personaStats = {role: '', window: '7d', scope: '', seq: 0, loadedAt: 0, loading: false, body: null};
+var _personaStatDefinitionSeq = 0;
 
 function personaStatsQuery(role, windowName, scope) {
   return '/api/stats?group_by=symphony&agent=' + encodeURIComponent(role) + '&window=' + encodeURIComponent(windowName) + (scope ? '&symphony=' + encodeURIComponent(scope) : '');
@@ -26,7 +27,8 @@ function personaStatValue(body, measures, key, kind, value, description) {
   var text = partialUsage ? 'partial' : personaStatText(value, kind);
   if (body.partial && !partialUsage) text += ' (partial)';
   var tip = personaStatTip(body, key, description);
-  return '<span data-metric="' + esc(key) + '" title="' + esc(tip) + '" aria-label="' + esc(text + '. ' + tip) + '">' + esc(text) + '</span>';
+  var definitionId = 'persona-stat-definition-' + (++_personaStatDefinitionSeq);
+  return '<span data-metric="' + esc(key) + '" title="' + esc(tip) + '" tabindex="0" aria-describedby="' + definitionId + '">' + esc(text) + '</span><span class="persona-stat-definition" id="' + definitionId + '">' + esc(tip) + '</span>';
 }
 
 function personaStatsTiles(body) {
@@ -132,7 +134,7 @@ function personaStatsMount(root) {
   if (!root || root.getAttribute('data-persona-context') !== 'read') return;
   var controls = '<section id="persona-stats" aria-label="Persona statistics"><div class="persona-stats-controls"><label>Window <select id="persona-stats-window">' + PERSONA_STATS_WINDOWS.map(function(name) {
     return '<option value="' + esc(name) + '"' + (name === _personaStats.window ? ' selected' : '') + '>' + esc(name) + '</option>';
-  }).join('') + '</select></label><button type="button" class="action-btn" id="persona-stats-refresh">Refresh</button></div><div id="persona-stats-content" aria-live="polite"></div></section>';
+  }).join('') + '</select></label><button type="button" class="action-btn" id="persona-stats-refresh">Refresh</button></div><div id="persona-stats-content"></div></section>';
   root.insertAdjacentHTML('beforeend', controls);
   var stats = document.getElementById('persona-stats');
   root.onPersonaSelect = function(role) {

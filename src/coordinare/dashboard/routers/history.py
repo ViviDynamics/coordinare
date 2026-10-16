@@ -44,7 +44,7 @@ class HistoryParams(BaseModel):
     symphony: str | None = None
     card: str | None = None
     stage: str | None = None
-    agent: str | None = None
+    agent: str | None = Field(None, max_length=1024)
     outcome: Literal["completed", "failed", "unknown"] | None = None
     # ISO days (UTC). Read as text so a bad day is a 400 with a reason, not a validation dump.
     since: str | None = None

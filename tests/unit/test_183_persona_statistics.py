@@ -189,3 +189,69 @@ async def test_shared_edit_after_latest_run_is_visible_without_inventing_run_ver
     assert body["shared_persona_edits"][0]["scope"] == "shared_history"
     assert "Private instruction text" not in json.dumps(body)
     assert body["persona_versions"][0]["version"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_at", ["2026-10-15T11:00:00+00:00", "2026-10-15T13:00:00+02:00"])
+async def test_shared_edits_exclude_attributed_version_and_timestamp(
+    tmp_path: Path, changed_at: str,
+) -> None:
+    version_run(tmp_path, "a")
+    version_run(tmp_path, "b", symphony="beta")
+    root = tmp_path / "persona-history"
+    root.mkdir()
+    edits = [
+        {"version": 2, "changed_at": changed_at},
+        {"version": 3, "changed_at": changed_at},
+        {"version": 2, "changed_at": NOW.isoformat()},
+    ]
+    (root / "reviewer.jsonl").write_text("".join(json.dumps({
+        "role": "reviewer", "sha256": "abc", "text": "private", "changed_by": "operator",
+        "source": "dashboard", **edit,
+    }) + "\n" for edit in edits))
+    body = await RunStatistics(tmp_path, persona_root=root).query(
+        StatsQuery(agent="reviewer"), visible=VISIBLE, lifecycle={}, boards={}, now=NOW,
+    )
+    assert len(body["persona_edits"]) == 2
+    assert {edit["symphony"] for edit in body["persona_edits"]} == VISIBLE
+    assert [(edit["version"], edit["changed_at"]) for edit in body["shared_persona_edits"]] == [
+        (3, changed_at), (2, NOW.isoformat()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_edit_buckets_use_utc_day_and_keep_edits_without_runs_that_day(tmp_path: Path) -> None:
+    for run, hours, changed_at in [
+        ("today", 1, "2026-10-15T01:00:00+02:00"),
+        ("yesterday", 24, "2026-10-15T01:00:00+02:00"),
+        ("earlier", 48, "2026-10-12T23:00:00+00:00"),
+    ]:
+        version_run(tmp_path, run, hours=hours)
+        path = transcript_path(tmp_path, symphony="alpha", card_id=run, run_id=run)
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records[0]["persona"]["changed_at"] = changed_at
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    body = await RunStatistics(tmp_path).query(
+        StatsQuery(agent="reviewer"), visible=VISIBLE, lifecycle={}, boards={}, now=NOW,
+    )
+    assert [edit["changed_at"] for edit in body["persona_edits"]] == [
+        "2026-10-12T23:00:00+00:00", "2026-10-14T23:00:00+00:00",
+    ]
+    days = {day["day"]: day["persona_edits"] for day in body["daily"]}
+    assert days["2026-10-14"] == [body["persona_edits"][1]]
+    assert days["2026-10-15"] == []
+
+
+def test_history_agent_length_limit(tmp_path: Path) -> None:
+    with client(tmp_path) as api:
+        assert api.get("/api/history/runs", params={"agent": "a" * 1024}).status_code == 200
+        assert api.get("/api/history/runs", params={"agent": "a" * 1025}).status_code == 422
+
+
+@pytest.mark.parametrize("check", ["zero", "scale", "coordinates", "definitions", "refresh"])
+def test_review_regressions_under_node(check: str) -> None:
+    result = subprocess.run(
+        ["node", "tests/js/stats_review_checks.js", check], capture_output=True, text=True,
+        check=False, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

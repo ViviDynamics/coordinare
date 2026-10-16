@@ -257,25 +257,26 @@ def _measures(
 
 
 def _persona_edits(
-    rows: list[dict[str, Any]], day: str, start: datetime | None, end: datetime,
-) -> list[dict[str, Any]]:
-    edits = {}
+    rows: list[dict[str, Any]], start: datetime | None, end: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    """Collect distinct edits by UTC day once for both daily and cohort views."""
+    edits: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
     for row in rows:
         at = instant(row.get("persona_changed_at"))
         if at is None or at > end or (start is not None and at < start):
             continue
-        if at.date().isoformat() != day:
-            continue
-        key = (row["symphony"], row.get("persona_version"), row.get("persona_sha256"))
-        edits[key] = {"symphony": key[0], "version": key[1], "sha256": key[2], "changed_at": at.isoformat()}
-    return list(edits.values())
+        key = (row["symphony"], row.get("persona_version"), row.get("persona_sha256"), at)
+        edits[at.date().isoformat()][key] = {
+            "symphony": key[0], "version": key[1], "sha256": key[2], "changed_at": at.isoformat(),
+        }
+    return {day: list(bucket.values()) for day, bucket in sorted(edits.items())}
 
 
 def _persona_details(
     rows: list[dict[str, Any]], sources: StatsSources, params: StatsQuery, frame: StatsFrame,
-    start: datetime | None,
+    edits: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    table, end = frame.table, frame.now
+    table = frame.table
     versions: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         versions[row["symphony"], row.get("persona_version"), row.get("persona_sha256")].append(row)
@@ -299,8 +300,7 @@ def _persona_details(
              **_measures(group, sources.usage, table, params.top_n)}
             for key, group in sorted(versions.items(), key=lambda item: str(item[0]))
         ],
-        "persona_edits": [edit for day in sorted({str(row.get("persona_changed_at") or "")[:len("YYYY-MM-DD")] for row in rows})
-                          for edit in _persona_edits(rows, day, start, end)],
+        "persona_edits": [edit for bucket in edits.values() for edit in bucket],
     }
 
 
@@ -345,6 +345,7 @@ def aggregate(
     reasons = sorted(set(sources.reasons))
     if any(event.get("dropped") for events in lifecycle.values() for event in events):
         reasons = sorted({*reasons, "lifecycle_events_dropped"})
+    edits = _persona_edits(selected, start, now) if params.agent else {}
     return {
         "group_by": params.group_by,
         "window": params.window,
@@ -352,11 +353,11 @@ def aggregate(
         "end": now.isoformat(),
         "groups": _group_measures(selected, params, sources.usage, table),
         "totals": _measures(selected, sources.usage, table, params.top_n),
-        **(_persona_details(selected, sources, params, frame, start) if params.agent else {}),
+        **(_persona_details(selected, sources, params, frame, edits) if params.agent else {}),
         "daily": [
             {
                 "day": day,
-                **({"persona_edits": _persona_edits(selected, day, start, now)} if params.agent else {}),
+                **({"persona_edits": edits.get(day, [])} if params.agent else {}),
                 **_measures(rows, sources.usage, table, params.top_n),
                 "groups": _group_measures(rows, params, sources.usage, table),
             }
@@ -439,7 +440,14 @@ class RunStatistics:
         frame = StatsFrame(visible, copy.deepcopy(lifecycle), copy.deepcopy(boards), now, self.table)
         body = await asyncio.to_thread(aggregate, sources, params, frame)
         if params.agent:
-            body["shared_persona_edits"] = await asyncio.to_thread(
+            shared_edits = await asyncio.to_thread(
                 _shared_persona_edits, self.persona_root, params.agent, instant(body["start"]), now,
             )
+            seen = {(edit["version"], instant(edit["changed_at"])) for edit in body["persona_edits"]}
+            body["shared_persona_edits"] = []
+            for edit in shared_edits:
+                key = (edit["version"], instant(edit["changed_at"]))
+                if key not in seen:
+                    body["shared_persona_edits"].append(edit)
+                    seen.add(key)
         return body

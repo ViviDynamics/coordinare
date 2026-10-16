@@ -56,7 +56,7 @@ html = context.personaStatsHtml(body, 'reviewer', 'alpha');
 assert(/data-metric="tokens"[^>]*>partial</.test(html));
 assert(/data-metric="cost"[^>]*>partial</.test(html));
 assert(html.indexOf('(partial)') >= 0);
-var chart = context.statsChart([{label: 'a', value: 1}, {label: 'b', value: null}, {label: 'c', value: 2}], 'Gap', String, [{label: 'edit <bad>', x: 1}]);
+var chart = context.statsChart([{x: 0, label: 'a', value: 1}, {x: 1, label: 'b', value: null}, {x: 2, label: 'c', value: 2}], 'Gap', String, [{label: 'edit <bad>', x: 1}]);
 assert((chart.match(/<path d="M/g) || []).length === 3);
 assert(chart.indexOf('edit &lt;bad&gt;') >= 0);
 assert(fs.statSync(root + 'stats_charts.js').size < 8192);
