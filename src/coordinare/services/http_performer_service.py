@@ -39,6 +39,7 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.docker_executor import DockerExecutor
 from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.services.env_provenance import image_capability_refusal
+from coordinare.services.event_capture import capture_usage_records
 from coordinare.services.run_header import build_run_header
 from coordinare.services.run_log import RunLogBusyError, redact_log_text
 from coordinare.services.run_transcript import (
@@ -1210,6 +1211,7 @@ class HTTPPerformerService:
         self._transcripts.usage.observe(
             writer.run_id, symphony=symphony, card=card_id, stage=writer.stage, records=taken,
         )
+        capture_usage_records(writer.run_id, symphony, card_id, writer.stage, taken)
 
     async def _absorb_transcript(
         self,

@@ -31,7 +31,12 @@ from coordinare.models.review import (
 )
 from coordinare.services import pipeline_budget
 from coordinare.services.board_provider import board_of, move_card_or_warn
-from coordinare.services.card_lifecycle import card_id_of, record_lifecycle, stage_of
+from coordinare.services.card_lifecycle import (
+    CardLifecycleLog,
+    card_id_of,
+    record_lifecycle,
+    stage_of,
+)
 from coordinare.services.closed_pr import CLOSED_PR_REASON_PREFIX, matches_closed_pr_identity
 from coordinare.services.merge_review_gate import (
     GATE_BYPASSED,
@@ -247,6 +252,18 @@ async def _pr_waits_on_external_review(github: Any, facts: PrFacts, condition: s
     )
 
 
+def _record_human_wait_boundary(state: CoordinareState, card_id: str, wait: str | None, reason: str) -> None:
+    log = state.get("card_lifecycle")
+    if not isinstance(log, CardLifecycleLog):
+        return
+    events = log.peek(str(state.get("current_symphony") or ""), card_id)
+    last = next((event for event in reversed(events) if event["kind"] in {"human_review_started", "human_review_ended"}), {})
+    open_wait = last.get("kind") == "human_review_started"
+    if (wait == REVIEW_WAIT_HUMAN) != open_wait:
+        kind = "human_review_started" if wait == REVIEW_WAIT_HUMAN else "human_review_ended"
+        record_lifecycle(state, kind, card_id=card_id, stage=stage_of(state), detail={"reason": reason})
+
+
 def _record_review_wait(
     state: CoordinareState, card_id: str, wait: str | None, *, reason: str, head: str,
 ) -> None:
@@ -266,6 +283,7 @@ def _record_review_wait(
     expired = bool(state.get("review_wait_expired"))
     if wait == REVIEW_WAIT_AUTOMATION and expired:
         wait = REVIEW_WAIT_HUMAN
+    _record_human_wait_boundary(state, card_id, wait, reason)
     if wait == REVIEW_WAIT_AUTOMATION:
         episode_open = state.get("review_wait") == REVIEW_WAIT_AUTOMATION and isinstance(
             state.get("review_wait_since"), float,

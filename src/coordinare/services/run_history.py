@@ -180,9 +180,10 @@ class _Budget:
 
     limit: int
     used: int = 0
+    deadline: float | None = None
 
     def take(self, ceiling: int) -> bool:
-        if self.used >= ceiling:
+        if self.used >= ceiling or (self.deadline is not None and time.monotonic() >= self.deadline):
             return False
         self.used += 1
         return True
@@ -367,6 +368,9 @@ def _walk(root: Path, query: HistoryQuery, budget: _Budget) -> _Walk:
     folders = _card_folders(root, query, budget, folder_ceiling, walk)
     folders.sort(key=lambda folder: folder[:3], reverse=True)
     for _mtime, symphony, card, folder in folders:
+        if budget.deadline is not None and time.monotonic() >= budget.deadline:
+            walk.note(STAT_CAP_REASON)
+            break
         if STAT_CAP_REASON in walk.reasons:
             break
         _card_runs(folder, symphony, card, budget, walk)
@@ -493,6 +497,7 @@ def _row_for(candidate: _Candidate, query: HistoryQuery) -> dict[str, Any] | Non
         "stage_reason": None if stage else summary.get("reason"),
         "decision": (summary.get("conductor") or {}).get("decision"),
         "agent": summary.get("agent"),
+        "persona": (summary.get("persona") or {}).get("name"),
         "model": summary.get("model"),
         "card_title": redact_state_value(card.get("title")),
         "duration_seconds": duration,
@@ -503,6 +508,37 @@ def _row_for(candidate: _Candidate, query: HistoryQuery) -> dict[str, Any] | Non
         "pr_url": tail.pr_url,
         "pr_reason": None if tail.pr_url else NO_PR_REASON,
     }
+
+
+def retained_runs(
+    root: Path, visible: frozenset[str], *, limit: int, deadline: float,
+) -> dict[str, Any]:
+    """A bounded, unpaged source for statistics using the History reader's guards.
+
+    Unlike the interactive listing this reads at most ``limit`` candidates once,
+    and reports every discovery bound. No usage or transcript body is read here.
+    """
+    query = HistoryQuery(filters=HistoryFilter(), visible=visible)
+    budget = _Budget(HISTORY_STAT_MAX, deadline=deadline)
+    walk = _walk(root, query, budget)
+    walk.found.sort(key=lambda candidate: candidate.key, reverse=True)
+    rows = []
+    reasons = list(walk.reasons)
+    if time.monotonic() >= deadline:
+        reasons.append("history_time_budget")
+    for index, candidate in enumerate(walk.found):
+        if index >= limit:
+            reasons.append("run_limit")
+            break
+        if time.monotonic() >= deadline:
+            reasons.append("history_time_budget")
+            break
+        row = _row_for(candidate, query)
+        if row is None:
+            reasons.append("unreadable_run")
+        else:
+            rows.append(row)
+    return {"rows": rows, "partial_reasons": sorted(set(reasons)), "scanned": budget.used}
 
 
 # --------------------------------------------------------------------------- #

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.lib.redaction import redact_state_value
+from coordinare.services.event_store import EventStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -47,6 +48,9 @@ EVENT_KINDS: frozenset[str] = frozenset({
     "human_action",
     "override",
     "merged",
+    "human_review_started",
+    "human_review_ended",
+    "run_outcome",
 })
 #: The event kind that ends a card's history. A later dispatch of the same card id starts a new one.
 TERMINAL_KIND = "merged"
@@ -144,6 +148,7 @@ def _protected_indexes(events: list[EventRecord]) -> set[int]:
     dispatched_stages: set[str | None] = set()
     latest_verdict: dict[str | None, int] = {}
     latest_merge: int | None = None
+    latest_human_wait: int | None = None
     for index, event in enumerate(events):
         kind = event["kind"]
         stage = event.get("stage")
@@ -154,9 +159,13 @@ def _protected_indexes(events: list[EventRecord]) -> set[int]:
             latest_verdict[stage] = index
         elif kind == TERMINAL_KIND:
             latest_merge = index
+        elif kind in {"human_review_started", "human_review_ended"}:
+            latest_human_wait = index
     protected.update(latest_verdict.values())
     if latest_merge is not None:
         protected.add(latest_merge)
+    if latest_human_wait is not None:
+        protected.add(latest_human_wait)
     return protected
 
 
@@ -358,7 +367,17 @@ def record_lifecycle(state: Mapping[str, object], kind: str, card_id: str, **fie
     if not isinstance(log, CardLifecycleLog):
         return False
     symphony = str(state.get("current_symphony") or "")
-    return log.record(symphony, str(card_id), kind, **fields)
+    accepted = log.record(symphony, str(card_id), kind, **fields)
+    store = state.get("event_store")
+    events = log.peek(symphony, str(card_id)) if accepted else []
+    if events and isinstance(store, EventStore):
+        event = events[-1]
+        store.emit({
+            "ts": event["at"], "symphony": symphony, "card_id": str(card_id),
+            "stage": event.get("stage") or "", "kind": "card_lifecycle",
+            "source": "daemon", "message": kind, "data": event,
+        })
+    return accepted
 
 
 __all__ = [

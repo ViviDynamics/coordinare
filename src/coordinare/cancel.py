@@ -8,6 +8,7 @@ import structlog
 
 from coordinare.graph.state import _retire_active_session
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_lifecycle import record_lifecycle
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -168,6 +169,15 @@ async def cancel_active_card(
 
     # Reset state — clear all card-specific and lifecycle fields so the next
     # card starts fresh without stale performer_stage or relay_feedback.
+    if state.get("review_wait") == "human":
+        record_lifecycle(state, "human_review_ended", card_id=card_id,
+                         stage=state.get("performer_stage"), detail={"reason": "operator cancellation"})
+    if session_id and performer_stopped:
+        record_lifecycle(
+            state, "run_outcome", card_id=card_id, stage=state.get("performer_stage"),
+            detail={"run_id": session_id, "outcome": "cancelled", "reason": "operator cancellation"},
+            key=f"outcome:{session_id}:cancelled",
+        )
     lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
     state["phase"] = "idle"
     _retire_active_session(state, trigger="card_cancelled")

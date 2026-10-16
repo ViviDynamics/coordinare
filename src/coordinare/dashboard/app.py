@@ -119,6 +119,11 @@ def create_dashboard_app(
         config_path=config_path,
         assistant_on=_config_assistant_enabled(daemon),
     )
+    _register_routers(app, ctx)
+    return app
+
+
+def _register_routers(app: FastAPI, ctx: DashboardContext) -> None:
     for area in (
         routers.pages,
         routers.bootstrap,
@@ -133,9 +138,9 @@ def create_dashboard_app(
         routers.timeline,
         routers.history,
         routers.events,
+        routers.stats,
     ):
         area.register(app, ctx)
-    return app
 
 
 def check_port_available(host: str, port: int, *, label: str = "server") -> None:

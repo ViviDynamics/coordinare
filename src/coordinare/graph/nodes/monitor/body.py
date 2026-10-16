@@ -4284,10 +4284,12 @@ async def _phase_verdict_record(
         return None
     status = ctx.status if isinstance(ctx.status, dict) else {}
     head = _settled_head(status)
+    run_id = str((state.get("agent_dispatch") or {}).get("session_id") or "")
     record_lifecycle(
         state, "verdict", card_id=str(ctx.card_id or ""), stage=stage,
-        detail={"result": "pass" if passing else "fail", "marker": marker, "head": head[:12]},
-        key=f"{marker}:{head}",
+        detail={"result": "pass" if passing else "fail", "marker": marker, "head": head[:12],
+                **({"run_id": run_id} if run_id else {})},
+        key=f"{run_id}:{marker}:{head}" if run_id else f"{marker}:{head}",
     )
     return None
 
