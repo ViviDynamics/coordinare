@@ -301,6 +301,9 @@ function renderActiveWorkPanels(s) {
 
   var COLUMNS = ['TODO', 'BLOCKED', 'IN_PROGRESS', 'IN_REVIEW'];
   var COLUMN_LABELS = {TODO: 'To Do', BLOCKED: 'Blocked', IN_PROGRESS: 'In Progress', IN_REVIEW: 'In Review'};
+  if (typeof boardColumnLabel === 'function') {
+    COLUMNS.forEach(function(column) { COLUMN_LABELS[column] = boardColumnLabel(column); });
+  }
 
   // Index live sessions by card_id so swimlane cards can show phase/elapsed.
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];

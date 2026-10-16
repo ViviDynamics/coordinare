@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from coordinare.config import CoordinareConfiguration, SymphonyConfig
 from coordinare.env_placeholders import operator_workflow_env
 from coordinare.graph.nodes.check_board import (
-    NON_SLOT_PHASES,
     PASSIVE_PHASES,
     _refresh_current_card_metadata,
     check_board,
@@ -108,6 +107,7 @@ from coordinare.services.merge_review_gate import (
 from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
+    NON_SLOT_PHASES,
     admitted_side_runs,
     configured_hold_seconds,
     configured_review_limit,
@@ -131,6 +131,7 @@ from coordinare.services.reconciliation import (
 )
 from coordinare.services.run_log import RunLogCollector, prune_run_logs
 from coordinare.services.run_transcript import TranscriptCollector, prune_expired
+from coordinare.services.stats_poll import poll_board_observed
 from coordinare.services.symphony_failures import record_cycle_failure, record_cycle_success
 from coordinare.session import _SESSION_FIELDS, CardSession, session_to_state, state_to_session
 from coordinare.state_store import (
@@ -1664,7 +1665,7 @@ async def _preflight_poll_board(
         if provider is None:
             logger.info("multi_session.pre_poll_no_board")
             return
-        board = await provider.poll_board()
+        board = await poll_board_observed(state, provider)
         state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
         clear_deferred_github_operation(state, "poll_board")
         state["last_poll_at"] = datetime.now(UTC)

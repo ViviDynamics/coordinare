@@ -207,6 +207,7 @@ var SCOPE_UNSCOPED_READS = [
   {file: 'app.js', text: '_lastState = JSON.parse(e.data);', why: 'the arrival of each snapshot, from which every scope is built'},
   {file: 'app.js', text: 'afSyncRun(_lastState.activity_run_id);', why: 'the feed run belongs to the daemon, not to a symphony'},
   {file: 'app.js', text: 'renderSymphoniesPage(_lastState)', why: 'the Symphonies page lists every symphony by design'},
+  {file: 'symphonies.js', text: 'renderSymphoniesPage(_lastState)', why: 'refresh the Symphonies list with every identity while its rows hide scoped statistics'},
   {file: 'app.js', text: "var s = typeof _lastState !== 'undefined' ? _lastState : null;", why: 'the feed must know every symphony to tell whose card an item is'},
   {file: 'symphonies.js', text: "var s = typeof _lastState !== 'undefined' ? _lastState : null;", why: 'the switcher lists every symphony to offer its choices'},
   {file: 'symphonies.js', text: "symphonyNames(typeof _lastState !== 'undefined' ? _lastState : null)", why: 'the switcher resolves a choice against every symphony'},
@@ -762,7 +763,7 @@ function symphonyTableRowHtml(sym, choice) {
       (running ? ' <button class="action-btn sym-row-bootstrap-cancel" data-sym="' + esc(sym.name) + '">Cancel</button>' : '') + '</div>'
     : '';
   var inactive = symphonyIsInactive(sym);
-  return '<tr class="symphony-row' + (inactive ? ' symphony-inactive' : '') + '"' + (inactive ? ' data-inactive="true"' : '') + ' data-href="' + esc(href) + '">'
+  return '<tr class="symphony-row' + (inactive ? ' symphony-inactive' : '') + '"' + (inactive ? ' data-inactive="true"' : '') + ' data-href="' + esc(href) + '" data-stats-symphony="' + esc(sym.name) + '">'
     + '<td><a href="' + esc(href) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
     + '<td><span style="color:' + SYMPHONY_STATUS_COLORS[status.tone] + ';font-weight:bold">' + esc(status.label) + '</span>'
     + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(status.reason)) + '</div></td>'
@@ -770,9 +771,10 @@ function symphonyTableRowHtml(sym, choice) {
     + '<td style="color:var(--color-text-muted)">' + (symphonyRepoHtml(sym) || 'No repository') + '</td>'
     + '<td>' + esc(env.label) + '<div class="muted" style="font-size:11px">' + (hidden ? hiddenHtml : esc(env.reason)) + '</div>' +
     (hidden ? '' : symphonyBootstrapHtml(sym.env_bootstrap, sym.name)) + bootBtn + '</td>'
-    + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_active))) + '</td>'
-    + '<td>' + (hidden ? hiddenHtml : esc(symphonyCountText(sym.cards_queued))) + '</td>'
-    + '<td>' + (hidden ? hiddenHtml : usageCostHtml(sym.spend_week)) + '</td>'
+    + '<td data-stats-measure="active" data-stats-definition="Cards with live performer work now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="queued" data-stats-definition="Cards waiting for a performer slot now.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="spend" data-stats-definition="Cost of runs starting in the rolling 7d window.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
+    + '<td data-stats-measure="completed" data-stats-definition="Card merges in the rolling 7d window.">' + (hidden ? hiddenHtml : 'Loading') + '</td>'
     + '<td>' + esc(symphonyCountText(sym.cycle_count)) + '</td>'
     + '<td>' + esc(symphonyCountText(sym.error_count)) + '</td>'
     // The unchecked note can carry the last error, so under a scope it is hidden with the rest.
@@ -883,6 +885,7 @@ function refreshScopedViews() {
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
   else if (location.pathname === '/personas') personaStatsRefresh(false);
+  else if (location.pathname === '/symphonies' || location.pathname.indexOf('/symphonies/') === 0) renderSymphoniesPage(_lastState);
   else if (location.pathname === '/logs') renderLogsPage(currentScopedState());
   // 295: History has no symphony filter of its own, so the header's choice re-scopes it now.
   else if (location.pathname === '/history') renderHistoryPage(scoped);

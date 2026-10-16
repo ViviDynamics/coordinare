@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import sqlite3
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -12,11 +13,22 @@ from coordinare.graph.nodes.monitor.constants import VERDICT_STAGES
 from coordinare.lifecycle import ROLE_TO_STAGE
 from coordinare.services import stats_sources
 from coordinare.services.event_store_query import QUERY_TIMEOUT_SECONDS
-from coordinare.services.persona_history import history_for
-from coordinare.services.persona_service import VALID_ROLES
-from coordinare.services.stats_flow import card_flow, instant, lifecycle_records, percentiles
+from coordinare.services.stats_flow import (
+    card_flow,
+    instant,
+    lifecycle_records,
+)
+from coordinare.services.stats_measures import OUTCOMES, _measures
+from coordinare.services.stats_observability import reliability
+from coordinare.services.stats_persona import (
+    _persona_details,
+    _persona_edits,
+    _recent_runs,
+    _shared_persona_edits,
+)
+from coordinare.services.stats_reliability import read_board_checks, unavailable_board_checks
 from coordinare.services.stats_runtime import persona_runtime
-from coordinare.services.token_usage import PriceTable, UsageCounts, price_totals, usage_summary
+from coordinare.services.token_usage import PriceTable
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,11 +39,8 @@ if TYPE_CHECKING:
 
 CACHE_SECONDS = 30.0
 WINDOW_HOURS = {"24h": 24, "7d": 168, "30d": 720}
-OUTCOMES = ("success", "failure", "completed_without_verdict", "blocked", "system_error", "cancelled", "unknown")
 OUTCOME_MAP = {"completed": "completed_without_verdict", "failed": "system_error"}
 DIMENSIONS = ("symphony", "stage", "agent", "model", "backend", "outcome")
-RECENT_RUN_LIMIT = 10
-MAX_REASON_CHARS = 300
 MILLISECONDS_PER_SECOND = 1000
 DEFINITIONS = {
     "window": "Run start in [start, end]; all usage of those runs. Daily series uses UTC run start day.",
@@ -55,6 +64,11 @@ DEFINITIONS = {
     "recent_runs": "Newest ten retained runs in the same filtered start cohort, with the same accounting and outcome rules as totals.",
     "cost_precision": "usd is rounded to microdollars for display. Sum Decimal(usd_exact) for exact reconciliation across groups; partial_usd_exact contains known costs.",
     "card_flow": "Lifecycle observations per symphony, independent of run dimension filters. Merge time selects completed cards and cycles.",
+    "daily_completed": "UTC daily merge events, using the same merge time cohort as cards_completed.",
+    "recent_completed": "Last 10 recorded card merges in the selected window, newest first; reopened cards can appear more than once.",
+    "cost_per_completed_card_usd": "Run start cohort cost divided by merge cohort cards_completed. The cohorts may differ. Null with no completed cards or incomplete cost or source coverage.",
+    "symphony_health": "Current symphony identity, state and environment metadata, independent of selected window. Slot occupancy reuses the scheduler rules.",
+    "reliability": "Successful recorded upstream board polls divided by recorded polls in the last N completed UTC hours (24, 168 or 720). The current incomplete hour is excluded. Hourly counters retain the last failure reason per hour. Cache hits, backoff waits and restart-reconcile polls are not counted; legacy checks are not recorded. Recent errors retain their observation timestamps.",
     "cycle_time_seconds": "First dispatch of a card lifecycle to its merge, including dispatches before the window.",
     "human_review_wait_seconds": "Existing human versus automation wait classification. Recorded human intervals end at human_review_ended, human review, redispatch or merge and are clipped to the window. Only positive overlaps contribute seconds and samples. Null without overlapping observations.",
     "revision_rounds_per_pr": "CHANGES_REQUESTED review observations / distinct PRs in lifecycles active in the window, including PRs opened earlier; null with no PR observations.",
@@ -164,8 +178,8 @@ def _prepare(
         stage = _normal_stage(source.get("stage"))
         row = {
             **source,
-            "symphony": source["attributed_symphony"],
             "transcript_symphony": source["symphony"],
+            "symphony": source["attributed_symphony"],
             "stage": stage,
             "agent": source.get("persona"),
             "backend": source.get("agent"),
@@ -198,126 +212,6 @@ def _prepare(
     return runs, unattributed
 
 
-def _measures(
-    rows: list[dict[str, Any]], usage: dict[str, ModelTotals], table: PriceTable, top_n: int,
-) -> dict[str, Any]:
-    outcomes = Counter(row["outcome"] for row in rows)
-    verdicts = Counter(row["verdict"] for row in rows if row["verdict"] is not None)
-    verdict_runs = sum(verdicts.values())
-    resolved = sum(row["resolved_pair"] for row in rows)
-    totals: ModelTotals = {}
-    missing = 0
-    for row in rows:
-        run_usage = usage.get(row["run"])
-        if not run_usage:
-            missing += 1
-        for model, counts in (run_usage or {}).items():
-            totals[model] = totals.get(model, UsageCounts()) + counts
-    summary = usage_summary(totals, table)
-    priced = price_totals(totals, table)
-    summary["cost"]["usd_exact"] = str(priced.cost_usd) if priced.cost_usd is not None else None
-    summary["cost"]["partial_usd_exact"] = str(priced.partial_usd)
-    if missing:
-        summary["cost"]["usd"] = None
-        summary["cost"]["usd_exact"] = None
-        summary["cost"]["unknown_reason"] = "Some runs have no complete usage records"
-    reasons = Counter(
-        str(row.get("reason") or row["outcome"])[:MAX_REASON_CHARS]
-        for row in rows
-        if row["outcome"] not in {"success", "completed_without_verdict", "unknown"}
-    )
-    cards = {(row["symphony"], row["card"]) for row in rows}
-    return {
-        "runs": len(rows),
-        "outcomes": {outcome: outcomes[outcome] for outcome in OUTCOMES},
-        "success_rate": verdicts["success"] / verdict_runs if verdict_runs else None,
-        "verdict_runs": verdict_runs,
-        "first_pass_rate": sum(row["first_pass"] for row in rows) / resolved if resolved else None,
-        "resolved_card_stages": resolved,
-        "runs_per_card": len(rows) / len(cards) if cards else None,
-        "retries": sum(row["retry"] for row in rows),
-        "bounces": sum(row["bounce"] for row in rows),
-        "duration_seconds": percentiles(
-            [row["duration_seconds"] for row in rows if row["duration_seconds"] is not None],
-        ),
-        "last_run_at": max((row["started_at"] for row in rows), default=None),
-        "tokens": summary["tokens"],
-        "cost": summary["cost"],
-        "cost_per_run_usd": (float(priced.cost_usd) / len(rows)
-                             if rows and not missing and priced.cost_usd is not None else None),
-        "pricing": summary["pricing"],
-        "missing_usage_runs": missing,
-        "failure_reasons": [
-            {"reason": reason, "runs": count}
-            for reason, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0]))[
-                :top_n
-            ]
-        ],
-    }
-
-
-def _persona_edits(
-    rows: list[dict[str, Any]], start: datetime | None, end: datetime,
-) -> dict[str, list[dict[str, Any]]]:
-    """Collect distinct edits by UTC day once for both daily and cohort views."""
-    edits: dict[str, dict[tuple[Any, ...], dict[str, Any]]] = defaultdict(dict)
-    for row in rows:
-        at = instant(row.get("persona_changed_at"))
-        if at is None or at > end or (start is not None and at < start):
-            continue
-        key = (row["symphony"], row.get("persona_version"), row.get("persona_sha256"), at)
-        edits[at.date().isoformat()][key] = {
-            "symphony": key[0], "version": key[1], "sha256": key[2], "changed_at": at.isoformat(),
-        }
-    return {day: list(bucket.values()) for day, bucket in sorted(edits.items())}
-
-
-def _persona_details(
-    rows: list[dict[str, Any]], sources: StatsSources, params: StatsQuery, frame: StatsFrame,
-    edits: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    table = frame.table
-    versions: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        versions[row["symphony"], row.get("persona_version"), row.get("persona_sha256")].append(row)
-    recent = []
-    for row in sorted(rows, key=lambda row: (row["started_at"], row["run"]), reverse=True)[:RECENT_RUN_LIMIT]:
-        measures = _measures([row], sources.usage, table, params.top_n)
-        recent.append({
-            **{key: row.get(key) for key in (
-                "run", "card", "card_title", "agent", "stage", "outcome", "started_at", "duration_seconds",
-            )},
-            # Conductor transcripts live under their own folder, while the display scope is their owner.
-            "symphony": row.get("transcript_symphony", row["symphony"]),
-            "attributed_symphony": row["symphony"],
-            "cost": measures["cost"], "tokens": measures["tokens"],
-            "missing_usage_runs": measures["missing_usage_runs"],
-        })
-    return {
-        "recent_runs": recent,
-        "persona_versions": [
-            {"symphony": key[0], "version": key[1], "sha256": key[2],
-             **_measures(group, sources.usage, table, params.top_n)}
-            for key, group in sorted(versions.items(), key=lambda item: str(item[0]))
-        ],
-        "persona_edits": [edit for bucket in edits.values() for edit in bucket],
-    }
-
-
-def _shared_persona_edits(
-    root: Path | None, role: str, start: datetime | None, end: datetime,
-) -> list[dict[str, Any]]:
-    """Metadata only; the shared version store does not record symphony attribution."""
-    if root is None or role not in VALID_ROLES:
-        return []
-    return [
-        {"version": version.version, "sha256": version.sha256, "changed_at": version.changed_at,
-         "scope": "shared_history"}
-        for version in history_for(root).versions(role)
-        if (at := instant(version.changed_at)) is not None and at <= end and (start is None or at >= start)
-    ]
-
-
 def aggregate(
     sources: StatsSources,
     params: StatsQuery,
@@ -346,12 +240,22 @@ def aggregate(
     if any(event.get("dropped") for events in lifecycle.values() for event in events):
         reasons = sorted({*reasons, "lifecycle_events_dropped"})
     edits = _persona_edits(selected, start, now) if params.agent else {}
+    flow = card_flow(lifecycle, frame.boards, scope, start, now)
+    symphony_groups = []
+    for name, block in flow.items():
+        measures = _measures([row for row in selected if row["symphony"] == name], sources.usage, table, params.top_n)
+        symphony_groups.append({"key": name, **measures})
+        cost = measures["cost"]["usd"]
+        block["cost_per_completed_card_usd"] = (
+            cost / block["cards_completed"]
+            if not reasons and cost is not None and block["cards_completed"] else None
+        )
     return {
         "group_by": params.group_by,
         "window": params.window,
         "start": start.isoformat() if start is not None else None,
         "end": now.isoformat(),
-        "groups": _group_measures(selected, params, sources.usage, table),
+        "groups": symphony_groups if params.group_by == "symphony" and not params.agent else _group_measures(selected, params, sources.usage, table),
         "totals": _measures(selected, sources.usage, table, params.top_n),
         **(_persona_details(selected, sources, params, frame, edits) if params.agent else {}),
         "daily": [
@@ -363,7 +267,9 @@ def aggregate(
             }
             for day, rows in sorted(daily.items())
         ],
-        "card_flow": card_flow(lifecycle, frame.boards, scope, start, now),
+        "card_flow": flow,
+        "reliability": reliability(sources.events, scope, start, now),
+        "recent_runs": _recent_runs(selected, sources, params, table),
         "partial": bool(reasons),
         "partial_reasons": reasons,
         "coverage": {
@@ -408,6 +314,7 @@ class RunStatistics:
         self._sources: StatsSources | None = None
         self._visible: frozenset[str] = frozenset()
         self._expires = 0.0
+        self._board_checks: dict[str, tuple[dict[str, Any], set[str]]] = {}
 
     persona_runtime = staticmethod(persona_runtime)
 
@@ -434,11 +341,28 @@ class RunStatistics:
                     stats_sources.load_sources, self.root, self.event_path, visible, now.isoformat(),
                     copy.deepcopy(lifecycle),
                 )
+                self._board_checks.clear()
                 self._visible = visible
                 self._expires = time.monotonic() + CACHE_SECONDS
             sources = self._sources
+            if self.event_path is not None and params.window not in self._board_checks:
+                start = now - timedelta(hours=WINDOW_HOURS[params.window]) if params.window != "all" else None
+                try:
+                    self._board_checks[params.window] = await asyncio.to_thread(
+                        read_board_checks, self.event_path, visible,
+                        start.isoformat() if start is not None else None, now.isoformat(),
+                    )
+                except (OSError, sqlite3.Error) as exc:
+                    self._board_checks[params.window] = (
+                        {name: unavailable_board_checks("board_check_read_unavailable: " + type(exc).__name__) for name in visible},
+                        set(visible),
+                    )
+            board_checks = self._board_checks.get(params.window)
+        scope = frozenset({params.symphony}) if params.symphony is not None else visible
         frame = StatsFrame(visible, copy.deepcopy(lifecycle), copy.deepcopy(boards), now, self.table)
         body = await asyncio.to_thread(aggregate, sources, params, frame)
+        if board_checks is not None:
+            body["reliability"] = {name: board_checks[0][name] for name in sorted(scope)}
         if params.agent:
             shared_edits = await asyncio.to_thread(
                 _shared_persona_edits, self.persona_root, params.agent, instant(body["start"]), now,

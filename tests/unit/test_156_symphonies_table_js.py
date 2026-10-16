@@ -76,11 +76,14 @@ def test_the_table_placeholders_are_words_not_dashes() -> None:
     assert "Not known" in _SYMPHONIES
 
 
-def test_the_table_reads_spend_and_env_from_the_row_not_the_whole_snapshot() -> None:
+def test_the_table_gets_headlines_from_stats_api_and_env_from_the_row() -> None:
     row_function = re.search(r"function symphonyTableRowHtml\(.*?\n\}\n", _SYMPHONIES, re.DOTALL)
     assert row_function is not None
     body = row_function.group(0)
-    assert "sym.spend_week" in body
+    assert 'data-stats-measure="spend"' in body
+    assert 'data-stats-measure="completed"' in body
+    assert "sym.spend_week" not in body
+    assert "loadSymphonyListStats(el, choice, listRevision)" in _APP
     assert "token_usage" not in body
     assert "by_symphony" not in body
 

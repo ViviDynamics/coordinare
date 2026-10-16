@@ -171,7 +171,8 @@ async def test_statistics_resolves_services_after_startup(monkeypatch: pytest.Mo
     monkeypatch.setattr(stats, "RunStatistics", factory)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8090") as client:
         for _ in range(2):
-            assert (await client.get("/api/stats")).json() == {"late_bound": True}
+            # 184 adds live symphony health beside the query result; the query is what late-binds.
+            assert (await client.get("/api/stats")).json()["late_bound"] is True
     factory.assert_called_once_with(tmp_path, event_path=None)
 
 

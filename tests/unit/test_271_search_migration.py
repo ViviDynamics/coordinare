@@ -119,6 +119,11 @@ def test_271_filter_migration_resumes_one_committed_index_per_slice(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_271_writer_commits_between_index_slices(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "events.db", enable_fts=False)
+    # A populated legacy store needs online index builds. Empty stores finish
+    # them at initialization so their first readers never race a schema lock.
+    with sqlite3.connect(store.path) as db:
+        event_store_db.create_schema(db, enable_fts=False)
+        db.execute("INSERT INTO events(ts,message) VALUES (?, 'legacy')", (STAMP,))
     loop = asyncio.get_running_loop()
     finished = asyncio.Event()
     counts: list[int] = []
@@ -140,7 +145,7 @@ async def test_271_writer_commits_between_index_slices(tmp_path: Path) -> None:
         try:
             await asyncio.wait_for(finished.wait(), WAIT_SECONDS)
             await asyncio.wait_for(store.flush(), WAIT_SECONDS)
-            assert counts == list(range(1, FILTER_INDEX_COUNT + 2))
+            assert counts == list(range(2, FILTER_INDEX_COUNT + 3))
             assert store.health()["dropped"] == 0
         finally:
             await store.close()
