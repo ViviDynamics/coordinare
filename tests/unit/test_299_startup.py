@@ -437,3 +437,52 @@ async def test_sigterm_long_cycle_saves_final_snapshot_outside_runtime(monkeypat
         if not runtime.done():
             runtime.cancel()
         await asyncio.gather(runtime, return_exceptions=True)
+
+
+def _bound_dashboard_port() -> tuple[Any, int]:
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    return listener, listener.getsockname()[1]
+
+
+@pytest.mark.asyncio
+async def test_the_daemon_preflight_accepts_its_own_bound_dashboard_port(monkeypatch) -> None:
+    """299 regression: the dashboard binds before the runtime preflight, which must not see it as taken.
+
+    Every launch crash-looped (exit 1, "dashboard port" FAIL) until the daemon's own preflight
+    stopped probing the port it had already bound.
+    """
+    from coordinare import launch_preflight
+
+    monkeypatch.setattr(launch_preflight, "check_directories", lambda config: [])
+    monkeypatch.setattr(launch_preflight, "run_checks", lambda config: launch_preflight.DoctorReport())
+    monkeypatch.setattr(launch_preflight, "check_harnesses", AsyncMock(return_value=[]))
+    monkeypatch.setattr(launch_preflight, "check_native_models", lambda config: [])
+    monkeypatch.setattr(launch_preflight, "check_github", AsyncMock(return_value=[]))
+    listener, port = _bound_dashboard_port()
+    try:
+        config = ProjectConfiguration(
+            github_org="example", human_reviewers=["operator"], github_token=TOKEN,
+            dashboard_host="127.0.0.1", dashboard_port=port,
+        )
+        doctor = await launch_preflight.run_preflight(config)
+        assert "dashboard port" in [result.name for result in doctor.failed], "precondition: the port is taken"
+        daemon = await launch_preflight.run_preflight(config, probe_ports=False)
+        assert "dashboard port" not in [result.name for result in daemon.results]
+    finally:
+        listener.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_daemon_skips_the_port_probe(monkeypatch) -> None:
+    preflight = AsyncMock(return_value=MagicMock(ok=False, results=[], failed=[], render=lambda: ""))
+    monkeypatch.setattr(app_main, "run_preflight", preflight)
+    monkeypatch.setattr(app_main, "load_unexpanded_config", MagicMock(return_value={}))
+    config = ProjectConfiguration(github_org="example", human_reviewers=["operator"], github_token=TOKEN)
+    daemon = _daemon()
+    with pytest.raises(app_main.RuntimeExecutionError):
+        await app_main._initialize_daemon(config, None, None, daemon, {})
+    assert preflight.await_args.kwargs.get("probe_ports") is False

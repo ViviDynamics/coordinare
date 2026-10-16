@@ -1490,7 +1490,10 @@ async def _initialize_daemon(
     circuit_breakers: dict[str, CircuitBreaker],
 ) -> None:
     unexpanded = load_unexpanded_config(config_path)
-    report = await run_preflight(config, coordinare_config, unexpanded if config_path is not None else None)
+    # 299: the dashboard is already bound to its port here; the ports were checked before binding.
+    report = await run_preflight(
+        config, coordinare_config, unexpanded if config_path is not None else None, probe_ports=False,
+    )
     print(report.render())
     for result in report.results:
         if result.status is Status.WARN:

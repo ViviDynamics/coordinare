@@ -583,8 +583,13 @@ async def run_preflight(
     *,
     explicit: bool = False,
     probe_containers: bool = True,
+    probe_ports: bool = True,
 ) -> DoctorReport:
-    """Shared startup and doctor gate, also callable by init before writing a config."""
+    """Shared startup and doctor gate, also callable by init before writing a config.
+
+    The running daemon passes ``probe_ports=False``: it checks its ports before binding them, and
+    by the time its preflight runs (299) the dashboard is already serving on its own port.
+    """
     report = DoctorReport()
     try:
         validate_start_time(config, coordinare_config, raw)
@@ -613,7 +618,8 @@ async def run_preflight(
         await asyncio.to_thread(check_directories, config),
         strict=explicit or config.preset is not None,
     ))
-    report.results.append(check_port(config))
+    if probe_ports:
+        report.results.append(check_port(config))
     for effective in configs:
         probes = effective if explicit else _active_model_config(effective)
         strict = explicit or effective.preset is not None
