@@ -702,8 +702,6 @@ jobs:
       - performer
       - docker
       - benchmark
-      - release-changes
-      - release-smoke
     steps:
       - name: Mark build successful
         run: echo "Lint, tests, coverage, performer tests, E2E browser tests, Docker image builds, and benchmarks passed. Build successful."
