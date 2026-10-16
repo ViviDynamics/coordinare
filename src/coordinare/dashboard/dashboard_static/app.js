@@ -416,6 +416,8 @@ function renderSymphoniesPage(s) {
       _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : 'None');
       var lastPollCell = rows[4] ? rows[4].querySelector('td') : null;
       if (lastPollCell) lastPollCell.innerHTML = sym.last_poll_at ? timeHtml(sym.last_poll_at) : 'None';
+      var personas = el.querySelector('[data-persona-context]');
+      if (personas) personaSelect(personas, personaHashRole('symphony-read'), false);
       return;
     }
     loadSymphonyDetail(detail, el);
@@ -485,7 +487,6 @@ async function loadSymphonyDetail(name, el) {
   var res, data;
   try {
     res = await fetch('/api/symphonies/' + encodeURIComponent(name));
-    _symCfgHash = res.headers.get('ETag');
     data = await res.json();
   } catch(e) {
     el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">Failed to load symphony</div>';
@@ -496,8 +497,6 @@ async function loadSymphonyDetail(name, el) {
     return;
   }
   var st = data.state || {};
-  var ov = data.overrides || {};
-  var personas = data.personas || {};
   var statusRows = [
     ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : 'None'],
     ['Cycles', st.cycle_count != null ? st.cycle_count : 'None'],
@@ -582,7 +581,8 @@ async function loadSymphonyDetail(name, el) {
     + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
     + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
     + ecSection
-    + symFormHtml(name, data);
+    + symSummaryHtml(name, data);
+  loadSymphonyPersonas(name, data, el);
   var ecBtn = document.getElementById('sym-env-bootstrap-btn');
   if (ecBtn) {
     ecBtn.addEventListener('click', async function() {
@@ -635,15 +635,7 @@ async function loadSymphonyDetail(name, el) {
       }
     });
   }
-  _symBase = {overrides: data.overrides || {}, personas: data.personas || {}};
   _symShown = name;
-  // A reload after a moment must not draw this form over another page the reader has since entered.
-  _cfgSymReload = function() { if (_symShown === name) loadSymphonyDetail(name, el); };
-  var form = document.getElementById('sym-config-form');
-  cfgWireControls(form, symRunAction);
-  cfgRebaseline(form);
-  cfgSyncOffTargets(form);
-  cfgReapplyPending();
 }
 
 // 221: the symphony's Configuration form uses the Settings editors' safeguards: the review before a
@@ -651,7 +643,7 @@ async function loadSymphonyDetail(name, el) {
 // Its controls carry data-field like a Settings control, so the shared functions read and restore them.
 // The state it reads is the symphony GET the page loaded, never a copy it keeps elsewhere.
 var _symBase = {overrides: {}, personas: {}};
-// 221: the symphony whose form is drawn, so a page entered again draws it fresh.
+// The symphony whose status summary is drawn, refreshed on a new visit.
 var _symShown = null;
 
 function symOverrideFields() {
@@ -663,10 +655,6 @@ function symOverrideFields() {
     {key: 'max_closed_pr_attempts_per_issue', label: 'Max closed PRs per issue', type: 'number', placeholder: '3'},
     {key: 'assignee_filter', label: 'Assignee filter (GitHub login)', type: 'text', placeholder: '(no filter)'},
   ];
-}
-
-function symPersonaRoles() {
-  return ['assessor', 'architect', 'implementer', 'reviewer', 'security', 'qa', 'tech_writer', 'closer'];
 }
 
 // 221: one override. A number that a No cap box switches off takes its value from the box, so the box
@@ -713,15 +701,6 @@ function symSecretRow(secret) {
     + '</div></div>';
 }
 
-function symPersonaRow(role, instructions) {
-  return '<div style="margin-bottom:10px">'
-    + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(role) + '</label>'
-    + '<textarea data-persona-role="' + esc(role) + '" data-field="' + esc('personas.' + role) + '"'
-    + ' data-type="text" data-label="' + esc('Persona ' + role) + '" rows="3" placeholder="(inherits global default)"'
-    + ' style="' + CFG_INPUT + ';font-family:monospace;resize:vertical">' + esc(instructions) + '</textarea>'
-    + '</div>';
-}
-
 function symSpecFileChip(file) {
   return '<span data-spec-file="' + esc(file) + '" style="display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-elevated);'
     + 'border:1px solid var(--color-border);border-radius:12px;padding:2px 8px;font-size:11px;margin:2px">'
@@ -732,22 +711,18 @@ function symSpecFileChip(file) {
 }
 
 // 221: the Configuration card. Every control it shows is a data-field the shared functions read.
-function symFormHtml(name, data) {
+function symFormHtml(name, data, catalog) {
   var ov = data.overrides || {};
-  var personas = data.personas || {};
   var specFiles = data.env_spec_files || ['README.md'];
   var secretKeys = data.secret_overrides || [];
   var enabledChecked = data.enabled !== false ? ' checked' : '';
   var overrideRows = symOverrideFields().map(function(f) { return symOverrideRow(f, ov); }).join('');
   var secretRows = secretKeys.map(function(secret) { return symSecretRow(secret); }).join('');
-  var personaRows = symPersonaRoles().map(function(role) {
-    var instructions = personas[role] && personas[role].instructions ? personas[role].instructions : '';
-    return symPersonaRow(role, instructions);
-  }).join('');
   var chips = specFiles.map(function(file) { return symSpecFileChip(file); }).join('');
   return '<div id="sym-config-form" data-item data-scope="' + esc('symphony:' + name) + '" data-symphony="' + esc(name)
     + '" style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
-    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:12px;font-size:13px">Configuration</div>'
+    + '<p><a href="/symphonies" data-cfg-action="navigate" data-cfg-href="/symphonies">All symphonies</a></p>'
+    + '<h3>' + esc(name) + ' settings <span data-sym-dirty hidden>Unsaved</span></h3>'
     + '<div style="margin-bottom:10px">'
     + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-text-primary);cursor:pointer">'
     + '<input id="sym-enabled" type="checkbox" data-field="enabled" data-type="bool" data-label="Enabled"' + enabledChecked + '> Enabled</label>'
@@ -755,8 +730,7 @@ function symFormHtml(name, data) {
     + overrideRows
     + secretRows
     + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
-    + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
-    + personaRows
+    + symPersonasHtml(name, data.personas || {}, catalog, true)
     + '</div>'
     + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
     + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Env spec files (any change triggers a bootstrap)</div>'
@@ -774,15 +748,6 @@ function symFormHtml(name, data) {
     + '<span id="sym-save-msg" data-status class="action-msg"></span>'
     + '</div>'
     + '</div>';
-}
-
-function symRunAction(el, event) {
-  var action = el.getAttribute('data-cfg-action');
-  if (action === 'save-symphony') symSave(el);
-  else if (action === 'delete-symphony') symDelete(el);
-  else if (action === 'add-spec-file') symAddSpecFile(el);
-  else if (action === 'remove-spec-file') symRemoveSpecFile(el);
-  else cfgRunAction(el, event);
 }
 
 // 221: the body a symphony save sends, built from the same entries the review shows. It starts from the
@@ -807,8 +772,12 @@ function symRequestBody(entries, base) {
     if (key === 'env_spec_files') { if (Array.isArray(e.after) && e.after.length) specFiles = e.after; return; }
     if (key.indexOf('personas.') === 0) {
       var role = key.slice('personas.'.length);
-      var text = String(e.after === null || e.after === undefined ? '' : e.after).trim();
-      if (text) personas[role] = {instructions: text};
+      var text = String(e.after === null || e.after === undefined ? '' : e.after);
+      if (text.trim()) {
+        var persona = symCopy(personas[role]);
+        persona.instructions = text;
+        personas[role] = persona;
+      }
       else delete personas[role];
       return;
     }
@@ -846,9 +815,7 @@ function symSave(btn) {
   var body = symRequestBody(entries, _symBase);
   var pending = cfgPendingFor(form, changed);
   cfgShowReview(form, cfgDiffRows(changed), function() {
-    _cfgPending = pending;
-    cfgPut('/api/symphonies/' + encodeURIComponent(name),
-      {store: 'symphony', _method: 'PUT', 'If-Match': _symCfgHash || '', body: body}, form, statusEl, btn);
+    return symValidateAndSave(name, body, pending, form, statusEl, btn);
   });
 }
 
@@ -1517,3 +1484,58 @@ document.addEventListener('keydown', function(e) {
     toggleNavMenu(); document.getElementById('navbar-hamburger').focus();
   }
 });
+
+function symSummaryHtml(name, data) {
+  var overrides = data.overrides || {};
+  var rows = [['Enabled', data.enabled !== false ? 'Yes' : 'No']].concat(symOverrideFields().map(function(field) {
+    var set = Object.prototype.hasOwnProperty.call(overrides, field.key);
+    return [field.label, set ? (overrides[field.key] === null ? 'No cap' : String(overrides[field.key])) : 'Inherits global default'];
+  }));
+  rows.push(['Env spec files', (data.env_spec_files || ['README.md']).join(', ')]);
+  var href = '/config#symphonies/' + encodeURIComponent(name);
+  return '<section class="card" data-sym-summary-view><h3>Settings</h3><dl>' + rows.map(function(row) {
+    return '<dt>' + esc(row[0]) + '</dt><dd>' + esc(row[1]) + '</dd>';
+  }).join('') + '</dl><p><a href="' + esc(href) + '" onclick="navigate(event,this.getAttribute(\'href\'))">Edit settings</a></p>'
+    + '<div data-sym-persona-summary>Loading personas...</div></section>';
+}
+
+function loadSymphonyPersonas(name, data, el) {
+  var target = el.querySelector('[data-sym-persona-summary]');
+  return fetch('/api/personas').then(function(response) {
+    if (!response.ok) throw new Error('Failed to load personas');
+    return response.json();
+  }).then(function(catalog) {
+    if (!target.isConnected) return;
+    target.innerHTML = symPersonasHtml(name, data.personas || {}, catalog, false);
+    personaMount(target.querySelector('[data-persona-context]'));
+  }).catch(function() {
+    if (target.isConnected) target.textContent = 'Failed to load personas. Reload to try again.';
+  });
+}
+
+function symValidateAndSave(name, body, pendingEdits, form, statusEl, btn) {
+  var url = '/api/symphonies/' + encodeURIComponent(name);
+  var version = _symCfgHash;
+  cfgFlash(statusEl, 'Validating...', 'muted');
+  var controller = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = setTimeout(function() { if (controller) controller.abort(); }, CFG_SAVE_TIMEOUT_MS);
+  return fetch(url + '/validate', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body), signal: controller ? controller.signal : undefined}).then(function(response) {
+    return response.json().then(function(result) {
+      clearTimeout(timer);
+      if (!response.ok || !result.valid) {
+        var errors = (result.errors || []).map(function(error) { return error.msg; }).join('; ');
+        cfgFlash(statusEl, 'Not saved: ' + (result.error || errors || 'Validation failed') + '. Nothing was changed.', 'red');
+        cfgLock(form, false);
+        return;
+      }
+      _cfgPending = pendingEdits;
+      return cfgPut('/api/symphonies/' + encodeURIComponent(name),
+        {store: 'symphony', _method: 'PUT', 'If-Match': version || '', body: body}, form, statusEl, btn);
+    });
+  }).catch(function() {
+    clearTimeout(timer);
+    cfgFlash(statusEl, 'Validation could not finish. Nothing was saved. Try again.', 'red');
+    cfgLock(form, false);
+  });
+}

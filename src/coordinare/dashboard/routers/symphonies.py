@@ -390,7 +390,7 @@ def _register_validate_symphony(app: FastAPI, ctx: DashboardContext) -> None:
                 })
             except PydanticValidationError as exc:
                 return JSONResponse(
-                    {"valid": False, "errors": exc.errors()},
+                    {"valid": False, "errors": exc.errors(include_context=False, include_input=False)},
                     status_code=400,
                 )
             except ValueError as exc:

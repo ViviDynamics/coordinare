@@ -27,7 +27,7 @@ check('a cleared number is removed', !('poll_interval_seconds' in body.overrides
 check('No cap sends an explicit null', body.overrides.max_cards_in_review === null, JSON.stringify(body));
 check('an override the form does not show is kept', body.overrides.project_name === 'kept', JSON.stringify(body));
 check('an untyped secret keeps its mask', body.overrides.github_token === CFG_SECRET_MASK, JSON.stringify(body));
-check('a persona is trimmed', body.personas.implementer.instructions === 'do the work', JSON.stringify(body));
+check('persona source stays exact', body.personas.implementer.instructions === '  do the work  ', JSON.stringify(body));
 check('an unchanged persona is kept', body.personas.reviewer.instructions === 'keep me', JSON.stringify(body));
 check('enabled is sent', body.enabled === false, JSON.stringify(body));
 check('an empty spec list sends the default', same(body.env_spec_files, ['README.md']), JSON.stringify(body));
@@ -65,6 +65,7 @@ check('a bodiless failure names its status', cfgSymphonyRefusal(500, {}) === 'Er
 
 // --- the answer to a symphony save ---------------------------------------------------------------
 var calls = {flash: [], conflict: [], navigate: [], rebaseline: 0};
+function cfgRememberSymphony() {}
 function cfgClearErrors() {}
 function cfgFlash(el, text, kind) { calls.flash.push([text, kind]); }
 function cfgRebaseline() { calls.rebaseline += 1; }

@@ -27,6 +27,8 @@ from playwright.sync_api import Dialog, Page, Route, expect
 from coordinare.config import CoordinareConfiguration
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import DashboardStore, create_dashboard_app
+from tests.e2e.test_143_settings import _snapshot as _config_snapshot
+from tests.e2e.test_143_settings import _stub_config
 from tests.e2e.test_dashboard_browser import _full_snapshot
 
 _WAIT = 5_000
@@ -50,13 +52,19 @@ def _stub(page: Page, overrides: dict[str, Any] | None, saved: list[Any], *, put
           put_body: dict[str, Any] | None = None) -> None:
     """Serve the symphony and record every save body. A refused save answers put_status with put_body."""
 
+    _stub_config(page, _config_snapshot(), [])
+    page.route("**/api/personas", lambda route: route.fulfill(
+        json=[{"role": "implementer", "instructions": "Global instructions"}], headers={"ETag": '"v1"'},
+    ))
+    page.route(f"**/api/symphonies/{_NAME}/validate", lambda route: route.fulfill(json={"valid": True}))
+
     def handle(route: Route) -> None:
         if route.request.method == "PUT":
             saved.append(json.loads(route.request.post_data or "{}"))
             if put_status != 200:
                 route.fulfill(status=put_status, content_type="application/json", body=json.dumps(put_body or {}))
                 return
-            route.fulfill(status=200, content_type="application/json", headers={"ETag": '"v2"'},
+            route.fulfill(status=200, content_type="application/json", headers={"ETag": '"v1"'},
                           body=json.dumps(_symphony(saved[-1].get("overrides"))))
             return
         route.fulfill(status=200, content_type="application/json", headers={"ETag": '"v1"'},
@@ -88,7 +96,7 @@ def test_review_shows_old_and_new_then_save_sends_the_reviewed_snapshot(page: Pa
                                                                        store: DashboardStore) -> None:
     saved: list[Any] = []
     _stub(page, {"max_concurrent_cards": 2}, saved)
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("3")
     page.click("#sym-save-btn")
@@ -109,7 +117,7 @@ def test_review_shows_old_and_new_then_save_sends_the_reviewed_snapshot(page: Pa
 def test_editing_after_the_review_opens_is_not_sent(page: Page, live_server_url: str, store: DashboardStore) -> None:
     saved: list[Any] = []
     _stub(page, {"max_concurrent_cards": 2}, saved)
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("3")
     page.click("#sym-save-btn")
@@ -128,7 +136,7 @@ def test_editing_after_the_review_opens_is_not_sent(page: Page, live_server_url:
 def test_keep_editing_unlocks_the_form_and_sends_nothing(page: Page, live_server_url: str, store: DashboardStore) -> None:
     saved: list[Any] = []
     _stub(page, {"max_concurrent_cards": 2}, saved)
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("3")
     page.click("#sym-save-btn")
@@ -144,7 +152,7 @@ def test_a_refused_save_shows_its_reason_in_plain_words(page: Page, live_server_
     saved: list[Any] = []
     refusal = {"error": "Validation failed: Non-loopback dashboard_host requires dashboard_auth_token"}
     _stub(page, {"max_concurrent_cards": 2}, saved, put_status=422, put_body=refusal)
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("3")
     _review_and_confirm(page)
@@ -169,11 +177,11 @@ def test_no_prompt_on_an_untouched_form_or_after_a_save(page: Page, live_server_
     page.on("dialog", on_dialog)
     saved: list[Any] = []
     _stub(page, {"max_concurrent_cards": 2}, saved)
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator("a", has_text="All symphonies").click()
     expect(page).to_have_url(f"{live_server_url}/symphonies", timeout=_WAIT)
-    page.evaluate("() => navigate(null, '/symphonies/demo')")
+    page.evaluate("() => navigate(null, '/config#symphonies/demo')")
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT)
     assert dialogs == [], "an untouched form asks nothing"
 
@@ -196,12 +204,12 @@ def test_an_in_app_link_asks_before_leaving_and_stays_when_declined(page: Page, 
 
     page.on("dialog", decline)
     _stub(page, {"max_concurrent_cards": 2}, [])
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("4")
     page.locator("a", has_text="All symphonies").click()
 
-    expect(page).to_have_url(f"{live_server_url}/symphonies/{_NAME}", timeout=_WAIT)
+    expect(page).to_have_url(f"{live_server_url}/config#symphonies/{_NAME}", timeout=_WAIT)
     expect(page.locator(_OVERRIDE)).to_have_value("4")
     assert asked == ["confirm"]
 
@@ -211,12 +219,12 @@ def test_leaving_with_the_edits_discarded_comes_back_to_the_saved_values(page: P
                                                                         store: DashboardStore) -> None:
     page.on("dialog", lambda dialog: dialog.accept())
     _stub(page, {"max_concurrent_cards": 2}, [])
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     page.locator(_OVERRIDE).fill("4")
     page.locator("a", has_text="All symphonies").click()
     expect(page).to_have_url(f"{live_server_url}/symphonies", timeout=_WAIT)
-    page.evaluate("() => navigate(null, '/symphonies/demo')")
+    page.evaluate("() => navigate(null, '/config#symphonies/demo')")
 
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT)
     expect(page.locator(_OVERRIDE)).to_have_value("2")
@@ -233,7 +241,7 @@ def test_back_asks_before_leaving_and_keeps_the_edits_when_declined(page: Page, 
     _stub(page, {"max_concurrent_cards": 2}, [])
     page.goto(f"{live_server_url}/symphonies")
     _snapshot(store)
-    page.evaluate("() => navigate(null, '/symphonies/demo')")
+    page.evaluate("() => navigate(null, '/config#symphonies/demo')")
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT)
     page.locator(_OVERRIDE).fill("4")
 
@@ -242,14 +250,14 @@ def test_back_asks_before_leaving_and_keeps_the_edits_when_declined(page: Page, 
     if accept:
         expect(page).to_have_url(f"{live_server_url}/symphonies", timeout=_WAIT)
     else:
-        expect(page).to_have_url(f"{live_server_url}/symphonies/{_NAME}", timeout=_WAIT)
+        expect(page).to_have_url(f"{live_server_url}/config#symphonies/{_NAME}", timeout=_WAIT)
         expect(page.locator(_OVERRIDE)).to_have_value("4")
 
 
 @pytest.mark.e2e
 def test_closing_the_page_with_unsaved_edits_asks_first(page: Page, live_server_url: str, store: DashboardStore) -> None:
     _stub(page, {"max_concurrent_cards": 2}, [])
-    _open(page, f"{live_server_url}/symphonies/{_NAME}", store)
+    _open(page, f"{live_server_url}/config#symphonies/{_NAME}", store)
 
     untouched = page.evaluate("() => !window.dispatchEvent(new Event('beforeunload', {cancelable: true}))")
     page.locator(_OVERRIDE).fill("4")
@@ -321,7 +329,7 @@ def nocap_server(tmp_path: Path) -> Generator[dict[str, Any], None, None]:
 
 
 def _open_real(page: Page, server: dict[str, Any]) -> None:
-    page.goto(f"{server['url']}/symphonies/{_NAME}")
+    page.goto(f"{server['url']}/config#symphonies/{_NAME}")
     _snapshot(server["store"])
     expect(page.locator("#sym-save-btn")).to_be_visible(timeout=_WAIT)
 

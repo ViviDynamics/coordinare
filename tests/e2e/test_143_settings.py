@@ -441,14 +441,14 @@ def test_used_by_says_what_uses_each_item_or_not_used(page: Page, live_server_ur
 
 
 @pytest.mark.e2e
-def test_the_symphonies_tab_is_read_only_and_links_to_each_symphony(page: Page, live_server_url: str) -> None:
+def test_the_symphonies_tab_links_to_each_config_editor(page: Page, live_server_url: str) -> None:
     _stub_config(page, _snapshot(), [])
     _open_settings(page, live_server_url)
     _tab(page, "Symphonies")
     panel = _active_panel(page)
     expect(panel.locator("input, textarea, select")).to_have_count(0)
-    expect(panel.locator("a", has_text="Edit settings")).to_have_attribute("href", "/symphonies/demo")
-    expect(panel).to_contain_text("Edit this on the symphony's own page.")
+    expect(panel.get_by_role("link", name="demo", exact=True)).to_have_attribute("href", "/config#symphonies/demo")
+    expect(panel).to_contain_text("Choose a symphony to edit its settings and persona overrides.")
 
 
 # --- the Personas page links to Settings -----------------------------------------
