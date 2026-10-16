@@ -553,6 +553,9 @@ def initial_state() -> CoordinareState:
         "github_field_cache": {},
         "surfaced_stale_reviews": {},
         "approval_carryover_cache": {},
+        "approval_carryover_unverified_head": None,
+        "review_wait_detail": None,
+        "approval_docs_notified_head": None,
         "open_questions": [],
         # 494: fingerprints of questions consumed by the loop-broken
         # detector's re-queue (see handle_blocked / CardSession).
