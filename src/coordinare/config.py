@@ -274,6 +274,15 @@ class ScopeBehavior(BaseModel):
     full: ScopeTierBehavior | None = None
 
 
+class UnknownPersonaRoleError(ValueError):
+    """An invalid persona key, with a public message that excludes the key."""
+
+    def __init__(self, role: str) -> None:
+        valid_roles = f"Valid roles: {', '.join(sorted(PersonasConfig.model_fields))}."
+        self.public_message = f"Unknown persona role. {valid_roles}"
+        super().__init__(f"Unknown persona role: {role!r}. {valid_roles}")
+
+
 class PersonaConfig(BaseModel):
     """Per-role behavioral instructions for the AI agent."""
 
@@ -2559,8 +2568,7 @@ class SymphonyConfig(BaseModel):
         merged = global_personas.model_dump(exclude_unset=True)
         for role, raw_persona in (self.personas or {}).items():
             if role not in PersonasConfig.model_fields:
-                msg = f"Unknown persona role: {role}"
-                raise ValueError(msg)
+                raise UnknownPersonaRoleError(role)
             persona = PersonaConfig.model_validate(raw_persona)
             replacement = persona.model_dump(exclude_unset=True)
             if not persona.instructions.strip():

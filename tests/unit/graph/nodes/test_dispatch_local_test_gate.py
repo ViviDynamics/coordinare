@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from coordinare.config import LocalTestGateConfig, PersonaScopeConfig
+from coordinare.config import LocalTestGateConfig, PersonaScopeConfig, SymphonyConfig
 from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.state import initial_state
 from coordinare.workspace import WorkspaceInfo
@@ -80,7 +80,8 @@ def _state(
     state["config"] = SimpleNamespace()
     state["current_symphony"] = "default"
     if local_test_gate is not None:
-        sym_cfg = SimpleNamespace(
+        sym_cfg = SymphonyConfig(
+            name="default", github_project_number=1,
             persona_scope=PersonaScopeConfig(local_test_gate=local_test_gate),
         )
         state["symphony_configs"] = {"default": sym_cfg}

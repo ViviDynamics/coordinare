@@ -147,6 +147,8 @@ def _resolve_persona_slice_and_behavior(
         if isinstance(raw_slice, dict):
             slice_dict = raw_slice
 
+    # Scope tiering stays global. Symphony persona instructions affect prompt
+    # text, while skip routing and tier budgets keep using the global policy.
     config = state.get("config")
     personas_cfg = getattr(config, "personas", None) if config is not None else None
     persona_cfg = getattr(personas_cfg, role, None) if personas_cfg is not None else None

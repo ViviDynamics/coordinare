@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import AnyUrl, BaseModel, RootModel, Secret, SecretStr
+from pydantic import AnyUrl, BaseModel, RootModel, Secret, SecretStr, ValidationError
 
 from coordinare.auth import validate_auth_config
 from coordinare.config import ProjectConfiguration
@@ -303,6 +303,24 @@ def raw_placeholder_warnings(daemon_view: dict[str, Any]) -> list[tuple[str, str
     return [(f.field, f.message) for f in raw_placeholder_findings(daemon_view) if not f.refuses]
 
 
+def _validate_symphony_personas(
+    config: ProjectConfiguration, coordinare_config: CoordinareConfiguration,
+) -> None:
+    """Refuse invalid symphony personas on startup and every config save path."""
+    for index, symphony in enumerate(coordinare_config.symphonies):
+        try:
+            symphony.effective_personas(config.personas)
+        except ValueError as exc:
+            detail = str(exc)
+            if isinstance(exc, ValidationError):
+                detail = "; ".join(
+                    f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
+                    for error in exc.errors(include_input=False, include_context=False)
+                )
+            message = f"Symphony {symphony.name!r}: {detail}"
+            raise StartCheckError(message, f"symphonies[{index}].personas") from exc
+
+
 def validate_start_time(
     config: ProjectConfiguration,
     coordinare_config: CoordinareConfiguration | None = None,
@@ -326,6 +344,8 @@ def validate_start_time(
     if problems:
         field, message = problems[0]
         raise StartCheckError(message, field)
+    if coordinare_config is not None:
+        _validate_symphony_personas(config, coordinare_config)
     # getattr keeps the boot contract the #143 startup test pins: a config object that lacks the OIDC
     # fields is read as having none.
     oidc = getattr(config, "dashboard_oidc", None)
