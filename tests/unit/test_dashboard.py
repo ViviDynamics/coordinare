@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import socket
 from datetime import UTC, datetime
 from typing import Any
@@ -1968,8 +1969,13 @@ def test_list_symphonies_includes_env_bootstrap_performer_id(tmp_path) -> None:
 def test_dashboard_html_renders_per_row_bootstrap_button() -> None:
     """060: the symphonies list rendering includes the sym-row-bootstrap button class
     and wires its click to the env-bootstrap endpoint."""
-    assert "sym-row-bootstrap" in page_source()
-    assert "/env-bootstrap" in page_source()
+    client = _make_app()
+    page = client.get("/symphonies").text
+    scripts = [client.get(src).text for src in re.findall(r'<script src="([^"]+)"', page)]
+    source = "\n".join(scripts)
+    assert "sym-row-bootstrap" in source
+    assert "bootstrapAction(n," in source
+    assert "/env-bootstrap" in source
 
 
 def test_build_snapshot_symphonies_include_env_bootstrap_performer_id() -> None:

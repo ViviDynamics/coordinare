@@ -16,13 +16,13 @@ from typing import Any
 
 import pytest
 
-from coordinare.graph.nodes.check_board import _session_consumes_slot
 from coordinare.services.pipeline_budget import (
     dispatch_has_pipeline_slot,
     has_live_performer,
     has_live_work,
     has_started,
     select_pipelines,
+    session_consumes_slot,
 )
 
 
@@ -107,7 +107,7 @@ def _live_side_writer() -> dict[str, Any]:
 @pytest.mark.parametrize("session", [_live_agent(), _live_performer(), _live_side_writer()])
 def test_pickup_and_the_budget_agree_on_a_live_session(session: dict[str, Any]) -> None:
     assert has_live_work(session)
-    assert _session_consumes_slot(session)
+    assert session_consumes_slot(session)
 
 
 def test_a_monitoring_agent_with_a_live_session_is_running_work_in_the_budget() -> None:
@@ -125,4 +125,4 @@ def test_a_monitoring_agent_without_a_session_is_not_live() -> None:
 def test_a_parked_card_is_live_for_neither_test() -> None:
     session = _parked("parked")
     assert not has_live_work(session)
-    assert not _session_consumes_slot(session, "IN_REVIEW")
+    assert not session_consumes_slot(session, "IN_REVIEW")

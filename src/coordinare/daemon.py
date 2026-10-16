@@ -17,7 +17,6 @@ from pydantic import ValidationError
 from coordinare.config import CoordinareConfiguration, SymphonyConfig
 from coordinare.env_placeholders import operator_workflow_env
 from coordinare.graph.nodes.check_board import (
-    NON_SLOT_PHASES,
     PASSIVE_PHASES,
     _refresh_current_card_metadata,
     check_board,
@@ -108,6 +107,7 @@ from coordinare.services.merge_review_gate import (
 from coordinare.services.mounted_file import loaded_performer_mounts
 from coordinare.services.owned_writers import has_owned_writers, stop_owned_writers
 from coordinare.services.pipeline_budget import (
+    NON_SLOT_PHASES,
     admitted_side_runs,
     configured_hold_seconds,
     configured_review_limit,

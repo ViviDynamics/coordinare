@@ -31,8 +31,12 @@ const html = symphonyStatsHtml('alpha', response, response);
  'Env', '1 of 3'].forEach(text => assert.ok(html.includes(text), text));
 assert.ok(!html.includes('<script>bad'));
 assert.ok(html.includes('&lt;script&gt;bad'));
-assert.ok(!/<button|<input|<form/.test(html));
+assert.ok(!/<input|<form|sym-config-form/.test(html));
+['Actions', 'sym-env-bootstrap-btn', 'Force bootstrap now', 'sym-wiki-init-btn', 'Init wiki',
+ 'restart-reconcile'].forEach(text => assert.ok(html.includes(text), text));
 assert.ok(/role="img"/.test(html) && /<title>/.test(html));
+const noGroup = {...response, group_by: 'symphony', groups: []};
+assert.strictEqual(symphonyStatsHeadline(noGroup, 'alpha').spend, 'Not recorded');
 const headline = symphonyStatsHeadline(response, 'alpha');
 assert.strictEqual(headline.completed, '2');
 assert.strictEqual(headline.spend, '$1.25');
@@ -70,7 +74,75 @@ assert.ok(zeros.includes('First day: 0'));
 assert.ok(!/NaN|Infinity/.test(zeros));
 console.log('Symphony statistics contracts passed');
 
+async function actionChecks() {
+  const elements = {};
+  ['sym-env-bootstrap-btn', 'sym-env-bootstrap-msg', 'sym-wiki-init-btn', 'sym-wiki-init-msg'].forEach(id => {
+    elements[id] = {disabled: false, textContent: ''};
+  });
+  global.document = {getElementById: id => elements[id]};
+  global.location = {pathname: '/symphonies/alpha'};
+  let confirmed = false;
+  const confirmations = [];
+  global.window = {confirm: text => {confirmations.push(text); return confirmed;}};
+  let status = 202;
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({url, options});
+    return {status, ok: status === 202, json: async () => ({error: 'Already in flight'})};
+  };
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const bootstrap = elements['sym-env-bootstrap-btn'];
+  const wiki = elements['sym-wiki-init-btn'];
+  const bootstrapMessage = elements['sym-env-bootstrap-msg'];
+  const wikiMessage = elements['sym-wiki-init-msg'];
+  wireSymphonyStatsActions('alpha/a b');
+  bootstrap.onclick();
+  assert.strictEqual(calls.length, 0, 'cancelled bootstrap confirmation must not POST');
+  assert.ok(confirmations[0].includes('retry budget'));
+  confirmed = true;
+  bootstrap.onclick();
+  assert.strictEqual(bootstrap.disabled, true);
+  await settle();
+  assert.ok(calls[0].url.endsWith('/alpha%2Fa%20b/env-bootstrap'));
+  assert.strictEqual(bootstrap.disabled, false);
+  const beforeWiki = confirmations.length;
+  wiki.onclick();
+  assert.strictEqual(wiki.disabled, true);
+  await settle();
+  assert.ok(calls[1].url.endsWith('/alpha%2Fa%20b/wiki-init'));
+  assert.ok(wikiMessage.textContent.includes('Accepted'));
+  assert.strictEqual(confirmations.length, beforeWiki, 'wiki keeps its existing immediate action behavior');
+  for (const denied of [401, 403]) {
+    status = denied;
+    bootstrap.onclick();
+    wiki.onclick();
+    await settle();
+    const expected = denied === 401 ? 'Sign in' : 'permission';
+    assert.ok(bootstrapMessage.textContent.includes(expected));
+    assert.ok(wikiMessage.textContent.includes(expected));
+    assert.strictEqual(bootstrap.disabled, false);
+    assert.strictEqual(wiki.disabled, false);
+  }
+  status = 409;
+  wiki.onclick();
+  await settle();
+  assert.strictEqual(wikiMessage.textContent, 'Already in flight');
+  global.fetch = async () => {throw new Error('offline');};
+  wiki.onclick();
+  await settle();
+  assert.strictEqual(wikiMessage.textContent, 'Network error');
+  assert.strictEqual(wiki.disabled, false);
+  assert.ok(calls.every(call => call.options.method === 'POST' && call.options.credentials === 'same-origin'));
+  assert.ok(symphonyStatsActionsHtml({}).includes('id="sym-env-bootstrap-btn" disabled'));
+  assert.ok(symphonyStatsActionsHtml({env_bootstrap_performer_id: 'worker', bootstrap_in_flight: true})
+    .includes('id="sym-env-bootstrap-btn" disabled'));
+  assert.ok(!symphonyStatsActionsHtml({env_bootstrap_performer_id: 'worker'})
+    .includes('id="sym-env-bootstrap-btn" disabled'));
+  console.log('Symphony operational action checks passed');
+}
+
 async function requestChecks() {
+  await actionChecks();
   let scope = 'alpha';
   const writes = [];
   const elements = {

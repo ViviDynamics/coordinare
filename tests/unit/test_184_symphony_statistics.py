@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sqlite3
 import subprocess
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,7 +81,7 @@ def test_symphony_statistics_node_contract(tmp_path: Path) -> None:
     node = shutil.which("node")
     assert node is not None
     scripts = REPO / "src/coordinare/dashboard/dashboard_static"
-    names = ("helpers", "usage", "waiting", "runs", "symphonies", "stats_charts", "symphony_stats")
+    names = ("helpers", "usage", "waiting", "runs", "symphonies", "bootstrap", "stats_charts", "symphony_stats")
     bundle = tmp_path / "stats.js"
     bundle.write_text("\n".join((scripts / f"{name}.js").read_text() for name in names))
     result = subprocess.run(
@@ -216,3 +217,142 @@ def test_api_health_is_scoped_and_redacted() -> None:
     assert set(response.json()["symphony_health"]) == {"alpha"}
     assert response.json()["card_flow"]["alpha"]["columns_now"] == {"TODO": 1}
     assert secret not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poll_fails", [False, True])
+async def test_board_poll_store_failure_never_changes_poll_result(poll_fails: bool) -> None:
+    store = MagicMock()
+    store.emit.side_effect = RuntimeError("broken store")
+    provider = SimpleNamespace(poll_board=AsyncMock(return_value={"snapshot": {}}))
+    if poll_fails:
+        provider.poll_board.side_effect = ValueError("upstream failure")
+    with patch("coordinare.services.stats_poll.logger") as logger:
+        if poll_fails:
+            with pytest.raises(ValueError, match="upstream failure"):
+                await poll_board_observed({"event_store": store}, provider)
+        else:
+            assert await poll_board_observed({"event_store": store}, provider) == {"snapshot": {}}
+        logger.warning.assert_called_once_with("stats.board_check_record_failed", error_type="RuntimeError")
+
+
+@pytest.mark.asyncio
+async def test_board_poll_error_is_bounded_before_storage() -> None:
+    from coordinare.services.stats_measures import MAX_REASON_CHARS
+
+    store = MagicMock()
+    reason = "x" * (MAX_REASON_CHARS + 1)
+    provider = SimpleNamespace(poll_board=AsyncMock(side_effect=ValueError(reason)))
+    with pytest.raises(ValueError, match=reason):
+        await poll_board_observed({"event_store": store}, provider)
+    assert store.emit.call_args.args[0]["message"] == reason[:MAX_REASON_CHARS]
+
+
+def test_capacity_counter_is_shared_with_scheduler() -> None:
+    from coordinare.services.pipeline_budget import count_slot_consuming_sessions
+
+    state = {"board_snapshot": {"IN_PROGRESS": ["content"], "DONE": ["done"]}, "active_sessions": {
+        "restored": {"phase": "idle", "current_card": {"content_id": "content", "status": "DONE"}},
+        "done": {"phase": "dispatching"},
+        "writer": {"phase": "idle", "documenting_side": {"session_id": "side", "writer_active": True}},
+    }}
+    assert count_slot_consuming_sessions(state) == 2
+    assert live_health({"alpha": {"state": state}}, frozenset({"alpha"}))["alpha"]["slots_in_use"] == 2
+
+
+def test_stats_health_omits_unused_runtime_payloads() -> None:
+    session = {"phase": "idle", "block_cause": "needs_human", "review_wait_reason": "approval",
+               "performer_events": ["large"], "performer_logs": ["large"], "blueprint": "large"}
+    state = {"board_snapshot": {"TODO": ["card"]}, "board_titles": {"card": "Title"},
+             "active_sessions": {"card": session}, "board_issue_urls": {"card": "unused"},
+             "last_error": "error", "todo_waits": {"card": {"reason": "queued"}},
+             "session_skip_reasons": {}, "todo_capacity": {"in_use": 0, "limit": 1}}
+    health = live_health({"alpha": {"name": "alpha", "state": state, "spend_week": "unused",
+                                    "ownership_hint": "unused"}}, frozenset({"alpha"}))["alpha"]
+    assert "spend_week" not in health
+    assert "ownership_hint" not in health
+    assert set(health["state"]) == {
+        "last_error", "board_snapshot", "board_titles", "active_sessions", "todo_waits",
+        "session_skip_reasons", "todo_capacity",
+    }
+    assert health["state"]["active_sessions"]["card"] == {
+        "block_cause": "needs_human", "review_wait_reason": "approval",
+    }
+    assert session["performer_logs"] == ["large"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("window,days", [("24h", 1), ("7d", 7), ("30d", 30)])
+async def test_large_poll_history_has_complete_exact_windowed_reliability(
+    tmp_path: Path, window: str, days: int,
+) -> None:
+    from coordinare.services.event_store_db import create_schema
+
+    path = tmp_path / "events.db"
+    polls_per_day = 2880
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=False)
+        # One month of polls, plus an older month outside the longest UI window.
+        db.executemany(
+            "INSERT INTO events(ts,symphony,kind,message,data) VALUES (?,?,?,?,?)",
+            (((NOW - timedelta(seconds=30 * index)).isoformat(), "alpha", "stats.board_check",
+              "quota" if index % polls_per_day == 0 else "",
+              '{"success":false}' if index % polls_per_day == 0 else '{"success":true}')
+             for index in range(60 * polls_per_day)),
+        )
+        # Foreign observations and future observations must never affect alpha.
+        db.executemany(
+            "INSERT INTO events(ts,symphony,kind,data) VALUES (?,?,?,?)",
+            [(NOW.isoformat(), "private", "stats.board_check", '{"success":false}'),
+             ((NOW + timedelta(seconds=1)).isoformat(), "alpha", "stats.board_check", '{"success":false}')],
+        )
+    body = await RunStatistics(tmp_path, event_path=path).query(
+        StatsQuery(symphony="alpha", window=window), visible=VISIBLE, lifecycle={}, boards={}, now=NOW,
+    )
+    assert body["partial"] is False, body["partial_reasons"]
+    checks = days * polls_per_day + 1
+    assert body["reliability"]["alpha"]["checks"] == checks
+    assert body["reliability"]["alpha"]["success_rate"] == pytest.approx((checks - days - 1) / checks)
+    errors = body["reliability"]["alpha"]["recent_errors"]
+    assert len(errors) == min(days + 1, RECENT_LIMIT)
+    assert errors[0] == {"at": NOW.isoformat(), "reason": "quota"}
+    assert set(body["reliability"]) == {"alpha"}
+
+
+def test_reliability_definition_excludes_restart_reconcile_polls() -> None:
+    from coordinare.services.run_statistics import DEFINITIONS
+
+    assert "restart-reconcile" in DEFINITIONS["reliability"]
+
+
+@pytest.mark.asyncio
+async def test_board_check_budget_is_windowed_and_does_not_leak_between_symphonies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coordinare.services import stats_reliability
+    from coordinare.services.event_store_db import create_schema
+
+    monkeypatch.setattr(stats_reliability, "MAX_BOARD_CHECK_ROWS", 2)
+    path = tmp_path / "events.db"
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=False)
+        db.executemany(
+            "INSERT INTO events(ts,symphony,kind,data) VALUES (?,?,?,?)",
+            [((NOW - timedelta(days=age)).isoformat(), owner, "stats.board_check", '{"success":true}')
+             for owner, age in [("alpha", 0), ("alpha", 2), ("alpha", 3), ("beta", 0)]],
+        )
+    service = RunStatistics(tmp_path, event_path=path)
+    args = {"visible": VISIBLE, "lifecycle": {}, "boards": {}, "now": NOW}
+    short = await service.query(StatsQuery(symphony="alpha", window="24h"), **args)
+    assert short["partial"] is False
+    assert short["reliability"]["alpha"]["checks"] == 1
+    long = await service.query(StatsQuery(symphony="alpha", window="30d"), **args)
+    assert long["partial_reasons"] == ["board_check_read_budget"]
+    assert long["reliability"]["alpha"]["success_rate"] is None
+    other = await service.query(StatsQuery(symphony="beta", window="30d"), **args)
+    assert other["partial"] is False
+    assert other["reliability"]["beta"]["checks"] == 1
+    assert other["reliability"]["beta"]["success_rate"] == 1.0
+    listing = await service.query(StatsQuery(group_by="symphony", window="30d"), **args)
+    assert listing["partial"] is True
+    assert set(listing["reliability"]) == set(VISIBLE)

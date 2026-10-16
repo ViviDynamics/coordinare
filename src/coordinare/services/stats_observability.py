@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from coordinare.graph.nodes.check_board import _count_slot_consuming_sessions
-from coordinare.services.pipeline_budget import has_live_work, is_parked_in_review
+from coordinare.services.pipeline_budget import (
+    count_slot_consuming_sessions,
+    has_live_work,
+    is_parked_in_review,
+)
 from coordinare.services.stats_flow import RECENT_LIMIT, instant
 from coordinare.services.stats_poll import BOARD_CHECK_KIND
 
@@ -11,6 +14,18 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from coordinare.graph.state import CoordinareState
+
+
+# Only metadata consumed by symphony_stats.js and the shared status/identity helpers.
+HEALTH_FIELDS = (
+    "name", "enabled", "github_project_number", "github_org", "repo", "last_poll_at",
+    "poll_interval_seconds", "daemon_cycles_completed", "cycle_count", "error_count",
+    "cards_paused", "idle_reason", "merge_review", "env_status", "env_bootstrap",
+    "max_concurrent_cards", "env_bootstrap_performer_id", "bootstrap_in_flight",
+)
+HEALTH_STATE_FIELDS = (
+    "last_error", "board_snapshot", "board_titles", "todo_waits", "session_skip_reasons", "todo_capacity",
+)
 
 
 def live_health(entries: dict[str, Any], scope: frozenset[str]) -> dict[str, Any]:
@@ -23,7 +38,14 @@ def live_health(entries: dict[str, Any], scope: frozenset[str]) -> dict[str, Any
         sessions = state.get("active_sessions") or {}
         running_cards = [card for card, session in sessions.items() if has_live_work(session)]
         result[name] = {
-            **entry,
+            **{key: entry[key] for key in HEALTH_FIELDS if key in entry},
+            "state": {
+                **{key: state[key] for key in HEALTH_STATE_FIELDS if key in state},
+                "active_sessions": {
+                    card: {key: session[key] for key in ("block_cause", "review_wait_reason") if key in session}
+                    for card, session in sessions.items()
+                },
+            },
             "cards_active": len(running_cards),
             "running_card_ids": running_cards,
             "cards_queued": sum(
@@ -31,7 +53,7 @@ def live_health(entries: dict[str, Any], scope: frozenset[str]) -> dict[str, Any
                 for card, wait in (state.get("todo_waits") or {}).items()
             ) + sum(bool(session.get("slot_queued_since")) for session in sessions.values()),
             "cards_parked": sum(is_parked_in_review(session) for session in sessions.values()),
-            "slots_in_use": _count_slot_consuming_sessions(cast("CoordinareState", state)),
+            "slots_in_use": count_slot_consuming_sessions(cast("CoordinareState", state)),
         }
     return result
 

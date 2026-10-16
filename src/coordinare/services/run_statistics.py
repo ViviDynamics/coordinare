@@ -4,7 +4,7 @@ import asyncio
 import copy
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +25,7 @@ from coordinare.services.stats_persona import (
     _recent_runs,
     _shared_persona_edits,
 )
+from coordinare.services.stats_reliability import read_board_checks
 from coordinare.services.stats_runtime import persona_runtime
 from coordinare.services.token_usage import PriceTable
 
@@ -66,7 +67,7 @@ DEFINITIONS = {
     "recent_completed": "Last 10 recorded card merges in the selected window, newest first; reopened cards can appear more than once.",
     "cost_per_completed_card_usd": "Run start cohort cost divided by merge cohort cards_completed. The cohorts may differ. Null with no completed cards or incomplete cost or source coverage.",
     "symphony_health": "Current symphony identity, state and environment metadata, independent of selected window. Slot occupancy reuses the scheduler rules.",
-    "reliability": "Successful recorded upstream board polls divided by recorded polls in the window. Cache hits and backoff waits excluded; legacy checks are not recorded. Recent errors retain their observation timestamps.",
+    "reliability": "Successful recorded upstream board polls divided by recorded polls in the window. Cache hits, backoff waits and restart-reconcile polls are not counted; legacy checks are not recorded. Recent errors retain their observation timestamps.",
     "cycle_time_seconds": "First dispatch of a card lifecycle to its merge, including dispatches before the window.",
     "human_review_wait_seconds": "Existing human versus automation wait classification. Recorded human intervals end at human_review_ended, human review, redispatch or merge and are clipped to the window. Only positive overlaps contribute seconds and samples. Null without overlapping observations.",
     "revision_rounds_per_pr": "CHANGES_REQUESTED review observations / distinct PRs in lifecycles active in the window, including PRs opened earlier; null with no PR observations.",
@@ -312,6 +313,7 @@ class RunStatistics:
         self._sources: StatsSources | None = None
         self._visible: frozenset[str] = frozenset()
         self._expires = 0.0
+        self._board_checks: dict[str, tuple[dict[str, Any], set[str]]] = {}
 
     persona_runtime = staticmethod(persona_runtime)
 
@@ -338,11 +340,24 @@ class RunStatistics:
                     stats_sources.load_sources, self.root, self.event_path, visible, now.isoformat(),
                     copy.deepcopy(lifecycle),
                 )
+                self._board_checks.clear()
                 self._visible = visible
                 self._expires = time.monotonic() + CACHE_SECONDS
             sources = self._sources
+            if self.event_path is not None and params.window not in self._board_checks:
+                start = now - timedelta(hours=WINDOW_HOURS[params.window]) if params.window != "all" else None
+                self._board_checks[params.window] = await asyncio.to_thread(
+                    read_board_checks, self.event_path, visible,
+                    start.isoformat() if start is not None else None, now.isoformat(),
+                )
+            board_checks = self._board_checks.get(params.window)
+        scope = frozenset({params.symphony}) if params.symphony is not None else visible
+        if board_checks is not None and board_checks[1] & scope:
+            sources = replace(sources, reasons=[*sources.reasons, "board_check_read_budget"])
         frame = StatsFrame(visible, copy.deepcopy(lifecycle), copy.deepcopy(boards), now, self.table)
         body = await asyncio.to_thread(aggregate, sources, params, frame)
+        if board_checks is not None:
+            body["reliability"] = {name: board_checks[0][name] for name in sorted(scope)}
         if params.agent:
             shared_edits = await asyncio.to_thread(
                 _shared_persona_edits, self.persona_root, params.agent, instant(body["start"]), now,
