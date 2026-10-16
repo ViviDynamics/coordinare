@@ -1,47 +1,69 @@
-# Self-hosted backend quickstart
+# Quickstart with a self-hosted model
 
-The `opencode_compat` performer backend points the coordinare at any
-OpenAI-compatible `/v1/chat/completions` endpoint — LM Studio, vLLM, Ollama, or
-a LiteLLM proxy — without code changes. It speaks an LCD (lowest-common-
-denominator) profile of the OpenAI wire format: no hosted-tool descriptors, no
-`developer` role, no `prompt_cache_key`, no other OpenAI-only extensions.
+Follow the [installation quickstart](quickstart.md) for the installer, GitHub
+board, token and security requirements. Install git and OpenCode for local mode, or use Docker performers. Your repository's code reaches the model
+endpoint, so choose an endpoint you trust. Read the
+[threat model](security/threat-model.md).
 
-**Authoritative source**: the operator walk-through lives in
-[`specs/067-compatibility-first-backend/quickstart.md`](../specs/067-compatibility-first-backend/quickstart.md).
-This document is the public-facing copy for operator distribution; if it ever
-drifts from the spec, the spec wins.
+Start an OpenAI-compatible server such as vLLM, LM Studio, Ollama's compatibility
+API or LiteLLM. Note its exact model identifier and API base URL. The base URL
+must serve `/models` and `/chat/completions`; include `/v1` if your server needs
+it. Do not append `/chat/completions` to the base URL.
 
-## TL;DR
+For example, with a server at `http://127.0.0.1:1234/v1` serving a model named
+`your-model-name`, run:
 
-```yaml
-performers:
-  implementer:
-    backend: opencode_compat
-    base_url: http://localhost:1234/v1
-    model: qwen3-coder-30b
-    compat_remap_developer_role: true   # safety net; default true
+```sh
+coordinare init --harness opencode \
+  --endpoint http://127.0.0.1:1234/v1 --model your-model-name
 ```
 
-1. Start LM Studio (or vLLM / Ollama / LiteLLM) serving an OpenAI-compatible
-   `/v1/chat/completions` endpoint with a model whose context window is at
-   least 32 KiB.
-2. Set `backend: opencode_compat` on the performer roles you want routed to
-   the self-hosted endpoint.
-3. `set -a && source .env && set +a && .venv/bin/python -m coordinare`.
+Replace the URL and model with your server's values. Supply its key at the
+hidden API key prompt if it requires authentication. An endpoint without
+authentication can omit the key. An exported or saved `OPENAI_API_KEY` is reused,
+so remove an unrelated provider key from the environment before setup.
 
-See the spec quickstart for the full step-by-step and the SC-003 swap test.
+Init writes a `starter` endpoint with `kind: litellm`, a `starter` model endpoint
+and a single-model mode. This generic OpenAI-compatible endpoint works with the
+`opencode` harness. Models are selected through `endpoints`, `model_endpoints`
+and `modes`; inline `performers.<role>.model` is rejected. Use the
+[full reference](../config.example.yaml) for advanced orchestration. Init enables
+only implementer; the older full example files enable additional roles.
+
+Init checks endpoint reachability and the model list, then offers a login
+service or foreground start. To start later:
+
+```sh
+coordinare
+```
+
+Open <http://127.0.0.1:8090> and try the [first card](first-launch.md#try-one-card).
+Before rerunning doctor, stop the daemon to free its dashboard port:
+
+```sh
+coordinare doctor
+```
+
+## Docker performers
+
+Choose Docker during init, or use:
+
+```sh
+coordinare init --run-mode docker --harness opencode \
+  --endpoint http://198.51.100.10:1234/v1 --model your-model-name
+```
+
+Replace the example LAN address with a server reachable from both the host and
+the containers. Container `localhost` refers to the container. A host alias such
+as `host.docker.internal` can work inside Docker but may not resolve on the Linux
+host, where preflight also runs. See [Docker setup](docker-mode-setup.md) for
+runtime requirements, image selection, smoke checks and upgrades. Existing setup
+files require confirmation in a terminal or `--force` without one.
 
 ## Troubleshooting
 
-When upstream returns a non-2xx response, the daemon log emits a single
-`WARN` (transient) or `ERROR` (permanent) line containing every field of the
-upstream `UpstreamHTTPError` envelope verbatim — `status`, `route`, stripped
-`base_url`, the upstream `upstream_body`, `body_truncated`, `elapsed_ms`, and
-`upstream_request_id`. Grep for `upstream_http_error` in the daemon log to
-locate the failure.
-
-Transient statuses (`408`, `429`, `500`, `502`, `503`, `504`) and body markers
-(`temporarily unavailable`, `rate limit`) trigger retry; everything else
-surfaces immediately. The classification list lives in
-`src/coordinare/graph/nodes/handle_system_error.py` and is the single source of
-truth (FR-005).
+For endpoint or model failures, confirm the base URL, credentials and exact model
+name. Doctor prints a fix for each failed check. A reachable models API does not
+prove the model can complete a card. See [setup troubleshooting](setup-troubleshooting.md).
+For the separate Claude Code route through an Anthropic-compatible LiteLLM proxy,
+use the [proxy operator guide](operators/litellm-proxy.md).

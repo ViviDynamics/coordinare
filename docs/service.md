@@ -11,8 +11,8 @@ coordinare service logs
 
 Installation starts the daemon immediately and registers it to start at login
 and restart on failure. It uses this installation's `coordinare` executable,
-`~/.config/coordinare/config.yaml` and the adjacent `coordinare.env`. The issue
-195 `XDG_CONFIG_HOME` and `XDG_DATA_HOME` settings are respected. For a custom
+`~/.config/coordinare/config.yaml` and the adjacent `coordinare.env`. The
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` settings are respected. For a custom
 init directory, use `coordinare service install --config '/path with spaces/config.yaml'`.
 Later commands use the registered path, regardless of the current directory.
 There is one service per user; installing again replaces its registration and
