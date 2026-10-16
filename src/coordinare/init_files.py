@@ -18,6 +18,7 @@ from coordinare.user_config import (
     PRIVATE_DIRECTORY_MODE,
     SECRET_MODE,
     user_data_directory,
+    workspace_volume_name,
 )
 
 REFERENCE = "https://github.com/ViviDynamics/coordinare/blob/main/config.example.yaml"
@@ -77,7 +78,9 @@ def build_config(answers: dict[str, Any], existing: dict[str, Any]) -> dict[str,
     return raw
 
 
-def configure_containers(raw: dict[str, Any], image: str, secrets: dict[str, str]) -> None:
+def configure_containers(
+    raw: dict[str, Any], image: str, secrets: dict[str, str], *, config_directory: Path | None = None,
+) -> None:
     raw["performer_image"] = image
     raw["agent_executable"] = ""
     if not raw.get("performer_endpoints"):
@@ -98,9 +101,15 @@ def configure_containers(raw: dict[str, Any], image: str, secrets: dict[str, str
             endpoint.setdefault("secret_sources", {"init_payload": True, "env": False, "creds_file": False})
             endpoint.setdefault("extra_hosts", ["host.docker.internal:host-gateway"])
             endpoint.setdefault("volumes", [
-                {"host_path": str(data / "workspaces"), "container_path": "/workspace", "mode": "rw"},
+                {"volume_name": workspace_volume_name(config_directory), "container_path": "/workspace", "mode": "rw"},
                 {"host_path": str(data / "artifacts"), "container_path": "/artifacts", "mode": "rw"},
             ])
+            # Only init reruns migrate existing workspace binds. Preserve custom
+            # named volumes, other mounts, access modes and endpoint settings.
+            for mount in endpoint["volumes"]:
+                if mount.get("container_path") == "/workspace" and mount.get("host_path") is not None:
+                    mount.pop("host_path")
+                    mount["volume_name"] = workspace_volume_name(config_directory)
         if endpoint.get("mode") == "ephemeral":
             endpoint.setdefault("bind_host", "127.0.0.1")
             endpoint.setdefault("connect_host", "127.0.0.1")
@@ -112,7 +121,10 @@ def configure_containers(raw: dict[str, Any], image: str, secrets: dict[str, str
             endpoint["auth_token"] = "${" + key + "}"
     raw["performer_endpoints"] = endpoints
     directories = [Path(raw["env_cache_root"])]
-    directories.extend(Path(mount["host_path"]) for endpoint in endpoints for mount in endpoint.get("volumes", []))
+    directories.extend(
+        Path(mount["host_path"]) for endpoint in endpoints for mount in endpoint.get("volumes", [])
+        if mount.get("host_path") is not None
+    )
     for directory in directories:
         directory.expanduser().mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
 

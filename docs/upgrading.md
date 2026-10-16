@@ -43,6 +43,13 @@ directory to the image update command. Use `--config` with its `config.yaml` pat
 for validation, doctor and foreground startup. Otherwise these commands can
 select an unrelated default setup.
 
+This also migrates the starter workspace host bind to a per-config Docker named
+volume. It preserves other mounts and settings, and keeps existing custom named
+volumes. Old workspaces are not copied; the next job clones again. Once migration
+is verified, remove the old root-owned tree with
+`sudo rm -rf <data>/coordinare/workspaces`, where `<data>` is the previous XDG data
+root (normally `~/.local/share`). Existing configs keep working without migration.
+
 Keep the daemon stopped during this step. Decline init's start offers if you
 want to inspect the result first. Forced setup keeps private backups. Advanced
 configurations that init refuses must have their performer images updated by

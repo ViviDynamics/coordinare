@@ -252,7 +252,7 @@ def smoke_container(
     for entry in endpoint.extra_hosts:
         arguments += ["--add-host", entry]
     for mount in endpoint.volumes:
-        arguments += ["-v", f"{mount.host_path}:{mount.container_path}:{mount.mode}"]
+        arguments += ["-v", mount.docker_volume_arg()]
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     try:
         with docker_environment(values) as env_path:

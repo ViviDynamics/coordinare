@@ -57,11 +57,26 @@ class SecretSourceConfig(BaseModel):
 
 
 class VolumeMount(BaseModel):
+    """A host bind or a Docker named volume, with exactly one source."""
+
     model_config = ConfigDict(extra="forbid")
 
-    host_path: Path
+    host_path: Path | None = None
+    volume_name: str | None = Field(default=None, min_length=2, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
     container_path: PurePosixPath
     mode: Literal["ro", "rw"] = "ro"
+
+    @model_validator(mode="after")
+    def _one_source(self) -> VolumeMount:
+        if (self.host_path is None) == (self.volume_name is None):
+            message = "Set exactly one of host_path or volume_name"
+            raise ValueError(message)
+        return self
+
+    def docker_volume_arg(self) -> str:
+        """The same source and access mode for setup smoke and normal launches."""
+        source = self.volume_name if self.volume_name is not None else str(self.host_path)
+        return f"{source}:{self.container_path}:{self.mode}"
 
 
 class CapabilityOverride(BaseModel):

@@ -88,7 +88,7 @@ def locate_routing_file(
         if not container_path:
             continue
         for volume in endpoint.volumes:
-            if str(volume.container_path) == container_path:
+            if volume.host_path is not None and str(volume.container_path) == container_path:
                 return RoutingLocation(
                     endpoint_id=endpoint.id,
                     host_path=volume.host_path,

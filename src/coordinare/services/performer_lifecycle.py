@@ -231,11 +231,11 @@ async def start_ephemeral(
         performer_id=config.id,
         volume_count=len(config.volumes),
         volumes=[
-            f"{v.host_path}:{v.container_path}:{v.mode}" for v in config.volumes
+            v.docker_volume_arg() for v in config.volumes
         ],
     )
     for vol in config.volumes:
-        args += ["-v", f"{vol.host_path}:{vol.container_path}:{vol.mode}"]
+        args += ["-v", vol.docker_volume_arg()]
 
     # config.yaml uses os.path.expandvars, which leaves an unset ${VAR} as the literal text. Forwarding
     # that literal makes an unset variable look set, so an entry with an unset placeholder is left out
