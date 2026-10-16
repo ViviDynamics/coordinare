@@ -81,6 +81,7 @@ def test_the_e2e_job_ends_the_process_on_a_timeout() -> None:
     instead of ending the whole run.
     """
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "pr-ci.yml").read_text(encoding="utf-8")
-    e2e_runs = [line for line in workflow.splitlines() if "pytest tests/e2e/" in line]
+    # 289: the browser files arrive through scripts/ci_shard.py, so match the browser flag.
+    e2e_runs = [line for line in workflow.splitlines() if "pytest" in line and "--browser" in line]
     assert e2e_runs
     assert all(f"timeout_method={E2E_TIMEOUT_METHOD}" in line for line in e2e_runs)
