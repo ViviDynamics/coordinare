@@ -78,6 +78,9 @@ class PerformerCapabilities(BaseModel):
     tool_flags: list[str] = Field(default_factory=list)
 
 
+_CONFIGMAP_KEY_DOTS_ERROR = "ConfigMap key must not be '.' or start with '..'"
+
+
 class KubernetesRoutingConfigMap(BaseModel):
     """557: one routing-table key in a ConfigMap in the performer namespace."""
 
@@ -95,7 +98,7 @@ class KubernetesRoutingConfigMap(BaseModel):
     @classmethod
     def _check_key_prefix(cls, value: str) -> str:
         if value == "." or value.startswith(".."):
-            raise ValueError("ConfigMap key must not be '.' or start with '..'")
+            raise ValueError(_CONFIGMAP_KEY_DOTS_ERROR)
         return value
 
 
