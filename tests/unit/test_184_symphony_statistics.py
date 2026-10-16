@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import sqlite3
 import subprocess
+import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,7 +96,7 @@ def test_merged_symphony_detail_preserves_status_actions_and_settings(tmp_path: 
     scripts = REPO / "src/coordinare/dashboard/dashboard_static"
     bundle = tmp_path / "merged-detail.js"
     functions = ("renderSymphoniesPage", "symSummaryHtml", "symOverrideFields", "loadSymphonyPersonas")
-    sources = [(scripts / f"{name}.js").read_text() for name in ("helpers", "symphony_stats")]
+    sources = [(scripts / f"{name}.js").read_text() for name in ("helpers", "usage", "waiting", "runs", "symphonies", "bootstrap", "stats_charts", "symphony_stats")]
     sources.extend(shipped_function("app", name) for name in functions)
     sources.append("async " + shipped_function("app", "loadSymphonyDetail"))
     bundle.write_text("\n".join(sources))
@@ -185,13 +186,21 @@ async def test_reliability_survives_restart_in_existing_event_store(tmp_path: Pa
     await store.start()
     state = {"event_store": store, "current_symphony": "alpha"}
     provider = SimpleNamespace(poll_board=AsyncMock(return_value={"snapshot": {}}))
-    await poll_board_observed(state, provider)
-    provider.poll_board.side_effect = RuntimeError("quota exhausted")
-    with pytest.raises(RuntimeError, match="quota"):
+    with patch("coordinare.services.event_store.datetime") as clock:
+        clock.now.return_value = NOW
         await poll_board_observed(state, provider)
+    provider.poll_board.side_effect = RuntimeError("quota exhausted")
+    with patch("coordinare.services.event_store.datetime") as clock:
+        clock.now.return_value = NOW
+        with pytest.raises(RuntimeError, match="quota"):
+            await poll_board_observed(state, provider)
     await store.close()
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT count(*) FROM events WHERE kind='stats.board_check'").fetchone()[0] == 0
+        assert db.execute("SELECT polls,failures,last_reason FROM stats_board_checks").fetchall() == [(2, 1, "quota exhausted")]
     body = await RunStatistics(None, event_path=store.path).query(
         StatsQuery(symphony="alpha"), visible=VISIBLE, lifecycle={}, boards={},
+        now=NOW + timedelta(hours=1),
     )
     assert body["reliability"]["alpha"]["checks"] == 2
     assert body["reliability"]["alpha"]["success_rate"] == 0.5
@@ -282,41 +291,105 @@ def test_stats_health_omits_unused_runtime_payloads() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("window,days", [("24h", 1), ("7d", 7), ("30d", 30)])
-async def test_large_poll_history_has_complete_exact_windowed_reliability(
-    tmp_path: Path, window: str, days: int,
-) -> None:
+async def test_fleet_month_reliability_is_exact_compact_and_inside_budget(tmp_path: Path) -> None:
     from coordinare.services.event_store_db import create_schema
+    from coordinare.services.event_store_query import QUERY_TIMEOUT_SECONDS
+    from coordinare.services.stats_poll_db import record_board_checks
+    from coordinare.services.stats_reliability import read_board_checks
 
     path = tmp_path / "events.db"
-    polls_per_day = 2880
+    scope = frozenset(f"symphony-{index:02}" for index in range(16))
+    start = NOW - timedelta(days=30)
     with sqlite3.connect(path) as db:
         create_schema(db, enable_fts=False)
-        # One month of polls, plus an older month outside the longest UI window.
-        db.executemany(
-            "INSERT INTO events(ts,symphony,kind,message,data) VALUES (?,?,?,?,?)",
-            (((NOW - timedelta(seconds=30 * index)).isoformat(), "alpha", "stats.board_check",
-              "quota" if index % polls_per_day == 0 else "",
-              '{"success":false}' if index % polls_per_day == 0 else '{"success":true}')
-             for index in range(60 * polls_per_day)),
-        )
-        # Foreign observations and future observations must never affect alpha.
-        db.executemany(
-            "INSERT INTO events(ts,symphony,kind,data) VALUES (?,?,?,?)",
-            [(NOW.isoformat(), "private", "stats.board_check", '{"success":false}'),
-             ((NOW + timedelta(seconds=1)).isoformat(), "alpha", "stats.board_check", '{"success":false}')],
-        )
+        # 1,382,400 real poll observations through the same upsert as the writer.
+        # Every hour has 120 polls and four failures; the final failure is at :45.
+        record_board_checks(db, (
+            {"ts": (start + timedelta(seconds=30 * index)).isoformat(), "symphony": name,
+             "message": f"quota {index // 120}",
+             "data": '{"success":false}' if index % 30 == 0 else '{"success":true}'}
+            for name in sorted(scope) for index in range(30 * 2880)
+        ))
+        assert db.execute("SELECT count(*) FROM stats_board_checks").fetchone()[0] == 16 * 720
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    began = time.monotonic()
+    result, limited = read_board_checks(path, scope, start.isoformat(), NOW.isoformat())
+    elapsed = time.monotonic() - began
+    assert elapsed < QUERY_TIMEOUT_SECONDS, elapsed
+    assert not limited
+    for name in scope:
+        assert result[name]["checks"] == 86400
+        assert result[name]["success_rate"] == 29 / 30
+        assert result[name]["recent_errors"][0] == {
+            "at": (NOW - timedelta(minutes=15)).isoformat(), "reason": "quota 719",
+        }
     body = await RunStatistics(tmp_path, event_path=path).query(
-        StatsQuery(symphony="alpha", window=window), visible=VISIBLE, lifecycle={}, boards={}, now=NOW,
+        StatsQuery(window="30d", group_by="symphony"), visible=scope,
+        lifecycle={}, boards={}, now=NOW,
     )
     assert body["partial"] is False, body["partial_reasons"]
-    checks = days * polls_per_day + 1
-    assert body["reliability"]["alpha"]["checks"] == checks
-    assert body["reliability"]["alpha"]["success_rate"] == pytest.approx((checks - days - 1) / checks)
-    errors = body["reliability"]["alpha"]["recent_errors"]
-    assert len(errors) == min(days + 1, RECENT_LIMIT)
-    assert errors[0] == {"at": NOW.isoformat(), "reason": "quota"}
-    assert set(body["reliability"]) == {"alpha"}
+    assert body["reliability"] == result
+    for window, days in (("24h", 1), ("7d", 7)):
+        windowed = await RunStatistics(tmp_path, event_path=path).query(
+            StatsQuery(window=window, symphony="symphony-00"), visible=scope,
+            lifecycle={}, boards={}, now=NOW,
+        )
+        assert not windowed["partial"]
+        assert set(windowed["reliability"]) == {"symphony-00"}
+        assert windowed["reliability"]["symphony-00"]["checks"] == days * 2880
+        assert windowed["reliability"]["symphony-00"]["success_rate"] == 29 / 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [sqlite3.OperationalError("locked"), OSError("unavailable")])
+async def test_reliability_read_failure_does_not_fail_statistics(tmp_path: Path, failure: Exception) -> None:
+    from coordinare.services.event_store_db import create_schema
+    from coordinare.services.event_store_query import EventQueryTooBroad
+
+    path = tmp_path / "events.db"
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=False)
+    for error in (failure, EventQueryTooBroad()):
+        with patch("coordinare.services.run_statistics.read_board_checks", side_effect=error):
+            body = await RunStatistics(tmp_path, event_path=path).query(
+                StatsQuery(symphony="alpha"), visible=VISIBLE, lifecycle={}, boards={}, now=NOW,
+            )
+        assert body["totals"]["runs"] == 0
+        assert body["partial"] is False
+        figure = body["reliability"]["alpha"]
+        assert figure["checks"] is None
+        assert figure["success_rate"] is None
+        assert type(error).__name__ in figure["reason"]
+
+
+def test_hourly_reliability_window_and_failed_symphony_are_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coordinare.services.event_store_db import create_schema
+    from coordinare.services.stats_poll_db import record_board_checks
+    from coordinare.services.stats_reliability import read_board_checks
+
+    path = tmp_path / "events.db"
+    with sqlite3.connect(path) as db:
+        create_schema(db, enable_fts=False)
+        record_board_checks(db, [
+            {"ts": (NOW - timedelta(hours=hours)).isoformat(), "symphony": "alpha",
+             "message": "quota", "data": '{"success":false}'}
+            for hours in (0, 1, 24, 25)
+        ])
+    result, limited = read_board_checks(path, VISIBLE, (NOW - timedelta(days=1)).isoformat(), NOW.isoformat())
+    assert not limited
+    assert result["alpha"]["checks"] == 2
+    assert result["alpha"]["success_rate"] == 0
+    assert result["beta"]["checks"] == 0
+    assert result["beta"]["success_rate"] is None
+    # A row budget failure affects only that figure, even within a fleet read.
+    monkeypatch.setattr("coordinare.services.stats_reliability.MAX_BOARD_CHECK_ROWS", 1)
+    result, limited = read_board_checks(path, VISIBLE, (NOW - timedelta(days=1)).isoformat(), NOW.isoformat())
+    assert limited == {"alpha"}
+    assert result["alpha"]["checks"] is None
+    assert "EventQueryTooBroad" in result["alpha"]["reason"]
+    assert result["beta"]["checks"] == 0
 
 
 def test_reliability_definition_excludes_restart_reconcile_polls() -> None:
@@ -325,34 +398,52 @@ def test_reliability_definition_excludes_restart_reconcile_polls() -> None:
     assert "restart-reconcile" in DEFINITIONS["reliability"]
 
 
-@pytest.mark.asyncio
-async def test_board_check_budget_is_windowed_and_does_not_leak_between_symphonies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from coordinare.services import stats_reliability
+def test_legacy_poll_rollup_is_bounded_restart_safe_and_reports_pending(tmp_path: Path) -> None:
     from coordinare.services.event_store_db import create_schema
+    from coordinare.services.stats_poll_db import migrate_board_checks_batch
+    from coordinare.services.stats_reliability import read_board_checks
 
-    monkeypatch.setattr(stats_reliability, "MAX_BOARD_CHECK_ROWS", 2)
     path = tmp_path / "events.db"
     with sqlite3.connect(path) as db:
         create_schema(db, enable_fts=False)
         db.executemany(
-            "INSERT INTO events(ts,symphony,kind,data) VALUES (?,?,?,?)",
-            [((NOW - timedelta(days=age)).isoformat(), owner, "stats.board_check", '{"success":true}')
-             for owner, age in [("alpha", 0), ("alpha", 2), ("alpha", 3), ("beta", 0)]],
+            "INSERT INTO events(ts,symphony,kind,message,data) VALUES (?,?,?,?,?)",
+            [((NOW - timedelta(minutes=minutes)).isoformat(), "alpha", "stats.board_check", reason, data)
+             for minutes, reason, data in [(90, "old error", '{"success":false}'),
+                                          (65, "last error", '{"success":false}'),
+                                          (75, "", '{"success":true}')]],
         )
-    service = RunStatistics(tmp_path, event_path=path)
-    args = {"visible": VISIBLE, "lifecycle": {}, "boards": {}, "now": NOW}
-    short = await service.query(StatsQuery(symphony="alpha", window="24h"), **args)
-    assert short["partial"] is False
-    assert short["reliability"]["alpha"]["checks"] == 1
-    long = await service.query(StatsQuery(symphony="alpha", window="30d"), **args)
-    assert long["partial_reasons"] == ["board_check_read_budget"]
-    assert long["reliability"]["alpha"]["success_rate"] is None
-    other = await service.query(StatsQuery(symphony="beta", window="30d"), **args)
-    assert other["partial"] is False
-    assert other["reliability"]["beta"]["checks"] == 1
-    assert other["reliability"]["beta"]["success_rate"] == 1.0
-    listing = await service.query(StatsQuery(group_by="symphony", window="30d"), **args)
-    assert listing["partial"] is True
-    assert set(listing["reliability"]) == set(VISIBLE)
+    result, _ = read_board_checks(path, VISIBLE, None, NOW.isoformat())
+    assert result["alpha"]["success_rate"] is None
+    assert result["alpha"]["reason"] == "board_check_rollup_pending"
+    with sqlite3.connect(path) as db:
+        assert migrate_board_checks_batch(db, 2) == 2
+    # Reopening after a partial migration never loses or double-counts polls.
+    with sqlite3.connect(path) as db:
+        assert migrate_board_checks_batch(db, 2) == 1
+        assert migrate_board_checks_batch(db, 2) == 0
+        assert db.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    result, limited = read_board_checks(path, VISIBLE, None, NOW.isoformat())
+    assert not limited
+    assert result["alpha"]["checks"] == 3
+    assert result["alpha"]["success_rate"] == 1 / 3
+    assert result["alpha"]["recent_errors"] == [
+        {"at": (NOW - timedelta(minutes=65)).isoformat(), "reason": "last error"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hourly_poll_retention_keeps_event_health_counts_nonnegative(tmp_path: Path) -> None:
+    from coordinare.services.event_store_settings import EventStoreConfig
+
+    store = EventStore(tmp_path / "events.db", enable_fts=False, config=EventStoreConfig(retention_days=1))
+    await store.start()
+    store.emit({"ts": (NOW - timedelta(days=5)).isoformat(), "symphony": "alpha",
+                "kind": "stats.board_check", "data": {"success": True}})
+    await store.flush()
+    assert store.health()["dropped"] == 0
+    assert await store.prune() == 1
+    assert store.health()["rows"] == 0
+    await store.close()
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT count(*) FROM stats_board_checks").fetchone()[0] == 0

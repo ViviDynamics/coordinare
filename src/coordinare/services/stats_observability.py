@@ -8,7 +8,7 @@ from coordinare.services.pipeline_budget import (
     is_parked_in_review,
 )
 from coordinare.services.stats_flow import RECENT_LIMIT, instant
-from coordinare.services.stats_poll import BOARD_CHECK_KIND
+from coordinare.services.stats_poll_db import BOARD_CHECK_KIND
 
 if TYPE_CHECKING:
     from datetime import datetime

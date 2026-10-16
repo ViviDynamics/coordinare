@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.services.stats_poll_db import CREATE_BOARD_CHECKS
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -14,7 +16,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BASELINE_INDEXES = (
     ("ts", "ts"),
     ("symphony_ts", "symphony, ts"),
@@ -160,6 +162,7 @@ def create_schema(db: sqlite3.Connection, *, enable_fts: bool = True) -> bool:
     with db:
         db.execute("BEGIN IMMEDIATE")
         db.execute(CREATE_TABLE)
+        db.execute(CREATE_BOARD_CHECKS)
         for name, columns in BASELINE_INDEXES:
             db.execute(f"CREATE INDEX IF NOT EXISTS events_{name} ON events ({columns})")
         _prepare_performer_migration(db)
@@ -221,5 +224,14 @@ def prune_batch(
                 "SELECT id FROM events ORDER BY ts, id LIMIT ?", (batch_size,),
             ).fetchall()
         db.executemany("DELETE FROM events WHERE id=?", ids)
+        hours = db.execute(
+            "SELECT symphony,hour FROM stats_board_checks WHERE hour < ? ORDER BY hour LIMIT ?",
+            (cutoff[:13] + ":00:00+00:00", batch_size),
+        ).fetchall()
+        if not hours and not ids and path.stat().st_size > config.max_bytes:
+            hours = db.execute(
+                "SELECT symphony,hour FROM stats_board_checks ORDER BY hour LIMIT ?", (batch_size,),
+            ).fetchall()
+        db.executemany("DELETE FROM stats_board_checks WHERE symphony=? AND hour=?", hours)
     db.execute(f"PRAGMA incremental_vacuum({VACUUM_PAGES})").fetchall()
-    return len(ids)
+    return len(ids) + len(hours)

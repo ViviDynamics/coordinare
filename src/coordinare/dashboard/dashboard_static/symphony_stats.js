@@ -187,9 +187,10 @@ function symphonyStatsHtml(name, response, models) {
       'Usage split by dispatch model; actual usage models are priced individually.') : '<p class="muted">Model statistics unavailable. Reload to retry.</p>') + '</section>';
   var errors = (check.recent_errors || []).map(function(row) { return [timeHtml(row.at), esc(row.reason)]; });
   var reliabilityHtml = '<section class="card sym-stats-section"><h3>Reliability</h3><div class="sym-stats-grid">' +
-    metric('Board check success rate', symphonyStatsPercent(check.success_rate), 'Successful observed upstream board polls / observed polls. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
+    metric('Board check success rate', symphonyStatsPercent(check.success_rate), definitions.reliability || 'Successful observed upstream board polls / observed polls in completed UTC hours. Cache hits, deferred polls and restart-reconcile polls are not counted. Legacy checks were not recorded.') +
     metric('Board checks observed', symphonyStatsNumber(check.checks), 'Actual board poll observations retained in this window; recording begins with this release.') +
     metric('Performer system errors', symphonyStatsNumber((totals.outcomes || {}).system_error), 'Runs starting in the window whose latest attributed outcome is system_error.') + '</div>' +
+    (check.reason ? '<p role="status">Not recorded: ' + esc(check.reason) + '</p>' : '') +
     '<h4>Recent board errors</h4>' + symphonyStatsTable(response, ['When', 'Reason'], errors, 'Most recent failed board polls in this window.') +
     ((health.state || {}).last_error ? '<p>Last cycle error: ' + esc(health.state.last_error) + ' (time not recorded)</p>' : '') +
     '<h4>Env cache and bootstrap</h4><p>' + esc(env.label + ': ' + env.reason) + '</p>' +
@@ -203,7 +204,7 @@ function symphonyStatsHtml(name, response, models) {
     return [symphonyStatsLink('/cards/' + encodeURIComponent(name) + '/' + encodeURIComponent(row.card), row.card), timeHtml(row.merged_at),
       symphonyStatsLink('/history?h.symphony=' + encodeURIComponent(name) + '&h.card=' + encodeURIComponent(row.card), 'Runs and transcripts')];
   });
-  return header + coverage + symphonyStatsNowHtml(name, response, health, flow) + throughput + flowHtml + spend + reliabilityHtml + symphonyStatsActionsHtml(health) +
+  return header + coverage + symphonyStatsNowHtml(name, response, health, flow) + throughput + flowHtml + spend + reliabilityHtml +
     '<section class="card sym-stats-section"><h3>Recent runs</h3>' + symphonyStatsTable(response, ['Transcript', 'Card timeline', 'Stage', 'Outcome', 'Started'], runs, 'Last 10 retained runs starting in the selected window, newest first.') +
     '<h3>Recent completed cards</h3>' + symphonyStatsTable(response, ['Card timeline', 'Merged', 'History'], cards, 'Last 10 recorded card completions in the selected window, newest first.') +
     '<p>' + symphonyStatsLink('/history?h.symphony=' + encodeURIComponent(name), 'History for this symphony') + '</p></section>';
@@ -262,7 +263,6 @@ function loadSymphonyStatsDetail(name, el, force, revision) {
     var content = document.getElementById('sym-stats-content');
     if (content) {
       content.innerHTML = symphonyStatsHtml(name, results[0], results[1]);
-      wireSymphonyStatsActions(name);
     }
     _symphonyStatsLoadedAt = Date.now();
   }).catch(function() {
@@ -301,44 +301,4 @@ function loadSymphonyListStats(el, choice, revision) {
       row.querySelectorAll('[data-stats-measure]').forEach(function(cell) { cell.textContent = 'Statistics unavailable'; });
     });
   });
-}
-
-
-function symphonyStatsActionsHtml(health) {
-  var disabled = !health.env_bootstrap_performer_id || health.bootstrap_in_flight ? ' disabled' : '';
-  return '<section class="card sym-stats-section"><h3>Actions</h3>' +
-    '<button type="button" class="action-btn" id="sym-env-bootstrap-btn"' + disabled + '>Force bootstrap now</button> ' +
-    '<span id="sym-env-bootstrap-msg" class="action-msg" role="status"></span> ' +
-    '<button type="button" class="action-btn" id="sym-wiki-init-btn">Init wiki</button> ' +
-    '<span id="sym-wiki-init-msg" class="action-msg" role="status"></span></section>';
-}
-
-function wireSymphonyStatsActions(name) {
-  var bootstrap = document.getElementById('sym-env-bootstrap-btn');
-  if (bootstrap) bootstrap.onclick = function() {
-    bootstrapAction(name, false, bootstrap, document.getElementById('sym-env-bootstrap-msg'));
-  };
-  var wiki = document.getElementById('sym-wiki-init-btn');
-  if (wiki) wiki.onclick = function() {
-    symphonyWikiInitAction(name, wiki, document.getElementById('sym-wiki-init-msg'));
-  };
-}
-
-async function symphonyWikiInitAction(name, button, message) {
-  button.disabled = true;
-  message.textContent = 'Dispatching...';
-  try {
-    var response = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init',
-      {method: 'POST', credentials: 'same-origin'});
-    if (response.status === BOOTSTRAP_HTTP_UNAUTHORIZED) message.textContent = 'Sign in to perform this action.';
-    else if (response.status === BOOTSTRAP_HTTP_FORBIDDEN) message.textContent = 'You do not have permission to perform this action.';
-    else {
-      var body = await response.json();
-      message.textContent = response.ok ? 'Accepted: building the wiki, a seed PR will open on completion' :
-        body.error || body.detail || 'Error ' + response.status;
-    }
-  } catch (error) {
-    message.textContent = 'Network error';
-  }
-  button.disabled = false;
 }

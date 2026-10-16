@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import sqlite3
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from coordinare.services.event_store_query import (
@@ -13,28 +13,32 @@ from coordinare.services.event_store_query import (
     EventQueryTooBroad,
 )
 from coordinare.services.stats_flow import RECENT_LIMIT
-from coordinare.services.stats_measures import MAX_REASON_CHARS
-from coordinare.services.stats_poll import BOARD_CHECK_KIND
+from coordinare.services.stats_poll_db import BOARD_CHECK_KIND
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Independent of the lifecycle/usage budget. At a 30 second poll interval this
-# covers over 347 days per symphony, well beyond the longest rolling UI window.
+# An independent per-symphony bound for all-retained reads. Rolling windows
+# touch at most 720 rows, using the (symphony, hour) primary key.
 MAX_BOARD_CHECK_ROWS = 1_000_000
+
+
+def unavailable_board_checks(reason: str) -> dict[str, Any]:
+    return {"checks": None, "success_rate": None, "recent_errors": [], "reason": reason}
 
 
 def read_board_checks(
     path: Path, visible: frozenset[str], start: str | None, end: str,
 ) -> tuple[dict[str, Any], set[str]]:
-    """Aggregate exact windowed counts in SQLite, returning only recent errors.
+    """Read exact counters for completed UTC hours in the selected window.
 
-    Each symphony gets its own row bound and statement deadline. Older polls,
-    hidden symphonies and unrelated event kinds cannot consume that allowance.
-    No per-poll Python objects or shared event-read budget are used.
+    Excluding the incomplete current hour keeps a 30-day read to 720 rows.
+    Each symphony has an independent deadline and failure result.
     """
     result: dict[str, Any] = {}
     limited: set[str] = set()
+    end_hour = datetime.fromisoformat(end).replace(minute=0, second=0, microsecond=0).isoformat()
+    start_hour = datetime.fromisoformat(start).replace(minute=0, second=0, microsecond=0).isoformat() if start else ""
     with contextlib.closing(sqlite3.connect(
         f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=QUERY_TIMEOUT_SECONDS,
     )) as db:
@@ -48,29 +52,33 @@ def read_board_checks(
 
             db.set_progress_handler(expired, QUERY_PROGRESS_STEPS)
             try:
-                checks, successes, errors = db.execute(
-                    """WITH polls AS MATERIALIZED (
-                        SELECT ts,message,json_extract(data,'$.success') AS success
-                        FROM events WHERE kind=? AND symphony=? AND ts>=? AND ts<=?
-                        ORDER BY ts DESC LIMIT ?
-                    )
-                    SELECT count(*), coalesce(sum(success=1),0),
-                        (SELECT json_group_array(json_object('at',ts,'reason',substr(message,1,?)))
-                         FROM (SELECT ts,message FROM polls WHERE success=0
-                               ORDER BY ts DESC LIMIT ?))
-                    FROM polls""",
-                    (BOARD_CHECK_KIND, name, start or "", end, MAX_BOARD_CHECK_ROWS + 1,
-                     MAX_REASON_CHARS, RECENT_LIMIT),
+                pending = db.execute(
+                    "SELECT 1 FROM events WHERE kind=? AND symphony=? LIMIT 1",
+                    (BOARD_CHECK_KIND, name),
                 ).fetchone()
-            except sqlite3.OperationalError as exc:
-                if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
-                    raise EventQueryTooBroad from exc
-                raise
-            if checks > MAX_BOARD_CHECK_ROWS:
+                if pending:
+                    result[name] = unavailable_board_checks("board_check_rollup_pending")
+                    limited.add(name)
+                    continue
+                rows = db.execute(
+                    """SELECT polls,failures,last_error_at,last_reason
+                    FROM stats_board_checks WHERE symphony=? AND hour>=? AND hour<?
+                    ORDER BY hour DESC LIMIT ?""",
+                    (name, start_hour, end_hour, MAX_BOARD_CHECK_ROWS + 1),
+                ).fetchall()
+                if len(rows) > MAX_BOARD_CHECK_ROWS:
+                    raise EventQueryTooBroad
+            except sqlite3.Error as exc:
                 limited.add(name)
+                result[name] = unavailable_board_checks("board_check_read_unavailable: " + type(exc).__name__)
+                continue
+            checks = sum(row[0] for row in rows)
+            failures = sum(row[1] for row in rows)
             result[name] = {
                 "checks": checks,
-                "success_rate": successes / checks if checks and name not in limited else None,
-                "recent_errors": json.loads(errors),
+                "success_rate": (checks - failures) / checks if checks else None,
+                "recent_errors": [
+                    {"at": at, "reason": reason} for _, _, at, reason in rows if at is not None
+                ][:RECENT_LIMIT],
             }
     return result, limited

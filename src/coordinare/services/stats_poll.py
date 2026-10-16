@@ -5,10 +5,9 @@ from typing import Any
 import structlog
 
 from coordinare.services.stats_measures import MAX_REASON_CHARS
+from coordinare.services.stats_poll_db import BOARD_CHECK_KIND
 
 logger = structlog.get_logger(__name__)
-
-BOARD_CHECK_KIND = "stats.board_check"
 
 
 async def poll_board_observed(state: Any, provider: Any) -> dict[str, Any]:

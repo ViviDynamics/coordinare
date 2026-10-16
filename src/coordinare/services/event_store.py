@@ -27,6 +27,11 @@ from coordinare.services.event_store_query import (
 )
 from coordinare.services.event_store_settings import EventStoreConfig
 from coordinare.services.export_metrics import EXPORT_METRICS
+from coordinare.services.stats_poll_db import (
+    BOARD_CHECK_KIND,
+    migrate_board_checks_batch,
+    record_board_checks,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -277,12 +282,15 @@ class EventStore:
         self._initialize()
         if self._db is None:
             return
+        polls = [row for row in safe_rows if row["kind"] == BOARD_CHECK_KIND]
+        safe_rows = [row for row in safe_rows if row["kind"] != BOARD_CHECK_KIND]
         columns = ",".join(COLUMNS)
         placeholders = ",".join("?" for _ in COLUMNS)
         # Identifiers come only from the schema; event values remain bound parameters.
         insert_sql = "".join(("INSERT OR IGNORE INTO events (", columns, ") VALUES (", placeholders, ")"))
         accepted_sql = "".join(("SELECT ", columns, " FROM events WHERE id > ? ORDER BY id"))
         with self._db:
+            record_board_checks(self._db, polls)
             before = self._db.execute("SELECT coalesce(max(id),0) FROM events").fetchone()[0]
             inserted = self._db.executemany(
                 insert_sql,
@@ -415,11 +423,14 @@ class EventStore:
         if self._db is None:
             return 0
         migrated, self._migration_active = migrate_performer_batch(self._db, self._prune_batch_size)
+        rolled_up = migrate_board_checks_batch(self._db, self._prune_batch_size)
+        self._migration_active = self._migration_active or bool(rolled_up)
         removed = prune_batch(self._db, self.path, self.config, self._prune_batch_size)
         self._pruned += removed
         EXPORT_METRICS.pruned.inc(removed)
-        self._update_stats(-removed - migrated)
-        return removed + migrated
+        # Retention also removes hourly counters, which are not event rows.
+        self._update_stats()
+        return removed + migrated + rolled_up
 
     async def prune(self) -> int:
         try:

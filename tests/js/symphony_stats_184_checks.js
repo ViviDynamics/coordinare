@@ -31,9 +31,9 @@ const html = symphonyStatsHtml('alpha', response, response);
  'Env', '1 of 3'].forEach(text => assert.ok(html.includes(text), text));
 assert.ok(!html.includes('<script>bad'));
 assert.ok(html.includes('&lt;script&gt;bad'));
-assert.ok(!/<input|<form|sym-config-form/.test(html));
-['Actions', 'sym-env-bootstrap-btn', 'Force bootstrap now', 'sym-wiki-init-btn', 'Init wiki',
- 'restart-reconcile'].forEach(text => assert.ok(html.includes(text), text));
+assert.ok(!/<button|<input|<form|sym-config-form/.test(html), 'statistics remain read-only');
+assert.ok(html.includes('restart-reconcile'));
+assert.ok(!html.includes('sym-env-bootstrap-btn') && !html.includes('sym-wiki-init-btn'));
 assert.ok(/role="img"/.test(html) && /<title>/.test(html));
 const noGroup = {...response, group_by: 'symphony', groups: []};
 assert.strictEqual(symphonyStatsHeadline(noGroup, 'alpha').spend, 'Not recorded');
@@ -59,6 +59,10 @@ empty.symphony_health.alpha.last_poll_at = null;
 empty.reliability.alpha = {checks: 0, success_rate: null, recent_errors: []};
 const emptyHtml = symphonyStatsHtml('alpha', empty, empty);
 assert.ok(emptyHtml.includes('Disabled') && emptyHtml.includes('Not recorded'));
+empty.reliability.alpha.reason = 'board_check_read_unavailable: <locked>';
+const unavailableHtml = symphonyStatsHtml('alpha', empty, empty);
+assert.ok(unavailableHtml.includes('Not recorded: board_check_read_unavailable: &lt;locked&gt;'));
+assert.ok(!unavailableHtml.includes('<locked>'));
 assert.ok(!/[\u2013\u2014]/.test(html));
 assert.ok(statsChartHtml([{label: '<bad>', value: null}], 'Cost').includes('Not recorded'));
 // Daily symphony charts retain the reviewed shared renderer's scale and labels.
@@ -95,7 +99,8 @@ async function actionChecks() {
   const wiki = elements['sym-wiki-init-btn'];
   const bootstrapMessage = elements['sym-env-bootstrap-msg'];
   const wikiMessage = elements['sym-wiki-init-msg'];
-  wireSymphonyStatsActions('alpha/a b');
+  wireSymphonyDetailActions('alpha/a b', {querySelector: selector => elements[selector.slice(1)]});
+  wireSymphonyDetailActions('alpha/a b', {querySelector: selector => elements[selector.slice(1)]});
   bootstrap.onclick();
   assert.strictEqual(calls.length, 0, 'cancelled bootstrap confirmation must not POST');
   assert.ok(confirmations[0].includes('retry budget'));
@@ -133,11 +138,6 @@ async function actionChecks() {
   assert.strictEqual(wikiMessage.textContent, 'Network error');
   assert.strictEqual(wiki.disabled, false);
   assert.ok(calls.every(call => call.options.method === 'POST' && call.options.credentials === 'same-origin'));
-  assert.ok(symphonyStatsActionsHtml({}).includes('id="sym-env-bootstrap-btn" disabled'));
-  assert.ok(symphonyStatsActionsHtml({env_bootstrap_performer_id: 'worker', bootstrap_in_flight: true})
-    .includes('id="sym-env-bootstrap-btn" disabled'));
-  assert.ok(!symphonyStatsActionsHtml({env_bootstrap_performer_id: 'worker'})
-    .includes('id="sym-env-bootstrap-btn" disabled'));
   console.log('Symphony operational action checks passed');
 }
 

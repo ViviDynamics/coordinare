@@ -2323,7 +2323,9 @@ def _daemon_with_symphony(wiki_in_flight: bool = False, has_cache: bool = True) 
 
 def test_symphony_detail_is_read_only() -> None:
     """181/184: settings stay read-only alongside statistics and the bootstrap actions."""
-    source = page_source()
+    client = _make_app()
+    page = client.get("/symphonies/alpha").text
+    source = "\n".join(client.get(src).text for src in re.findall(r'<script src="([^"]+)"', page) if src.startswith('/'))
     assert "loadSymphonyStatsDetail(detail, statsEl, mounted, revision)" in source
     assert source.count('id="sym-env-bootstrap-btn"') == 1
     assert source.count('id="sym-wiki-init-btn"') == 1

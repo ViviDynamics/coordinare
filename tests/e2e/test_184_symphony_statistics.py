@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import copy
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,10 @@ def stats_responses(tmp_path: Path) -> dict[str, Any]:
                 result[f"{window}:{group}"]["symphony_health"] = live_health({"alpha": entry}, frozenset({"alpha"}))
         return result
 
-    return asyncio.run(responses())
+    # Playwright's sync API keeps an event loop running on this thread once a browser test has run,
+    # so the statistics queries run on a thread of their own.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, responses()).result()
 
 
 def open_stats(page: Page, url: str, store: DashboardStore, bodies: dict[str, Any]) -> None:

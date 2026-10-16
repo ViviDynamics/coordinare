@@ -596,68 +596,17 @@ async function loadSymphonyDetail(name, el) {
       + ecErrBanner
       + '<table style="font-size:12px;margin-bottom:10px"><tbody>' + ecRows + '</tbody></table>'
       + '<button class="action-btn" id="sym-env-bootstrap-btn" ' + disabled + '>Force bootstrap now</button>'
-      + ' <span id="sym-env-bootstrap-msg" class="action-msg"></span>'
-      + ' <button class="action-btn" id="sym-wiki-init-btn">Init wiki</button>'
-      + ' <span id="sym-wiki-init-msg" class="action-msg"></span>'
-      + '</div>';
+      + ' <span id="sym-env-bootstrap-msg" class="action-msg" role="status"></span>';
   }
+  if (!ecBootstrapId) ecSection = '<div class="card" style="margin-bottom:14px">';
+  ecSection += ' <button class="action-btn" id="sym-wiki-init-btn">Init wiki</button>'
+    + ' <span id="sym-wiki-init-msg" class="action-msg" role="status"></span></div>';
   el.innerHTML = '<h3 style="margin:12px 0 4px">Live status</h3>'
     + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
     + ecSection
     + symSummaryHtml(name, data);
   loadSymphonyPersonas(name, data, el);
-  var ecBtn = document.getElementById('sym-env-bootstrap-btn');
-  if (ecBtn) {
-    ecBtn.addEventListener('click', async function() {
-      var msg = document.getElementById('sym-env-bootstrap-msg');
-      ecBtn.disabled = true;
-      msg.textContent = 'Dispatching...';
-      msg.style.color = 'var(--color-text-muted)';
-      try {
-        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/env-bootstrap', {method: 'POST'});
-        var d = await r.json();
-        if (r.ok) {
-          msg.textContent = 'Accepted. Bootstrap will start on the next check';
-          msg.style.color = 'var(--color-accent-green)';
-          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
-        } else {
-          msg.textContent = d.error || ('Error ' + r.status);
-          msg.style.color = 'var(--color-accent-red)';
-          ecBtn.disabled = false;
-        }
-      } catch(e) {
-        msg.textContent = 'Network error';
-        msg.style.color = 'var(--color-accent-red)';
-        ecBtn.disabled = false;
-      }
-    });
-  }
-  var wikiBtn = document.getElementById('sym-wiki-init-btn');
-  if (wikiBtn) {
-    wikiBtn.addEventListener('click', async function() {
-      var msg = document.getElementById('sym-wiki-init-msg');
-      wikiBtn.disabled = true;
-      msg.textContent = 'Dispatching...';
-      msg.style.color = 'var(--color-text-muted)';
-      try {
-        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init', {method: 'POST'});
-        var d = await r.json();
-        if (r.ok) {
-          msg.textContent = 'Accepted: building the wiki, a seed PR will open on completion';
-          msg.style.color = 'var(--color-accent-green)';
-          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
-        } else {
-          msg.textContent = d.error || ('Error ' + r.status);
-          msg.style.color = 'var(--color-accent-red)';
-          wikiBtn.disabled = false;
-        }
-      } catch(e) {
-        msg.textContent = 'Network error';
-        msg.style.color = 'var(--color-accent-red)';
-        wikiBtn.disabled = false;
-      }
-    });
-  }
+  wireSymphonyDetailActions(name, el);
   _symShown = name;
 }
 

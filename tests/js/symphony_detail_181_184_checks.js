@@ -11,7 +11,8 @@ async function checkMergedDetail() {
       getAttribute(name) {return this.attributes[name];},
       setAttribute(name, value) {this.attributes[name] = value;},
       removeAttribute(name) {delete this.attributes[name];},
-      addEventListener(name, callback) {this.listeners[name] = callback;},
+      addEventListener(name, callback) {(this.listeners[name] ||= []).push(callback);},
+      async click() {await Promise.all([...(this.listeners.click || []), ...(this.onclick ? [this.onclick] : [])].map(fn => fn()));},
       querySelector() {return null;},
       get innerHTML() {return this.html;},
       set innerHTML(value) {this.html = value;}
@@ -21,6 +22,14 @@ async function checkMergedDetail() {
   Object.defineProperty(root, 'innerHTML', {get() {return this.html;}, set(value) {
     this.html = value;
     stats = element();
+    Object.defineProperty(stats, 'innerHTML', {get() {return this.html;}, set(html) {
+      this.html = html;
+      for (const id of Object.keys(elements)) if (elements[id].owner === this) delete elements[id];
+      for (const match of html.matchAll(/id="([^"]+)"/g)) {
+        assert.ok(!elements[match[1]], 'duplicate DOM id: ' + match[1]);
+        elements[match[1]] = Object.assign(element(), {owner: this});
+      }
+    }});
     detail = element();
     Object.defineProperty(detail, 'innerHTML', {get() {return this.html;}, set(html) {
       this.html = html;
@@ -28,15 +37,20 @@ async function checkMergedDetail() {
         const cell = element();
         return {cell, querySelector: () => cell};
       }) : null;
-      for (const match of html.matchAll(/id="([^"]+)"/g)) elements[match[1]] = element();
+      for (const id of Object.keys(elements)) if (elements[id].owner === this) delete elements[id];
+      for (const match of html.matchAll(/id="([^"]+)"/g)) {
+        assert.ok(!elements[match[1]], 'duplicate DOM id: ' + match[1]);
+        elements[match[1]] = Object.assign(element(), {owner: this});
+      }
     }});
     const personaSummary = element();
-    detail.querySelector = selector => selector === 'table[data-detail]' && rows
+    detail.querySelector = selector => selector.startsWith('#') ? elements[selector.slice(1)] || null : selector === 'table[data-detail]' && rows
       ? {querySelectorAll: () => rows} : selector === '[data-sym-persona-summary]' ? personaSummary : null;
   }});
   root.querySelector = selector => selector === '[data-symphony-stats]' ? stats : detail;
   elements['symphonies-page-section'] = root;
   global.document = {getElementById: id => elements[id] || null};
+  global.window = {confirm: () => true};
   global.location = {pathname: '/symphonies/alpha'};
   global._symShown = null;
   let allowed = true;
@@ -44,7 +58,8 @@ async function checkMergedDetail() {
   symphonyStatsScopeAllows = () => allowed;
   loadSymphonyStatsDetail = (name, target, force, revision) => {
     statsReads.push({name, target, force, revision});
-    target.innerHTML = allowed ? 'Statistics' : 'Choose All symphonies';
+    target.innerHTML = allowed ? symphonyStatsHtml(name, {window: '7d', start: '2026-10-08T12:00:00Z',
+      end: '2026-10-15T12:00:00Z', symphony_health: {alpha: {name: 'alpha'}}}, null) : 'Choose All symphonies';
   };
   const calls = [];
   global.fetch = (url, options) => new Promise(resolve => calls.push({url, options, resolve}));
@@ -70,7 +85,7 @@ async function checkMergedDetail() {
   const markup = detail.innerHTML;
   ['sym-env-bootstrap-btn', 'sym-wiki-init-btn'].forEach(id => {
     assert.strictEqual(markup.split('id="' + id + '"').length - 1, 1, id + ' occurs once');
-    assert.ok(elements[id].listeners.click, id + ' retains its handler');
+    assert.ok(elements[id].onclick || elements[id].listeners.click, id + ' retains its handler');
   });
   assert.ok(markup.includes('Env bootstrap failing for alpha:'));
   assert.ok(markup.includes('&lt;bad image&gt;') && !markup.includes('<bad image>'));
@@ -89,16 +104,31 @@ async function checkMergedDetail() {
   assert.strictEqual(rows[4].cell.innerHTML, timeHtml(changed.last_poll_at));
   assert.strictEqual(rows[5].cell.textContent, '<new error>');
   assert.strictEqual(detail.innerHTML, markup, 'statistics and SSE preserve settings and action elements');
-  assert.strictEqual(stats.innerHTML, 'Statistics');
+  assert.ok(stats.innerHTML.includes('Throughput'));
+  wireSymphonyDetailActions('alpha', detail);
+  wireSymphonyDetailActions('alpha', detail);
   for (const [id, endpoint] of [['sym-env-bootstrap-btn', 'env-bootstrap'], ['sym-wiki-init-btn', 'wiki-init']]) {
-    const clicked = elements[id].listeners.click();
+    const beforeClick = calls.length;
+    const clicked = elements[id].click();
+    assert.strictEqual(calls.length, beforeClick + 1, 'one click sends exactly one POST after re-render');
     const call = calls.at(-1);
     assert.strictEqual(call.url, '/api/symphonies/alpha/' + endpoint);
     assert.strictEqual(call.options.method, 'POST');
     call.resolve({ok: false, json: async () => ({error: 'Try again'})});
     await clicked;
+    await settle();
     assert.strictEqual(elements[id].disabled, false);
   }
+  // A full detail reload replaces its controls. A stats/SSE refresh preserves them.
+  const reload = loadSymphonyDetail('alpha', detail);
+  calls.at(-1).resolve({ok: true, json: async () => ({name: 'alpha', state: entry.state})});
+  await reload;
+  assert.ok(!elements['sym-env-bootstrap-btn'], 'bootstrap is unavailable without a performer');
+  assert.ok(elements['sym-wiki-init-btn'], 'wiki remains reachable without a bootstrap performer');
+  const wikiClick = elements['sym-wiki-init-btn'].click();
+  assert.ok(calls.at(-1).url.endsWith('/wiki-init'));
+  calls.at(-1).resolve({ok: false, json: async () => ({error: 'Try again'})});
+  await wikiClick;
   allowed = false;
   const before = calls.length;
   renderSymphoniesPage({symphonies: [changed]});
