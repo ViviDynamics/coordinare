@@ -12,7 +12,10 @@ from coordinare.graph.nodes.monitor.constants import VERDICT_STAGES
 from coordinare.lifecycle import ROLE_TO_STAGE
 from coordinare.services import stats_sources
 from coordinare.services.event_store_query import QUERY_TIMEOUT_SECONDS
+from coordinare.services.persona_history import history_for
+from coordinare.services.persona_service import VALID_ROLES
 from coordinare.services.stats_flow import card_flow, instant, lifecycle_records, percentiles
+from coordinare.services.stats_runtime import persona_runtime
 from coordinare.services.token_usage import PriceTable, UsageCounts, price_totals, usage_summary
 
 if TYPE_CHECKING:
@@ -27,6 +30,7 @@ WINDOW_HOURS = {"24h": 24, "7d": 168, "30d": 720}
 OUTCOMES = ("success", "failure", "completed_without_verdict", "blocked", "system_error", "cancelled", "unknown")
 OUTCOME_MAP = {"completed": "completed_without_verdict", "failed": "system_error"}
 DIMENSIONS = ("symphony", "stage", "agent", "model", "backend", "outcome")
+RECENT_RUN_LIMIT = 10
 MAX_REASON_CHARS = 300
 MILLISECONDS_PER_SECOND = 1000
 DEFINITIONS = {
@@ -45,6 +49,10 @@ DEFINITIONS = {
     "duration_seconds": "Header start to final transcript timestamp; negative or missing durations excluded. Linear percentiles.",
     "cost": "Indexed event store usage aggregated per run and model in SQL, with TokenLedger scope precedence and PriceTable pricing. Transcript fallback covers runs predating retained event coverage, runs with dropped or partially pruned usage events, and runs with no event store. usd is null if usage is missing or any model is unpriced.",
     "usage_read_bounds": f"At most 2000 runs and 10000 run/model groups, in batches of 128 runs. Each SQLite statement has a {QUERY_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND:g} ms deadline and all usage batches share a one second deadline. Legacy transcripts share a 16 MiB usage byte budget.",
+    "cost_per_run_usd": "Total priced USD / runs in the cohort; null for missing usage, unpriced models or an empty cohort.",
+    "shared_persona_edits": "Shared retained persona history metadata in the window, including edits after the latest run. Symphony attribution is not recorded; these are not symphony run statistics.",
+    "persona_versions": "Recorded run header version and content hash, separated by symphony. Missing identities stay null. Edit markers use recorded changed_at, not the run start.",
+    "recent_runs": "Newest ten retained runs in the same filtered start cohort, with the same accounting and outcome rules as totals.",
     "cost_precision": "usd is rounded to microdollars for display. Sum Decimal(usd_exact) for exact reconciliation across groups; partial_usd_exact contains known costs.",
     "card_flow": "Lifecycle observations per symphony, independent of run dimension filters. Merge time selects completed cards and cycles.",
     "cycle_time_seconds": "First dispatch of a card lifecycle to its merge, including dispatches before the window.",
@@ -157,6 +165,7 @@ def _prepare(
         row = {
             **source,
             "symphony": source["attributed_symphony"],
+            "transcript_symphony": source["symphony"],
             "stage": stage,
             "agent": source.get("persona"),
             "backend": source.get("agent"),
@@ -234,6 +243,8 @@ def _measures(
         "last_run_at": max((row["started_at"] for row in rows), default=None),
         "tokens": summary["tokens"],
         "cost": summary["cost"],
+        "cost_per_run_usd": (float(priced.cost_usd) / len(rows)
+                             if rows and not missing and priced.cost_usd is not None else None),
         "pricing": summary["pricing"],
         "missing_usage_runs": missing,
         "failure_reasons": [
@@ -243,6 +254,68 @@ def _measures(
             ]
         ],
     }
+
+
+def _persona_edits(
+    rows: list[dict[str, Any]], day: str, start: datetime | None, end: datetime,
+) -> list[dict[str, Any]]:
+    edits = {}
+    for row in rows:
+        at = instant(row.get("persona_changed_at"))
+        if at is None or at > end or (start is not None and at < start):
+            continue
+        if at.date().isoformat() != day:
+            continue
+        key = (row["symphony"], row.get("persona_version"), row.get("persona_sha256"))
+        edits[key] = {"symphony": key[0], "version": key[1], "sha256": key[2], "changed_at": at.isoformat()}
+    return list(edits.values())
+
+
+def _persona_details(
+    rows: list[dict[str, Any]], sources: StatsSources, params: StatsQuery, frame: StatsFrame,
+    start: datetime | None,
+) -> dict[str, Any]:
+    table, end = frame.table, frame.now
+    versions: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        versions[row["symphony"], row.get("persona_version"), row.get("persona_sha256")].append(row)
+    recent = []
+    for row in sorted(rows, key=lambda row: (row["started_at"], row["run"]), reverse=True)[:RECENT_RUN_LIMIT]:
+        measures = _measures([row], sources.usage, table, params.top_n)
+        recent.append({
+            **{key: row.get(key) for key in (
+                "run", "card", "card_title", "agent", "stage", "outcome", "started_at", "duration_seconds",
+            )},
+            # Conductor transcripts live under their own folder, while the display scope is their owner.
+            "symphony": row.get("transcript_symphony", row["symphony"]),
+            "attributed_symphony": row["symphony"],
+            "cost": measures["cost"], "tokens": measures["tokens"],
+            "missing_usage_runs": measures["missing_usage_runs"],
+        })
+    return {
+        "recent_runs": recent,
+        "persona_versions": [
+            {"symphony": key[0], "version": key[1], "sha256": key[2],
+             **_measures(group, sources.usage, table, params.top_n)}
+            for key, group in sorted(versions.items(), key=lambda item: str(item[0]))
+        ],
+        "persona_edits": [edit for day in sorted({str(row.get("persona_changed_at") or "")[:len("YYYY-MM-DD")] for row in rows})
+                          for edit in _persona_edits(rows, day, start, end)],
+    }
+
+
+def _shared_persona_edits(
+    root: Path | None, role: str, start: datetime | None, end: datetime,
+) -> list[dict[str, Any]]:
+    """Metadata only; the shared version store does not record symphony attribution."""
+    if root is None or role not in VALID_ROLES:
+        return []
+    return [
+        {"version": version.version, "sha256": version.sha256, "changed_at": version.changed_at,
+         "scope": "shared_history"}
+        for version in history_for(root).versions(role)
+        if (at := instant(version.changed_at)) is not None and at <= end and (start is None or at >= start)
+    ]
 
 
 def aggregate(
@@ -279,9 +352,11 @@ def aggregate(
         "end": now.isoformat(),
         "groups": _group_measures(selected, params, sources.usage, table),
         "totals": _measures(selected, sources.usage, table, params.top_n),
+        **(_persona_details(selected, sources, params, frame, start) if params.agent else {}),
         "daily": [
             {
                 "day": day,
+                **({"persona_edits": _persona_edits(selected, day, start, now)} if params.agent else {}),
                 **_measures(rows, sources.usage, table, params.top_n),
                 "groups": _group_measures(rows, params, sources.usage, table),
             }
@@ -322,14 +397,18 @@ class RunStatistics:
 
     def __init__(
         self, root: Path | None, *, event_path: Path | None = None, table: PriceTable | None = None,
+        persona_root: Path | None = None,
     ) -> None:
         self.root = root
+        self.persona_root = persona_root
         self.event_path = event_path
         self.table = table or PriceTable()
         self._lock = asyncio.Lock()
         self._sources: StatsSources | None = None
         self._visible: frozenset[str] = frozenset()
         self._expires = 0.0
+
+    persona_runtime = staticmethod(persona_runtime)
 
     async def query(
         self,
@@ -358,4 +437,9 @@ class RunStatistics:
                 self._expires = time.monotonic() + CACHE_SECONDS
             sources = self._sources
         frame = StatsFrame(visible, copy.deepcopy(lifecycle), copy.deepcopy(boards), now, self.table)
-        return await asyncio.to_thread(aggregate, sources, params, frame)
+        body = await asyncio.to_thread(aggregate, sources, params, frame)
+        if params.agent:
+            body["shared_persona_edits"] = await asyncio.to_thread(
+                _shared_persona_edits, self.persona_root, params.agent, instant(body["start"]), now,
+            )
+        return body

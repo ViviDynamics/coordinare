@@ -187,6 +187,7 @@ function personaSelect(root, role, updateUrl) {
     tab.setAttribute('tabindex', selected ? '0' : '-1');
   });
   personaSyncPanels(root);
+  if (typeof root.onPersonaSelect === 'function') root.onPersonaSelect(role);
   if (role && updateUrl && personaHashRole(root.getAttribute('data-persona-context')) !== role) {
     var context = root.getAttribute('data-persona-context');
     var hash = context === 'config' ? '#personas/' : '#';

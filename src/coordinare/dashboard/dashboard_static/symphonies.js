@@ -881,6 +881,7 @@ function refreshScopedViews() {
   updateAttention(scoped);
   renderState(scoped);
   if (isPerformersPath(location.pathname)) renderPerformersPage(scoped);
+  else if (location.pathname === '/personas') personaStatsRefresh(false);
   else if (location.pathname === '/logs') renderLogsPage(currentScopedState());
   // 295: History has no symphony filter of its own, so the header's choice re-scopes it now.
   else if (location.pathname === '/history') renderHistoryPage(scoped);
